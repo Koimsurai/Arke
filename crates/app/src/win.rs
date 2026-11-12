@@ -158,6 +158,33 @@ pub(crate) fn run_elevated(exe: &Path, args: &str) -> Result<u32, ElevateError> 
     code.ok_or(ElevateError::TimedOut)
 }
 
+/// Quotes one argument for a Windows command line as `CommandLineToArgvW` reads it back. A
+/// backslash is literal except in front of a quote, so `"C:\"` would swallow its own closing
+/// quote: backslashes before a quote are doubled, and the quote itself escaped.
+pub(crate) fn quote_arg(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+    out
+}
+
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 const DRIVE_REMOTE: u32 = 4;
@@ -1453,6 +1480,39 @@ fn raise(hwnd: isize, also: Option<u32>) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// What Windows hands the elevated process: each quoted argument comes back unchanged.
+    #[test]
+    fn quoted_arguments_survive_the_command_line() {
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::UI::Shell::CommandLineToArgvW;
+        // `C:\` is the change journal case: unescaped, its closing quote became part of the path.
+        let originals = [
+            r"C:\",
+            r"D:\a b\",
+            r#"say "hi""#,
+            r"\\server\share",
+            "",
+            "plain",
+        ];
+        let line = std::iter::once("arke.exe".to_string())
+            .chain(originals.iter().map(|a| quote_arg(a)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let wide_line = wide(std::ffi::OsStr::new(&line));
+        let mut count = 0;
+        // SAFETY: wide_line is NUL-terminated; the returned array is freed with LocalFree below.
+        let parsed = unsafe {
+            let argv = CommandLineToArgvW(PCWSTR(wide_line.as_ptr()), &raw mut count);
+            assert!(!argv.is_null());
+            let parsed: Vec<String> = (1..count as usize)
+                .map(|i| (*argv.add(i)).to_string().unwrap())
+                .collect();
+            let _ = LocalFree(Some(HLOCAL(argv.cast())));
+            parsed
+        };
+        assert_eq!(parsed, originals);
+    }
 
     /// Real shortcuts in a temp folder: the target reads back, and a name clash gets a number.
     #[test]

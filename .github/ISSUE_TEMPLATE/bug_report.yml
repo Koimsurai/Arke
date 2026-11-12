@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in Arke doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The quickest way to report a bug is from Arke itself: **Settings › About › Report a problem › Open an issue on GitHub**. It fills in your version, Windows build and settings, with your account, computer and server names taken out. Use this form if Arke won't start or you'd rather write it yourself.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a folder with ...
+        2. Press ...
+        3. ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: input
+    id: version
+    attributes:
+      label: Arke version
+      description: Shown in Settings › About.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Run `winver` to see it.
+      placeholder: "Windows 11 24H2 (26100.2033)"
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Build
+      options:
+        - x64
+        - ARM64
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The last lines of `%LOCALAPPDATA%\Arke\arke.log`, if they look related. Check them for names you'd rather not share.
+      render: text
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and this one isn't there yet.
+          required: true

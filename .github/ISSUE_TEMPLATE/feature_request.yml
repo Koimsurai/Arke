@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest something Arke should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task or the annoyance, not only the feature you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could Arke help?
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Seen it elsewhere?
+      description: Another file manager or app that does this well, and what you like about it.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and this one isn't there yet.
+          required: true

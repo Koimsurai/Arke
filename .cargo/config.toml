@@ -1,0 +1,10 @@
+# Static CRT so arke.exe runs without the VC++ redistributable
+[build]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[alias]
+# The workspace has two binaries (arke, arke-indexd)
+arke = "run --bin arke"
+lint = "clippy --workspace --all-targets -- -D warnings"
+# Release tooling: changesets, versioning, packaging, publishing (see CONTRIBUTING.md)
+xtask = "run -q -p xtask --"

@@ -1,0 +1,24 @@
+name: pull requests
+
+# Arke doesn't accept pull requests for now (see CONTRIBUTING.md): close them with a pointer to
+# issues. Nothing from the pull request is checked out or run.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: >-
+      github.event.pull_request.user.login != github.repository_owner &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: close with a note
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr close "$PR_URL" --comment "Thanks for taking the time! Arke doesn't accept pull requests for now. Please open an issue to report a bug or suggest a change instead."

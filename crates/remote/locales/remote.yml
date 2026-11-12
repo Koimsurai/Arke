@@ -1,0 +1,70 @@
+_version: 2
+
+remote.no_host:
+  en: "Can't find the server %{host}"
+  zh-TW: "找不到伺服器 %{host}"
+  zh-CN: "找不到服务器 %{host}"
+remote.unreachable:
+  en: "Can't connect to %{host}; check the address and port"
+  zh-TW: "無法連線到 %{host}，請檢查位址和連接埠"
+  zh-CN: "无法连接到 %{host}，请检查地址和端口"
+remote.timeout:
+  en: "The server isn't responding"
+  zh-TW: "伺服器沒有回應"
+  zh-CN: "服务器没有响应"
+remote.lost:
+  en: The connection to the server was lost
+  zh-TW: 與伺服器的連線中斷了
+  zh-CN: 与服务器的连接断开了
+remote.needs_login:
+  en: You need to sign in to this server
+  zh-TW: 需要登入這台伺服器
+  zh-CN: 需要登录此服务器
+remote.login_failed:
+  en: The user name or password is incorrect
+  zh-TW: 使用者名稱或密碼不正確
+  zh-CN: 用户名或密码不正确
+remote.host_unknown:
+  en: "First connection to this server. Check that its key fingerprint is %{fingerprint}"
+  zh-TW: "第一次連線到這台伺服器，請確認它的金鑰指紋是 %{fingerprint}"
+  zh-CN: "第一次连接到此服务器，请确认它的密钥指纹是 %{fingerprint}"
+remote.host_changed:
+  en: "The key of %{host} has changed. Someone may be intercepting the connection; Arke did not connect"
+  zh-TW: "%{host} 的金鑰變了，可能有人在攔截連線，Arke 沒有連線"
+  zh-CN: "%{host} 的密钥变了，可能有人在拦截连接，Arke 没有连接"
+remote.insecure:
+  en: "Sign-in over plain http would send the password unencrypted; use https"
+  zh-TW: "透過 http 登入會以明文傳送密碼，請改用 https"
+  zh-CN: "通过 http 登录会以明文发送密码，请改用 https"
+remote.bad_key:
+  en: "Can't use the key file: %{reason}"
+  zh-TW: "無法使用金鑰檔：%{reason}"
+  zh-CN: "无法使用密钥文件：%{reason}"
+remote.not_found:
+  en: The item was not found on the server
+  zh-TW: 伺服器上找不到這個項目
+  zh-CN: 服务器上找不到此项目
+remote.denied:
+  en: The server denied access
+  zh-TW: 伺服器拒絕存取
+  zh-CN: 服务器拒绝访问
+remote.exists:
+  en: An item with that name already exists
+  zh-TW: 已有同名的項目
+  zh-CN: 已有同名的项目
+remote.too_large:
+  en: Too large to preview from the server
+  zh-TW: 檔案太大，無法從伺服器預覽
+  zh-CN: 文件太大，无法从服务器预览
+remote.cancelled:
+  en: Cancelled
+  zh-TW: 已取消
+  zh-CN: 已取消
+remote.server:
+  en: "The server reported an error: %{reason}"
+  zh-TW: "伺服器回報錯誤：%{reason}"
+  zh-CN: "服务器报告错误：%{reason}"
+remote.cert:
+  en: "The server's certificate isn't trusted"
+  zh-TW: 伺服器的憑證不受信任
+  zh-CN: 服务器的证书不受信任

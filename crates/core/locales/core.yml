@@ -1,0 +1,357 @@
+_version: 2
+
+# ─── Type column (format::type_label)
+type.folder:
+  en: Folder
+  zh-TW: 資料夾
+  zh-CN: 文件夹
+type.folder_link:
+  en: Folder shortcut
+  zh-TW: 資料夾捷徑
+  zh-CN: 文件夹快捷方式
+type.file:
+  en: File
+  zh-TW: 檔案
+  zh-CN: 文件
+type.ext_file:
+  en: "%{ext} File"
+  zh-TW: "%{ext} 檔案"
+  zh-CN: "%{ext} 文件"
+type.text:
+  en: Text Document
+  zh-TW: 文字文件
+  zh-CN: 文本文档
+type.markdown:
+  en: Markdown Document
+  zh-TW: Markdown 文件
+  zh-CN: Markdown 文档
+type.exe:
+  en: Application
+  zh-TW: 應用程式
+  zh-CN: 应用程序
+type.msi:
+  en: Windows Installer
+  zh-TW: Windows 安裝程式
+  zh-CN: Windows Installer 程序包
+type.dll:
+  en: Application Extension
+  zh-TW: 應用程式擴充
+  zh-CN: 应用程序扩展
+type.lnk:
+  en: Shortcut
+  zh-TW: 捷徑
+  zh-CN: 快捷方式
+type.url:
+  en: Internet Shortcut
+  zh-TW: 網際網路捷徑
+  zh-CN: Internet 快捷方式
+type.batch:
+  en: Batch File
+  zh-TW: 批次檔
+  zh-CN: 批处理文件
+type.ps1:
+  en: PowerShell Script
+  zh-TW: PowerShell 指令碼
+  zh-CN: PowerShell 脚本
+type.zip:
+  en: ZIP Archive
+  zh-TW: ZIP 壓縮檔
+  zh-CN: ZIP 压缩文件
+type.7z:
+  en: 7-Zip Archive
+  zh-TW: 7-Zip 壓縮檔
+  zh-CN: 7-Zip 压缩文件
+type.rar:
+  en: RAR Archive
+  zh-TW: RAR 壓縮檔
+  zh-CN: RAR 压缩文件
+type.jpeg:
+  en: JPEG Image
+  zh-TW: JPEG 影像
+  zh-CN: JPEG 图像
+type.png:
+  en: PNG Image
+  zh-TW: PNG 影像
+  zh-CN: PNG 图像
+type.gif:
+  en: GIF Image
+  zh-TW: GIF 影像
+  zh-CN: GIF 图像
+type.webp:
+  en: WebP Image
+  zh-TW: WebP 影像
+  zh-CN: WebP 图像
+type.svg:
+  en: SVG Image
+  zh-TW: SVG 影像
+  zh-CN: SVG 图像
+type.ico:
+  en: Icon
+  zh-TW: 圖示
+  zh-CN: 图标
+type.mp3:
+  en: MP3 Audio
+  zh-TW: MP3 音訊
+  zh-CN: MP3 音频
+type.wav:
+  en: WAV Audio
+  zh-TW: WAV 音訊
+  zh-CN: WAV 音频
+type.flac:
+  en: FLAC Audio
+  zh-TW: FLAC 音訊
+  zh-CN: FLAC 音频
+type.mp4:
+  en: MP4 Video
+  zh-TW: MP4 影片
+  zh-CN: MP4 视频
+type.mkv:
+  en: MKV Video
+  zh-TW: MKV 影片
+  zh-CN: MKV 视频
+type.mov:
+  en: QuickTime Video
+  zh-TW: QuickTime 影片
+  zh-CN: QuickTime 视频
+type.pdf:
+  en: PDF Document
+  zh-TW: PDF 文件
+  zh-CN: PDF 文档
+type.word:
+  en: Word Document
+  zh-TW: Word 文件
+  zh-CN: Word 文档
+type.excel:
+  en: Excel Spreadsheet
+  zh-TW: Excel 試算表
+  zh-CN: Excel 工作表
+type.powerpoint:
+  en: PowerPoint Presentation
+  zh-TW: PowerPoint 簡報
+  zh-CN: PowerPoint 演示文稿
+type.csv:
+  en: CSV File
+  zh-TW: CSV 檔案
+  zh-CN: CSV 文件
+type.json:
+  en: JSON File
+  zh-TW: JSON 檔案
+  zh-CN: JSON 文件
+type.xml:
+  en: XML File
+  zh-TW: XML 檔案
+  zh-CN: XML 文件
+type.html:
+  en: HTML Document
+  zh-TW: HTML 文件
+  zh-CN: HTML 文档
+type.rust:
+  en: Rust Source
+  zh-TW: Rust 原始碼
+  zh-CN: Rust 源文件
+type.python:
+  en: Python Source
+  zh-TW: Python 原始碼
+  zh-CN: Python 源文件
+type.javascript:
+  en: JavaScript File
+  zh-TW: JavaScript 檔案
+  zh-CN: JavaScript 文件
+type.typescript:
+  en: TypeScript File
+  zh-TW: TypeScript 檔案
+  zh-CN: TypeScript 文件
+type.toml:
+  en: TOML File
+  zh-TW: TOML 檔案
+  zh-CN: TOML 文件
+type.yaml:
+  en: YAML File
+  zh-TW: YAML 檔案
+  zh-CN: YAML 文件
+type.iso:
+  en: Disc Image
+  zh-TW: 光碟映像檔
+  zh-CN: 光盘映像文件
+
+# ─── File name validation (path::validate_file_name)
+name.empty:
+  en: The name can't be empty
+  zh-TW: 名稱不能是空白
+  zh-CN: 名称不能为空
+name.bad_chars:
+  en: 'A name can''t contain any of these characters: \ / : * ? " < > |'
+  zh-TW: '名稱不能包含下列字元：\ / : * ? " < > |'
+  zh-CN: '名称不能包含下列字符：\ / : * ? " < > |'
+name.trailing:
+  en: A name can't end with a period or a space
+  zh-TW: 名稱結尾不能是句點或空白
+  zh-CN: 名称不能以句点或空格结尾
+name.too_long:
+  en: The name is too long
+  zh-TW: 名稱太長
+  zh-CN: 名称太长
+name.reserved:
+  en: This name is reserved by Windows
+  zh-TW: 這是 Windows 保留的名稱
+  zh-CN: 这是 Windows 保留的名称
+
+# ─── Listing errors (service)
+io.internal:
+  en: "Internal error (logged); please report it"
+  zh-TW: 內部錯誤（已記錄），請回報
+  zh-CN: 内部错误（已记录），请反馈
+io.not_found:
+  en: This location can't be found
+  zh-TW: 找不到這個位置
+  zh-CN: 找不到此位置
+io.denied:
+  en: Access denied
+  zh-TW: 沒有存取權限
+  zh-CN: 没有访问权限
+io.not_dir:
+  en: "This isn't a folder"
+  zh-TW: 這不是資料夾
+  zh-CN: 这不是文件夹
+io.too_large:
+  en: The file is too large
+  zh-TW: 檔案太大
+  zh-CN: 文件太大
+
+# ─── Extraction (archive)
+archive.folder_fallback:
+  en: Extracted
+  zh-TW: 解壓縮
+  zh-CN: 解压
+archive.exists:
+  en: "%{path} already exists"
+  zh-TW: "%{path} 已經存在"
+  zh-CN: "%{path} 已存在"
+archive.zip_failed:
+  en: "Couldn't create the zip file: %{error}"
+  zh-TW: "無法建立 zip 檔：%{error}"
+  zh-CN: "无法创建 zip 文件：%{error}"
+archive.create_failed:
+  en: "Couldn't create %{path}: %{error}"
+  zh-TW: "無法建立 %{path}：%{error}"
+  zh-CN: "无法创建 %{path}：%{error}"
+archive.open_failed:
+  en: "Couldn't open the archive: %{error}"
+  zh-TW: "無法開啟壓縮檔：%{error}"
+  zh-CN: "无法打开压缩文件：%{error}"
+archive.write_failed:
+  en: "Couldn't write %{path}: %{error}"
+  zh-TW: "無法寫入 %{path}：%{error}"
+  zh-CN: "无法写入 %{path}：%{error}"
+archive.read_failed:
+  en: "Couldn't read the archive (%{name}): %{error}"
+  zh-TW: "壓縮檔讀取失敗（%{name}）：%{error}"
+  zh-CN: "压缩文件读取失败（%{name}）：%{error}"
+archive.not_zip:
+  en: "Not a valid zip file: %{error}"
+  zh-TW: "不是有效的 zip 檔：%{error}"
+  zh-CN: "不是有效的 zip 文件：%{error}"
+archive.not_tar:
+  en: "Not a valid tar file: %{error}"
+  zh-TW: "不是有效的 tar 檔：%{error}"
+  zh-CN: "不是有效的 tar 文件：%{error}"
+archive.corrupt:
+  en: "The archive is damaged: %{error}"
+  zh-TW: "壓縮檔損毀：%{error}"
+  zh-CN: "压缩文件已损坏：%{error}"
+archive.not_format:
+  en: "Not a valid %{format} file: %{error}"
+  zh-TW: "不是有效的 %{format} 檔：%{error}"
+  zh-CN: "不是有效的 %{format} 文件：%{error}"
+archive.encrypted:
+  en: "Arke can't open password-protected archives yet"
+  zh-TW: "Arke 還無法開啟有密碼保護的壓縮檔"
+  zh-CN: "Arke 暂时无法打开受密码保护的压缩文件"
+archive.unsupported_method:
+  en: "This archive uses a compression method Arke can't read (%{method})"
+  zh-TW: "這個壓縮檔使用 Arke 無法讀取的壓縮方式（%{method}）"
+  zh-CN: "此压缩文件使用了 Arke 无法读取的压缩方式（%{method}）"
+archive.system_missing:
+  en: "Opening %{format} files needs Windows 11 version 23H2 or later"
+  zh-TW: "開啟 %{format} 檔需要 Windows 11 23H2 以上版本"
+  zh-CN: "打开 %{format} 文件需要 Windows 11 23H2 或更高版本"
+archive.system_unsupported:
+  en: "This version of Windows can't read this %{format} file (%{error}). The file may be damaged, or it may need Windows 11 version 23H2 or later."
+  zh-TW: "這個 Windows 版本無法讀取這個 %{format} 檔（%{error}）。檔案可能已損毀，或需要 Windows 11 23H2 以上版本。"
+  zh-CN: "此 Windows 版本无法读取这个 %{format} 文件（%{error}）。文件可能已损坏，或需要 Windows 11 23H2 或更高版本。"
+archive.system_names:
+  en: "This version of Windows can't handle some file names in this archive (characters outside the system language). Files before them were kept; Windows 11 version 23H2 or later can extract it all."
+  zh-TW: "這個 Windows 版本無法處理壓縮檔裡的部分檔名（含系統語言以外的字元）。之前的檔案已保留；Windows 11 23H2 以上版本可以完整解壓縮。"
+  zh-CN: "此 Windows 版本无法处理压缩文件中的部分文件名（含系统语言以外的字符）。之前的文件已保留；Windows 11 23H2 或更高版本可以完整解压。"
+archive.tar_failed:
+  en: "Windows' tar.exe failed: %{error}"
+  zh-TW: "Windows 的 tar.exe 執行失敗：%{error}"
+  zh-CN: "Windows 的 tar.exe 运行失败：%{error}"
+archive.run_failed:
+  en: "Couldn't run %{path}: %{error}"
+  zh-TW: "無法執行 %{path}：%{error}"
+  zh-CN: "无法运行 %{path}：%{error}"
+archive.needs_file:
+  en: "%{format} archives can only be read from a file on disk"
+  zh-TW: "%{format} 壓縮檔只能從磁碟上的檔案讀取"
+  zh-CN: "%{format} 压缩文件只能从磁盘上的文件读取"
+
+# ─── Date keywords for dm:… (English always works; these are the localized forms, comma-separated)
+query.dm.today:
+  en: today
+  zh-TW: 今天
+  zh-CN: 今天
+query.dm.yesterday:
+  en: yesterday
+  zh-TW: 昨天
+  zh-CN: 昨天
+query.dm.thisweek:
+  en: thisweek
+  zh-TW: 本週,這週
+  zh-CN: 本周,这周
+query.dm.thismonth:
+  en: thismonth
+  zh-TW: 本月,這個月
+  zh-CN: 本月,这个月
+query.dm.thisyear:
+  en: thisyear
+  zh-TW: 今年
+  zh-CN: 今年
+
+# ─── Network locations (SMB)
+io.net_not_found:
+  en: "Can't find the network path; check the server name and that the server is on"
+  zh-TW: "找不到網路路徑，請檢查伺服器名稱並確認伺服器已開機"
+  zh-CN: "找不到网络路径，请检查服务器名称并确认服务器已开机"
+io.net_offline:
+  en: "The server isn't responding; check your network or VPN connection"
+  zh-TW: "伺服器沒有回應，請檢查網路或 VPN 連線"
+  zh-CN: "服务器没有响应，请检查网络或 VPN 连接"
+io.net_no_share:
+  en: The server has no shared folder with this name
+  zh-TW: 伺服器上沒有這個共用資料夾
+  zh-CN: 服务器上没有这个共享文件夹
+io.net_other_account:
+  en: You're already connected to this server with a different account; disconnect it first
+  zh-TW: "已經用其他帳戶連到這台伺服器，請先中斷該連線"
+  zh-CN: "已使用其他帐户连接到此服务器，请先断开该连接"
+io.net_login:
+  en: You need to sign in to this server
+  zh-TW: 需要登入這台伺服器
+  zh-CN: 需要登录此服务器
+io.net_account:
+  en: The server didn't accept your account (password expired, account locked, or restricted)
+  zh-TW: "伺服器不接受這個帳戶（密碼過期、帳戶遭鎖定或受限制）"
+  zh-CN: 服务器不接受此帐户（密码过期、帐户被锁定或受限）
+io.net_denied:
+  en: Access denied; you may need to sign in with another account
+  zh-TW: "沒有存取權限，可能要用其他帳戶登入"
+  zh-CN: 没有访问权限，可能需要使用其他帐户登录
+io.net_no_host:
+  en: Can't find a server named %{server}
+  zh-TW: 找不到名為 %{server} 的伺服器
+  zh-CN: 找不到名为 %{server} 的服务器
+io.net_down:
+  en: Can't reach %{server} (it may be off, or the network or VPN is down)
+  zh-TW: 連不到 %{server}（可能沒開機，或網路、VPN 斷了）
+  zh-CN: 无法连接到 %{server}（可能未开机，或网络、VPN 已断开）

@@ -1,0 +1,16 @@
+[package]
+name = "genicon"
+description = "Renders the Arke logo SVGs to the Windows .ico and UI PNGs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# No text or system fonts needed
+resvg = { version = "0.46", default-features = false }
+ico = "0.6"
+
+[lints]
+workspace = true

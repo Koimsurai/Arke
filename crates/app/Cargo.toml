@@ -1,0 +1,123 @@
+[package]
+name = "arke-app"
+description = "Arke: a fast file explorer for Windows (GPUI app and Windows integration)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "arke"
+path = "src/main.rs"
+
+[dependencies]
+arke-core.workspace = true
+arke-indexd.workspace = true
+arke-remote.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+flume.workspace = true
+log.workspace = true
+env_logger.workspace = true
+unicode-segmentation.workspace = true
+rust-i18n.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# HWND of the GPUI window, so shell dialogs are owned by it
+raw-window-handle = "0.6"
+image.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+
+windows-core.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    # PDF previews (Windows.Data.Pdf renders a page into an in-memory stream)
+    "Data_Pdf",
+    # Cloud sync roots (StorageProviderSyncRootManager)
+    "Foundation_Collections",
+    "Storage",
+    "Storage_Provider",
+    "Storage_Streams",
+    # Ejecting drives (SetupAPI, CM_Request_Device_EjectW)
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    # A server's share list (NetShareEnum's buffer is freed with NetApiBufferFree)
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_NetworkManagement_WNet",
+    # Update checks over WinHTTP (system certificates and proxy)
+    "Win32_Networking_WinHttp",
+    "Win32_Security",
+    # Saved network credentials go to Windows Credential Manager
+    "Win32_Security_Credentials",
+    # Jump list titles (PKEY_Title)
+    "Win32_Storage_EnhancedStorage",
+    "Win32_Storage_FileSystem",
+    # Always keep on this device / free up space (CfSetPinState)
+    "Win32_Storage_CloudFilters",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    # `--bench index` writes its report to the launching terminal
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    # Crash log: which module faulted
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    # Defer index rebuilds in battery saver
+    "Win32_System_Power",
+    # `--bench index` reports the process's working set (GetProcessMemoryInfo)
+    "Win32_System_ProcessStatus",
+    # The HKEY field in SHELLEXECUTEINFOW, and the folder handler registration (win_registry.rs)
+    "Win32_System_Registry",
+    # Which programs hold a file that can't be deleted (Restart Manager)
+    "Win32_System_RestartManager",
+    "Win32_System_RemoteDesktop",
+    # Key state flags for the outgoing drag source
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_Time",
+    "Win32_System_Variant",
+    # Which programs have a folder open (NtQueryInformationFile, FileProcessIdsUsingFileInformation)
+    "Wdk_Storage_FileSystem",
+    # RtlGetVersion, to detect Windows 11 for Mica
+    "Wdk_System_SystemServices",
+    # System image list (IImageList) for drag images
+    "Win32_UI_Controls",
+    # Re-enable Arke's window if the file dialog process dies while modal (EnableWindow)
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+embed-resource = "3"
+
+[dev-dependencies]
+zip.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+arke-core = { workspace = true, features = ["test-support"] }
+arke-remote = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
+
+# `#[implement]` expands to ::windows_core, which unused-dependency checkers can't see
+[package.metadata.cargo-shear]
+ignored = ["windows-core"]

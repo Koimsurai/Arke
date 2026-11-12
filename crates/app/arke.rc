@@ -1,0 +1,30 @@
+// Windows resources: icon (GPUI uses resource 1 for the window and taskbar) and version info.
+// Template: build.rs fills in @...@ and compiles the result from OUT_DIR.
+#include <winver.h>
+
+1 ICON "@ICON@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @FILEVERSION@
+PRODUCTVERSION @FILEVERSION@
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Arke contributors"
+      VALUE "FileDescription", "Arke"
+      VALUE "FileVersion", "@VERSION@"
+      VALUE "InternalName", "arke"
+      VALUE "OriginalFilename", "arke.exe"
+      VALUE "ProductName", "Arke"
+      VALUE "ProductVersion", "@VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

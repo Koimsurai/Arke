@@ -1,0 +1,25 @@
+# typos (crate-ci/typos). Only words that were actually flagged go here, each with what it is,
+# so the list doesn't grow into something that lets real typos through.
+
+[default.extend-words]
+# Windows shell API: FOF_* flags of SHFILEOPSTRUCT, and the `fo` variable holding one
+FOF = "FOF"
+fo = "fo"
+# FORMATETC::ptd (target device pointer)
+ptd = "ptd"
+# SDDL alias for BUILTIN\Administrators
+BA = "BA"
+# The flate2 crate
+flate = "flate"
+# File extension used in a test fixture (game save)
+sav = "sav"
+# Hidden + System + Archive in the Details Attributes column
+HSA = "HSA"
+
+[default.extend-identifiers]
+# "PNGs" is split as PN + Gs
+PNGs = "PNGs"
+
+[files]
+# THIRD_PARTY_LICENSES.md is generated and quotes license texts and crate names verbatim
+extend-exclude = ["Cargo.lock", "THIRD_PARTY_LICENSES.md"]

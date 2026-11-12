@@ -1,0 +1,43 @@
+[package]
+name = "arke-core"
+description = "Platform-independent directory model, sorting, filtering and indexing for Arke"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+log.workspace = true
+notify.workspace = true
+nucleo.workspace = true
+rust-i18n.workspace = true
+flume.workspace = true
+memmap2.workspace = true
+parking_lot.workspace = true
+image.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
+lopdf.workspace = true
+tar.workspace = true
+flate2.workspace = true
+sevenz-rust2.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Loads Windows' own libarchive (archiveint.dll) for RAR and compressed tars; see archive/libarchive.rs
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = ["Win32_System_LibraryLoader", "Win32_System_SystemInformation"]
+
+[dev-dependencies]
+# Tests build their own 7z fixtures (with CJK names) instead of shipping binaries
+sevenz-rust2 = { workspace = true, features = ["compress"] }
+
+[lints]
+workspace = true
+
+[features]
+# Exposes FakeFs for the app's GPUI tests
+test-support = []

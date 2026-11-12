@@ -1,0 +1,14 @@
+[profile.ci]
+fail-fast = false
+retries = 1
+
+[profile.ci.junit]
+path = "junit.xml"
+# Failing tests keep their panic output in the report, so CI results show why without the log
+store-failure-output = true
+store-success-output = false
+
+[profile.default]
+# A test running for 30 s is stuck (UI tests normally take ~2 s)
+slow-timeout = { period = "10s", terminate-after = 3 }
+

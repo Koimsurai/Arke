@@ -1,0 +1,136 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/app",
+    "crates/indexd",
+    "crates/remote",
+    "tools/genfiles",
+    "tools/genicon",
+    "tools/xtask",
+]
+default-members = ["crates/app", "crates/indexd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+arke-core = { path = "crates/core" }
+arke-indexd = { path = "crates/indexd" }
+arke-remote = { path = "crates/remote" }
+
+# The official `gpui` on crates.io stopped at 0.2.2; `gpui-pre` is a weekly snapshot of Zed
+# (0.3.11 = zed@f816e1f). The API changes between snapshots, so the version is pinned.
+# Equivalent git source: `git = "https://github.com/zed-industries/zed", rev = "f816e1f"`.
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11" }
+
+windows = "0.62"
+# `#[implement]` expands to ::windows_core; keep in step with `windows`
+windows-core = "0.62"
+notify = "8"
+flume = "0.11"
+memmap2 = "0.9"
+# Fuzzy matching (Helix's engine). MPL-2.0, used unmodified; see THIRD_PARTY_NOTICES.md
+nucleo = "0.5"
+# Archive support: zip (deflate only), tar and .tar.gz
+zip = { version = "9", default-features = false, features = ["deflate"] }
+tar = "0.4"
+# Office Open XML previews (.docx/.xlsx/.pptx): streaming XML reader, no DTD or entity expansion
+quick-xml = "0.41"
+# Text of PDFs for content search; defaults off (no rayon, no chrono)
+lopdf = { version = "0.47", default-features = false }
+flate2 = "1"
+# 7z in pure Rust (Apache-2.0): exact Unicode names, byte progress and cancel, and it works on
+# Windows 10, whose tar.exe has no LZMA. No AES (password-protected 7z reports as such) and no
+# BZip2 (its decoder crate's bzip2-1.0.6 license isn't on the deny.toml allowlist).
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["ppmd"] }
+# Thumbnails; same version as gpui so decoded frames can be handed over directly
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
+log = "0.4"
+env_logger = "0.11"
+unicode-segmentation = "1"
+# Locks without poisoning (project rule: no std::sync::Mutex/RwLock/Condvar)
+parking_lot = "0.12"
+# Typed errors for library and platform code (domain layers); tools use anyhow
+thiserror = "2"
+anyhow = "1"
+# UI translations, embedded at compile time
+rust-i18n = "4"
+# Settings file (%APPDATA%\Arke\settings.json)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Release tooling and update verification
+sha2 = "0.10"
+
+# ─── Lints (crates opt in with `[lints] workspace = true`)
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# From nursery, picked one by one (the whole group is too noisy)
+or_fun_call = "warn"                   # `unwrap_or(expensive())` evaluates eagerly
+significant_drop_in_scrutinee = "warn" # lock guard held across a match/if-let
+significant_drop_tightening = "warn"   # lock guard outlives the critical section
+redundant_clone = "warn"
+missing_const_for_fn = "warn"
+use_self = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+uninlined_format_args = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+# UI layout math converts between f32 and integers constantly
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+# GPUI listener signatures pass by reference
+needless_pass_by_value = "allow"
+trivially_copy_pass_by_ref = "allow"
+
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+arc_with_non_send_sync = "deny"
+
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+large_futures = "warn"
+result_large_err = "warn"
+large_stack_arrays = "warn"
+large_enum_variant = "warn"
+inefficient_to_string = "warn"
+
+# ─── Profiles
+[profile.dev]
+# Optimize dependencies in dev builds; unoptimized GPUI rendering is misleadingly slow
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+# No panic = "abort": a panic on a worker thread should fail that job, not the whole app
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = "debuginfo"

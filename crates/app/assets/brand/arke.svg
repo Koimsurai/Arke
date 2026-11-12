@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Shapes, reused for fills, clips and highlights -->
+    <path id="folderShape"
+      d="M30 51 H82 Q88 51 92 56 L100 67 H172 Q186 67 186 81 V184 Q186 198 172 198 H30 Q16 198 16 184 V65 Q16 51 30 51 Z"/>
+    <!-- Wing kept within the folder's width so the folder can fill most of the canvas -->
+    <path id="wingShape"
+      d="M74 198
+         C106 127.4 143.3 86.1 181.3 69.5
+         C193.6 60.2 200.6 46.8 200.1 24
+         C203.7 50.9 198.2 71.6 183.3 84
+         Q194 77.8 207.7 79.9
+         C208.1 102.6 199.4 112.9 186 117.1
+         Q196.5 115 208 117.1
+         C203.6 133.6 195.9 141.9 186 146
+         V184 Q186 198 172 198 Z"/>
+    <clipPath id="folderClip"><use href="#folderShape"/></clipPath>
+    <clipPath id="wingClip"><use href="#wingShape"/></clipPath>
+
+    <!-- Folder: deeper terracotta, lit from the top left -->
+    <linearGradient id="folder" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#CE5C3C"/>
+      <stop offset="1" stop-color="#983822"/>
+    </linearGradient>
+    <!-- Soft inner bevel along the folder's top edge -->
+    <linearGradient id="folderBevel" gradientUnits="userSpaceOnUse" x1="0" y1="51" x2="0" y2="89">
+      <stop offset="0" stop-color="#FFD9C4" stop-opacity="0.75"/>
+      <stop offset="0.35" stop-color="#FFD9C4" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFD9C4" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Slight darkening toward the folder's bottom edge -->
+    <linearGradient id="folderBase" gradientUnits="userSpaceOnUse" x1="0" y1="170" x2="0" y2="198">
+      <stop offset="0" stop-color="#3A1206" stop-opacity="0"/>
+      <stop offset="1" stop-color="#3A1206" stop-opacity="0.16"/>
+    </linearGradient>
+
+    <!-- Wing: darker at the root inside the folder, brightest at the tips -->
+    <linearGradient id="wing" gradientUnits="userSpaceOnUse" x1="80" y1="198" x2="200.1" y2="24">
+      <stop offset="0" stop-color="#D3613C"/>
+      <stop offset="0.5" stop-color="#EC7E51"/>
+      <stop offset="1" stop-color="#F9A979"/>
+    </linearGradient>
+    <!-- Curvature: the wing turns slightly darker away from its leading edge -->
+    <linearGradient id="wingTurn" gradientUnits="userSpaceOnUse" x1="160.4" y1="81.9" x2="197" y2="138.2">
+      <stop offset="0" stop-color="#3A1206" stop-opacity="0"/>
+      <stop offset="1" stop-color="#3A1206" stop-opacity="0.13"/>
+    </linearGradient>
+    <!-- Highlight on the leading edge, strongest toward the tip -->
+    <linearGradient id="wingEdge" gradientUnits="userSpaceOnUse" x1="96" y1="159" x2="200.1" y2="24">
+      <stop offset="0" stop-color="#FFF1E8" stop-opacity="0"/>
+      <stop offset="0.6" stop-color="#FFF1E8" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#FFF1E8" stop-opacity="0.8"/>
+    </linearGradient>
+
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.7"/>
+    </filter>
+    <filter id="castBlur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3.2"/>
+    </filter>
+    <!-- Soft shadow under the whole icon -->
+    <filter id="ground" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4.5" flood-color="#3A1408" flood-opacity="0.2"/>
+    </filter>
+  </defs>
+
+  <g transform="translate(-12 -10.75) scale(1.25)" filter="url(#ground)">
+    <!-- Folder -->
+    <use href="#folderShape" fill="url(#folder)"/>
+    <g clip-path="url(#folderClip)">
+      <rect x="0" y="160" width="256" height="60" fill="url(#folderBase)"/>
+      <use href="#folderShape" fill="none" stroke="url(#folderBevel)" stroke-width="3.5" filter="url(#soft)"/>
+      <!-- Shadow of the wing, falling only on the folder -->
+      <use href="#wingShape" fill="#3A1206" fill-opacity="0.42" transform="translate(-3 2)" filter="url(#castBlur)"/>
+    </g>
+
+    <!-- Wing -->
+    <use href="#wingShape" fill="url(#wing)"/>
+    <g clip-path="url(#wingClip)">
+      <use href="#wingShape" fill="url(#wingTurn)"/>
+      <path fill="none" stroke="url(#wingEdge)" stroke-width="4" stroke-linecap="round" filter="url(#soft)"
+        d="M74 198 C106 127.4 143.3 86.1 181.3 69.5 C193.6 60.2 200.6 46.8 200.1 24"/>
+    </g>
+  </g>
+</svg>

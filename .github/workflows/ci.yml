@@ -1,0 +1,118 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 19 * * *" # nightly run catches new advisories and records coverage
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Actions are pinned to commit SHAs; Dependabot bumps them along with the version comment.
+# Lint and tests run as separate jobs so they finish in parallel. Coverage needs its own
+# instrumented build, the slowest step, so it runs on main and nightly rather than on every PR.
+jobs:
+  lint:
+    name: fmt · typos · clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: lint
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-shear,typos-cli
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: typos
+        run: typos
+      - name: unused dependencies
+        run: cargo shear
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      - name: test
+        run: cargo nextest run --locked --workspace --profile ci
+
+  coverage:
+    name: coverage
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: coverage
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+      # Baseline 72% lines (2026-11-11); raise the floor as tests grow
+      - name: test + coverage
+        run: cargo llvm-cov nextest --locked --workspace --profile ci --fail-under-lines 68 --lcov --output-path lcov.info
+      - name: upload coverage
+        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: lcov.info
+          disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+      - name: upload test results
+        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: target/nextest/ci/junit.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  deny:
+    name: licenses · advisories · bans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+
+  # Dependabot's grouped update titles run past the 72-character limit.
+  commits:
+    name: conventional commits
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: check subjects
+        run: |
+          git log --format=%s "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" |
+            while IFS= read -r subject; do sh tools/check-commit-msg.sh -s "$subject" || exit 1; done

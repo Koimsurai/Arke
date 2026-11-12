@@ -1,0 +1,4 @@
+#!/bin/sh
+# Rejects commit messages that don't follow Conventional Commits.
+# Enable once per clone: git config core.hooksPath .githooks
+exec sh "$(dirname "$0")/../tools/check-commit-msg.sh" "$1"

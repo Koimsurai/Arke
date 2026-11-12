@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Workflow actions are pinned to commit SHAs, so something has to bump them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+  # cargo-deny catches known advisories; this keeps ordinary versions moving.
+  # gpui-pre is pinned with `=` on purpose (snapshots break API) and is upgraded by hand.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "gpui-pre*"

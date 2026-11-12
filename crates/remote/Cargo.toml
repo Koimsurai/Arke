@@ -1,0 +1,40 @@
+[package]
+name = "arke-remote"
+description = "Remote locations for Arke: SFTP and WebDAV behind the Fs trait"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arke-core.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+rust-i18n.workspace = true
+# SSH/SFTP in pure Rust (Apache-2.0). `ring` instead of the default aws-lc-rs (no C toolchain
+# needed); no `rsa` feature: the rsa crate has an unfixed timing advisory (RUSTSEC-2023-0071)
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2"] }
+russh-sftp = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
+# PROPFIND responses
+roxmltree = "0.21"
+percent-encoding = "2"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinHttp",
+    "Win32_Security_Credentials",
+]
+
+[features]
+# A local SFTP server for the app's end-to-end tests (`testing`)
+test-support = []
+
+[lints]
+workspace = true

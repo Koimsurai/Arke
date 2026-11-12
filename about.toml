@@ -1,0 +1,25 @@
+# cargo-about: full license texts of everything in arke.exe, written to THIRD_PARTY_LICENSES.md by
+# `cargo xtask licenses` (and by `cargo xtask build` before every release build).
+# `accepted` mirrors the allowlist in deny.toml; keep the two in sync.
+accepted = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+# Only what ships in the exe: no build scripts' or tests' dependencies, no workspace crates.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }

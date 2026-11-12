@@ -1,0 +1,4177 @@
+_version: 2
+
+# UI text. To add a language, add a line under each key (e.g. ja: ...) and map it in win::locale_for.
+# %{name} is substituted; %USERPROFILE% (no braces) is left as is.
+
+# ─── Window menu (right-click the title bar)
+window.minimize:
+  en: Minimize
+  zh-TW: 最小化
+  zh-CN: 最小化
+window.maximize:
+  en: Maximize
+  zh-TW: 最大化
+  zh-CN: 最大化
+window.restore:
+  en: Restore
+  zh-TW: 還原
+  zh-CN: 还原
+window.close:
+  en: Close window
+  zh-TW: 關閉視窗
+  zh-CN: 关闭窗口
+
+# ─── Sidebar
+sidebar.this_pc:
+  en: This PC
+  zh-TW: 此電腦
+  zh-CN: 此电脑
+sidebar.tabs:
+  en: Tabs
+  zh-TW: 分頁
+  zh-CN: 标签页
+sidebar.new_tab:
+  en: New tab
+  zh-TW: 新分頁
+  zh-CN: 新建标签页
+sidebar.tile_tooltip:
+  en: "%{path} (middle-click opens a new tab)"
+  zh-TW: "%{path}（中鍵在新分頁開啟）"
+  zh-CN: "%{path}（中键在新标签页中打开）"
+
+# ─── Known folders and drives (win::load_places)
+place.profile:
+  en: "User folder"
+  zh-TW: "使用者資料夾"
+  zh-CN: "用户文件夹"
+place.desktop:
+  en: Desktop
+  zh-TW: 桌面
+  zh-CN: 桌面
+place.downloads:
+  en: Downloads
+  zh-TW: 下載
+  zh-CN: 下载
+place.documents:
+  en: Documents
+  zh-TW: 文件
+  zh-CN: 文档
+place.pictures:
+  en: Pictures
+  zh-TW: 圖片
+  zh-CN: 图片
+place.music:
+  en: Music
+  zh-TW: 音樂
+  zh-CN: 音乐
+place.videos:
+  en: Videos
+  zh-TW: 影片
+  zh-CN: 视频
+drive.local:
+  en: Local Disk
+  zh-TW: 本機磁碟
+  zh-CN: 本地磁盘
+drive.network:
+  en: Network Drive
+  zh-TW: 網路磁碟
+  zh-CN: 网络驱动器
+drive.removable:
+  en: Removable Disk
+  zh-TW: 卸除式磁碟
+  zh-CN: 可移动磁盘
+drive.cdrom:
+  en: CD Drive
+  zh-TW: 光碟機
+  zh-CN: CD 驱动器
+drive.other:
+  en: Drive
+  zh-TW: 磁碟
+  zh-CN: 驱动器
+
+# ─── Top bar
+nav.back:
+  en: Back (Alt+←)
+  zh-TW: 返回（Alt+←）
+  zh-CN: 后退（Alt+←）
+nav.forward:
+  en: Forward (Alt+→)
+  zh-TW: 前進（Alt+→）
+  zh-CN: 前进（Alt+→）
+nav.up:
+  en: Up (Alt+↑)
+  zh-TW: 上一層（Alt+↑）
+  zh-CN: 上一级（Alt+↑）
+nav.refresh:
+  en: Refresh (F5)
+  zh-TW: 重新整理（F5）
+  zh-CN: 刷新（F5）
+path.placeholder:
+  en: Type a path, e.g. C:\Windows or %USERPROFILE%
+  zh-TW: 輸入路徑，例如 C:\Windows 或 %USERPROFILE%
+  zh-CN: 输入路径，例如 C:\Windows 或 %USERPROFILE%
+filter.placeholder:
+  en: Filter (Ctrl+F)
+  zh-TW: 篩選（Ctrl+F）
+  zh-CN: 筛选（Ctrl+F）
+filter.search_placeholder:
+  en: Search subfolders
+  zh-TW: 搜尋子資料夾
+  zh-CN: 搜索子文件夹
+filter.search_in_placeholder:
+  en: "Search in %{name}"
+  zh-TW: "在 %{name} 中搜尋"
+  zh-CN: "在 %{name} 中搜索"
+filter.computer_placeholder:
+  en: Search this PC
+  zh-TW: 搜尋整台電腦
+  zh-CN: 搜索整台电脑
+scope.here:
+  en: This folder
+  zh-TW: 這個資料夾
+  zh-CN: 当前文件夹
+scope.subfolders:
+  en: Subfolders
+  zh-TW: 含子資料夾
+  zh-CN: 含子文件夹
+scope.computer:
+  en: This PC
+  zh-TW: 整台電腦
+  zh-CN: 整台电脑
+scope.here_hint:
+  en: Filters as you type
+  zh-TW: 邊打邊篩選
+  zh-CN: 边输入边筛选
+scope.subfolders_hint:
+  en: This folder and everything under it
+  zh-TW: 這個資料夾與底下所有資料夾
+  zh-CN: 当前文件夹及其所有子文件夹
+scope.search_in_hint:
+  en: "%{name} and everything under it"
+  zh-TW: "%{name} 與底下所有資料夾"
+  zh-CN: "%{name} 及其所有子文件夹"
+scope.chip_tip:
+  en: Search options (Tab)
+  zh-TW: 搜尋選項（Tab）
+  zh-CN: 搜索选项（Tab）
+scope.tab_hint:
+  en: Tab for options
+  zh-TW: 按 Tab 調整選項
+  zh-CN: 按 Tab 调整选项
+scope.keys_hint:
+  en: "Arrows to move · Enter to choose · Esc to close"
+  zh-TW: "方向鍵移動 · Enter 選擇 · Esc 關閉"
+  zh-CN: "方向键移动 · Enter 选择 · Esc 关闭"
+scope.section:
+  en: Search in
+  zh-TW: 搜尋範圍
+  zh-CN: 搜索范围
+search.panel:
+  en: Search options
+  zh-TW: 搜尋選項
+  zh-CN: 搜索选项
+scope.computer_off:
+  en: Searching this PC is off
+  zh-TW: 還沒開啟搜尋整台電腦
+  zh-CN: 尚未开启整台电脑搜索
+scope.enable:
+  en: Turn on
+  zh-TW: 開啟
+  zh-CN: 开启
+scope.computer_prompt:
+  en: Type a name to search this PC
+  zh-TW: 輸入名稱搜尋整台電腦
+  zh-CN: 输入名称搜索整台电脑
+scope.building_hint:
+  en: "Results appear once the index is ready"
+  zh-TW: "索引建好後就會顯示結果"
+  zh-CN: "索引建好后就会显示结果"
+scope.widen_subfolders:
+  en: Search subfolders
+  zh-TW: "搜尋子資料夾"
+  zh-CN: "搜索子文件夹"
+scope.top_hits:
+  en: Top %{count} matches
+  zh-TW: 最符合的 %{count} 個
+  zh-CN: 最匹配的 %{count} 个
+scope.widen_computer:
+  en: Search this PC
+  zh-TW: 搜尋整台電腦
+  zh-CN: 搜索整台电脑
+scope.search_here:
+  en: Search this folder
+  zh-TW: 搜尋這個資料夾
+  zh-CN: 搜索当前文件夹
+scope.contents_unavailable:
+  en: This PC can't search inside files
+  zh-TW: 整台電腦無法搜尋檔案內容
+  zh-CN: 整台电脑无法搜索文件内容
+scope.contents_unavailable_hint:
+  en: "The index only knows names. Search this folder or its subfolders to look inside files."
+  zh-TW: "索引只有檔名。要搜尋檔案內容，請改搜這個資料夾或含子資料夾。"
+  zh-CN: "索引只有文件名。要搜索文件内容，请改搜当前文件夹或含子文件夹。"
+filter.type:
+  en: Type
+  zh-TW: 類型
+  zh-CN: 类型
+filter.size:
+  en: Size
+  zh-TW: 大小
+  zh-CN: 大小
+filter.date:
+  en: Date modified
+  zh-TW: 修改日期
+  zh-CN: 修改日期
+filter.contents:
+  en: Contents
+  zh-TW: 內容
+  zh-CN: 内容
+filter.contents_tip:
+  en: Search in file contents
+  zh-TW: 搜尋檔案內容
+  zh-CN: 搜索文件内容
+filter.contents_unavailable:
+  en: "Not available for This PC: the index only knows names"
+  zh-TW: "整台電腦無法使用：索引只有檔名"
+  zh-CN: "整台电脑无法使用：索引只有文件名"
+filter.contents_remote:
+  en: "Not available on servers: every file would be downloaded"
+  zh-TW: "伺服器上無法使用：每個檔案都得先下載"
+  zh-CN: "服务器上无法使用：每个文件都得先下载"
+filter.remove:
+  en: Remove filter
+  zh-TW: 移除篩選
+  zh-CN: 移除筛选
+filter.type_folder:
+  en: Folders
+  zh-TW: 資料夾
+  zh-CN: 文件夹
+filter.type_document:
+  en: Documents
+  zh-TW: 文件
+  zh-CN: 文档
+filter.type_image:
+  en: Images
+  zh-TW: 圖片
+  zh-CN: 图片
+filter.type_audio:
+  en: Audio
+  zh-TW: 音訊
+  zh-CN: 音频
+filter.type_video:
+  en: Video
+  zh-TW: 影片
+  zh-CN: 视频
+filter.type_archive:
+  en: Archives
+  zh-TW: 壓縮檔
+  zh-CN: 压缩包
+filter.type_code:
+  en: Code
+  zh-TW: 程式碼
+  zh-CN: 代码
+filter.type_app:
+  en: Apps
+  zh-TW: 應用程式
+  zh-CN: 应用程序
+filter.size_over:
+  en: "Over %{size}"
+  zh-TW: "大於 %{size}"
+  zh-CN: "大于 %{size}"
+filter.size_empty:
+  en: Empty
+  zh-TW: 空白
+  zh-CN: 空文件
+filter.date_today:
+  en: Today
+  zh-TW: 今天
+  zh-CN: 今天
+filter.date_week:
+  en: This week
+  zh-TW: 本週
+  zh-CN: 本周
+filter.date_month:
+  en: This month
+  zh-TW: 本月
+  zh-CN: 本月
+filter.date_year:
+  en: This year
+  zh-TW: 今年
+  zh-CN: 今年
+filter.section:
+  en: Filters
+  zh-TW: 篩選條件
+  zh-CN: 筛选条件
+filter.clear_all:
+  en: Clear filters
+  zh-TW: 清除篩選
+  zh-CN: 清除筛选
+filter.any_type:
+  en: Any type
+  zh-TW: 所有類型
+  zh-CN: 所有类型
+filter.any_size:
+  en: Any size
+  zh-TW: 不限大小
+  zh-CN: 不限大小
+filter.any_date:
+  en: Any time
+  zh-TW: 不限時間
+  zh-CN: 不限时间
+filter.custom:
+  en: "Custom: %{term}"
+  zh-TW: "自訂：%{term}"
+  zh-CN: "自定义：%{term}"
+filter.contents_desc:
+  en: "Finds text inside files, PDFs and Office documents included, typed after content:"
+  zh-TW: "找出檔案裡的文字（含 PDF 和 Office 文件），打在 content: 後面"
+  zh-CN: "查找文件里的文字（含 PDF 和 Office 文档），输入在 content: 后面"
+search.content_match:
+  en: "Content match: %{line}"
+  zh-TW: "內容符合：%{line}"
+  zh-CN: "内容匹配：%{line}"
+filter.remove_named:
+  en: "Remove filter %{name}"
+  zh-TW: "移除篩選 %{name}"
+  zh-CN: "移除筛选 %{name}"
+
+# ─── Context bar
+ctx.paste:
+  en: Paste
+  zh-TW: 貼上
+  zh-CN: 粘贴
+ctx.new_folder:
+  en: New folder
+  zh-TW: "新增資料夾"
+  zh-CN: 新建文件夹
+ctx.new_folder_tip:
+  en: New folder (Ctrl+Shift+N)
+  zh-TW: 新增資料夾（Ctrl+Shift+N）
+  zh-CN: 新建文件夹（Ctrl+Shift+N）
+ctx.view_details:
+  en: Details (Ctrl+Shift+6)
+  zh-TW: 詳細資料（Ctrl+Shift+6）
+  zh-CN: 详细信息（Ctrl+Shift+6）
+ctx.view_icons:
+  en: Large icons (Ctrl+Shift+2)
+  zh-TW: 大圖示（Ctrl+Shift+2）
+  zh-CN: 大图标（Ctrl+Shift+2）
+ctx.view_icons_xl:
+  en: Extra large icons (Ctrl+Shift+1)
+  zh-TW: 超大圖示（Ctrl+Shift+1）
+  zh-CN: 超大图标（Ctrl+Shift+1）
+ctx.view_icons_medium:
+  en: Medium icons (Ctrl+Shift+3)
+  zh-TW: 中圖示（Ctrl+Shift+3）
+  zh-CN: 中图标（Ctrl+Shift+3）
+ctx.view_icons_small:
+  en: Small icons (Ctrl+Shift+4)
+  zh-TW: 小圖示（Ctrl+Shift+4）
+  zh-CN: 小图标（Ctrl+Shift+4）
+ctx.view_icons_custom:
+  en: "Icons, %{px} px"
+  zh-TW: "圖示，%{px} px"
+  zh-CN: "图标，%{px} px"
+view.options:
+  en: View options
+  zh-TW: 檢視選項
+  zh-CN: 视图选项
+view.layout:
+  en: Layout
+  zh-TW: 版面配置
+  zh-CN: 布局
+view.icons:
+  en: Icons
+  zh-TW: 圖示
+  zh-CN: 图标
+view.icon_size:
+  en: Icon size
+  zh-TW: 圖示大小
+  zh-CN: 图标大小
+view.icon_px:
+  en: "%{px} px"
+  zh-TW: "%{px} px"
+  zh-CN: "%{px} px"
+view.density:
+  en: Density
+  zh-TW: 清單密度
+  zh-CN: 列表密度
+view.tree_desc:
+  en: "Click the arrow next to a folder to see its contents here"
+  zh-TW: "點資料夾旁的箭頭，直接在下方看內容"
+  zh-CN: "点文件夹旁的箭头，直接在下方看内容"
+ctx.split_on:
+  en: "Split into two panes"
+  zh-TW: "分割成兩個窗格"
+  zh-CN: "拆分为两个窗格"
+ctx.split_off:
+  en: "Back to one pane"
+  zh-TW: "取消分割"
+  zh-CN: "取消拆分"
+sel.count:
+  en: "%{count} selected"
+  zh-TW: 已選取 %{count} 個
+  zh-CN: 已选择 %{count} 个
+sel.count_short:
+  en: "%{count}"
+  zh-TW: "%{count} 個"
+  zh-CN: "%{count} 个"
+sel.copy_to:
+  en: Copy to %{name}
+  zh-TW: 複製到 %{name}
+  zh-CN: 复制到 %{name}
+sel.move_to:
+  en: Move to %{name}
+  zh-TW: 移動到 %{name}
+  zh-CN: 移动到 %{name}
+sel.open:
+  en: Open
+  zh-TW: 開啟
+  zh-CN: 打开
+sel.cut:
+  en: Cut
+  zh-TW: 剪下
+  zh-CN: 剪切
+sel.copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+sel.rename:
+  en: Rename
+  zh-TW: 重新命名
+  zh-CN: 重命名
+sel.delete:
+  en: Delete
+  zh-TW: 刪除
+  zh-CN: 删除
+sel.clear:
+  en: Deselect
+  zh-TW: 取消選取
+  zh-CN: 取消选择
+info.matched_one:
+  en: "1 match"
+  zh-TW: "符合 %{count} 個"
+  zh-CN: "匹配 %{count} 个"
+info.matched_other:
+  en: "%{count} matches"
+  zh-TW: "符合 %{count} 個"
+  zh-CN: "匹配 %{count} 个"
+info.showing_first:
+  en: " (showing the first %{count})"
+  zh-TW: （顯示前 %{count} 個）
+  zh-CN: （显示前 %{count} 个）
+info.scanned:
+  en: Scanned %{count} items
+  zh-TW: 已掃描 %{count} 個項目
+  zh-CN: 已扫描 %{count} 个项目
+info.content_read_one:
+  en: "Read 1 file"
+  zh-TW: "已讀 %{count} 個檔案"
+  zh-CN: "已读 %{count} 个文件"
+info.content_read_other:
+  en: "Read %{count} files"
+  zh-TW: "已讀 %{count} 個檔案"
+  zh-CN: "已读 %{count} 个文件"
+info.content_reading:
+  en: "Searching contents… %{read} of %{total} files"
+  zh-TW: "搜尋內容中… %{read} / %{total} 個檔案"
+  zh-CN: "正在搜索内容… %{read} / %{total} 个文件"
+info.searching:
+  en: Searching… %{scanned}
+  zh-TW: 搜尋中… %{scanned}
+  zh-CN: 正在搜索… %{scanned}
+info.truncated:
+  en: "Too many results; narrow the search"
+  zh-TW: "結果太多，請縮小範圍"
+  zh-CN: "结果太多，请缩小范围"
+info.unreadable_one:
+  en: "1 folder couldn't be read"
+  zh-TW: "%{count} 個資料夾無法讀取"
+  zh-CN: "%{count} 个文件夹无法读取"
+info.unreadable_other:
+  en: "%{count} folders couldn't be read"
+  zh-TW: "%{count} 個資料夾無法讀取"
+  zh-CN: "%{count} 个文件夹无法读取"
+info.filtered:
+  en: "%{shown} of %{total} items match"
+  zh-TW: 符合 %{shown} 個，共 %{total} 個項目
+  zh-CN: 匹配 %{shown} 个，共 %{total} 个项目
+info.items_one:
+  en: "1 item"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+info.items_other:
+  en: "%{count} items"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+time.today:
+  en: "Today %{time}"
+  zh-TW: 今天 %{time}
+  zh-CN: 今天 %{time}
+time.yesterday:
+  en: "Yesterday %{time}"
+  zh-TW: 昨天 %{time}
+  zh-CN: 昨天 %{time}
+time.this_year:
+  en: "%{month}/%{day}"
+  zh-TW: "%{month} 月 %{day} 日"
+  zh-CN: "%{month}月%{day}日"
+time.date:
+  en: "%{year}/%{month}/%{day}"
+  zh-TW: "%{year}/%{month}/%{day}"
+  zh-CN: "%{year}/%{month}/%{day}"
+path.edit_tip:
+  en: Click to type a path (Ctrl+L)
+  zh-TW: 按一下以輸入路徑（Ctrl+L）
+  zh-CN: 单击以输入路径（Ctrl+L）
+path.no_folders:
+  en: No folders
+  zh-TW: 沒有資料夾
+  zh-CN: 没有文件夹
+path.suggest_hint:
+  en: "↑↓ choose · Tab complete · Enter go"
+  zh-TW: ↑↓ 選擇 · Tab 補完 · Enter 前往
+  zh-CN: ↑↓ 选择 · Tab 补全 · Enter 前往
+settings.title:
+  en: Settings
+  zh-TW: 設定
+  zh-CN: 设置
+settings.menu:
+  en: Settings…
+  zh-TW: 設定…
+  zh-CN: 设置…
+settings.appearance:
+  en: Appearance
+  zh-TW: 外觀
+  zh-CN: 外观
+settings.theme:
+  en: Theme
+  zh-TW: 主題
+  zh-CN: 主题
+settings.theme_desc:
+  en: "Light, dark, or follow Windows"
+  zh-TW: "淺色、深色，或跟隨 Windows"
+  zh-CN: "浅色、深色，或跟随 Windows"
+settings.theme_system:
+  en: System
+  zh-TW: "跟隨系統"
+  zh-CN: 跟随系统
+settings.theme_light:
+  en: Light
+  zh-TW: 淺色
+  zh-CN: 浅色
+settings.theme_dark:
+  en: Dark
+  zh-TW: 深色
+  zh-CN: 深色
+settings.group_colors:
+  en: "Theme and color"
+  zh-TW: "主題與顏色"
+  zh-CN: "主题和颜色"
+settings.group_layout:
+  en: "Layout"
+  zh-TW: "版面"
+  zh-CN: "布局"
+settings.group_show:
+  en: "Show"
+  zh-TW: "顯示"
+  zh-CN: "显示"
+settings.group_behavior:
+  en: "Clicking and selecting"
+  zh-TW: "點按與選取"
+  zh-CN: "点击和选择"
+settings.group_confirm:
+  en: "Confirmations"
+  zh-TW: "確認"
+  zh-CN: "确认"
+settings.group_new_tabs:
+  en: "New tabs"
+  zh-TW: "新分頁"
+  zh-CN: "新标签页"
+settings.group_folder_views:
+  en: "Folder views"
+  zh-TW: "資料夾檢視"
+  zh-CN: "文件夹视图"
+settings.group_details:
+  en: "Details view"
+  zh-TW: "詳細資料檢視"
+  zh-CN: "详细信息视图"
+settings.accent:
+  en: Accent color
+  zh-TW: 強調色
+  zh-CN: 强调色
+settings.accent_desc:
+  en: "Selection, focus and buttons"
+  zh-TW: "選取、焦點與按鈕"
+  zh-CN: "选中项、焦点和按钮"
+settings.accent_windows:
+  en: Windows
+  zh-TW: "跟隨 Windows"
+  zh-CN: 跟随 Windows
+settings.custom:
+  en: Custom
+  zh-TW: 自訂
+  zh-CN: 自定义
+settings.tint:
+  en: "Background tint"
+  zh-TW: "背景色調"
+  zh-CN: "背景色调"
+settings.tint_desc:
+  en: "Color of the sidebar and top bar"
+  zh-TW: "側邊欄與頂列的底色"
+  zh-CN: "侧边栏和顶栏的底色"
+tint.none:
+  en: Default
+  zh-TW: 預設
+  zh-CN: 默认
+tint.accent:
+  en: Match accent
+  zh-TW: "跟隨強調色"
+  zh-CN: 跟随强调色
+settings.material:
+  en: "Background material"
+  zh-TW: "背景材質"
+  zh-CN: "背景材质"
+settings.material_desc:
+  en: "Transparency of the sidebar and top bar"
+  zh-TW: "側邊欄與頂列的透明效果"
+  zh-CN: "侧边栏和顶栏的透明效果"
+material.mica:
+  en: Mica
+  zh-TW: Mica
+  zh-CN: Mica
+material.mica_alt:
+  en: Mica Alt
+  zh-TW: Mica Alt
+  zh-CN: Mica Alt
+material.solid:
+  en: Solid
+  zh-TW: 實色
+  zh-CN: 纯色
+accent.arke:
+  en: Arke orange
+  zh-TW: Arke 橘
+  zh-CN: Arke 橙
+accent.blue:
+  en: Blue
+  zh-TW: "藍色"
+  zh-CN: "蓝色"
+accent.indigo:
+  en: Indigo
+  zh-TW: "靛藍色"
+  zh-CN: "靛蓝色"
+accent.purple:
+  en: Purple
+  zh-TW: "紫色"
+  zh-CN: "紫色"
+accent.pink:
+  en: Pink
+  zh-TW: "桃紅色"
+  zh-CN: "桃红色"
+accent.red:
+  en: Red
+  zh-TW: "紅色"
+  zh-CN: "红色"
+accent.amber:
+  en: Amber
+  zh-TW: "琥珀色"
+  zh-CN: "琥珀色"
+accent.green:
+  en: Green
+  zh-TW: "綠色"
+  zh-CN: "绿色"
+accent.teal:
+  en: Teal
+  zh-TW: "青色"
+  zh-CN: "青色"
+accent.graphite:
+  en: Graphite
+  zh-TW: "石墨色"
+  zh-CN: "石墨色"
+settings.font:
+  en: Font
+  zh-TW: 字體
+  zh-CN: 字体
+settings.font_sample:
+  en: "Arke File Explorer Aa 123"
+  zh-TW: "Arke 檔案總管 Aa 123"
+  zh-CN: "Arke 文件管理器 Aa 123"
+settings.font_default:
+  en: Default
+  zh-TW: 預設
+  zh-CN: 默认
+settings.background:
+  en: Background image
+  zh-TW: 背景圖片
+  zh-CN: 背景图片
+settings.background_desc:
+  en: "Shown behind the file list"
+  zh-TW: "顯示在檔案清單後面"
+  zh-CN: "显示在文件列表后面"
+settings.background_none:
+  en: None
+  zh-TW: 無
+  zh-CN: 无
+settings.background_path:
+  en: "Paste an image path and press Enter"
+  zh-TW: "貼上圖片路徑後按 Enter"
+  zh-CN: "粘贴图片路径后按 Enter"
+settings.background_clear:
+  en: Clear
+  zh-TW: 清除
+  zh-CN: 清除
+settings.background_opacity:
+  en: "Opacity"
+  zh-TW: "不透明度"
+  zh-CN: "不透明度"
+settings.browse:
+  en: "Browse…"
+  zh-TW: "瀏覽…"
+  zh-CN: "浏览…"
+settings.background_pick_title:
+  en: Choose a background image
+  zh-TW: 選擇背景圖片
+  zh-CN: 选择背景图片
+settings.filter_images:
+  en: Images
+  zh-TW: 圖片
+  zh-CN: 图片
+settings.background_unreadable:
+  en: "Can't read this image"
+  zh-TW: 無法讀取這張圖片
+  zh-CN: 无法读取这张图片
+settings.background_preview:
+  en: "Preview on the left: the file list over the image at this opacity"
+  zh-TW: "左邊是預覽：檔案清單疊在這個不透明度的圖片上"
+  zh-CN: "左边是预览：文件列表叠在这个不透明度的图片上"
+settings.background_hint:
+  en: "You can also right-click an image › Set as Arke background"
+  zh-TW: "也可以在圖片上按右鍵 →「設為 Arke 背景」"
+  zh-CN: "也可以右键单击图片 →“设为 Arke 背景”"
+menu.set_background:
+  en: Set as Arke background
+  zh-TW: "設為 Arke 背景"
+  zh-CN: 设为 Arke 背景
+menu.import_settings:
+  en: Import as Arke settings
+  zh-TW: 匯入 Arke 設定
+  zh-CN: 导入 Arke 设置
+settings.checkboxes:
+  en: Item check boxes
+  zh-TW: 顯示核取方塊
+  zh-CN: 显示复选框
+settings.checkboxes_desc:
+  en: "Select several items without holding Ctrl"
+  zh-TW: "不按 Ctrl 也能用滑鼠多選"
+  zh-CN: "不按 Ctrl 也能用鼠标多选"
+checks.select_all:
+  en: Select all
+  zh-TW: 全選
+  zh-CN: 全选
+settings.group_rows:
+  en: "Group items"
+  zh-TW: "分組顯示"
+  zh-CN: "分组显示"
+settings.group_rows_desc:
+  en: "By the sort column, such as Today, Yesterday, Last week"
+  zh-TW: "依排序的欄位分段，例如今天、昨天、上週"
+  zh-CN: "按排序的列分组，例如今天、昨天、上周"
+settings.details_tree:
+  en: "Expand folders in the list"
+  zh-TW: "在清單中展開資料夾"
+  zh-CN: "在列表中展开文件夹"
+settings.details_tree_desc:
+  en: "In Details view, the arrow next to a folder lists its contents right below it. → and ← expand and collapse"
+  zh-TW: "詳細資料檢視中，點資料夾旁的箭頭就在下方列出內容。→ 和 ← 展開或收合"
+  zh-CN: "详细信息视图中，点文件夹旁的箭头就在下方列出内容。→ 和 ← 展开或折叠"
+group.today:
+  en: Today
+  zh-TW: 今天
+  zh-CN: 今天
+group.yesterday:
+  en: Yesterday
+  zh-TW: 昨天
+  zh-CN: 昨天
+group.this_week:
+  en: Earlier this week
+  zh-TW: 本週稍早
+  zh-CN: 本周早些时候
+group.last_week:
+  en: Last week
+  zh-TW: 上週
+  zh-CN: 上周
+group.this_month:
+  en: Earlier this month
+  zh-TW: 本月稍早
+  zh-CN: 本月早些时候
+group.last_month:
+  en: Last month
+  zh-TW: 上個月
+  zh-CN: 上个月
+group.this_year:
+  en: Earlier this year
+  zh-TW: 今年稍早
+  zh-CN: 今年早些时候
+group.year:
+  en: "%{year}"
+  zh-TW: "%{year} 年"
+  zh-CN: "%{year}年"
+group.future:
+  en: In the future
+  zh-TW: 未來
+  zh-CN: 未来
+group.unknown:
+  en: Unknown
+  zh-TW: 不明
+  zh-CN: 未知
+group.other:
+  en: Other
+  zh-TW: 其他
+  zh-CN: 其他
+group.no_extension:
+  en: No extension
+  zh-TW: 沒有副檔名
+  zh-CN: 无扩展名
+group.no_attributes:
+  en: No attributes
+  zh-TW: 沒有屬性
+  zh-CN: 无属性
+group.size_empty:
+  en: Empty (0 KB)
+  zh-TW: 空的（0 KB）
+  zh-CN: 空（0 KB）
+group.size_tiny:
+  en: Tiny (0 – 16 KB)
+  zh-TW: 極小（0 – 16 KB）
+  zh-CN: 微小（0 – 16 KB）
+group.size_small:
+  en: Small (16 KB – 1 MB)
+  zh-TW: 小（16 KB – 1 MB）
+  zh-CN: 小（16 KB – 1 MB）
+group.size_medium:
+  en: Medium (1 – 128 MB)
+  zh-TW: 中（1 – 128 MB）
+  zh-CN: 中（1 – 128 MB）
+group.size_large:
+  en: Large (128 MB – 1 GB)
+  zh-TW: 大（128 MB – 1 GB）
+  zh-CN: 大（128 MB – 1 GB）
+group.size_huge:
+  en: Huge (1 – 4 GB)
+  zh-TW: 非常大（1 – 4 GB）
+  zh-CN: 特大（1 – 4 GB）
+group.size_gigantic:
+  en: Gigantic (> 4 GB)
+  zh-TW: 巨大（超過 4 GB）
+  zh-CN: 巨大（超过 4 GB）
+settings.context_menu:
+  en: Context menu
+  zh-TW: 右鍵選單
+  zh-CN: 右键菜单
+openwith.title:
+  en: Open with
+  zh-TW: 「以…開啟」的程式
+  zh-CN: “打开方式”中的程序
+openwith.desc:
+  en: "Turn off editors you don't use, or add another program"
+  zh-TW: "關掉用不到的編輯器，或加入其他程式"
+  zh-CN: "关闭用不到的编辑器，或添加其他程序"
+openwith.placeholder:
+  en: Path to a program (.exe) to add
+  zh-TW: "要加入的程式路徑（.exe）"
+  zh-CN: 要添加的程序路径（.exe）
+openwith.add:
+  en: Add another program
+  zh-TW: 加入其他程式
+  zh-CN: 添加其他程序
+openwith.pick_title:
+  en: Choose a program
+  zh-TW: 選擇程式
+  zh-CN: 选择程序
+openwith.filter:
+  en: Programs
+  zh-TW: 程式
+  zh-CN: 程序
+openwith.remove:
+  en: Remove
+  zh-TW: 移除
+  zh-CN: 移除
+menupref.pinned_title:
+  en: Pinned Windows commands
+  zh-TW: 釘到主選單的 Windows 命令
+  zh-CN: 固定到主菜单的 Windows 命令
+menupref.pinned_desc:
+  en: "In More options, click the pin next to a command to show it in the main menu"
+  zh-TW: "在「更多選項」中按命令旁的圖釘，就會顯示在主選單"
+  zh-CN: "在“更多选项”中单击命令旁的图钉，即可显示在主菜单中"
+menupref.pinned_empty:
+  en: Nothing pinned yet
+  zh-TW: 還沒有釘選的命令
+  zh-CN: 还没有固定的命令
+menupref.intro:
+  en: "Turn off what you don't use. Open, cut, copy, paste, rename, delete and new are always shown."
+  zh-TW: "關掉用不到的項目。開啟、剪下、複製、貼上、重新命名、刪除與新增一定會顯示。"
+  zh-CN: "关闭用不到的项。打开、剪切、复制、粘贴、重命名、删除和新建始终显示。"
+menupref.preview:
+  en: Right-clicking a folder
+  zh-TW: 對資料夾按右鍵時
+  zh-CN: 右键单击文件夹时
+menupref.reset:
+  en: Turn all back on
+  zh-TW: "全部開啟"
+  zh-CN: 全部开启
+menupref.pin:
+  en: Pin / Unpin
+  zh-TW: 釘選／取消釘選
+  zh-CN: 固定/取消固定
+menupref.archive:
+  en: Compress and extract
+  zh-TW: 壓縮與解壓縮
+  zh-CN: 压缩和解压缩
+menupref.open_with:
+  en: Open with VS Code, Zed…
+  zh-TW: 以 VS Code、Zed… 開啟
+  zh-CN: 用 VS Code、Zed… 打开
+menupref.open_with_note:
+  en: "Only editors installed on this computer"
+  zh-TW: "只列出已安裝的編輯器"
+  zh-CN: "只列出已安装的编辑器"
+menupref.view:
+  en: "View and refresh"
+  zh-TW: 檢視方式與重新整理
+  zh-CN: 查看方式和刷新
+menupref.folders:
+  en: On folders
+  zh-TW: 在資料夾上
+  zh-CN: 在文件夹上
+menupref.tree:
+  en: "Details view, with “Expand folders in the list” on"
+  zh-TW: "詳細資料檢視，開啟「在清單中展開資料夾」時"
+  zh-CN: "详细信息视图，开启“在列表中展开文件夹”时"
+menupref.images:
+  en: On pictures
+  zh-TW: 在圖片上
+  zh-CN: 在图片上
+menupref.json:
+  en: On .json files
+  zh-TW: 在 .json 檔上
+  zh-CN: 在 .json 文件上
+menupref.blank:
+  en: "On empty space in a folder"
+  zh-TW: 在資料夾的空白處
+  zh-CN: 在文件夹的空白处
+menupref.more_note:
+  en: "The original Windows menu"
+  zh-TW: "Windows 原本的右鍵選單"
+  zh-CN: "Windows 原来的右键菜单"
+report.title:
+  en: Report a problem
+  zh-TW: 回報問題
+  zh-CN: 反馈问题
+report.desc:
+  en: "Includes the version and recent log"
+  zh-TW: "附上版本與最近的記錄"
+  zh-CN: "附上版本和最近的日志"
+report.what:
+  en: "Exactly this is copied or saved. Your account name, profile folder and server names are replaced; save it as a file to edit it before sending."
+  zh-TW: "複製或儲存的就是下面這些內容。帳戶名稱、個人資料夾和伺服器名稱都已替換；想先修改的話可以存成檔案再編輯。"
+  zh-CN: "复制或保存的就是下面这些内容。账户名、个人文件夹和服务器名称都已替换；想先修改的话可以保存为文件再编辑。"
+report.github:
+  en: Open an issue on GitHub
+  zh-TW: 在 GitHub 回報
+  zh-CN: 在 GitHub 上反馈
+report.copy:
+  en: Copy report
+  zh-TW: 複製回報內容
+  zh-CN: 复制反馈内容
+report.save:
+  en: Save as text file
+  zh-TW: 存成文字檔
+  zh-CN: 保存为文本文件
+report.copied:
+  en: "Copied. Paste it into the GitHub issue."
+  zh-TW: "已複製，請貼到 GitHub 的回報欄位"
+  zh-CN: "已复制，请粘贴到 GitHub Issue 中"
+report.saved:
+  en: "Saved: %{path}"
+  zh-TW: 已存成：%{path}
+  zh-CN: 已保存：%{path}
+report.file_stem:
+  en: Arke problem report
+  zh-TW: Arke 問題回報
+  zh-CN: Arke 问题反馈
+report.environment:
+  en: Environment
+  zh-TW: 環境
+  zh-CN: 环境
+report.settings:
+  en: Settings
+  zh-TW: 設定
+  zh-CN: 设置
+report.log:
+  en: Recent log
+  zh-TW: 最近的記錄
+  zh-CN: 最近的日志
+report.no_log:
+  en: (no log file; dev builds log to the console)
+  zh-TW: （沒有記錄檔；開發版的記錄在主控台）
+  zh-CN: （没有日志文件；开发版的日志输出到控制台）
+report.default_title:
+  en: "Problem: "
+  zh-TW: 問題：
+  zh-CN: 问题：
+report.describe_here:
+  en: "What happened, and what did you expect?"
+  zh-TW: 發生了什麼事？原本預期會怎樣？
+  zh-CN: 发生了什么？原本预期是怎样的？
+report.steps:
+  en: "Steps to reproduce"
+  zh-TW: "重現步驟"
+  zh-CN: 复现步骤
+report.steps_hint:
+  en: "1. \n2. \n3. "
+  zh-TW: "1. \n2. \n3. "
+  zh-CN: "1. \n2. \n3. "
+report.paste_log:
+  en: (The full report, including the log, is on your clipboard; paste it here)
+  zh-TW: （完整的回報與記錄已經複製到剪貼簿，請貼在這裡）
+  zh-CN: （完整的反馈和日志已复制到剪贴板，请粘贴在这里）
+update.title:
+  en: Updates
+  zh-TW: 更新
+  zh-CN: 更新
+update.desc_short:
+  en: "Release channel, automatic checks and installing new versions"
+  zh-TW: "更新頻道、自動檢查與安裝新版本"
+  zh-CN: "更新渠道、自动检查与安装新版本"
+update.desc:
+  en: "Current version: Arke %{version}"
+  zh-TW: "目前版本：Arke %{version}"
+  zh-CN: "当前版本：Arke %{version}"
+update.channel:
+  en: Channel
+  zh-TW: "更新通道"
+  zh-CN: 更新通道
+update.channel_desc:
+  en: "Stable is the safest; RC is the next release; Nightly updates daily"
+  zh-TW: "正式版最穩定；RC 是下一版的候選；Nightly 每天更新"
+  zh-CN: "正式版最稳定；RC 是下一版的候选；Nightly 每天更新"
+update.auto:
+  en: Check automatically
+  zh-TW: 自動檢查
+  zh-CN: 自动检查
+update.auto_desc:
+  en: "At most once a day; never installs on its own"
+  zh-TW: "一天最多檢查一次，不會自動安裝"
+  zh-CN: "每天最多检查一次，不会自动安装"
+update.check:
+  en: Check now
+  zh-TW: "立即檢查"
+  zh-CN: 立即检查
+update.checking:
+  en: Checking…
+  zh-TW: 檢查中…
+  zh-CN: 正在检查…
+update.never_checked:
+  en: Not checked yet
+  zh-TW: 還沒檢查過
+  zh-CN: 尚未检查
+update.up_to_date:
+  en: "You're up to date"
+  zh-TW: 已經是最新版
+  zh-CN: 已是最新版本
+update.available:
+  en: "Arke %{version} is available"
+  zh-TW: 有新版：Arke %{version}
+  zh-CN: 有新版本：Arke %{version}
+update.notes:
+  en: What's new
+  zh-TW: "查看更新內容"
+  zh-CN: 查看更新内容
+update.install:
+  en: Download and update
+  zh-TW: 下載並更新
+  zh-CN: 下载并更新
+update.downloading:
+  en: "Downloading %{version}: %{got} / %{total} MB"
+  zh-TW: 下載 %{version} 中：%{got} / %{total} MB
+  zh-CN: 正在下载 %{version}：%{got} / %{total} MB
+update.downloading_short:
+  en: Downloading…
+  zh-TW: 下載中…
+  zh-CN: 正在下载…
+update.ready:
+  en: "%{version} downloaded; restart Arke to update"
+  zh-TW: "%{version} 已下載，重新啟動 Arke 後套用"
+  zh-CN: "%{version} 已下载，重启 Arke 后生效"
+update.ready_short:
+  en: Restart to update
+  zh-TW: "重新啟動以更新"
+  zh-CN: "重启以更新"
+update.restart:
+  en: Restart now
+  zh-TW: "立即重新啟動"
+  zh-CN: 立即重启
+update.failed:
+  en: "Couldn't update: %{error}"
+  zh-TW: 無法更新：%{error}
+  zh-CN: 无法更新：%{error}
+update.failed_short:
+  en: Couldn't check
+  zh-TW: 無法檢查
+  zh-CN: 无法检查
+update.managed:
+  en: "Updates come through %{manager}. Run `%{command}` to update."
+  zh-TW: "更新由 %{manager} 管理，請執行「%{command}」更新。"
+  zh-CN: "更新由 %{manager} 管理，请运行“%{command}”更新。"
+update.no_source:
+  en: "This build has no update source"
+  zh-TW: "這個版本沒有設定更新來源"
+  zh-CN: "此版本没有设置更新源"
+update.bad_hash:
+  en: the download doesn't match its checksum
+  zh-TW: "下載的檔案與檢查碼不符"
+  zh-CN: 下载的文件与校验和不符
+update.cannot_replace:
+  en: "couldn't replace arke.exe (%{error}); download it from the release page instead"
+  zh-TW: "無法取代 arke.exe（%{error}）；請從發行頁面手動下載"
+  zh-CN: 无法替换 arke.exe（%{error}）；请从发布页面手动下载
+update.badge:
+  en: Update
+  zh-TW: 有更新
+  zh-CN: 有更新
+channel.stable:
+  en: Stable
+  zh-TW: 正式版
+  zh-CN: 正式版
+channel.rc:
+  en: RC
+  zh-TW: RC
+  zh-CN: RC
+channel.nightly:
+  en: Nightly
+  zh-TW: Nightly
+  zh-CN: Nightly
+channel.dev:
+  en: Dev build
+  zh-TW: 開發版
+  zh-CN: 开发版
+backup.title:
+  en: Back up settings
+  zh-TW: 備份設定
+  zh-CN: 备份设置
+backup.desc:
+  en: "Move your settings to another computer or restore them"
+  zh-TW: "把設定帶到另一台電腦，或從備份還原"
+  zh-CN: "把设置迁移到另一台电脑，或从备份恢复"
+backup.summary:
+  en: Export · Import
+  zh-TW: 匯出 · 匯入
+  zh-CN: 导出 · 导入
+backup.export_title:
+  en: Export
+  zh-TW: 匯出
+  zh-CN: 导出
+backup.export_desc:
+  en: "All settings and pinned folders, not open tabs"
+  zh-TW: "所有設定與釘選的資料夾，不含開著的分頁"
+  zh-CN: "所有设置和固定的文件夹，不含打开的标签页"
+backup.export:
+  en: Export to Downloads
+  zh-TW: 匯出到「下載」
+  zh-CN: 导出到“下载”
+backup.import_title:
+  en: Import
+  zh-TW: 匯入
+  zh-CN: 导入
+backup.import_desc:
+  en: "Browse for a .json file or paste its path and press Enter. You can also right-click the file › Import as Arke settings"
+  zh-TW: "瀏覽選擇 .json 檔，或貼上路徑後按 Enter；也可以在檔案上按右鍵 →「匯入 Arke 設定」"
+  zh-CN: "浏览选择 .json 文件，或粘贴路径后按 Enter；也可以右键单击该文件 →“导入 Arke 设置”"
+backup.pick_title:
+  en: Choose an Arke settings file
+  zh-TW: 選擇 Arke 設定檔
+  zh-CN: 选择 Arke 设置文件
+backup.filter:
+  en: Arke settings (JSON)
+  zh-TW: Arke 設定（JSON）
+  zh-CN: Arke 设置（JSON）
+backup.import_placeholder:
+  en: Path to the .json file
+  zh-TW: .json 檔的路徑
+  zh-CN: .json 文件的路径
+backup.file_stem:
+  en: Arke settings
+  zh-TW: Arke 設定
+  zh-CN: Arke 设置
+backup.file_stem_dated:
+  en: Arke settings %{date}
+  zh-TW: Arke 設定 %{date}
+  zh-CN: Arke 设置 %{date}
+backup.exported:
+  en: "Exported: %{path}"
+  zh-TW: 已匯出：%{path}
+  zh-CN: 已导出：%{path}
+backup.reveal:
+  en: Show in Arke
+  zh-TW: 在 Arke 裡顯示
+  zh-CN: 在 Arke 中显示
+backup.imported:
+  en: Imported settings from “%{name}”
+  zh-TW: 已從「%{name}」匯入設定
+  zh-CN: 已从“%{name}”导入设置
+backup.undo:
+  en: Undo
+  zh-TW: 復原
+  zh-CN: 撤销
+backup.undone:
+  en: "Restored the settings from before the import"
+  zh-TW: "已還原成匯入前的設定"
+  zh-CN: 已恢复为导入前的设置
+backup.no_folder:
+  en: Couldn't find the Downloads folder
+  zh-TW: 找不到「下載」資料夾
+  zh-CN: 找不到“下载”文件夹
+backup.export_failed:
+  en: "Couldn't export: %{error}"
+  zh-TW: 無法匯出：%{error}
+  zh-CN: 无法导出：%{error}
+backup.import_failed:
+  en: "Couldn't import “%{name}”: %{error}"
+  zh-TW: 無法匯入「%{name}」：%{error}
+  zh-CN: 无法导入“%{name}”：%{error}
+backup.missing:
+  en: the file doesn't exist
+  zh-TW: 找不到這個檔案
+  zh-CN: 找不到此文件
+backup.not_json:
+  en: this isn't a JSON file
+  zh-TW: 這不是 JSON 檔
+  zh-CN: 这不是 JSON 文件
+backup.not_arke:
+  en: this isn't an Arke settings backup
+  zh-TW: 這不是 Arke 的設定備份
+  zh-CN: 这不是 Arke 的设置备份
+backup.broken:
+  en: "the backup is damaged (%{error})"
+  zh-TW: 備份的內容有問題（%{error}）
+  zh-CN: 备份内容有问题（%{error}）
+settings.density:
+  en: List density
+  zh-TW: 清單密度
+  zh-CN: 列表密度
+settings.tabs:
+  en: "Tab position"
+  zh-TW: 分頁位置
+  zh-CN: 标签页位置
+settings.tabs_side:
+  en: Sidebar
+  zh-TW: 側邊欄
+  zh-CN: 侧边栏
+settings.tabs_top:
+  en: Top
+  zh-TW: 上方
+  zh-CN: 顶部
+settings.list:
+  en: List
+  zh-TW: 清單
+  zh-CN: 列表
+settings.show_hidden:
+  en: Show hidden items
+  zh-TW: 顯示隱藏的項目
+  zh-CN: 显示隐藏的项目
+settings.show_protected:
+  en: "Show protected system files"
+  zh-TW: "顯示受保護的系統檔案"
+  zh-CN: "显示受保护的系统文件"
+settings.show_protected_desc:
+  en: "Such as pagefile.sys and $Recycle.Bin"
+  zh-TW: "例如 pagefile.sys、$Recycle.Bin"
+  zh-CN: "例如 pagefile.sys、$Recycle.Bin"
+settings.hide_dotfiles:
+  en: "Treat names starting with a dot as hidden"
+  zh-TW: "將以點開頭的項目視為隱藏"
+  zh-CN: "将以点开头的项目视为隐藏"
+settings.hide_dotfiles_desc:
+  en: "Such as .git and .vscode"
+  zh-TW: "例如 .git、.vscode"
+  zh-CN: "例如 .git、.vscode"
+settings.single_click:
+  en: "Open items with a single click"
+  zh-TW: "按一下就開啟"
+  zh-CN: "单击即可打开"
+settings.single_click_desc:
+  en: "Ctrl+click or Shift+click to select"
+  zh-TW: "按住 Ctrl 或 Shift 再按一下即可選取"
+  zh-CN: "按住 Ctrl 或 Shift 单击来选择"
+settings.preview:
+  en: Preview pane
+  zh-TW: 預覽窗格
+  zh-CN: 预览窗格
+settings.preview_desc:
+  en: "Shows the selected item on the right; Space for quick look"
+  zh-TW: "在右側預覽選取的項目；空白鍵快速預覽"
+  zh-CN: "在右侧预览选中的项目；按空格键快速预览"
+settings.startup:
+  en: Startup
+  zh-TW: 啟動
+  zh-CN: 启动
+settings.start:
+  en: "New windows open to"
+  zh-TW: "新視窗開啟位置"
+  zh-CN: "新窗口打开位置"
+settings.start_home:
+  en: User folder
+  zh-TW: 使用者資料夾
+  zh-CN: 用户文件夹
+settings.start_last:
+  en: Last location
+  zh-TW: 上次的位置
+  zh-CN: 上次的位置
+settings.search:
+  en: Search
+  zh-TW: 搜尋
+  zh-CN: 搜索
+settings.global_search:
+  en: "Search this PC"
+  zh-TW: "搜尋整台電腦"
+  zh-CN: "搜索整台电脑"
+settings.global_search_desc:
+  en: "Indexes file names on local drives"
+  zh-TW: "為本機磁碟的檔名建立索引"
+  zh-CN: "为本地磁盘的文件名建立索引"
+settings.files:
+  en: "Files and folders"
+  zh-TW: "檔案與資料夾"
+  zh-CN: "文件和文件夹"
+settings.show_extensions:
+  en: "Show file name extensions"
+  zh-TW: "顯示副檔名"
+  zh-CN: "显示文件扩展名"
+settings.show_thumbnails:
+  en: "Show thumbnails"
+  zh-TW: "顯示縮圖"
+  zh-CN: "显示缩略图"
+settings.show_thumbnails_desc:
+  en: "For pictures in Large icons view"
+  zh-TW: "大圖示檢視中的圖片"
+  zh-CN: "大图标视图中的图片"
+settings.network_thumbnails:
+  en: "Thumbnails on network locations"
+  zh-TW: "網路位置也顯示縮圖"
+  zh-CN: "网络位置也显示缩略图"
+settings.network_thumbnails_desc:
+  en: "Slower, since they're read from the server"
+  zh-TW: "需從伺服器讀取，速度較慢"
+  zh-CN: "需从服务器读取，速度较慢"
+settings.sorting:
+  en: "Sorting and view"
+  zh-TW: "排序與檢視"
+  zh-CN: "排序和视图"
+settings.default_view:
+  en: "View"
+  zh-TW: "檢視"
+  zh-CN: "视图"
+settings.view_details:
+  en: "Details"
+  zh-TW: "詳細資料"
+  zh-CN: "详细信息"
+settings.view_icons:
+  en: "Large icons"
+  zh-TW: "大圖示"
+  zh-CN: "大图标"
+settings.view_columns:
+  en: "Columns"
+  zh-TW: "分欄"
+  zh-CN: "分栏"
+settings.sort_by:
+  en: "Sort by"
+  zh-TW: "排序方式"
+  zh-CN: "排序方式"
+settings.sort_by_desc:
+  en: "For tabs you haven't sorted yourself"
+  zh-TW: "套用到未手動排序的分頁"
+  zh-CN: "应用到未手动排序的标签页"
+settings.sort_by_desc_folders:
+  en: "For folders you haven't sorted yourself"
+  zh-TW: "套用到未手動排序的資料夾"
+  zh-CN: "应用到未手动排序的文件夹"
+settings.folder_views:
+  en: "Remember view for each folder"
+  zh-TW: "記住每個資料夾的檢視"
+  zh-CN: "记住每个文件夹的视图"
+settings.folder_views_desc:
+  en: "Folders reopen with the view and sort you last picked there"
+  zh-TW: "資料夾會以上次選擇的檢視與排序開啟"
+  zh-CN: "文件夹会以上次选择的视图和排序打开"
+settings.folder_views_reset:
+  en: "Reset folder views"
+  zh-TW: "重設資料夾檢視"
+  zh-CN: "重置文件夹视图"
+settings.folder_views_none:
+  en: "None remembered yet"
+  zh-TW: "還沒有記住的資料夾"
+  zh-CN: "还没有记住的文件夹"
+settings.search_ranking:
+  en: "Results"
+  zh-TW: "結果排序"
+  zh-CN: "结果排序"
+settings.search_history:
+  en: "Put what you open first"
+  zh-TW: "常用的排前面"
+  zh-CN: "常用的排前面"
+settings.search_history_desc:
+  en: "Files you open and folders you visit rank above similar matches in This PC results. Kept on this PC only."
+  zh-TW: "在整台電腦的結果中，常開的檔案和資料夾會排在相近的結果前面。只存在這台電腦。"
+  zh-CN: "在整台电脑的结果中，常打开的文件和文件夹会排在相近的结果前面。只保存在这台电脑。"
+settings.search_history_clear:
+  en: "Clear history"
+  zh-TW: "清除記錄"
+  zh-CN: "清除记录"
+settings.search_history_none:
+  en: "No history yet"
+  zh-TW: "還沒有記錄"
+  zh-CN: "还没有记录"
+settings.sort_direction:
+  en: "Order"
+  zh-TW: "排序方向"
+  zh-CN: "排序方向"
+settings.ascending:
+  en: "Ascending"
+  zh-TW: "遞增"
+  zh-CN: "递增"
+settings.descending:
+  en: "Descending"
+  zh-TW: "遞減"
+  zh-CN: "递减"
+settings.folders:
+  en: "Folders"
+  zh-TW: "資料夾"
+  zh-CN: "文件夹"
+settings.folders_first:
+  en: "Before files"
+  zh-TW: "排在檔案前面"
+  zh-CN: "排在文件前面"
+settings.folders_mixed:
+  en: "Mixed with files"
+  zh-TW: "和檔案一起排"
+  zh-CN: "和文件一起排"
+settings.language:
+  en: "Language"
+  zh-TW: "語言"
+  zh-CN: "语言"
+settings.language_system:
+  en: "System"
+  zh-TW: "跟隨系統"
+  zh-CN: "跟随系统"
+settings.columns:
+  en: "Visible columns"
+  zh-TW: 顯示的欄位
+  zh-CN: 显示的列
+settings.columns_desc:
+  en: "Name is always shown. Drag headers to reorder"
+  zh-TW: "名稱一定會顯示，拖曳欄位標題可調整順序"
+  zh-CN: "名称始终显示，拖动列标题可调整顺序"
+settings.dates:
+  en: "Date format"
+  zh-TW: "日期格式"
+  zh-CN: "日期格式"
+settings.dates_short:
+  en: "Short (Today 07:49)"
+  zh-TW: "簡短（今天 07:49）"
+  zh-CN: "简短（今天 07:49）"
+settings.dates_full:
+  en: "Full (2026/11/11 07:49)"
+  zh-TW: "完整（2026/11/11 07:49）"
+  zh-CN: "完整（2026/11/11 07:49）"
+settings.size_units:
+  en: "File size units"
+  zh-TW: "檔案大小單位"
+  zh-CN: "文件大小单位"
+settings.size_units_binary:
+  en: "1 KB = 1024 bytes (like Windows)"
+  zh-TW: "1 KB = 1024 位元組（同 Windows）"
+  zh-CN: "1 KB = 1024 字节（与 Windows 相同）"
+settings.size_units_decimal:
+  en: "1 KB = 1000 bytes"
+  zh-TW: "1 KB = 1000 位元組"
+  zh-CN: "1 KB = 1000 字节"
+settings.autostart:
+  en: "Start when I sign in to Windows"
+  zh-TW: "登入 Windows 時啟動"
+  zh-CN: "登录 Windows 时启动"
+settings.autostart_desc:
+  en: "Waits in the background without a window"
+  zh-TW: "在背景待命，不開視窗"
+  zh-CN: "在后台待命，不打开窗口"
+settings.tray:
+  en: "Show icon in the notification area"
+  zh-TW: "在通知區域顯示圖示"
+  zh-CN: "在通知区域显示图标"
+settings.keep_running:
+  en: "Keep running after closing windows"
+  zh-TW: "關閉視窗後繼續在背景執行"
+  zh-CN: "关闭窗口后继续在后台运行"
+settings.keep_running_desc:
+  en: "Opens faster next time"
+  zh-TW: "下次開啟更快"
+  zh-CN: "下次打开更快"
+settings.takeover:
+  en: "Open folders in Arke"
+  zh-TW: "用 Arke 開啟資料夾"
+  zh-CN: "用 Arke 打开文件夹"
+settings.takeover_desc:
+  en: "Registers Arke as the folder handler for this Windows account. Turn it off to undo it"
+  zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，關閉即還原"
+  zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，关闭即还原"
+settings.language_zh:
+  en: "繁體中文"
+  zh-TW: "繁體中文"
+  zh-CN: "繁體中文"
+settings.language_zh_cn:
+  en: "简体中文"
+  zh-TW: "简体中文"
+  zh-CN: "简体中文"
+settings.language_en:
+  en: "English"
+  zh-TW: "English"
+  zh-CN: "English"
+settings.start_session:
+  en: "Last tabs"
+  zh-TW: "上次的分頁"
+  zh-CN: "上次的标签页"
+settings.confirm_recycle:
+  en: "Ask before moving to the Recycle Bin"
+  zh-TW: "移到資源回收筒前先確認"
+  zh-CN: "移到回收站前先确认"
+settings.confirm_recycle_desc:
+  en: "Permanent deletion always needs confirmation"
+  zh-TW: "永久刪除一律會先確認"
+  zh-CN: "永久删除始终会先确认"
+settings.warn_extension:
+  en: "Warn when changing a file extension"
+  zh-TW: "變更副檔名時先提醒"
+  zh-CN: "更改扩展名时先提醒"
+confirm.cancel:
+  en: "Cancel"
+  zh-TW: "取消"
+  zh-CN: "取消"
+confirm.recycle_title:
+  en: "Move to the Recycle Bin?"
+  zh-TW: "移到資源回收筒？"
+  zh-CN: "移到回收站？"
+confirm.recycle_one:
+  en: "“%{name}” will be moved to the Recycle Bin."
+  zh-TW: "「%{name}」會移到資源回收筒。"
+  zh-CN: "“%{name}”将移到回收站。"
+confirm.recycle_many:
+  en: "%{count} items will be moved to the Recycle Bin."
+  zh-TW: "%{count} 個項目會移到資源回收筒。"
+  zh-CN: "%{count} 个项目将移到回收站。"
+confirm.recycle_ok:
+  en: "Move to Recycle Bin"
+  zh-TW: "移到資源回收筒"
+  zh-CN: "移到回收站"
+confirm.ext_title:
+  en: "Change the file name extension?"
+  zh-TW: "要變更副檔名嗎？"
+  zh-CN: "要更改扩展名吗？"
+confirm.ext_body:
+  en: "After renaming to “%{name}”, the file might not open in its usual app."
+  zh-TW: "改成「%{name}」之後，檔案可能用原本的程式打不開。"
+  zh-CN: "改为“%{name}”后，文件可能无法用原来的程序打开。"
+confirm.ext_ok:
+  en: "Rename"
+  zh-TW: "重新命名"
+  zh-CN: "重命名"
+settings.double_click_up:
+  en: "Double-click empty space to go up"
+  zh-TW: "在空白處按兩下回到上一層"
+  zh-CN: "双击空白处返回上一级"
+menu.open_terminal:
+  en: "Open in Terminal"
+  zh-TW: "在終端機開啟"
+  zh-CN: "在终端中打开"
+error.terminal_failed:
+  en: "Couldn't open a terminal: %{error}"
+  zh-TW: "無法開啟終端機：%{error}"
+  zh-CN: "无法打开终端：%{error}"
+settings.folder_sizes:
+  en: "Calculate folder sizes"
+  zh-TW: "計算資料夾大小"
+  zh-CN: "计算文件夹大小"
+settings.folder_sizes_desc:
+  en: "Local drives only"
+  zh-TW: "只計算本機磁碟"
+  zh-CN: "仅限本地磁盘"
+settings.about:
+  en: About
+  zh-TW: 關於
+  zh-CN: 关于
+settings.about_tagline:
+  en: A fast file explorer for Windows
+  zh-TW: 快速的 Windows 檔案總管
+  zh-CN: 快速的 Windows 文件管理器
+settings.version_line:
+  en: "Version %{version}"
+  zh-TW: "版本 %{version}"
+  zh-CN: "版本 %{version}"
+settings.about_legal:
+  en: "Arke is free software under the AGPL-3.0 and comes with no warranty."
+  zh-TW: "Arke 是採用 AGPL-3.0 授權的自由軟體，不提供任何擔保。"
+  zh-CN: "Arke 是采用 AGPL-3.0 许可证的自由软件，不提供任何担保。"
+settings.source_code:
+  en: "Source code"
+  zh-TW: "原始碼"
+  zh-CN: "源代码"
+settings.licenses:
+  en: "Licenses"
+  zh-TW: "授權"
+  zh-CN: "许可证"
+settings.settings_file:
+  en: Settings file
+  zh-TW: 設定檔
+  zh-CN: 设置文件
+settings.version:
+  en: "Arke %{version}"
+  zh-TW: "Arke %{version}"
+  zh-CN: "Arke %{version}"
+settings.open_folder:
+  en: Show settings file
+  zh-TW: 開啟設定檔位置
+  zh-CN: 打开设置文件位置
+info.hidden:
+  en: "%{count} hidden (Ctrl+H to show)"
+  zh-TW: 另有 %{count} 個隱藏（Ctrl+H 顯示）
+  zh-CN: 另有 %{count} 个隐藏项（Ctrl+H 显示）
+info.hidden_short:
+  en: "%{count} hidden"
+  zh-TW: "%{count} 個隱藏"
+  zh-CN: "%{count} 个隐藏项"
+info.loading:
+  en: Loading…
+  zh-TW: 載入中…
+  zh-CN: 正在加载…
+
+# ─── List
+col.name:
+  en: Name
+  zh-TW: 名稱
+  zh-CN: 名称
+col.location:
+  en: Location
+  zh-TW: 位置
+  zh-CN: 位置
+col.created:
+  en: Date created
+  zh-TW: 建立日期
+  zh-CN: 创建日期
+col.modified:
+  en: Date modified
+  zh-TW: 修改日期
+  zh-CN: 修改日期
+col.type:
+  en: Type
+  zh-TW: 類型
+  zh-CN: 类型
+col.size:
+  en: Size
+  zh-TW: 大小
+  zh-CN: 大小
+col.extension:
+  en: Extension
+  zh-TW: 副檔名
+  zh-CN: 扩展名
+col.attributes:
+  en: Attributes
+  zh-TW: 屬性
+  zh-CN: 属性
+col.link_target:
+  en: Link target
+  zh-TW: 連結目標
+  zh-CN: 链接目标
+col.sort_hint:
+  en: "Shift+click to also sort by this"
+  zh-TW: "Shift+按一下：同時依此排序"
+  zh-CN: "Shift+单击：同时按此排序"
+menu.reset_column_order:
+  en: Reset column order
+  zh-TW: 重設欄位順序
+  zh-CN: 重置列顺序
+list.here:
+  en: (this folder)
+  zh-TW: "（這個資料夾）"
+  zh-CN: （当前文件夹）
+list.search_prompt:
+  en: "Type a name to search this folder and its subfolders"
+  zh-TW: "輸入名稱搜尋這個資料夾與子資料夾"
+  zh-CN: "输入名称搜索此文件夹及其子文件夹"
+list.search_in_prompt:
+  en: "Type a name to search %{name} and its subfolders"
+  zh-TW: "輸入名稱搜尋 %{name} 與子資料夾"
+  zh-CN: "输入名称搜索 %{name} 及其子文件夹"
+list.no_match:
+  en: No matching items
+  zh-TW: 沒有符合的項目
+  zh-CN: 没有匹配的项目
+list.searching:
+  en: Searching…
+  zh-TW: 搜尋中…
+  zh-CN: 正在搜索…
+list.searching_contents:
+  en: Searching file contents…
+  zh-TW: 正在搜尋檔案內容…
+  zh-CN: 正在搜索文件内容…
+list.no_filter_match:
+  en: No items match the filter
+  zh-TW: 沒有符合篩選的項目
+  zh-CN: 没有符合筛选条件的项目
+list.no_filter_hint:
+  en: Press Esc to clear the filter
+  zh-TW: 按 Esc 清除篩選
+  zh-CN: 按 Esc 清除筛选
+list.empty:
+  en: This folder is empty
+  zh-TW: 這個資料夾是空的
+  zh-CN: 此文件夹为空
+list.no_shares:
+  en: No shared folders
+  zh-TW: 沒有共用資料夾
+  zh-CN: 没有共享文件夹
+list.empty_hint:
+  en: Drag files here, or press Ctrl+Shift+N for a new folder
+  zh-TW: 把檔案拖進來，或按 Ctrl+Shift+N 新增資料夾
+  zh-CN: 将文件拖到这里，或按 Ctrl+Shift+N 新建文件夹
+list.failed_title:
+  en: "Couldn't open “%{name}”"
+  zh-TW: 無法開啟「%{name}」
+  zh-CN: 无法打开“%{name}”
+list.failed_edit:
+  en: Edit path (Ctrl+L)
+  zh-TW: 修改路徑（Ctrl+L）
+  zh-CN: 编辑路径（Ctrl+L）
+list.cannot_show:
+  en: This location can't be shown
+  zh-TW: 無法顯示這個位置
+  zh-CN: 无法显示此位置
+
+# ─── Toasts
+toast.extracting:
+  en: Extracting “%{name}”
+  zh-TW: 正在解壓縮「%{name}」
+  zh-CN: 正在解压“%{name}”
+toast.cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+toast.op_detail:
+  en: "%{op}: %{detail}"
+  zh-TW: "%{op}：%{detail}"
+  zh-CN: "%{op}：%{detail}"
+toast.op_preparing:
+  en: "%{op}: getting ready…"
+  zh-TW: "%{op}：準備中…"
+  zh-CN: "%{op}：正在准备…"
+toast.op_progress:
+  en: "%{op}: %{done} done"
+  zh-TW: "%{op}：已處理 %{done} 項"
+  zh-CN: "%{op}：已处理 %{done} 项"
+toast.op_cancelling:
+  en: "%{op}: stopping…"
+  zh-TW: "%{op}：正在停止…"
+  zh-CN: "%{op}：正在停止…"
+toast.ops_running:
+  en: File operation in progress…
+  zh-TW: 檔案操作進行中…
+  zh-CN: 文件操作进行中…
+toast.close:
+  en: Close
+  zh-TW: 關閉
+  zh-CN: 关闭
+toast.undo:
+  en: "Undo"
+  zh-TW: "復原"
+  zh-CN: "撤销"
+
+# ─── Context menu
+menu.new_folder:
+  en: New folder
+  zh-TW: 新增資料夾
+  zh-CN: 新建文件夹
+menu.new_file_in:
+  en: "New file…"
+  zh-TW: "新增檔案…"
+  zh-CN: "新建文件…"
+menu.new_folder_in:
+  en: "New folder…"
+  zh-TW: "新增資料夾…"
+  zh-CN: "新建文件夹…"
+menu.search_in_folder:
+  en: "Search in this folder"
+  zh-TW: "在此資料夾中搜尋"
+  zh-CN: "在此文件夹中搜索"
+menu.copy_relative_path:
+  en: "Copy relative path"
+  zh-TW: "複製相對路徑"
+  zh-CN: "复制相对路径"
+menu.paste:
+  en: Paste
+  zh-TW: 貼上
+  zh-CN: 粘贴
+menu.view_details:
+  en: Details
+  zh-TW: 詳細資料
+  zh-CN: 详细信息
+menu.view_icons:
+  en: Large icons
+  zh-TW: 大圖示
+  zh-CN: 大图标
+menu.view_icons_xl:
+  en: Extra large icons
+  zh-TW: 超大圖示
+  zh-CN: 超大图标
+menu.view_icons_medium:
+  en: Medium icons
+  zh-TW: 中圖示
+  zh-CN: 中图标
+menu.view_icons_small:
+  en: Small icons
+  zh-TW: 小圖示
+  zh-CN: 小图标
+menu.view:
+  en: View
+  zh-TW: 檢視
+  zh-CN: 查看
+menu.refresh:
+  en: Refresh
+  zh-TW: 重新整理
+  zh-CN: 刷新
+menu.copy_path:
+  en: Copy path
+  zh-TW: 複製路徑
+  zh-CN: 复制路径
+menu.open_in_explorer:
+  en: Open in Windows File Explorer
+  zh-TW: 在 Windows 檔案總管中開啟
+  zh-CN: 在 Windows 文件资源管理器中打开
+menu.reveal_in_explorer:
+  en: Show in Windows File Explorer
+  zh-TW: 在 Windows 檔案總管中顯示
+  zh-CN: 在 Windows 文件资源管理器中显示
+menu.open:
+  en: Open
+  zh-TW: 開啟
+  zh-CN: 打开
+menu.open_in_new_tab:
+  en: Open in new tab
+  zh-TW: 在新分頁開啟
+  zh-CN: 在新标签页中打开
+menu.extract_to:
+  en: "Extract to “%{name}\\”"
+  zh-TW: 解壓縮到「%{name}\」
+  zh-CN: 解压到“%{name}\”
+menu.extract_here:
+  en: Extract here
+  zh-TW: 解壓縮到此處
+  zh-CN: 解压到当前文件夹
+menu.cut:
+  en: Cut
+  zh-TW: 剪下
+  zh-CN: 剪切
+menu.copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+menu.rename:
+  en: Rename
+  zh-TW: 重新命名
+  zh-CN: 重命名
+menu.delete:
+  en: Delete
+  zh-TW: 刪除
+  zh-CN: 删除
+menu.move_to_new_folder:
+  en: Move to new folder
+  zh-TW: 移到新資料夾
+  zh-CN: 移到新文件夹
+menu.new_text_file:
+  en: New text document
+  zh-TW: 新增文字文件
+  zh-CN: 新建文本文档
+preview.encoding:
+  en: Encoding
+  zh-TW: 編碼
+  zh-CN: 编码
+preview.encoding_legacy:
+  en: System default (ANSI)
+  zh-TW: 系統預設（Big5 等）
+  zh-CN: 系统默认（GBK 等）
+preview.archive_summary:
+  en: "%{files}, %{dirs} · %{size} unpacked"
+  zh-TW: "%{files}、%{dirs} · 解開後 %{size}"
+  zh-CN: "%{files}、%{dirs} · 解压后 %{size}"
+preview.archive_partial:
+  en: " (first part only)"
+  zh-TW: "（只讀取了開頭部分）"
+  zh-CN: "（仅读取了开头部分）"
+preview.more_unknown:
+  en: More items not shown
+  zh-TW: 還有更多項目沒有列出
+  zh-CN: 还有更多项目未列出
+preview.taken:
+  en: Taken
+  zh-TW: 拍攝時間
+  zh-CN: 拍摄时间
+preview.camera:
+  en: Camera
+  zh-TW: 相機
+  zh-CN: 相机
+preview.lens:
+  en: Lens
+  zh-TW: 鏡頭
+  zh-CN: 镜头
+preview.exposure:
+  en: Exposure
+  zh-TW: 曝光
+  zh-CN: 曝光
+preview.range:
+  en: "%{from} – %{to}"
+  zh-TW: "%{from} ～ %{to}"
+  zh-CN: "%{from} 至 %{to}"
+preview.selected_one:
+  en: "1 item selected"
+  zh-TW: "已選取 %{count} 項"
+  zh-CN: "已选择 %{count} 项"
+preview.selected_other:
+  en: "%{count} items selected"
+  zh-TW: "已選取 %{count} 項"
+  zh-CN: "已选择 %{count} 项"
+preview.selected_parts:
+  en: "%{files}, %{dirs}"
+  zh-TW: "%{files}、%{dirs}"
+  zh-CN: "%{files}、%{dirs}"
+preview.files_only_one:
+  en: "1 file"
+  zh-TW: "%{count} 個檔案"
+  zh-CN: "%{count} 个文件"
+preview.files_only_other:
+  en: "%{count} files"
+  zh-TW: "%{count} 個檔案"
+  zh-CN: "%{count} 个文件"
+preview.dirs_only_one:
+  en: "1 folder"
+  zh-TW: "%{count} 個資料夾"
+  zh-CN: "%{count} 个文件夹"
+preview.dirs_only_other:
+  en: "%{count} folders"
+  zh-TW: "%{count} 個資料夾"
+  zh-CN: "%{count} 个文件夹"
+preview.total_size:
+  en: Total size
+  zh-TW: 總大小
+  zh-CN: 总大小
+preview.total_size_files:
+  en: "%{size} (files only)"
+  zh-TW: "%{size}（不含資料夾）"
+  zh-CN: "%{size}（不含文件夹）"
+preview.modified_range:
+  en: Modified
+  zh-TW: 修改日期
+  zh-CN: 修改日期
+preview.by_type:
+  en: By type
+  zh-TW: 類型
+  zh-CN: 类型
+preview.other_types:
+  en: "Other types: %{count}"
+  zh-TW: 其他類型 %{count} 項
+  zh-CN: 其他类型 %{count} 项
+preview.too_many:
+  en: Too many to summarize
+  zh-TW: "項目太多，只顯示數量"
+  zh-CN: "项目太多，只显示数量"
+preview.more_items:
+  en: "%{count} more"
+  zh-TW: 還有 %{count} 項
+  zh-CN: 还有 %{count} 项
+menu.more_options:
+  en: More options
+  zh-TW: 更多選項
+  zh-CN: 更多选项
+sidebar.search_network:
+  en: "Include in PC search"
+  zh-TW: "加入整台電腦搜尋"
+  zh-CN: "加入整台电脑搜索"
+sidebar.unsearch_network:
+  en: "Exclude from PC search"
+  zh-TW: "從整台電腦搜尋排除"
+  zh-CN: "从整台电脑搜索中排除"
+search.index_network_total_one:
+  en: "Network: 1 item"
+  zh-TW: "網路位置 %{count} 項"
+  zh-CN: "网络位置 %{count} 项"
+search.index_network_total_other:
+  en: "Network: %{count} items"
+  zh-TW: "網路位置 %{count} 項"
+  zh-CN: "网络位置 %{count} 项"
+search.index_network_items_one:
+  en: "1 item indexed"
+  zh-TW: "已建立索引 %{count} 項"
+  zh-CN: "已建立索引 %{count} 项"
+search.index_network_items_other:
+  en: "%{count} items indexed"
+  zh-TW: "已建立索引 %{count} 項"
+  zh-CN: "已建立索引 %{count} 项"
+search.index_network_building:
+  en: Indexing…
+  zh-TW: 建立索引中…
+  zh-CN: 正在建立索引…
+search.index_network_offline:
+  en: " (%{count} offline, showing the last results)"
+  zh-TW: "（%{count} 個無法連線，顯示上次的結果）"
+  zh-CN: "（%{count} 个无法连接，显示上次的结果）"
+search.index_network_unreachable:
+  en: " (offline, showing the last results)"
+  zh-TW: "（無法連線，顯示上次的結果）"
+  zh-CN: "（无法连接，显示上次的结果）"
+settings.service:
+  en: Live updates (background service)
+  zh-TW: 即時更新（背景服務）
+  zh-CN: 实时更新（后台服务）
+settings.service_desc:
+  en: Catches up on changes made while Arke is closed and builds the index faster. Needs administrator approval.
+  zh-TW: Arke 關閉期間的變更也能補上，建索引也更快。需要系統管理員同意。
+  zh-CN: Arke 关闭期间的更改也能补上，建立索引也更快。需要管理员批准。
+settings.service_install:
+  en: Install
+  zh-TW: 安裝
+  zh-CN: 安装
+settings.service_remove:
+  en: Remove
+  zh-TW: 移除
+  zh-CN: 卸载
+settings.skip_build_dirs:
+  en: "Skip build folders"
+  zh-TW: "略過建置資料夾"
+  zh-CN: "跳过构建文件夹"
+settings.skip_build_dirs_desc:
+  en: "Such as node_modules, .git and target. The folders themselves still show up in search."
+  zh-TW: "node_modules、.git、target 等；資料夾本身仍搜尋得到"
+  zh-CN: "node_modules、.git、target 等；文件夹本身仍可搜索到"
+search.index_waiting:
+  en: " · Low on resources, updating later"
+  zh-TW: " · 系統資源不足，稍後再更新"
+  zh-CN: " · 系统资源不足，稍后再更新"
+settings.search_network:
+  en: "Network locations"
+  zh-TW: "網路位置"
+  zh-CN: "网络位置"
+settings.search_network_desc:
+  en: "Only updated after you open a location, so idle NAS drives aren't woken up"
+  zh-TW: "開啟過的位置才會在背景更新，不會喚醒閒置的 NAS"
+  zh-CN: "打开过的位置才会在后台更新，不会唤醒闲置的 NAS"
+settings.journal_title:
+  en: "Change journal (NTFS)"
+  zh-TW: "NTFS 變更日誌"
+  zh-CN: "NTFS 更改日志"
+settings.journal_short:
+  en: "How far back Arke can catch up on changes made while it was closed"
+  zh-TW: "決定 Arke 關閉多久之後仍能補上期間的變更"
+  zh-CN: "决定 Arke 关闭多久之后仍能补上期间的更改"
+settings.search_index:
+  en: Index
+  zh-TW: 索引
+  zh-CN: 索引
+settings.advanced:
+  en: Advanced
+  zh-TW: 進階
+  zh-CN: 高级
+settings.journal_desc:
+  en: "Arke uses it to catch up on changes made while it was closed. If it's too small, the index is rebuilt instead. Changing the size needs administrator approval."
+  zh-TW: "Arke 關閉期間的變更從這裡補上；太小時會改為重建索引。調整大小需要系統管理員同意。"
+  zh-CN: "Arke 关闭期间的更改从这里补上；太小时会改为重建索引。调整大小需要管理员批准。"
+settings.journal_now:
+  en: "Up to %{max} MB · %{used} MB used"
+  zh-TW: "上限 %{max} MB · 已用 %{used} MB"
+  zh-CN: "上限 %{max} MB · 已用 %{used} MB"
+settings.journal_busy:
+  en: "Waiting for administrator approval…"
+  zh-TW: "等待系統管理員同意…"
+  zh-CN: "正在等待管理员批准…"
+settings.journal_failed:
+  en: "Couldn't change the size: %{error}"
+  zh-TW: "無法調整大小：%{error}"
+  zh-CN: "无法调整大小：%{error}"
+settings.search_network_auto:
+  en: "Add network drives and recently opened shares automatically"
+  zh-TW: "自動加入網路磁碟機與最近開啟的共用資料夾"
+  zh-CN: "自动添加网络驱动器和最近打开的共享文件夹"
+settings.search_network_skip:
+  en: "Exclude"
+  zh-TW: "排除"
+  zh-CN: "排除"
+settings.search_scope:
+  en: "Drives"
+  zh-TW: "要搜尋的磁碟"
+  zh-CN: "要搜索的驱动器"
+settings.search_scope_desc:
+  en: "To leave out a folder, right-click it › Exclude from PC search"
+  zh-TW: "要排除資料夾：在它上面按右鍵 →「從整台電腦搜尋排除」"
+  zh-CN: "要排除文件夹：右键单击它 →“从整台电脑搜索中排除”"
+settings.search_network_readd:
+  en: "Add back"
+  zh-TW: "加回"
+  zh-CN: "重新添加"
+settings.search_network_excluded:
+  en: "Excluded"
+  zh-TW: "已排除"
+  zh-CN: "已排除"
+search.index_network_large:
+  en: "Very large: consider adding only the folders you use"
+  zh-TW: "項目很多，建議只加入常用的資料夾"
+  zh-CN: "项目很多，建议只添加常用的文件夹"
+search.index_network_dormant:
+  en: last results; updates after you open it
+  zh-TW: "上次的結果，開啟後才更新"
+  zh-CN: 上次的结果，打开后才更新
+search.index_network_waiting:
+  en: "Indexed after you open it once"
+  zh-TW: "開啟過一次後才建立索引"
+  zh-CN: "打开过一次后才建立索引"
+settings.search_network_empty:
+  en: "No network locations yet"
+  zh-TW: "還沒有網路位置"
+  zh-CN: "还没有网络位置"
+menu.choose_app:
+  en: Open with…
+  zh-TW: 開啟檔案的方式…
+  zh-CN: 打开方式…
+menu.open_file_location:
+  en: Open file location
+  zh-TW: 開啟檔案位置
+  zh-CN: 打开文件所在的位置
+menu.go_to_link_target:
+  en: Go to link target
+  zh-TW: 前往連結目標
+  zh-CN: 转到链接目标
+error.link_no_target:
+  en: "Couldn't read where this link points: %{error}"
+  zh-TW: "無法讀取這個連結指向的位置：%{error}"
+  zh-CN: "无法读取此链接指向的位置：%{error}"
+error.shortcut_no_target:
+  en: This shortcut doesn't point to a file or folder
+  zh-TW: "這個捷徑沒有指向檔案或資料夾"
+  zh-CN: 此快捷方式指向的不是文件或文件夹
+menu.keep_on_device:
+  en: Always keep on this device
+  zh-TW: 一律保留在此裝置
+  zh-CN: 始终保留在此设备上
+menu.free_up_space:
+  en: Free up space
+  zh-TW: 釋放空間
+  zh-CN: 释放空间
+error.cloud_pin_failed:
+  en: "Couldn't change how these files are kept: %{error}"
+  zh-TW: 無法變更這些檔案的保留方式：%{error}
+  zh-CN: 无法更改这些文件的保留方式：%{error}
+menupref.cloud:
+  en: Always keep on this device / Free up space
+  zh-TW: 一律保留在此裝置／釋放空間
+  zh-CN: 始终保留在此设备上/释放空间
+menupref.cloud_note:
+  en: Only in OneDrive and other cloud folders
+  zh-TW: 只在 OneDrive 等雲端資料夾裡
+  zh-CN: 仅在 OneDrive 等云文件夹中
+menu.pin_command:
+  en: Pin to the main menu
+  zh-TW: 釘到主選單
+  zh-CN: 固定到主菜单
+menu.unpin_command:
+  en: Unpin from the main menu
+  zh-TW: 從主選單取消釘選
+  zh-CN: 从主菜单取消固定
+menu.host_start_failed:
+  en: "Couldn't load the Windows menu: %{error}"
+  zh-TW: "無法載入 Windows 選單：%{error}"
+  zh-CN: "无法加载 Windows 菜单：%{error}"
+net.login_title:
+  en: Sign in to the shared folder
+  zh-TW: 登入共用資料夾
+  zh-CN: 登录共享文件夹
+net.login_intro:
+  en: "Enter the user name and password for %{name}"
+  zh-TW: "輸入 %{name} 的使用者名稱與密碼"
+  zh-CN: "输入 %{name} 的用户名和密码"
+net.login_ok:
+  en: Sign in
+  zh-TW: 登入
+  zh-CN: 登录
+net.map_title:
+  en: "Map network drive"
+  zh-TW: "連線網路磁碟機"
+  zh-CN: 映射网络驱动器
+net.map_intro:
+  en: "Give a shared folder its own drive letter"
+  zh-TW: "為共用資料夾指派磁碟機代號"
+  zh-CN: "为共享文件夹分配一个驱动器号"
+net.map_ok:
+  en: Connect
+  zh-TW: 連線
+  zh-CN: 连接
+net.folder:
+  en: Folder
+  zh-TW: 資料夾
+  zh-CN: 文件夹
+net.letter:
+  en: Drive letter
+  zh-TW: 磁碟機代號
+  zh-CN: 驱动器号
+net.user:
+  en: User name
+  zh-TW: 使用者名稱
+  zh-CN: 用户名
+net.user_optional:
+  en: User name (leave empty to use your Windows account)
+  zh-TW: "使用者名稱（使用目前的 Windows 帳戶則留空）"
+  zh-CN: 用户名（使用当前 Windows 帐户则留空）
+net.user_hint:
+  en: 'name, or DOMAIN\name'
+  zh-TW: '名稱，或 網域\名稱'
+  zh-CN: '用户名，或 域\用户名'
+net.password:
+  en: Password
+  zh-TW: 密碼
+  zh-CN: 密码
+net.remember:
+  en: "Remember my credentials (kept by Windows)"
+  zh-TW: "記住我的認證（由 Windows 保存）"
+  zh-CN: "记住我的凭据（由 Windows 保存）"
+net.need_folder:
+  en: 'Enter a shared folder, like \\server\share'
+  zh-TW: "請輸入共用資料夾，例如 \\\\server\\share"
+  zh-CN: '请输入共享文件夹，例如 \\server\share'
+net.need_user:
+  en: Enter a user name
+  zh-TW: "請輸入使用者名稱"
+  zh-CN: 请输入用户名
+net.failed:
+  en: Couldn't connect
+  zh-TW: 連線失敗
+  zh-CN: 连接失败
+net.connecting:
+  en: Connecting…
+  zh-TW: 連線中…
+  zh-CN: 正在连接…
+net.use_system:
+  en: Use the Windows dialog…
+  zh-TW: "改用 Windows 對話方塊…"
+  zh-CN: "改用 Windows 对话框…"
+net.bad_login:
+  en: The user name or password is wrong
+  zh-TW: "使用者名稱或密碼不正確"
+  zh-CN: 用户名或密码不正确
+net.conflict:
+  en: This server is already connected with another account. Disconnect that first.
+  zh-TW: "已經用另一個帳戶連線到這台伺服器，請先中斷該連線再試一次"
+  zh-CN: 已使用另一个帐户连接到此服务器，请先断开该连接再试
+net.not_found:
+  en: That shared folder can't be found
+  zh-TW: 找不到這個共用資料夾
+  zh-CN: 找不到此共享文件夹
+net.letter_used:
+  en: That drive letter is already in use
+  zh-TW: "這個磁碟機代號已在使用中"
+  zh-CN: 此驱动器号已被使用
+net.disconnect_failed:
+  en: "Couldn't disconnect %{name}: %{error}"
+  zh-TW: "無法中斷 %{name} 的連線：%{error}"
+  zh-CN: "无法断开 %{name}：%{error}"
+net.add_title:
+  en: Add network location
+  zh-TW: 新增網路位置
+  zh-CN: 添加网络位置
+net.proto_smb:
+  en: Shared folder
+  zh-TW: 共用資料夾
+  zh-CN: 共享文件夹
+net.proto_sftp:
+  en: SFTP
+  zh-TW: SFTP
+  zh-CN: SFTP
+net.proto_dav:
+  en: WebDAV
+  zh-TW: WebDAV
+  zh-CN: WebDAV
+net.sftp_intro:
+  en: Browse a server over SSH
+  zh-TW: 透過 SSH 瀏覽伺服器
+  zh-CN: 通过 SSH 浏览服务器
+net.dav_intro:
+  en: "Browse a WebDAV server over https (Nextcloud, NAS, ...)"
+  zh-TW: "透過 https 瀏覽 WebDAV 伺服器（Nextcloud、NAS 等）"
+  zh-CN: "通过 https 浏览 WebDAV 服务器（Nextcloud、NAS 等）"
+net.remote_login_title:
+  en: Sign in to the server
+  zh-TW: 登入伺服器
+  zh-CN: 登录服务器
+net.host:
+  en: Server
+  zh-TW: 伺服器
+  zh-CN: 服务器
+net.host_hint:
+  en: "nas.local, or a full URL"
+  zh-TW: "nas.local，或完整網址"
+  zh-CN: "nas.local，或完整网址"
+net.port:
+  en: Port
+  zh-TW: 連接埠
+  zh-CN: 端口
+net.remote_path:
+  en: Folder on the server (optional)
+  zh-TW: 伺服器上的資料夾（選填）
+  zh-CN: 服务器上的文件夹（可选）
+net.user_dav:
+  en: User name (optional)
+  zh-TW: 使用者名稱（選填）
+  zh-CN: 用户名（可选）
+net.sign_in_with:
+  en: Sign in with
+  zh-TW: 登入方式
+  zh-CN: 登录方式
+net.key_file:
+  en: Key file
+  zh-TW: 金鑰檔
+  zh-CN: 密钥文件
+net.passphrase:
+  en: Key passphrase (if it has one)
+  zh-TW: 金鑰密碼（如果有）
+  zh-CN: 密钥密码（如果有）
+net.password_or_agent:
+  en: Password (leave empty to use your SSH agent)
+  zh-TW: 密碼（留空則使用 SSH 代理程式）
+  zh-CN: 密码（留空则使用 SSH 代理）
+net.need_host:
+  en: Enter a server name or address
+  zh-TW: 請輸入伺服器名稱或位址
+  zh-CN: 请输入服务器名称或地址
+net.bad_address:
+  en: Check the server name and port
+  zh-TW: 請檢查伺服器名稱和連接埠
+  zh-CN: 请检查服务器名称和端口
+net.need_key:
+  en: Enter the path of your private key file
+  zh-TW: 請輸入私密金鑰檔的路徑
+  zh-CN: 请输入私钥文件的路径
+net.key_new_title:
+  en: First connection to this server
+  zh-TW: 第一次連線到這台伺服器
+  zh-CN: 第一次连接到此服务器
+net.key_new_body:
+  en: "Make sure the fingerprint below matches the server's (ask its admin if unsure)."
+  zh-TW: 請確認下方的指紋與伺服器的一致（不確定就問管理員）。
+  zh-CN: 请确认下方的指纹与服务器的一致（不确定就问管理员）。
+net.key_trust:
+  en: Trust and connect
+  zh-TW: 信任並連線
+  zh-CN: 信任并连接
+net.key_changed_title:
+  en: "Warning: the server's key has changed"
+  zh-TW: 警告：伺服器的金鑰變了
+  zh-CN: 警告：服务器的密钥变了
+net.key_changed_body:
+  en: "%{host} no longer has the key Arke saw before. Someone may be intercepting the connection. Only continue if you know the server was reinstalled or its key replaced."
+  zh-TW: "%{host} 的金鑰和 Arke 先前看到的不同，可能有人在攔截連線。只有確定伺服器重灌或換過金鑰時才繼續。"
+  zh-CN: "%{host} 的密钥与 Arke 之前看到的不同，可能有人在拦截连接。只有确定服务器重装或更换过密钥时才继续。"
+net.key_replace:
+  en: Replace key and connect
+  zh-TW: 取代金鑰並連線
+  zh-CN: 替换密钥并连接
+sidebar.add_location:
+  en: Add network location…
+  zh-TW: 新增網路位置…
+  zh-CN: 添加网络位置…
+error.not_on_remote:
+  en: Not available for items on a server
+  zh-TW: 伺服器上的項目無法使用這項功能
+  zh-CN: 服务器上的项目无法使用此功能
+jumplist.pinned:
+  en: Pinned
+  zh-TW: "已釘選"
+  zh-CN: 已固定
+jumplist.recent:
+  en: Recent
+  zh-TW: 最近
+  zh-CN: 最近
+tray.open:
+  en: New window
+  zh-TW: 開新視窗
+  zh-CN: 新建窗口
+tray.takeover:
+  en: Open folders in Arke
+  zh-TW: 用 Arke 開啟資料夾
+  zh-CN: 用 Arke 打开文件夹
+tray.quit:
+  en: Quit Arke
+  zh-TW: 結束 Arke
+  zh-CN: 退出 Arke
+menu.host_blocked:
+  en: "The Windows menu was blocked (usually by antivirus)"
+  zh-TW: "Windows 選單遭到封鎖（通常是防毒軟體）"
+  zh-CN: "Windows 菜单被拦截了（通常是杀毒软件）"
+menu.host_gone:
+  en: "The Windows menu closed; try again"
+  zh-TW: "Windows 選單已關閉，請再試一次"
+  zh-CN: "Windows 菜单已关闭，请重试"
+menu.host_timeout:
+  en: "The Windows menu took too long"
+  zh-TW: "Windows 選單回應逾時"
+  zh-CN: "Windows 菜单响应超时"
+menu.load_failed:
+  en: "Couldn't read: %{error}"
+  zh-TW: 讀取失敗：%{error}
+  zh-CN: 读取失败：%{error}
+menu.thread_start_failed:
+  en: "Couldn't load the Windows menu"
+  zh-TW: "無法載入 Windows 選單"
+  zh-CN: "无法加载 Windows 菜单"
+menu.thread_gone:
+  en: "The Windows menu closed"
+  zh-TW: "Windows 選單已關閉"
+  zh-CN: "Windows 菜单已关闭"
+menu.thread_no_reply:
+  en: "The Windows menu isn't responding"
+  zh-TW: "Windows 選單沒有回應"
+  zh-CN: "Windows 菜单没有响应"
+menu.expired:
+  en: This menu has expired; open it again
+  zh-TW: 這個選單已經失效，請重新開啟
+  zh-CN: 此菜单已失效，请重新打开
+menu.loading:
+  en: Loading…
+  zh-TW: 載入中…
+  zh-CN: 正在加载…
+menu.no_more_options:
+  en: No other options
+  zh-TW: 沒有其他選項
+  zh-CN: 没有其他选项
+
+# ─── Notices and errors
+ops.list_separator:
+  en: ", "
+  zh-TW: 、
+  zh-CN: 、
+fail.in_use_by:
+  en: "“%{name}” is in use by %{apps}"
+  zh-TW: "「%{name}」正由 %{apps} 使用中"
+  zh-CN: "“%{name}”正由 %{apps} 使用"
+fail.app_pid:
+  en: "%{app} (PID %{pid})"
+  zh-TW: "%{app}（PID %{pid}）"
+  zh-CN: "%{app}（PID %{pid}）"
+fail.more_apps:
+  en: " and %{count} more"
+  zh-TW: " 等 %{count} 個程式"
+  zh-CN: " 等 %{count} 个程序"
+fail.in_use:
+  en: "“%{name}” is open in another program"
+  zh-TW: "「%{name}」正由其他程式使用中"
+  zh-CN: "“%{name}”正由其他程序使用"
+fail.access_denied:
+  en: "No permission for “%{name}” (access denied)"
+  zh-TW: "沒有「%{name}」的權限（存取被拒）"
+  zh-CN: "没有“%{name}”的权限（拒绝访问）"
+fail.read_only:
+  en: "“%{name}” is read-only"
+  zh-TW: "「%{name}」是唯讀的"
+  zh-CN: "“%{name}”是只读的"
+fail.too_long:
+  en: "The path of “%{name}” is too long"
+  zh-TW: "「%{name}」的路徑太長"
+  zh-CN: "“%{name}”的路径太长"
+fail.no_recycle_bin:
+  en: "“%{name}” can't go to the Recycle Bin"
+  zh-TW: "「%{name}」無法移到資源回收筒"
+  zh-CN: "“%{name}”无法移到回收站"
+fail.bad_name:
+  en: "The Recycle Bin can't take the name “%{name}”"
+  zh-TW: "資源回收筒無法處理「%{name}」這個名稱"
+  zh-CN: "回收站无法处理“%{name}”这个名称"
+fail.bad_name_inside:
+  en: "“%{name}” contains names the Recycle Bin can't take (ending in a period or space, or like “con”)"
+  zh-TW: "「%{name}」內有資源回收筒無法處理的名稱（結尾是句點或空格，或像「con」）"
+  zh-CN: "“%{name}”里有回收站无法处理的名称（结尾是句点或空格，或像“con”）"
+fail.disk_full:
+  en: "Not enough space for “%{name}”"
+  zh-TW: "空間不足，無法處理「%{name}」"
+  zh-CN: "空间不足，无法处理“%{name}”"
+fail.offline:
+  en: "Can't reach the network location of “%{name}”"
+  zh-TW: "無法連線到「%{name}」所在的網路位置"
+  zh-CN: "无法连接到“%{name}”所在的网络位置"
+fail.many_one:
+  en: "%{count} item failed: %{list}"
+  zh-TW: "%{count} 個項目未完成：%{list}"
+  zh-CN: "%{count} 个项目未完成：%{list}"
+fail.many_other:
+  en: "%{count} items failed: %{list}"
+  zh-TW: "%{count} 個項目未完成：%{list}"
+  zh-CN: "%{count} 个项目未完成：%{list}"
+fail.list_separator:
+  en: "; "
+  zh-TW: "；"
+  zh-CN: "；"
+fail.sentence_gap:
+  en: ". "
+  zh-TW: "。"
+  zh-CN: "。"
+fail.hint_close:
+  en: "Close it there, then try again."
+  zh-TW: "請在該程式中關閉後再試一次。"
+  zh-CN: "请在该程序中关闭后再试一次。"
+fail.hint_permanent:
+  en: "Shift+Delete deletes it permanently."
+  zh-TW: "按 Shift+Delete 可永久刪除。"
+  zh-CN: "按 Shift+Delete 可永久删除。"
+confirm.gap:
+  en: " "
+  zh-TW: ""
+  zh-CN: ""
+confirm.no_bin_one:
+  en: "“%{name}” is on a drive without a Recycle Bin, so it will be permanently deleted. This can't be undone."
+  zh-TW: "「%{name}」所在的磁碟沒有資源回收筒，會永久刪除，無法復原。"
+  zh-CN: "“%{name}”所在的磁盘没有回收站，将永久删除，无法恢复。"
+confirm.no_bin_many:
+  en: "%{count} items are on a drive without a Recycle Bin, so they will be permanently deleted. This can't be undone."
+  zh-TW: "有 %{count} 個項目所在的磁碟沒有資源回收筒，會永久刪除，無法復原。"
+  zh-CN: "有 %{count} 个项目所在的磁盘没有回收站，将永久删除，无法恢复。"
+confirm.no_bin_others_one:
+  en: "The other item goes to the Recycle Bin."
+  zh-TW: "另外 %{count} 個項目會移到資源回收筒。"
+  zh-CN: "另外 %{count} 个项目将移到回收站。"
+confirm.no_bin_others_other:
+  en: "The other %{count} items go to the Recycle Bin."
+  zh-TW: "另外 %{count} 個項目會移到資源回收筒。"
+  zh-CN: "另外 %{count} 个项目将移到回收站。"
+ops.crashed:
+  en: "Something went wrong inside Arke; nothing more was done"
+  zh-TW: "Arke 內部發生錯誤，已停止這項作業"
+  zh-CN: "Arke 内部出错，已停止此操作"
+error.command_failed:
+  en: "Couldn't run “%{name}”: %{error}"
+  zh-TW: 無法執行「%{name}」：%{error}
+  zh-CN: 无法运行“%{name}”：%{error}
+notice.address_copied:
+  en: Copied the address
+  zh-TW: 已複製位址
+  zh-CN: 已复制地址
+notice.history_cleared:
+  en: "History cleared"
+  zh-TW: "已清除瀏覽記錄"
+  zh-CN: "已清除历史记录"
+menu.copy_address:
+  en: Copy address
+  zh-TW: 複製位址
+  zh-CN: 复制地址
+menu.copy_as_path:
+  en: Copy as path
+  zh-TW: 複製為路徑
+  zh-CN: 复制为路径
+menu.edit_address:
+  en: Edit address
+  zh-TW: 編輯位址
+  zh-CN: 编辑地址
+menu.clear_history:
+  en: "Clear history"
+  zh-TW: "清除瀏覽記錄"
+  zh-CN: "清除历史记录"
+notice.paths_copied_one:
+  en: "Copied 1 path"
+  zh-TW: "已複製 %{count} 個路徑"
+  zh-CN: "已复制 %{count} 个路径"
+notice.paths_copied_other:
+  en: "Copied %{count} paths"
+  zh-TW: "已複製 %{count} 個路徑"
+  zh-CN: "已复制 %{count} 个路径"
+notice.recycled_one:
+  en: "Moved to Recycle Bin"
+  zh-TW: "已移到資源回收筒"
+  zh-CN: "已移到回收站"
+notice.recycled_other:
+  en: "Moved %{count} items to Recycle Bin"
+  zh-TW: "已將 %{count} 個項目移到資源回收筒"
+  zh-CN: "已将 %{count} 个项目移到回收站"
+notice.moved_to_new_folder_one:
+  en: "Moved 1 item into a new folder"
+  zh-TW: "已將 1 個項目移到新資料夾"
+  zh-CN: "已将 1 个项目移到新文件夹"
+notice.moved_to_new_folder_other:
+  en: "Moved %{count} items into a new folder"
+  zh-TW: "已將 %{count} 個項目移到新資料夾"
+  zh-CN: "已将 %{count} 个项目移到新文件夹"
+error.open_failed:
+  en: "Couldn't open %{name}: %{error}"
+  zh-TW: 無法開啟 %{name}：%{error}
+  zh-CN: 无法打开 %{name}：%{error}
+error.share_list:
+  en: "A server's shares can't be changed here"
+  zh-TW: 無法在這裡變更伺服器的共用資料夾
+  zh-CN: 无法在这里更改服务器的共享文件夹
+error.open_blocked:
+  en: "%{error} (antivirus or company policy may be blocking it)"
+  zh-TW: "%{error}（可能被防毒軟體或公司政策擋住）"
+  zh-CN: "%{error}（可能被杀毒软件或公司策略拦截）"
+error.reveal_failed:
+  en: "Couldn't open File Explorer: %{error}"
+  zh-TW: 無法開啟檔案總管：%{error}
+  zh-CN: 无法打开文件资源管理器：%{error}
+error.system_menu_failed:
+  en: "Couldn't show the system menu: %{error}"
+  zh-TW: 無法顯示系統選單：%{error}
+  zh-CN: 无法显示系统菜单：%{error}
+error.path:
+  en: "%{path}: %{error}"
+  zh-TW: "%{path}：%{error}"
+  zh-CN: "%{path}：%{error}"
+extract.busy:
+  en: An extraction is already running
+  zh-TW: 已有解壓縮正在進行
+  zh-CN: 已有解压任务正在进行
+extract.failed:
+  en: "Couldn't extract %{name}: %{error}"
+  zh-TW: "無法解壓縮 %{name}：%{error}"
+  zh-CN: "无法解压 %{name}：%{error}"
+extract.cancelled_one:
+  en: "Extraction cancelled (1 file extracted)"
+  zh-TW: "已取消解壓縮（已解出 %{count} 個檔案）"
+  zh-CN: "已取消解压（已解压 %{count} 个文件）"
+extract.cancelled_other:
+  en: "Extraction cancelled (%{count} files extracted)"
+  zh-TW: "已取消解壓縮（已解出 %{count} 個檔案）"
+  zh-CN: "已取消解压（已解压 %{count} 个文件）"
+extract.done_one:
+  en: "Extracted 1 file"
+  zh-TW: "已解壓縮 %{count} 個檔案"
+  zh-CN: "已解压 %{count} 个文件"
+extract.done_other:
+  en: "Extracted %{count} files"
+  zh-TW: "已解壓縮 %{count} 個檔案"
+  zh-CN: "已解压 %{count} 个文件"
+extract.skipped_existing_one:
+  en: ", skipped 1 existing file"
+  zh-TW: "，略過 %{count} 個已存在的檔案"
+  zh-CN: "，跳过 %{count} 个已存在的文件"
+extract.skipped_existing_other:
+  en: ", skipped %{count} existing files"
+  zh-TW: "，略過 %{count} 個已存在的檔案"
+  zh-CN: "，跳过 %{count} 个已存在的文件"
+extract.skipped_unsafe_one:
+  en: ", skipped 1 unsafe or unsupported item"
+  zh-TW: "，略過 %{count} 個不安全或不支援的項目"
+  zh-CN: "，跳过 %{count} 个不安全或不支持的项目"
+extract.skipped_unsafe_other:
+  en: ", skipped %{count} unsafe or unsupported items"
+  zh-TW: "，略過 %{count} 個不安全或不支援的項目"
+  zh-CN: "，跳过 %{count} 个不安全或不支持的项目"
+
+# ─── Clipboard and file operations
+clip.copied_one:
+  en: "Copied 1 item"
+  zh-TW: "已複製 %{count} 個項目"
+  zh-CN: "已复制 %{count} 个项目"
+clip.copied_other:
+  en: "Copied %{count} items"
+  zh-TW: "已複製 %{count} 個項目"
+  zh-CN: "已复制 %{count} 个项目"
+clip.cut_one:
+  en: "Cut 1 item"
+  zh-TW: "已剪下 %{count} 個項目"
+  zh-CN: "已剪切 %{count} 个项目"
+clip.cut_other:
+  en: "Cut %{count} items"
+  zh-TW: "已剪下 %{count} 個項目"
+  zh-CN: "已剪切 %{count} 个项目"
+clip.failed:
+  en: "Couldn't put the files on the clipboard: %{error}"
+  zh-TW: 無法放到剪貼簿：%{error}
+  zh-CN: 无法放到剪贴板：%{error}
+clip.empty:
+  en: There are no files on the clipboard
+  zh-TW: 剪貼簿裡沒有檔案
+  zh-CN: 剪贴板中没有文件
+clip.busy:
+  en: The clipboard is being used by another program
+  zh-TW: 剪貼簿正被其他程式使用
+  zh-CN: 剪贴板正被其他程序使用
+clip.lock_failed:
+  en: "The clipboard isn't available right now; try again"
+  zh-TW: "剪貼簿暫時無法使用，請再試一次"
+  zh-CN: "剪贴板暂时无法使用，请重试"
+ops.same_folder:
+  en: Both panes show the same folder
+  zh-TW: "兩個窗格是同一個資料夾"
+  zh-CN: "两个窗格是同一个文件夹"
+ops.new_folder_name:
+  en: New folder
+  zh-TW: 新增資料夾
+  zh-CN: 新建文件夹
+ops.new_text_file_name:
+  en: New Text Document
+  zh-TW: 新增文字文件
+  zh-CN: 新建 文本文档
+ops.failed:
+  en: "%{op} failed: %{error}"
+  zh-TW: "%{op}失敗：%{error}"
+  zh-CN: "%{op}失败：%{error}"
+ops.cancelled:
+  en: "%{op} cancelled"
+  zh-TW: 已取消%{op}
+  zh-CN: 已取消%{op}
+menu.undo:
+  en: Undo
+  zh-TW: 復原
+  zh-CN: 撤销
+menu.undo_op:
+  en: "Undo %{op}"
+  zh-TW: "復原「%{op}」"
+  zh-CN: "撤销“%{op}”"
+undo.done_one:
+  en: "Undid %{op} (1 item)"
+  zh-TW: "已復原「%{op}」（%{count} 項）"
+  zh-CN: "已撤销“%{op}”（%{count} 项）"
+undo.done_other:
+  en: "Undid %{op} (%{count} items)"
+  zh-TW: "已復原「%{op}」（%{count} 項）"
+  zh-CN: "已撤销“%{op}”（%{count} 项）"
+undo.nothing:
+  en: "Nothing to undo"
+  zh-TW: "沒有可以復原的操作"
+  zh-CN: "没有可撤销的操作"
+undo.missing:
+  en: "Can't undo: %{name} is no longer there"
+  zh-TW: "找不到「%{name}」了，無法復原"
+  zh-CN: "找不到“%{name}”了，无法撤销"
+undo.unsupported:
+  en: "Undo isn't available here"
+  zh-TW: "這裡不能復原"
+  zh-CN: "此处无法撤销"
+op.undo:
+  en: Undo
+  zh-TW: 復原
+  zh-CN: 撤销
+menu.open_new_window:
+  en: Open in new window
+  zh-TW: 在新視窗開啟
+  zh-CN: 在新窗口中打开
+menu.properties:
+  en: Properties
+  zh-TW: 內容
+  zh-CN: 属性
+menu.open_with:
+  en: "Open with %{name}"
+  zh-TW: "以 %{name} 開啟"
+  zh-CN: "用 %{name} 打开"
+menu.compress:
+  en: "Compress to “%{name}”"
+  zh-TW: "壓縮成「%{name}」"
+  zh-CN: "压缩为“%{name}”"
+toast.compressing:
+  en: "Compressing %{name}"
+  zh-TW: "正在壓縮 %{name}"
+  zh-CN: "正在压缩 %{name}"
+compress.done_one:
+  en: "Compressed 1 file into “%{name}”"
+  zh-TW: "已把 %{count} 個檔案壓縮成「%{name}」"
+  zh-CN: "已将 %{count} 个文件压缩为“%{name}”"
+compress.done_other:
+  en: "Compressed %{count} files into “%{name}”"
+  zh-TW: "已把 %{count} 個檔案壓縮成「%{name}」"
+  zh-CN: "已将 %{count} 个文件压缩为“%{name}”"
+compress.cancelled:
+  en: "Compression cancelled; the partial file was removed"
+  zh-TW: "已取消壓縮，未完成的檔案已刪除"
+  zh-CN: "已取消压缩，未完成的文件已删除"
+compress.skipped:
+  en: " (skipped %{count}: links or unreadable)"
+  zh-TW: "（略過 %{count} 項：連結或讀不到）"
+  zh-CN: "（跳过 %{count} 项：链接或无法读取）"
+compress.failed:
+  en: "Couldn't compress %{name}: %{error}"
+  zh-TW: "無法壓縮 %{name}：%{error}"
+  zh-CN: "无法压缩 %{name}：%{error}"
+op.extract:
+  en: "Extract"
+  zh-TW: "解壓縮"
+  zh-CN: "解压"
+op.compress:
+  en: "Compress"
+  zh-TW: "壓縮"
+  zh-CN: "压缩"
+op.copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+op.move:
+  en: Move
+  zh-TW: 移動
+  zh-CN: 移动
+op.recycle:
+  en: "Move to Recycle Bin"
+  zh-TW: "移到資源回收筒"
+  zh-CN: "移到回收站"
+op.delete_permanently:
+  en: Permanent delete
+  zh-TW: 永久刪除
+  zh-CN: 永久删除
+op.rename:
+  en: Rename
+  zh-TW: 重新命名
+  zh-CN: 重命名
+op.new_folder:
+  en: New folder
+  zh-TW: 新增資料夾
+  zh-CN: 新建文件夹
+op.new_file:
+  en: New file
+  zh-TW: 新增檔案
+  zh-CN: 新建文件
+op.paste:
+  en: Paste
+  zh-TW: 貼上
+  zh-CN: 粘贴
+
+# ─── Ctrl+T
+palette.placeholder:
+  en: Type a folder name or a path
+  zh-TW: 輸入資料夾名稱或路徑
+  zh-CN: 输入文件夹名称或路径
+palette.current:
+  en: New tab here
+  zh-TW: 在目前的資料夾開新分頁
+  zh-CN: 在当前文件夹打开新标签页
+palette.typed:
+  en: Go to this path
+  zh-TW: 前往這個路徑
+  zh-CN: 前往此路径
+palette.tab:
+  en: Switch to tab
+  zh-TW: "切換到分頁"
+  zh-CN: 切换到标签页
+palette.recent:
+  en: Recent
+  zh-TW: 最近
+  zh-CN: 最近
+palette.place:
+  en: Place
+  zh-TW: 常用位置
+  zh-CN: 常用位置
+palette.no_match:
+  en: "No matching places; type a full path to go there"
+  zh-TW: "沒有符合的位置；輸入完整路徑可以直接前往"
+  zh-CN: "没有匹配的位置；输入完整路径可直接前往"
+palette.hint_open:
+  en: Open in new tab
+  zh-TW: 開新分頁
+  zh-CN: 打开新标签页
+palette.hint_split:
+  en: "Open side by side"
+  zh-TW: "並排開啟"
+  zh-CN: "并排打开"
+palette.find_files_hint:
+  en: "Find files: search box at the top right (Ctrl+F)"
+  zh-TW: 找檔案：右上角的搜尋框（Ctrl+F）
+  zh-CN: 查找文件：右上角的搜索框（Ctrl+F）
+palette.hint_close:
+  en: Close
+  zh-TW: 關閉
+  zh-CN: 关闭
+
+# ─── Tab dragging
+split.drop_here:
+  en: Drop to open “%{name}” side by side
+  zh-TW: "放開即可並排開啟「%{name}」"
+  zh-CN: "松开即可并排打开“%{name}”"
+
+# ─── Sidebar：釘選、最愛、右鍵選單
+sidebar.pinned:
+  en: Pinned
+  zh-TW: "已釘選"
+  zh-CN: 已固定
+sidebar.pinned_hint:
+  en: "Right-click a folder › Pin to sidebar"
+  zh-TW: 在資料夾上按右鍵 →「釘選到側邊欄」
+  zh-CN: 右键单击文件夹 →“固定到侧边栏”
+sidebar.open_in_new_tab:
+  en: Open in new tab
+  zh-TW: 在新分頁開啟
+  zh-CN: 在新标签页中打开
+sidebar.pin:
+  en: Pin to sidebar
+  zh-TW: 釘選到側邊欄
+  zh-CN: 固定到侧边栏
+sidebar.move_to_list:
+  en: Move to the list below
+  zh-TW: 移到下面的清單
+  zh-CN: 移到下面的列表
+sidebar.move_to_tiles:
+  en: Move to the tiles
+  zh-TW: 移到方塊
+  zh-CN: 移到磁贴
+sidebar.pinned_to_list:
+  en: "Tiles are full; added to the list below"
+  zh-TW: "方塊已滿，已加入下方清單"
+  zh-CN: "磁贴已满，已添加到下方列表"
+sidebar.drop_to_list:
+  en: "Drop here to add to the list"
+  zh-TW: "放到這裡以加入清單"
+  zh-CN: "放到这里以加入列表"
+sidebar.unpin:
+  en: Unpin
+  zh-TW: 取消釘選
+  zh-CN: 取消固定
+sidebar.duplicate_tab:
+  en: Duplicate tab
+  zh-TW: 複製分頁
+  zh-CN: 复制标签页
+sidebar.close_other_tabs:
+  en: Close other tabs
+  zh-TW: 關閉其他分頁
+  zh-CN: 关闭其他标签页
+sidebar.reopen_closed_tab:
+  en: Reopen closed tab (Ctrl+Shift+T)
+  zh-TW: 重新開啟關閉的分頁（Ctrl+Shift+T）
+  zh-CN: 重新打开关闭的标签页（Ctrl+Shift+T）
+sidebar.eject:
+  en: Eject
+  zh-TW: 退出
+  zh-CN: 弹出
+eject.done:
+  en: "%{name} can be safely removed"
+  zh-TW: 可以安全地移除 %{name} 了
+  zh-CN: 现在可以安全地移除 %{name} 了
+eject.failed:
+  en: "Couldn't eject %{name}: %{error}"
+  zh-TW: 無法退出 %{name}：%{error}
+  zh-CN: 无法弹出 %{name}：%{error}
+eject.busy:
+  en: it's in use; close the programs using it and try again
+  zh-TW: "裝置正在使用中，請關閉使用它的程式後再試一次"
+  zh-CN: 设备正在使用中，请关闭正在使用它的程序后重试
+eject.busy_by:
+  en: "%{name} is using it"
+  zh-TW: 「%{name}」正在使用它
+  zh-CN: “%{name}”正在使用它
+eject.not_found:
+  en: couldn't find the device for this drive
+  zh-TW: "找不到這個磁碟機對應的裝置"
+  zh-CN: 找不到此驱动器对应的设备
+eject.not_drive:
+  en: only drives can be ejected
+  zh-TW: 只能退出磁碟
+  zh-CN: 只能弹出驱动器
+home.title:
+  en: Home
+  zh-TW: 首頁
+  zh-CN: 主页
+home.recent:
+  en: Recent files
+  zh-TW: 最近使用的檔案
+  zh-CN: 最近使用的文件
+home.drives:
+  en: Drives
+  zh-TW: 磁碟
+  zh-CN: 驱动器
+home.network:
+  en: Network locations
+  zh-TW: 網路位置
+  zh-CN: 网络位置
+home.quick_access:
+  en: Quick access
+  zh-TW: 快速存取
+  zh-CN: 快速访问
+home.just_now:
+  en: Just now
+  zh-TW: 剛剛
+  zh-CN: 刚刚
+home.minutes_ago_one:
+  en: "%{count} minute ago"
+  zh-TW: "%{count} 分鐘前"
+  zh-CN: "%{count} 分钟前"
+home.minutes_ago_other:
+  en: "%{count} minutes ago"
+  zh-TW: "%{count} 分鐘前"
+  zh-CN: "%{count} 分钟前"
+home.hours_ago_one:
+  en: "%{count} hour ago"
+  zh-TW: "%{count} 小時前"
+  zh-CN: "%{count} 小时前"
+home.hours_ago_other:
+  en: "%{count} hours ago"
+  zh-TW: "%{count} 小時前"
+  zh-CN: "%{count} 小时前"
+home.yesterday:
+  en: Yesterday
+  zh-TW: 昨天
+  zh-CN: 昨天
+home.days_ago_one:
+  en: "%{count} day ago"
+  zh-TW: "%{count} 天前"
+  zh-CN: "%{count} 天前"
+home.days_ago_other:
+  en: "%{count} days ago"
+  zh-TW: "%{count} 天前"
+  zh-CN: "%{count} 天前"
+home.loading:
+  en: Loading…
+  zh-TW: "載入中…"
+  zh-CN: "正在加载…"
+home.no_recent:
+  en: No recent files yet
+  zh-TW: 還沒有最近使用的檔案
+  zh-CN: 还没有最近使用的文件
+home.reveal:
+  en: Show in folder
+  zh-TW: 在資料夾中顯示
+  zh-CN: 在文件夹中显示
+home.space:
+  en: "%{free} free of %{total}"
+  zh-TW: 剩餘 %{free}，共 %{total}
+  zh-CN: "%{free} 可用，共 %{total}"
+sidebar.close_tab:
+  en: Close tab
+  zh-TW: 關閉分頁
+  zh-CN: 关闭标签页
+sidebar.close_tab_key:
+  en: Close tab (Ctrl+W)
+  zh-TW: 關閉分頁（Ctrl+W）
+  zh-CN: 关闭标签页（Ctrl+W）
+sidebar.close_side:
+  en: Close active side (Ctrl+W)
+  zh-TW: 關閉目前這一側（Ctrl+W）
+  zh-CN: 关闭当前这一侧（Ctrl+W）
+sidebar.unsplit:
+  en: "Back to one pane"
+  zh-TW: 取消分割
+  zh-CN: 取消拆分
+
+# ─── Density
+density.compact:
+  en: Compact
+  zh-TW: 緊湊
+  zh-CN: 紧凑
+density.standard:
+  en: Standard
+  zh-TW: 標準
+  zh-CN: 标准
+density.comfortable:
+  en: Comfortable
+  zh-TW: 寬鬆
+  zh-CN: 宽松
+
+# ─── Tab placement
+sidebar.tabs_to_top:
+  en: Move tabs to the top
+  zh-TW: 分頁改放到上方
+  zh-CN: 将标签页移到顶部
+sidebar.tabs_to_side:
+  en: Move tabs to the sidebar
+  zh-TW: 分頁改放到側邊欄
+  zh-CN: 将标签页移到侧边栏
+
+# ─── Drag and drop
+dnd.items_one:
+  en: "1 item"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+dnd.items_other:
+  en: "%{count} items"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+dnd.menu_move:
+  en: Move to %{dest}
+  zh-TW: 移動到「%{dest}」
+  zh-CN: 移动到“%{dest}”
+dnd.menu_copy:
+  en: Copy to %{dest}
+  zh-TW: 複製到「%{dest}」
+  zh-CN: 复制到“%{dest}”
+dnd.menu_shortcut:
+  en: Create shortcuts here
+  zh-TW: 在這裡建立捷徑
+  zh-CN: 在当前位置创建快捷方式
+dnd.menu_cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+dnd.shortcut_name:
+  en: "%{name} - Shortcut"
+  zh-TW: "%{name} - 捷徑"
+  zh-CN: "%{name} - 快捷方式"
+dnd.shortcut_failed:
+  en: "Couldn't create the shortcut: %{error}"
+  zh-TW: 無法建立捷徑：%{error}
+  zh-CN: 无法创建快捷方式：%{error}
+dnd.keys:
+  en: "Ctrl copy · Shift move · Alt choose"
+  zh-TW: "Ctrl 複製 · Shift 移動 · Alt 選擇"
+  zh-CN: "Ctrl 复制 · Shift 移动 · Alt 选择"
+dnd.will_ask:
+  en: "Release to choose an action"
+  zh-TW: "放開後選擇要做什麼"
+  zh-CN: "松开后选择要执行的操作"
+dnd.no_target:
+  en: Drag onto a folder
+  zh-TW: 拖到資料夾上
+  zh-CN: 拖到文件夹上
+
+# ─── Preview
+ctx.preview:
+  en: "Preview pane (Space for quick look)"
+  zh-TW: "預覽窗格（空白鍵快速預覽）"
+  zh-CN: "预览窗格（空格键快速预览）"
+preview.dimensions:
+  en: Dimensions
+  zh-TW: 尺寸
+  zh-CN: 尺寸
+preview.nothing_selected:
+  en: Select an item to preview it
+  zh-TW: "選取要預覽的項目"
+  zh-CN: "选择要预览的项目"
+preview.in_last_column:
+  en: Previewed in the last column
+  zh-TW: "預覽顯示在最後一欄"
+  zh-CN: "预览显示在最后一列"
+
+# ─── Columns view
+ctx.view_columns:
+  en: "Columns"
+  zh-TW: "分欄檢視"
+  zh-CN: "分栏视图"
+
+preview.cloud:
+  en: "Online-only file; it downloads when opened"
+  zh-TW: "這個檔案只在雲端，開啟時會下載"
+  zh-CN: "此文件仅在云端，打开时会下载"
+
+# ─── Whole-computer search (search box scope)
+search.index_enable_tip:
+  en: "Index file names on local drives"
+  zh-TW: "為本機磁碟的檔名建立索引"
+  zh-CN: "为本地磁盘的文件名建立索引"
+search.index_building:
+  en: Indexing… %{count} found
+  zh-TW: 建立索引中… 已找到 %{count} 項
+  zh-CN: 正在建立索引… 已找到 %{count} 项
+search.index_updating:
+  en: "This PC: %{count} items · updating"
+  zh-TW: 整台電腦 %{count} 項 · 更新中
+  zh-CN: 整台电脑 %{count} 项 · 正在更新
+search.index_ready:
+  en: "This PC: %{count} items"
+  zh-TW: 整台電腦 %{count} 項
+  zh-CN: 整台电脑 %{count} 项
+search.syntax:
+  en: "ext:pdf  size:>10mb  dm:today"
+  zh-TW: "ext:pdf  size:>10mb  dm:今天"
+  zh-CN: "ext:pdf  size:>10mb  dm:今天"
+search.index_rebuild:
+  en: "Rebuild the index now"
+  zh-TW: "重新建立索引"
+  zh-CN: "重新建立索引"
+search.index_rebuild_live:
+  en: Rescan now
+  zh-TW: "立即重新掃描"
+  zh-CN: "立即重新扫描"
+search.index_live:
+  en: "This PC: %{count} items · live"
+  zh-TW: 整台電腦 %{count} 項 · 即時更新
+  zh-CN: 整台电脑 %{count} 项 · 实时更新
+search.service_install:
+  en: "Live updates: install a background service so changes made while Arke is closed are picked up too (needs administrator approval)"
+  zh-TW: "即時更新：安裝背景服務，Arke 關閉期間的變更也能補上（需要系統管理員同意）"
+  zh-CN: "实时更新：安装后台服务，Arke 关闭期间的更改也能补上（需要管理员批准）"
+search.service_live:
+  en: "Updating live. Click to remove the background service."
+  zh-TW: "即時更新中。按一下移除背景服務。"
+  zh-CN: "正在实时更新。单击可卸载后台服务。"
+search.service_building:
+  en: Building the index; live updates start when it's done. Click to remove the background service.
+  zh-TW: 正在建立索引，建好後開始即時更新。按一下移除背景服務。
+  zh-CN: 正在建立索引，完成后开始实时更新。单击可卸载后台服务。
+search.service_offline:
+  en: "The background service isn't connected; using normal updates for now. Click to remove it."
+  zh-TW: "背景服務沒有連上，暫時用一般方式更新。按一下移除。"
+  zh-CN: "后台服务未连接，暂时使用普通方式更新。单击可卸载。"
+search.service_busy:
+  en: Waiting for administrator approval…
+  zh-TW: 等待系統管理員同意…
+  zh-CN: 正在等待管理员批准…
+toast.retry:
+  en: Retry
+  zh-TW: 重試
+  zh-CN: 重试
+toast.login:
+  en: Sign in…
+  zh-TW: 登入…
+  zh-CN: 登录…
+error.login_failed:
+  en: "Not signed in to %{name}"
+  zh-TW: 沒有登入 %{name}
+  zh-CN: 未登录 %{name}
+info.cached_refreshing:
+  en: Showing last contents, refreshing…
+  zh-TW: 先顯示上次的內容，更新中…
+  zh-CN: 先显示上次的内容，正在更新…
+info.cached_offline:
+  en: Showing last contents (server unreachable)
+  zh-TW: "顯示的是上次的內容（無法連線到伺服器）"
+  zh-CN: 显示的是上次的内容（无法连接服务器）
+error.auto_retry:
+  en: " · Opens automatically when the server is back"
+  zh-TW: " · 伺服器恢復連線後會自動開啟"
+  zh-CN: " · 服务器恢复后会自动打开"
+sidebar.network:
+  en: Network
+  zh-TW: 網路
+  zh-CN: 网络
+sidebar.network_hint:
+  en: Shared folders you open show up here
+  zh-TW: "開啟過的共用資料夾會顯示在這裡"
+  zh-CN: 打开过的共享文件夹会显示在这里
+sidebar.share_label:
+  en: "%{share} (%{server})"
+  zh-TW: "%{share}（%{server}）"
+  zh-CN: "%{share}（%{server}）"
+sidebar.map_drive:
+  en: Map network drive…
+  zh-TW: "連線網路磁碟機…"
+  zh-CN: 映射网络驱动器…
+sidebar.disconnect_drive:
+  en: Disconnect network drive…
+  zh-TW: "中斷網路磁碟機連線…"
+  zh-CN: 断开网络驱动器…
+sidebar.forget_share:
+  en: Remove from this list
+  zh-TW: 從清單移除
+  zh-CN: 从列表中移除
+recycle.title:
+  en: "Recycle Bin"
+  zh-TW: "資源回收筒"
+  zh-CN: "回收站"
+recycle.loading:
+  en: "Loading…"
+  zh-TW: "載入中…"
+  zh-CN: "正在加载…"
+recycle.empty:
+  en: "The Recycle Bin is empty"
+  zh-TW: "資源回收筒是空的"
+  zh-CN: "回收站为空"
+recycle.empty_hint:
+  en: "Deleted files stay here until you restore them or delete them permanently"
+  zh-TW: "刪除的檔案會先放在這裡，可以還原，也可以永久刪除"
+  zh-CN: "删除的文件会先放在这里，可以还原，也可以永久删除"
+recycle.summary_one:
+  en: "1 item, %{size}"
+  zh-TW: "%{count} 個項目，共 %{size}"
+  zh-CN: "%{count} 个项目，共 %{size}"
+recycle.summary_other:
+  en: "%{count} items, %{size}"
+  zh-TW: "%{count} 個項目，共 %{size}"
+  zh-CN: "%{count} 个项目，共 %{size}"
+recycle.selected:
+  en: "%{count} selected, %{size}"
+  zh-TW: "已選取 %{count} 個，共 %{size}"
+  zh-CN: "已选择 %{count} 个，共 %{size}"
+recycle.restore:
+  en: "Restore"
+  zh-TW: "還原"
+  zh-CN: "还原"
+recycle.purge:
+  en: "Delete permanently"
+  zh-TW: "永久刪除"
+  zh-CN: "永久删除"
+recycle.restore_all:
+  en: "Restore all"
+  zh-TW: "全部還原"
+  zh-CN: "全部还原"
+recycle.empty_bin:
+  en: "Empty Recycle Bin"
+  zh-TW: "清空資源回收筒"
+  zh-CN: "清空回收站"
+recycle.open_from:
+  en: "Open original location"
+  zh-TW: "開啟原來的位置"
+  zh-CN: "打开原位置"
+recycle.col_from:
+  en: "Original location"
+  zh-TW: "原來的位置"
+  zh-CN: "原位置"
+recycle.col_deleted:
+  en: "Date deleted"
+  zh-TW: "刪除日期"
+  zh-CN: "删除日期"
+recycle.restoring:
+  en: "Restoring…"
+  zh-TW: "正在還原…"
+  zh-CN: "正在还原…"
+recycle.purging:
+  en: "Deleting permanently…"
+  zh-TW: "正在永久刪除…"
+  zh-CN: "正在永久删除…"
+recycle.restored_one:
+  en: "Restored 1 item"
+  zh-TW: "已還原 %{count} 個項目"
+  zh-CN: "已还原 %{count} 个项目"
+recycle.restored_other:
+  en: "Restored %{count} items"
+  zh-TW: "已還原 %{count} 個項目"
+  zh-CN: "已还原 %{count} 个项目"
+recycle.purged_one:
+  en: "Permanently deleted 1 item"
+  zh-TW: "已永久刪除 %{count} 個項目"
+  zh-CN: "已永久删除 %{count} 个项目"
+recycle.purged_other:
+  en: "Permanently deleted %{count} items"
+  zh-TW: "已永久刪除 %{count} 個項目"
+  zh-CN: "已永久删除 %{count} 个项目"
+recycle.confirm_purge_title:
+  en: "Delete permanently?"
+  zh-TW: "永久刪除？"
+  zh-CN: "永久删除？"
+recycle.confirm_purge_one:
+  en: "“%{name}” will be permanently deleted. This can't be undone."
+  zh-TW: "「%{name}」會永久刪除，無法復原。"
+  zh-CN: "“%{name}”将永久删除，无法恢复。"
+recycle.confirm_purge_many:
+  en: "%{count} items will be permanently deleted. This can't be undone."
+  zh-TW: "%{count} 個項目會永久刪除，無法復原。"
+  zh-CN: "%{count} 个项目将永久删除，无法恢复。"
+recycle.confirm_empty_title:
+  en: "Empty the Recycle Bin?"
+  zh-TW: "清空資源回收筒？"
+  zh-CN: "清空回收站？"
+recycle.confirm_empty_one:
+  en: "1 item will be permanently deleted. This can't be undone."
+  zh-TW: "裡面的 %{count} 個項目會永久刪除，無法復原。"
+  zh-CN: "其中的 %{count} 个项目将永久删除，无法恢复。"
+recycle.confirm_empty_other:
+  en: "All %{count} items will be permanently deleted. This can't be undone."
+  zh-TW: "裡面的 %{count} 個項目會永久刪除，無法復原。"
+  zh-CN: "其中的 %{count} 个项目将永久删除，无法恢复。"
+recycle.confirm_restore_all_title:
+  en: "Restore everything?"
+  zh-TW: "全部還原？"
+  zh-CN: "全部还原？"
+recycle.confirm_restore_all_one:
+  en: "1 item will go back to where it was."
+  zh-TW: "%{count} 個項目會放回原來的位置。"
+  zh-CN: "%{count} 个项目将放回原位置。"
+recycle.confirm_restore_all_other:
+  en: "%{count} items will go back to where they were."
+  zh-TW: "%{count} 個項目會放回原來的位置。"
+  zh-CN: "%{count} 个项目将放回原位置。"
+ops.center_title:
+  en: "File operations"
+  zh-TW: "檔案操作"
+  zh-CN: "文件操作"
+ops.center_running:
+  en: "File operations (%{count} running)"
+  zh-TW: "檔案操作（%{count} 個進行中）"
+  zh-CN: "文件操作（%{count} 个进行中）"
+ops.center_clear:
+  en: "Clear finished"
+  zh-TW: "清除已完成"
+  zh-CN: "清除已完成"
+ops.subject_one:
+  en: "%{op} “%{name}”"
+  zh-TW: "%{op}「%{name}」"
+  zh-CN: "%{op}“%{name}”"
+ops.subject_many:
+  en: "%{op} “%{name}” and others (%{count} items)"
+  zh-TW: "%{op}「%{name}」等 %{count} 項"
+  zh-CN: "%{op}“%{name}”等 %{count} 项"
+ops.recycle_one:
+  en: "Move “%{name}” to Recycle Bin"
+  zh-TW: "將「%{name}」移到資源回收筒"
+  zh-CN: "将“%{name}”移到回收站"
+ops.recycle_many:
+  en: "Move “%{name}” and others to Recycle Bin (%{count} items)"
+  zh-TW: "將「%{name}」等 %{count} 項移到資源回收筒"
+  zh-CN: "将“%{name}”等 %{count} 项移到回收站"
+ops.state_percent:
+  en: "%{percent}% done"
+  zh-TW: 已完成 %{percent}%
+  zh-CN: 已完成 %{percent}%
+ops.state_preparing:
+  en: "Getting ready…"
+  zh-TW: "準備中…"
+  zh-CN: "正在准备…"
+ops.state_preparing_items_one:
+  en: "Getting 1 item ready…"
+  zh-TW: "正在準備 %{count} 個項目…"
+  zh-CN: "正在准备 %{count} 个项目…"
+ops.state_preparing_items_other:
+  en: "Getting %{count} items ready…"
+  zh-TW: "正在準備 %{count} 個項目…"
+  zh-CN: "正在准备 %{count} 个项目…"
+ops.state_stopping:
+  en: "Stopping…"
+  zh-TW: "正在停止…"
+  zh-CN: "正在停止…"
+ops.state_running_one:
+  en: "1 item done"
+  zh-TW: "已處理 %{count} 項"
+  zh-CN: "已处理 %{count} 项"
+ops.state_running_other:
+  en: "%{count} items done"
+  zh-TW: "已處理 %{count} 項"
+  zh-CN: "已处理 %{count} 项"
+ops.rate_bytes:
+  en: "%{size}/s"
+  zh-TW: 每秒 %{size}
+  zh-CN: 每秒 %{size}
+ops.rate_one:
+  en: "1 item/s"
+  zh-TW: "每秒 %{count} 項"
+  zh-CN: "每秒 %{count} 项"
+ops.rate_other:
+  en: "%{count} items/s"
+  zh-TW: "每秒 %{count} 項"
+  zh-CN: "每秒 %{count} 项"
+ops.eta:
+  en: "about %{time} left"
+  zh-TW: "約剩 %{time}"
+  zh-CN: "剩余约 %{time}"
+ops.separator:
+  en: " · "
+  zh-TW: " · "
+  zh-CN: " · "
+ops.state_done_one:
+  en: "Done · 1 item · %{time}"
+  zh-TW: "已完成 · %{count} 項 · %{time}"
+  zh-CN: "已完成 · %{count} 项 · %{time}"
+ops.state_done_other:
+  en: "Done · %{count} items · %{time}"
+  zh-TW: "已完成 · %{count} 項 · %{time}"
+  zh-CN: "已完成 · %{count} 项 · %{time}"
+ops.state_cancelled_one:
+  en: "Cancelled · 1 item done"
+  zh-TW: "已取消 · 已完成 %{count} 項"
+  zh-CN: "已取消 · 已完成 %{count} 项"
+ops.state_cancelled_other:
+  en: "Cancelled · %{count} items done"
+  zh-TW: "已取消 · 已完成 %{count} 項"
+  zh-CN: "已取消 · 已完成 %{count} 项"
+ops.state_failed:
+  en: "Failed: %{error}"
+  zh-TW: "失敗：%{error}"
+  zh-CN: "失败：%{error}"
+ops.seconds:
+  en: "%{s} s"
+  zh-TW: "%{s} 秒"
+  zh-CN: "%{s} 秒"
+ops.minutes:
+  en: "%{m} min"
+  zh-TW: "%{m} 分鐘"
+  zh-CN: "%{m} 分钟"
+ops.minutes_seconds:
+  en: "%{m} min %{s} s"
+  zh-TW: "%{m} 分 %{s} 秒"
+  zh-CN: "%{m} 分 %{s} 秒"
+ops.hours_minutes:
+  en: "%{h} h %{m} min"
+  zh-TW: "%{h} 小時 %{m} 分"
+  zh-CN: "%{h} 小时 %{m} 分"
+palette.workspace:
+  en: Workspace
+  zh-TW: 工作區
+  zh-CN: 工作区
+sidebar.pin_tab:
+  en: Pin tab
+  zh-TW: 釘選分頁
+  zh-CN: 固定标签页
+sidebar.unpin_tab:
+  en: Unpin tab
+  zh-TW: 取消釘選分頁
+  zh-CN: 取消固定标签页
+sidebar.drop_to_pin_tab:
+  en: Drop here to pin
+  zh-TW: 放到這裡以釘選
+  zh-CN: 放到这里以固定
+sidebar.close_all_tabs:
+  en: Close all tabs
+  zh-TW: 關閉所有分頁
+  zh-CN: 关闭所有标签页
+workspaces.title:
+  en: Workspaces
+  zh-TW: 工作區
+  zh-CN: 工作区
+workspaces.intro:
+  en: Save these tabs to come back to them later. Opening a workspace replaces the open tabs; pinned tabs stay.
+  zh-TW: 儲存目前的分頁，之後隨時回來。開啟工作區會取代目前的分頁，釘選的分頁會保留。
+  zh-CN: 保存当前的标签页，之后随时回来。打开工作区会替换当前的标签页，固定的标签页会保留。
+workspaces.name_hint:
+  en: Name
+  zh-TW: 名稱
+  zh-CN: 名称
+workspaces.default_name:
+  en: Workspace
+  zh-TW: 工作區
+  zh-CN: 工作区
+workspaces.save:
+  en: Save
+  zh-TW: 儲存
+  zh-CN: 保存
+workspaces.replace:
+  en: Replace
+  zh-TW: 取代
+  zh-CN: 替换
+workspaces.saved:
+  en: Saved
+  zh-TW: 已儲存
+  zh-CN: 已保存
+workspaces.none:
+  en: No saved workspaces yet
+  zh-TW: 還沒有儲存的工作區
+  zh-CN: 还没有保存的工作区
+workspaces.rename:
+  en: Rename
+  zh-TW: 重新命名
+  zh-CN: 重命名
+workspaces.delete:
+  en: Delete
+  zh-TW: 刪除
+  zh-CN: 删除
+workspaces.name_empty:
+  en: Type a name
+  zh-TW: 請輸入名稱
+  zh-CN: 请输入名称
+workspaces.name_taken:
+  en: Another workspace has this name
+  zh-TW: 已有同名的工作區
+  zh-CN: 已有同名的工作区
+workspaces.tabs_one:
+  en: 1 tab
+  zh-TW: "%{count} 個分頁"
+  zh-CN: "%{count} 个标签页"
+workspaces.tabs_other:
+  en: "%{count} tabs"
+  zh-TW: "%{count} 個分頁"
+  zh-CN: "%{count} 个标签页"
+workspaces.tabs_split_one:
+  en: "1 tab, %{panes} panes"
+  zh-TW: "%{count} 個分頁，%{panes} 個窗格"
+  zh-CN: "%{count} 个标签页，%{panes} 个窗格"
+workspaces.tabs_split_other:
+  en: "%{count} tabs, %{panes} panes"
+  zh-TW: "%{count} 個分頁，%{panes} 個窗格"
+  zh-CN: "%{count} 个标签页，%{panes} 个窗格"
+compare.sync_tip:
+  en: Synchronized browsing
+  zh-TW: 同步瀏覽
+  zh-CN: 同步浏览
+compare.compare_tip:
+  en: Compare folders
+  zh-TW: 比較資料夾
+  zh-CN: 比较文件夹
+compare.working:
+  en: Comparing…
+  zh-TW: 比較中…
+  zh-CN: 比较中…
+compare.same:
+  en: Same items
+  zh-TW: 內容相同
+  zh-CN: 内容相同
+compare.differ_one:
+  en: 1 differs
+  zh-TW: "%{count} 項不同"
+  zh-CN: "%{count} 项不同"
+compare.differ_other:
+  en: "%{count} differ"
+  zh-TW: "%{count} 項不同"
+  zh-CN: "%{count} 项不同"
+compare.select:
+  en: Select
+  zh-TW: 選取
+  zh-CN: 选择
+compare.select_tip:
+  en: Select the differences in both panes
+  zh-TW: 在兩個窗格選取不同的項目
+  zh-CN: 在两个窗格选择不同的项目
+compare.only_here:
+  en: Only here
+  zh-TW: 僅此側
+  zh-CN: 仅此侧
+compare.newer:
+  en: Newer
+  zh-TW: 較新
+  zh-CN: 较新
+compare.older:
+  en: Older
+  zh-TW: 較舊
+  zh-CN: 较旧
+compare.differs:
+  en: Differs
+  zh-TW: 不同
+  zh-CN: 不同
+
+# ─── Redo, operation queue, verify after copy, TeraCopy
+toast.redo:
+  en: "Redo"
+  zh-TW: "重做"
+  zh-CN: "重做"
+menu.redo_op:
+  en: "Redo %{op}"
+  zh-TW: "重做「%{op}」"
+  zh-CN: "重做“%{op}”"
+redo.nothing:
+  en: "Nothing to redo"
+  zh-TW: "沒有可以重做的操作"
+  zh-CN: "没有可重做的操作"
+redo.done:
+  en: "Redid %{op}"
+  zh-TW: "已重做「%{op}」"
+  zh-CN: "已重做“%{op}”"
+ops.state_queued:
+  en: "Queued"
+  zh-TW: "排隊中"
+  zh-CN: "排队中"
+ops.state_queued_paused:
+  en: "Queued, queue paused"
+  zh-TW: "排隊中，佇列已暫停"
+  zh-CN: "排队中，队列已暂停"
+ops.state_verifying:
+  en: "Verifying…"
+  zh-TW: "正在驗證…"
+  zh-CN: "正在验证…"
+ops.state_verifying_percent:
+  en: "Verifying, %{percent}% done"
+  zh-TW: "正在驗證，已完成 %{percent}%"
+  zh-CN: "正在验证，已完成 %{percent}%"
+ops.queue_pause:
+  en: "Pause queue"
+  zh-TW: "暫停佇列"
+  zh-CN: "暂停队列"
+ops.queue_resume:
+  en: "Resume queue"
+  zh-TW: "繼續佇列"
+  zh-CN: "继续队列"
+ops.queue_pause_tip:
+  en: "Jobs that haven't started wait. A running job finishes first."
+  zh-TW: "尚未開始的工作會等候，進行中的工作會先做完"
+  zh-CN: "尚未开始的任务会等待，进行中的任务会先完成"
+verify.failed_one:
+  en: "1 copy doesn't match its original: %{names}"
+  zh-TW: "%{count} 個複本與原檔不符：%{names}"
+  zh-CN: "%{count} 个副本与原文件不符：%{names}"
+verify.failed_other:
+  en: "%{count} copies don't match their originals: %{names}"
+  zh-TW: "%{count} 個複本與原檔不符：%{names}"
+  zh-CN: "%{count} 个副本与原文件不符：%{names}"
+verify.more:
+  en: " and %{count} more"
+  zh-TW: "，另有 %{count} 項"
+  zh-CN: "，另有 %{count} 项"
+verify.reason_missing:
+  en: "%{name} (missing)"
+  zh-TW: "%{name}（不見了）"
+  zh-CN: "%{name}（不见了）"
+verify.reason_size:
+  en: "%{name} (different size)"
+  zh-TW: "%{name}（大小不同）"
+  zh-CN: "%{name}（大小不同）"
+verify.reason_content:
+  en: "%{name} (different content)"
+  zh-TW: "%{name}（內容不同）"
+  zh-CN: "%{name}（内容不同）"
+verify.reason_unreadable:
+  en: "%{name} (can't read: %{error})"
+  zh-TW: "%{name}（無法讀取：%{error}）"
+  zh-CN: "%{name}（无法读取：%{error}）"
+teracopy.handed_off:
+  en: "Sent to TeraCopy"
+  zh-TW: "已交給 TeraCopy"
+  zh-CN: "已交给 TeraCopy"
+settings.group_file_ops:
+  en: "Copy and move"
+  zh-TW: "複製與移動"
+  zh-CN: "复制和移动"
+settings.queue_same_drive:
+  en: "One job at a time per drive"
+  zh-TW: "同一個磁碟一次只做一項工作"
+  zh-CN: "同一个磁盘一次只做一项任务"
+settings.queue_same_drive_desc:
+  en: "Copies and moves on the same drive wait their turn instead of running at once"
+  zh-TW: "同一個磁碟上的複製和移動會依序進行，不會同時搶著跑"
+  zh-CN: "同一个磁盘上的复制和移动会依次进行，不会同时抢着跑"
+settings.verify_copies:
+  en: "Verify after copy"
+  zh-TW: "複製後驗證"
+  zh-CN: "复制后验证"
+settings.verify_copies_desc:
+  en: "Reads each copy back and compares it with the original. Takes longer."
+  zh-TW: "把每個複本讀回來和原檔比對，會比較久"
+  zh-CN: "把每个副本读回来和原文件比对，会更久"
+settings.use_teracopy:
+  en: "Use TeraCopy for copy and move"
+  zh-TW: "用 TeraCopy 複製和移動"
+  zh-CN: "用 TeraCopy 复制和移动"
+settings.use_teracopy_desc:
+  en: "Found at %{path}. Arke can't undo jobs TeraCopy runs."
+  zh-TW: "位於 %{path}。交給 TeraCopy 的工作無法在 Arke 復原"
+  zh-CN: "位于 %{path}。交给 TeraCopy 的任务无法在 Arke 撤销"
+
+# ─── Cloud file states (badge tooltips)
+cloud.online_only:
+  en: "Online-only"
+  zh-TW: "僅限線上"
+  zh-CN: "仅联机"
+cloud.local:
+  en: "Available on this device"
+  zh-TW: "可在此裝置上使用"
+  zh-CN: "在此设备上可用"
+cloud.pinned:
+  en: "Always available on this device"
+  zh-TW: "一律可在此裝置上使用"
+  zh-CN: "始终在此设备上可用"
+cloud.syncing:
+  en: "Syncing"
+  zh-TW: "正在同步"
+  zh-CN: "正在同步"
+cloud.not_synced:
+  en: "Not synced yet, or the sync client reported a problem"
+  zh-TW: "尚未同步，或同步用戶端回報了問題"
+  zh-CN: "尚未同步，或同步客户端报告了问题"
+
+# ─── PDF preview
+preview.pdf_unreadable:
+  en: "This PDF can't be previewed (it may be protected or damaged)"
+  zh-TW: "無法預覽這個 PDF（可能受密碼保護或已損毀）"
+  zh-CN: "无法预览此 PDF（可能受密码保护或已损坏）"
+preview.pages:
+  en: Pages
+  zh-TW: 頁數
+  zh-CN: 页数
+preview.page_of:
+  en: "Page %{page} of %{pages}"
+  zh-TW: "第 %{page} 頁，共 %{pages} 頁"
+  zh-CN: "第 %{page} 页，共 %{pages} 页"
+preview.prev_page:
+  en: Previous page
+  zh-TW: 上一頁
+  zh-CN: 上一页
+preview.next_page:
+  en: Next page
+  zh-TW: 下一頁
+  zh-CN: 下一页
+
+# ─── Office preview (.docx, .xlsx, .pptx)
+preview.office_unreadable:
+  en: "Can't preview this file"
+  zh-TW: 無法預覽這個檔案
+  zh-CN: 无法预览这个文件
+preview.office_protected:
+  en: This file is password-protected
+  zh-TW: 這個檔案受密碼保護
+  zh-CN: 这个文件受密码保护
+preview.office_too_large:
+  en: Too large to preview
+  zh-TW: 檔案太大，無法預覽
+  zh-CN: 文件太大，无法预览
+preview.office_truncated:
+  en: Preview truncated
+  zh-TW: 預覽內容已截斷
+  zh-CN: 预览内容已截断
+preview.office_image:
+  en: Image
+  zh-TW: 圖片
+  zh-CN: 图片
+preview.sheet_partial:
+  en: "Showing the first %{rows} rows and %{cols} columns"
+  zh-TW: "只顯示前 %{rows} 列、%{cols} 欄"
+  zh-CN: "只显示前 %{rows} 行、%{cols} 列"
+preview.sheet_more_rows:
+  en: "Showing the first %{rows} rows"
+  zh-TW: "只顯示前 %{rows} 列"
+  zh-CN: "只显示前 %{rows} 行"
+preview.sheet_more_cols:
+  en: "Showing the first %{cols} columns"
+  zh-TW: "只顯示前 %{cols} 欄"
+  zh-CN: "只显示前 %{cols} 列"
+preview.sheet_empty:
+  en: This sheet is empty
+  zh-TW: 這個工作表是空的
+  zh-CN: 这个工作表是空的
+preview.sheets:
+  en: Sheets
+  zh-TW: 工作表
+  zh-CN: 工作表
+preview.slides:
+  en: Slides
+  zh-TW: 投影片
+  zh-CN: 幻灯片
+preview.slide_of:
+  en: "Slide %{page} of %{pages}"
+  zh-TW: "第 %{page} 張投影片，共 %{pages} 張"
+  zh-CN: "第 %{page} 张幻灯片，共 %{pages} 张"
+preview.prev_slide:
+  en: Previous slide
+  zh-TW: 上一張投影片
+  zh-CN: 上一张幻灯片
+preview.next_slide:
+  en: Next slide
+  zh-TW: 下一張投影片
+  zh-CN: 下一张幻灯片
+preview.slide_no_text:
+  en: No text on this slide
+  zh-TW: 這張投影片沒有文字
+  zh-CN: 这张幻灯片没有文字
+
+# ─── Shelf
+menu.add_to_shelf:
+  en: Add to shelf
+  zh-TW: 加到暫存架
+  zh-CN: 添加到暂存架
+shelf.title:
+  en: Shelf
+  zh-TW: 暫存架
+  zh-CN: 暂存架
+shelf.tip:
+  en: "Collect files from different folders here, then copy or move them together. Drop files here or press Ctrl+Shift+A."
+  zh-TW: "把不同資料夾的檔案先收集到這裡，再一起複製或移動。把檔案拖到這裡，或按 Ctrl+Shift+A。"
+  zh-CN: "把不同文件夹的文件先收集到这里，再一起复制或移动。把文件拖到这里，或按 Ctrl+Shift+A。"
+shelf.empty:
+  en: "Drop files here"
+  zh-TW: "把檔案拖到這裡"
+  zh-CN: "把文件拖到这里"
+shelf.copy_here:
+  en: Copy here
+  zh-TW: 複製到這裡
+  zh-CN: 复制到此处
+shelf.move_here:
+  en: Move here
+  zh-TW: 移動到這裡
+  zh-CN: 移动到此处
+shelf.copy_to:
+  en: "Copy the items to %{name}"
+  zh-TW: "把項目複製到 %{name}"
+  zh-CN: "把项目复制到 %{name}"
+shelf.move_to:
+  en: "Move the items to %{name}; they leave the shelf"
+  zh-TW: "把項目移動到 %{name}，並從暫存架移除"
+  zh-CN: "把项目移动到 %{name}，并从暂存架移除"
+shelf.no_folder:
+  en: "Open a folder first"
+  zh-TW: "請先開啟一個資料夾"
+  zh-CN: "请先打开一个文件夹"
+shelf.clear:
+  en: Clear shelf
+  zh-TW: 清空暫存架
+  zh-CN: 清空暂存架
+shelf.clear_short:
+  en: Clear
+  zh-TW: 清空
+  zh-CN: 清空
+shelf.remove:
+  en: Remove from shelf
+  zh-TW: 從暫存架移除
+  zh-CN: 从暂存架移除
+shelf.show_in_folder:
+  en: Show in folder
+  zh-TW: 在資料夾中顯示
+  zh-CN: 在文件夹中显示
+shelf.missing:
+  en: "No longer at %{path}"
+  zh-TW: "已不在 %{path}"
+  zh-CN: "已不在 %{path}"
+shelf.missing_short:
+  en: Missing
+  zh-TW: 找不到
+  zh-CN: 找不到
+shelf.added_one:
+  en: "Added 1 item to the shelf"
+  zh-TW: "已將 %{count} 個項目加到暫存架"
+  zh-CN: "已将 %{count} 个项目添加到暂存架"
+shelf.added_other:
+  en: "Added %{count} items to the shelf"
+  zh-TW: "已將 %{count} 個項目加到暫存架"
+  zh-CN: "已将 %{count} 个项目添加到暂存架"
+shelf.already_one:
+  en: "Already on the shelf"
+  zh-TW: "已在暫存架上"
+  zh-CN: "已在暂存架上"
+shelf.already_other:
+  en: "All %{count} are already on the shelf"
+  zh-TW: "這 %{count} 個項目都已在暫存架上"
+  zh-CN: "这 %{count} 个项目都已在暂存架上"
+shelf.nothing_to_do:
+  en: "The shelf's items are already in this folder"
+  zh-TW: "暫存架上的項目已在這個資料夾中"
+  zh-CN: "暂存架上的项目已在此文件夹中"
+
+# ─── Screen reader names (read out, never shown)
+a11y.sidebar:
+  en: Navigation pane
+  zh-TW: 瀏覽窗格
+  zh-CN: 导航窗格
+a11y.address:
+  en: Address
+  zh-TW: 網址列
+  zh-CN: 地址栏
+a11y.subfolders:
+  en: Subfolders
+  zh-TW: 子資料夾
+  zh-CN: 子文件夹
+a11y.more_folders:
+  en: Hidden levels
+  zh-TW: 隱藏的層級
+  zh-CN: 隐藏的层级
+a11y.clear_filter:
+  en: Clear
+  zh-TW: 清除
+  zh-CN: 清除
+a11y.select_item:
+  en: Select
+  zh-TW: 選取
+  zh-CN: 选择
+preview.ql_key_move:
+  en: Previous / next
+  zh-TW: 上一個／下一個
+  zh-CN: 上一个/下一个
+preview.ql_key_pages:
+  en: Pages
+  zh-TW: 翻頁
+  zh-CN: 翻页
+preview.no_preview:
+  en: No preview available
+  zh-TW: 無法預覽
+  zh-CN: 无法预览
+preview.position:
+  en: "%{index} of %{total}"
+  zh-TW: "%{index} / %{total}"
+  zh-CN: "%{index} / %{total}"
+preview.prev_item:
+  en: Previous item
+  zh-TW: 上一個項目
+  zh-CN: 上一个项目
+preview.next_item:
+  en: Next item
+  zh-TW: 下一個項目
+  zh-CN: 下一个项目
+preview.zoom_fit:
+  en: Fit
+  zh-TW: 符合視窗
+  zh-CN: 适应窗口
+preview.zoom_tip:
+  en: Switch between fit and actual size (the wheel zooms too)
+  zh-TW: 在符合視窗與實際大小間切換（也可用滾輪縮放）
+  zh-CN: 在适应窗口与实际大小间切换（也可用滚轮缩放）
+preview.pages_n_one:
+  en: "1 page"
+  zh-TW: "%{count} 頁"
+  zh-CN: "%{count} 页"
+preview.pages_n_other:
+  en: "%{count} pages"
+  zh-TW: "%{count} 頁"
+  zh-CN: "%{count} 页"
+preview.slides_n_one:
+  en: "1 slide"
+  zh-TW: "%{count} 張投影片"
+  zh-CN: "%{count} 张幻灯片"
+preview.slides_n_other:
+  en: "%{count} slides"
+  zh-TW: "%{count} 張投影片"
+  zh-CN: "%{count} 张幻灯片"
+preview.sheets_n_one:
+  en: "1 sheet"
+  zh-TW: "%{count} 個工作表"
+  zh-CN: "%{count} 个工作表"
+preview.sheets_n_other:
+  en: "%{count} sheets"
+  zh-TW: "%{count} 個工作表"
+  zh-CN: "%{count} 个工作表"
+
+# ─── Start menu (Settings > Startup, first-run card)
+settings.start_menu:
+  en: "Show Arke in the Start menu"
+  zh-TW: "在開始功能表顯示 Arke"
+  zh-CN: "在开始菜单中显示 Arke"
+settings.start_menu_desc:
+  en: "A shortcut in your Start menu folder; follows Arke if you move it"
+  zh-TW: "在開始功能表資料夾放一個捷徑；搬動 Arke 時會跟著更新"
+  zh-CN: "在开始菜单文件夹放一个快捷方式；移动 Arke 后会自动更新"
+welcome.title:
+  en: "Add Arke to the Start menu?"
+  zh-TW: "要把 Arke 加到開始功能表嗎？"
+  zh-CN: "要把 Arke 添加到开始菜单吗？"
+welcome.body:
+  en: "Arke is a single program file. A Start menu shortcut makes it easy to find and pin."
+  zh-TW: "Arke 只是一個程式檔。加到開始功能表就容易找到，也能釘選。"
+  zh-CN: "Arke 只是一个程序文件。添加到开始菜单后更容易找到，也能固定。"
+welcome.autostart:
+  en: "Also start when I sign in to Windows"
+  zh-TW: "也在登入 Windows 時啟動"
+  zh-CN: "也在登录 Windows 时启动"
+welcome.add:
+  en: "Add to Start"
+  zh-TW: "加到開始"
+  zh-CN: "添加到开始"
+welcome.not_now:
+  en: "Not now"
+  zh-TW: "暫時不要"
+  zh-CN: "暂时不用"
+welcome.later_hint:
+  en: "You can change this later in Settings › Startup"
+  zh-TW: "之後可以在 設定 › 啟動 更改"
+  zh-CN: "之后可以在 设置 › 启动 中更改"
+
+# ─── Uninstall (Settings > About, arke --uninstall)
+uninstall.title:
+  en: "Remove Arke from this PC"
+  zh-TW: "從這台電腦移除 Arke"
+  zh-CN: "从这台电脑卸载 Arke"
+uninstall.desc:
+  en: "Removes the program, its shortcuts and everything it saved"
+  zh-TW: "移除程式、捷徑和它存下的所有資料"
+  zh-CN: "删除程序、快捷方式和它保存的所有数据"
+uninstall.button:
+  en: "Remove…"
+  zh-TW: "移除…"
+  zh-CN: "卸载…"
+uninstall.confirm_title:
+  en: "Remove Arke from this PC?"
+  zh-TW: "要從這台電腦移除 Arke 嗎？"
+  zh-CN: "要从这台电脑卸载 Arke 吗？"
+uninstall.intro:
+  en: "This removes:"
+  zh-TW: "會移除："
+  zh-CN: "将删除："
+uninstall.keep:
+  en: "Keep my settings"
+  zh-TW: "保留我的設定"
+  zh-CN: "保留我的设置"
+uninstall.keep_desc:
+  en: "Settings, pinned folders, workspaces and trusted hosts stay for a later reinstall"
+  zh-TW: "設定、釘選的資料夾、工作區和信任的主機都會留著，之後重新安裝可以接著用"
+  zh-CN: "设置、固定的文件夹、工作区和信任的主机会保留，之后重新安装可以继续使用"
+uninstall.uac_note:
+  en: "Windows will ask for administrator approval to remove the search service."
+  zh-TW: "移除搜尋服務時，Windows 會要求系統管理員核准。"
+  zh-CN: "卸载搜索服务时，Windows 会请求管理员批准。"
+uninstall.closes_note:
+  en: "Arke closes now, finishes in the background and then shows what was removed."
+  zh-TW: "Arke 會先關閉，在背景完成後顯示移除了哪些項目。"
+  zh-CN: "Arke 会先关闭，在后台完成后显示删除了哪些内容。"
+uninstall.ok:
+  en: "Remove Arke"
+  zh-TW: "移除 Arke"
+  zh-CN: "卸载 Arke"
+uninstall.start_failed:
+  en: "Couldn't start the removal: %{error}"
+  zh-TW: "無法開始移除：%{error}"
+  zh-CN: "无法开始卸载：%{error}"
+uninstall.step_quit:
+  en: "Close Arke"
+  zh-TW: "關閉 Arke"
+  zh-CN: "关闭 Arke"
+uninstall.step_service:
+  en: "The search service"
+  zh-TW: "搜尋服務"
+  zh-CN: "搜索服务"
+uninstall.step_takeover:
+  en: "\"Open folders in Arke\" (folders open in File Explorer again)"
+  zh-TW: "「在 Arke 開啟資料夾」（資料夾改回由檔案總管開啟）"
+  zh-CN: "“在 Arke 中打开文件夹”（文件夹改回由文件资源管理器打开）"
+uninstall.step_start_menu:
+  en: "The Start menu shortcut"
+  zh-TW: "開始功能表的捷徑"
+  zh-CN: "开始菜单快捷方式"
+uninstall.step_startup:
+  en: "The shortcut that starts Arke when you sign in"
+  zh-TW: "登入時啟動 Arke 的捷徑"
+  zh-CN: "登录时启动 Arke 的快捷方式"
+uninstall.step_passwords:
+  en: "Saved SFTP and WebDAV passwords"
+  zh-TW: "記住的 SFTP 與 WebDAV 密碼"
+  zh-CN: "记住的 SFTP 和 WebDAV 密码"
+uninstall.step_jump_list:
+  en: "The taskbar jump list"
+  zh-TW: "工作列的捷徑清單"
+  zh-CN: "任务栏的跳转列表"
+uninstall.step_data:
+  en: "Search index, log and downloaded updates (%{path})"
+  zh-TW: "搜尋索引、記錄與下載的更新（%{path}）"
+  zh-CN: "搜索索引、日志和下载的更新（%{path}）"
+uninstall.step_settings:
+  en: "Settings, pinned folders, workspaces and trusted hosts (%{path})"
+  zh-TW: "設定、釘選的資料夾、工作區與信任的主機（%{path}）"
+  zh-CN: "设置、固定的文件夹、工作区和信任的主机（%{path}）"
+uninstall.step_keep_settings:
+  en: "Your settings stay in %{path}"
+  zh-TW: "你的設定會留在 %{path}"
+  zh-CN: "你的设置保留在 %{path}"
+uninstall.step_exe:
+  en: "The program (%{path})"
+  zh-TW: "程式本身（%{path}）"
+  zh-CN: "程序本身（%{path}）"
+uninstall.step_keep_exe:
+  en: "The program stays, since %{manager} installed it: remove it with %{command}"
+  zh-TW: "程式本身由 %{manager} 管理，會留著：請用 %{command} 移除"
+  zh-CN: "程序本身由 %{manager} 管理，会保留：请用 %{command} 卸载"
+uninstall.none:
+  en: "nothing to remove"
+  zh-TW: "沒有需要移除的"
+  zh-CN: "没有需要删除的"
+uninstall.passwords_removed_one:
+  en: "%{count} removed"
+  zh-TW: "移除了 %{count} 個"
+  zh-CN: "删除了 %{count} 个"
+uninstall.passwords_removed_other:
+  en: "%{count} removed"
+  zh-TW: "移除了 %{count} 個"
+  zh-CN: "删除了 %{count} 个"
+uninstall.exe_later:
+  en: "deleted as soon as Arke has closed"
+  zh-TW: "Arke 關閉後就會刪除"
+  zh-CN: "Arke 关闭后即删除"
+uninstall.still_running:
+  en: "Arke is still running; close it and try again"
+  zh-TW: "Arke 還在執行，請關閉後再試一次"
+  zh-CN: "Arke 仍在运行，请关闭后再试一次"
+uninstall.exit_code:
+  en: "not removed (exit code %{code})"
+  zh-TW: "沒有移除（結束代碼 %{code}）"
+  zh-CN: "未卸载（退出代码 %{code}）"
+uninstall.settings_unreadable:
+  en: "the settings file could not be read, so the setting is left as it was"
+  zh-TW: "讀不到設定檔，這個設定維持原狀"
+  zh-CN: "读不到设置文件，这个设置保持原样"
+uninstall.refused:
+  en: "not deleted, %{path} is not Arke's own folder"
+  zh-TW: "沒有刪除，%{path} 不是 Arke 自己的資料夾"
+  zh-CN: "未删除，%{path} 不是 Arke 自己的文件夹"
+uninstall.summary_ok:
+  en: "Arke was removed from this PC."
+  zh-TW: "已從這台電腦移除 Arke。"
+  zh-CN: "已从这台电脑卸载 Arke。"
+uninstall.summary_failed:
+  en: "Arke was removed, but some steps didn't go through:"
+  zh-TW: "Arke 已移除，但有些步驟沒有完成："
+  zh-CN: "Arke 已卸载，但有些步骤没有完成："
+
+# ─── Report a problem: privacy
+report.mask_names:
+  en: "Hide file and folder names"
+  zh-TW: "隱藏檔案與資料夾名稱"
+  zh-CN: "隐藏文件和文件夹名称"
+report.include_log:
+  en: "Include the recent log"
+  zh-TW: "附上最近的記錄"
+  zh-CN: "附上最近的日志"
+report.preview_loading:
+  en: "Preparing the report…"
+  zh-TW: "正在準備回報內容…"
+  zh-CN: "正在准备反馈内容…"
+report.refresh:
+  en: "Refresh"
+  zh-TW: "重新整理"
+  zh-CN: "刷新"

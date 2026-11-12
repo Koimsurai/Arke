@@ -55,7 +55,7 @@ log = "0.4"
 env_logger = "0.11"
 unicode-segmentation = "1"
 # Locks without poisoning (project rule: no std::sync::Mutex/RwLock/Condvar)
-parking_lot = "0.12"
+parking_lot = "0.13"
 # Typed errors for library and platform code (domain layers); tools use anyhow
 thiserror = "2"
 anyhow = "1"

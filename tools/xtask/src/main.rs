@@ -221,6 +221,14 @@ const LICENSES: &str = "THIRD_PARTY_LICENSES.md";
 /// files in the local registry, so the output depends on nothing but `Cargo.lock`).
 fn cmd_licenses() -> Result<()> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // cargo-about reads `cargo metadata` for every platform, so crates a Windows build never
+    // downloads (macOS-only ones) must be in the registry first; a fresh CI runner lacks them.
+    let fetched = Command::new(&cargo)
+        .args(["fetch", "--locked"])
+        .current_dir(root())
+        .status()
+        .with_context(|| format!("running {cargo} fetch"))?;
+    ensure!(fetched.success(), "cargo fetch failed");
     let status = Command::new(&cargo)
         .args([
             "about",

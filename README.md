@@ -254,7 +254,8 @@ It also turns off "Open folders in Arke" and puts the previous folder handler ba
 <summary><b>Why does SmartScreen or my antivirus warn about it?</b></summary>
 
 The builds aren't code-signed yet, and a new unsigned exe has no reputation with SmartScreen.
-Each release comes with a SHA-256 checksum, and you can always build it from source yourself.
+Each release comes with a SHA-256 checksum and a VirusTotal scan of the exes in its notes, and you
+can always build it from source yourself.
 
 </details>
 

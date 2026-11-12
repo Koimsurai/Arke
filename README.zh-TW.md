@@ -226,7 +226,7 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 <summary><b>為什麼 SmartScreen 或防毒軟體會警告？</b></summary>
 
 目前還沒有程式碼簽章，新的未簽章執行檔在 SmartScreen 那裡沒有信譽。每個版本都附 SHA-256
-校驗碼，你也隨時可以從原始碼自己建置。
+校驗碼，發行說明裡也有執行檔的 VirusTotal 掃描結果，你也隨時可以從原始碼自己建置。
 
 </details>
 

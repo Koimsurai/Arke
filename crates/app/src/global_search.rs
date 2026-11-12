@@ -832,7 +832,8 @@ pub(crate) fn set_journal_size(root: PathBuf, mb: u64, roots: Vec<PathBuf>, cx: 
     cx.refresh_windows();
     let (tx, rx) = flume::bounded(1);
     crate::explorer::spawn_thread("journal-resize", move || {
-        let args = format!("--indexd journal-size \"{}\" {mb}", root.display());
+        let root = crate::win::quote_arg(&root.to_string_lossy());
+        let args = format!("--indexd journal-size {root} {mb}");
         let _ = tx.send(crate::win::run_elevated(&exe, &args));
     });
     cx.spawn(async move |cx| {

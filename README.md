@@ -255,7 +255,8 @@ It also turns off "Open folders in Arke" and puts the previous folder handler ba
 
 The builds aren't code-signed yet, and a new unsigned exe has no reputation with SmartScreen.
 Each release comes with a SHA-256 checksum and a VirusTotal scan of the exes in its notes, and you
-can always build it from source yourself.
+can always build it from source yourself. For releases after 0.1.0,
+`gh attestation verify arke-<version>.exe -R Koimsurai/Arke` confirms that an exe was built by this repository's release workflow.
 
 </details>
 

@@ -226,7 +226,8 @@ Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（�
 <summary><b>为什么 SmartScreen 或杀毒软件会警告？</b></summary>
 
 目前还没有代码签名，新的未签名 exe 在 SmartScreen 那里没有信誉。每个版本都附 SHA-256 校验值，
-发布说明里也有 exe 的 VirusTotal 扫描结果，你也随时可以从源代码自己编译。
+发布说明里也有 exe 的 VirusTotal 扫描结果，你也随时可以从源代码自己编译。0.1.0 之后的版本可以用
+`gh attestation verify arke-<版本>.exe -R Koimsurai/Arke` 确认 exe 是由这个仓库的发布流程构建的。
 
 </details>
 

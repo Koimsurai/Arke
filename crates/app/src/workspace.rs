@@ -61,6 +61,13 @@ use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
 pub(crate) use sidebar::{leave_drive_everywhere, place_icon};
 
+/// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
+/// window order on Windows (`window_stack` is `None` there), so each window records activation.
+#[derive(Default)]
+pub(crate) struct LastActiveWindow(pub(crate) Option<gpui::AnyWindowHandle>);
+
+impl gpui::Global for LastActiveWindow {}
+
 actions!(
     workspace,
     [
@@ -518,6 +525,7 @@ impl Workspace {
             if !window.is_window_active() {
                 return;
             }
+            cx.set_global(LastActiveWindow(Some(window.window_handle())));
             crate::motion::sync_app(cx);
             // "Follow Windows" accent: the system color may have just changed.
             this.sync_look(window, cx);
@@ -969,6 +977,43 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.insert_tab(path, at, activate, window, cx);
+    }
+
+    /// A folder or the Recycle Bin another program asked Arke to show, in this window (#11). A tab
+    /// already showing the folder is reused (repeated "Show in folder" from a browser's downloads
+    /// shouldn't pile up tabs); otherwise a new tab opens at the end. `select` is selected there.
+    pub(crate) fn open_external(
+        &mut self,
+        target: arke_core::takeover::Target,
+        select: Vec<std::sync::Arc<str>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use arke_core::takeover::{Target, same_path};
+        match target {
+            Target::Folder(path) => {
+                let showing = self.tabs.iter().position(|tab| {
+                    let view = &tab.panes[tab.active_pane].view;
+                    self.page_title(view.entity_id()).is_none()
+                        && view
+                            .read(cx)
+                            .display_path()
+                            .is_some_and(|p| same_path(p, &path))
+                });
+                if let Some(ix) = showing {
+                    self.activate(ix, window, cx);
+                    self.active_view()
+                        .update(cx, |e, cx| e.select_in_folder(&path, select, cx));
+                } else {
+                    let at = self.tabs.len();
+                    self.open_tab(path, at, true, window, cx);
+                    self.active_view()
+                        .update(cx, |e, _| e.select_on_arrival(select));
+                }
+            }
+            Target::RecycleBin => self.open_recycle(true, window, cx),
+            Target::Home => self.open_home(true, window, cx),
+        }
     }
 
     /// [`Self::open_tab`], returning where the tab went: new tabs never go among the pinned ones.

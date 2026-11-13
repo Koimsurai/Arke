@@ -1357,6 +1357,14 @@ impl Workspace {
                     }
                 }),
             ),
+            card(
+                Icon::TabOpen,
+                t!("settings.external_tab"),
+                Some(t!("settings.external_tab_desc")),
+                switch("external-tab", s.open_external_in_tab, |st| {
+                    st.open_external_in_tab = !st.open_external_in_tab;
+                }),
+            ),
         ];
         let search = search_page(s, page, ui, cx);
         let update = super::update_page::update_card(s, page.expanded.contains("update"), ui, cx);
@@ -1412,7 +1420,7 @@ impl Workspace {
                 (Some(t!("settings.group_details")), &[0, 1, 2, 6, 7]),
             ],
         );
-        let startup = regroup(startup, &[(None, &[3, 4, 5, 0, 1, 2])]);
+        let startup = regroup(startup, &[(None, &[3, 4, 5, 6, 0, 1, 2])]);
         let about = vec![about_header(), group(None, about)];
         vec![
             (t!("settings.appearance"), Icon::Theme, appearance),

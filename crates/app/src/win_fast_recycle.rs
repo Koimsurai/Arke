@@ -132,6 +132,8 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
         }
     }
     notify(path, meta.is_dir(), &bin);
+    #[cfg(test)]
+    TAKEN.fetch_add(1, Ordering::Relaxed);
     Some(item)
 }
 
@@ -484,16 +486,23 @@ fn decode(bytes: &[u8]) -> Option<Record> {
     })
 }
 
+/// Items the fast path took (tests tell it from the engine with this).
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::shell::{FileOp, OpOutcome, PutBack, Undo};
+pub(crate) static TAKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Temp sandboxes and bin lookups for the live tests here and in `tests_live_recycle.rs`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crate::shell::OpOutcome;
 
     /// A folder under %TEMP% named for this test and process; only it is ever touched.
-    struct Sandbox(PathBuf);
+    pub(crate) struct Sandbox(pub(crate) PathBuf);
 
     impl Sandbox {
-        fn new(tag: &str) -> Self {
+        pub(crate) fn new(tag: &str) -> Self {
             purge_leftovers(tag);
             let dir = crate::win::long_temp_dir()
                 .join(format!("arke-test-fastbin-{tag}-{}", std::process::id()));
@@ -501,7 +510,7 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
         }
-        fn file(&self, rel: &str, body: &str) -> PathBuf {
+        pub(crate) fn file(&self, rel: &str, body: &str) -> PathBuf {
             let path = self.0.join(rel);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, body).unwrap();
@@ -517,7 +526,7 @@ mod tests {
 
     /// Bin items an earlier, interrupted run of the test `tag` left: their origin is one of its
     /// sandboxes (which may be gone by now).
-    fn purge_leftovers(tag: &str) {
+    pub(crate) fn purge_leftovers(tag: &str) {
         let prefix = format!("arke-test-fastbin-{tag}-");
         let Ok(items) = crate::win_recycle::list() else {
             return;
@@ -538,7 +547,7 @@ mod tests {
     }
 
     /// Items in the bin that came from `dir`.
-    fn recycled_from(dir: &Path) -> Vec<crate::shell::RecycledItem> {
+    pub(crate) fn recycled_from(dir: &Path) -> Vec<crate::shell::RecycledItem> {
         let here = fs::canonicalize(dir).unwrap();
         crate::win_recycle::list()
             .unwrap()
@@ -547,13 +556,20 @@ mod tests {
             .collect()
     }
 
-    fn purge(items: &[crate::shell::RecycledItem]) {
+    pub(crate) fn purge(items: &[crate::shell::RecycledItem]) {
         let places: Vec<&str> = items.iter().map(|i| i.now.as_str()).collect();
         assert_eq!(
             crate::win_fileops::purge_recycled(&places, None).map_err(|e| e.to_string()),
             Ok(OpOutcome::Done)
         );
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{Sandbox, purge, recycled_from};
+    use super::*;
+    use crate::shell::{FileOp, OpOutcome, PutBack, Undo};
 
     #[test]
     fn bin_names_keep_the_name_from_the_last_dot() {

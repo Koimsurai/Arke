@@ -184,10 +184,20 @@ impl Pattern {
         match self {
             Self::Literal(expected) => text == *expected,
             Self::Command(suffix) => command_exe(&text, suffix)
-                .and_then(|exe| exe.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-                .is_some_and(|name| name == "arke.exe"),
+                .and_then(|exe| exe.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .is_some_and(|name| is_arke_exe(&name)),
         }
     }
+}
+
+/// Whether an exe is Arke by its file name: `arke.exe`, or a release download as it comes
+/// (`arke-0.1.1.exe`, `arke-0.1.1-arm64.exe`, which is also what winget installs). Only matching
+/// `arke.exe` made turning the setting off leave a release exe's values behind as "another
+/// program's", and made each update save the previous Arke's command as the value to put back.
+fn is_arke_exe(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "arke.exe"
+        || (name.starts_with("arke-") && name.ends_with(".exe") && name != "arke-indexd.exe")
 }
 
 /// The exe path inside `"<exe>"<suffix>`.
@@ -432,7 +442,10 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
             done.left_alone += 1;
             continue;
         }
-        match (&entry.prior, current) {
+        // A backup from an older build may hold another Arke's command as the value before Arke:
+        // that is Arke's too, so it goes away instead of coming back.
+        let prior = entry.prior.as_ref().filter(|p| !entry.ours.matches(p));
+        match (prior, current) {
             (Some(prior), current) if current.as_ref() != Some(prior) => {
                 reg.write(&entry.key, &entry.value, prior)?;
                 done.values += 1;
@@ -684,6 +697,66 @@ mod tests {
                 "Directory and Drive stay untouched"
             );
         }
+    }
+
+    #[test]
+    fn release_file_names_count_as_arke() {
+        for name in [
+            "arke.exe",
+            "Arke.exe",
+            "arke-0.1.1.exe",
+            "arke-0.1.1-arm64.exe",
+            "arke-0.2.0-nightly.20261112.exe",
+        ] {
+            assert!(is_arke_exe(name), "{name}");
+        }
+        for name in [
+            "fm.exe",
+            "arke-indexd.exe",
+            "arkeology.exe",
+            "arke-0.1.1.txt",
+        ] {
+            assert!(!is_arke_exe(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_release_exe_is_undone_completely() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        let release = Path::new(r"C:\Users\me\Downloads\arke-0.1.1.exe");
+        apply(&reg, &backup, release).unwrap();
+        let done = restore(&reg, &backup).unwrap();
+        assert_eq!(done.left_alone, 0, "nothing mistaken for another program's");
+        assert!(reg.snapshot().is_empty(), "{:?}", reg.snapshot());
+    }
+
+    #[test]
+    fn an_older_arke_saved_as_the_previous_value_is_not_put_back() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        // What an older build left: its own command recorded as the value before Arke.
+        let old = r#""D:\dist\arke-0.2.0-nightly.20261112.exe" "%1""#;
+        let ours = |suffix: &str| Pattern::Command(suffix.into());
+        backup
+            .save(&Backup {
+                version: 1,
+                entries: vec![BackupEntry {
+                    key: OPEN_CMD.into(),
+                    value: String::new(),
+                    ours: ours(r#" "%1""#),
+                    prior: Some(RegValue::sz(old)),
+                }],
+                created_keys: Vec::new(),
+            })
+            .unwrap();
+        reg.put(OPEN_CMD, "", &cmd(r"C:\Apps\arke-0.1.1.exe"));
+        restore(&reg, &backup).unwrap();
+        assert_eq!(
+            reg.text(OPEN_CMD, ""),
+            None,
+            "neither Arke's command is left"
+        );
     }
 
     #[test]

@@ -6354,3 +6354,51 @@ fn first_run_card_can_be_dismissed(cx: &mut TestAppContext) {
     assert!(!s.start_menu && !s.autostart && s.start_menu_offered);
     assert!(cx.debug_bounds("welcome").is_none());
 }
+
+/// #7: the name to select may come from a path in another case than the folder's entry (a typed
+/// path, or one another program passed); it is still selected, under the entry's spelling.
+#[gpui::test]
+fn a_name_in_another_case_is_still_selected_after_navigating(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![dir("Child"), dir("other")]);
+    fs.insert_many(r"C:\p\Child", 1);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\p\Child");
+    wait_until(cx, &view, "load", loaded(r"C:\p\Child"));
+    view.update(cx, |e, cx| {
+        e.navigate_selecting(
+            PathBuf::from(r"C:\p"),
+            NavKind::New,
+            Some("child".into()),
+            cx,
+        );
+    });
+    wait_until(cx, &view, "up", loaded(r"C:\p"));
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |e, _| selected_names(e)), vec!["Child"]);
+    assert!(
+        view.update(cx, |e, _| e.cursor).is_some(),
+        "and gets the cursor"
+    );
+}
+
+/// #7: going back to an ancestor more than one level up selects the folder on the way, as
+/// File Explorer does, not only when it is the direct parent.
+#[gpui::test]
+fn going_back_to_an_ancestor_selects_the_folder_on_the_way(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![dir("b"), dir("x")]);
+    fs.insert_dir(r"C:\a\b", vec![dir("c")]);
+    fs.insert_many(r"C:\a\b\c", 1);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\a");
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    view.update(cx, |e, cx| {
+        e.navigate(PathBuf::from(r"C:\a\b\c"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "c", loaded(r"C:\a\b\c"));
+    view.update_in(cx, |e, window, cx| {
+        e.go_back(&crate::explorer::GoBack, window, cx);
+    });
+    wait_until(cx, &view, "back", loaded(r"C:\a"));
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |e, _| selected_names(e)), vec!["b"]);
+}

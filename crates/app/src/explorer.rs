@@ -1561,6 +1561,11 @@ impl Explorer {
                     // Full content replaced: drop selections that no longer exist (nested tree
                     // rows included, so the whole list).
                     if let Some(view) = self.view() {
+                        // A selection that came with the navigation may name entries in another
+                        // case (#7): take their spelling before dropping what isn't there.
+                        if self.scroll_to_cursor.is_some() {
+                            self.selection.adopt_case(&view);
+                        }
                         self.selection.retain_existing(&view);
                     }
                 }
@@ -1718,10 +1723,9 @@ impl Explorer {
             if keep.is_empty()
                 && let Some(came_from) = previous
                     .as_deref()
-                    .filter(|prev| prev.parent() == Some(path))
-                    .and_then(Path::file_name)
+                    .and_then(|prev| child_toward(path, prev))
             {
-                keep.push(Arc::from(came_from.to_string_lossy().as_ref()));
+                keep.push(came_from);
             }
             self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             // The folder we came from goes to the middle, as in Explorer.
@@ -1753,6 +1757,14 @@ impl Explorer {
             return;
         };
         self.cursor = self.selection.cursor_index(&view, self.cursor);
+        // Still placing a selection that came with a navigation: its names may come from a path in
+        // another case than the folder's entries (#7).
+        if self.cursor.is_none()
+            && self.scroll_to_cursor.is_some()
+            && self.selection.adopt_case(&view)
+        {
+            self.cursor = self.selection.cursor_index(&view, None);
+        }
         if let Some(strategy) = self.scroll_to_cursor
             && let Some(ix) = self.cursor
         {
@@ -3071,6 +3083,28 @@ fn tab_title_for(path: &Path) -> String {
         return share.to_string_lossy().into_owned();
     }
     path.display().to_string()
+}
+
+/// The item in `dir` on the way to `inner`: going up or back to any ancestor selects the folder
+/// you came from, as in File Explorer (#7). Paths compare ignoring case, like Windows does.
+fn child_toward(dir: &Path, inner: &Path) -> Option<Arc<str>> {
+    if inner.parent() == Some(dir) {
+        return inner
+            .file_name()
+            .map(|n| Arc::from(n.to_string_lossy().as_ref()));
+    }
+    if !arke_core::takeover::within(inner, dir) || arke_core::takeover::same_path(inner, dir) {
+        return None;
+    }
+    let dir = dir.to_string_lossy();
+    let inner = inner.to_string_lossy();
+    let rest = inner
+        .get(dir.trim_end_matches('\\').len()..)?
+        .trim_start_matches('\\');
+    rest.split('\\')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(Arc::from)
 }
 
 #[cfg(test)]

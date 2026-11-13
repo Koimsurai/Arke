@@ -33,7 +33,7 @@ windows = "0.62"
 # `#[implement]` expands to ::windows_core; keep in step with `windows`
 windows-core = "0.62"
 notify = "8"
-flume = "0.11"
+flume = "0.12"
 memmap2 = "0.9"
 # Fuzzy matching (Helix's engine). MPL-2.0, used unmodified; see THIRD_PARTY_NOTICES.md
 nucleo = "0.5"

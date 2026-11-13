@@ -2073,6 +2073,99 @@ mod tests {
         let parsed = parse_hdrop(HDROP(global.0.unwrap().0));
         assert_eq!(parsed, paths);
     }
+    /// Timing for #9, not a check. Run with
+    /// `cargo nextest run -p arke-app --run-ignored only bulk_delete_timing --no-capture`.
+    /// Uses this test's own temp folders; what it puts in the Recycle Bin is purged at the end.
+    #[test]
+    #[ignore = "benchmark: writes 3 x 20,000 files to %TEMP% and uses the Recycle Bin"]
+    #[allow(clippy::print_stderr)]
+    fn bulk_delete_timing() {
+        use std::time::Instant;
+        const N: usize = 20_000;
+        let make = |sb: &Sandbox, name: &str| -> PathBuf {
+            let dir = sb.0.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            for i in 0..N {
+                fs::write(dir.join(format!("f{i:05}.txt")), b"x").unwrap();
+            }
+            dir
+        };
+        let sb = Sandbox::new("bench");
+
+        let dir = make(&sb, "engine");
+        let progress = std::sync::Arc::new(crate::shell::OpProgress::default());
+        let started = Instant::now();
+        let (result, _) = perform_tracked(
+            &FileOp::Delete {
+                paths: vec![dir],
+                recycle: true,
+            },
+            None,
+            &progress,
+        );
+        eprintln!(
+            "recycle, IFileOperation as Arke runs it: {:?} ({:?})",
+            started.elapsed(),
+            result.map_err(|e| e.to_string())
+        );
+
+        let dir = make(&sb, "legacy");
+        let from: Vec<u16> = dir.as_os_str().encode_wide().chain([0, 0]).collect();
+        let mut op = windows::Win32::UI::Shell::SHFILEOPSTRUCTW {
+            wFunc: windows::Win32::UI::Shell::FO_DELETE,
+            pFrom: PCWSTR(from.as_ptr()),
+            fFlags: (FOF_ALLOWUNDO.0 | FOF_NO_UI.0) as u16,
+            ..Default::default()
+        };
+        let started = Instant::now();
+        // SAFETY: `from` is double-NUL terminated and outlives the call.
+        let code = unsafe { windows::Win32::UI::Shell::SHFileOperationW(&raw mut op) };
+        eprintln!(
+            "recycle, SHFileOperation: {:?} (code {code})",
+            started.elapsed()
+        );
+
+        let dir = make(&sb, "purge");
+        let started = Instant::now();
+        let result = crate::win_purge::purge(&[dir], &crate::shell::OpProgress::default());
+        eprintln!(
+            "permanent delete, win_purge: {:?} ({:?})",
+            started.elapsed(),
+            result.map_err(|e| e.to_string())
+        );
+
+        // Only what this benchmark recycled, now or in an earlier interrupted run: items whose
+        // origin is one of its sandboxes.
+        let mine: Vec<String> = crate::win_recycle::list()
+            .unwrap()
+            .into_iter()
+            .filter(|item| {
+                item.from.starts_with(crate::win::long_temp_dir())
+                    && item.from.components().any(|c| {
+                        c.as_os_str()
+                            .to_string_lossy()
+                            .starts_with("arke-fileop-test-bench-")
+                    })
+            })
+            .map(|item| item.now)
+            .collect();
+        eprintln!("purging {} recycled benchmark folders", mine.len());
+        let mine: Vec<&str> = mine.iter().map(String::as_str).collect();
+        assert_eq!(
+            purge_recycled(&mine, None).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        // Sandboxes of earlier interrupted runs.
+        for leftover in fs::read_dir(crate::win::long_temp_dir()).unwrap().flatten() {
+            if leftover
+                .file_name()
+                .to_string_lossy()
+                .starts_with("arke-fileop-test-bench-")
+            {
+                let _ = fs::remove_dir_all(leftover.path());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -145,6 +145,30 @@ mod tests {
         }
     }
 
+    /// Timing for #9, not a check. Run with
+    /// `cargo test -p arke-app --bin arke purge_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark: writes 20,000 files to %TEMP%"]
+    #[allow(clippy::print_stderr)]
+    fn purge_timing() {
+        let sb = Sandbox::new("timing");
+        let dir = sb.0.join("many");
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..20_000 {
+            fs::write(dir.join(format!("f{i:05}.txt")), b"x").unwrap();
+        }
+        let progress = OpProgress::default();
+        let started = std::time::Instant::now();
+        let result = purge(std::slice::from_ref(&dir), &progress);
+        eprintln!(
+            "permanent delete of 20,000 files: {:?} ({:?}, {} items)",
+            started.elapsed(),
+            result.map_err(|e| e.to_string()),
+            progress.done.load(Ordering::Relaxed)
+        );
+        assert!(!dir.exists());
+    }
+
     /// Creates a junction (no admin rights needed).
     fn junction(link: &Path, target: &Path) {
         let ok = Command::new("cmd")

@@ -915,6 +915,26 @@ pub(crate) fn turn_off_takeover(path: &Path) -> bool {
     save(path, &settings).is_ok()
 }
 
+/// The "Win+E and the File Explorer icon open Arke too" switch, read straight from the settings
+/// file before anything else starts (the folder handler deciding where Home goes). Off when the
+/// file is missing or unreadable; nothing is written.
+pub(crate) fn home_opens_arke() -> bool {
+    default_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .is_some_and(|bytes| win_e_switch(&bytes))
+}
+
+fn win_e_switch(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("win_e_opens_arke")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
 fn load(path: &Path) -> Option<Settings> {
     let bytes = std::fs::read(path).ok()?;
     parse_settings(&bytes, path)
@@ -1387,6 +1407,18 @@ mod tests {
         assert!(s.net_places.contains(&PathBuf::from(r"\\server9\share")));
         s.forget_share(Path::new(r"\\server9\share"));
         assert!(!s.net_places.contains(&PathBuf::from(r"\\server9\share")));
+    }
+
+    #[test]
+    fn the_win_e_switch_is_read_without_loading_the_rest() {
+        assert!(win_e_switch(br#"{"win_e_opens_arke":true,"pinned":[]}"#));
+        assert!(win_e_switch(b"\xEF\xBB\xBF{\"win_e_opens_arke\":true}"));
+        assert!(!win_e_switch(br#"{"win_e_opens_arke":false}"#));
+        assert!(
+            !win_e_switch(br#"{"open_folders_in_arke":true}"#),
+            "off unless set"
+        );
+        assert!(!win_e_switch(b"{ broken"));
     }
 
     #[test]

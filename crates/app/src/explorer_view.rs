@@ -2555,7 +2555,8 @@ const RENAME_INSET: Pixels = px(4. + 1.);
 ///
 /// `in_row`: Details rows pull the box left by its inset, so the text stays exactly where the
 /// name was drawn instead of jumping right when renaming starts (grid tiles center the name, so
-/// they don't need it).
+/// they don't need it). In a tile the box spans the tile's width: tiles center their children,
+/// so without a width it would shrink to its border and hide the name (#38).
 fn name_cell(
     entry: &Entry,
     rename: Option<(Entity<TextInput>, Option<NameError>)>,
@@ -2564,10 +2565,16 @@ fn name_cell(
 ) -> AnyElement {
     match rename {
         Some((input, problem)) => div()
+            .debug_selector(|| "rename-box".to_owned())
             .relative()
-            .flex_1()
+            .map(|d| {
+                if in_row {
+                    d.flex_1().ml(-RENAME_INSET)
+                } else {
+                    d.w_full().flex_none()
+                }
+            })
             .min_w_0()
-            .when(in_row, |d| d.ml(-RENAME_INSET))
             .h(theme::S_24)
             .px(RENAME_INSET - px(1.))
             .flex()

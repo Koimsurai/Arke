@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn names_in_another_case_take_the_entrys_spelling() {
+    fn names_in_another_case_take_the_entry_spelling() {
         let list = entries(&["Projects", "readme.md", "Ärger"]);
         let mut sel = Selection::default();
         sel.select_names(["projects".into(), "ärger".into()]);

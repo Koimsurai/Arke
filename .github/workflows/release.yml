@@ -1,6 +1,6 @@
 # Pushing a v* tag publishes a release: v0.2.0-rc.1 is an RC, v0.2.0 is stable.
-# The build job checks the tag, runs the tests and packages dist/ with a read-only token; only the
-# publish job can write to the repo, and it only uploads what the build job made.
+# The test job and one build job per architecture run side by side with a read-only token; only
+# the publish job can write to the repo, and it only uploads what the build jobs made.
 name: release
 
 on:
@@ -11,8 +11,13 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  test:
     runs-on: windows-latest
+    # Same settings and cache key as ci.yml's test job, so the tests reuse the cache main saved
+    # (rust-cache keys on CARGO_* variables too) instead of compiling everything again.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     outputs:
       channel: ${{ steps.version.outputs.channel }}
       number: ${{ steps.version.outputs.number }}
@@ -24,63 +29,62 @@ jobs:
       # Restore only: a cache saved under a tag can't be used by any later run.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          shared-key: test
           save-if: false
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-nextest,cargo-about
-      # The tag must be the version xtask publishes: the Cargo.toml version for stable (after
-      # cargo xtask version), the next version plus -rc.N for an RC.
+          tool: cargo-nextest
       - name: tag matches the version
         id: version
         shell: bash
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          case "$tag" in
-            *-rc.*) channel=rc; number="${tag##*-rc.}" ;;
-            *-*) echo "::error::unrecognized tag $GITHUB_REF_NAME (expected v1.2.3 or v1.2.3-rc.N)"; exit 1 ;;
-            *) channel=stable; number="" ;;
-          esac
-          args=("$channel")
-          if [ -n "$number" ]; then
-            if ! [[ "$number" =~ ^[0-9]+$ ]]; then
-              echo "::error::RC number in $GITHUB_REF_NAME is not a number"
-              exit 1
-            fi
-            args+=(--number "$number")
-          fi
-          expected="$(cargo xtask release-version "${args[@]}")"
-          if [ "$expected" != "$tag" ]; then
-            echo "::error::tag $GITHUB_REF_NAME doesn't match the version to publish, v$expected"
-            exit 1
-          fi
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+        run: bash .github/release-tag.sh
       - name: test
         run: cargo nextest run --locked --workspace --profile ci
-      # The release has arke-<version>.exe (x64) and arke-<version>-arm64.exe, each with a .sha256,
-      # and THIRD_PARTY_LICENSES.md. ARM64 is cross-compiled here (the runner image has the MSVC
-      # ARM64 build tools); tests run on x64 only.
+
+  # The release has arke-<version>.exe (x64) and arke-<version>-arm64.exe, each with a .sha256,
+  # and THIRD_PARTY_LICENSES.md. Each architecture builds in its own job, at the same time (fat
+  # LTO makes each one long); ARM64 is cross-compiled (the runner image has the MSVC ARM64 build
+  # tools). Tests run on x64 only.
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-about
       - name: add ARM64 target
+        if: matrix.arch == 'arm64'
         run: rustup target add aarch64-pc-windows-msvc
+      - name: tag matches the version
+        id: version
+        shell: bash
+        run: bash .github/release-tag.sh
       - name: build
         shell: bash
         env:
           CHANNEL: ${{ steps.version.outputs.channel }}
           NUMBER: ${{ steps.version.outputs.number }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          args=("$CHANNEL")
+          args=("$CHANNEL" --arch "$ARCH")
           if [ -n "$NUMBER" ]; then args+=(--number "$NUMBER"); fi
           cargo xtask build "${args[@]}"
           ls -l dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist
+          name: dist-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    needs: build
+    needs: [test, build]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -93,10 +97,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Both builds into one dist/; the notes and THIRD_PARTY_LICENSES.md are the same in each.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          pattern: dist-*
           path: dist
+          merge-multiple: true
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*.exe
@@ -104,8 +110,8 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CHANNEL: ${{ needs.build.outputs.channel }}
-          NUMBER: ${{ needs.build.outputs.number }}
+          CHANNEL: ${{ needs.test.outputs.channel }}
+          NUMBER: ${{ needs.test.outputs.number }}
         run: |
           args=("$CHANNEL")
           if [ -n "$NUMBER" ]; then args+=(--number "$NUMBER"); fi

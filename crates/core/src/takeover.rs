@@ -192,7 +192,8 @@ pub fn selected_names(folder: &Path, items: &[String]) -> Vec<String> {
     names
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+/// Whether `a` and `b` name the same folder (case-insensitive, trailing backslash ignored).
+pub fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.to_string_lossy();
     let b = b.to_string_lossy();
     a.trim_end_matches('\\')

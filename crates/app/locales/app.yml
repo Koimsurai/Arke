@@ -1524,6 +1524,14 @@ settings.takeover_desc:
   en: "Registers Arke as the folder handler for this Windows account. Turn it off to undo it"
   zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，關閉即還原"
   zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，关闭即还原"
+settings.external_tab:
+  en: "Open folders from other apps in a tab"
+  zh-TW: "從其他程式開啟的資料夾以分頁開啟"
+  zh-CN: "从其他程序打开的文件夹以标签页打开"
+settings.external_tab_desc:
+  en: "Adds a tab to the window you used last. Off: each folder gets a new window"
+  zh-TW: "加到最近使用的視窗。關閉則每個資料夾都開新視窗"
+  zh-CN: "加到最近使用的窗口。关闭则每个文件夹都开新窗口"
 settings.language_zh:
   en: "繁體中文"
   zh-TW: "繁體中文"

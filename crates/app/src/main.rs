@@ -640,8 +640,10 @@ fn open_taken_over(cx: &mut App, services: &Services, request: &win_takeover::Op
     )
 }
 
-/// Opens a window for a folder, Home or the Recycle Bin (with `select` selected) and brings it to
-/// the front. `explorer_thread` is the thread of the Explorer window being replaced, if any.
+/// Shows a folder, Home or the Recycle Bin (with `select` selected) and brings it to the front: a
+/// folder or the Recycle Bin as a tab in the window used last (`tab_host`), Home (Win+E, "Open
+/// Arke") and everything else in a new window. `explorer_thread` is the thread of the Explorer
+/// window being replaced, if any.
 fn open_target(
     cx: &mut App,
     services: &Services,
@@ -649,6 +651,19 @@ fn open_target(
     select: &[String],
     explorer_thread: Option<u32>,
 ) -> bool {
+    let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
+    if target != Target::Home
+        && let Some(host) = tab_host(cx)
+    {
+        let shown = host.update(cx, |workspace, window, cx| {
+            workspace.open_external(target.clone(), select.clone(), window, cx);
+            bring_to_front(window, explorer_thread);
+        });
+        if shown.is_ok() {
+            cx.activate(true);
+            return true;
+        }
+    }
     let start = match &target {
         Target::Folder(path) => path.clone(),
         Target::Home | Target::RecycleBin => {
@@ -658,7 +673,6 @@ fn open_target(
     let Some(window) = open_explorer_window(cx, services, Some(start), None, Instant::now()) else {
         return false;
     };
-    let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
     let shown = window.update(cx, |workspace, window, cx| {
         workspace.show_taken_over(target, select, window, cx);
         bring_to_front(window, explorer_thread);
@@ -667,6 +681,34 @@ fn open_target(
         cx.activate(true);
     }
     shown.is_ok()
+}
+
+/// The window a folder from another program opens in as a tab: the one used last, else the newest.
+/// `None` (open a window) when no window is open or the setting asks for a window each time.
+fn tab_host(cx: &mut App) -> Option<gpui::WindowHandle<Workspace>> {
+    if !settings::SettingsStore::global(cx)
+        .read(cx)
+        .settings
+        .open_external_in_tab
+    {
+        return None;
+    }
+    let windows: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Workspace>())
+        .collect();
+    let last = cx
+        .try_global::<workspace::LastActiveWindow>()
+        .and_then(|l| l.0)
+        .and_then(|w| w.downcast::<Workspace>());
+    pick_tab_host(&windows, last)
+}
+
+/// `last` if it is still open, otherwise the newest window.
+fn pick_tab_host<H: Copy + PartialEq>(windows: &[H], last: Option<H>) -> Option<H> {
+    last.filter(|l| windows.contains(l))
+        .or_else(|| windows.last().copied())
 }
 
 /// Brings Arke's window to the front, even when another program owns the foreground (a window
@@ -949,6 +991,9 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
                     // foreground right (instance.rs), which `bring_to_front` makes use of.
                     if let Some(page) = open.page {
                         open_target(cx, &services, page.target(), &[], None)
+                    } else if let (Some(path), None) = (&open.path, &bench) {
+                        // A folder handed over by the shell or another program (#11).
+                        open_target(cx, &services, Target::Folder(path.clone()), &[], None)
                     } else {
                         match open_explorer_window(cx, &services, open.path, bench, started_at) {
                             Some(handle) => {
@@ -1176,5 +1221,15 @@ mod arg_tests {
         assert_eq!(args.window_bench(), Some(BenchMode::Scroll));
         assert_eq!(args.path, Some(PathBuf::from(r"C:\big")));
         assert_eq!(parse(&["--bench"]).window_bench(), Some(BenchMode::Startup));
+    }
+
+    #[test]
+    fn folders_from_other_apps_go_to_the_window_used_last() {
+        assert_eq!(pick_tab_host(&[1, 2, 3], Some(1)), Some(1));
+        // The window used last was closed, or none was active yet: the newest.
+        assert_eq!(pick_tab_host(&[1, 2, 3], Some(9)), Some(3));
+        assert_eq!(pick_tab_host(&[1, 2], None), Some(2));
+        // No window (only the notification area icon): open one.
+        assert_eq!(pick_tab_host::<u8>(&[], Some(1)), None);
     }
 }

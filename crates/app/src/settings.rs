@@ -429,6 +429,9 @@ pub(crate) struct Settings {
     /// Show folders opened from anywhere in Arke instead of File Explorer (`win_takeover.rs`).
     /// Only while Arke runs in the background; needs `keep_running`.
     pub(crate) open_folders_in_arke: bool,
+    /// Folders opened from other programs open as a tab in the window used last, not a window of
+    /// their own (#11).
+    pub(crate) open_external_in_tab: bool,
     pub(crate) language: Language,
     /// Ask before moving to the Recycle Bin. Permanent deletes are always confirmed by Windows.
     pub(crate) confirm_recycle: bool,
@@ -544,6 +547,7 @@ impl Default for Settings {
             remember_folder_views: true,
             keep_running: true,
             open_folders_in_arke: false,
+            open_external_in_tab: true,
             language: Language::default(),
             confirm_recycle: false,
             warn_extension_change: true,

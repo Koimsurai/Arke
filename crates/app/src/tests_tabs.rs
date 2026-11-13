@@ -722,3 +722,43 @@ fn ctrl_w_closes_the_active_side_then_the_tab(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui::test]
+fn a_folder_from_another_app_opens_as_a_tab_and_reuses_one_showing_it(cx: &mut TestAppContext) {
+    use arke_core::takeover::Target;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    fs.insert_many(r"C:\dl", 3);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+
+    let one: Arc<str> = "file_000001.txt".into();
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_external(Target::Folder(p(r"C:\dl")), vec![one.clone()], window, cx);
+    });
+    let dl = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &dl, "dl", loaded(r"C:\dl"));
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 2);
+    assert_eq!(active(&ws, cx), 1);
+    assert_eq!(
+        dl.update(cx, |e, _| selected_names(e)),
+        vec!["file_000001.txt"]
+    );
+
+    // Again for the same folder (other case, trailing backslash) while on the first tab: the tab
+    // already showing it comes back with the new item selected, no third tab.
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    let two: Arc<str> = "file_000002.txt".into();
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_external(Target::Folder(p(r"c:\DL\")), vec![two.clone()], window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 2);
+    assert_eq!(active(&ws, cx), 1);
+    assert_eq!(
+        dl.update(cx, |e, _| selected_names(e)),
+        vec!["file_000002.txt"]
+    );
+}

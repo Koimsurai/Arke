@@ -770,3 +770,30 @@ fn a_folder_from_another_app_opens_as_a_tab_and_reuses_one_showing_it(cx: &mut T
     });
     assert_eq!(at_cursor.as_deref(), Some("file_000002.txt"));
 }
+
+#[gpui::test]
+fn closing_the_last_tab_leaves_the_window_on_home(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+
+    ws.update_in(cx, |ws, window, cx| ws.close_tab(0, window, cx));
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 1);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(rust_i18n::t!("home.title").into_owned()),
+        "the window stays, showing Home"
+    );
+
+    // Home has the keyboard: Ctrl+W there closes the window.
+    cx.simulate_keystrokes("ctrl-w");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| cx.windows().len()),
+        0,
+        "Ctrl+W on Home closes it"
+    );
+}

@@ -29,6 +29,9 @@ use crate::workspace::{CloseTab, NewTab, Workspace};
 
 #[path = "tests_folder_views.rs"]
 mod folder_views;
+#[cfg(windows)]
+#[path = "tests_live_recycle.rs"]
+mod live_recycle;
 #[path = "tests_motion.rs"]
 mod motion;
 #[path = "tests_preview_shelf.rs"]
@@ -1461,6 +1464,19 @@ fn setup_workspace_with<'a>(
     shell: Arc<FakeShell>,
     start: &str,
 ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    let services = Services {
+        fs,
+        shell,
+        remotes: crate::remote_shell::test_remotes(),
+    };
+    setup_workspace_services(cx, services, PathBuf::from(start))
+}
+
+fn setup_workspace_services(
+    cx: &mut TestAppContext,
+    services: Services,
+    start: PathBuf,
+) -> (Entity<Workspace>, &mut VisualTestContext) {
     arke_core::fs::mark_ui_thread();
     // The locale is process-wide. Tests run in English, the default, so expected text built
     // with t!() before this call still matches.
@@ -1472,12 +1488,6 @@ fn setup_workspace_with<'a>(
         crate::workspace::bind_keys(cx);
         crate::palette::bind_keys(cx);
     });
-    let services = Services {
-        fs,
-        shell,
-        remotes: crate::remote_shell::test_remotes(),
-    };
-    let start = PathBuf::from(start);
     cx.add_window_view(move |window, cx| {
         Workspace::new(
             services,

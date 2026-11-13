@@ -340,13 +340,20 @@ pub(crate) mod test_support {
         }
     }
 
-    /// PowerShell holding `path` open with no sharing, like an editor that locks its file.
+    /// PowerShell holding `path` open with no sharing, like an editor that locks its file. Waits
+    /// until the file really is held: right after a file is written, real-time antivirus may
+    /// have it open for a moment, and a failed open must not pass for a lock (PowerShell carries
+    /// on after a failed call, so "ready" alone proved nothing).
     pub(crate) fn lock_in_other_process(path: &Path) -> Helper {
         use std::io::Read;
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let script = format!(
-            "$f = [System.IO.File]::Open('{}', 'Open', 'Read', 'None'); 'ready'; Start-Sleep 60",
+            "$f = $null; \
+             for ($i = 0; $i -lt 100 -and -not $f; $i++) {{ \
+               try {{ $f = [System.IO.File]::Open('{}', 'Open', 'Read', 'None') }} \
+               catch {{ Start-Sleep -Milliseconds 50 }} }}; \
+             if ($f) {{ 'ready'; Start-Sleep 60 }} else {{ 'nolok' }}",
             path.display()
         );
         let mut child = Command::new("powershell")
@@ -357,8 +364,14 @@ pub(crate) mod test_support {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .unwrap();
-        let mut ready = [0u8; 5];
-        child.stdout.take().unwrap().read_exact(&mut ready).unwrap();
+        let mut answer = [0u8; 5];
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_exact(&mut answer)
+            .unwrap();
+        assert_eq!(&answer, b"ready", "could not lock {}", path.display());
         Helper(child)
     }
 }

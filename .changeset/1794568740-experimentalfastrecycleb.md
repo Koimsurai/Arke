@@ -1,0 +1,5 @@
+---
+default: minor
+---
+
+Experimental Fast Recycle Bin: on local NTFS drives a folder goes to the Recycle Bin at once (20,000 files in about 0.3 s instead of 40 s), and Windows restores it as usual

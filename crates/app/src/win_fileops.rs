@@ -487,10 +487,59 @@ pub(crate) fn perform_tracked(
     {
         return (crate::win_purge::purge(paths, progress), None);
     }
+    // Experimental fast Recycle Bin: what it can take goes there directly, the rest through
+    // the engine below (win_fast_recycle.rs).
+    let mut fast = Vec::new();
+    let rest;
+    let op = match op {
+        FileOp::Delete {
+            paths,
+            recycle: true,
+        } if crate::win_fast_recycle::enabled() => {
+            let mut left = Vec::new();
+            for path in paths {
+                match crate::win_fast_recycle::recycle(path) {
+                    Some(now) => {
+                        progress
+                            .done
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        fast.extend(put_back(path, &now));
+                    }
+                    None => left.push(path.clone()),
+                }
+            }
+            if left.is_empty() {
+                return (Ok(OpOutcome::Done), Some(Undo::PutBack(fast)));
+            }
+            rest = FileOp::Delete {
+                paths: left,
+                recycle: true,
+            };
+            &rest
+        }
+        other => other,
+    };
     HIDE_PROGRESS.set(true);
-    let outcome = perform_recorded(op, owner, false, Some(progress.clone()));
+    let (result, undo) = perform_recorded(op, owner, false, Some(progress.clone()));
     HIDE_PROGRESS.set(false);
-    outcome
+    let undo = match (undo, fast.is_empty()) {
+        (undo, true) => undo,
+        (Some(Undo::PutBack(mut items)), false) => {
+            items.extend(fast);
+            Some(Undo::PutBack(items))
+        }
+        (_, false) => Some(Undo::PutBack(fast)),
+    };
+    (result, undo)
+}
+
+/// How to undo moving `from` to `now`.
+fn put_back(from: &Path, now: &Path) -> Option<PutBack> {
+    Some(PutBack {
+        now: now.to_string_lossy().into_owned(),
+        parent: from.parent()?.to_path_buf(),
+        name: from.file_name()?.to_string_lossy().into_owned(),
+    })
 }
 
 fn perform_recorded(

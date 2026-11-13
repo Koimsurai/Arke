@@ -68,6 +68,7 @@ mod win_cloud;
 mod win_devnotify;
 mod win_dragimage;
 mod win_eject;
+mod win_fast_recycle;
 mod win_fileops;
 mod win_http;
 mod win_icons;

@@ -55,6 +55,7 @@ features = [
     # Update checks over WinHTTP (system certificates and proxy)
     "Win32_Networking_WinHttp",
     "Win32_Security",
+    "Win32_Security_Authorization",
     # Saved network credentials go to Windows Credential Manager
     "Win32_Security_Credentials",
     # Jump list titles (PKEY_Title)

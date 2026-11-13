@@ -1181,6 +1181,14 @@ impl Workspace {
                     ui,
                 ),
             ),
+            card(
+                Icon::Trash,
+                t!("settings.fast_recycle"),
+                Some(t!("settings.fast_recycle_desc")),
+                switch("fast-recycle", s.fast_recycle, |st| {
+                    st.fast_recycle = !st.fast_recycle;
+                }),
+            ),
         ];
         let sorting = vec![
             card(
@@ -1435,7 +1443,7 @@ impl Workspace {
             files,
             &[
                 (Some(t!("settings.group_show")), &[0, 2, 1, 5, 6, 7, 8]),
-                (Some(t!("settings.group_behavior")), &[4, 3, 11, 12, 13]),
+                (Some(t!("settings.group_behavior")), &[4, 3, 11, 12, 13, 14]),
                 (Some(t!("settings.group_confirm")), &[9, 10]),
             ],
         );

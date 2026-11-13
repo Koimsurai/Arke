@@ -797,3 +797,50 @@ fn closing_the_last_tab_leaves_the_window_on_home(cx: &mut TestAppContext) {
         "Ctrl+W on Home closes it"
     );
 }
+
+#[gpui::test]
+fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    let fs = FakeFs::new();
+    for dir in [r"C:\a", r"C:\b", r"C:\c"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    for path in [r"C:\b", r"C:\c"] {
+        view.update(cx, |e, cx| e.navigate(p(path), NavKind::New, cx));
+        wait_until(cx, &view, path, loaded(path));
+    }
+    cx.run_until_parked();
+    let press = |cx: &mut VisualTestContext, direction, position| {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Navigate(direction),
+            position,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+    };
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+
+    // Over the list: the pane handles it.
+    let list = view.update(cx, |e, _| e.list_bounds_for_test());
+    let over_list = point(list.left() + px(40.), list.top() + px(10.));
+    press(cx, NavigationDirection::Back, over_list);
+    wait_until(cx, &view, "back to b", loaded(r"C:\b"));
+    assert_eq!(at(cx), Some(p(r"C:\b")));
+
+    // Left of the list (the sidebar), outside any pane: still the active tab.
+    let beside = point(px(8.), list.top() + px(10.));
+    assert!(beside.x < list.left(), "the test point is outside the list");
+    press(cx, NavigationDirection::Back, beside);
+    wait_until(cx, &view, "back to a", loaded(r"C:\a"));
+    assert_eq!(at(cx), Some(p(r"C:\a")));
+    press(cx, NavigationDirection::Forward, beside);
+    wait_until(cx, &view, "forward to b", loaded(r"C:\b"));
+    assert_eq!(at(cx), Some(p(r"C:\b")));
+}

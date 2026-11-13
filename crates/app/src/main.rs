@@ -693,6 +693,11 @@ fn tab_host(cx: &mut App) -> Option<gpui::WindowHandle<Workspace>> {
     {
         return None;
     }
+    last_window(cx)
+}
+
+/// The Arke window used last, else the newest; `None` when no window is open.
+fn last_window(cx: &App) -> Option<gpui::WindowHandle<Workspace>> {
     let windows: Vec<_> = cx
         .windows()
         .into_iter()
@@ -1047,7 +1052,12 @@ fn install_tray(cx: &mut App, services: &Services, store: &gpui::Entity<settings
         while let Ok(command) = commands.recv_async().await {
             cx.update(|cx| match command {
                 tray::TrayCommand::Open => {
-                    if open_explorer(cx, &services, None, None, Instant::now()) {
+                    // Brings back the window used last (restored if minimized); a new window only
+                    // when none is open, so repeated or double clicks don't pile up windows.
+                    if let Some(window) = last_window(cx) {
+                        let _ = window.update(cx, |_, window, _| bring_to_front(window, None));
+                        cx.activate(true);
+                    } else if open_explorer(cx, &services, None, None, Instant::now()) {
                         cx.activate(true);
                     }
                 }

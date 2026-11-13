@@ -1,0 +1,74 @@
+# Uploads a release's exes to VirusTotal and adds the scan links to its notes. Runs after the
+# release workflow publishes, or by hand for an existing tag. The API key lives in the
+# VT_API_KEY environment, so only jobs that ask for that environment can read it.
+name: virustotal
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.2.0
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    environment: VT_API_KEY
+    permissions:
+      # Appends the links to the release notes.
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: download the exes
+        run: gh release download "$TAG" --pattern '*.exe' --dir dist
+      # Files under 32 MB go to /files; larger ones (the x64 exe) need a one-time upload URL.
+      # Links point at the file's SHA-256 page, which shows the result once the engines finish.
+      - name: upload to VirusTotal
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          set -euo pipefail
+          links=()
+          for exe in dist/*.exe; do
+            size=$(stat -c %s "$exe")
+            url=https://www.virustotal.com/api/v3/files
+            if [ "$size" -ge $((32 * 1024 * 1024)) ]; then
+              url=$(curl -sS --fail -H "x-apikey: $VT_API_KEY" \
+                https://www.virustotal.com/api/v3/files/upload_url | jq -r .data)
+            fi
+            curl -sS --fail -H "x-apikey: $VT_API_KEY" -F "file=@$exe" "$url" > /dev/null
+            sha=$(sha256sum "$exe" | cut -d' ' -f1)
+            name=$(basename "$exe")
+            echo "$name uploaded ($size bytes), sha256 $sha"
+            links+=("[$name](https://www.virustotal.com/gui/file/$sha)")
+          done
+          {
+            echo "VirusTotal scans of this release:"
+            last=$((${#links[@]} - 1))
+            for i in "${!links[@]}"; do
+              if [ "$i" -lt "$last" ]; then echo "${links[$i]} ·"; else echo "${links[$i]}"; fi
+            done
+          } > vt-links.md
+      - name: add the links to the release notes
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json body --jq .body > notes.md
+          if grep -q '^VirusTotal scans of this release:' notes.md; then
+            echo "the notes already list VirusTotal scans; left as they are"
+            exit 0
+          fi
+          printf '\n\n' >> notes.md
+          cat vt-links.md >> notes.md
+          gh release edit "$TAG" --notes-file notes.md

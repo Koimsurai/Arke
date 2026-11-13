@@ -844,3 +844,78 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     wait_until(cx, &view, "forward to b", loaded(r"C:\b"));
     assert_eq!(at(cx), Some(p(r"C:\b")));
 }
+
+/// Tab A goes a → b; a new tab B opens at c and goes to d. Returns the two list views.
+fn two_tabs_with_history(
+    ws: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> (Entity<Explorer>, Entity<Explorer>) {
+    let a = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &a, "a", loaded(r"C:\a"));
+    a.update(cx, |e, cx| e.navigate(p(r"C:\b"), NavKind::New, cx));
+    wait_until(cx, &a, "b", loaded(r"C:\b"));
+    open_tabs(ws, cx, &[r"C:\c"]);
+    let b = ws.update(cx, |ws, _| ws.active_view().clone());
+    b.update(cx, |e, cx| e.navigate(p(r"C:\d"), NavKind::New, cx));
+    wait_until(cx, &b, "d", loaded(r"C:\d"));
+    cx.run_until_parked();
+    (a, b)
+}
+
+fn four_folders() -> Arc<FakeFs> {
+    let fs = FakeFs::new();
+    for dir in [r"C:\a", r"C:\b", r"C:\c", r"C:\d"] {
+        fs.insert_many(dir, 1);
+    }
+    fs
+}
+
+#[gpui::test]
+fn back_crosses_tabs_in_the_order_you_went_and_forward_retraces_it(cx: &mut TestAppContext) {
+    let (ws, cx) = setup_workspace(cx, four_folders(), r"C:\a");
+    let (a, b) = two_tabs_with_history(&ws, cx);
+    let step = |cx: &mut VisualTestContext, keys: &str| {
+        cx.simulate_keystrokes(keys);
+        cx.run_until_parked();
+    };
+
+    step(cx, "alt-left");
+    wait_until(cx, &b, "B back to c", loaded(r"C:\c"));
+    assert_eq!(active(&ws, cx), 1, "still in tab B");
+    // B is at its first folder: back returns to tab A as it was left.
+    step(cx, "alt-left");
+    assert_eq!(active(&ws, cx), 0);
+    assert_eq!(
+        a.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\b"))
+    );
+    step(cx, "alt-left");
+    wait_until(cx, &a, "A back to a", loaded(r"C:\a"));
+
+    step(cx, "alt-right");
+    wait_until(cx, &a, "A forward to b", loaded(r"C:\b"));
+    step(cx, "alt-right");
+    assert_eq!(active(&ws, cx), 1, "forward goes back into tab B");
+    step(cx, "alt-right");
+    wait_until(cx, &b, "B forward to d", loaded(r"C:\d"));
+}
+
+#[gpui::test]
+fn within_the_current_tab_back_stays_in_the_tab(cx: &mut TestAppContext) {
+    let (ws, cx) = setup_workspace(cx, four_folders(), r"C:\a");
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.nav_scope = crate::settings::NavScope::WithinTab, cx);
+        });
+    });
+    let (_, b) = two_tabs_with_history(&ws, cx);
+    cx.simulate_keystrokes("alt-left");
+    wait_until(cx, &b, "B back to c", loaded(r"C:\c"));
+    cx.simulate_keystrokes("alt-left");
+    cx.run_until_parked();
+    assert_eq!(active(&ws, cx), 1, "nothing left in this tab: stays");
+    assert_eq!(
+        b.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\c"))
+    );
+}

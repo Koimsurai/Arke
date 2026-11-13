@@ -35,6 +35,8 @@ mod backup;
 mod home_page;
 #[path = "workspace_menuprefs.rs"]
 pub(crate) mod menuprefs;
+#[path = "workspace_nav.rs"]
+mod nav;
 #[path = "workspace_pages.rs"]
 mod pages;
 #[path = "workspace_recycle.rs"]
@@ -314,6 +316,8 @@ pub(crate) struct Workspace {
     /// Rechecks network folders when Arke regains focus.
     _activation: Subscription,
     _settings: Subscription,
+    /// Back and forward across tabs.
+    nav: nav::NavState,
     /// Last session saved to settings; only saved again when it changes.
     saved_session: Option<crate::settings::Session>,
     /// Window position is saved only after moving or resizing settles.
@@ -552,6 +556,7 @@ impl Workspace {
             this.sync_look(window, cx);
             this.sync_accent_input(window, cx);
             this.start_from_settings(&store, window, cx);
+            this.sync_nav_buttons(cx);
             cx.notify();
         });
         // Saved workspaces show in the sidebar and Ctrl+T.
@@ -594,6 +599,7 @@ impl Workspace {
             _appearance: appearance,
             _activation: activation,
             _settings: settings,
+            nav: nav::NavState::default(),
             saved_session: None,
             _bounds: bounds,
             bounds_task: None,
@@ -604,6 +610,8 @@ impl Workspace {
         if let Some(session) = restore {
             this.restore_session(&session, window, cx);
         }
+        // The first switch to another tab is a step back to this one.
+        this.note_active(cx);
         this
     }
 
@@ -900,7 +908,11 @@ impl Workspace {
                 );
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
-            ExplorerEvent::Navigated(path) => {
+            ExplorerEvent::HistoryButton(back) => self.history_button(source, *back, window, cx),
+            ExplorerEvent::Navigated { path, stepped } => {
+                if *stepped {
+                    self.note_navigation(source.entity_id(), cx);
+                }
                 crate::search_history::SearchHistory::record(path, true, cx);
                 SettingsStore::global(cx).update(cx, |s, cx| {
                     s.update(
@@ -1070,7 +1082,8 @@ impl Workspace {
     /// Focuses what the active tab shows: its page (Home, Settings, the Recycle Bin) when one
     /// covers the list, otherwise the list. A hidden list can't take keys, so with the list focused
     /// under a page, shortcuts such as Ctrl+W did nothing.
-    fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_active(cx);
         let focus = self
             .page_focus(cx)
             .unwrap_or_else(|| self.active_view().read(cx).focus_handle(cx));
@@ -2016,6 +2029,26 @@ impl Render for Workspace {
                 this.open_workspaces(window, cx);
             }))
             .on_key_down(cx.listener(Self::on_key_down))
+            .capture_action(cx.listener(|this, _: &crate::explorer::GoBack, window, cx| {
+                if Self::across_tabs(cx) {
+                    cx.stop_propagation();
+                    this.step_timeline(true, window, cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &crate::explorer::GoForward, window, cx| {
+                if Self::across_tabs(cx) {
+                    cx.stop_propagation();
+                    this.step_timeline(false, window, cx);
+                }
+            }))
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                if let MouseButton::Navigate(direction) = event.button
+                    && Self::across_tabs(cx)
+                {
+                    cx.stop_propagation();
+                    this.step_timeline(direction == gpui::NavigationDirection::Back, window, cx);
+                }
+            }))
             // Mouse back/forward anywhere in the window (the sidebar, the tab list, Home and the
             // other pages) move the active tab; over a list the pane itself handles them (#8).
             .on_mouse_down(

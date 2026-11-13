@@ -27,7 +27,7 @@ use crate::assets::Icon;
 use crate::explorer::ViewMode;
 use crate::scrollbar::ScrollbarDrag;
 use crate::settings::{
-    Accent, Density, FolderOrder, Language, Material, Settings, SettingsStore, SortBy,
+    Accent, Density, FolderOrder, Language, Material, NavScope, Settings, SettingsStore, SortBy,
     StartLocation, TabLayout, ThemeMode, Tint,
 };
 use crate::text_input::{InputEvent, TextInput};
@@ -1166,6 +1166,21 @@ impl Workspace {
                     st.preview_pane = !st.preview_pane;
                 }),
             ),
+            card(
+                Icon::ArrowLeft,
+                t!("settings.nav_scope"),
+                Some(t!("settings.nav_scope_desc")),
+                choice(
+                    "nav-scope",
+                    &[
+                        (NavScope::AcrossTabs, t!("settings.nav_scope_across")),
+                        (NavScope::WithinTab, t!("settings.nav_scope_within")),
+                    ],
+                    s.nav_scope,
+                    |st, v| st.nav_scope = v,
+                    ui,
+                ),
+            ),
         ];
         let sorting = vec![
             card(
@@ -1420,7 +1435,7 @@ impl Workspace {
             files,
             &[
                 (Some(t!("settings.group_show")), &[0, 2, 1, 5, 6, 7, 8]),
-                (Some(t!("settings.group_behavior")), &[4, 3, 11, 12]),
+                (Some(t!("settings.group_behavior")), &[4, 3, 11, 12, 13]),
                 (Some(t!("settings.group_confirm")), &[9, 10]),
             ],
         );

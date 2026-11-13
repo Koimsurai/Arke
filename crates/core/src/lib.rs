@@ -50,6 +50,7 @@ pub mod sort;
 pub mod takeover;
 pub mod text;
 pub mod thumbs;
+pub mod timeline;
 pub mod tree;
 pub mod typeahead;
 pub mod verify;

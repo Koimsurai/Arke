@@ -1358,6 +1358,19 @@ impl Workspace {
                 }),
             ),
             card(
+                Icon::Explorer,
+                t!("settings.win_e"),
+                Some(t!("settings.win_e_desc")),
+                switch("win-e", s.win_e_opens_arke, |st| {
+                    st.win_e_opens_arke = !st.win_e_opens_arke;
+                    // Only means something while Arke opens folders.
+                    if st.win_e_opens_arke {
+                        st.open_folders_in_arke = true;
+                        st.keep_running = true;
+                    }
+                }),
+            ),
+            card(
                 Icon::TabOpen,
                 t!("settings.external_tab"),
                 Some(t!("settings.external_tab_desc")),
@@ -1420,7 +1433,7 @@ impl Workspace {
                 (Some(t!("settings.group_details")), &[0, 1, 2, 6, 7]),
             ],
         );
-        let startup = regroup(startup, &[(None, &[3, 4, 5, 6, 0, 1, 2])]);
+        let startup = regroup(startup, &[(None, &[3, 4, 5, 6, 7, 0, 1, 2])]);
         let about = vec![about_header(), group(None, about)];
         vec![
             (t!("settings.appearance"), Icon::Theme, appearance),

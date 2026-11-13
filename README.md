@@ -85,10 +85,11 @@ Shell extensions from other programs run in a separate process, so a buggy one c
   23H2 and later).
 
 **Windows**
-- Optionally (experimental) open folders in Arke instead of File Explorer (Win+E and folders
-  opened from other apps included), also "Show in folder" from browsers and "Open file location" from other apps.
+- Optionally (experimental) open folders in Arke instead of File Explorer (folders opened from other
+  apps included), also "Show in folder" from browsers and "Open file location" from other apps.
   It registers Arke as the folder handler for your account and is undone when you turn it off.
-  File Explorer you start yourself from the taskbar or Start still opens as File Explorer.
+  File Explorer you start yourself (Win+E, the taskbar, Start) stays File Explorer unless you also
+  turn on "Win+E and the File Explorer icon open Arke too".
 - Screen reader support, x64 and ARM64 builds (ARM64 not yet tested on real ARM hardware),
   taskbar jump list, safe USB eject, system tray, settings backup. English, Simplified and
   Traditional Chinese.
@@ -222,8 +223,8 @@ with Windows, which keeps services under
 change is the optional "Open folders in Arke" setting, which registers Arke as the folder handler for your Windows account, only under
 `HKEY_CURRENT_USER\Software\Classes`: the `open` and `explore` verbs of `Folder` (so every folder
 the shell opens, "Show in folder" of browsers and editors included, starts Arke instead of File
-Explorer; whatever Arke can't show, such as Control Panel, is handed straight to Explorer) and the
-Win+E handler. Whatever was there before
+Explorer; whatever Arke can't show, such as Control Panel, is handed straight to Explorer) and, only
+with "Win+E and the File Explorer icon open Arke too", the Win+E handler. Whatever was there before
 is saved to `%APPDATA%\Arke\folder-handler-backup.json` and put back exactly when you turn the
 setting off or run `arke --restore-explorer`. Arke also keeps watching for new Explorer windows for
 the cases the registration can't reach, such as `explorer.exe /select,...`. Settings live in `%APPDATA%\Arke`, the search index, log and

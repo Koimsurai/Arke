@@ -1532,6 +1532,14 @@ settings.external_tab_desc:
   en: "Adds a tab to the window you used last. Off: each folder gets a new window"
   zh-TW: "加到最近使用的視窗。關閉則每個資料夾都開新視窗"
   zh-CN: "加到最近使用的窗口。关闭则每个文件夹都开新窗口"
+settings.win_e:
+  en: "Win+E and the File Explorer icon open Arke too"
+  zh-TW: "Win+E 和檔案總管圖示也開 Arke"
+  zh-CN: "Win+E 和文件资源管理器图标也打开 Arke"
+settings.win_e_desc:
+  en: "Off: File Explorer you start yourself stays File Explorer"
+  zh-TW: "關閉時，自己開的檔案總管仍是檔案總管"
+  zh-CN: "关闭时，自己打开的文件资源管理器仍是文件资源管理器"
 settings.language_zh:
   en: "繁體中文"
   zh-TW: "繁體中文"

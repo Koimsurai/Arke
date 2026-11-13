@@ -731,6 +731,11 @@ fn shell_window(args: &Args) -> Option<win_openinfolder::Linger> {
     {
         return None;
     }
+    // What the shell or the calling program passed, to tell "Show in folder" callers apart.
+    log::info!(
+        "opened with {:?}",
+        std::env::args_os().skip(1).collect::<Vec<_>>()
+    );
     win_openinfolder::start(folder.clone(), |folder, items| {
         let count = items.len();
         let outcome = instance::send(&Request::Select { folder, items }, instance::CLIENT_TIMEOUT);

@@ -287,7 +287,7 @@ mod com {
     impl IServiceProvider_Impl for StandIn_Impl {
         fn QueryService(
             &self,
-            _: *const GUID,
+            service: *const GUID,
             riid: *const GUID,
             ppv: *mut *mut c_void,
         ) -> Res<()> {
@@ -298,7 +298,14 @@ mod com {
             unsafe { *ppv = std::ptr::null_mut() };
             let unknown: IUnknown = self.to_interface();
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
-            unsafe { unknown.query(riid, ppv) }.ok()
+            let found = unsafe { unknown.query(riid, ppv) }.ok();
+            // SAFETY: riid was checked above; service may be null.
+            let (service, iid) = unsafe { (service.as_ref().copied(), *riid) };
+            log::info!(
+                "shell window: QueryService({service:?}, {iid:?}): {}",
+                if found.is_ok() { "ok" } else { "not supported" }
+            );
+            found
         }
     }
 
@@ -608,6 +615,13 @@ fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<Path
         windows.OnNavigate(cookie, &raw const location)?;
         (pending, cookie)
     };
+    let registered = Instant::now();
+    log::info!(
+        "shell window registered for {} (thread {})",
+        folder.display(),
+        // SAFETY: no preconditions.
+        unsafe { GetCurrentThreadId() }
+    );
 
     // SAFETY: thread timers, so WM_TIMER arrives in this thread's queue.
     let (lifetime, tick) = unsafe {
@@ -653,5 +667,12 @@ fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<Path
         let _ = DestroyWindow(hwnd);
     }
     drop(stand_in);
-    Ok(std::mem::take(&mut *shared.items.lock()))
+    let items = std::mem::take(&mut *shared.items.lock());
+    log::info!(
+        "shell window for {}: {} items selected, closed after {} ms",
+        folder.display(),
+        items.len(),
+        registered.elapsed().as_millis()
+    );
+    Ok(items)
 }

@@ -28,7 +28,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
 use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-    CoInitializeEx, CoTaskMemFree, CoUninitialize, DISPATCH_FLAGS, DISPPARAMS, EXCEPINFO,
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, DISPATCH_FLAGS, DISPPARAMS, EXCEPINFO, IBindCtx,
     IDispatch, IDispatch_Impl, IServiceProvider, IServiceProvider_Impl, ITypeInfo,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -37,10 +37,11 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Variant::{InitVariantFromBuffer, VARIANT};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    _SVGIO, FOLDERSETTINGS, IFolderView, IFolderView_Impl, ILCombine, ILGetSize, IShellBrowser,
-    IShellItem, IShellView, IShellView_Impl, IShellWindows, IWebBrowser_Impl, IWebBrowserApp,
-    IWebBrowserApp_Impl, SHCreateItemFromIDList, SHParseDisplayName, SIGDN_FILESYSPATH, SVSI_EDIT,
-    SVSI_ENSUREVISIBLE, SVSI_FOCUSED, SVSI_SELECT, SWC_BROWSER, ShellWindows,
+    _SVGIO, FOLDERSETTINGS, IFolderView, IFolderView_Impl, ILCombine, ILGetSize, ILIsEqual,
+    IShellBrowser, IShellItem, IShellView, IShellView_Impl, IShellWindows, IWebBrowser_Impl,
+    IWebBrowserApp, IWebBrowserApp_Impl, SHCreateItemFromIDList, SHGetDesktopFolder,
+    SHParseDisplayName, SIGDN_FILESYSPATH, SVSI_EDIT, SVSI_ENSUREVISIBLE, SVSI_FOCUSED,
+    SVSI_SELECT, SWC_BROWSER, ShellWindows,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer, MSG,
@@ -528,22 +529,55 @@ fn run(folder: &std::path::Path) -> Vec<PathBuf> {
     items
 }
 
-#[allow(clippy::too_many_lines)]
-fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<PathBuf>> {
-    use std::os::windows::ffi::OsStrExt;
-    let name: Vec<u16> = folder
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+/// The folder's item id lists the caller may look the window up by. `SHParseDisplayName` and the
+/// desktop folder's `ParseDisplayName` (what Chromium and Electron use for "Show in folder") give
+/// different lists for anything under the user profile (Downloads, projects), and the shell's
+/// window list only finds a window registered with the very list the caller has: with just one
+/// of them the caller waits 20 s, gives up and nothing is selected (#6). Both are registered when
+/// they differ.
+fn folder_locations(name: PCWSTR) -> windows::core::Result<Vec<Pidl>> {
     let mut raw = std::ptr::null_mut();
     // SAFETY: name is NUL-terminated; raw receives an allocated item id list.
-    unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut raw, 0, None) }?;
-    let pidl = Pidl(raw);
-    // SAFETY: standard COM activation of the shell's window list.
-    let windows: IShellWindows =
-        unsafe { CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER) }?;
+    unsafe { SHParseDisplayName(name, None, &raw mut raw, 0, None) }?;
+    let mut out = vec![Pidl(raw)];
+    // SAFETY: plain shell calls; the parsed list is owned by the Pidl that wraps it.
+    unsafe {
+        if let Ok(desktop) = SHGetDesktopFolder() {
+            let mut raw = std::ptr::null_mut();
+            let parsed = desktop.ParseDisplayName(
+                HWND::default(),
+                None::<&IBindCtx>,
+                name,
+                None,
+                &raw mut raw,
+                std::ptr::null_mut(),
+            );
+            if parsed.is_ok() && !raw.is_null() {
+                let other = Pidl(raw);
+                if !ILIsEqual(out[0].0.cast_const(), other.0.cast_const()).as_bool() {
+                    out.push(other);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
 
+/// One registration in the shell's window list: a hidden window and the object answering for it.
+struct Registration {
+    hwnd: HWND,
+    /// Kept alive until the registration is revoked.
+    _stand_in: IWebBrowserApp,
+    pending: i32,
+    cookie: i32,
+}
+
+/// Creates a hidden, cloaked window and registers a stand-in for `location` with it.
+fn register(
+    windows: &IShellWindows,
+    location: &Pidl,
+    shared: &Arc<Shared>,
+) -> windows::core::Result<Registration> {
     let class = windows::core::w!("ArkeShellWindow");
     // SAFETY: registers a window class of this module; the window procedure is defined above.
     let hwnd = unsafe {
@@ -554,7 +588,7 @@ fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<Path
             lpszClassName: class,
             ..Default::default()
         };
-        // Registering twice (a second folder in this process) fails harmlessly.
+        // Registering twice (a second window or folder in this process) fails harmlessly.
         RegisterClassW(&raw const wc);
         CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WINDOW_EX_STYLE(0),
@@ -581,25 +615,22 @@ fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<Path
             size_of::<i32>() as u32,
         )
     };
-
-    let shared = Arc::new(Shared::default());
     let stand_in: IWebBrowserApp = StandIn {
         hwnd,
         folder: Pidl({
             // The object keeps its own copy of the folder's item id list.
             // SAFETY: duplicates a valid list with the COM allocator.
-            unsafe { ILCombine(Some(pidl.0.cast_const()), None) }
+            unsafe { ILCombine(Some(location.0.cast_const()), None) }
         }),
         shared: shared.clone(),
     }
     .into();
     let dispatch: IDispatch = stand_in.cast()?;
-
-    // SAFETY: pidl is valid for ILGetSize bytes; the variant owns a copy.
-    let location = unsafe {
+    // SAFETY: the list is valid for ILGetSize bytes; the variant owns a copy.
+    let variant = unsafe {
         InitVariantFromBuffer(
-            pidl.0.cast_const().cast(),
-            ILGetSize(Some(pidl.0.cast_const())),
+            location.0.cast_const().cast(),
+            ILGetSize(Some(location.0.cast_const())),
         )
     }?;
     let empty = VARIANT::default();
@@ -607,20 +638,49 @@ fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<Path
     let (pending, cookie) = unsafe {
         let pending = windows.RegisterPending(
             GetCurrentThreadId().cast_signed(),
-            &raw const location,
+            &raw const variant,
             &raw const empty,
             SWC_BROWSER,
         )?;
         let cookie = windows.Register(&dispatch, hwnd.0 as i32, SWC_BROWSER)?;
-        windows.OnNavigate(cookie, &raw const location)?;
+        windows.OnNavigate(cookie, &raw const variant)?;
         (pending, cookie)
     };
+    Ok(Registration {
+        hwnd,
+        _stand_in: stand_in,
+        pending,
+        cookie,
+    })
+}
+
+fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<PathBuf>> {
+    use std::os::windows::ffi::OsStrExt;
+    let name: Vec<u16> = folder
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let locations = folder_locations(PCWSTR(name.as_ptr()))?;
+    // SAFETY: standard COM activation of the shell's window list.
+    let windows: IShellWindows =
+        unsafe { CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER) }?;
+    let shared = Arc::new(Shared::default());
+    let mut registrations = Vec::new();
+    for location in &locations {
+        match register(&windows, location, &shared) {
+            Ok(registration) => registrations.push(registration),
+            Err(err) if !registrations.is_empty() => {
+                log::info!("shell window: second registration failed: {err}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
     let registered = Instant::now();
     log::info!(
-        "shell window registered for {} (thread {})",
+        "shell window registered for {} ({} item id lists)",
         folder.display(),
-        // SAFETY: no preconditions.
-        unsafe { GetCurrentThreadId() }
+        registrations.len()
     );
 
     // SAFETY: thread timers, so WM_TIMER arrives in this thread's queue.
@@ -660,13 +720,15 @@ fn register_and_wait(folder: &std::path::Path) -> windows::core::Result<Vec<Path
     unsafe {
         let _ = KillTimer(None, lifetime);
         let _ = KillTimer(None, tick);
-        let _ = windows.Revoke(cookie);
-        if pending != cookie {
-            let _ = windows.Revoke(pending);
+        for r in &registrations {
+            let _ = windows.Revoke(r.cookie);
+            if r.pending != r.cookie {
+                let _ = windows.Revoke(r.pending);
+            }
+            let _ = DestroyWindow(r.hwnd);
         }
-        let _ = DestroyWindow(hwnd);
     }
-    drop(stand_in);
+    drop(registrations);
     let items = std::mem::take(&mut *shared.items.lock());
     log::info!(
         "shell window for {}: {} items selected, closed after {} ms",

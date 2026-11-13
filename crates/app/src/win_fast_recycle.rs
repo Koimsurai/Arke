@@ -730,8 +730,9 @@ mod tests {
     #[allow(clippy::print_stderr)]
     fn items_in_use_are_treated_like_the_engine_treats_them() {
         use crate::win_inuse::test_support::lock_in_other_process;
+        type Build = fn(&Path) -> PathBuf;
         let sb = Sandbox::new("inuse");
-        let cases: [(&str, fn(&Path) -> PathBuf); 2] = [
+        let cases: [(&str, Build); 2] = [
             ("open file", |dir| {
                 let file = dir.join("open.txt");
                 fs::write(&file, "x").unwrap();

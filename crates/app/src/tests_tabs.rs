@@ -454,8 +454,7 @@ fn compare_folders_marks_and_selects_the_differences(cx: &mut TestAppContext) {
             let mut m: Vec<(String, Mark)> = e
                 .compare
                 .as_ref()
-                .map(|m| m.iter().map(|(k, v)| (k.to_string(), *v)).collect())
-                .unwrap_or_default();
+                .map_or_default(|m| m.iter().map(|(k, v)| (k.to_string(), *v)).collect());
             m.sort_by(|a, b| a.0.cmp(&b.0));
             m
         })

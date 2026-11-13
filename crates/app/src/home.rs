@@ -153,10 +153,7 @@ pub(crate) fn short_folder(folder: &Path, places: &[Place]) -> String {
         .filter(|p| folder.starts_with(&p.path))
         .max_by_key(|p| p.path.components().count());
     if let Some(place) = best {
-        let rest = folder
-            .strip_prefix(&place.path)
-            .map(names)
-            .unwrap_or_default();
+        let rest = folder.strip_prefix(&place.path).map_or_default(names);
         let mut parts = vec![place.label.clone()];
         parts.extend(tail(rest));
         return parts.join(SEP);
@@ -283,18 +280,15 @@ impl HomePage {
             let name = file
                 .path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+                .map_or_default(|n| n.to_string_lossy().into_owned());
             let folder = file
                 .path
                 .parent()
-                .map(|p| short_folder(p, &self.places))
-                .unwrap_or_default();
+                .map_or_default(|p| short_folder(p, &self.places));
             let ext = file
                 .path
                 .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
+                .map_or_default(|e| e.to_string_lossy().to_lowercase());
             let open = file.path.clone();
             let reveal = file.path.clone();
             let parent = file.path.parent().map(Path::to_path_buf);

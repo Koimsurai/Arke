@@ -16,8 +16,9 @@ impl Explorer {
             return self
                 .search_hit(self.search_cursor)
                 .zip(self.search_results.as_ref())
-                .map(|(hit, r)| vec![(r.root.join(&*hit.rel), hit.entry.is_dir_like())])
-                .unwrap_or_default();
+                .map_or_default(|(hit, r)| {
+                    vec![(r.root.join(&*hit.rel), hit.entry.is_dir_like())]
+                });
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();

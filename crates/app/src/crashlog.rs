@@ -77,9 +77,7 @@ pub(crate) fn init() {
     log::info!(
         "main started ({} {})",
         crate::build_info::VERSION,
-        std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default()
+        std::env::current_exe().map_or_default(|p| p.display().to_string())
     );
 
     let default_hook = std::panic::take_hook();

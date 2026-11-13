@@ -142,11 +142,8 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
 fn bin_extension(path: &Path) -> String {
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    name.rfind('.')
-        .map(|at| name[at..].to_owned())
-        .unwrap_or_default()
+        .map_or_default(|n| n.to_string_lossy().into_owned());
+    name.rfind('.').map_or_default(|at| name[at..].to_owned())
 }
 
 /// Renames `from` to `to` on the same volume, never replacing anything at `to` (unlike

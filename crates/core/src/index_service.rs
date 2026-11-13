@@ -1091,8 +1091,7 @@ fn checkpoint_path(cache: &Path) -> PathBuf {
 fn alt_path(path: &Path) -> PathBuf {
     let stem = path
         .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|s| s.to_string_lossy().into_owned());
     let name = match path.extension() {
         Some(ext) => format!("{stem}.alt.{}", ext.to_string_lossy()),
         None => format!("{stem}.alt"),

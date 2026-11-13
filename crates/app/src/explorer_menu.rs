@@ -776,8 +776,9 @@ impl Explorer {
             return self
                 .search_hit(self.search_cursor)
                 .zip(self.search_results.as_ref())
-                .map(|(hit, r)| vec![(r.root.join(&*hit.rel), hit.entry.is_dir_like())])
-                .unwrap_or_default();
+                .map_or_default(|(hit, r)| {
+                    vec![(r.root.join(&*hit.rel), hit.entry.is_dir_like())]
+                });
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
@@ -981,8 +982,7 @@ impl Explorer {
         }
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         if single && !*is_dir && archive_kind(&name).is_some() {
             entries.push(MenuEntry::Separator);
             entries.push(item(
@@ -1520,8 +1520,7 @@ impl Explorer {
         // Same as Explorer's "Copy as path": each path quoted, one per line.
         let text = if targets.is_empty() {
             self.current_path()
-                .map(|p| format!("\"{}\"", p.display()))
-                .unwrap_or_default()
+                .map_or_default(|p| format!("\"{}\"", p.display()))
         } else {
             targets
                 .iter()
@@ -1779,8 +1778,7 @@ impl Explorer {
             if let Err(err) = shell.choose_app(&path, owner) {
                 let name = path
                     .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                    .map_or_default(|n| n.to_string_lossy().into_owned());
                 let _ = tx.send(crate::explorer::AppEvent::Notice(Err(t!(
                     "error.open_failed",
                     name = name,
@@ -1992,8 +1990,7 @@ impl Explorer {
         }
         let name = archive_path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         let (Some(kind), Some(model)) = (archive_kind(&name), self.model.as_ref()) else {
             return;
         };

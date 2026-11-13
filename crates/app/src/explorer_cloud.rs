@@ -97,8 +97,7 @@ impl Explorer {
                 .cache
                 .iter()
                 .find(|(d, _)| *d == path)
-                .map(|(_, s)| s.clone())
-                .unwrap_or_default();
+                .map_or_default(|(_, s)| s.clone());
             self.cloud.dir = Some(path.clone());
             self.cloud.version = None;
             self.cloud.inflight = false;

@@ -46,7 +46,7 @@ fn file_name(path: &Path) -> String {
 
 /// The folder an item is in, by name (a drive root keeps its full name, `D:\`).
 fn folder_name(path: &Path) -> String {
-    path.parent().map(file_name).unwrap_or_default()
+    path.parent().map_or_default(file_name)
 }
 
 impl Workspace {
@@ -227,8 +227,7 @@ impl Workspace {
                 let items = dragged
                     .source
                     .upgrade()
-                    .map(|e| e.read(cx).drag_items(dragged.ix))
-                    .unwrap_or_default();
+                    .map_or_default(|e| e.read(cx).drag_items(dragged.ix));
                 this.add_to_shelf_from_drop(items, cx);
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {

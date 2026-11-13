@@ -441,8 +441,7 @@ fn load(
                 .extension()
                 .and_then(|e| e.to_str())
                 .and_then(arke_core::highlight::lang_for)
-                .map(|lang| arke_core::highlight::highlight(&text, lang))
-                .unwrap_or_default();
+                .map_or_default(|lang| arke_core::highlight::highlight(&text, lang));
             PreviewData::Text {
                 lines: split_lines(&text, &marks),
                 encoding,
@@ -980,8 +979,7 @@ impl Explorer {
             preview
                 .path
                 .parent()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
+                .map_or_default(|p| p.display().to_string()),
         ));
         rows
     }

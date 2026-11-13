@@ -336,12 +336,11 @@ fn parse(bytes: &[u8], path: &Path) -> Result<Vec<StoredFolder>, FolderViewsErro
     let folders = value
         .get("folders")
         .and_then(serde_json::Value::as_array)
-        .map(|list| {
+        .map_or_default(|list| {
             list.iter()
                 .filter_map(|v| serde_json::from_value(v.clone()).ok())
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     Ok(folders)
 }
 

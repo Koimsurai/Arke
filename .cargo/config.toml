@@ -8,3 +8,9 @@ arke = "run --bin arke"
 lint = "clippy --workspace --all-targets -- -D warnings"
 # Release tooling: changesets, versioning, packaging, publishing (see CONTRIBUTING.md)
 xtask = "run -q -p xtask --"
+
+# Versions published less than a week ago are skipped when resolving (unless already in
+# Cargo.lock), so a compromised release has time to be caught and yanked first. A fix that
+# can't wait: CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update <crate> --precise <v>
+[registry]
+global-min-publish-age = "7 days"

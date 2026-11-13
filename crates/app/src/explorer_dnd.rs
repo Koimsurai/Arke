@@ -76,8 +76,7 @@ impl DraggedFiles {
         }
         self.source
             .upgrade()
-            .map(|e| e.read(cx).drag_paths(self.ix))
-            .unwrap_or_default()
+            .map_or_default(|e| e.read(cx).drag_paths(self.ix))
     }
 
     /// Whether a drop moves: shelf items copy unless Shift is held; list items follow
@@ -281,8 +280,7 @@ impl DragPreview {
         let label = match paths.as_slice() {
             [one] => one
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|n| n.to_string_lossy().into_owned()),
             many => tn!("dnd.items", many.len()).into_owned(),
         };
         Self {

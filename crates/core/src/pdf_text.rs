@@ -313,7 +313,7 @@ impl<'a> Walker<'a, '_> {
             .ok();
         let mut scope: Vec<&'a Dictionary> = own.into_iter().collect();
         scope.extend_from_slice(resources);
-        let fonts = own.map(|res| fonts_in(self.doc, res)).unwrap_or_default();
+        let fonts = own.map_or_default(|res| fonts_in(self.doc, res));
         self.fonts.push(fonts);
         // A form's text is its own text object; the page's position resumes after it.
         let saved = std::mem::take(&mut self.state);

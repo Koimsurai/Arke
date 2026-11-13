@@ -260,8 +260,7 @@ pub fn frecent_hits(
         let name = item
             .path
             .file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy());
         let modified = st
             .modified
             .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())

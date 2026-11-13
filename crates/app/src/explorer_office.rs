@@ -626,9 +626,12 @@ pub(super) fn sheet_grid(
                             .border_b_1(),
                     )
                     .when(cell.is_some_and(|c| c.numeric), Styled::justify_end)
-                    .child(div().min_w_0().truncate().child(SharedString::from(
-                        cell.map(|c| c.text.clone()).unwrap_or_default(),
-                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(cell.map_or_default(|c| c.text.clone()))),
+                    )
                 }))
         }));
     let body = div()

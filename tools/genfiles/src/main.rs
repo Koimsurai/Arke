@@ -118,7 +118,7 @@ fn main() {
 
 fn ensure_under_temp(root: &Path, dir: &Path) {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+    let parent = dir.parent().map_or_default(Path::to_path_buf);
     let parent = parent.canonicalize().unwrap_or(parent);
     if parent != root {
         eprintln!(

@@ -43,7 +43,7 @@ pub fn compare(
     on_bytes: &mut dyn FnMut(u64),
 ) -> Vec<Mismatch> {
     let mut out = Vec::new();
-    let name = source.file_name().map(PathBuf::from).unwrap_or_default();
+    let name = source.file_name().map_or_default(PathBuf::from);
     walk(source, copy, &name, cancel, on_bytes, &mut out);
     out
 }

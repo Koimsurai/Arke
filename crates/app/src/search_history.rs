@@ -113,7 +113,7 @@ fn parse(bytes: &[u8], path: &Path, now: u64) -> Result<Frecency, HistoryError> 
     let visits = value
         .get("items")
         .and_then(serde_json::Value::as_array)
-        .map(|items| {
+        .map_or_default(|items| {
             items
                 .iter()
                 .filter_map(|v| serde_json::from_value::<StoredVisit>(v.clone()).ok())
@@ -124,8 +124,7 @@ fn parse(bytes: &[u8], path: &Path, now: u64) -> Result<Frecency, HistoryError> 
                     last: v.last,
                 })
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        });
     Ok(Frecency::from_visits(visits, now))
 }
 

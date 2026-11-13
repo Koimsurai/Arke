@@ -452,17 +452,13 @@ impl GlobalSearch {
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
         for net in &mut self.net {
-            let status = net.service.as_ref().map(|s| s.status()).unwrap_or_default();
+            let status = net.service.as_ref().map_or_default(|s| s.status());
             if status != net.status {
                 net.status = status;
                 cx.notify();
             }
         }
-        let status = self
-            .service
-            .as_ref()
-            .map(|s| s.status())
-            .unwrap_or_default();
+        let status = self.service.as_ref().map_or_default(|s| s.status());
         if status != self.status {
             self.status = status;
             cx.notify();

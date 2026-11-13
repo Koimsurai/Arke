@@ -447,8 +447,7 @@ pub(crate) fn system_locale() -> &'static str {
     let name = usize::try_from(len)
         .ok()
         .filter(|&n| n > 0)
-        .map(|n| String::from_utf16_lossy(&buf[..n - 1]))
-        .unwrap_or_default();
+        .map_or_default(|n| String::from_utf16_lossy(&buf[..n - 1]));
     locale_for(&name)
 }
 
@@ -1766,8 +1765,7 @@ fn cloud_roots() -> Vec<(String, PathBuf)> {
             // Business accounts get folders like "OneDrive - Contoso", clearer than "OneDrive".
             let folder = path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+                .map_or_default(|n| n.to_string_lossy().into_owned());
             let label = if name.is_empty() || folder.starts_with(&name) {
                 folder
             } else {

@@ -257,7 +257,6 @@ impl Explorer {
         self.parent_column
             .as_ref()
             .and_then(|c| c.entries.as_ref())
-            .map(|e| e.iter().map(|e| e.name.to_string()).collect())
-            .unwrap_or_default()
+            .map_or_default(|e| e.iter().map(|e| e.name.to_string()).collect())
     }
 }

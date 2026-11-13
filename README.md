@@ -88,6 +88,7 @@ Shell extensions from other programs run in a separate process, so a buggy one c
 - Optionally (experimental) open folders in Arke instead of File Explorer (Win+E and folders
   opened from other apps included), also "Show in folder" from browsers and "Open file location" from other apps.
   It registers Arke as the folder handler for your account and is undone when you turn it off.
+  File Explorer you start yourself from the taskbar or Start still opens as File Explorer.
 - Screen reader support, x64 and ARM64 builds (ARM64 not yet tested on real ARM hardware),
   taskbar jump list, safe USB eject, system tray, settings backup. English, Simplified and
   Traditional Chinese.

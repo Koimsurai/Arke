@@ -83,6 +83,8 @@ pub(crate) struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// How far the text is scrolled left so the caret stays in view when it is wider than the field.
+    scroll_x: Pixels,
     is_selecting: bool,
     /// Password field: drawn as dots, copy and cut disabled
     masked: bool,
@@ -104,6 +106,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            scroll_x: Pixels::ZERO,
             is_selecting: false,
             masked: false,
         }
@@ -338,7 +341,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        self.content_offset(line.closest_index_for_x(position.x - bounds.left()))
+        self.content_offset(line.closest_index_for_x(position.x - bounds.left() + self.scroll_x))
     }
 
     fn select_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
@@ -539,15 +542,10 @@ impl EntityInputHandler for TextInput {
             return None;
         }
         let range = self.range_from_utf16(&range_utf16);
+        let left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
-            point(
-                bounds.left() + last_layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + last_layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            point(left + last_layout.x_for_index(range.start), bounds.top()),
+            point(left + last_layout.x_for_index(range.end), bounds.bottom()),
         ))
     }
 
@@ -574,9 +572,25 @@ impl EntityInputHandler for TextInput {
         if last_layout.text != self.content {
             return None;
         }
-        let utf8_index = last_layout.closest_index_for_x(line_point.x);
+        let utf8_index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
         Some(self.offset_to_utf16(utf8_index))
     }
+}
+
+const CARET_WIDTH: Pixels = px(1.5);
+
+/// Scroll offset after a change: unchanged while the caret is visible, otherwise just enough to
+/// bring it back in, and never past the end of the text.
+fn follow_caret(scroll: Pixels, caret: Pixels, text_width: Pixels, field_width: Pixels) -> Pixels {
+    let view = (field_width - CARET_WIDTH).max(Pixels::ZERO);
+    let mut scroll = scroll;
+    if caret - scroll > view {
+        scroll = caret - view;
+    }
+    if caret < scroll {
+        scroll = caret;
+    }
+    scroll.clamp(Pixels::ZERO, (text_width - view).max(Pixels::ZERO))
 }
 
 struct TextElement {
@@ -587,6 +601,7 @@ struct PrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    scroll_x: Pixels,
 }
 
 impl IntoElement for TextElement {
@@ -696,13 +711,19 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let cursor_pos = line.x_for_index(cursor);
+        let scroll_x = if input.content.is_empty() {
+            Pixels::ZERO
+        } else {
+            follow_caret(input.scroll_x, cursor_pos, line.width(), bounds.size.width)
+        };
+        let left = bounds.left() - scroll_x;
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(1.5), bounds.bottom() - bounds.top()),
+                        point(left + cursor_pos, bounds.top()),
+                        size(CARET_WIDTH, bounds.bottom() - bounds.top()),
                     ),
                     theme::signal(),
                 )),
@@ -711,14 +732,8 @@ impl Element for TextElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
+                        point(left + line.x_for_index(selected_range.start), bounds.top()),
+                        point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                     ),
                     theme::text_selection(),
                 )),
@@ -729,6 +744,7 @@ impl Element for TextElement {
             line: Some(line),
             cursor,
             selection,
+            scroll_x,
         }
     }
 
@@ -748,32 +764,40 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
-            window.paint_quad(selection);
-        }
         let Some(line) = prepaint.line.take() else {
             return;
         };
-        if let Err(err) = line.paint(
+        let scroll_x = prepaint.scroll_x;
+        // Text scrolled out of the field is clipped; the caret may sit on the right edge.
+        let mask = Bounds::new(
             bounds.origin,
-            window.line_height(),
-            gpui::TextAlign::Left,
-            None,
-            window,
-            cx,
-        ) {
-            log::warn!("text paint failed: {err}");
-        }
-
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+            size(bounds.size.width + CARET_WIDTH, bounds.size.height),
+        );
+        window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+            if let Some(selection) = prepaint.selection.take() {
+                window.paint_quad(selection);
+            }
+            if let Err(err) = line.paint(
+                point(bounds.left() - scroll_x, bounds.top()),
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            ) {
+                log::warn!("text paint failed: {err}");
+            }
+            if focus_handle.is_focused(window)
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
+            input.scroll_x = scroll_x;
         });
     }
 }
@@ -895,5 +919,32 @@ mod mask_tests {
             assert_eq!(input.content_offset(dot + 1), 1);
             assert_eq!(input.content_offset(99), 7);
         });
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    #[test]
+    fn long_text_scrolls_to_keep_the_caret_in_view() {
+        let (field, text) = (px(100.), px(300.));
+        let view = px(100.) - CARET_WIDTH;
+        // Fits: never scrolls.
+        assert_eq!(follow_caret(px(0.), px(80.), px(80.), field), px(0.));
+        // Caret past the right edge (typing or pasting at the end): just enough to show it.
+        assert_eq!(follow_caret(px(0.), text, text, field), text - view);
+        // Moving left inside the visible part leaves the scroll alone.
+        assert_eq!(
+            follow_caret(text - view, px(250.), text, field),
+            text - view
+        );
+        // Home: back to the start.
+        assert_eq!(follow_caret(text - view, px(0.), text, field), px(0.));
+        // Text got shorter (deleted at the end): no empty space after it.
+        assert_eq!(
+            follow_caret(px(200.), px(120.), px(120.), field),
+            px(120.) - view
+        );
     }
 }

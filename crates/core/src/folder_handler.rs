@@ -195,9 +195,15 @@ impl Pattern {
 /// `arke.exe` made turning the setting off leave a release exe's values behind as "another
 /// program's", and made each update save the previous Arke's command as the value to put back.
 fn is_arke_exe(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name == "arke.exe"
-        || (name.starts_with("arke-") && name.ends_with(".exe") && name != "arke-indexd.exe")
+    let path = Path::new(name);
+    let exe = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    exe && (stem == "arke" || (stem.starts_with("arke-") && stem != "arke-indexd"))
 }
 
 /// The exe path inside `"<exe>"<suffix>`.

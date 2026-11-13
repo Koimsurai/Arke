@@ -761,4 +761,12 @@ fn a_folder_from_another_app_opens_as_a_tab_and_reuses_one_showing_it(cx: &mut T
         dl.update(cx, |e, _| selected_names(e)),
         vec!["file_000002.txt"]
     );
+    // The folder was already listed: the item also gets the cursor (focus), not just the selection.
+    let at_cursor = dl.update(cx, |e, _| {
+        e.cursor.and_then(|ix| {
+            e.view()
+                .and_then(|v| v.get(ix).map(|entry| entry.name.to_string()))
+        })
+    });
+    assert_eq!(at_cursor.as_deref(), Some("file_000002.txt"));
 }

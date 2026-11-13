@@ -1557,13 +1557,13 @@ settings.nav_scope_within:
   zh-TW: "只在目前分頁"
   zh-CN: "只在当前标签页"
 settings.fast_recycle:
-  en: "Fast Recycle Bin (experimental)"
-  zh-TW: "快速丟回收筒（實驗）"
-  zh-CN: "快速丢回收站（实验）"
+  en: "Fast Recycle Bin"
+  zh-TW: "快速丟回收筒"
+  zh-CN: "快速丢回收站"
 settings.fast_recycle_desc:
-  en: "Big folders go to the Recycle Bin at once on local drives, instead of Windows checking every file first. Restore works as usual"
-  zh-TW: "在本機磁碟上，大資料夾直接進回收筒，不用等 Windows 先逐一檢查每個檔案。還原方式不變"
-  zh-CN: "在本机磁盘上，大文件夹直接进回收站，不用等 Windows 先逐一检查每个文件。还原方式不变"
+  en: "On local drives, big folders go to the Recycle Bin at once instead of Windows checking every file first. Restore works as usual; anything else is left to Windows"
+  zh-TW: "在本機磁碟上，大資料夾直接進回收筒，不用等 Windows 先逐一檢查每個檔案。還原方式不變，其他情況照樣交給 Windows"
+  zh-CN: "在本机磁盘上，大文件夹直接进回收站，不用等 Windows 先逐一检查每个文件。还原方式不变，其他情况照样交给 Windows"
 settings.language_zh:
   en: "繁體中文"
   zh-TW: "繁體中文"

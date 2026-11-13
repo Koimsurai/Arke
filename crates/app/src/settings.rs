@@ -448,7 +448,7 @@ pub(crate) struct Settings {
     pub(crate) open_external_in_tab: bool,
     /// What back and forward move through.
     pub(crate) nav_scope: NavScope,
-    /// Experimental: same-drive Recycle Bin moves done directly instead of through the Windows
+    /// Same-drive Recycle Bin moves done directly instead of through the Windows
     /// engine (`win_fast_recycle.rs`).
     pub(crate) fast_recycle: bool,
     pub(crate) language: Language,
@@ -569,7 +569,7 @@ impl Default for Settings {
             win_e_opens_arke: false,
             open_external_in_tab: true,
             nav_scope: NavScope::AcrossTabs,
-            fast_recycle: false,
+            fast_recycle: true,
             language: Language::default(),
             confirm_recycle: false,
             warn_extension_change: true,
@@ -1317,7 +1317,7 @@ mod tests {
         assert_eq!(old.pinned, [PathBuf::from(r"D:\x")]);
         assert_eq!(old.tab_layout, TabLayout::Vertical);
         assert!(
-            old.show_extensions && old.show_thumbnails && old.keep_running,
+            old.show_extensions && old.show_thumbnails && old.keep_running && old.fast_recycle,
             "new switches default to on"
         );
         assert!(

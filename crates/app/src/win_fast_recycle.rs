@@ -1,4 +1,4 @@
-//! Fast Recycle Bin (experimental, off by default; #9).
+//! Fast Recycle Bin (on by default, can be turned off in settings; #9).
 //!
 //! Sending a big folder to the Recycle Bin through the Windows engine (`IFileOperation`, or the
 //! older `SHFileOperation`, the same speed) first visits every file, and with real-time antivirus

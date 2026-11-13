@@ -487,7 +487,7 @@ pub(crate) fn perform_tracked(
     {
         return (crate::win_purge::purge(paths, progress), None);
     }
-    // Experimental fast Recycle Bin: what it can take goes there directly, the rest through
+    // Fast Recycle Bin: what it can take goes there directly, the rest through
     // the engine below (win_fast_recycle.rs).
     let mut fast = Vec::new();
     let rest;

@@ -1,14 +1,13 @@
-# Uploads a release's exes to VirusTotal and adds the scan links to its notes. Runs after the
-# release workflow publishes, or by hand for an existing tag. The API key lives in the
-# VirusTotal environment, so only jobs that ask for that environment can read it.
+# Uploads a release's exes to VirusTotal and adds the scan links to its notes. Runs once the
+# release workflow has published, or by hand for an existing tag. The API key lives in the
+# VirusTotal environment, so only jobs that ask for that environment can read it. (Not called
+# from release.yml with `uses:`: a called workflow got an empty key from the environment.)
 name: virustotal
 
 on:
-  workflow_call:
-    inputs:
-      tag:
-        type: string
-        required: true
+  workflow_run:
+    workflows: [release]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -21,6 +20,8 @@ permissions:
 
 jobs:
   scan:
+    # After a release run only if it published; its head branch is the tag it ran for.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: VirusTotal
     permissions:
@@ -29,7 +30,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
     steps:
       - name: download the exes
         run: gh release download "$TAG" --pattern '*.exe' --dir dist
@@ -40,6 +41,10 @@ jobs:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "$VT_API_KEY" ]; then
+            echo "::error::VT_API_KEY is empty: the job didn't get the VirusTotal environment's secret"
+            exit 1
+          fi
           links=()
           for exe in dist/*.exe; do
             size=$(stat -c %s "$exe")

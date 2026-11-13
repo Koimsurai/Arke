@@ -1078,7 +1078,13 @@ impl Workspace {
             return;
         }
         if self.tabs.len() == 1 {
-            window.remove_window();
+            // The last tab: the window stays on Home; closing Home itself closes the window.
+            if self.home_open() {
+                window.remove_window();
+            } else {
+                self.remember_closed(ix, cx);
+                self.open_home(false, window, cx);
+            }
             return;
         }
         self.remember_closed(ix, cx);

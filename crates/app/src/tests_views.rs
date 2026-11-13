@@ -800,3 +800,48 @@ fn folder_menu_new_folder_in_the_plain_list_opens_the_folder(cx: &mut TestAppCon
         }]
     );
 }
+
+/// The rename box shows the name in every view: as wide as the name column in Details, and as
+/// wide as the tile at every icon size (it once shrank to its border there, #38).
+#[gpui::test]
+fn rename_box_shows_the_name_in_every_view(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\r",
+        vec![
+            file("a fairly long file name for renaming.txt", 1),
+            file("b.txt", 1),
+        ],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\r");
+    wait_until(cx, &view, "load", loaded(r"C:\r"));
+    for keys in [
+        "",
+        "ctrl-shift-1",
+        "ctrl-shift-2",
+        "ctrl-shift-3",
+        "ctrl-shift-4",
+    ] {
+        if !keys.is_empty() {
+            cx.simulate_keystrokes(keys);
+        }
+        cx.simulate_keystrokes("home f2");
+        cx.run_until_parked();
+        let mode = icons_of(&view, cx);
+        let shown = cx.debug_bounds("rename-box").expect("rename box drawn");
+        let tile = view.update(cx, |v, _| v.tile().w);
+        let least = if mode.0 == ViewMode::Details {
+            px(200.)
+        } else {
+            tile - px(16.)
+        };
+        assert!(
+            shown.size.width >= least,
+            "{mode:?}: box {:?}, wanted at least {least:?}",
+            shown.size
+        );
+        assert_eq!(shown.size.height, crate::theme::S_24, "{mode:?}: one line");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+    }
+}

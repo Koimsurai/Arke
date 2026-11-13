@@ -110,3 +110,13 @@ jobs:
           args=("$CHANNEL")
           if [ -n "$NUMBER" ]; then args+=(--number "$NUMBER"); fi
           cargo xtask publish "${args[@]}" --prebuilt
+
+  # After publishing: VirusTotal scans, linked from the release notes. Its own workflow so it can
+  # also be run by hand for an existing tag; the API key stays in the VT_API_KEY environment.
+  virustotal:
+    needs: publish
+    permissions:
+      contents: write
+    uses: ./.github/workflows/virustotal.yml
+    with:
+      tag: ${{ github.ref_name }}

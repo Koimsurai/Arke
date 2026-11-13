@@ -91,15 +91,17 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
         now_filetime(),
         &arke_core::path::unverbatim(path),
     );
+    // The record is read back before anything moves: what is on disk must be what was meant.
     let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&info)
         .and_then(|mut f| f.write_all(&record));
-    if written.is_err() {
+    if written.is_err() || fs::read(&info).ok().as_deref() != Some(record.as_slice()) {
         let _ = fs::remove_file(&info);
         return None;
     }
+    let (_, count_before) = bin_state(&root)?;
     if let Err(err) = move_no_replace(
         &arke_core::path::verbatim(path),
         &arke_core::path::verbatim(&item),
@@ -110,6 +112,24 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
         );
         let _ = fs::remove_file(&info);
         return None;
+    }
+    // Windows must count the new item; if it doesn't, put everything back and let the engine
+    // do it. (A crash between the record and the move leaves the item where it was and an `$I`
+    // with no item, which Windows lists as nothing to restore; no data moves without a record.)
+    if bin_state(&root).is_none_or(|(_, count)| count <= count_before) {
+        log::warn!(
+            "fast recycle: Windows didn't count {}; put back",
+            path.display()
+        );
+        if move_no_replace(
+            &arke_core::path::verbatim(&item),
+            &arke_core::path::verbatim(path),
+        )
+        .is_ok()
+        {
+            let _ = fs::remove_file(&info);
+            return None;
+        }
     }
     notify(path, meta.is_dir(), &bin);
     Some(item)
@@ -249,7 +269,7 @@ fn fits(root: &Path, size: u64) -> bool {
     if nuke {
         return false;
     }
-    let Some(used) = bin_usage(root) else {
+    let Some((used, _)) = bin_state(root) else {
         return false;
     };
     has_room(used, size, max_mb)
@@ -335,8 +355,8 @@ fn policy_blocks(no_recycle_files: Option<u32>, recycle_bin_size: Option<u32>) -
     no_recycle_files.is_some_and(|v| v != 0) || recycle_bin_size.is_some()
 }
 
-/// Bytes already in the drive's bin.
-fn bin_usage(root: &Path) -> Option<u64> {
+/// Bytes and items in the drive's bin, as Windows counts them.
+fn bin_state(root: &Path) -> Option<(u64, u64)> {
     use windows::Win32::UI::Shell::{SHQUERYRBINFO, SHQueryRecycleBinW};
     let root = windows::core::HSTRING::from(root.as_os_str());
     let mut info = SHQUERYRBINFO {
@@ -345,7 +365,10 @@ fn bin_usage(root: &Path) -> Option<u64> {
     };
     // SAFETY: root is NUL-terminated; info is a properly sized out struct.
     unsafe { SHQueryRecycleBinW(&root, &raw mut info) }.ok()?;
-    u64::try_from(info.i64Size).ok()
+    Some((
+        u64::try_from(info.i64Size).ok()?,
+        u64::try_from(info.i64NumItems).ok()?,
+    ))
 }
 
 /// Unused `$I`/`$R` names in `bin` for an item with extension `ext`.
@@ -770,8 +793,8 @@ mod tests {
         }
     }
 
-    /// Items something holds: the fast path never moves one the engine would leave, and when it
-    /// leaves one (for the engine to handle) it leaves no record behind.
+    /// Items something holds: whatever the engine does with them (move or leave), the fast path
+    /// does too, and when it leaves one it leaves no record behind.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
     #[allow(clippy::print_stderr)]
@@ -817,12 +840,9 @@ mod tests {
                 !fast_item.exists(),
                 "{label}: answer matches the disk"
             );
-            // The engine itself isn't consistent with a folder holding an open file: now and then
-            // it does move it. The fast path never moves what the engine leaves, and what it
-            // leaves goes to the engine, so the outcome is the engine's either way.
-            assert!(
-                !fast_moved || engine_moved,
-                "{label}: the fast path moved something the engine left"
+            assert_eq!(
+                fast_moved, engine_moved,
+                "{label}: same outcome as the engine"
             );
             if !fast_moved {
                 assert_eq!(
@@ -969,6 +989,69 @@ mod tests {
         }
         purge(&recycled_from(engine_item.parent().unwrap()));
         let _ = fs::remove_dir_all(arke_core::path::verbatim(&sb.0));
+    }
+
+    /// Many items at once from several threads (as with two windows deleting together): each gets
+    /// its own names in the bin, nothing overwrites anything, and every one comes back.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn many_at_once_each_get_their_own_place() {
+        const ITEMS: usize = 40;
+        let sb = Sandbox::new("together");
+        let items: Vec<PathBuf> = (0..ITEMS)
+            .map(|i| {
+                let dir = sb.0.join(format!("item{i:02}.dat"));
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(dir.join("body.txt"), format!("item {i}")).unwrap();
+                dir
+            })
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let done = parking_lot::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let now = recycle(item);
+                        done.lock().push((item.clone(), now));
+                    }
+                });
+            }
+        });
+        let done = done.into_inner();
+        assert!(done.iter().all(|(_, now)| now.is_some()), "all taken");
+        let mut places: Vec<&PathBuf> = done.iter().filter_map(|(_, now)| now.as_ref()).collect();
+        places.sort();
+        places.dedup();
+        assert_eq!(places.len(), ITEMS, "every item has its own place");
+        assert_eq!(
+            recycled_from(&sb.0).len(),
+            ITEMS,
+            "and Windows lists them all"
+        );
+
+        let back = Undo::PutBack(
+            recycled_from(&sb.0)
+                .into_iter()
+                .map(|item| PutBack {
+                    now: item.now,
+                    parent: sb.0.clone(),
+                    name: item.name,
+                })
+                .collect(),
+        );
+        assert_eq!(
+            crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        for (i, item) in items.iter().enumerate() {
+            assert_eq!(
+                fs::read_to_string(item.join("body.txt")).unwrap(),
+                format!("item {i}"),
+                "each back with its own contents"
+            );
+        }
+        assert!(recycled_from(&sb.0).is_empty());
     }
 
     /// Timing against the engine on the same kind of folder. Run with

@@ -4,10 +4,12 @@
 //! `SHOpenFolderAndSelectItems` (browsers' "Show in folder", VS Code's reveal, ...) starts the
 //! folder's `open` verb and then looks the new window up in the shell's window list
 //! (`IShellWindows`), asks it for its view and calls `IShellView::SelectItem` for every item to
-//! select. Without a window to find it would wait, give up and start Explorer itself.
+//! select. Without a window to find it waits 20 s and gives up (`E_ABORT`), selecting nothing;
+//! Chromium runs these one after another, so the next "Show in folder" waits behind it.
 //!
 //! While Arke handles a folder, this module registers a small invisible shell window for that
-//! folder (`RegisterPending` + `Register`, like the Files app's launcher does), answers the
+//! folder (`RegisterPending` + `Register`, like the Files app's launcher, `OpenInFolder.cpp`,
+//! including its use of the desktop folder's `ParseDisplayName`; see [`folder_locations`]), answers the
 //! caller's `SelectItem` calls and hands the collected items back. The window lives for a few
 //! seconds at most, on its own thread with its own message loop; nothing is shown.
 //!

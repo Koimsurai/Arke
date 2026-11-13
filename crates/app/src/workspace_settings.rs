@@ -1416,6 +1416,26 @@ impl Workspace {
                 ),
             ),
             update,
+            card(
+                Icon::Bolt,
+                t!("whats_new.title"),
+                Some(t!("whats_new.desc")),
+                text_button(
+                    "whats-new-show",
+                    t!("whats_new.open"),
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_whats_new(super::whats_new_page::Mode::Browse, window, cx);
+                    }),
+                ),
+            ),
+            card(
+                Icon::Bolt,
+                t!("whats_new.auto"),
+                Some(t!("whats_new.auto_desc")),
+                switch("whats-new-auto", s.whats_new_auto, |st| {
+                    st.whats_new_auto = !st.whats_new_auto;
+                }),
+            ),
             report,
             expander(
                 "backup",
@@ -3173,6 +3193,7 @@ pub(super) fn text_button(
     let label = SharedString::from(label.to_string());
     div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
         .h(theme::H_CTL_SM)
         .px(theme::S_12)

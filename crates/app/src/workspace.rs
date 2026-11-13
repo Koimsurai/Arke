@@ -59,6 +59,8 @@ mod uninstall_page;
 mod update_page;
 #[path = "workspace_welcome.rs"]
 mod welcome;
+#[path = "workspace_whats_new.rs"]
+pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
 pub(crate) use sidebar::{leave_drive_everywhere, place_icon};
@@ -295,6 +297,7 @@ pub(crate) struct Workspace {
     /// Open Recycle Bin page.
     recycle_page: Option<recycle_page::RecyclePage>,
     home_page: Option<home_page::HomeView>,
+    whats_new: Option<whats_new_page::WhatsNewView>,
     /// Window opened without a path: once settings load, switch to the last session if configured.
     start_default: bool,
     /// Dragging the divider between the panes.
@@ -587,6 +590,7 @@ impl Workspace {
             settings_panel: None,
             recycle_page: None,
             home_page: None,
+            whats_new: None,
             start_default,
             resizing: false,
             dragging_tab: None,
@@ -1966,6 +1970,8 @@ impl Render for Workspace {
         self.settings_follow_navigation(cx);
         self.recycle_follow_navigation(cx);
         self.home_follow_navigation(cx);
+        self.whats_new_follow_navigation(cx);
+        Self::whats_new_on_startup(window, cx);
         self.save_session_if_changed(cx);
         self.refresh_compare(cx);
         let horizontal = Self::horizontal_tabs(cx);
@@ -1993,7 +1999,10 @@ impl Render for Workspace {
                     Some(page) => page,
                     None => match self.render_home_page(window, cx) {
                         Some(page) => page,
-                        None => self.render_panes(cx),
+                        None => match self.render_whats_new_page(window, cx) {
+                            Some(page) => page,
+                            None => self.render_panes(cx),
+                        },
                     },
                 },
             });
@@ -2107,6 +2116,7 @@ impl Render for Workspace {
             .children(self.render_drag_out_watch(cx))
             .children(self.render_sidebar_menu(cx))
             .children(welcome::welcome_card(cx))
+            .children(update_page::update_notice(cx))
             .children(self.net_dialog.as_ref().map(|slot| slot.dialog.clone()))
             .children(self.workspaces.as_ref().map(|(panel, _)| panel.clone()))
             .children(self.palette.as_ref().map(|(palette, _)| {
@@ -2189,7 +2199,11 @@ impl Workspace {
             // Same left edge as the sidebar items below.
             .pl(theme::S_12)
             .child(crate::brand::sidebar_mark())
-            .child(if self.settings_open() || self.recycle_open() || self.home_open() {
+            .child(if self.settings_open()
+                || self.recycle_open()
+                || self.home_open()
+                || self.whats_new_open()
+            {
                 // With Settings or Recycle Bin open, back returns to the previous folder.
                 ghost_button(
                     "back",
@@ -2200,6 +2214,7 @@ impl Workspace {
                         this.close_settings(&settings_panel::CloseSettings, window, cx);
                         this.close_recycle(window, cx);
                         this.close_home(window, cx);
+                        this.close_whats_new(window, cx);
                     }),
                 )
                 .into_any_element()

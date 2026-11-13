@@ -1144,6 +1144,62 @@ update.badge:
   en: Update
   zh-TW: 有更新
   zh-CN: 有更新
+update.notice_body:
+  en: "Nothing changes until you choose to update; the new version starts when Arke restarts"
+  zh-TW: "按下更新之前不會有任何變動；Arke 重新啟動後才會換成新版本"
+  zh-CN: "点击更新之前不会有任何变化；Arke 重启后才会换成新版本"
+whats_new.title:
+  en: "What's new"
+  zh-TW: "新功能"
+  zh-CN: "新功能"
+whats_new.desc:
+  en: "What changed in this version and the ones before"
+  zh-TW: "這個版本和之前版本的改動"
+  zh-CN: "此版本和之前版本的改动"
+whats_new.open:
+  en: "Show"
+  zh-TW: "查看"
+  zh-CN: "查看"
+whats_new.auto:
+  en: "Show what's new after updating"
+  zh-TW: "更新後顯示新功能"
+  zh-CN: "更新后显示新功能"
+whats_new.auto_desc:
+  en: "Opens a tab once, the first time Arke runs after an update"
+  zh-TW: "更新後第一次啟動時開一個分頁，只開一次"
+  zh-CN: "更新后第一次启动时打开一个标签页，只打开一次"
+whats_new.updated:
+  en: "Arke is now %{version}"
+  zh-TW: "Arke 已更新到 %{version}"
+  zh-CN: "Arke 已更新到 %{version}"
+whats_new.since:
+  en: "What changed since %{version}"
+  zh-TW: "自 %{version} 以來的改動"
+  zh-CN: "自 %{version} 以来的改动"
+whats_new.not_installed:
+  en: "Not installed yet. The notes come from the release page, in English"
+  zh-TW: "還沒安裝。說明來自發行頁面（英文）"
+  zh-CN: "尚未安装。说明来自发布页面（英文）"
+whats_new.not_installed_tag:
+  en: "Available"
+  zh-TW: "可以更新"
+  zh-CN: "可以更新"
+whats_new.testing:
+  en: "In testing"
+  zh-TW: "測試中"
+  zh-CN: "测试中"
+whats_new.no_notes:
+  en: "No notes for this version"
+  zh-TW: "這個版本沒有說明"
+  zh-CN: "此版本没有说明"
+whats_new.reopen:
+  en: "You can open this page again from Settings › About"
+  zh-TW: "之後可以從「設定 › 關於」再打開這頁"
+  zh-CN: "之后可以从“设置 › 关于”再打开这页"
+whats_new.changelog:
+  en: "Full changelog"
+  zh-TW: "完整更新紀錄"
+  zh-CN: "完整更新日志"
 channel.stable:
   en: Stable
   zh-TW: 正式版
@@ -2458,6 +2514,10 @@ tray.quit:
   en: Quit Arke
   zh-TW: 結束 Arke
   zh-CN: 退出 Arke
+tray.update:
+  en: "Update to Arke %{version}"
+  zh-TW: "更新到 Arke %{version}"
+  zh-CN: "更新到 Arke %{version}"
 menu.host_blocked:
   en: "The Windows menu was blocked (usually by antivirus)"
   zh-TW: "Windows 選單遭到封鎖（通常是防毒軟體）"

@@ -118,7 +118,7 @@ jobs:
           cargo xtask publish "${args[@]}" --prebuilt
 
   # After publishing: VirusTotal scans, linked from the release notes. Its own workflow so it can
-  # also be run by hand for an existing tag; the API key stays in the VT_API_KEY environment.
+  # also be run by hand for an existing tag; the API key stays in the VirusTotal environment.
   virustotal:
     needs: publish
     permissions:

@@ -1,6 +1,6 @@
 # Uploads a release's exes to VirusTotal and adds the scan links to its notes. Runs after the
 # release workflow publishes, or by hand for an existing tag. The API key lives in the
-# VT_API_KEY environment, so only jobs that ask for that environment can read it.
+# VirusTotal environment, so only jobs that ask for that environment can read it.
 name: virustotal
 
 on:
@@ -22,7 +22,7 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    environment: VT_API_KEY
+    environment: VirusTotal
     permissions:
       # Appends the links to the release notes.
       contents: write

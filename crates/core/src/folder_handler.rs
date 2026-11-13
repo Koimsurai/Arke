@@ -7,7 +7,8 @@
 //!   Every way the shell opens a folder, including `SHOpenFolderAndSelectItems` ("Show in folder" of
 //!   browsers and editors), goes through these verbs, so no File Explorer window is created.
 //! - Win+E: `CLSID\{52205fd8-...}\shell\opennewwindow\command` with an empty `DelegateExecute`
-//!   runs `"<arke.exe>" --home`.
+//!   runs `"<arke.exe>" --home`. Only on request ([`apply_scoped`]): File Explorer started from the
+//!   taskbar or Start runs the same verb, so this also replaces File Explorer started on purpose.
 //!
 //! `Folder` also covers Control Panel and other virtual folders, so `arke.exe` hands everything it
 //! cannot show to `explorer.exe` (see `takeover::route_argument`).
@@ -234,8 +235,8 @@ fn classes_key(rest: &str) -> String {
     format!(r"{CLASSES}\{rest}")
 }
 
-/// Every value Arke writes for the exe at `exe`.
-fn specs(exe: &Path) -> Vec<Spec> {
+/// Every value Arke writes for the exe at `exe`; the Win+E class only with `win_e`.
+fn specs(exe: &Path, win_e: bool) -> Vec<Spec> {
     let exe = exe.display();
     let mut out = Vec::new();
     for verb in FOLDER_VERBS {
@@ -253,6 +254,9 @@ fn specs(exe: &Path) -> Vec<Spec> {
             data: String::new(),
             pattern: Pattern::Literal(String::new()),
         });
+    }
+    if !win_e {
+        return out;
     }
     let win_e = classes_key(&format!(r"CLSID\{WIN_E_CLSID}\shell\opennewwindow\command"));
     out.push(Spec {
@@ -329,6 +333,8 @@ pub struct Applied {
     pub written: usize,
     /// Of those, commands that pointed to another (moved or deleted) Arke exe.
     pub repaired: usize,
+    /// Win+E values put back because Win+E no longer opens Arke.
+    pub dropped: usize,
 }
 
 /// What [`restore`] did.
@@ -349,7 +355,22 @@ pub struct Restored {
 /// A registry or backup call failed. The backup is saved before the first write, so [`restore`]
 /// can always undo a partial run.
 pub fn apply(reg: &dyn Registry, store: &dyn BackupStore, exe: &Path) -> Result<Applied, Error> {
-    let specs = specs(exe);
+    apply_scoped(reg, store, exe, true)
+}
+
+/// [`apply`], with Win+E (and File Explorer started from the taskbar or Start, which runs the same
+/// verb) opening Arke only when `win_e` is set. Without it, Win+E values Arke wrote earlier are put
+/// back as they were, so File Explorer started on purpose is File Explorer again.
+///
+/// # Errors
+/// As [`apply`].
+pub fn apply_scoped(
+    reg: &dyn Registry,
+    store: &dyn BackupStore,
+    exe: &Path,
+    win_e: bool,
+) -> Result<Applied, Error> {
+    let specs = specs(exe, win_e);
     for spec in &specs {
         check_allowed(&spec.key)?;
     }
@@ -413,7 +434,76 @@ pub fn apply(reg: &dyn Registry, store: &dyn BackupStore, exe: &Path) -> Result<
         reg.write(&spec.key, spec.value, &desired)?;
         applied.written += 1;
     }
+    if !win_e {
+        applied.dropped = drop_win_e(reg, store)?;
+    }
     Ok(applied)
+}
+
+/// Puts back the Win+E values Arke wrote and forgets them in the backup; the folder verbs stay.
+fn drop_win_e(reg: &dyn Registry, store: &dyn BackupStore) -> Result<usize, Error> {
+    let Some(mut backup) = store.load()? else {
+        return Ok(0);
+    };
+    let class = classes_key(&format!(r"CLSID\{WIN_E_CLSID}"));
+    let under = |key: &str| {
+        key.get(..class.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(&class))
+    };
+    let (win_e, rest): (Vec<BackupEntry>, Vec<BackupEntry>) =
+        backup.entries.drain(..).partition(|e| under(&e.key));
+    if win_e.is_empty() {
+        backup.entries = rest;
+        return Ok(0);
+    }
+    let mut done = 0;
+    for entry in &win_e {
+        check_allowed(&entry.key)?;
+        if put_back(reg, entry)? == PutBack::Changed {
+            done += 1;
+        }
+    }
+    let (mut drop_keys, keep_keys): (Vec<String>, Vec<String>) =
+        backup.created_keys.drain(..).partition(|k| under(k));
+    drop_keys.extend(win_e.iter().flat_map(|e| managed_chain(&e.key)));
+    delete_empty(reg, drop_keys)?;
+    backup.entries = rest;
+    backup.created_keys = keep_keys;
+    store.save(&backup)?;
+    Ok(done)
+}
+
+/// What [`put_back`] did with one value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PutBack {
+    /// Written back or removed.
+    Changed,
+    /// Already as it was.
+    Same,
+    /// Somebody else changed it after Arke: left alone.
+    LeftAlone,
+}
+
+/// Puts one value back as it was before Arke, unless somebody else changed it since.
+fn put_back(reg: &dyn Registry, entry: &BackupEntry) -> Result<PutBack, Error> {
+    let current = reg.read(&entry.key, &entry.value)?;
+    if !current.as_ref().is_none_or(|v| entry.ours.matches(v)) {
+        return Ok(PutBack::LeftAlone);
+    }
+    // A backup from an older build may hold another Arke's command as the value before Arke:
+    // that is Arke's too, so it goes away instead of coming back.
+    let prior = entry.prior.as_ref().filter(|p| !entry.ours.matches(p));
+    match (prior, current) {
+        (Some(prior), current) if current.as_ref() != Some(prior) => {
+            reg.write(&entry.key, &entry.value, prior)?;
+            Ok(PutBack::Changed)
+        }
+        (None, Some(_)) => {
+            reg.delete_value(&entry.key, &entry.value)?;
+            Ok(PutBack::Changed)
+        }
+        _ => Ok(PutBack::Same),
+    }
 }
 
 /// Puts everything back as it was before [`apply`] and removes the backup. Values somebody else
@@ -429,7 +519,7 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
         (b.entries, b.created_keys)
     } else {
         // No record of the originals: assume there were none.
-        let entries: Vec<BackupEntry> = specs(Path::new("arke.exe"))
+        let entries: Vec<BackupEntry> = specs(Path::new("arke.exe"), true)
             .into_iter()
             .map(|s| BackupEntry {
                 key: s.key,
@@ -443,35 +533,40 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
     };
     for entry in &entries {
         check_allowed(&entry.key)?;
-        let current = reg.read(&entry.key, &entry.value)?;
-        if !current.as_ref().is_none_or(|v| entry.ours.matches(v)) {
-            done.left_alone += 1;
-            continue;
-        }
-        // A backup from an older build may hold another Arke's command as the value before Arke:
-        // that is Arke's too, so it goes away instead of coming back.
-        let prior = entry.prior.as_ref().filter(|p| !entry.ours.matches(p));
-        match (prior, current) {
-            (Some(prior), current) if current.as_ref() != Some(prior) => {
-                reg.write(&entry.key, &entry.value, prior)?;
-                done.values += 1;
-            }
-            (None, Some(_)) => {
-                reg.delete_value(&entry.key, &entry.value)?;
-                done.values += 1;
-            }
-            _ => {}
+        match put_back(reg, entry)? {
+            PutBack::Changed => done.values += 1,
+            PutBack::LeftAlone => done.left_alone += 1,
+            PutBack::Same => {}
         }
     }
-    // Deepest first; a key that still holds anything stays.
     let mut keys: Vec<String> = created;
+    keys.extend(entries.iter().flat_map(|e| managed_chain(&e.key)));
+    delete_empty(reg, keys)?;
+    store.remove()?;
+    Ok(done)
+}
+
+/// The keys of a value Arke manages that may go once empty: from the value's key up to, but not
+/// including, `Folder` or the class id's parent `CLSID`. Needed because an empty key under
+/// `HKCU\Software\Classes` hides the one Windows ships (an empty Win+E `command` key leaves
+/// Win+E doing nothing), and a backup from an older build may not list the keys Arke created.
+fn managed_chain(key: &str) -> Vec<String> {
+    chain(key)
+        .into_iter()
+        .filter(|k| k.matches('\\').count() > CLASSES.matches('\\').count() + 1)
+        .filter(|k| !k.eq_ignore_ascii_case(&classes_key("CLSID")))
+        .collect()
+}
+
+/// Deletes each key that holds nothing, deepest first; a key that still holds anything stays.
+fn delete_empty(reg: &dyn Registry, mut keys: Vec<String>) -> Result<(), Error> {
     keys.sort_by_key(|k| std::cmp::Reverse(k.matches('\\').count()));
+    keys.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     for key in &keys {
         check_allowed(key)?;
         reg.delete_key_if_empty(key)?;
     }
-    store.remove()?;
-    Ok(done)
+    Ok(())
 }
 
 /// A [`Registry`] in memory, for tests.
@@ -680,7 +775,8 @@ mod tests {
             applied,
             Applied {
                 written: 6,
-                repaired: 0
+                repaired: 0,
+                dropped: 0
             }
         );
         for key in [OPEN_CMD, EXPLORE_CMD] {
@@ -703,6 +799,62 @@ mod tests {
                 "Directory and Drive stay untouched"
             );
         }
+    }
+
+    #[test]
+    fn win_e_is_left_to_file_explorer_unless_asked_for() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        // Someone had their own Win+E command before Arke.
+        reg.put(WIN_E_CMD, "", r#""D:\Other\fm.exe""#);
+        let applied = apply_scoped(&reg, &backup, exe(), false).unwrap();
+        assert_eq!(applied.written, 4, "only the folder verbs");
+        assert_eq!(
+            reg.text(WIN_E_CMD, "").as_deref(),
+            Some(r#""D:\Other\fm.exe""#)
+        );
+        assert_eq!(reg.text(WIN_E_CMD, "DelegateExecute"), None);
+
+        // Turned on, then off again: the other program's Win+E is back, the folder verbs stay.
+        apply_scoped(&reg, &backup, exe(), true).unwrap();
+        assert_eq!(
+            reg.text(WIN_E_CMD, "").as_deref(),
+            Some(r#""C:\Apps\Arke\arke.exe" --home"#)
+        );
+        let off = apply_scoped(&reg, &backup, exe(), false).unwrap();
+        assert_eq!(off.written, 0);
+        assert_eq!(off.dropped, 2);
+        assert_eq!(
+            reg.text(WIN_E_CMD, "").as_deref(),
+            Some(r#""D:\Other\fm.exe""#)
+        );
+        assert_eq!(reg.text(WIN_E_CMD, "DelegateExecute"), None);
+        assert_eq!(reg.text(OPEN_CMD, "").unwrap(), cmd(EXE));
+
+        // Turning "Open folders in Arke" off afterwards still puts everything back.
+        restore(&reg, &backup).unwrap();
+        assert_eq!(
+            reg.text(WIN_E_CMD, "").as_deref(),
+            Some(r#""D:\Other\fm.exe""#)
+        );
+        assert_eq!(reg.text(OPEN_CMD, ""), None);
+    }
+
+    #[test]
+    fn win_e_keys_arke_created_are_removed_when_it_is_turned_off() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        apply(&reg, &backup, exe()).unwrap();
+        apply_scoped(&reg, &backup, exe(), false).unwrap();
+        assert!(
+            reg.snapshot()
+                .iter()
+                .all(|(key, _, _)| !key.contains("52205fd8")),
+            "{:?}",
+            reg.snapshot()
+        );
+        restore(&reg, &backup).unwrap();
+        assert!(reg.snapshot().is_empty(), "{:?}", reg.snapshot());
     }
 
     #[test]
@@ -743,14 +895,13 @@ mod tests {
         let backup = MemoryBackup::default();
         // What an older build left: its own command recorded as the value before Arke.
         let old = r#""D:\dist\arke-0.2.0-nightly.20261112.exe" "%1""#;
-        let ours = |suffix: &str| Pattern::Command(suffix.into());
         backup
             .save(&Backup {
                 version: 1,
                 entries: vec![BackupEntry {
                     key: OPEN_CMD.into(),
                     value: String::new(),
-                    ours: ours(r#" "%1""#),
+                    ours: Pattern::Command(r#" "%1""#.into()),
                     prior: Some(RegValue::sz(old)),
                 }],
                 created_keys: Vec::new(),
@@ -762,6 +913,44 @@ mod tests {
             reg.text(OPEN_CMD, ""),
             None,
             "neither Arke's command is left"
+        );
+    }
+
+    #[test]
+    fn keys_left_empty_are_removed_even_without_a_record_of_creating_them() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        // An older build created the keys; the backup it left only knows another Arke's values.
+        let old_home = r#""D:\dist\arke-test.exe" --home"#;
+        reg.put(WIN_E_CMD, "", old_home);
+        reg.put(OPEN_CMD, "", &cmd(r"D:\dist\arke-test.exe"));
+        reg.put(OPEN_CMD, "DelegateExecute", STOCK_DELEGATE);
+        reg.put(
+            r"Software\Classes\Folder\shell\open",
+            "MultiSelectModel",
+            "Document",
+        );
+        apply_scoped(&reg, &backup, exe(), true).unwrap();
+        apply_scoped(&reg, &backup, exe(), false).unwrap();
+        assert!(
+            reg.snapshot()
+                .iter()
+                .all(|(key, _, _)| !key.contains("52205fd8")),
+            "no empty Win+E key hides the one Windows ships: {:?}",
+            reg.snapshot()
+        );
+        restore(&reg, &backup).unwrap();
+        assert_eq!(reg.text(OPEN_CMD, ""), None);
+        assert_eq!(
+            reg.text(OPEN_CMD, "DelegateExecute").as_deref(),
+            Some(STOCK_DELEGATE),
+            "the value from before Arke is back"
+        );
+        assert_eq!(
+            reg.text(r"Software\Classes\Folder\shell\open", "MultiSelectModel")
+                .as_deref(),
+            Some("Document"),
+            "other values and their keys stay"
         );
     }
 
@@ -840,7 +1029,8 @@ mod tests {
             applied,
             Applied {
                 written: 3,
-                repaired: 3
+                repaired: 3,
+                dropped: 0
             }
         );
         assert_eq!(
@@ -882,7 +1072,7 @@ mod tests {
         let before = reg.snapshot();
         apply(&reg, &backup, exe()).unwrap();
         // As if the process died right after saving the backup: undo every write.
-        for spec in specs(exe()) {
+        for spec in specs(exe(), true) {
             if spec.key == OPEN_CMD && spec.value == "DelegateExecute" {
                 reg.put(OPEN_CMD, "DelegateExecute", STOCK_DELEGATE);
             } else {

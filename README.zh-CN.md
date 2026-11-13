@@ -74,9 +74,10 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
   xz／bzip2／zstd 的 tar 使用 Windows 内置的 libarchive（Windows 11 23H2 及以上最完整）。
 
 **Windows 集成**
-- 可以选择（实验性）让文件夹改用 Arke 打开，代替文件资源管理器（Win+E 和其他程序打开的文件夹都算），连浏览器的
+- 可以选择（实验性）让文件夹改用 Arke 打开，代替文件资源管理器（其他程序打开的文件夹也算），连浏览器的
   “在文件夹中显示”、其他程序的“打开文件所在的位置”都会接过来。它会把 Arke 注册为你账户的文件夹打开
-  程序，关掉设置就还原。从任务栏或开始菜单自己打开的文件资源管理器不受影响。
+  程序，关掉设置就还原。自己打开的文件资源管理器（Win+E、任务栏、开始菜单）仍是文件资源管理器，除非另外
+  打开“Win+E 和文件资源管理器图标也打开 Arke”。
 - 支持屏幕阅读器，提供 x64 和 ARM64 版本（ARM64 还没在真正的 ARM 电脑上测试过）；任务栏的跳转列表、
   安全弹出 U 盘、通知区域图标、设置备份。界面有英文、简体中文和繁体中文。
 
@@ -198,7 +199,7 @@ Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（�
 `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\ArkeIndex`。除此之外，唯一会改注册表的是可选的
 “用 Arke 打开文件夹”：它把 Arke 注册为你这个 Windows 账户的文件夹打开程序，只写 `HKEY_CURRENT_USER\Software\Classes` 下面：`Folder` 的 `open` 和 `explore` 操作
 （shell 打开任何文件夹都会启动 Arke，包括浏览器、编辑器的“在文件夹中显示”；Arke 不能显示的，例如控制面板，
-会直接交给文件资源管理器）以及 Win+E 的处理程序。原来的内容会备份到
+会直接交给文件资源管理器），以及打开“Win+E 和文件资源管理器图标也打开 Arke”时的 Win+E 处理程序。原来的内容会备份到
 `%APPDATA%\Arke\folder-handler-backup.json`，你关掉设置或运行 `arke --restore-explorer` 时原样放回去。
 对注册表覆盖不到的情况（例如 `explorer.exe /select,...`），Arke 仍会在运行时留意新打开的资源管理器窗口。
 设置保存在 `%APPDATA%\Arke`，搜索索引、日志和下载的

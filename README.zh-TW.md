@@ -74,9 +74,10 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
   xz／bzip2／zstd 的 tar 使用 Windows 內建的 libarchive（Windows 11 23H2 以上最完整）。
 
 **Windows 整合**
-- 可選擇（實驗性）讓資料夾改用 Arke 開啟，取代檔案總管（Win+E 和其他程式開的資料夾都算），連瀏覽器的
+- 可選擇（實驗性）讓資料夾改用 Arke 開啟，取代檔案總管（其他程式開的資料夾也算），連瀏覽器的
   「在資料夾中顯示」、其他程式的「開啟檔案位置」都會接過來。它會把 Arke 登錄為你帳戶的資料夾開啟
-  程式，關掉設定就還原。從工作列或開始功能表自己打開的檔案總管不受影響。
+  程式，關掉設定就還原。自己開的檔案總管（Win+E、工作列、開始功能表）仍是檔案總管，除非另外打開
+  「Win+E 和檔案總管圖示也開 Arke」。
 - 支援螢幕閱讀器，提供 x64 與 ARM64 版本（ARM64 還沒在真正的 ARM 電腦上測試過）；工作列的捷徑清單、
   安全退出 USB 磁碟、通知區域圖示、設定備份。介面有英文、簡體中文與繁體中文。
 
@@ -198,7 +199,7 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\ArkeIndex`。除此之外，唯一會動到登錄檔的是選用的
 「用 Arke 開啟資料夾」：它把 Arke 登錄為你這個 Windows 帳戶的資料夾開啟程式，只寫 `HKEY_CURRENT_USER\Software\Classes` 底下：`Folder` 的 `open` 與 `explore` 動作
 （shell 開任何資料夾都會啟動 Arke，包括瀏覽器、編輯器的「在資料夾中顯示」；Arke 不能顯示的，例如控制台，
-會直接交給檔案總管）以及 Win+E 的處理程式。原本的內容會備份到
+會直接交給檔案總管），以及打開「Win+E 和檔案總管圖示也開 Arke」時的 Win+E 處理程式。原本的內容會備份到
 `%APPDATA%\Arke\folder-handler-backup.json`，你關掉設定或執行 `arke --restore-explorer` 時原封不動放回去。
 對登錄無法涵蓋的情況（例如 `explorer.exe /select,...`），Arke 還是會在執行時留意新開的檔案總管視窗。設定存在 `%APPDATA%\Arke`，搜尋索引、記錄檔和下載的更新在
 `%LOCALAPPDATA%\Arke`。「登入 Windows 時啟動」是在「啟動」資料夾放一個捷徑，「在開始功能表顯示 Arke」則是在開始功能表資料夾放一個捷徑。SFTP 和 WebDAV 位置的密碼只有在你

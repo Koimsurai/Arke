@@ -429,6 +429,9 @@ pub(crate) struct Settings {
     /// Show folders opened from anywhere in Arke instead of File Explorer (`win_takeover.rs`).
     /// Only while Arke runs in the background; needs `keep_running`.
     pub(crate) open_folders_in_arke: bool,
+    /// With `open_folders_in_arke`, Win+E and File Explorer started from the taskbar or Start
+    /// (the same verb) open Arke too. Off: File Explorer started on purpose stays File Explorer.
+    pub(crate) win_e_opens_arke: bool,
     /// Folders opened from other programs open as a tab in the window used last, not a window of
     /// their own (#11).
     pub(crate) open_external_in_tab: bool,
@@ -547,6 +550,7 @@ impl Default for Settings {
             remember_folder_views: true,
             keep_running: true,
             open_folders_in_arke: false,
+            win_e_opens_arke: false,
             open_external_in_tab: true,
             language: Language::default(),
             confirm_recycle: false,
@@ -909,6 +913,26 @@ pub(crate) fn turn_off_takeover(path: &Path) -> bool {
     }
     settings.open_folders_in_arke = false;
     save(path, &settings).is_ok()
+}
+
+/// The "Win+E and the File Explorer icon open Arke too" switch, read straight from the settings
+/// file before anything else starts (the folder handler deciding where Home goes). Off when the
+/// file is missing or unreadable; nothing is written.
+pub(crate) fn home_opens_arke() -> bool {
+    default_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .is_some_and(|bytes| win_e_switch(&bytes))
+}
+
+fn win_e_switch(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("win_e_opens_arke")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 fn load(path: &Path) -> Option<Settings> {
@@ -1383,6 +1407,18 @@ mod tests {
         assert!(s.net_places.contains(&PathBuf::from(r"\\server9\share")));
         s.forget_share(Path::new(r"\\server9\share"));
         assert!(!s.net_places.contains(&PathBuf::from(r"\\server9\share")));
+    }
+
+    #[test]
+    fn the_win_e_switch_is_read_without_loading_the_rest() {
+        assert!(win_e_switch(br#"{"win_e_opens_arke":true,"pinned":[]}"#));
+        assert!(win_e_switch(b"\xEF\xBB\xBF{\"win_e_opens_arke\":true}"));
+        assert!(!win_e_switch(br#"{"win_e_opens_arke":false}"#));
+        assert!(
+            !win_e_switch(br#"{"open_folders_in_arke":true}"#),
+            "off unless set"
+        );
+        assert!(!win_e_switch(b"{ broken"));
     }
 
     #[test]

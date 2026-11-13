@@ -242,6 +242,13 @@ fn main() -> std::process::ExitCode {
                 win::open_in_explorer(&target);
                 return std::process::ExitCode::SUCCESS;
             }
+            // Home, This PC and Quick access are where File Explorer starts from Start or the
+            // taskbar: File Explorer started on purpose stays File Explorer unless Win+E is meant to
+            // open Arke too.
+            arke_core::takeover::Route::Arke(Target::Home) if !settings::home_opens_arke() => {
+                win::open_in_explorer(target);
+                return std::process::ExitCode::SUCCESS;
+            }
             arke_core::takeover::Route::Arke(Target::Home) => {
                 args.path = None;
                 args.page = Some(Page::Home);

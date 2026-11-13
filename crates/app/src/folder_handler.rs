@@ -50,11 +50,15 @@ impl Handler {
         }
     }
 
-    /// Makes the registry match `wanted`: on registers (or repairs) the handler, off restores the
-    /// previous values when Arke registered anything.
-    pub(crate) fn sync(&self, wanted: bool) {
+    /// Makes the registry match `wanted`: on registers (or repairs) the handler, Win+E included
+    /// only with `win_e`; off restores the previous values when Arke registered anything.
+    pub(crate) fn sync(&self, wanted: bool, win_e: bool) {
         if wanted {
-            match folder_handler::apply(&*self.registry, &*self.backup, &self.exe) {
+            match folder_handler::apply_scoped(&*self.registry, &*self.backup, &self.exe, win_e) {
+                Ok(done) if done.dropped > 0 => log::info!(
+                    "folder handler: Win+E back to File Explorer ({} values)",
+                    done.dropped
+                ),
                 Ok(done) if done.written == 0 => {
                     log::info!(
                         "folder handler: already registered for {}",
@@ -110,23 +114,26 @@ fn allowed_here(is_set: impl Fn(&str) -> bool) -> bool {
 /// the latest wish counts. At startup with the setting on, the registration is verified and
 /// repaired (an exe that moved), with it off a leftover registration is undone.
 pub(crate) fn follow_setting(store: &Entity<SettingsStore>, handler: Handler, cx: &mut App) {
-    let (tx, rx) = flume::unbounded::<bool>();
+    let (tx, rx) = flume::unbounded::<(bool, bool)>();
     let handler = Arc::new(handler);
     crate::explorer::spawn_thread("folder-handler", move || {
         while let Ok(mut wanted) = rx.recv() {
             while let Ok(newer) = rx.try_recv() {
                 wanted = newer;
             }
-            handler.sync(wanted);
+            handler.sync(wanted.0, wanted.1);
         }
     });
-    let mut applied: Option<bool> = None;
+    let mut applied: Option<(bool, bool)> = None;
     let mut follow = move |store: &SettingsStore| {
         // Before settings load the values are defaults.
         if !store.loaded {
             return;
         }
-        let wanted = store.settings.open_folders_in_arke;
+        let wanted = (
+            store.settings.open_folders_in_arke,
+            store.settings.win_e_opens_arke,
+        );
         if applied.replace(wanted) != Some(wanted) {
             let _ = tx.send(wanted);
         }

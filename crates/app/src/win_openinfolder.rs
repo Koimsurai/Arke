@@ -302,7 +302,7 @@ mod com {
             let found = unsafe { unknown.query(riid, ppv) }.ok();
             // SAFETY: riid was checked above; service may be null.
             let (service, iid) = unsafe { (service.as_ref().copied(), *riid) };
-            log::info!(
+            log::debug!(
                 "shell window: QueryService({service:?}, {iid:?}): {}",
                 if found.is_ok() { "ok" } else { "not supported" }
             );

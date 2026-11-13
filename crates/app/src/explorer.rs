@@ -1399,6 +1399,9 @@ impl Explorer {
         self.selection.set_cursor_name(Some(first));
         self.cursor = None;
         self.scroll_to_cursor = Some(ScrollStrategy::Center);
+        // The folder is already listed, so nothing else will place the cursor: do it now, which
+        // also scrolls the item to the middle.
+        self.resolve_cursor();
         cx.notify();
         true
     }

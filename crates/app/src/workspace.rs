@@ -1067,8 +1067,13 @@ impl Workspace {
         }
     }
 
+    /// Focuses what the active tab shows: its page (Home, Settings, the Recycle Bin) when one
+    /// covers the list, otherwise the list. A hidden list can't take keys, so with the list focused
+    /// under a page, shortcuts such as Ctrl+W did nothing.
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self.active_view().read(cx).focus_handle(cx);
+        let focus = self
+            .page_focus(cx)
+            .unwrap_or_else(|| self.active_view().read(cx).focus_handle(cx));
         window.focus(&focus, cx);
     }
 
@@ -2273,7 +2278,8 @@ fn drag_area(id: &'static str, cx: &mut Context<Workspace>) -> gpui::Stateful<gp
 
 impl Focusable for Workspace {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.active_view().read(cx).focus_handle(cx)
+        self.page_focus(cx)
+            .unwrap_or_else(|| self.active_view().read(cx).focus_handle(cx))
     }
 }
 

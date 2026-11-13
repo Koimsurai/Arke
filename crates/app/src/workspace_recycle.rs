@@ -57,6 +57,11 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(super) fn recycle_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
+        use gpui::Focusable as _;
+        self.recycle_page.as_ref().map(|p| p.view.focus_handle(cx))
+    }
+
     pub(super) fn close_recycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(page) = self.recycle_page.take() {
             self.dismiss_page(&page.owner, window, cx);

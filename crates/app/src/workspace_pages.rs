@@ -49,6 +49,20 @@ impl Workspace {
             .is_some_and(|p| p.view.read(cx).display_path() == owner.path.as_deref())
     }
 
+    /// Focus handle of the page the active tab shows, if one covers its list.
+    pub(super) fn page_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
+        if self.settings_open() {
+            return self.settings_panel.as_ref().map(|p| p.focus.clone());
+        }
+        if self.recycle_open() {
+            return self.recycle_focus(cx);
+        }
+        if self.home_open() {
+            return self.home_focus(cx);
+        }
+        None
+    }
+
     /// Page shown in this list view, used for the tab title.
     pub(super) fn page_title(&self, view: EntityId) -> Option<(String, Icon)> {
         let owns = |owner: &Owner| owner.view == view;

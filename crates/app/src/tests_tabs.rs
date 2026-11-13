@@ -787,4 +787,9 @@ fn closing_the_last_tab_leaves_the_window_on_home(cx: &mut TestAppContext) {
         Some(rust_i18n::t!("home.title").into_owned()),
         "the window stays, showing Home"
     );
+
+    // Home has the keyboard: Ctrl+W there closes the window.
+    cx.simulate_keystrokes("ctrl-w");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| cx.windows().len()), 0, "Ctrl+W on Home closes it");
 }

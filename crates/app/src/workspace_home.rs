@@ -48,6 +48,11 @@ impl Workspace {
         }
     }
 
+    pub(super) fn home_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
+        use gpui::Focusable as _;
+        self.home_page.as_ref().map(|p| p.view.focus_handle(cx))
+    }
+
     /// Switches to the tab that already has it open, otherwise opens it in a new or the current tab.
     pub(super) fn open_home(&mut self, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
         let existing = self.home_page.as_ref().map(|p| p.owner.clone());
@@ -73,6 +78,7 @@ impl Workspace {
             owner: self.owner_here(new_tab, cx),
             _events: events,
         });
+        self.focus_active(window, cx);
         cx.notify();
     }
 

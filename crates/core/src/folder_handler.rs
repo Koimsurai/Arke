@@ -465,11 +465,8 @@ fn drop_win_e(reg: &dyn Registry, store: &dyn BackupStore) -> Result<usize, Erro
     }
     let (mut drop_keys, keep_keys): (Vec<String>, Vec<String>) =
         backup.created_keys.drain(..).partition(|k| under(k));
-    drop_keys.sort_by_key(|k| std::cmp::Reverse(k.matches('\\').count()));
-    for key in &drop_keys {
-        check_allowed(key)?;
-        reg.delete_key_if_empty(key)?;
-    }
+    drop_keys.extend(win_e.iter().flat_map(|e| managed_chain(&e.key)));
+    delete_empty(reg, drop_keys)?;
     backup.entries = rest;
     backup.created_keys = keep_keys;
     store.save(&backup)?;
@@ -542,15 +539,34 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
             PutBack::Same => {}
         }
     }
-    // Deepest first; a key that still holds anything stays.
     let mut keys: Vec<String> = created;
+    keys.extend(entries.iter().flat_map(|e| managed_chain(&e.key)));
+    delete_empty(reg, keys)?;
+    store.remove()?;
+    Ok(done)
+}
+
+/// The keys of a value Arke manages that may go once empty: from the value's key up to, but not
+/// including, `Folder` or the class id's parent `CLSID`. Needed because an empty key under
+/// `HKCU\Software\Classes` hides the one Windows ships (an empty Win+E `command` key leaves
+/// Win+E doing nothing), and a backup from an older build may not list the keys Arke created.
+fn managed_chain(key: &str) -> Vec<String> {
+    chain(key)
+        .into_iter()
+        .filter(|k| k.matches('\\').count() > CLASSES.matches('\\').count() + 1)
+        .filter(|k| !k.eq_ignore_ascii_case(&classes_key("CLSID")))
+        .collect()
+}
+
+/// Deletes each key that holds nothing, deepest first; a key that still holds anything stays.
+fn delete_empty(reg: &dyn Registry, mut keys: Vec<String>) -> Result<(), Error> {
     keys.sort_by_key(|k| std::cmp::Reverse(k.matches('\\').count()));
+    keys.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     for key in &keys {
         check_allowed(key)?;
         reg.delete_key_if_empty(key)?;
     }
-    store.remove()?;
-    Ok(done)
+    Ok(())
 }
 
 /// A [`Registry`] in memory, for tests.
@@ -897,6 +913,44 @@ mod tests {
             reg.text(OPEN_CMD, ""),
             None,
             "neither Arke's command is left"
+        );
+    }
+
+    #[test]
+    fn keys_left_empty_are_removed_even_without_a_record_of_creating_them() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        // An older build created the keys; the backup it left only knows another Arke's values.
+        let old_home = r#""D:\dist\arke-test.exe" --home"#;
+        reg.put(WIN_E_CMD, "", old_home);
+        reg.put(OPEN_CMD, "", &cmd(r"D:\dist\arke-test.exe"));
+        reg.put(OPEN_CMD, "DelegateExecute", STOCK_DELEGATE);
+        reg.put(
+            r"Software\Classes\Folder\shell\open",
+            "MultiSelectModel",
+            "Document",
+        );
+        apply_scoped(&reg, &backup, exe(), true).unwrap();
+        apply_scoped(&reg, &backup, exe(), false).unwrap();
+        assert!(
+            reg.snapshot()
+                .iter()
+                .all(|(key, _, _)| !key.contains("52205fd8")),
+            "no empty Win+E key hides the one Windows ships: {:?}",
+            reg.snapshot()
+        );
+        restore(&reg, &backup).unwrap();
+        assert_eq!(reg.text(OPEN_CMD, ""), None);
+        assert_eq!(
+            reg.text(OPEN_CMD, "DelegateExecute").as_deref(),
+            Some(STOCK_DELEGATE),
+            "the value from before Arke is back"
+        );
+        assert_eq!(
+            reg.text(r"Software\Classes\Folder\shell\open", "MultiSelectModel")
+                .as_deref(),
+            Some("Document"),
+            "other values and their keys stay"
         );
     }
 

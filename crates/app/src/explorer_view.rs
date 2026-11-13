@@ -2889,14 +2889,7 @@ impl Render for Explorer {
                     cx.emit(ExplorerEvent::Activated);
                 }
             }))
-            .on_mouse_down(
-                MouseButton::Navigate(NavigationDirection::Back),
-                cx.listener(|this, _: &MouseDownEvent, w, cx| this.go_back(&GoBack, w, cx)),
-            )
-            .on_mouse_down(
-                MouseButton::Navigate(NavigationDirection::Forward),
-                cx.listener(|this, _: &MouseDownEvent, w, cx| this.go_forward(&GoForward, w, cx)),
-            )
+            .map(|d| Self::mouse_navigation(d, cx))
             .child(self.render_top_bar(window, cx))
             .child(
                 // The paper: the single sheet holding the list
@@ -3208,4 +3201,28 @@ fn cloud_badge(
             .tooltip(tooltip(tip.into_owned()))
             .child(svg().path(icon.path()).size(theme::ICON).text_color(color)),
     )
+}
+
+impl Explorer {
+    /// Mouse back/forward over this pane go back in this pane; the window handles them everywhere
+    /// else (sidebar, tab list, pages), so they stop here to move only once (#8).
+    fn mouse_navigation(
+        d: gpui::Stateful<gpui::Div>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        d.on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Back),
+            cx.listener(|this, _: &MouseDownEvent, w, cx| {
+                cx.stop_propagation();
+                this.go_back(&GoBack, w, cx);
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Forward),
+            cx.listener(|this, _: &MouseDownEvent, w, cx| {
+                cx.stop_propagation();
+                this.go_forward(&GoForward, w, cx);
+            }),
+        )
+    }
 }

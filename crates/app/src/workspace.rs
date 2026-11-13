@@ -2016,6 +2016,24 @@ impl Render for Workspace {
                 this.open_workspaces(window, cx);
             }))
             .on_key_down(cx.listener(Self::on_key_down))
+            // Mouse back/forward anywhere in the window (the sidebar, the tab list, Home and the
+            // other pages) move the active tab; over a list the pane itself handles them (#8).
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Back),
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    let view = this.active_view().clone();
+                    view.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Forward),
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    let view = this.active_view().clone();
+                    view.update(cx, |e, cx| {
+                        e.go_forward(&crate::explorer::GoForward, window, cx);
+                    });
+                }),
+            )
             // Pressing or releasing Ctrl/Shift/Alt during a drag updates the drop action shown on the drag card.
             .on_modifiers_changed(|_, window, cx| {
                 if cx.has_active_drag() {

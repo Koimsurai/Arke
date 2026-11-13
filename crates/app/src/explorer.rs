@@ -394,7 +394,13 @@ pub(crate) enum ExplorerEvent {
     /// Needs a login for this network location (Workspace opens the dialog).
     NetLogin(PathBuf),
     /// Moved to another folder (recorded in Recent).
-    Navigated(PathBuf),
+    /// Arrived at a folder; `stepped` when the history recorded a step back to where it was.
+    Navigated {
+        path: PathBuf,
+        stepped: bool,
+    },
+    /// The back (`true`) or forward toolbar button: the workspace decides what it moves.
+    HistoryButton(bool),
     /// An operation changed this remote folder (servers send no change notifications; panes
     /// showing it relist).
     RemoteChanged(PathBuf),
@@ -532,6 +538,9 @@ pub(crate) struct Explorer {
     pub(crate) model: Option<DirModel>,
     pending: Option<PendingNav>,
     pub(crate) history: History,
+    /// Back and forward button states set by the workspace when they follow the timeline
+    /// across tabs (`workspace_nav.rs`); `None`: this pane's own history.
+    pub(crate) global_nav: Option<(bool, bool)>,
     pub(crate) sort: SortSpec,
     /// Last seen default sort and view. Tabs still on the old defaults follow when settings change.
     seen_defaults: (SortSpec, ViewMode),
@@ -862,6 +871,7 @@ impl Explorer {
             model: None,
             pending: None,
             history: History::default(),
+            global_nav: None,
             sort: defaults.0,
             seen_defaults: defaults,
             // A benchmark measures a fixed view, never one saved by the user
@@ -1543,9 +1553,12 @@ impl Explorer {
             } if generation == current => {
                 if let Some(pending) = self.pending.take_if(|p| p.generation == generation) {
                     let folder_view = pending.folder_view;
-                    self.commit_navigation(pending, &path, sorted_by);
+                    let stepped = self.commit_navigation(pending, &path, sorted_by);
                     self.folder_view_on_commit(folder_view, cx);
-                    cx.emit(ExplorerEvent::Navigated(path.clone()));
+                    cx.emit(ExplorerEvent::Navigated {
+                        path: path.clone(),
+                        stepped,
+                    });
                 }
                 let Some(model) = self.model.as_mut().filter(|m| m.generation == generation) else {
                     return;
@@ -1712,9 +1725,12 @@ impl Explorer {
         cx.notify();
     }
 
-    fn commit_navigation(&mut self, pending: PendingNav, path: &Path, sorted_by: SortSpec) {
+    /// Returns whether the history recorded a step (a new folder, not back, forward or refresh).
+    fn commit_navigation(&mut self, pending: PendingNav, path: &Path, sorted_by: SortSpec) -> bool {
         self.failed = None;
         let previous = self.model.as_ref().map(|m| m.path.clone());
+        let stepped =
+            pending.kind == NavKind::New && previous.as_deref().is_some_and(|p| p != path);
         self.history.commit(pending.kind, previous.as_deref(), path);
         if pending.kind != NavKind::Refresh {
             // Going up selects the folder we came from; "Open file location" selects the given
@@ -1748,6 +1764,7 @@ impl Explorer {
         self.filtered = None;
         self.show_loading = false;
         self.loading_task = None;
+        stepped
     }
 
     /// Restores the cursor by name after the contents or filter change.

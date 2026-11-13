@@ -82,8 +82,9 @@ impl Explorer {
     // ───────────────────────── Top bar (on the frame) ─────────────────────────
 
     fn render_top_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_back = self.history.can_go_back();
-        let can_forward = self.history.can_go_forward();
+        let (can_back, can_forward) = self
+            .global_nav
+            .unwrap_or_else(|| (self.history.can_go_back(), self.history.can_go_forward()));
         let can_up = self
             .display_path()
             .and_then(arke_core::path::parent)
@@ -106,7 +107,9 @@ impl Explorer {
                         Icon::ArrowLeft,
                         can_back,
                         t!("nav.back"),
-                        cx.listener(|this, _: &ClickEvent, w, cx| this.go_back(&GoBack, w, cx)),
+                        cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ExplorerEvent::HistoryButton(true));
+                        }),
                     ),
                     cx,
                 ))
@@ -115,8 +118,8 @@ impl Explorer {
                     Icon::ArrowRight,
                     can_forward,
                     t!("nav.forward"),
-                    cx.listener(|this, _: &ClickEvent, w, cx| {
-                        this.go_forward(&GoForward, w, cx);
+                    cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(ExplorerEvent::HistoryButton(false));
                     }),
                 ))
             })

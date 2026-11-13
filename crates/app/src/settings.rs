@@ -213,6 +213,17 @@ pub(crate) struct WindowPlace {
     pub(crate) maximized: bool,
 }
 
+/// What back and forward move through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NavScope {
+    /// Every step in the order it happened, switching tabs when needed (`core::timeline`).
+    #[default]
+    AcrossTabs,
+    /// Only the current tab's folders, as in File Explorer.
+    WithinTab,
+}
+
 /// Default sort column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -435,6 +446,8 @@ pub(crate) struct Settings {
     /// Folders opened from other programs open as a tab in the window used last, not a window of
     /// their own (#11).
     pub(crate) open_external_in_tab: bool,
+    /// What back and forward move through.
+    pub(crate) nav_scope: NavScope,
     pub(crate) language: Language,
     /// Ask before moving to the Recycle Bin. Permanent deletes are always confirmed by Windows.
     pub(crate) confirm_recycle: bool,
@@ -552,6 +565,7 @@ impl Default for Settings {
             open_folders_in_arke: false,
             win_e_opens_arke: false,
             open_external_in_tab: true,
+            nav_scope: NavScope::AcrossTabs,
             language: Language::default(),
             confirm_recycle: false,
             warn_extension_change: true,

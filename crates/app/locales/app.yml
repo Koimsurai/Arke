@@ -1540,6 +1540,22 @@ settings.win_e_desc:
   en: "Off: File Explorer you start yourself stays File Explorer"
   zh-TW: "關閉時，自己開的檔案總管仍是檔案總管"
   zh-CN: "关闭时，自己打开的文件资源管理器仍是文件资源管理器"
+settings.nav_scope:
+  en: "Back and forward"
+  zh-TW: "上一頁／下一頁"
+  zh-CN: "上一页／下一页"
+settings.nav_scope_desc:
+  en: "Across tabs: once a tab is back at its first folder, back returns to the tab you came from"
+  zh-TW: "跨分頁：分頁退到最早的資料夾後，再按上一頁會回到你來之前的分頁"
+  zh-CN: "跨标签页：标签页退到最早的文件夹后，再按上一页会回到你来之前的标签页"
+settings.nav_scope_across:
+  en: "Across tabs, in the order you went"
+  zh-TW: "跨分頁，依你走過的順序"
+  zh-CN: "跨标签页，按你走过的顺序"
+settings.nav_scope_within:
+  en: "Within the current tab"
+  zh-TW: "只在目前分頁"
+  zh-CN: "只在当前标签页"
 settings.language_zh:
   en: "繁體中文"
   zh-TW: "繁體中文"

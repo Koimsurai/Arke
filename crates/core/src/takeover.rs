@@ -162,6 +162,14 @@ pub fn within(path: &Path, root: &Path) -> bool {
     head.eq_ignore_ascii_case(root) && (tail.is_empty() || tail.starts_with('\\'))
 }
 
+/// Whether the window watcher moves an Explorer window showing `target` to Arke. A window that opens
+/// at Home or This PC is File Explorer started on purpose (taskbar, Start, `explorer.exe`), so it
+/// stays; Win+E reaches Arke through the folder handler instead. Folders and the Recycle Bin, which
+/// some program asked Explorer to show, are moved.
+pub const fn watcher_takes(target: &Target) -> bool {
+    !matches!(target, Target::Home)
+}
+
 /// Test-only restriction (`ARKE_TAKEOVER_TEST_ROOT`): with a root set, only folders inside it are
 /// taken over, so live checks never touch the tester's own Explorer windows.
 pub fn allowed_by_test_root(target: &Target, root: Option<&Path>) -> bool {
@@ -453,6 +461,13 @@ mod tests {
         assert!(!within(Path::new(r"D:\Temp\arke-test"), root));
         assert!(within(Path::new(r"C:\x"), Path::new(r"C:\")));
         assert!(!within(Path::new(r"C:\x"), Path::new("")));
+    }
+
+    #[test]
+    fn explorer_started_on_purpose_is_left_alone() {
+        assert!(!watcher_takes(&Target::Home));
+        assert!(watcher_takes(&Target::RecycleBin));
+        assert!(watcher_takes(&Target::Folder(PathBuf::from(r"C:\Users"))));
     }
 
     #[test]

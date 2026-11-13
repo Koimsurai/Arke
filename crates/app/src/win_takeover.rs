@@ -17,7 +17,8 @@
 //!   hidden, Arke opens the folder (with the selection) and only then the Explorer window is closed
 //!   with `IWebBrowser2::Quit`. Anything else is never touched.
 //!
-//! Left alone: windows opened while Shift is held, windows of elevated processes, windows Arke
+//! Left alone: File Explorer opened on purpose (a window at Home or This PC: the taskbar, Start or a
+//! bare `explorer.exe`), windows opened while Shift is held, windows of elevated processes, windows Arke
 //! itself asked Explorer for ("Show in File Explorer", see [`note_reveal`]), and every folder Arke
 //! cannot show (Control Panel, Network, phones, archives, search results, ...).
 //!
@@ -706,6 +707,10 @@ impl Watch {
             log::info!("takeover: leaving {parsing} to Explorer");
             return None;
         };
+        if !takeover::watcher_takes(&target) {
+            log::info!("takeover: File Explorer opened at {parsing}, leaving it");
+            return None;
+        }
         if !takeover::allowed_by_test_root(&target, self.test_root.as_deref()) {
             return None;
         }

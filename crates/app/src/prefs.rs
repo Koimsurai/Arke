@@ -26,7 +26,7 @@ static WIDTHS: [AtomicU32; Col::ALL.len()] = [const { AtomicU32::new(0) }; Col::
 /// Dragged preview pane width (px, 0 = automatic).
 static PREVIEW_W: AtomicU32 = AtomicU32::new(0);
 /// The columns after Name, left to right.
-static ORDER: RwLock<[Col; Col::MOVABLE.len()]> = parking_lot::const_rwlock(Col::MOVABLE);
+static ORDER: RwLock<[Col; Col::MOVABLE.len()]> = RwLock::new(Col::MOVABLE);
 
 /// Columns in Details view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

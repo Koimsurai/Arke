@@ -161,13 +161,11 @@ fn download_tree(
 
 /// Lowercase names already in a local folder.
 fn local_names(dir: &Path) -> HashSet<String> {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .map(|e| e.file_name().to_string_lossy().to_lowercase())
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(dir).map_or_default(|rd| {
+        rd.filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_lowercase())
+            .collect()
+    })
 }
 
 /// A fresh folder under the cache for one staging (clipboard, drag out, copy between servers).
@@ -389,8 +387,7 @@ impl RemoteShell {
                 None => {
                     let name = source
                         .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                        .map_or_default(|n| n.to_string_lossy().into_owned());
                     let is_dir = source.is_dir();
                     let name = free_name(&name, is_dir, &taken);
                     taken.insert(name.to_lowercase());

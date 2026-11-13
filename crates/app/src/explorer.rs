@@ -2850,8 +2850,7 @@ impl Explorer {
     fn start_edit_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self
             .display_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
+            .map_or_default(|p| p.display().to_string());
         self.editing_path = true;
         self.path_input.update(cx, |input, cx| {
             input.set_text(text, cx);
@@ -3048,8 +3047,7 @@ media_loaded: {}",
             "== arke bench {}\npath: {}\nentries: {}\nfirst_frame_ms: {:.1}\nfirst_listing_ms: {:.1}\nlist_enumerate_ms: {:.1}\nlist_sort_ms: {:.1}\nlist_total_ms: {:.1}\nfirst_frame_unix_ms: {:.1}\nfirst_listing_unix_ms: {:.1}",
             crate::build_info::VERSION,
             self.current_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
+                .map_or_default(|p| p.display().to_string()),
             self.entry_count(),
             ms(self.metrics.first_frame),
             ms(self.metrics.first_listing),

@@ -689,8 +689,7 @@ impl Explorer {
         };
         let modified = entry
             .modified
-            .map(|t| self.services.shell.format_time(t))
-            .unwrap_or_default();
+            .map_or_default(|t| self.services.shell.format_time(t));
         // Nested tree rows are named by relative path; read the file name.
         let name = arke_core::tree::leaf(&entry.name);
         crate::a11y::item_label(
@@ -704,14 +703,12 @@ impl Explorer {
         if self.search_mode {
             return t!("filter.search_placeholder").into_owned();
         }
-        self.display_path()
-            .map(|p| {
-                p.file_name().map_or_else(
-                    || p.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                )
-            })
-            .unwrap_or_default()
+        self.display_path().map_or_default(|p| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        })
     }
 
     fn row_shell(
@@ -1477,8 +1474,7 @@ impl Explorer {
                             .child(
                                 entry
                                     .modified
-                                    .map(|t| shell.format_time(t))
-                                    .unwrap_or_default(),
+                                    .map_or_default(|t| shell.format_time(t)),
                             ),
                     )
                     .child(size_cell(entry, super::sizes::FolderSize::Unknown))
@@ -3174,16 +3170,13 @@ pub(super) fn date_cell(
         .flex_none()
         .text_size(theme::FS_12)
         .text_color(theme::text_muted())
-        .child(
-            time.map(|t| {
-                if crate::prefs::full_dates() {
-                    shell.format_time(t)
-                } else {
-                    shell.format_time_short(t)
-                }
-            })
-            .unwrap_or_default(),
-        )
+        .child(time.map_or_default(|t| {
+            if crate::prefs::full_dates() {
+                shell.format_time(t)
+            } else {
+                shell.format_time_short(t)
+            }
+        }))
 }
 
 /// Cloud file state after the name, like Explorer: a cloud for online-only; inside sync roots a

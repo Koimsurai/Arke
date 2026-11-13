@@ -683,7 +683,7 @@ impl Job {
                 if last.get(&entry.name) != Some(&fp) {
                     upserts.push(entry.clone());
                 }
-                now.insert(entry.name.clone(), fp);
+                now.insert(entry.name, fp);
                 if now.len() > NET_RECHECK_MAX_ENTRIES {
                     return;
                 }

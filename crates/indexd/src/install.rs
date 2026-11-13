@@ -299,7 +299,7 @@ pub(crate) fn install(user: &str) -> Result<(), InstallError> {
     let target = install_path().ok_or(InstallError::NoProgramFiles)?;
     let manager = manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
     let existing = open(&manager)?;
-    let mut allowed = existing.as_ref().map(allowed_users).unwrap_or_default();
+    let mut allowed = existing.as_ref().map_or_default(allowed_users);
     if !allowed.iter().any(|s| s == user) {
         allowed.push(user.to_string());
     }

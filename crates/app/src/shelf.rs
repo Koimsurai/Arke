@@ -187,12 +187,11 @@ fn parse(bytes: &[u8], path: &Path) -> Result<Shelf, ShelfError> {
     let items: Vec<ShelfItem> = value
         .get("items")
         .and_then(serde_json::Value::as_array)
-        .map(|list| {
+        .map_or_default(|list| {
             list.iter()
                 .filter_map(|v| serde_json::from_value(v.clone()).ok())
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let mut shelf = Shelf::default();
     shelf.add(items.into_iter().map(|i| (i.path, i.is_dir)));
     Ok(shelf)

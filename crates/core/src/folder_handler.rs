@@ -202,8 +202,7 @@ fn is_arke_exe(name: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
     let stem = path
         .file_stem()
-        .map(|s| s.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|s| s.to_string_lossy().to_ascii_lowercase());
     exe && (stem == "arke" || (stem.starts_with("arke-") && stem != "arke-indexd"))
 }
 

@@ -14,7 +14,7 @@ default-members = ["crates/app", "crates/indexd"]
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.100"
 license = "AGPL-3.0-only"
 publish = false
 
@@ -101,6 +101,8 @@ cast_sign_loss = "allow"
 # GPUI listener signatures pass by reference
 needless_pass_by_value = "allow"
 trivially_copy_pass_by_ref = "allow"
+# Its suggestion, `assert_eq!(x, [] as [T; 0])`, reads worse than `assert!(x.is_empty())`
+assert_is_empty = "allow"
 
 todo = "deny"
 unimplemented = "deny"

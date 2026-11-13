@@ -267,10 +267,7 @@ impl Workspace {
             .clone();
         let image_input = cx.new(|cx| {
             let mut input = TextInput::new(t!("settings.background_path").to_string(), cx);
-            input.set_text(
-                image.map(|p| p.display().to_string()).unwrap_or_default(),
-                cx,
-            );
+            input.set_text(image.map_or_default(|p| p.display().to_string()), cx);
             input
         });
         let image_sub = cx.subscribe_in(&image_input, window, Self::on_image_input);
@@ -552,8 +549,7 @@ impl Workspace {
                 .settings
                 .background_image
                 .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
+                .map_or_default(|p| p.display().to_string());
             image.update(cx, |input, cx| {
                 if input.text() != text {
                     input.set_text(text, cx);
@@ -1821,8 +1817,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let label = options
         .iter()
         .find(|(value, _)| *value == current)
-        .map(|(_, label)| label.to_string())
-        .unwrap_or_default();
+        .map_or_default(|(_, label)| label.to_string());
     let label_font = fonts.as_ref().and_then(|font| font(at));
     let workspace = ui.workspace.clone();
     let long = options.len() > LONG_LIST;
@@ -3197,12 +3192,10 @@ pub(super) fn text_button(
 /// "Live updates" button: installs or removes the background service (UAC prompt); shows text only while waiting.
 /// Same action as the lightning button in the search scope bar, placed here so it is easier to find.
 fn service_control(cx: &App) -> AnyElement {
-    let (installed, busy) = crate::global_search::GlobalSearch::global(cx)
-        .map(|g| {
-            let g = g.read(cx);
-            (g.service_installed == Some(true), g.service_busy)
-        })
-        .unwrap_or_default();
+    let (installed, busy) = crate::global_search::GlobalSearch::global(cx).map_or_default(|g| {
+        let g = g.read(cx);
+        (g.service_installed == Some(true), g.service_busy)
+    });
     if busy {
         return div()
             .text_size(theme::FS_12)

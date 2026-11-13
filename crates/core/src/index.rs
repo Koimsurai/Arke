@@ -528,8 +528,7 @@ impl Index {
                             Vec::new()
                         } else {
                             fs.read_dir(&path)
-                                .map(|iter| iter.filter_map(Result::ok).collect())
-                                .unwrap_or_default()
+                                .map_or_default(|iter| iter.filter_map(Result::ok).collect())
                         };
                         if done_tx.send((id, entries)).is_err() {
                             return;
@@ -1871,8 +1870,7 @@ impl Overlay {
             }
             let name = path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+                .map_or_default(|n| n.to_string_lossy().into_owned());
             let modified = i64::try_from(info.modified).unwrap_or(i64::MAX);
             if !query.accepts(&name, info.is_dir, info.size, modified) {
                 continue;
@@ -1890,8 +1888,7 @@ impl Overlay {
             if let Some(dp) = &dir_pattern {
                 let parent = path
                     .parent()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                    .map_or_default(|p| p.to_string_lossy().into_owned());
                 if dp
                     .score(Utf32Str::new(&parent, &mut buf), &mut matcher)
                     .is_none()
@@ -2957,9 +2954,7 @@ mod tests {
             println!(
                 "{text:>14}: {:>4} hits, search {search:>9.2?}, rank {ranked:>9.2?}  {}",
                 out.len(),
-                out.first()
-                    .map(|h| h.path.display().to_string())
-                    .unwrap_or_default()
+                out.first().map_or_default(|h| h.path.display().to_string())
             );
         }
     }
@@ -3030,8 +3025,7 @@ mod tests {
                 hits.len(),
                 best,
                 hits.first()
-                    .map(|h| h.path.display().to_string())
-                    .unwrap_or_default()
+                    .map_or_default(|h| h.path.display().to_string())
             );
         }
         // Narrow while typing: c -> ca -> car -> carg -> cargo.

@@ -566,8 +566,7 @@ fn verify_copies(
         let Some(copy) = copy else {
             let name = source
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+                .map_or_default(|n| n.to_string_lossy().into_owned());
             failed.push(t!("verify.reason_missing", name = name).into_owned());
             continue;
         };
@@ -631,8 +630,7 @@ impl Explorer {
             return self
                 .search_hit(self.search_cursor)
                 .zip(self.search_results.as_ref())
-                .map(|(hit, r)| vec![(r.root.join(&*hit.rel), hit.entry.name.clone())])
-                .unwrap_or_default();
+                .map_or_default(|(hit, r)| vec![(r.root.join(&*hit.rel), hit.entry.name.clone())]);
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
@@ -989,14 +987,12 @@ impl Explorer {
         // to
         // "name (1)", "name (2)", ...
         let batch: Vec<Arc<str>> = if self.selection.len() > 1 && self.selection.contains(&name) {
-            self.view()
-                .map(|v| {
-                    v.iter()
-                        .filter(|e| self.selection.contains(&e.name))
-                        .map(|e| e.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default()
+            self.view().map_or_default(|v| {
+                v.iter()
+                    .filter(|e| self.selection.contains(&e.name))
+                    .map(|e| e.name.clone())
+                    .collect()
+            })
         } else {
             Vec::new()
         };
@@ -1195,8 +1191,7 @@ impl Explorer {
                 let ext = (!entry.is_dir_like())
                     .then(|| Path::new(&**name).extension())
                     .flatten()
-                    .map(|e| format!(".{}", e.to_string_lossy()))
-                    .unwrap_or_default();
+                    .map_or_default(|e| format!(".{}", e.to_string_lossy()));
                 let new_name = format!("{stem} ({}){ext}", ix + 1);
                 (new_name != arke_core::tree::leaf(name)).then(|| (dir.join(&**name), new_name))
             })

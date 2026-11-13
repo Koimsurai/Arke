@@ -421,8 +421,7 @@ impl Explorer {
     ) {
         let crumbs = self
             .display_path()
-            .map(arke_core::path::breadcrumbs)
-            .unwrap_or_default();
+            .map_or_default(arke_core::path::breadcrumbs);
         let total = crumbs.len();
         let Some(hide) = self.crumbs_to_hide(&crumbs, window) else {
             let shown = crumbs

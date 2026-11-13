@@ -732,8 +732,7 @@ fn loaded(path: &str) -> impl Fn(&Explorer) -> bool + '_ {
 fn names(v: &Explorer) -> Vec<String> {
     v.model
         .as_ref()
-        .map(|m| m.entries.iter().map(|e| e.name.to_string()).collect())
-        .unwrap_or_default()
+        .map_or_default(|m| m.entries.iter().map(|e| e.name.to_string()).collect())
 }
 
 fn selected_name(v: &Explorer) -> Option<String> {
@@ -1022,20 +1021,17 @@ fn chinese_file_names_sort_without_panic(cx: &mut TestAppContext) {
 }
 
 fn selected_names(v: &Explorer) -> Vec<String> {
-    v.view()
-        .map(|view| {
-            view.iter()
-                .filter(|e| v.selection.contains(&e.name))
-                .map(|e| e.name.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
+    v.view().map_or_default(|view| {
+        view.iter()
+            .filter(|e| v.selection.contains(&e.name))
+            .map(|e| e.name.to_string())
+            .collect()
+    })
 }
 
 fn view_names(v: &Explorer) -> Vec<String> {
     v.view()
-        .map(|view| view.iter().map(|e| e.name.to_string()).collect())
-        .unwrap_or_default()
+        .map_or_default(|view| view.iter().map(|e| e.name.to_string()).collect())
 }
 
 #[gpui::test]
@@ -1226,8 +1222,7 @@ fn final_hits(v: &Explorer) -> Vec<String> {
     v.search_results
         .as_ref()
         .filter(|r| !r.searching)
-        .map(|r| r.hits.iter().map(|h| h.rel.to_string()).collect())
-        .unwrap_or_default()
+        .map_or_default(|r| r.hits.iter().map(|h| h.rel.to_string()).collect())
 }
 
 #[gpui::test]
@@ -1360,16 +1355,12 @@ fn filter_chips_and_content_search(cx: &mut TestAppContext) {
         final_hits(v).len() == 2
     });
     let lines: Vec<String> = view.update(cx, |v, _| {
-        let mut lines: Vec<String> = v
-            .search_results
-            .as_ref()
-            .map(|r| {
-                r.hits
-                    .iter()
-                    .filter_map(|h| h.snippet.as_deref().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut lines: Vec<String> = v.search_results.as_ref().map_or_default(|r| {
+            r.hits
+                .iter()
+                .filter_map(|h| h.snippet.as_deref().map(str::to_string))
+                .collect()
+        });
         lines.sort();
         lines
     });
@@ -1422,20 +1413,17 @@ otes.txt",
         final_hits(v).len() == 2
     });
     let mut found: Vec<(String, String)> = view.update(cx, |v, _| {
-        v.search_results
-            .as_ref()
-            .map(|r| {
-                r.hits
-                    .iter()
-                    .map(|h| {
-                        (
-                            h.rel.to_string(),
-                            h.snippet.as_deref().unwrap_or_default().to_string(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        v.search_results.as_ref().map_or_default(|r| {
+            r.hits
+                .iter()
+                .map(|h| {
+                    (
+                        h.rel.to_string(),
+                        h.snippet.as_deref().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        })
     });
     found.sort();
     assert_eq!(
@@ -5419,8 +5407,7 @@ fn alt_drop_asks_what_to_do(cx: &mut TestAppContext) {
         view.update(cx, |v, _| {
             v.context_menu
                 .as_ref()
-                .map(crate::explorer::ContextMenuForTest::labels)
-                .unwrap_or_default()
+                .map_or_default(crate::explorer::ContextMenuForTest::labels)
         })
     };
     open(cx);
@@ -6036,8 +6023,7 @@ fn right_button_drag_asks_what_to_do_on_drop(cx: &mut TestAppContext) {
         (
             v.context_menu
                 .as_ref()
-                .map(crate::explorer::ContextMenuForTest::labels)
-                .unwrap_or_default(),
+                .map_or_default(crate::explorer::ContextMenuForTest::labels),
             v.pending_drop.clone(),
         )
     });

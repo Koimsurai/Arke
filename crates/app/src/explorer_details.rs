@@ -455,14 +455,13 @@ impl Explorer {
     /// A date as its column shows it (full date-times, or short forms like "Today 07:49").
     fn date_text(&self, time: Option<std::time::SystemTime>, full: bool) -> String {
         let shell = &self.services.shell;
-        time.map(|t| {
+        time.map_or_default(|t| {
             if full {
                 shell.format_time(t)
             } else {
                 shell.format_time_short(t)
             }
         })
-        .unwrap_or_default()
     }
 
     /// Widths of `col`'s cells in the Details rows on screen, measured with `text_w`.
@@ -753,8 +752,7 @@ fn shown_extension(entry: &Entry) -> SharedString {
     entry
         .name
         .rfind('.')
-        .map(|dot| SharedString::from(entry.name[dot..].to_owned()))
-        .unwrap_or_default()
+        .map_or_default(|dot| SharedString::from(entry.name[dot..].to_owned()))
 }
 
 /// `cell` with its column's divider on its right edge: dragging it sizes `col` (the columns to its

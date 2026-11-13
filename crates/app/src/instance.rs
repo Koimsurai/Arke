@@ -117,8 +117,7 @@ pub(crate) fn encode(req: &Request) -> Vec<u8> {
             let path: Vec<u16> = open
                 .path
                 .as_ref()
-                .map(|p| p.as_os_str().encode_wide().collect())
-                .unwrap_or_default();
+                .map_or_default(|p| p.as_os_str().encode_wide().collect());
             push_field(&mut w, &path);
             let bench = match open.bench {
                 None => "",
@@ -130,8 +129,7 @@ pub(crate) fn encode(req: &Request) -> Vec<u8> {
             let out: Vec<u16> = open
                 .bench_out
                 .as_ref()
-                .map(|p| p.as_os_str().encode_wide().collect())
-                .unwrap_or_default();
+                .map_or_default(|p| p.as_os_str().encode_wide().collect());
             push_field(&mut w, &out);
             push_field(&mut w, &wide(&open.launched_unix_ms.to_string()));
             let page = match open.page {

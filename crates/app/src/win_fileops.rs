@@ -555,7 +555,7 @@ fn perform_recorded(
         } => Some(paths.as_slice()),
         _ => None,
     };
-    let shorts = recycled.map(short_forms).unwrap_or_default();
+    let shorts = recycled.map_or_default(short_forms);
     let cancel = progress.clone();
     let recorder: IFileOperationProgressSink = Recorder {
         done: std::cell::RefCell::new(Vec::new()),

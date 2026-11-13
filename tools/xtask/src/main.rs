@@ -478,7 +478,7 @@ fn exe_name(version: &str, arch: Arch) -> String {
 /// Packages release builds as dist/arke-<version>[-arm64].exe, each with a .sha256, plus release
 /// notes. Returns (version, exe paths).
 fn cmd_build(args: &[String]) -> Result<(String, Vec<PathBuf>)> {
-    let channel = args.first().map(String::as_str).unwrap_or_default();
+    let channel = args.first().map_or_default(String::as_str);
     let version = release_version(channel, args)?;
     // Before compiling: the exe embeds this file.
     cmd_licenses()?;
@@ -546,7 +546,7 @@ fn cmd_build(args: &[String]) -> Result<(String, Vec<PathBuf>)> {
 /// What `cargo xtask build` left in dist/ for this version: the exes `--arch` asks for. Lets CI
 /// build and test without write access and publish in a separate job.
 fn prebuilt(args: &[String]) -> Result<(String, Vec<PathBuf>)> {
-    let channel = args.first().map(String::as_str).unwrap_or_default();
+    let channel = args.first().map_or_default(String::as_str);
     let version = release_version(channel, args)?;
     let dist = root().join("dist");
     let mut packaged = Vec::new();
@@ -615,8 +615,7 @@ fn cmd_publish(args: &[String]) -> Result<()> {
         let sha = exe.with_file_name(format!(
             "{}.sha256",
             exe.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
+                .map_or_default(|n| n.to_string_lossy().into_owned())
         ));
         [exe.clone(), sha]
     });
@@ -624,8 +623,7 @@ fn cmd_publish(args: &[String]) -> Result<()> {
     for file in files.chain([licenses]) {
         let name = file
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         curl(&[
             "-sS",
             "-X",
@@ -669,7 +667,7 @@ fn main() -> ExitCode {
         Some("status") => cmd_status(),
         Some("version") => cmd_version(),
         Some("release-version") => {
-            let channel = rest.first().map(String::as_str).unwrap_or_default();
+            let channel = rest.first().map_or_default(String::as_str);
             release_version(channel, rest).map(|v| println!("{v}"))
         }
         Some("licenses") => cmd_licenses(),

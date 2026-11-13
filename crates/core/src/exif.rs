@@ -153,8 +153,7 @@ pub fn parse(raw: &[u8]) -> Option<PhotoInfo> {
     let exif = find(&ifd0, EXIF_IFD)
         .and_then(|f| tiff.u32(f.value_at))
         .and_then(|at| usize::try_from(at).ok())
-        .map(|at| tiff.ifd(at))
-        .unwrap_or_default();
+        .map_or_default(|at| tiff.ifd(at));
 
     let make = find(&ifd0, MAKE).and_then(|f| tiff.ascii(f));
     let model = find(&ifd0, MODEL).and_then(|f| tiff.ascii(f));

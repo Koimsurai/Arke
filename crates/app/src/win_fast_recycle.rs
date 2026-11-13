@@ -46,6 +46,8 @@ pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
 /// `$I` layout version written and accepted.
 const VERSION: i64 = 2;
 /// `$I` records looked at to check the bin's layout.
@@ -64,7 +66,12 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
         return None;
     }
     let meta = fs::symlink_metadata(path).ok()?;
-    let size = if meta.is_dir() && !meta.file_type().is_symlink() {
+    // Links, junctions and cloud placeholders (OneDrive and the like keep a reparse point on every
+    // item they sync) stay with the engine, which knows what each of them needs.
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return None;
+    }
+    let size = if meta.is_dir() {
         tree_size(path)?
     } else {
         meta.len()
@@ -72,10 +79,7 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
     if !fits(&root, size) {
         return None;
     }
-    let ext = path
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let ext = bin_extension(path);
     let (info, item) = free_names(&bin, &ext)?;
     let record = encode(
         VERSION,
@@ -92,9 +96,9 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
         let _ = fs::remove_file(&info);
         return None;
     }
-    if let Err(err) = fs::rename(
-        arke_core::path::verbatim(path),
-        arke_core::path::verbatim(&item),
+    if let Err(err) = move_no_replace(
+        &arke_core::path::verbatim(path),
+        &arke_core::path::verbatim(&item),
     ) {
         log::info!(
             "fast recycle: {} stays with the engine: {err}",
@@ -105,6 +109,29 @@ pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
     }
     notify(path, meta.is_dir(), &bin);
     Some(item)
+}
+
+/// The part of the name the bin item keeps: from the last dot on, as Windows takes it, so a name
+/// that only starts with a dot (`.gitignore`) keeps all of it.
+fn bin_extension(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    name.rfind('.')
+        .map(|at| name[at..].to_owned())
+        .unwrap_or_default()
+}
+
+/// Renames `from` to `to` on the same volume, never replacing anything at `to` (unlike
+/// `fs::rename`) and never copying.
+fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use windows::Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW};
+    let from = windows::core::HSTRING::from(from.as_os_str());
+    let to = windows::core::HSTRING::from(to.as_os_str());
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    unsafe { MoveFileExW(&from, &to, MOVE_FILE_FLAGS(0)) }
+        .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 & 0xFFFF))
 }
 
 /// `X:\` of a drive-letter path; `None` for anything else (shares, device paths).
@@ -221,7 +248,12 @@ fn fits(root: &Path, size: u64) -> bool {
     let Some(used) = bin_usage(root) else {
         return false;
     };
-    used.saturating_add(size) <= u64::from(max_mb) * 1024 * 1024
+    has_room(used, size, max_mb)
+}
+
+/// `size` more bytes fit in a bin holding `used` bytes of at most `max_mb` megabytes.
+fn has_room(used: u64, size: u64, max_mb: u32) -> bool {
+    used.saturating_add(size) <= u64::from(max_mb).saturating_mul(1024 * 1024)
 }
 
 /// `MaxCapacity` (MB) and `NukeOnDelete` of the drive's bin, from
@@ -401,6 +433,7 @@ mod tests {
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
+            purge_leftovers(tag);
             let dir = crate::win::long_temp_dir()
                 .join(format!("arke-test-fastbin-{tag}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
@@ -421,6 +454,28 @@ mod tests {
         }
     }
 
+    /// Bin items an earlier, interrupted run of the test `tag` left: their origin is one of its
+    /// sandboxes (which may be gone by now).
+    fn purge_leftovers(tag: &str) {
+        let prefix = format!("arke-test-fastbin-{tag}-");
+        let Ok(items) = crate::win_recycle::list() else {
+            return;
+        };
+        let stale: Vec<crate::shell::RecycledItem> = items
+            .into_iter()
+            .filter(|item| {
+                item.from.starts_with(crate::win::long_temp_dir())
+                    && item
+                        .from
+                        .components()
+                        .any(|c| c.as_os_str().to_string_lossy().starts_with(&prefix))
+            })
+            .collect();
+        if !stale.is_empty() {
+            purge(&stale);
+        }
+    }
+
     /// Items in the bin that came from `dir`.
     fn recycled_from(dir: &Path) -> Vec<crate::shell::RecycledItem> {
         let here = fs::canonicalize(dir).unwrap();
@@ -437,6 +492,29 @@ mod tests {
             crate::win_fileops::purge_recycled(&places, None).map_err(|e| e.to_string()),
             Ok(OpOutcome::Done)
         );
+    }
+
+    #[test]
+    fn bin_names_keep_the_name_from_the_last_dot() {
+        for (name, kept) in [
+            ("a.b.c.txt", ".txt"),
+            (".gitignore", ".gitignore"),
+            ("noext", ""),
+            ("中文 資料夾", ""),
+            ("photos.v2", ".v2"),
+        ] {
+            assert_eq!(bin_extension(Path::new(name)), kept, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_item_fits_only_with_what_is_already_in_the_bin() {
+        let mb = 1024 * 1024;
+        assert!(has_room(0, 10 * mb, 10));
+        assert!(!has_room(1, 10 * mb, 10), "one byte over");
+        assert!(!has_room(5 * mb, 6 * mb, 10));
+        assert!(!has_room(0, 1, 0), "a bin of size 0 takes nothing");
+        assert!(!has_room(u64::MAX, 1, u32::MAX), "no overflow");
     }
 
     #[test]
@@ -545,6 +623,301 @@ mod tests {
         );
         assert!(fs::metadata(&ro).unwrap().permissions().readonly());
         assert!(recycled_from(&sb.0).is_empty(), "no record left behind");
+    }
+
+    /// Recycles `path` through the Windows engine (silent), like Arke does without the fast path.
+    fn engine(paths: Vec<PathBuf>) -> Result<OpOutcome, String> {
+        crate::win_fileops::perform(
+            &FileOp::Delete {
+                paths,
+                recycle: true,
+            },
+            None,
+            true,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// The `$R` name past the six random characters: what Windows keeps of the original name.
+    fn suffix(now: &str) -> String {
+        Path::new(now).file_name().unwrap().to_string_lossy()[8..].to_owned()
+    }
+
+    fn record_of(now: &str) -> Record {
+        let now = Path::new(now);
+        let name = now.file_name().unwrap().to_string_lossy();
+        decode(&fs::read(now.with_file_name(format!("$I{}", &name[2..]))).unwrap()).unwrap()
+    }
+
+    /// Builds the same item twice, under `engine` and `fast`, with `build(dir)`.
+    fn twin(sb: &Sandbox, build: impl Fn(&Path) -> PathBuf) -> (PathBuf, PathBuf) {
+        let engine_dir = sb.0.join("engine");
+        let fast_dir = sb.0.join("fast");
+        fs::create_dir_all(&engine_dir).unwrap();
+        fs::create_dir_all(&fast_dir).unwrap();
+        (build(&engine_dir), build(&fast_dir))
+    }
+
+    /// Odd names: the bin item keeps the same part of the name, the record the same size and
+    /// path as when Windows recycles the same item, and each comes back intact.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn odd_names_end_up_like_windows_puts_them() {
+        let sb = Sandbox::new("names");
+        let names = [
+            ".gitignore",
+            "noext",
+            "a.b.c.txt",
+            "中文 資料夾",
+            "emoji 😀.md",
+            "UPPER.TXT",
+        ];
+        for name in names {
+            let (engine_item, fast_item) = twin(&sb, |dir| {
+                let path = dir.join(name);
+                if name.contains('.') {
+                    fs::write(&path, "12345").unwrap();
+                } else {
+                    fs::create_dir_all(path.join("inner")).unwrap();
+                    fs::write(path.join("inner").join("x.bin"), "1234567").unwrap();
+                }
+                path
+            });
+            assert_eq!(
+                engine(vec![engine_item.clone()]),
+                Ok(OpOutcome::Done),
+                "{name}"
+            );
+            let fast_now = recycle(&fast_item).unwrap_or_else(|| panic!("{name}: not taken"));
+            let by_engine = recycled_from(engine_item.parent().unwrap());
+            let by_fast = recycled_from(fast_item.parent().unwrap());
+            assert_eq!((by_engine.len(), by_fast.len()), (1, 1), "{name}");
+            let (e, f) = (&by_engine[0], &by_fast[0]);
+            assert_eq!(suffix(&e.now), suffix(&f.now), "{name}: bin name");
+            assert_eq!(
+                (e.name.as_str(), e.is_dir, e.size),
+                (f.name.as_str(), f.is_dir, f.size)
+            );
+            let (re, rf) = (record_of(&e.now), record_of(&f.now));
+            assert_eq!(re.size, rf.size, "{name}: recorded size");
+            assert_eq!(
+                re.path.replace(r"\engine\", r"\fast\"),
+                rf.path,
+                "{name}: recorded path"
+            );
+            assert_eq!(Path::new(&f.now), fast_now);
+            purge(&by_engine);
+            let back = Undo::PutBack(vec![PutBack {
+                now: f.now.clone(),
+                parent: f.from.clone(),
+                name: f.name.clone(),
+            }]);
+            assert_eq!(
+                crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+                Ok(OpOutcome::Done),
+                "{name}: restore"
+            );
+            assert!(fast_item.exists(), "{name}: back in place");
+            let _ = fs::remove_dir_all(&fast_item);
+            let _ = fs::remove_file(&fast_item);
+        }
+    }
+
+    /// Items something holds: whatever the engine does with them (move or leave), the fast path
+    /// does too, and when it leaves one it leaves no record behind.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    #[allow(clippy::print_stderr)]
+    fn items_in_use_are_treated_like_the_engine_treats_them() {
+        use crate::win_inuse::test_support::lock_in_other_process;
+        let sb = Sandbox::new("inuse");
+        let cases: [(&str, fn(&Path) -> PathBuf); 2] = [
+            ("open file", |dir| {
+                let file = dir.join("open.txt");
+                fs::write(&file, "x").unwrap();
+                file
+            }),
+            ("folder with an open file", |dir| {
+                let folder = dir.join("holder");
+                fs::create_dir_all(&folder).unwrap();
+                fs::write(folder.join("open.txt"), "x").unwrap();
+                folder
+            }),
+        ];
+        for (label, build) in cases {
+            let (engine_item, fast_item) = twin(&sb, build);
+            let lock = |item: &Path| {
+                let target = if item.is_dir() {
+                    item.join("open.txt")
+                } else {
+                    item.to_path_buf()
+                };
+                lock_in_other_process(&target)
+            };
+            let engine_lock = lock(&engine_item);
+            let _ = engine(vec![engine_item.clone()]);
+            let engine_moved = !engine_item.exists();
+            drop(engine_lock);
+
+            let fast_lock = lock(&fast_item);
+            let records_before = recycled_from(fast_item.parent().unwrap()).len();
+            let fast_moved = recycle(&fast_item).is_some();
+            drop(fast_lock);
+            eprintln!("{label}: engine moved it {engine_moved}, fast path moved it {fast_moved}");
+            assert_eq!(
+                fast_moved,
+                !fast_item.exists(),
+                "{label}: answer matches the disk"
+            );
+            assert_eq!(
+                fast_moved, engine_moved,
+                "{label}: same outcome as the engine"
+            );
+            if !fast_moved {
+                assert_eq!(
+                    recycled_from(fast_item.parent().unwrap()).len(),
+                    records_before,
+                    "{label}: no record left behind"
+                );
+            }
+            purge(&recycled_from(engine_item.parent().unwrap()));
+            purge(&recycled_from(fast_item.parent().unwrap()));
+        }
+    }
+
+    /// A folder with a junction to somewhere else goes to the bin with the junction, and the
+    /// place it points to keeps its files; a junction on its own is left to the engine.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn links_go_with_their_folder_and_their_targets_stay() {
+        let sb = Sandbox::new("links");
+        let outside = sb.file(r"outside\keep.txt", "keep");
+        let folder = sb.0.join("project");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("a.txt"), "a").unwrap();
+        let junction = |link: &Path, target: &Path| {
+            let ok = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "junction");
+        };
+        junction(&folder.join("linked"), outside.parent().unwrap());
+        let alone = sb.0.join("alone");
+        junction(&alone, outside.parent().unwrap());
+
+        assert_eq!(
+            recycle(&alone),
+            None,
+            "a junction itself stays with the engine"
+        );
+        assert!(alone.exists());
+        let now = recycle(&folder).expect("the folder is taken");
+        assert_eq!(
+            fs::read_to_string(&outside).unwrap(),
+            "keep",
+            "target untouched"
+        );
+        let items = recycled_from(&sb.0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].size, 1, "the link's target isn't counted");
+        assert_eq!(Path::new(&items[0].now), now);
+        let back = Undo::PutBack(vec![PutBack {
+            now: items[0].now.clone(),
+            parent: sb.0.clone(),
+            name: "project".into(),
+        }]);
+        assert_eq!(
+            crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join(r"linked\keep.txt")).unwrap(),
+            "keep",
+            "the link still points where it did"
+        );
+        let _ = fs::remove_dir(folder.join("linked"));
+        let _ = fs::remove_dir(&alone);
+    }
+
+    /// Sizes Windows records for files with an alternate data stream, and hidden, system and
+    /// read-only ones, match what the fast path records.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn recorded_sizes_match_windows_for_streams_and_attributes() {
+        let sb = Sandbox::new("sizes");
+        let (engine_item, fast_item) = twin(&sb, |dir| {
+            let folder = dir.join("mixed");
+            fs::create_dir_all(&folder).unwrap();
+            let plain = folder.join("plain.txt");
+            fs::write(&plain, "12345").unwrap();
+            fs::write(folder.join("plain.txt:extra"), vec![b'x'; 1000]).unwrap();
+            let flagged = folder.join("flagged.txt");
+            fs::write(&flagged, "123").unwrap();
+            let ok = std::process::Command::new("attrib")
+                .args(["+h", "+s", "+r"])
+                .arg(&flagged)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "attrib");
+            folder
+        });
+        assert_eq!(engine(vec![engine_item.clone()]), Ok(OpOutcome::Done));
+        recycle(&fast_item).expect("taken");
+        let e = &recycled_from(engine_item.parent().unwrap())[0];
+        let f = &recycled_from(fast_item.parent().unwrap())[0];
+        assert_eq!(record_of(&e.now).size, record_of(&f.now).size);
+        purge(&recycled_from(engine_item.parent().unwrap()));
+        purge(&recycled_from(fast_item.parent().unwrap()));
+    }
+
+    /// A folder whose own path is longer than MAX_PATH: the fast path takes it only if the engine
+    /// can too, and then it comes back.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    #[allow(clippy::print_stderr)]
+    fn long_paths_follow_the_engine() {
+        let sb = Sandbox::new("long");
+        let deep = |dir: &Path| -> PathBuf {
+            let mut path = arke_core::path::verbatim(dir);
+            for _ in 0..6 {
+                path.push("a".repeat(45));
+            }
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("x.txt"), "x").unwrap();
+            path
+        };
+        let (engine_item, fast_item) = twin(&sb, deep);
+        assert!(arke_core::path::unverbatim(&fast_item).as_os_str().len() > 260);
+        let engine_result = engine(vec![arke_core::path::unverbatim(&engine_item)]);
+        let engine_moved = !engine_item.exists();
+        let fast_now = recycle(&arke_core::path::unverbatim(&fast_item));
+        eprintln!("engine: {engine_result:?}, moved {engine_moved}; fast: {fast_now:?}");
+        assert_eq!(
+            fast_now.is_some(),
+            engine_moved,
+            "same outcome as the engine"
+        );
+        if let Some(now) = fast_now {
+            let back = Undo::PutBack(vec![PutBack {
+                now: now.to_string_lossy().into_owned(),
+                parent: arke_core::path::unverbatim(fast_item.parent().unwrap()),
+                name: "a".repeat(45),
+            }]);
+            assert_eq!(
+                crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+                Ok(OpOutcome::Done),
+                "restores"
+            );
+            assert!(fast_item.join("x.txt").exists());
+        }
+        purge(&recycled_from(engine_item.parent().unwrap()));
+        let _ = fs::remove_dir_all(arke_core::path::verbatim(&sb.0));
     }
 
     /// Timing against the engine on the same kind of folder. Run with

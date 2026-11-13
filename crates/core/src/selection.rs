@@ -28,6 +28,12 @@ fn position(entries: &[Entry], name: &str, hint: Option<usize>) -> Option<usize>
     entries.iter().position(|e| &*e.name == name)
 }
 
+fn same_ignoring_case(a: &str, b: &str) -> bool {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
+}
+
 impl Selection {
     /// Number of selected items.
     pub fn len(&self) -> usize {
@@ -75,6 +81,41 @@ impl Selection {
         let first = self.names.iter().next().cloned();
         self.anchor.clone_from(&first);
         self.cursor = first;
+    }
+
+    /// Gives names that aren't in `entries` as spelled, but are there in another case, the entry's
+    /// spelling. Windows names ignore case, and a name taken from a typed path or one another
+    /// program passed may not match the folder's (#7). Returns whether anything changed.
+    pub fn adopt_case(&mut self, entries: &[Entry]) -> bool {
+        let respell = |name: &Arc<str>| -> Option<Arc<str>> {
+            if entries.iter().any(|e| e.name == *name) {
+                return None;
+            }
+            entries
+                .iter()
+                .find(|e| same_ignoring_case(&e.name, name))
+                .map(|e| e.name.clone())
+        };
+        let mut changed = false;
+        let names: Vec<Arc<str>> = self.names.drain().collect();
+        for name in names {
+            match respell(&name) {
+                Some(entry) => {
+                    changed = true;
+                    self.names.insert(entry);
+                }
+                None => {
+                    self.names.insert(name);
+                }
+            }
+        }
+        for slot in [&mut self.cursor, &mut self.anchor] {
+            if let Some(entry) = slot.as_ref().and_then(respell) {
+                *slot = Some(entry);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Sets cursor and anchor without changing the selection (e.g. pre-pointing at a folder after
@@ -187,6 +228,25 @@ mod tests {
             .filter(|e| sel.contains(&e.name))
             .map(|e| e.name.to_string())
             .collect()
+    }
+
+    #[test]
+    fn names_in_another_case_take_the_entry_spelling() {
+        let list = entries(&["Projects", "readme.md", "Ärger"]);
+        let mut sel = Selection::default();
+        sel.select_names(["projects".into(), "ärger".into()]);
+        assert!(sel.adopt_case(&list));
+        assert_eq!(selected(&sel, &list), ["Projects", "Ärger"]);
+        assert!(
+            sel.cursor_index(&list, None).is_some(),
+            "the cursor follows"
+        );
+        assert!(!sel.adopt_case(&list), "nothing left to fix");
+        // An exact match wins; a name that isn't there at all stays as it is.
+        let both = entries(&["foo", "Foo"]);
+        sel.select_names(["Foo".into(), "gone".into()]);
+        assert!(!sel.adopt_case(&both));
+        assert_eq!(selected(&sel, &both), ["Foo"]);
     }
 
     #[test]

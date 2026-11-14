@@ -124,7 +124,8 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
 到 [Releases](https://github.com/Koimsurai/Arke/releases) 下载 `arke-<版本>.exe`（ARM64 电脑用 `arke-<版本>-arm64.exe`）直接运行。
 只有一个 exe，不需要安装程序，也不需要装运行库。设置保存在 `%APPDATA%\Arke`。
 
-目前还没有代码签名，第一次运行时 SmartScreen 可能会让你确认。
+目前还没有代码签名，第一次运行时 SmartScreen 可能会让你确认。通过 SignPath Foundation 的签名
+正在申请中，见[代码签名政策](#代码签名政策)。
 
 Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（设置 › 关于）。
 
@@ -272,6 +273,21 @@ Arke 基于 Zed 编辑器的界面框架 [GPUI](https://github.com/zed-industrie
 侧边栏标签页则致敬了 Arc 浏览器。
 
 名字来自希腊神话：Arke 是 Iris 的双胞胎姐妹，两人都是长着翅膀的信使。
+
+## 代码签名政策
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/)（由 SignPath.io 免费提供代码签名，证书由
+SignPath Foundation 颁发）。
+
+- 提交与审查：[Koimsurai](https://github.com/Koimsurai)
+- 批准：[Koimsurai](https://github.com/Koimsurai)
+
+只有本仓库的 GitHub Actions 发版流程从 tag 构建出的 exe 会被签名，并且每个版本签名前都经过人工批准。
+
+**隐私。** Arke 不会收集或发送任何关于你或你的文件的数据。它只会在这些时候联网：到 GitHub 检查新版本
+（一天最多一次，可在 设置 › 关于 关闭）、在你选择安装时下载新版，以及连接到你自己打开的网络共享、
+SFTP 和 WebDAV 位置。
 
 ## 许可证
 

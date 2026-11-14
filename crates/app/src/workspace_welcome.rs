@@ -5,7 +5,7 @@
 //! Either button answers it for good (`start_menu_offered`); the same choices stay in
 //! Settings > Startup.
 
-use gpui::{AnimationExt, App, SharedString, div, prelude::*, px, svg};
+use gpui::{AnimationExt, App, SharedString, div, prelude::*, svg};
 use rust_i18n::t;
 
 use crate::a11y::A11yExt as _;
@@ -94,16 +94,13 @@ pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
     let autostart = cx
         .try_global::<WelcomeChoice>()
         .is_some_and(|c| c.autostart);
-    Some(
+    Some(crate::motion::corner_card(
         div()
             .id("welcome")
             .debug_selector(|| "welcome".to_owned())
             .a11y(gpui::Role::Dialog, t!("welcome.title"))
             .occlude()
-            .absolute()
-            .bottom(theme::S_16)
-            .right(theme::S_16)
-            .w(px(360.))
+            .w_full()
             .p(theme::S_16)
             .flex()
             .flex_col()
@@ -186,9 +183,8 @@ pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
             )
             .with_animation("welcome-appear", crate::motion::enter(), |el, t| {
                 crate::motion::slide_in(el, t, 0., crate::motion::SLIDE)
-            })
-            .into_any_element(),
-    )
+            }),
+    ))
 }
 
 #[cfg(test)]

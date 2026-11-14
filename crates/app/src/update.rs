@@ -561,24 +561,20 @@ pub(crate) fn start_download(release: Release, cx: &mut App) {
 }
 
 /// Restart into the new version: launch the new exe (it waits for this process to exit), then quit.
-/// An installer runs without its wizard (Windows asks for approval if Arke is installed for all
-/// users), closes this process if it is still running and starts the new version when done.
+/// An installer is handled by [`run_setup`].
 pub(crate) fn restart(exe: &Path, cx: &mut App) {
-    let spawned = if is_setup(exe) {
-        std::process::Command::new(exe)
-            .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LAUNCH"])
-            .spawn()
-    } else {
-        std::process::Command::new(exe)
-            .arg(AFTER_UPDATE_ARG)
-            .arg(std::process::id().to_string())
-            .spawn()
-    };
+    if is_setup(exe) {
+        run_setup(exe, cx);
+        return;
+    }
+    let spawned = std::process::Command::new(exe)
+        .arg(AFTER_UPDATE_ARG)
+        .arg(std::process::id().to_string())
+        .spawn();
     match spawned {
         Ok(_) => cx.quit(),
-        // The installer changed nothing yet. The exe was already swapped, though: put the old one
-        // back, or Arke's next start (or the next folder opened) would run what can't start.
-        Err(e) if is_setup(exe) => UpdateState::set(cx, UpdateState::Failed(e.to_string())),
+        // The exe was already swapped: put the old one back, or Arke's next start (or the next
+        // folder opened) would run what can't start.
         Err(e) => {
             let message = match roll_back(exe) {
                 Ok(()) => t!("update.rolled_back", error = e.to_string()).into_owned(),
@@ -588,6 +584,62 @@ pub(crate) fn restart(exe: &Path, cx: &mut App) {
             UpdateState::set(cx, UpdateState::Failed(message));
         }
     }
+}
+
+/// Whether an installer started by [`run_setup`] is still running, so a second click doesn't
+/// start another.
+static SETUP_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run the installer without its wizard. Arke stays open: the installer closes it once it starts
+/// installing (`arke --quit`, then Windows) and starts the new version when done. Windows first
+/// asks for approval when Arke is installed for all users; if that's declined the installer exits
+/// without changing anything, and Arke, still open, says the update didn't happen. Quitting right
+/// away would leave the user with no Arke and nothing to say why.
+fn run_setup(exe: &Path, cx: &mut App) {
+    use std::sync::atomic::Ordering;
+    if SETUP_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    match std::process::Command::new(exe)
+        .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LAUNCH"])
+        .spawn()
+    {
+        Ok(child) => watch_setup(child, cx),
+        Err(e) => {
+            SETUP_RUNNING.store(false, Ordering::SeqCst);
+            UpdateState::set(cx, UpdateState::Failed(e.to_string()));
+        }
+    }
+}
+
+/// Waits for the installer [`run_setup`] started. Normally this copy is closed before it exits.
+pub(crate) fn watch_setup(mut child: std::process::Child, cx: &mut App) {
+    use std::sync::atomic::Ordering;
+    let (tx, rx) = flume::bounded(1);
+    crate::explorer::spawn_thread("update-setup", move || {
+        let _ = tx.send(child.wait().map(|status| status.code()));
+    });
+    cx.spawn(async move |cx| {
+        let Ok(result) = rx.recv_async().await else {
+            return;
+        };
+        cx.update(|cx| {
+            SETUP_RUNNING.store(false, Ordering::SeqCst);
+            match result {
+                // Installed, but this copy wasn't closed: the new version is already starting.
+                Ok(Some(0)) => cx.quit(),
+                Ok(code) => {
+                    log::warn!("update: the installer exited with {code:?} before installing");
+                    UpdateState::set(
+                        cx,
+                        UpdateState::Failed(t!("update.setup_canceled").into_owned()),
+                    );
+                }
+                Err(e) => UpdateState::set(cx, UpdateState::Failed(e.to_string())),
+            }
+        });
+    })
+    .detach();
 }
 
 /// Undoes [`install`] when the new exe can't be started (antivirus software often blocks a new,

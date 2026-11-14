@@ -143,8 +143,7 @@ Download `arke-<version>.exe` (or `arke-<version>-arm64.exe` for ARM64 PCs) from
 [Releases](https://github.com/Koimsurai/Arke/releases) and run it. It's a single executable: no installer and no runtime. Settings are stored in
 `%APPDATA%\Arke`.
 
-Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time. Signing
-through SignPath Foundation is on the way, see [Code signing policy](#code-signing-policy).
+Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time.
 
 Arke checks GitHub for a new version at most once a day and only installs one when you say so
 (Settings › About).
@@ -312,18 +311,9 @@ framework of the Zed editor, and on the open-source crates listed in
 
 The name comes from Greek myth: Arke is the twin sister of Iris, both winged messengers.
 
-## Code signing policy
+## Privacy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
-[SignPath Foundation](https://signpath.org/).
-
-- Committers and reviewers: [Koimsurai](https://github.com/Koimsurai)
-- Approvers: [Koimsurai](https://github.com/Koimsurai)
-
-Only exes built by this repository's release workflow on GitHub Actions from a tagged commit are
-signed, and each release is approved by hand before it is signed.
-
-**Privacy.** Arke doesn't collect or send any data about you or your files. It goes online only to
+Arke doesn't collect or send any data about you or your files. It goes online only to
 check GitHub for a new version (at most once a day, can be turned off in Settings › About), to
 download one when you choose to install it, and to reach the network shares, SFTP and WebDAV
 locations you open yourself.

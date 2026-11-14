@@ -109,6 +109,16 @@ fn split_lines(text: &str, marks: &[(std::ops::Range<usize>, Token)]) -> Vec<Cod
     lines
 }
 
+/// The first [`TEXT_LINES`] lines of a Markdown file, joined with `\n` (the layout splits on that),
+/// with every hard break ending a line as in [`line_spans`].
+fn markdown_lines(text: &str) -> String {
+    line_spans(text)
+        .take(TEXT_LINES)
+        .map(|(start, end)| &text[start..end])
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Byte ranges of the lines in `text`, without their breaks. Every hard break DirectWrite knows
 /// ends a line, not just `\n`: CRLF, a lone `\r` (old Mac CSV exports), VT, FF, NEL and the Unicode
 /// line and paragraph separators. Left inside a line, DirectWrite breaks it into more lines than
@@ -456,8 +466,7 @@ fn load(
                 return PreviewData::Nothing;
             };
             if is_markdown(path) {
-                let text: String = text.lines().take(TEXT_LINES).collect::<Vec<_>>().join("\n");
-                return PreviewData::Markdown(text);
+                return PreviewData::Markdown(markdown_lines(&text));
             }
             let marks = path
                 .extension()
@@ -3197,6 +3206,19 @@ mod code_tests {
             .map(|(r, t)| (&lines[1].text[r.clone()], *t))
             .collect();
         assert_eq!(second, [("y */", Token::Comment), ("let", Token::Keyword)]);
+    }
+
+    /// Markdown saved with lone CRs previewed empty (one line with a CR per paragraph), and a
+    /// paragraph with form feeds vanished; both now split like text does.
+    #[test]
+    fn markdown_lines_end_at_every_hard_break() {
+        assert_eq!(
+            markdown_lines("# Title\r\rtext\r- item\r\nlast"),
+            "# Title\n\ntext\n- item\nlast"
+        );
+        assert_eq!(markdown_lines("a\u{c}b\u{c}c"), "a\nb\nc");
+        let long = "line\r".repeat(TEXT_LINES + 10);
+        assert_eq!(markdown_lines(&long).lines().count(), TEXT_LINES);
     }
 
     /// A CSV saved with lone CRs (old Mac Excel), or with CRs, VTs, FFs or NELs inside its fields,

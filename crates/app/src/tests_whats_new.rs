@@ -271,3 +271,53 @@ fn corner_cards_stay_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
     in_corner(cx, "welcome");
     crate::motion::force_for_test(false);
 }
+
+/// Picking another channel in Settings drops the old channel's answer right away; before, the
+/// page kept saying "up to date" until the next check, so switching seemed to do nothing.
+/// (Test builds have no releases repo, so this takes the no-check path.)
+#[gpui::test]
+fn switching_the_channel_drops_the_old_answer(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
+    change(cx, |st| st.update_channel_choice = Some(Channel::Stable));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+    });
+    cx.run_until_parked();
+    click(cx, "update");
+    cx.update(|_, cx| UpdateState::set_for_test(cx, UpdateState::UpToDate));
+    cx.run_until_parked();
+
+    click(cx, "update-channel");
+    click(cx, "update-channel-0");
+    assert!(
+        matches!(
+            cx.update(|_, cx| UpdateState::get(cx)),
+            UpdateState::UpToDate
+        ),
+        "picking the same channel keeps the answer"
+    );
+
+    click(cx, "update-channel");
+    click(cx, "update-channel-1");
+    assert_eq!(settings(cx).update_channel(), Channel::Rc);
+    assert!(matches!(
+        cx.update(|_, cx| UpdateState::get(cx)),
+        UpdateState::Idle
+    ));
+
+    // A download in progress isn't thrown away by a change of mind.
+    cx.update(|_, cx| {
+        UpdateState::set_for_test(cx, UpdateState::Downloading(release("0.4.0"), 1, 2));
+    });
+    click(cx, "update-channel");
+    click(cx, "update-channel-0");
+    assert!(matches!(
+        cx.update(|_, cx| UpdateState::get(cx)),
+        UpdateState::Downloading(..)
+    ));
+}

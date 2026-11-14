@@ -10,7 +10,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::Workspace;
-use super::settings_panel::{Ui, choice, expander, switch};
+use super::settings_panel::{Ui, choice_with, expander, set, switch};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::build_info::{self, Channel};
@@ -85,15 +85,22 @@ fn body(
             .into_any_element();
     }
     let no_source = build_info::RELEASES_REPO.is_empty();
-    let channel = choice(
+    let current = s.update_channel();
+    let channel = choice_with(
         "update-channel",
         &[
             (Channel::Stable, Channel::Stable.label()),
             (Channel::Rc, Channel::Rc.label()),
             (Channel::Nightly, Channel::Nightly.label()),
         ],
-        s.update_channel(),
-        |st, v| st.update_channel_choice = Some(v),
+        current,
+        move |value, cx| {
+            set(cx, move |st| st.update_channel_choice = Some(value));
+            if value != current {
+                update::channel_changed(value, cx);
+            }
+        },
+        None,
         ui,
     );
     let auto = switch("update-auto", s.update_auto, |st| {

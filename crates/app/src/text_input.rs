@@ -341,7 +341,11 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        self.content_offset(line.closest_index_for_x(position.x - bounds.left() + self.scroll_x))
+        let offset = self
+            .content_offset(line.closest_index_for_x(position.x - bounds.left() + self.scroll_x));
+        // `line` is from the last frame. If the text changed since (Tab completing the path during
+        // a drag), the offset may be past the end or inside a character of the new text.
+        self.content.floor_char_boundary(offset)
     }
 
     fn select_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
@@ -946,5 +950,51 @@ mod scroll_tests {
             follow_caret(px(200.), px(120.), px(120.), field),
             px(120.) - view
         );
+    }
+}
+
+#[cfg(test)]
+mod stale_layout_tests {
+    use super::*;
+
+    /// The text changes while the mouse is selecting (Tab completes the path during a drag), and a
+    /// mouse event arrives before the next frame: its position is measured on the old line. It
+    /// used to land inside a character of the new text, and the next key pressed panicked.
+    #[gpui::test]
+    fn a_mouse_event_on_the_previous_frame_lands_on_a_character(cx: &mut gpui::TestAppContext) {
+        // New text, and the offset on the old line: inside a character, and past the end.
+        for (new_text, old_offset) in [("a中中", 3), ("a", 9)] {
+            let (input, cx) = cx.add_window_view(|_, cx| {
+                let mut input = TextInput::new("", cx);
+                input.set_text("中中中", cx);
+                input
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    let line = input.last_layout.clone().expect("drawn");
+                    let bounds = input.last_bounds.expect("drawn");
+                    let at = point(
+                        bounds.left() + line.x_for_index(old_offset),
+                        bounds.center().y,
+                    );
+                    input.set_text(new_text, cx);
+                    input.is_selecting = true;
+                    let event = MouseMoveEvent {
+                        position: at,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: gpui::Modifiers::none(),
+                    };
+                    input.on_mouse_move(&event, window, cx);
+                    let range = input.selected_range.clone();
+                    assert!(
+                        input.content.get(range.clone()).is_some(),
+                        "{range:?} splits a character of {:?} or runs past it",
+                        input.content
+                    );
+                    input.replace_text_in_range(None, "x", window, cx);
+                });
+            });
+        }
     }
 }

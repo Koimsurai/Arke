@@ -86,12 +86,8 @@ pub(crate) struct CodeLine {
 /// are marked on each line).
 fn split_lines(text: &str, marks: &[(std::ops::Range<usize>, Token)]) -> Vec<CodeLine> {
     let mut lines = Vec::new();
-    let mut start = 0;
     let mut next = 0;
-    for line in text.split('\n').take(TEXT_LINES) {
-        // CRLF: hide the \r and keep ranges before it so they never extend past the line's text.
-        let visible = line.trim_end_matches('\r');
-        let end = start + visible.len();
+    for (start, end) in line_spans(text).take(TEXT_LINES) {
         // Skip ranges that ended before this line.
         while marks.get(next).is_some_and(|(r, _)| r.end <= start) {
             next += 1;
@@ -106,12 +102,38 @@ fn split_lines(text: &str, marks: &[(std::ops::Range<usize>, Token)]) -> Vec<Cod
             })
             .collect();
         lines.push(CodeLine {
-            text: SharedString::from(visible.to_owned()),
+            text: SharedString::from(text[start..end].to_owned()),
             marks: line_marks,
         });
-        start += line.len() + 1;
     }
     lines
+}
+
+/// Byte ranges of the lines in `text`, without their breaks. Every hard break DirectWrite knows
+/// ends a line, not just `\n`: CRLF, a lone `\r` (old Mac CSV exports), VT, FF, NEL and the Unicode
+/// line and paragraph separators. Left inside a line, DirectWrite breaks it into more lines than
+/// GPUI's layout reads, and the whole line draws empty.
+fn line_spans(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut start = Some(0);
+    let mut chars = text.char_indices().peekable();
+    std::iter::from_fn(move || {
+        let from = start?;
+        while let Some((ix, c)) = chars.next() {
+            if matches!(
+                c,
+                '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+            ) {
+                if c == '\r' && chars.next_if(|&(_, n)| n == '\n').is_some() {
+                    start = Some(ix + 2);
+                } else {
+                    start = Some(ix + c.len_utf8());
+                }
+                return Some((from, ix));
+            }
+        }
+        start = None;
+        Some((from, text.len()))
+    })
 }
 
 pub(crate) enum PreviewBody {
@@ -3173,6 +3195,28 @@ mod code_tests {
             .map(|(r, t)| (&lines[1].text[r.clone()], *t))
             .collect();
         assert_eq!(second, [("y */", Token::Comment), ("let", Token::Keyword)]);
+    }
+
+    /// A CSV saved with lone CRs (old Mac Excel), or with CRs, VTs, FFs or NELs inside its fields,
+    /// used to preview empty: the line reached DirectWrite with more breaks than GPUI reads.
+    #[test]
+    fn every_hard_break_ends_a_line() {
+        let text = "a,1\rb,2\rc,3\rd,4\re,5\r\nf\u{b}g\u{c}h\u{85}i\u{2028}j\u{2029}k\n";
+        let lines: Vec<_> = split_lines(text, &[])
+            .into_iter()
+            .map(|l| l.text.to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "a,1", "b,2", "c,3", "d,4", "e,5", "f", "g", "h", "i", "j", "k", ""
+            ]
+        );
+        let lang = arke_core::highlight::lang_for("rs").unwrap();
+        let text = "let\r/* x */\rlet";
+        let lines = split_lines(text, &arke_core::highlight::highlight(text, lang));
+        assert_eq!(lines[1].marks, [(0..7, Token::Comment)]);
+        assert_eq!(lines[2].marks, [(0..3, Token::Keyword)]);
     }
 
     #[test]

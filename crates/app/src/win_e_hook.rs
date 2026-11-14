@@ -7,7 +7,7 @@
 //! and never looks at the verb, so the registration is in place but File Explorer opens anyway.
 //!
 //! Only on those PCs, and only while Arke keeps running in the background, a low-level keyboard
-//! hook takes Win+E before Explorer sees it and opens Arke's Home window instead. Nothing flashes:
+//! hook takes Win+E before Explorer sees it and opens an Arke window instead. Nothing flashes:
 //! Explorer never gets the key. The hook looks at nothing but the E key while a Windows key is
 //! held; every other key goes straight on, and nothing is recorded. When Arke isn't running, or
 //! the foreground window belongs to an elevated program (Windows doesn't pass its keys to the

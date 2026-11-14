@@ -206,6 +206,8 @@ Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（�
 会直接交给文件资源管理器），以及打开“Win+E 和文件资源管理器图标也打开 Arke”时的 Win+E 处理程序。原来的内容会备份到
 `%APPDATA%\Arke\folder-handler-backup.json`，你关掉设置或运行 `arke --restore-explorer` 时原样放回去。
 对注册表覆盖不到的情况（例如 `explorer.exe /select,...`），Arke 仍会在运行时留意新打开的资源管理器窗口。
+有些电脑的 Windows 会把 Win+E 直接交给文件资源管理器、不经过注册表（Windows 从 2026 年底开始陆续推送这项改动），
+在这些电脑上，Arke 在后台运行时会用键盘 hook 接管 Win+E：只在按住 Windows 键时看 E 这一个键，不记录任何内容。
 设置保存在 `%APPDATA%\Arke`，搜索索引、日志和下载的
 更新在 `%LOCALAPPDATA%\Arke`。“登录 Windows 时启动”是在“启动”文件夹里放一个快捷方式，“在开始菜单显示 Arke”则是在开始菜单文件夹里放一个快捷方式。SFTP 和 WebDAV 位置的密码只有
 在你勾选“记住”时才会存进 Windows 凭据管理器。只有可选的搜索服务需要管理员同意。

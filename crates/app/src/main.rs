@@ -68,6 +68,7 @@ mod win;
 mod win_cloud;
 mod win_devnotify;
 mod win_dragimage;
+mod win_e_hook;
 mod win_eject;
 mod win_fast_recycle;
 mod win_fileops;
@@ -455,6 +456,7 @@ fn app_main(mut args: Args) {
             install_tray(cx, &services, &store);
             follow_autostart_setting(&store, &services, cx);
             follow_takeover_setting(&store, &services, cx);
+            follow_win_e_hook(&store, &services, cx);
         }
         // The shell registration follows the setting in every process that is running, resident
         // or not (a standalone Arke started through the folder verb keeps it repaired too).
@@ -642,6 +644,87 @@ fn follow_takeover_setting(
     apply(store.read(cx));
     cx.observe(store, move |store, cx| apply(store.read(cx)))
         .detach();
+}
+
+/// "Win+E opens Arke too" on PCs where Windows sends Win+E straight to File Explorer instead of
+/// asking the registration (`win_e_hook.rs`, #34): while the setting is on and Arke stays in the
+/// background, a keyboard hook takes Win+E there. Everywhere else the registration does the job and
+/// no hook runs. Windows can switch that path on or off when Explorer restarts, so it is looked at
+/// again every half minute (one registry read, off the UI thread).
+fn follow_win_e_hook(
+    store: &gpui::Entity<settings::SettingsStore>,
+    services: &Services,
+    cx: &mut App,
+) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    // `ARKE_WIN_E_HOOK` acts as if Windows sent Win+E straight to File Explorer, so the hook can be
+    // checked end to end on a PC without that (live checks also set `ARKE_NO_FOLDER_HANDLER`).
+    let forced = std::env::var_os("ARKE_WIN_E_HOOK").is_some();
+    if !forced && !folder_handler::shell_allowed() {
+        return;
+    }
+    let (tx, rx) = flume::bounded::<()>(4);
+    let services = services.clone();
+    cx.spawn(async move |cx| {
+        while rx.recv_async().await.is_ok() {
+            cx.update(|cx| {
+                open_target(cx, &services, Target::Home, &[], None);
+            });
+        }
+    })
+    .detach();
+    let hook: Rc<RefCell<Option<win_e_hook::Hook>>> = Rc::default();
+    let direct_launch = Rc::new(Cell::new(false));
+    let apply = {
+        let direct_launch = direct_launch.clone();
+        move |store: &settings::SettingsStore| {
+            // Before settings load the values are defaults.
+            if !store.loaded {
+                return;
+            }
+            let s = &store.settings;
+            let wanted = s.open_folders_in_arke
+                && s.win_e_opens_arke
+                && s.keep_running
+                && direct_launch.get();
+            let mut hook = hook.borrow_mut();
+            if wanted && hook.is_none() {
+                *hook = win_e_hook::Hook::start(tx.clone());
+            } else if !wanted && hook.is_some() {
+                *hook = None;
+            }
+        }
+    };
+    let apply = Rc::new(apply);
+    {
+        let apply = apply.clone();
+        cx.observe(store, move |store, cx| apply(store.read(cx)))
+            .detach();
+    }
+    let store = store.downgrade();
+    cx.spawn(async move |cx| {
+        loop {
+            let active = cx
+                .background_executor()
+                .spawn(async move { forced || win_e_hook::direct_launch_active() })
+                .await;
+            if direct_launch.replace(active) != active {
+                log::info!(
+                    "Win+E: Windows direct launch {}",
+                    if active { "on" } else { "off" }
+                );
+            }
+            let Some(store) = store.upgrade() else {
+                return;
+            };
+            cx.update(|cx| apply(store.read(cx)));
+            cx.background_executor()
+                .timer(Duration::from_secs(30))
+                .await;
+        }
+    })
+    .detach();
 }
 
 /// Opens a window showing what an Explorer window showed. Answers whether Arke has a window.

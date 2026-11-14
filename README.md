@@ -232,7 +232,10 @@ Explorer; whatever Arke can't show, such as Control Panel, is handed straight to
 with "Win+E and the File Explorer icon open Arke too", the Win+E handler. Whatever was there before
 is saved to `%APPDATA%\Arke\folder-handler-backup.json` and put back exactly when you turn the
 setting off or run `arke --restore-explorer`. Arke also keeps watching for new Explorer windows for
-the cases the registration can't reach, such as `explorer.exe /select,...`. Settings live in `%APPDATA%\Arke`, the search index, log and
+the cases the registration can't reach, such as `explorer.exe /select,...`. On PCs where Windows
+sends Win+E straight to File Explorer without asking the registration (a change Windows has been
+rolling out since late 2026), Arke takes Win+E with a keyboard hook while it runs in the background:
+it only reacts to E while a Windows key is held and records nothing. Settings live in `%APPDATA%\Arke`, the search index, log and
 downloaded updates in `%LOCALAPPDATA%\Arke`. "Start when I sign in to Windows" is a shortcut in your Startup
 folder, and "Show Arke in the Start menu" one in your Start menu folder. Passwords for SFTP and WebDAV locations go to Windows Credential Manager, and only when
 you tick "Remember". The optional search service is the only part that needs administrator

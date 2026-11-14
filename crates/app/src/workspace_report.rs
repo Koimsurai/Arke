@@ -138,6 +138,7 @@ fn settings_summary(s: &Settings) -> String {
 /// "Open folders in Arke" and Win+E: the settings, and who the registry says handles folders and
 /// Win+E now (read only). `with_registry` is false on the UI thread (the issue URL).
 fn shell_integration(s: &Settings, with_registry: bool) -> String {
+    use std::fmt::Write as _;
     let mut out = format!(
         "- open folders in Arke {}, Win+E too {}, in a tab {}\n",
         s.open_folders_in_arke, s.win_e_opens_arke, s.open_external_in_tab
@@ -147,6 +148,12 @@ fn shell_integration(s: &Settings, with_registry: bool) -> String {
             out.push_str(&line);
             out.push('\n');
         }
+        // Where this is on, Win+E skips the registration and Arke takes it with a hook (#34).
+        let _ = writeln!(
+            out,
+            "- Windows sends Win+E straight to File Explorer: {}",
+            crate::win_e_hook::direct_launch_active()
+        );
     }
     out
 }

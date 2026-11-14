@@ -169,7 +169,15 @@ fn settings_about_shows_it_and_turns_it_off(cx: &mut TestAppContext) {
     );
     let versions = page_versions(&ws, cx).unwrap();
     let names: Vec<&str> = versions.iter().map(|(v, _)| v.as_str()).collect();
-    assert_eq!(names, ["0.3.0", "0.2.0", "0.1.1", "0.1.0"]);
+    // Every released version, newest first: what the changelog has, down to the first release
+    // (not a fixed list, so a release doesn't break this test).
+    let released: Vec<String> = crate::whats_new::releases("en")
+        .into_iter()
+        .map(|r| r.version)
+        .collect();
+    assert_eq!(names, released);
+    assert_eq!(names.last(), Some(&"0.1.0"));
+    assert!(names.len() >= 4, "{names:?}");
     assert!(
         versions[0].1 && !versions[1].1,
         "newest open, the rest folded"

@@ -116,6 +116,10 @@ pub(crate) fn exit() -> Animation {
 }
 
 /// Element at progress `t` (0 to 1): fades in and slides from offset (`dx`, `dy`) into place.
+///
+/// The offset is set with `left` and `top`: on an element placed with `right` or `bottom` (a corner
+/// card) it would pin the element to the top left instead, so animate a child of the placed box
+/// ([`corner_card`]).
 pub(crate) fn slide_in<E: Styled>(el: E, t: f32, dx: f32, dy: f32) -> E {
     if !enabled() {
         return el;
@@ -123,6 +127,18 @@ pub(crate) fn slide_in<E: Styled>(el: E, t: f32, dx: f32, dy: f32) -> E {
     el.opacity(t.clamp(0., 1.))
         .left(px(dx * (1. - t)))
         .top(px(dy * (1. - t)))
+}
+
+/// A card in the window's bottom right corner (the first-run card, the update notice), 360 px wide.
+/// The box is placed here; the card inside it may slide in, since its offsets move it within the box.
+pub(crate) fn corner_card(card: impl IntoElement) -> AnyElement {
+    gpui::div()
+        .absolute()
+        .bottom(crate::theme::S_16)
+        .right(crate::theme::S_16)
+        .w(px(360.))
+        .child(card)
+        .into_any_element()
 }
 
 /// Element at progress `t` (0 to 1, linear): fades out while sliding (eased in) toward offset

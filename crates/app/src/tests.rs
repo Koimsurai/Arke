@@ -6327,6 +6327,35 @@ fn first_run_card_adds_the_start_menu_shortcut(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("welcome").is_none(), "answered");
 }
 
+/// The first-run card stays in the bottom right while it slides in: the slide sets `left` and
+/// `top`, which on the placed box itself pinned it to the top left, as tall as the window (tests run
+/// with motion off, which hid it).
+#[gpui::test]
+fn first_run_card_stays_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
+    use crate::settings::SettingsStore;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    crate::motion::force_for_test(true);
+    cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(1000.)));
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.set_first_run_for_test(true);
+            cx.notify();
+        });
+    });
+    for wait in [0, 50, 400] {
+        cx.executor().advance_clock(Duration::from_millis(wait));
+        cx.run_until_parked();
+        let b = cx.debug_bounds("welcome").expect("the card is drawn");
+        assert!(
+            b.origin.x > gpui::px(1000.) && b.size.height < gpui::px(400.),
+            "after {wait} ms: {b:?}"
+        );
+    }
+    crate::motion::force_for_test(false);
+}
+
 /// "Not now" dismisses the card without adding anything.
 #[gpui::test]
 fn first_run_card_can_be_dismissed(cx: &mut TestAppContext) {

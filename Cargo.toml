@@ -41,7 +41,7 @@ nucleo = "0.5"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 tar = "0.4"
 # Office Open XML previews (.docx/.xlsx/.pptx): streaming XML reader, no DTD or entity expansion
-quick-xml = "0.41"
+quick-xml = "0.42"
 # Text of PDFs for content search; defaults off (no rayon, no chrono)
 lopdf = { version = "0.47", default-features = false }
 flate2 = "1"

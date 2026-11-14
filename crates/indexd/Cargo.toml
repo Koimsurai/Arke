@@ -22,7 +22,7 @@ parking_lot.workspace = true
 env_logger.workspace = true
 thiserror.workspace = true
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",

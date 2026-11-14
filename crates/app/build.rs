@@ -62,6 +62,14 @@ fn pending_changesets(manifest: &std::path::Path, channel: &str) {
 }
 
 fn main() {
+    // Arke uses Windows APIs throughout: say so up front instead of failing deep in the build.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        println!(
+            "cargo::error=Arke builds for Windows only for now. See \"Will there be a Linux or \
+             macOS version?\" in the README: https://github.com/Koimsurai/Arke#faq"
+        );
+        return;
+    }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let version = env_or("ARKE_VERSION", || {
         std::env::var("CARGO_PKG_VERSION").unwrap_or_default()

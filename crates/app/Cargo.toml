@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 arke-core.workspace = true
-arke-indexd.workspace = true
 arke-remote.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -31,9 +30,13 @@ image.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 
+# Arke is Windows-only for now; on other targets build.rs stops with a clear message instead of
+# these failing to build (#57).
+[target.'cfg(windows)'.dependencies]
+arke-indexd.workspace = true
 windows-core.workspace = true
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     # PDF previews (Windows.Data.Pdf renders a page into an in-memory stream)

@@ -658,7 +658,10 @@ fn follow_win_e_hook(
 ) {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    if !folder_handler::shell_allowed() {
+    // `ARKE_WIN_E_HOOK` acts as if Windows sent Win+E straight to File Explorer, so the hook can be
+    // checked end to end on a PC without that (live checks also set `ARKE_NO_FOLDER_HANDLER`).
+    let forced = std::env::var_os("ARKE_WIN_E_HOOK").is_some();
+    if !forced && !folder_handler::shell_allowed() {
         return;
     }
     let (tx, rx) = flume::bounded::<()>(4);
@@ -704,7 +707,7 @@ fn follow_win_e_hook(
         loop {
             let active = cx
                 .background_executor()
-                .spawn(async { win_e_hook::direct_launch_active() })
+                .spawn(async move { forced || win_e_hook::direct_launch_active() })
                 .await;
             if direct_launch.replace(active) != active {
                 log::info!(

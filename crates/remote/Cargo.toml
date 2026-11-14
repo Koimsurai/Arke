@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "
 # PROPFIND responses
 roxmltree = "0.21"
 percent-encoding = "2"
-base64 = "0.22"
+base64 = "0.23"
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true

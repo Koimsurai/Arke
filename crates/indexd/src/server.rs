@@ -201,7 +201,7 @@ impl Server {
                 log::warn!("too many clients");
                 continue;
             }
-            let server = self.clone();
+            let server = Arc::clone(self);
             let spawned = std::thread::Builder::new()
                 .name("indexd-client".into())
                 .spawn(move || {
@@ -508,7 +508,7 @@ mod tests {
             idle: None,
             owner_access,
         });
-        let running = server.clone();
+        let running = Arc::clone(&server);
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send(running.run().map_err(|e| e.to_string()));

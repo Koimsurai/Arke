@@ -240,12 +240,7 @@ impl SearchHistory {
         if SettingsStore::try_global(cx).is_some_and(|s| !s.read(cx).settings.search_history) {
             return None;
         }
-        let snapshot = cx
-            .try_global::<GlobalHistory>()?
-            .0
-            .read(cx)
-            .snapshot
-            .clone();
+        let snapshot = Arc::clone(&cx.try_global::<GlobalHistory>()?.0.read(cx).snapshot);
         (!snapshot.is_empty()).then_some(snapshot)
     }
 

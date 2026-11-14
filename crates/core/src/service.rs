@@ -156,7 +156,7 @@ impl NetCache {
     fn get(&self, path: &Path, show_hidden: bool) -> Option<(Arc<Vec<Entry>>, SortSpec, usize)> {
         let c = self.dirs.get(&cache_key(path))?;
         (c.show_hidden == show_hidden && c.rules == crate::entry::hidden_rules_version())
-            .then(|| (c.entries.clone(), c.sorted_by, c.hidden_count))
+            .then(|| (Arc::clone(&c.entries), c.sorted_by, c.hidden_count))
     }
 
     fn put(&mut self, path: &Path, cached: Cached) {
@@ -225,12 +225,12 @@ impl DirService {
         *self.recheck.lock() = None;
         let job = Job {
             generation,
-            fs: self.fs.clone(),
-            current: self.current.clone(),
-            sink: self.sink.clone(),
+            fs: Arc::clone(&self.fs),
+            current: Arc::clone(&self.current),
+            sink: Arc::clone(&self.sink),
             probe: self.probe.clone(),
-            cache: self.cache.clone(),
-            recheck: self.recheck.clone(),
+            cache: Arc::clone(&self.cache),
+            recheck: Arc::clone(&self.recheck),
             outcome: Arc::new(AtomicU8::new(OUTCOME_PENDING)),
         };
         let requested_at = Instant::now();
@@ -610,7 +610,7 @@ impl Job {
             *self.recheck.lock() = Some(tx);
             let job = self.clone();
             let dir = path.to_path_buf();
-            let seen = entries.clone();
+            let seen = Arc::clone(entries);
             let _ = std::thread::Builder::new()
                 .name(format!("recheck-{}", self.generation))
                 .spawn(move || job.recheck_dir(&dir, &seen, opts.show_hidden, &rx));
@@ -619,7 +619,7 @@ impl Job {
             self.cache.lock().put(
                 path,
                 Cached {
-                    entries: entries.clone(),
+                    entries: Arc::clone(entries),
                     sorted_by: opts.sort,
                     show_hidden: opts.show_hidden,
                     rules: crate::entry::hidden_rules_version(),
@@ -650,7 +650,7 @@ impl Job {
         };
         let mut last: HashMap<Arc<str>, Fingerprint> = first
             .iter()
-            .map(|e| (e.name.clone(), fingerprint(e)))
+            .map(|e| (Arc::clone(&e.name), fingerprint(e)))
             .collect();
         loop {
             // Wait for a signal; quit once the folder changes.
@@ -755,7 +755,7 @@ mod tests {
 
     fn service(fs: Arc<dyn Fs>) -> (DirService, Events) {
         let events: Events = Arc::default();
-        let ev2 = events.clone();
+        let ev2 = Arc::clone(&events);
         let svc = DirService::new(fs, Arc::new(move |e| ev2.lock().push(e)));
         (svc, events)
     }
@@ -801,7 +801,7 @@ mod tests {
         fs.insert_many(&hung, 10);
         fs.insert_many(&fast, 3);
         fs.hang(&hung);
-        let (svc, events) = service(fs.clone());
+        let (svc, events) = service(Arc::clone(&fs) as Arc<dyn Fs>);
 
         let t = Instant::now();
         svc.navigate(hung.clone(), opts(true));
@@ -859,7 +859,11 @@ mod tests {
     ) -> (DirService, Events, Arc<FakeProbe>) {
         let probe = Arc::new(FakeProbe(Mutex::new(reach), Mutex::new(Ok(Vec::new()))));
         let (svc, events) = service(fs);
-        (svc.with_probe(probe.clone()), events, probe)
+        (
+            svc.with_probe(Arc::clone(&probe) as Arc<dyn NetProbe>),
+            events,
+            probe,
+        )
     }
 
     /// Unreachable server: don't wait for the hung listing (OS timeout is tens of seconds);
@@ -870,7 +874,8 @@ mod tests {
         let share = PathBuf::from(r"\\sleeping-nas\share");
         fs.insert_many(&share, 3);
         fs.hang(&share);
-        let (svc, events, _) = network_service(fs.clone(), crate::net::Reach::Down);
+        let (svc, events, _) =
+            network_service(Arc::clone(&fs) as Arc<dyn Fs>, crate::net::Reach::Down);
         let started = Instant::now();
         let generation = svc.navigate(share.clone(), opts(false));
         assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
@@ -905,7 +910,8 @@ mod tests {
         let fs = FakeFs::new();
         let share = PathBuf::from(r"\\nas\share\docs");
         fs.insert_many(&share, 4);
-        let (svc, events, probe) = network_service(fs.clone(), crate::net::Reach::Up);
+        let (svc, events, probe) =
+            network_service(Arc::clone(&fs) as Arc<dyn Fs>, crate::net::Reach::Up);
         svc.navigate(share.clone(), opts(false));
         assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
             e,
@@ -958,7 +964,8 @@ mod tests {
                 Entry::new("keep.txt", crate::entry::EntryKind::File, 1, None, 0),
             ],
         );
-        let (svc, events, _) = network_service(fs.clone(), crate::net::Reach::Up);
+        let (svc, events, _) =
+            network_service(Arc::clone(&fs) as Arc<dyn Fs>, crate::net::Reach::Up);
         let generation = svc.navigate(share.clone(), opts(true));
         assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
             e,
@@ -1037,7 +1044,7 @@ mod tests {
         let fs = FakeFs::new();
         let dir = PathBuf::from(r"C:\w");
         fs.insert_many(&dir, 2);
-        let (svc, events) = service(fs.clone());
+        let (svc, events) = service(Arc::clone(&fs) as Arc<dyn Fs>);
         svc.navigate(dir.clone(), opts(true));
         assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
             e,
@@ -1157,7 +1164,8 @@ mod tests {
     fn servers_list_their_shares() {
         use crate::net::{STYPE_DISKTREE, Share};
         let fs = FakeFs::new();
-        let (svc, events, probe) = network_service(fs.clone(), crate::net::Reach::Up);
+        let (svc, events, probe) =
+            network_service(Arc::clone(&fs) as Arc<dyn Fs>, crate::net::Reach::Up);
         *probe.1.lock() = Ok(vec![
             Share {
                 name: "team".into(),

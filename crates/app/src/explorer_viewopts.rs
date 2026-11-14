@@ -304,7 +304,7 @@ impl Explorer {
                     .child(
                         crate::slider::slider(
                             self.icon_size.fraction(),
-                            self.icon_slider_drag.clone(),
+                            Rc::clone(&self.icon_slider_drag),
                             on_slide,
                         )
                         .flex_1()

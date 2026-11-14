@@ -173,7 +173,7 @@ impl Explorer {
     /// Lists the folders in `dir` on a background thread. Hidden ones are kept: the › menu and
     /// autocomplete each apply the list's hidden rules when they use the result.
     fn list_folders(&self, dir: PathBuf, request: u64) {
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let probe = self.services.shell.net_probe();
         let tx = self.events_tx.clone();
         spawn_thread("path-folders", move || {
@@ -511,7 +511,7 @@ impl Explorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let slot = self.path_slot.clone();
+        let slot = Rc::clone(&self.path_slot);
         // The breadcrumbs collapse based on this width: when it changes, draw once more with the
         // new value (the slot's width doesn't depend on its content, so this settles at once).
         let capture = canvas(
@@ -545,7 +545,7 @@ impl Explorer {
     }
 
     fn render_path_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let bounds = self.path_bounds.clone();
+        let bounds = Rc::clone(&self.path_bounds);
         // Menus and autocomplete line up with the bar; its width follows the path, so draw once
         // more when it changes.
         let capture = canvas(

@@ -208,7 +208,7 @@ fn coordinator(
     let wake_pending = Arc::new(AtomicBool::new(false));
     let notify: Notify = {
         let wake_tx = wake_tx.clone();
-        let pending = wake_pending.clone();
+        let pending = Arc::clone(&wake_pending);
         Arc::new(move || {
             if !pending.swap(true, Ordering::AcqRel)
                 && let Some(tx) = wake_tx.upgrade()
@@ -218,7 +218,7 @@ fn coordinator(
         })
     };
     let mut c = Coordinator {
-        fs: fs.clone(),
+        fs: Arc::clone(fs),
         notify,
         wake_pending,
         nucleo: None,
@@ -300,21 +300,21 @@ impl Coordinator {
     fn restart(&mut self, generation: Gen, root: PathBuf, show_hidden: bool, query: Query) {
         // Stop the old walk first (dropping Walk cancels it), then clear nucleo.
         drop(self.active.take());
-        let notify = self.notify.clone();
+        let notify = Arc::clone(&self.notify);
         let nucleo = self.nucleo.get_or_insert_with(|| {
             Nucleo::new(Config::DEFAULT.match_paths(), notify, None, COLUMNS)
         });
         nucleo.restart(true);
         reparse(nucleo, &query.text, false);
         let walk = spawn_walk(
-            self.fs.clone(),
+            Arc::clone(&self.fs),
             WalkSpec {
                 root: root.clone(),
                 show_hidden,
                 query: query.clone(),
             },
             nucleo.injector(),
-            self.notify.clone(),
+            Arc::clone(&self.notify),
         );
         self.active = Some(Active {
             generation,
@@ -394,7 +394,7 @@ fn snapshot(nucleo: &Nucleo<Arc<SearchHit>>, a: &Active, searching: bool) -> Sea
         let take = matched.min(MAX_HITS as u32);
         let mut hits: Vec<Arc<SearchHit>> = snap
             .matched_items(0..take)
-            .map(|item| item.data.clone())
+            .map(|item| Arc::clone(item.data))
             .collect();
         // No name to rank by: newest first, like "This PC". Content hits stay in the order
         // found so the list doesn't jump while files are read.
@@ -434,8 +434,8 @@ fn spawn_walk(
     let cancel = Arc::new(AtomicBool::new(false));
     let progress = Arc::new(Progress::default());
     let walk = Walk {
-        cancel: cancel.clone(),
-        progress: progress.clone(),
+        cancel: Arc::clone(&cancel),
+        progress: Arc::clone(&progress),
     };
     let spawned = std::thread::Builder::new()
         .name("search-walk".into())
@@ -662,7 +662,7 @@ mod tests {
         fs.hang(r"C:\slow");
         fs.insert_dir(r"C:\fast", vec![file("target.txt")]);
         let (sink, rx) = collect();
-        let svc = SearchService::new(fs.clone(), sink);
+        let svc = SearchService::new(Arc::clone(&fs) as Arc<dyn Fs>, sink);
 
         let started = Instant::now();
         let _stuck = svc.start(PathBuf::from(r"C:\slow"), false, "a", Clock::default());
@@ -682,7 +682,7 @@ mod tests {
         );
         fs.insert_dir(r"C:\f\pics", vec![file("cat.jpg"), file("cat.txt")]);
         let (sink, rx) = collect();
-        let svc = SearchService::new(fs.clone(), sink);
+        let svc = SearchService::new(Arc::clone(&fs) as Arc<dyn Fs>, sink);
         let g = svc.start(
             PathBuf::from(r"C:\f"),
             false,

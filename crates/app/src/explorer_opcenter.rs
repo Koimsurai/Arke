@@ -2,6 +2,7 @@
 //! just finished, opening a list. State lives in `op_center.rs` (global, shared by all tabs); this
 //! only draws.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -74,7 +75,7 @@ impl Explorer {
                 state: job.state.clone(),
                 fraction: job.fraction(),
                 stopping: job.progress.cancel.load(Ordering::Relaxed),
-                progress: job.progress.clone(),
+                progress: Arc::clone(&job.progress),
                 undo: job
                     .undo
                     .filter(|id| crate::explorer::UndoHistory::has(cx, *id)),
@@ -110,7 +111,7 @@ impl Explorer {
             .rev()
             .filter(|job| job.running())
             .find_map(crate::op_center::Job::speed_text);
-        let ring_shown = self.ring_shown.clone();
+        let ring_shown = Rc::clone(&self.ring_shown);
         let button = button(busy, overall, unseen, open, tip, speed, ring_shown, cx);
         if !open {
             return Some(button.into_any_element());
@@ -391,7 +392,7 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
 
 /// "Cancel" on a running (or queued) row.
 fn cancel_button(row: &Row, cx: &mut Context<Explorer>) -> AnyElement {
-    let progress = row.progress.clone();
+    let progress = Arc::clone(&row.progress);
     div()
         .id(("op-center-cancel", usize::try_from(row.id).unwrap_or(0)))
         .a11y_button(t!("toast.cancel"))

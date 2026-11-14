@@ -624,7 +624,7 @@ fn register(
             // SAFETY: duplicates a valid list with the COM allocator.
             unsafe { ILCombine(Some(location.0.cast_const()), None) }
         }),
-        shared: shared.clone(),
+        shared: Arc::clone(shared),
     }
     .into();
     let dispatch: IDispatch = stand_in.cast()?;

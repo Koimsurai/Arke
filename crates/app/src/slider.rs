@@ -60,7 +60,7 @@ pub(crate) fn slider(
             window.paint_quad(gpui::fill(center, theme::signal()).corner_radii(dot / 2.));
 
             let at = move |x: Pixels| ((x - left) / width).clamp(0., 1.);
-            let (d, slide) = (dragging.clone(), on_slide.clone());
+            let (d, slide) = (Rc::clone(&dragging), Rc::clone(&on_slide));
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || e.button != MouseButton::Left
@@ -73,7 +73,7 @@ pub(crate) fn slider(
                 slide(at(e.position.x), window, cx);
                 window.refresh();
             });
-            let (d, slide) = (dragging.clone(), on_slide);
+            let (d, slide) = (Rc::clone(&dragging), on_slide);
             window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || !d.get() {
                     return;

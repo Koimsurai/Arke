@@ -2,6 +2,7 @@
 //! browsing and folder compare (`workspace.rs`, `workspace_saved.rs`, `explorer_compare.rs`).
 
 use arke_core::compare::Mark;
+use std::sync::Arc;
 
 use super::*;
 use crate::saved_workspaces::WorkspaceStore;
@@ -506,7 +507,7 @@ fn copies_to_the_other_pane_select_what_arrived(cx: &mut TestAppContext) {
     let shell = Arc::new(FakeShell::default());
     {
         // Copies and moves land in the fake file system, as the real ones would.
-        let fs = fs.clone();
+        let fs = Arc::clone(&fs);
         *shell.on_op.lock() = Some(Box::new(move |op| {
             let (FileOp::Copy { sources, dest } | FileOp::Move { sources, dest }) = op else {
                 return;
@@ -734,7 +735,12 @@ fn a_folder_from_another_app_opens_as_a_tab_and_reuses_one_showing_it(cx: &mut T
 
     let one: Arc<str> = "file_000001.txt".into();
     ws.update_in(cx, |ws, window, cx| {
-        ws.open_external(Target::Folder(p(r"C:\dl")), vec![one.clone()], window, cx);
+        ws.open_external(
+            Target::Folder(p(r"C:\dl")),
+            vec![Arc::clone(&one)],
+            window,
+            cx,
+        );
     });
     let dl = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &dl, "dl", loaded(r"C:\dl"));
@@ -751,7 +757,12 @@ fn a_folder_from_another_app_opens_as_a_tab_and_reuses_one_showing_it(cx: &mut T
     ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
     let two: Arc<str> = "file_000002.txt".into();
     ws.update_in(cx, |ws, window, cx| {
-        ws.open_external(Target::Folder(p(r"c:\DL\")), vec![two.clone()], window, cx);
+        ws.open_external(
+            Target::Folder(p(r"c:\DL\")),
+            vec![Arc::clone(&two)],
+            window,
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 2);

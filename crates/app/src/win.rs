@@ -3,6 +3,7 @@
 use rust_i18n::t;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
@@ -761,7 +762,7 @@ impl Shell for WinShell {
             _ => None,
         };
         if let Some(sources) = sources {
-            let progress = progress.clone();
+            let progress = Arc::clone(progress);
             crate::explorer::spawn_thread("op-size", move || {
                 if let Some(total) = total_size(&sources) {
                     progress

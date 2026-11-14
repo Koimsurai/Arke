@@ -36,7 +36,7 @@ impl Explorer {
             .iter()
             .enumerate()
             .filter(|(_, e)| marks.contains_key(&e.name))
-            .map(|(ix, e)| (ix, e.name.clone()))
+            .map(|(ix, e)| (ix, Arc::clone(&e.name)))
             .collect();
         let first = marked.first().cloned();
         self.selection

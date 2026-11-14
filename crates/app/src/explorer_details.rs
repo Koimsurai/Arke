@@ -627,20 +627,22 @@ impl Explorer {
             links.targets.clear();
         }
         // The Details tree's nested rows too (named by relative path, so `dir.join` still works).
-        let entries = self.tree_view().unwrap_or_else(|| model.entries.clone());
+        let entries = self
+            .tree_view()
+            .unwrap_or_else(|| Arc::clone(&model.entries));
         let links = &mut self.link_targets;
         let missing: Vec<Arc<str>> = entries
             .iter()
             .filter(|e| e.is_link() && !links.targets.contains_key(&e.name))
-            .map(|e| e.name.clone())
+            .map(|e| Arc::clone(&e.name))
             .collect();
         if missing.is_empty() {
             return;
         }
         for name in &missing {
-            links.targets.insert(name.clone(), LinkState::Reading);
+            links.targets.insert(Arc::clone(name), LinkState::Reading);
         }
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let tx = self.events_tx.clone();
         let dir = model.path.clone();
         let generation = model.generation;

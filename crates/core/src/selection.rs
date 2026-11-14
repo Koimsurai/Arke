@@ -69,8 +69,8 @@ impl Selection {
     /// Selects only this name (e.g. the folder we just came up from; it may not be loaded yet).
     pub fn select_name(&mut self, name: Arc<str>) {
         self.names.clear();
-        self.names.insert(name.clone());
-        self.cursor = Some(name.clone());
+        self.names.insert(Arc::clone(&name));
+        self.cursor = Some(Arc::clone(&name));
         self.anchor = Some(name);
     }
 
@@ -94,7 +94,7 @@ impl Selection {
             entries
                 .iter()
                 .find(|e| same_ignoring_case(&e.name, name))
-                .map(|e| e.name.clone())
+                .map(|e| Arc::clone(&e.name))
         };
         let mut changed = false;
         let names: Vec<Arc<str>> = self.names.drain().collect();
@@ -135,19 +135,19 @@ impl Selection {
     pub fn select_only(&mut self, entries: &[Entry], ix: usize) {
         let Some(entry) = entries.get(ix) else { return };
         self.names.clear();
-        self.names.insert(entry.name.clone());
-        self.cursor = Some(entry.name.clone());
-        self.anchor = Some(entry.name.clone());
+        self.names.insert(Arc::clone(&entry.name));
+        self.cursor = Some(Arc::clone(&entry.name));
+        self.anchor = Some(Arc::clone(&entry.name));
     }
 
     /// Ctrl+click / Ctrl+Space: toggle this item and make it the new anchor.
     pub fn toggle(&mut self, entries: &[Entry], ix: usize) {
         let Some(entry) = entries.get(ix) else { return };
         if !self.names.remove(&entry.name) {
-            self.names.insert(entry.name.clone());
+            self.names.insert(Arc::clone(&entry.name));
         }
-        self.cursor = Some(entry.name.clone());
-        self.anchor = Some(entry.name.clone());
+        self.cursor = Some(Arc::clone(&entry.name));
+        self.anchor = Some(Arc::clone(&entry.name));
     }
 
     /// Shift+click / Shift+arrow: select from the anchor to `ix`. With `additive` (Ctrl+Shift)
@@ -164,17 +164,18 @@ impl Selection {
         }
         let (lo, hi) = (anchor_ix.min(ix), anchor_ix.max(ix));
         self.names
-            .extend(entries[lo..=hi].iter().map(|e| e.name.clone()));
+            .extend(entries[lo..=hi].iter().map(|e| Arc::clone(&e.name)));
         if self.anchor.is_none() {
-            self.anchor = Some(entry.name.clone());
+            self.anchor = Some(Arc::clone(&entry.name));
         }
-        self.cursor = Some(entry.name.clone());
+        self.cursor = Some(Arc::clone(&entry.name));
     }
 
     /// Ctrl+A. A few ms for 100k items (only Arc clones and hashing).
     pub fn select_all(&mut self, entries: &[Entry]) {
         self.names.clear();
-        self.names.extend(entries.iter().map(|e| e.name.clone()));
+        self.names
+            .extend(entries.iter().map(|e| Arc::clone(&e.name)));
     }
 
     /// After a full content replacement, drops names that no longer exist.

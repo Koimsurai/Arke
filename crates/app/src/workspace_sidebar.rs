@@ -4,6 +4,7 @@
 //! The context menu is the sidebar's own small menu (open in new tab, pin, favorites, ...).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use arke_core::filetype::FileKind;
 use gpui::{
@@ -1189,8 +1190,8 @@ impl Workspace {
         self.expanded.insert(path.clone());
         // Relist on every expand since the folder may have changed; show the old result meanwhile.
         self.tree_children.entry(path.clone()).or_insert(None);
-        let fs = self.services.fs.clone();
-        let shell = self.services.shell.clone();
+        let fs = Arc::clone(&self.services.fs);
+        let shell = Arc::clone(&self.services.shell);
         let (tx, rx) = flume::bounded::<(Vec<PathBuf>, Vec<PathBuf>)>(1);
         let dir = path.clone();
         let spawned = std::thread::Builder::new()
@@ -1273,7 +1274,7 @@ impl Workspace {
             .filter_map(|p| arke_core::remote::RemoteUrl::from_path(&p.url))
             .any(|u| u.same_origin(&gone));
         if !still_used {
-            let remotes = self.services.remotes.clone();
+            let remotes = Arc::clone(&self.services.remotes);
             crate::explorer::spawn_thread("remote-forget", move || remotes.forget(&gone));
         }
     }
@@ -1410,7 +1411,7 @@ impl Workspace {
     /// then asks Windows to eject. Reports who holds the drive if it is in use.
     fn eject_drive(&mut self, drive: PathBuf, cx: &mut Context<Self>) {
         self.leave_drive(&drive, cx);
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let view = self.active_view().clone();
         let (tx, rx) = flume::bounded(1);
         let target = drive.clone();
@@ -1447,7 +1448,7 @@ impl Workspace {
     }
 
     fn disconnect_drive(&mut self, drive: PathBuf, cx: &mut Context<Self>) {
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let view = self.active_view().clone();
         let (tx, rx) = flume::bounded(1);
         let target = drive.clone();
@@ -1488,7 +1489,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let owner = Explorer::owner_from(window);
         let (tx, rx) = flume::bounded(1);
         crate::explorer::spawn_thread("net-drive-dialog", move || {

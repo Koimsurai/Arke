@@ -310,7 +310,7 @@ pub fn serve_sftp(root: PathBuf, seed: u8) -> u16 {
                     root: root.clone(),
                     channels: HashMap::new(),
                 };
-                let config = config.clone();
+                let config = Arc::clone(&config);
                 tokio::spawn(async move {
                     if let Ok(session) = russh::server::run_stream(config, stream, handler).await {
                         let _ = session.await;

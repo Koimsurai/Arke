@@ -1165,13 +1165,13 @@ impl Index {
         // The mapping starts on a page boundary and columns are 8-aligned, so typed slices are
         // aligned.
         let names = Names::Mapped {
-            map: map.clone(),
+            map: Arc::clone(&map),
             offset: layout.names,
             len: layout.names_len,
         };
         std::str::from_utf8(&map[layout.names..layout.names + layout.names_len])
             .map_err(|_| bad_format())?;
-        let column = |offset: usize| (map.clone(), offset, layout.count);
+        let column = |offset: usize| (Arc::clone(&map), offset, layout.count);
         let (m, o, n) = column(layout.nodes);
         let nodes: Column<Node> = Column::Mapped {
             map: m,
@@ -2155,7 +2155,7 @@ mod tests {
                 list,
             )
         };
-        let j = journal.clone();
+        let j = Arc::clone(&journal);
         let index = build(&move |root, sink| j.list(root, sink));
         assert_eq!(
             all_paths(&index),
@@ -2917,7 +2917,7 @@ mod tests {
         }
         let snapshot = Arc::new(history.snapshot(now + 86_400));
         let signals = RankSignals::new(
-            Some(snapshot.clone()),
+            Some(Arc::clone(&snapshot)),
             Some(Path::new(r"C:\Users\me")),
             &[PathBuf::from(r"C:\Windows")],
         );

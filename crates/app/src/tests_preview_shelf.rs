@@ -5,6 +5,7 @@ use crate::explorer::{PreviewBody, ShelfDrag};
 use crate::shelf::ShelfStore;
 use arke_core::entry::CloudSync;
 use arke_core::filetype::FileKind;
+use std::sync::Arc;
 
 /// Page and page count of the PDF on screen.
 fn pdf_page(v: &Explorer) -> Option<(u32, u32)> {
@@ -26,7 +27,7 @@ fn quick_look_turns_pdf_pages(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.pdf", 100), file("b.txt", 5)]);
     fs.set_content(Path::new(r"C:\p\b.txt"), b"hello".to_vec());
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\p");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
     cx.simulate_keystrokes("down space");
     assert!(view.update(cx, |v, _| v.quick_look));
@@ -91,7 +92,7 @@ fn online_only_pdfs_are_not_rendered(cx: &mut TestAppContext) {
         )],
     );
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\p");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
     cx.simulate_keystrokes("down space");
     wait_until(cx, &view, "cloud body", |v| {
@@ -133,7 +134,7 @@ fn cloud_states_come_from_the_scan(cx: &mut TestAppContext) {
         syncing: vec![Arc::from("busy.txt")],
         not_synced: Vec::new(),
     };
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\sync");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\sync");
     wait_until(cx, &view, "load", loaded(r"C:\sync"));
     wait_until(cx, &view, "states", |v| {
         v.cloud.sync_of("busy.txt") == Some(CloudSync::Syncing)
@@ -184,7 +185,7 @@ fn shelf_collects_items_and_copies_or_moves_them(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\dest", vec![]);
     let shell = Arc::new(FakeShell::default());
     // A move takes the items away from their folders.
-    let moved_fs = fs.clone();
+    let moved_fs = Arc::clone(&fs);
     *shell.on_op.lock() = Some(Box::new(move |op| {
         if let FileOp::Move { sources, .. } = op {
             for p in sources {
@@ -195,7 +196,7 @@ fn shelf_collects_items_and_copies_or_moves_them(cx: &mut TestAppContext) {
             }
         }
     }));
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\one");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\one");
     wait_until(cx, &view, "load", loaded(r"C:\one"));
 
     // Ctrl+Shift+A adds the selection; adding again says it's already there.
@@ -290,13 +291,13 @@ fn missing_shelf_items_are_marked_and_skipped(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\one", vec![file("a.txt", 1), file("b.txt", 1)]);
     fs.insert_dir(r"C:\dest", vec![]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\one");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\one");
     wait_until(cx, &view, "load", loaded(r"C:\one"));
     cx.simulate_keystrokes("ctrl-a ctrl-shift-a");
     assert_eq!(shelf_paths(cx).len(), 2);
     fs.remove(Path::new(r"C:\one"), "b.txt");
     view.update(cx, |v, cx| {
-        let fs: Arc<dyn arke_core::Fs> = v.services.fs.clone();
+        let fs: Arc<dyn arke_core::Fs> = Arc::clone(&v.services.fs);
         ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
     });
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -335,7 +336,7 @@ fn dragging_the_preview_edge_resizes_and_saves_it(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.pdf", 100)]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\p");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
     cx.simulate_resize(gpui::size(px(1500.), px(800.)));
     // Through settings, like the toolbar button: saving the width writes settings too, which

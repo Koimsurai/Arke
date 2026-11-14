@@ -284,7 +284,7 @@ mod fake {
                     .filter(|(usn, c)| *usn >= from.usn && c.path.starts_with(root))
                     .map(|(_, c)| c.clone())
                     .collect();
-                s.followers.push((root.to_path_buf(), cb.clone()));
+                s.followers.push((root.to_path_buf(), Arc::clone(&cb)));
                 let cursor = Cursor {
                     journal: s.journal,
                     usn: s.next,

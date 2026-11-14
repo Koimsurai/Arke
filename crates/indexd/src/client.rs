@@ -344,7 +344,7 @@ impl Journal for ServiceJournal {
             pipe,
             stopped: AtomicBool::new(false),
         });
-        let reader = follow.clone();
+        let reader = Arc::clone(&follow);
         std::thread::Builder::new()
             .name("arke-indexd-follow".into())
             .spawn(move || {

@@ -97,7 +97,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     };
     config.idle = Some(IDLE);
     let server = Server::new(config);
-    let _ = SERVER.set(server.clone());
+    let _ = SERVER.set(Arc::clone(&server));
     report(SERVICE_RUNNING, 0);
     let code = match server.run() {
         Ok(()) => 0,

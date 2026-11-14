@@ -11,6 +11,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, Focusable, SharedString, Window, div, prelude::*,
@@ -43,7 +44,7 @@ impl Workspace {
     pub(super) fn export_settings(&mut self, cx: &mut Context<Self>) {
         let explorer = self.active_view().read(cx);
         let places = explorer.places.clone();
-        let shell = explorer.services.shell.clone();
+        let shell = Arc::clone(&explorer.services.shell);
         let folder = places
             .iter()
             .find(|p| matches!(p.kind, PlaceKind::Folder(KnownFolder::Downloads)))

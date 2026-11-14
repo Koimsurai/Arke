@@ -592,8 +592,8 @@ impl Explorer {
             });
         })
         .detach();
-        let fs = self.services.fs.clone();
-        let shell = self.services.shell.clone();
+        let fs = Arc::clone(&self.services.fs);
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         self.preview_task = Some(cx.spawn(async move |this, cx| {
             if !PREVIEW_DELAY.is_zero() {
@@ -851,7 +851,7 @@ impl Explorer {
         }
         view.pending = Some((page, target));
         let path = preview.path.clone();
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("pdf-page", move || {
             let data = load_pdf(shell.as_ref(), &path, page, target);
@@ -938,7 +938,7 @@ impl Explorer {
                     .overflow_hidden()
                     .when(raised, |d| d.shadow(theme::elev_float()))
                     .when(!raised, |d| d.border_1().border_color(theme::line()))
-                    .child(img(render.image.clone()).size_full()),
+                    .child(img(Arc::clone(&render.image)).size_full()),
             )
             .into_any_element()
     }
@@ -1029,7 +1029,7 @@ impl Explorer {
             .relative()
             .size_full()
             .child(body)
-            .child(crate::scrollbar::scrollbar(scroll.clone(), drag.clone()))
+            .child(crate::scrollbar::scrollbar(scroll.clone(), Rc::clone(drag)))
             .into_any_element()
     }
 
@@ -1037,13 +1037,13 @@ impl Explorer {
         match &preview.body {
             // Give the element the frame's aspect ratio; otherwise GPUI sizes by the image's own
             // ratio and portrait photos overflow.
-            PreviewBody::Image { image, .. } => img(image.clone())
+            PreviewBody::Image { image, .. } => img(Arc::clone(image))
                 .size_full()
                 .aspect_ratio(PANE_IMAGE_RATIO)
                 .object_fit(ObjectFit::Contain)
                 .rounded(theme::R_8)
                 .into_any_element(),
-            PreviewBody::Pdf(view) => img(view.render.image.clone())
+            PreviewBody::Pdf(view) => img(Arc::clone(&view.render.image))
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
@@ -1146,19 +1146,19 @@ impl Explorer {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(SharedString::from(entry.name.clone())),
+                            .child(SharedString::from(Arc::clone(&entry.name))),
                     );
                 match cx.as_deref_mut() {
                     Some(cx) => {
                         let dir = dir.to_path_buf();
-                        let name = entry.name.clone();
+                        let name = Arc::clone(&entry.name);
                         row.cursor_pointer()
                             .hover(|s| s.bg(theme::wash()))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.navigate_selecting(
                                     dir.clone(),
                                     arke_core::NavKind::New,
-                                    Some(name.clone()),
+                                    Some(Arc::clone(&name)),
                                     cx,
                                 );
                             }))
@@ -1528,8 +1528,10 @@ impl Explorer {
                         .child(tn!("info.items", *total).into_owned()),
                 )
                 .child({
-                    let (scroll, drag) =
-                        (self.preview_scroll.clone(), self.preview_scrollbar.clone());
+                    let (scroll, drag) = (
+                        self.preview_scroll.clone(),
+                        Rc::clone(&self.preview_scrollbar),
+                    );
                     let list = Self::folder_list(&preview.path, entries, *total, &scroll, Some(cx));
                     div()
                         .flex_1()
@@ -2409,7 +2411,7 @@ impl Explorer {
         if self.zoom.full.is_none() && width.max(height) > IMAGE_SIDE {
             self.zoom.generation += 1;
             let generation = self.zoom.generation;
-            let fs = self.services.fs.clone();
+            let fs = Arc::clone(&self.services.fs);
             let tx = self.events_tx.clone();
             spawn_thread("zoom-image", move || {
                 let image = fs
@@ -2589,13 +2591,13 @@ impl Explorer {
                     .into_any_element();
             }
         };
-        let view = self.zoom.view.clone();
+        let view = Rc::clone(&self.zoom.view);
         let capture = canvas(move |bounds, _, _| view.set(bounds), |_, (), _, _| {})
             .absolute()
             .size_full();
         let picture = if self.zoom.on {
             let content = self.zoomed_size(width, height, window.scale_factor());
-            let source = self.zoom.full.clone().unwrap_or_else(|| image.clone());
+            let source = self.zoom.full.clone().unwrap_or_else(|| Arc::clone(image));
             img(source)
                 .absolute()
                 .left(self.zoom.pan.x)
@@ -2608,7 +2610,7 @@ impl Explorer {
             // portrait photos.
             let area = Bounds::new(Point::default(), self.look_area());
             let fit = shown_rect(area, width, height, window.scale_factor());
-            img(image.clone())
+            img(Arc::clone(image))
                 .absolute()
                 .left(fit.origin.x)
                 .top(fit.origin.y)

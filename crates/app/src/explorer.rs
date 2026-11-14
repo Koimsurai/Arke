@@ -1036,7 +1036,7 @@ impl Explorer {
         let (events_tx, events_rx) = flume::unbounded::<AppEvent>();
         let io_tx = events_tx.clone();
         let mut dir_service = DirService::new(
-            services.fs.clone(),
+            Arc::clone(&services.fs),
             Arc::new(move |event| {
                 let _ = io_tx.send(AppEvent::Io(event));
             }),
@@ -1046,7 +1046,7 @@ impl Explorer {
         }
         let search_tx = events_tx.clone();
         let search = SearchService::new(
-            services.fs.clone(),
+            Arc::clone(&services.fs),
             Arc::new(move |results| {
                 let _ = search_tx.send(AppEvent::Search(results));
             }),
@@ -1065,7 +1065,7 @@ impl Explorer {
         });
 
         {
-            let shell = services.shell.clone();
+            let shell = Arc::clone(&services.shell);
             let tx = events_tx.clone();
             spawn_thread("places", move || {
                 let _ = tx.send(AppEvent::Places(shell.load_places()));
@@ -1258,7 +1258,7 @@ impl Explorer {
                     return;
                 }
                 let (tx, rx) = flume::bounded(1);
-                let probe = probe.clone();
+                let probe = Arc::clone(&probe);
                 let target = path.clone();
                 spawn_thread("net-retry-probe", move || {
                     let up = probe
@@ -1320,7 +1320,7 @@ impl Explorer {
         if roots.is_empty() {
             return;
         }
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("disk-space", move || {
             let _ = tx.send(AppEvent::DiskSpace(shell.disk_spaces(&roots)));
@@ -1328,7 +1328,7 @@ impl Explorer {
     }
 
     pub(crate) fn reload_places(&self) {
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("places", move || {
             let _ = tx.send(AppEvent::Places(shell.load_places()));
@@ -1406,7 +1406,7 @@ impl Explorer {
         if !self.current_path().is_some_and(same) || names.is_empty() {
             return false;
         }
-        let first = names[0].clone();
+        let first = Arc::clone(&names[0]);
         self.selection = Selection::default();
         self.selection.select_names(names);
         self.selection.set_cursor_name(Some(first));
@@ -1751,7 +1751,7 @@ impl Explorer {
             self.scroll_to_cursor = (!keep.is_empty()).then_some(ScrollStrategy::Center);
             self.selection = Selection::default();
             if !keep.is_empty() {
-                let first = keep[0].clone();
+                let first = Arc::clone(&keep[0]);
                 self.selection.select_names(keep);
                 self.selection.set_cursor_name(Some(first));
             }
@@ -1851,7 +1851,7 @@ impl Explorer {
             return;
         }
         self.sort_inflight = Some(key);
-        let entries = model.entries.clone();
+        let entries = Arc::clone(&model.entries);
         self.sort_task = Some(cx.spawn(async move |this, cx| {
             let sorted = cx
                 .background_executor()
@@ -1918,12 +1918,12 @@ impl Explorer {
         {
             // Keep the previous result while the filter recomputes so the full list doesn't flash
             // back.
-            return Some(f.entries.clone());
+            return Some(Arc::clone(&f.entries));
         }
         if let Some(tree) = self.tree_view() {
             return Some(tree);
         }
-        Some(model.entries.clone())
+        Some(Arc::clone(&model.entries))
     }
 
     /// No name and no filters to search for (blank, or `content:""` still being typed).
@@ -1956,7 +1956,7 @@ impl Explorer {
         {
             return;
         }
-        let entries = model.entries.clone();
+        let entries = Arc::clone(&model.entries);
         let query = Query::parse(&self.query, crate::win::clock());
         if query.content_needle().is_some() {
             self.start_content_filter(key, entries, query, cx);
@@ -2692,7 +2692,7 @@ impl Explorer {
             self.navigate_selecting(
                 parent.to_path_buf(),
                 NavKind::New,
-                Some(hit.entry.name.clone()),
+                Some(Arc::clone(&hit.entry.name)),
                 cx,
             );
         }
@@ -2734,7 +2734,7 @@ impl Explorer {
     fn open_file(&self, path: PathBuf, cx: &mut App) {
         // Opened files rank first among same-name results in "This PC" search.
         crate::search_history::SearchHistory::record(&path, false, cx);
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         let shortcut = path
             .extension()
@@ -2954,7 +2954,7 @@ impl Explorer {
         let Some(dir) = self.current_path().map(Path::to_path_buf) else {
             return;
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("run-command", move || {
             if let Err(e) = shell.run_in(&command, &dir) {

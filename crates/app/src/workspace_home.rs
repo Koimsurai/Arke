@@ -5,6 +5,7 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, Subscription, Window, div, prelude::*, svg,
 };
 use rust_i18n::t;
+use std::sync::Arc;
 
 use super::Workspace;
 use crate::a11y::A11yExt as _;
@@ -64,7 +65,7 @@ impl Workspace {
         } else {
             self.clear_pages_here();
         }
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let places = self.active_view().read(cx).places.clone();
         let shares = SettingsStore::global(cx)
             .read(cx)

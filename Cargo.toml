@@ -84,6 +84,8 @@ or_fun_call = "warn"                   # `unwrap_or(expensive())` evaluates eage
 significant_drop_in_scrutinee = "warn" # lock guard held across a match/if-let
 significant_drop_tightening = "warn"   # lock guard outlives the critical section
 redundant_clone = "warn"
+# `Arc::clone(&x)` / `Rc::clone(&x)`: a reference count, not a copy of the data
+clone_on_ref_ptr = "warn"
 missing_const_for_fn = "warn"
 use_self = "warn"
 module_name_repetitions = "allow"

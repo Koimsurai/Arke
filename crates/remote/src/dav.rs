@@ -595,7 +595,11 @@ mod tests {
         let t = script(vec![(207, NEXTCLOUD.as_bytes()), (401, b""), (404, b"")]);
         let url =
             RemoteUrl::from_path(std::path::Path::new("https://bob@cloud.example.com/")).unwrap();
-        let dav = DavClient::new(&url, Some("pw".into()), t.clone());
+        let dav = DavClient::new(
+            &url,
+            Some("pw".into()),
+            Arc::clone(&t) as Arc<dyn Transport>,
+        );
         let entries = dav.list("/remote.php/dav/files/bob/").unwrap();
         let names: Vec<_> = entries.iter().map(|e| e.name.to_string()).collect();
         assert_eq!(names, ["My Photos", "報告.txt"]);
@@ -620,7 +624,7 @@ mod tests {
         let t = script(vec![(201, b"")]);
         let remote = RemoteUrl::from_path(std::path::Path::new("http://u@nas/")).unwrap();
         assert!(matches!(
-            DavClient::new(&remote, None, t.clone()).mkdir("/a"),
+            DavClient::new(&remote, None, Arc::clone(&t) as Arc<dyn Transport>).mkdir("/a"),
             Err(RemoteError::Insecure)
         ));
         let local = RemoteUrl::from_path(std::path::Path::new("http://u@127.0.0.1:8080/")).unwrap();
@@ -637,7 +641,7 @@ mod tests {
     fn move_sends_an_encoded_destination_without_overwrite() {
         let t = script(vec![(201, b""), (412, b"")]);
         let url = RemoteUrl::from_path(std::path::Path::new("https://h/")).unwrap();
-        let dav = DavClient::new(&url, None, t.clone());
+        let dav = DavClient::new(&url, None, Arc::clone(&t) as Arc<dyn Transport>);
         dav.rename("/a/old name.txt", "/a/new name.txt", false)
             .unwrap();
         let seen = t.seen.lock()[0].clone();

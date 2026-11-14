@@ -232,66 +232,70 @@ impl IndexService {
             on_change: Box::new(on_change),
         });
         let weak = Arc::downgrade(&shared);
-        spawn("index-start", &shared.opts.thread_init.clone(), move || {
-            let Some(shared) = weak.upgrade() else {
-                return;
-            };
-            shared.load_cache();
-            shared.load_checkpoint();
-            if shared.opts.passive {
-                shared.building.store(false, Ordering::Release);
-                (shared.on_change)();
-                return;
-            }
-            let resume = shared.choose_sources();
-            shared.watch_roots(&weak);
-            match resume {
-                // Journal available and the saved position still connects: replay changes from
-                // while we were closed, no rewalk.
-                Start::Resume(cursors) if !(shared.has_unjournaled() && shared.is_stale()) => {
-                    shared.follow_all(&cursors);
-                    shared.building.store(false, Ordering::Release);
-                    (shared.on_change)();
-                }
-                Start::Resume(_) | Start::Build => shared.build(),
-                Start::NoJournal if shared.is_stale() => shared.build(),
-                Start::NoJournal => {
-                    // Saved index is fresh enough: no rewalk.
-                    shared.building.store(false, Ordering::Release);
-                    (shared.on_change)();
-                }
-            }
-            drop(shared);
-            // Periodic staleness check while running; deferred rebuilds are retried.
-            let mut since_check = Duration::ZERO;
-            let mut since_checkpoint = Duration::ZERO;
-            let tick = DEFERRED_RETRY.min(CHECKPOINT_EVERY);
-            loop {
-                std::thread::sleep(tick);
-                since_check += tick;
-                since_checkpoint += tick;
+        spawn(
+            "index-start",
+            &Arc::clone(&shared.opts.thread_init),
+            move || {
                 let Some(shared) = weak.upgrade() else {
                     return;
                 };
-                if shared.stopped.load(Ordering::Relaxed) {
+                shared.load_cache();
+                shared.load_checkpoint();
+                if shared.opts.passive {
+                    shared.building.store(false, Ordering::Release);
+                    (shared.on_change)();
                     return;
                 }
-                if since_checkpoint >= CHECKPOINT_EVERY {
-                    since_checkpoint = Duration::ZERO;
-                    shared.save_checkpoint();
-                }
-                if shared.deferred.load(Ordering::Relaxed) && (shared.opts.can_build)() {
-                    shared.request_build();
-                }
-                if since_check >= REFRESH_CHECK {
-                    since_check = Duration::ZERO;
-                    // No periodic rebuild needed if every root is journaled.
-                    if shared.has_unjournaled() && shared.is_stale() {
-                        shared.request_build();
+                let resume = shared.choose_sources();
+                shared.watch_roots(&weak);
+                match resume {
+                    // Journal available and the saved position still connects: replay changes from
+                    // while we were closed, no rewalk.
+                    Start::Resume(cursors) if !(shared.has_unjournaled() && shared.is_stale()) => {
+                        shared.follow_all(&cursors);
+                        shared.building.store(false, Ordering::Release);
+                        (shared.on_change)();
+                    }
+                    Start::Resume(_) | Start::Build => shared.build(),
+                    Start::NoJournal if shared.is_stale() => shared.build(),
+                    Start::NoJournal => {
+                        // Saved index is fresh enough: no rewalk.
+                        shared.building.store(false, Ordering::Release);
+                        (shared.on_change)();
                     }
                 }
-            }
-        });
+                drop(shared);
+                // Periodic staleness check while running; deferred rebuilds are retried.
+                let mut since_check = Duration::ZERO;
+                let mut since_checkpoint = Duration::ZERO;
+                let tick = DEFERRED_RETRY.min(CHECKPOINT_EVERY);
+                loop {
+                    std::thread::sleep(tick);
+                    since_check += tick;
+                    since_checkpoint += tick;
+                    let Some(shared) = weak.upgrade() else {
+                        return;
+                    };
+                    if shared.stopped.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if since_checkpoint >= CHECKPOINT_EVERY {
+                        since_checkpoint = Duration::ZERO;
+                        shared.save_checkpoint();
+                    }
+                    if shared.deferred.load(Ordering::Relaxed) && (shared.opts.can_build)() {
+                        shared.request_build();
+                    }
+                    if since_check >= REFRESH_CHECK {
+                        since_check = Duration::ZERO;
+                        // No periodic rebuild needed if every root is journaled.
+                        if shared.has_unjournaled() && shared.is_stale() {
+                            shared.request_build();
+                        }
+                    }
+                }
+            },
+        );
         Self { shared }
     }
 
@@ -331,7 +335,7 @@ impl IndexService {
                 (Weak::ptr_eq(&n.index, &Arc::downgrade(&index))
                     && n.show_hidden == show_hidden
                     && refines(&n.input, input))
-                .then(|| n.ids.clone())
+                .then(|| Arc::clone(&n.ids))
             })
         } else {
             None
@@ -779,7 +783,7 @@ impl Shared {
 
     fn watch_roots_at(&self, weak: &Weak<Self>, which: &[usize]) {
         for root in which.iter().filter_map(|&i| self.opts.roots.get(i)) {
-            let weak = weak.clone();
+            let weak = Weak::clone(weak);
             let watched = self.fs.watch_tree(
                 root,
                 Box::new(move |event| {
@@ -1008,7 +1012,7 @@ impl Shared {
                 })
                 .collect()
         };
-        let init = self.opts.thread_init.clone();
+        let init = Arc::clone(&self.opts.thread_init);
         // Roots with the background service: have it read the NTFS MFT directly (seconds); walk
         // otherwise.
         let journal = self.opts.journal.clone();
@@ -1113,7 +1117,7 @@ fn save(path: &Path, index: &Index) -> io::Result<()> {
 }
 
 fn spawn(name: &str, init: &ThreadInit, f: impl FnOnce() + Send + 'static) {
-    let init = init.clone();
+    let init = Arc::clone(init);
     let spawned = std::thread::Builder::new()
         .name(name.into())
         .spawn(move || {
@@ -1199,7 +1203,7 @@ mod tests {
             vec![Entry::new("trip-report.jpg", EntryKind::File, 1, None, 0)],
         );
         let svc = IndexService::start(
-            fs.clone(),
+            Arc::clone(&fs) as Arc<dyn Fs>,
             IndexOptions {
                 skip_build_dirs: true,
                 ..opts(None)
@@ -1259,7 +1263,11 @@ mod tests {
             ..opts(Some(cache.clone()))
         };
         {
-            let svc = IndexService::start(fs.clone(), excluded(&[r"c:\games\"]), || {});
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                excluded(&[r"c:\games\"]),
+                || {},
+            );
             wait("index built", || ready(&svc));
             assert_eq!(found(&svc, "report"), [r"C:\Work\q3-report.docx"]);
             assert_eq!(found(&svc, "games"), [r"C:\Games"]);
@@ -1317,7 +1325,7 @@ mod tests {
         }
         let fs = FakeFs::new();
         let svc = IndexService::start(
-            fs.clone(),
+            Arc::clone(&fs) as Arc<dyn Fs>,
             IndexOptions {
                 passive: true,
                 ..opts(Some(cache))
@@ -1343,7 +1351,7 @@ mod tests {
             vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
         );
         let ok = Arc::new(AtomicBool::new(false));
-        let gate = ok.clone();
+        let gate = Arc::clone(&ok);
         let svc = IndexService::start(
             fs,
             IndexOptions {
@@ -1369,7 +1377,7 @@ mod tests {
             me,
             vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
         );
-        let svc = IndexService::start(fs.clone(), opts(None), || {});
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
         wait("index built", || ready(&svc));
         assert_eq!(found(&svc, "report"), [r"C:\Users\me\report.docx"]);
 
@@ -1424,7 +1432,7 @@ mod tests {
             vec![Entry::new("new-report.txt", EntryKind::File, 1, None, 0)],
         );
         fs.hang(r"C:\");
-        let svc = IndexService::start(fs.clone(), opts(Some(cache)), || {});
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(Some(cache)), || {});
         wait("cache loaded", || svc.status().count.is_some());
         assert!(svc.status().scanning.is_some(), "rebuilding meanwhile");
         assert_eq!(found(&svc, "report"), [r"C:\old\old-report.txt"]);
@@ -1459,7 +1467,7 @@ mod tests {
         );
         let mut options = opts(Some(cache.clone()));
         options.refresh_after = Duration::from_hours(24);
-        let svc = IndexService::start(fs.clone(), options, || {});
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, options, || {});
         wait("cache loaded", || ready(&svc));
         assert_eq!(found(&svc, "report"), [r"C:\old\old-report.txt"]);
         assert_eq!(fs.read_dir_calls(), 0, "no walk");
@@ -1487,7 +1495,7 @@ mod tests {
         let mut o = opts(Some(cache.to_path_buf()));
         // With a journal the saved index's age doesn't matter.
         o.refresh_after = Duration::ZERO;
-        o.journal = Some(journal.clone());
+        o.journal = Some(Arc::clone(journal) as Arc<dyn Journal>);
         o
     }
 
@@ -1508,7 +1516,11 @@ mod tests {
         );
         let journal = FakeJournal::new(7);
         {
-            let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
             wait("first build", || ready(&svc));
             wait("journal caught up", || svc.status().live);
             assert_eq!(fs.watcher_count(Path::new(r"C:\")), 0, "journal, no watch");
@@ -1525,7 +1537,11 @@ mod tests {
         journal.push(me.join("moved"), true);
 
         let calls = fs.read_dir_calls();
-        let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
         wait("offline changes replayed", || {
             let f = found(&svc, "report");
             f.iter().any(|p| p.ends_with("new-report.md"))
@@ -1563,12 +1579,16 @@ mod tests {
         };
         {
             // Watching only: changes made while closed may be missing, so walk instead.
-            let svc = IndexService::start(fs.clone(), opts(None), || {});
+            let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
             wait("built", || ready(&svc));
             assert_eq!(sizes(&svc), None);
         }
         let journal = FakeJournal::new(3);
-        let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
         wait("journal caught up", || ready(&svc) && svc.status().live);
         assert_eq!(sizes(&svc), Some(vec![("docs".to_string(), 10)]));
         // A live change shows up without a walk.
@@ -1597,7 +1617,11 @@ mod tests {
         );
         let journal = FakeJournal::new(1);
         {
-            let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
             wait("first build", || ready(&svc) && svc.status().live);
             fs.add_file(a, "new-report.txt", 1);
             journal.push(a.join("new-report.txt"), false);
@@ -1609,7 +1633,11 @@ mod tests {
         // While closed: the journal wraps and the build-time position is gone.
         journal.forget_all();
         let walked = fs.read_dir_calls();
-        let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
         wait("cache loaded, journal resumed", || {
             ready(&svc) && svc.status().live
         });
@@ -1637,13 +1665,21 @@ mod tests {
         );
         let journal = FakeJournal::new(1);
         {
-            let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
             wait("first build", || ready(&svc));
         }
         // Journal recreated while closed (new ID): saved position doesn't connect, so rebuild.
         journal.recreate(2);
         fs.add_file(Path::new(r"C:\a"), "unlogged-report.txt", 1);
-        let svc = IndexService::start(fs.clone(), journal_opts(&cache, &journal), || {});
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
         wait("found after rebuild", || found(&svc, "unlogged").len() == 1);
         wait("following new journal", || svc.status().live);
 

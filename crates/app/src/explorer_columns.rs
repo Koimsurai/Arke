@@ -58,7 +58,7 @@ impl Explorer {
             entries: None,
             scroll: UniformListScrollHandle::new(),
         });
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let probe = self.services.shell.net_probe();
         let tx = self.events_tx.clone();
         let show_hidden = self.show_hidden;
@@ -143,7 +143,7 @@ impl Explorer {
                 let path = dir.join(&*entry.name);
                 let current = here.as_deref() == Some(path.as_path());
                 let is_dir = entry.is_dir_like();
-                let name: Arc<str> = entry.name.clone();
+                let name: Arc<str> = Arc::clone(&entry.name);
                 let parent = dir.clone();
                 div()
                     .id(("parent-col", ix))
@@ -187,7 +187,7 @@ impl Explorer {
                             this.navigate_selecting(
                                 parent.clone(),
                                 NavKind::New,
-                                Some(name.clone()),
+                                Some(Arc::clone(&name)),
                                 cx,
                             );
                         }

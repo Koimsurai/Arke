@@ -141,7 +141,7 @@ impl MediaStore {
     fn new(services: Services, cx: &mut Context<Self>) -> Self {
         let (tx, rx) = flume::unbounded::<MediaEvent>();
         let thumbs = {
-            let fs = services.fs.clone();
+            let fs = Arc::clone(&services.fs);
             let tx = tx.clone();
             Loader::new("thumbnail", 3, move |key: &MediaKey| {
                 let thumb = fs
@@ -152,7 +152,7 @@ impl MediaStore {
             })
         };
         let icons = {
-            let shell = services.shell.clone();
+            let shell = Arc::clone(&services.shell);
             let tx = tx.clone();
             Loader::new("system-icon", 1, move |key: &MediaKey| {
                 let icon = shell.file_icon(&key.path, SYSTEM_ICON_SIZE);
@@ -275,7 +275,7 @@ impl MediaStore {
             return local;
         }
         if self.local_pending.insert(root.clone()) {
-            let shell = self.services.shell.clone();
+            let shell = Arc::clone(&self.services.shell);
             let tx = self.tx.clone();
             let spawned = std::thread::Builder::new()
                 .name("local-disk".into())

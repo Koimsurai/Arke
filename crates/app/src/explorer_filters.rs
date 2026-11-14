@@ -93,7 +93,7 @@ impl PanelGeometry {
 
 /// Invisible element recording where its parent was drawn.
 fn measure(geometry: &Rc<RefCell<PanelGeometry>>, what: Measured) -> impl IntoElement {
-    let geometry = geometry.clone();
+    let geometry = Rc::clone(geometry);
     canvas(
         move |bounds, window, _| {
             if geometry.borrow_mut().set(what, bounds) {
@@ -804,9 +804,9 @@ impl Explorer {
             total: Arc::new(AtomicUsize::new(0)),
         };
         let (cancel, read, total) = (
-            filter.cancel.clone(),
-            filter.read.clone(),
-            filter.total.clone(),
+            Arc::clone(&filter.cancel),
+            Arc::clone(&filter.read),
+            Arc::clone(&filter.total),
         );
         self.content_filter = Some(filter);
         // Start empty: the last query's matches would be wrong for this one.
@@ -815,7 +815,7 @@ impl Explorer {
             entries: Arc::default(),
         });
         self.filter_inflight = Some(key.clone());
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let (tx, rx) = flume::unbounded::<Found>();
         spawn_thread("content-filter", move || {
             let candidates: Vec<Entry> = filter_by_query(&entries, &query)

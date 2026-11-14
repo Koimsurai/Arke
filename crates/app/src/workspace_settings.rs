@@ -13,6 +13,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
@@ -277,7 +279,7 @@ impl Workspace {
         let app_input = cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx));
         let app_sub = cx.subscribe_in(&app_input, window, Self::on_app_input);
         // List fonts in the background; there can be hundreds.
-        let text_system = cx.text_system().clone();
+        let text_system = Arc::clone(cx.text_system());
         cx.spawn(async move |this, cx| {
             let names = cx
                 .background_executor()
@@ -352,7 +354,7 @@ impl Workspace {
             image: None,
             failed: false,
         });
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let (tx, rx) = flume::bounded(1);
         let source = path.clone();
         crate::explorer::spawn_thread("backdrop-thumb", move || {
@@ -410,7 +412,7 @@ impl Workspace {
             })
             .map(|p| p.path.clone());
         let request = what.request(&settings, downloads);
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let owner = crate::explorer::Explorer::owner_from(window);
         let (tx, rx) = flume::bounded(1);
         crate::explorer::spawn_thread("pick-file", move || {
@@ -873,7 +875,7 @@ impl Workspace {
                         )
                         .child(crate::scrollbar::scrollbar(
                             page.scroll.clone(),
-                            page.scrollbar_drag.clone(),
+                            Rc::clone(&page.scrollbar_drag),
                         ))
                         .children(self.render_uninstall_dialog(cx)),
                 )
@@ -1498,7 +1500,7 @@ impl Workspace {
         let Some(path) = crate::settings::default_path() else {
             return;
         };
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         crate::explorer::spawn_thread("reveal-settings", move || {
             let _ = shell.reveal_in_explorer(&path, true);
         });
@@ -2608,7 +2610,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
             .collect(),
     );
     let font_of: OptionFont = {
-        let names = names.clone();
+        let names = Rc::clone(&names);
         std::rc::Rc::new(move |ix: usize| names.get(ix).cloned())
     };
     // Live sample under the name, in the chosen font.
@@ -2618,7 +2620,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
         .when_some(names.get(current).cloned(), gpui::Styled::font_family)
         .child(t!("settings.font_sample").into_owned())
         .into_any_element();
-    let fonts = fonts.clone();
+    let fonts = Rc::clone(fonts);
     row(
         Icon::Font,
         t!("settings.font").into_owned().into(),
@@ -2628,7 +2630,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
             &options,
             current,
             move |ix: usize, cx| {
-                let fonts = fonts.clone();
+                let fonts = Rc::clone(&fonts);
                 set(cx, move |st| {
                     if ix == 0 {
                         st.font.clear();
@@ -2743,7 +2745,7 @@ fn background_body(
             Icon::Image,
             Some(t!("settings.background_none").into_owned()),
         ),
-        (true, Some(image), _) => gpui::img(image.clone())
+        (true, Some(image), _) => gpui::img(Arc::clone(image))
             .size_full()
             .object_fit(gpui::ObjectFit::Cover)
             .into_any_element(),
@@ -2892,7 +2894,7 @@ fn background_body(
                         .flex()
                         .items_center()
                         .gap(theme::S_12)
-                        .child(opacity_slider(opacity, page.slider_drag.clone()))
+                        .child(opacity_slider(opacity, Rc::clone(&page.slider_drag)))
                         .child(
                             div()
                                 .w(px(40.))
@@ -3549,7 +3551,7 @@ fn network_row(
         .hover(|s| s.bg(theme::wash()))
         .child(action)
         .on_click(move |_: &ClickEvent, _, cx: &mut App| {
-            let apply = apply.clone();
+            let apply = Rc::clone(&apply);
             set(cx, move |st| apply(st));
         });
     div()

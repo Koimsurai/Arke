@@ -210,13 +210,13 @@ mod tests {
     }
 
     fn watch(registry: &Registry, path: &str, counts: &Arc<Counts>) -> WatchGuard {
-        let (arm, rescan) = (counts.clone(), counts.clone());
+        let (arm, rescan) = (Arc::clone(counts), Arc::clone(counts));
         registry
             .watch(
                 Path::new(path),
                 Box::new(move || {
                     arm.opened.fetch_add(1, Ordering::SeqCst);
-                    Ok(Box::new(Fake(arm.clone())) as Box<dyn Armed>)
+                    Ok(Box::new(Fake(Arc::clone(&arm))) as Box<dyn Armed>)
                 }),
                 Box::new(move || {
                     rescan.rescans.fetch_add(1, Ordering::SeqCst);

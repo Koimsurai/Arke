@@ -91,7 +91,7 @@ impl Workspace {
         };
         // A parent always exists; a subfolder of the same name may not, which is looked up off
         // the UI thread (it may be a slow network folder).
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let (tx, rx) = flume::bounded(1);
         let from = base.clone();
         crate::explorer::spawn_thread("sync-browse", move || {
@@ -159,7 +159,7 @@ impl Workspace {
                 .model
                 .as_ref()
                 .filter(|m| m.complete)
-                .map(|m| ((m.generation, m.version), m.entries.clone()))
+                .map(|m| ((m.generation, m.version), Arc::clone(&m.entries)))
         };
         let (Some((left_key, left)), Some((right_key, right))) = (listing(0), listing(1)) else {
             return;

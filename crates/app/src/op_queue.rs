@@ -272,7 +272,7 @@ mod tests {
 
         let second = Arc::new(OpProgress::default());
         let started = {
-            let (queue, second) = (queue.clone(), second.clone());
+            let (queue, second) = (Arc::clone(&queue), Arc::clone(&second));
             std::thread::spawn(move || queue.enter(vec!["disk1".into()], true, &second).is_some())
         };
         while !second.queued.load(Ordering::Relaxed) {
@@ -287,7 +287,7 @@ mod tests {
         let _held = queue.enter(vec!["disk1".into()], true, &holder);
         let third = Arc::new(OpProgress::default());
         let cancelled = {
-            let (queue, third) = (queue.clone(), third.clone());
+            let (queue, third) = (Arc::clone(&queue), Arc::clone(&third));
             std::thread::spawn(move || queue.enter(vec!["disk1".into()], true, &third).is_none())
         };
         while !third.queued.load(Ordering::Relaxed) {
@@ -304,7 +304,7 @@ mod tests {
         queue.set_paused(true);
         let job = Arc::new(OpProgress::default());
         let started = {
-            let (queue, job) = (queue.clone(), job.clone());
+            let (queue, job) = (Arc::clone(&queue), Arc::clone(&job));
             std::thread::spawn(move || queue.enter(vec!["disk9".into()], true, &job).is_some())
         };
         while !job.queued.load(Ordering::Relaxed) {

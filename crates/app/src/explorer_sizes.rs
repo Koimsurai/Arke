@@ -89,7 +89,7 @@ impl FolderSizes {
 
     /// Current sizes (name -> bytes) for sorting.
     pub(crate) fn snapshot(&self) -> Arc<HashMap<Arc<str>, u64>> {
-        self.sizes.clone()
+        Arc::clone(&self.sizes)
     }
 }
 
@@ -148,9 +148,9 @@ impl Explorer {
             .entries
             .iter()
             .filter(|e| e.kind == EntryKind::Dir)
-            .map(|e| (e.name.clone(), e.modified))
+            .map(|e| (Arc::clone(&e.name), e.modified))
             .collect();
-        let names: Vec<Arc<str>> = dirs.iter().map(|(n, _)| n.clone()).collect();
+        let names: Vec<Arc<str>> = dirs.iter().map(|(n, _)| Arc::clone(n)).collect();
         self.folder_sizes.seen = dirs.into_iter().collect();
         self.folder_sizes.checked_version = model.version;
         self.folder_sizes.stop();
@@ -159,7 +159,7 @@ impl Explorer {
         self.folder_sizes.sizes = Arc::new(
             names
                 .iter()
-                .filter_map(|n| cache.0.get(&path.join(&**n)).map(|&b| (n.clone(), b)))
+                .filter_map(|n| cache.0.get(&path.join(&**n)).map(|&b| (Arc::clone(n), b)))
                 .collect(),
         );
         self.folder_sizes.rev += 1;
@@ -188,13 +188,13 @@ impl Explorer {
             .iter()
             .filter(|e| e.kind == EntryKind::Dir)
             .filter(|e| self.folder_sizes.seen.get(&e.name) != Some(&e.modified))
-            .map(|e| (e.name.clone(), e.modified))
+            .map(|e| (Arc::clone(&e.name), e.modified))
             .collect();
         if changed.is_empty() {
             return;
         }
         let path = model.path.clone();
-        let names: Vec<Arc<str>> = changed.iter().map(|(n, _)| n.clone()).collect();
+        let names: Vec<Arc<str>> = changed.iter().map(|(n, _)| Arc::clone(n)).collect();
         self.folder_sizes.seen.extend(changed);
         self.folder_sizes.pending.extend(names.iter().cloned());
         self.start_size_worker(path, names, cx);
@@ -206,8 +206,8 @@ impl Explorer {
     fn start_size_worker(&mut self, path: PathBuf, names: Vec<Arc<str>>, cx: &App) {
         self.folder_sizes.stop();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.folder_sizes.cancel = Some(cancel.clone());
-        let fs = self.services.fs.clone();
+        self.folder_sizes.cancel = Some(Arc::clone(&cancel));
+        let fs = Arc::clone(&self.services.fs);
         let tx = self.events_tx.clone();
         let index = crate::global_search::GlobalSearch::local_service(cx);
         spawn_thread("folder-sizes", move || {
@@ -267,7 +267,7 @@ impl Explorer {
             // Same as the last value: leave it so no re-sort is needed.
             let sizes = Arc::make_mut(&mut self.folder_sizes.sizes);
             match bytes {
-                Some(bytes) => sizes.insert(name.clone(), bytes),
+                Some(bytes) => sizes.insert(Arc::clone(&name), bytes),
                 None => sizes.remove(&name),
             };
             self.folder_sizes.rev += 1;

@@ -106,7 +106,7 @@ impl Watcher {
     pub(crate) fn start(tx: flume::Sender<OpenRequest>) -> Option<Self> {
         let thread_id = Arc::new(AtomicU32::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
-        let (id, flag) = (thread_id.clone(), stopped.clone());
+        let (id, flag) = (Arc::clone(&thread_id), Arc::clone(&stopped));
         std::thread::Builder::new()
             .name("takeover".into())
             .spawn(move || run(&tx, &id, &flag))
@@ -348,7 +348,7 @@ fn connect(registered: &Arc<AtomicBool>) -> Option<(IShellWindows, Option<Subscr
         // SAFETY: valid interface pointers; the sink lives as long as the subscription.
         let point = unsafe { container.FindConnectionPoint(&DShellWindowsEvents::IID) }.ok()?;
         let sink: DShellWindowsEvents = sink::Sink {
-            registered: registered.clone(),
+            registered: Arc::clone(registered),
         }
         .into();
         // SAFETY: see above.

@@ -2,6 +2,7 @@
 //! (`explorer_tree.rs`).
 
 use gpui::{Modifiers, ScrollDelta, ScrollEvent, point, px};
+use std::sync::Arc;
 
 use super::*;
 use crate::explorer::{IconSize, ViewMode};
@@ -286,7 +287,7 @@ fn tree_expands_and_collapses_with_arrows(cx: &mut TestAppContext) {
 #[gpui::test]
 fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
     let fs = tree_fs();
-    let (view, cx) = setup_tree(cx, fs.clone(), Arc::default());
+    let (view, cx) = setup_tree(cx, Arc::clone(&fs), Arc::default());
     cx.simulate_keystrokes("home right");
     wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
     wait_watcher(&fs, Path::new(r"C:\t\alpha"));
@@ -343,7 +344,7 @@ fn tree_rows_rename_and_setting_off(cx: &mut TestAppContext) {
     let fs = tree_fs();
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup_tree(cx, fs.clone(), shell.clone());
+    let (view, cx) = setup_tree(cx, Arc::clone(&fs), Arc::clone(&shell));
     // beta: expand, step onto b1.txt, rename it.
     cx.simulate_keystrokes("home down right");
     wait_until(cx, &view, "beta listed", |v| view_names(v).len() == 4);
@@ -418,7 +419,7 @@ fn tree_rows_feed_the_shelf_drags_and_redo(cx: &mut TestAppContext) {
     let fs = tree_fs();
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup_tree(cx, fs.clone(), shell.clone());
+    let (view, cx) = setup_tree(cx, Arc::clone(&fs), Arc::clone(&shell));
     cx.simulate_keystrokes("home right");
     wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
     wait_watcher(&fs, Path::new(r"C:\t\alpha"));
@@ -475,7 +476,7 @@ fn tree_keeps_rows_in_place_while_expanding_and_collapsing(cx: &mut TestAppConte
             .collect();
         fs.insert_dir(format!(r"C:\t\{f}"), files);
     }
-    let (view, cx) = setup_tree(cx, fs.clone(), Arc::default());
+    let (view, cx) = setup_tree(cx, Arc::clone(&fs), Arc::default());
     let row_h = view.update(cx, |v, _| v.row_height());
     let paint = |cx: &mut VisualTestContext| {
         cx.update(|window, _| window.refresh());
@@ -581,7 +582,7 @@ fn tree_folder_menu_creates_inside_nested_folders(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\t\beta", vec![file("b1.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup_tree(cx, fs, shell.clone());
+    let (view, cx) = setup_tree(cx, fs, Arc::clone(&shell));
     cx.simulate_keystrokes("home right");
     wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
 
@@ -655,7 +656,7 @@ fn tree_folder_menu_creates_inside_nested_folders(cx: &mut TestAppContext) {
 #[gpui::test]
 fn tree_copy_relative_path(cx: &mut TestAppContext) {
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup_tree(cx, tree_fs(), shell.clone());
+    let (view, cx) = setup_tree(cx, tree_fs(), Arc::clone(&shell));
     cx.simulate_keystrokes("home right");
     wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
     cx.simulate_keystrokes("right right");
@@ -783,7 +784,7 @@ fn folder_menu_new_folder_in_the_plain_list_opens_the_folder(cx: &mut TestAppCon
     let fs = tree_fs();
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\t");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\t");
     wait_until(cx, &view, "load", loaded(r"C:\t"));
     right_click(&view, cx, Some(1));
     run_command(&view, cx, MenuCommand::NewFolderIn);

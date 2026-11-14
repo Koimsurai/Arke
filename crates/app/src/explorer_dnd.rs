@@ -211,7 +211,7 @@ impl DragPreview {
     /// Drops inside Arke don't wait for this; they transfer from the server directly.
     fn stage_remote(paths: Vec<PathBuf>, id: u64, services: &super::Services, cx: &mut App) {
         let (tx, rx) = flume::bounded(1);
-        let remotes = services.remotes.clone();
+        let remotes = Arc::clone(&services.remotes);
         spawn_thread("drag-stage", move || {
             let _ = tx.send(crate::remote_shell::stage_local_copies(
                 &remotes,
@@ -239,8 +239,8 @@ impl DragPreview {
     /// Builds the drag image in the background and stores it if the same drag is still active.
     fn prepare_image(job: DragImageJob, id: u64, services: &super::Services, cx: &mut App) {
         let (tx, rx) = flume::bounded::<Option<DragImage>>(1);
-        let fs = services.fs.clone();
-        let shell = services.shell.clone();
+        let fs = Arc::clone(&services.fs);
+        let shell = Arc::clone(&services.shell);
         spawn_thread("drag-image", move || {
             let base = job.ready.or_else(|| {
                 job.decode

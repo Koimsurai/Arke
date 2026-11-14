@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -181,7 +182,7 @@ impl RecycleBin {
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         self.serial = self.serial.wrapping_add(1);
         let serial = self.serial;
-        let shell = self.shell.clone();
+        let shell = Arc::clone(&self.shell);
         let (tx, rx) = flume::bounded(1);
         spawn_thread("recycle-list", move || {
             let _ = tx.send(shell.recycle_bin());
@@ -381,7 +382,7 @@ impl RecycleBin {
         self.busy = Some(job);
         self.notice = None;
         cx.notify();
-        let shell = self.shell.clone();
+        let shell = Arc::clone(&self.shell);
         let owner = self.owner;
         let count = items.len();
         let (tx, rx) = flume::bounded(1);
@@ -493,7 +494,7 @@ impl Render for RecycleBin {
                 .child(list)
                 .child(crate::scrollbar::scrollbar(
                     self.scroll.0.borrow().base_handle.clone(),
-                    self.scrollbar_drag.clone(),
+                    Rc::clone(&self.scrollbar_drag),
                 ))
                 .into_any_element()
         };

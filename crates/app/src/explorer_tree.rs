@@ -129,7 +129,7 @@ impl Explorer {
             self.tree.revision,
         );
         if let Some(cached) = self.tree.flat.borrow().as_ref().filter(|c| c.key == key) {
-            return Some((cached.entries.clone(), cached.rows.clone()));
+            return Some((Arc::clone(&cached.entries), Arc::clone(&cached.rows)));
         }
         let nodes = &self.tree.nodes;
         let flat = core_tree::flatten(&model.entries, |name| match nodes.get(name) {
@@ -143,8 +143,8 @@ impl Explorer {
         let rows = Arc::new(flat.rows);
         *self.tree.flat.borrow_mut() = Some(FlatCache {
             key,
-            entries: entries.clone(),
-            rows: rows.clone(),
+            entries: Arc::clone(&entries),
+            rows: Arc::clone(&rows),
         });
         Some((entries, rows))
     }
@@ -178,7 +178,7 @@ impl Explorer {
             return visual;
         }
         let row = self.tree_row(ix);
-        let name = entry.name.clone();
+        let name = Arc::clone(&entry.name);
         let chevron = entry.is_dir_like().then(|| {
             div()
                 .id(ElementId::NamedInteger(
@@ -318,13 +318,13 @@ impl Explorer {
         let id = self.tree.next_id;
         self.tree.next_id += 1;
         let tx = self.events_tx.clone();
-        let rel = entry.name.clone();
+        let rel = Arc::clone(&entry.name);
         let mut service = DirService::new(
-            self.services.fs.clone(),
+            Arc::clone(&self.services.fs),
             Arc::new(move |event| {
                 let _ = tx.send(AppEvent::Tree {
                     node: id,
-                    rel: rel.clone(),
+                    rel: Arc::clone(&rel),
                     event,
                 });
             }),
@@ -336,7 +336,7 @@ impl Explorer {
         let model = DirModel::new(path, generation, self.sort);
         self.tree
             .nodes
-            .insert(entry.name.clone(), Node { id, service, model });
+            .insert(Arc::clone(&entry.name), Node { id, service, model });
         self.tree.changed();
         cx.notify();
     }
@@ -357,7 +357,7 @@ impl Explorer {
             .is_some_and(|c| core_tree::is_within(c, name));
         drop_within(&mut self.selection, |n| core_tree::is_within(n, name));
         if cursor_inside {
-            self.selection.select_name(name.clone());
+            self.selection.select_name(Arc::clone(name));
         }
         self.tree.changed();
         self.resolve_cursor();
@@ -522,7 +522,7 @@ impl Explorer {
                 ..
             } if generation == current => {
                 // Can't be listed (access denied, gone): fold it back up and say why.
-                let name = rel.clone();
+                let name = Arc::clone(rel);
                 self.error = Some(
                     t!(
                         "error.open_failed",
@@ -577,7 +577,7 @@ impl Explorer {
         #[allow(clippy::cast_precision_loss)]
         let item_top = row_h * self.display_row(ix) as f32;
         Some(ScrollAnchor {
-            name: entry.name.clone(),
+            name: Arc::clone(&entry.name),
             offset: item_top - top,
         })
     }

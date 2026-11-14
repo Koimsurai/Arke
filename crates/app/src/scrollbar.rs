@@ -197,7 +197,7 @@ fn bar(handle: ScrollHandle, drag: ScrollbarDrag, axis: Axis) -> gpui::Canvas<Bo
             window.paint_quad(gpui::fill(thumb_bounds, color).corner_radii(width / 2.));
 
             // Press on the thumb starts a drag; on the track pages toward the cursor.
-            let (h, d) = (handle.clone(), drag.clone());
+            let (h, d) = (handle.clone(), Rc::clone(&drag));
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || e.button != MouseButton::Left
@@ -218,7 +218,7 @@ fn bar(handle: ScrollHandle, drag: ScrollbarDrag, axis: Axis) -> gpui::Canvas<Bo
                 }
                 window.refresh();
             });
-            let (h, d) = (handle.clone(), drag.clone());
+            let (h, d) = (handle.clone(), Rc::clone(&drag));
             window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;

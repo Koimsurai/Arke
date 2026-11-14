@@ -168,10 +168,10 @@ fn watch_with(
 ) -> io::Result<Box<dyn Send>> {
     let on_event: Arc<WatchCallback> = Arc::new(on_event);
     let target = path.to_path_buf();
-    let events = on_event.clone();
+    let events = Arc::clone(&on_event);
     let guard = crate::watches::registry().watch(
         path,
-        Box::new(move || arm_watcher(&target, mode, events.clone())),
+        Box::new(move || arm_watcher(&target, mode, Arc::clone(&events))),
         Box::new(move || on_event(WatchEvent::Rescan)),
     )?;
     Ok(Box::new(guard))

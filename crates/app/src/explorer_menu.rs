@@ -1358,7 +1358,7 @@ impl Explorer {
                     _ => crate::shell::CloudPin::Keep,
                 };
                 let paths: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
-                let shell = self.services.shell.clone();
+                let shell = Arc::clone(&self.services.shell);
                 let tx = self.events_tx.clone();
                 spawn_thread("cloud-pin", move || {
                     if let Err(e) = shell.set_cloud_pin(&paths, pin) {
@@ -1414,7 +1414,7 @@ impl Explorer {
             C::AddToShelf => self.add_paths_to_shelf(targets.clone(), cx),
             C::OpenFileLocation => {
                 if let Some((path, false)) = targets.first().cloned() {
-                    let shell = self.services.shell.clone();
+                    let shell = Arc::clone(&self.services.shell);
                     let tx = self.events_tx.clone();
                     spawn_thread("shortcut-target", move || {
                         let event = match shell.shortcut_target(&path) {
@@ -1429,7 +1429,7 @@ impl Explorer {
             }
             C::GoToLinkTarget => {
                 if let Some((path, _)) = targets.first().cloned() {
-                    let fs = self.services.fs.clone();
+                    let fs = Arc::clone(&self.services.fs);
                     let tx = self.events_tx.clone();
                     spawn_thread("link-target", move || {
                         let event = match fs.read_link(&path) {
@@ -1529,7 +1529,7 @@ impl Explorer {
                 .join("\r\n")
         };
         let count = targets.len().max(1);
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("copy-path", move || {
             let result = shell
@@ -1560,7 +1560,7 @@ impl Explorer {
         }
         let count = lines.len();
         let text = lines.join("\r\n");
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("copy-relative-path", move || {
             let result = shell
@@ -1581,7 +1581,7 @@ impl Explorer {
             return;
         };
         let text = path.display().to_string();
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("copy-address", move || {
             let result = shell
@@ -1732,7 +1732,7 @@ impl Explorer {
         dest: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         crate::explorer::spawn_thread("create-shortcuts", move || {
             if let Err(err) = shell.create_shortcuts(&sources, &dest) {
@@ -1756,7 +1756,7 @@ impl Explorer {
                 None => return,
             },
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("terminal", move || {
             if let Err(e) = shell.open_terminal(&dir) {
@@ -1771,7 +1771,7 @@ impl Explorer {
 
     /// Windows' own "Open with" dialog for `path`, owned by this window.
     pub(crate) fn choose_app(&self, path: PathBuf, window: &Window) {
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let owner = Self::owner_from(window);
         let tx = self.events_tx.clone();
         crate::explorer::spawn_thread("choose-app", move || {
@@ -1797,7 +1797,7 @@ impl Explorer {
                 None => return,
             },
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("reveal", move || {
             if let Err(e) = shell.reveal_in_explorer(&path, select) {
@@ -1836,7 +1836,7 @@ impl Explorer {
         }
         let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         menu.shell_request = Some(request);
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("more-options", move || {
             let result = shell.shell_menu(&paths, background);
@@ -1920,7 +1920,7 @@ impl Explorer {
             })
         }
         let paths: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let owner = Self::owner_from(window);
         crate::explorer::spawn_thread("shell-verb", move || {
             let result = shell.shell_menu(&paths, false).and_then(|menu| {
@@ -1967,7 +1967,7 @@ impl Explorer {
             (f32::from(position.x) * scale).round() as i32,
             (f32::from(position.y) * scale).round() as i32,
         );
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         let owner = self.owner;
         spawn_thread("shell-command", move || {
@@ -2015,18 +2015,18 @@ impl Explorer {
             name,
             compress: false,
             job,
-            ops: ops.clone(),
+            ops: Arc::clone(&ops),
             progress: ExtractProgress::default(),
         });
         self.notice = None;
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("extract", move || {
             // Banner progress is sent at most every 100 ms to avoid flooding the UI; the progress
             // center reads counters directly.
             let last = Mutex::new(Instant::now());
             let progress_tx = tx.clone();
-            let counters = ops.clone();
+            let counters = Arc::clone(&ops);
             let progress = move |p: ExtractProgress| {
                 report(&counters, p);
                 let mut last = last.lock();
@@ -2084,16 +2084,16 @@ impl Explorer {
             name: name.clone(),
             compress: true,
             job,
-            ops: ops.clone(),
+            ops: Arc::clone(&ops),
             progress: ExtractProgress::default(),
         });
         self.notice = None;
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("compress", move || {
             let last = Mutex::new(Instant::now());
             let progress_tx = tx.clone();
-            let counters = ops.clone();
+            let counters = Arc::clone(&ops);
             let progress = move |p: ExtractProgress| {
                 report(&counters, p);
                 let mut last = last.lock();
@@ -2251,7 +2251,7 @@ impl Explorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let geometry = menu.geometry.clone();
+        let geometry = Rc::clone(&menu.geometry);
         let pinned = SettingsStore::global(cx)
             .read(cx)
             .settings
@@ -2408,7 +2408,7 @@ impl Explorer {
                 Self::render_menu_row(menu, level, ix, entry, highlighted, marks, pinned, cx)
             })
             .collect();
-        let geometry = menu.geometry.clone();
+        let geometry = Rc::clone(&menu.geometry);
         div()
             .id(("context-menu", level))
             .role(gpui::Role::Menu)
@@ -2562,7 +2562,7 @@ impl Explorer {
                 .into_any_element();
         };
         let key = level * LEVEL_STRIDE + ix;
-        let geometry = menu.geometry.clone();
+        let geometry = Rc::clone(&menu.geometry);
         let mark = marks.then(|| row_mark(icon, glyph, checked));
         let group: SharedString = format!("menu-row-{key}").into();
         let pin_button = pin.map(|pin| Self::pin_button(key, pin, pinned, group.clone(), cx));

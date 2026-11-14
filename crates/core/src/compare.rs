@@ -84,20 +84,20 @@ pub fn compare(left: &[Entry], right: &[Entry]) -> Comparison {
     for a in left {
         match by_key.get(&*a.sort_key) {
             None => {
-                out.left.insert(a.name.clone(), Mark::Unique);
+                out.left.insert(Arc::clone(&a.name), Mark::Unique);
             }
             Some(b) => {
                 matched.insert(&b.sort_key);
                 if let Some((on_left, on_right)) = marks(a, b) {
-                    out.left.insert(a.name.clone(), on_left);
-                    out.right.insert(b.name.clone(), on_right);
+                    out.left.insert(Arc::clone(&a.name), on_left);
+                    out.right.insert(Arc::clone(&b.name), on_right);
                 }
             }
         }
     }
     for b in right {
         if !matched.contains(&*b.sort_key) {
-            out.right.insert(b.name.clone(), Mark::Unique);
+            out.right.insert(Arc::clone(&b.name), Mark::Unique);
         }
     }
     out

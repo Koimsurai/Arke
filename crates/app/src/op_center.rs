@@ -298,7 +298,7 @@ impl OpCenter {
             id,
             verb,
             subject,
-            progress: progress.clone(),
+            progress: Arc::clone(&progress),
             started: Instant::now(),
             state: JobState::Running,
             undo: None,
@@ -506,7 +506,7 @@ mod tests {
             id: 1,
             verb: "op.recycle",
             subject: Some(("big".into(), 1)),
-            progress: progress.clone(),
+            progress: Arc::clone(&progress),
             started: Instant::now(),
             state: JobState::Running,
             undo: None,
@@ -607,7 +607,7 @@ mod tests {
             id: 1,
             verb: "op.copy",
             subject: None,
-            progress: progress.clone(),
+            progress: Arc::clone(&progress),
             started: long_ago,
             state: JobState::Running,
             undo: None,
@@ -637,7 +637,7 @@ mod tests {
     fn orphaned_jobs_are_closed_out() {
         let mut center = OpCenter::default();
         let held = Arc::new(OpProgress::default());
-        for (id, progress) in [(1, held.clone()), (2, Arc::new(OpProgress::default()))] {
+        for (id, progress) in [(1, Arc::clone(&held)), (2, Arc::new(OpProgress::default()))] {
             center.jobs.push(Job {
                 id,
                 verb: "op.recycle",

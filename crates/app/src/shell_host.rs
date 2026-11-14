@@ -315,7 +315,7 @@ fn spawn_host() -> Result<Host, SpawnError> {
             }
         })
         .and_then(|_| {
-            let pending = pending.clone();
+            let pending = Arc::clone(&pending);
             std::thread::Builder::new()
                 .name("shell-host-read".into())
                 .spawn(move || {

@@ -356,7 +356,7 @@ impl NetDialog {
         self.busy = true;
         self.error = None;
         cx.notify();
-        let shell = self.shell.clone();
+        let shell = Arc::clone(&self.shell);
         let (tx, rx) = flume::bounded(1);
         crate::explorer::spawn_thread("net-connect", move || {
             let _ = tx.send(shell.net_connect(&request));
@@ -426,7 +426,7 @@ impl NetDialog {
         self.busy = true;
         self.error = None;
         cx.notify();
-        let remotes = self.remotes.clone();
+        let remotes = Arc::clone(&self.remotes);
         let (tx, rx) = flume::bounded(1);
         let target = url.clone();
         let key = key_file.clone();

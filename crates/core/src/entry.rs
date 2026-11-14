@@ -114,7 +114,7 @@ pub fn unsynced_by_attributes(entries: &[Entry]) -> Vec<Arc<str>> {
     entries
         .iter()
         .filter(|e| !placeholder(e) && !e.is_system() && !matches!(e.kind, EntryKind::Link { .. }))
-        .map(|e| e.name.clone())
+        .map(|e| Arc::clone(&e.name))
         .collect()
 }
 
@@ -131,7 +131,7 @@ impl Entry {
         let sort_key: Arc<str> = if name.chars().any(char::is_uppercase) {
             name.to_lowercase().into()
         } else {
-            name.clone()
+            Arc::clone(&name)
         };
         Self {
             name,

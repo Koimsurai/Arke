@@ -137,7 +137,7 @@ impl Hook {
         *target().lock() = Some(tx);
         let thread_id = Arc::new(AtomicU32::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
-        let (id, flag) = (thread_id.clone(), stopped.clone());
+        let (id, flag) = (Arc::clone(&thread_id), Arc::clone(&stopped));
         std::thread::Builder::new()
             .name("win-e-hook".into())
             .spawn(move || run(&id, &flag))

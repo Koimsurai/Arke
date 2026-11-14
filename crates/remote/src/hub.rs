@@ -205,7 +205,7 @@ impl Remotes {
     }
 
     fn slot(&self, url: &RemoteUrl) -> Slot {
-        self.conns.lock().entry(url.origin()).or_default().clone()
+        Arc::clone(self.conns.lock().entry(url.origin()).or_default())
     }
 
     // The slot stays locked while connecting, so concurrent requests share one connection.
@@ -214,12 +214,12 @@ impl Remotes {
         let slot = self.slot(url);
         let mut held = slot.lock().await;
         if let Some(conn) = held.as_ref().filter(|c| !c.is_closed()) {
-            return Ok(conn.clone());
+            return Ok(Arc::clone(conn));
         }
         let auth = self.auth(url);
         log::info!("connecting to {}", url.origin());
-        let conn = Arc::new(sftp::connect(url, &auth, self.known.clone()).await?);
-        *held = Some(conn.clone());
+        let conn = Arc::new(sftp::connect(url, &auth, Arc::clone(&self.known)).await?);
+        *held = Some(Arc::clone(&conn));
         Ok(conn)
     }
 
@@ -245,7 +245,7 @@ impl Remotes {
     }
 
     fn dav(&self, url: &RemoteUrl) -> DavClient {
-        DavClient::new(url, self.auth(url).secret, self.transport.clone())
+        DavClient::new(url, self.auth(url).secret, Arc::clone(&self.transport))
     }
 
     /// Lists a folder.

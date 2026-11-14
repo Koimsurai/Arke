@@ -21,6 +21,7 @@ use rust_i18n::t;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(windows)]
@@ -1128,7 +1129,7 @@ impl<R> CountingReader<R> {
     }
 
     fn read_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
-        self.read.clone()
+        Arc::clone(&self.read)
     }
 }
 

@@ -221,8 +221,8 @@ impl GlobalSearch {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        let fs = self.fs.clone();
-        let shell = self.shell.clone();
+        let fs = Arc::clone(&self.fs);
+        let shell = Arc::clone(&self.shell);
         let roots = self.roots.clone();
         let real = matches!(roots, Roots::LocalDrives);
         let skip_build_dirs = self.skip_build_dirs;
@@ -308,7 +308,7 @@ impl GlobalSearch {
     /// only the cache. If opened, probe the server (a few seconds max): reachable means watch and
     /// rewalk when stale (weekly, one connection); otherwise cache only.
     fn start_net(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        let fs = self.fs.clone();
+        let fs = Arc::clone(&self.fs);
         let real = matches!(self.roots, Roots::LocalDrives);
         let awake = self.net.iter().any(|n| n.root == root && n.awake);
         let skip_build_dirs = self.skip_build_dirs;

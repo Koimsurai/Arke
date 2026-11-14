@@ -453,7 +453,7 @@ pub(super) fn extract(
                 if header.encrypted {
                     return Err(ArchiveError::Encrypted);
                 }
-                let position = reader.position.clone();
+                let position = Arc::clone(&reader.position);
                 let mut on_bytes = |_: u64| {
                     progress.done = position.load(Ordering::Relaxed).min(total);
                     (opts.progress)(progress);

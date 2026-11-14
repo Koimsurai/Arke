@@ -761,7 +761,7 @@ fn hung_network_share_never_blocks_ui(cx: &mut TestAppContext) {
     fs.insert_many(r"C:\other", 5);
     fs.insert_many(r"\\dead\share", 10);
     fs.hang(r"\\dead\share");
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\home");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\home");
     wait_until(cx, &view, "load C:\\home", loaded(r"C:\home"));
 
     let t = Instant::now();
@@ -892,7 +892,7 @@ fn watcher_changes_update_list_incrementally(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     let dir_path = Path::new(r"C:\w");
     fs.insert_dir(dir_path, vec![file("a.txt", 1), file("c.txt", 1)]);
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\w");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\w");
     wait_until(cx, &view, "load", loaded(r"C:\w"));
     let deadline = Instant::now() + Duration::from_secs(20);
     while fs.watcher_count(dir_path) == 0 {
@@ -918,7 +918,7 @@ fn watcher_changes_update_list_incrementally(cx: &mut TestAppContext) {
 fn failed_navigation_keeps_current_directory(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_many(r"C:\home", 2);
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\home");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\home");
     wait_until(cx, &view, "load", loaded(r"C:\home"));
 
     view.update(cx, |v, cx| {
@@ -946,7 +946,7 @@ fn opening_files_and_loading_places_run_off_ui_thread(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\home", vec![file("readme.md", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\home");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\home");
     wait_until(cx, &view, "load", loaded(r"C:\home"));
     wait_until(cx, &view, "sidebar", |v| !v.places.is_empty());
 
@@ -1049,7 +1049,7 @@ fn multi_select_survives_sort_and_watcher(cx: &mut TestAppContext) {
             file("d.txt", 10),
         ],
     );
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\m");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\m");
     wait_until(cx, &view, "load", loaded(r"C:\m"));
 
     cx.simulate_keystrokes("down shift-down shift-down");
@@ -1106,7 +1106,7 @@ fn live_filter_small_and_large_directories(cx: &mut TestAppContext) {
     );
     fs.insert_many(r"C:\big", 100_000);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\f");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\f");
     wait_until(cx, &view, "load", loaded(r"C:\f"));
 
     cx.dispatch_action(FocusFilter);
@@ -1162,7 +1162,7 @@ fn delete_after_filtering_never_hits_hidden_items(cx: &mut TestAppContext) {
         ],
     );
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\s");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\s");
     wait_until(cx, &view, "load", loaded(r"C:\s"));
 
     // beta selected, then a filter that hides it: nothing is selected any more and Delete does
@@ -1282,7 +1282,7 @@ fn search_with_hung_subfolder_streams_partial_results(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\h", vec![dir("mnt"), file("target_here.txt", 1)]);
     fs.insert_dir(r"C:\h\mnt", vec![file("target_never.txt", 1)]);
     fs.hang(r"C:\h\mnt");
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\h");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\h");
     wait_until(cx, &view, "load", loaded(r"C:\h"));
     cx.dispatch_action(FocusSearch);
     cx.simulate_input("target");
@@ -1584,7 +1584,7 @@ fn dragging_files_out_of_the_window_hands_them_to_windows(cx: &mut TestAppContex
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\o", vec![file("a.txt", 1), file("b.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\o");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\o"));
     cx.run_until_parked();
@@ -1636,7 +1636,7 @@ fn dragging_back_into_the_window_resumes_arkes_own_drag(cx: &mut TestAppContext)
     shell
         .drag_returns
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\r");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\r");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\r"));
     cx.run_until_parked();
@@ -1746,7 +1746,7 @@ fn network_drive_dialog_connects_in_the_background(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\o");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\o"));
     cx.update(|window, cx| {
@@ -1847,7 +1847,7 @@ fn recycle_bin_page_restores_and_purges(cx: &mut TestAppContext) {
         item("new.txt", 300, 2),
         item("mid.txt", 200, 3),
     ];
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\o");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\o"));
     cx.update(|window, cx| {
@@ -1937,7 +1937,7 @@ fn dragging_a_selection_out_carries_a_count(cx: &mut TestAppContext) {
         vec![file("a.txt", 1), file("b.txt", 1), file("c.txt", 1)],
     );
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\o");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\o"));
     cx.run_until_parked();
@@ -2061,7 +2061,7 @@ fn settle_watcher(fs: &FakeFs, dir: &Path) {
 
 /// Simulates IFileOperation's effect on the file system and sends watcher events.
 fn apply_to_fake_fs(fs: &Arc<FakeFs>, shell: &FakeShell) {
-    let fs = fs.clone();
+    let fs = Arc::clone(fs);
     *shell.on_op.lock() = Some(Box::new(move |op| match op {
         FileOp::Delete { paths, .. } => {
             for p in paths {
@@ -2115,7 +2115,7 @@ fn copy_cut_paste_through_clipboard(cx: &mut TestAppContext) {
     );
     fs.insert_dir(r"C:\b", vec![]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\a");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\a");
     wait_until(cx, &view, "load", loaded(r"C:\a"));
 
     cx.simulate_keystrokes("down shift-down ctrl-c");
@@ -2183,7 +2183,7 @@ fn delete_recycles_and_selects_next(cx: &mut TestAppContext) {
     );
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\d");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\d");
     wait_until(cx, &view, "load", loaded(r"C:\d"));
     wait_watcher(&fs, dir_path);
 
@@ -2241,7 +2241,7 @@ fn failed_delete_names_the_program_and_retries_only_what_failed(cx: &mut TestApp
             pid: 4242,
         }],
     ));
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\fd");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\fd");
     wait_until(cx, &view, "load", loaded(r"C:\fd"));
     wait_watcher(&fs, dir_path);
 
@@ -2327,7 +2327,7 @@ fn deleting_where_there_is_no_recycle_bin_asks_first(cx: &mut TestAppContext) {
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
     shell.no_bin.lock().push(PathBuf::from(r"C:\nb\b.txt"));
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\nb");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\nb");
     wait_until(cx, &view, "load", loaded(r"C:\nb"));
     wait_watcher(&fs, dir_path);
 
@@ -2376,7 +2376,7 @@ fn deleting_a_search_hit_removes_it_from_the_results(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\sr\docs", vec![file("report_b.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\sr");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\sr");
     wait_until(cx, &view, "load", loaded(r"C:\sr"));
 
     cx.dispatch_action(FocusSearch);
@@ -2412,7 +2412,7 @@ fn ctrl_z_undoes_the_last_file_op_but_not_in_text_boxes(cx: &mut TestAppContext)
     fs.insert_dir(dir_path, vec![file("a.txt", 1), file("b.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\u");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\u");
     wait_until(cx, &view, "load", loaded(r"C:\u"));
     wait_watcher(&fs, dir_path);
 
@@ -2470,7 +2470,7 @@ fn recycling_offers_undo_on_the_notice_and_in_the_progress_center(cx: &mut TestA
     fs.insert_dir(dir_path, vec![file("a.txt", 1), file("b.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\rb");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\rb");
     wait_until(cx, &view, "load", loaded(r"C:\rb"));
     wait_watcher(&fs, dir_path);
 
@@ -2533,7 +2533,7 @@ fn asks_before_recycling_and_before_changing_extensions(cx: &mut TestAppContext)
     fs.insert_dir(dir_path, vec![file("a.txt", 1), file("report.docx", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\k");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\k");
     wait_until(cx, &view, "load", loaded(r"C:\k"));
     wait_watcher(&fs, dir_path);
 
@@ -2592,7 +2592,7 @@ fn inline_rename_validates_names(cx: &mut TestAppContext) {
     fs.insert_dir(dir_path, vec![file("report.docx", 1), file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\r");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\r");
     wait_until(cx, &view, "load", loaded(r"C:\r"));
     wait_watcher(&fs, dir_path);
 
@@ -2700,7 +2700,7 @@ fn new_folder_gets_unique_name_and_starts_rename(cx: &mut TestAppContext) {
     fs.insert_dir(dir_path, vec![dir(&new_folder), file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\n");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\n");
     wait_until(cx, &view, "load", loaded(r"C:\n"));
     wait_watcher(&fs, dir_path);
 
@@ -2730,7 +2730,7 @@ fn background_menu_new_text_file_and_more_options(cx: &mut TestAppContext) {
     fs.insert_dir(dir_path, vec![file(&format!("{text_doc}.txt"), 0)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\t");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\t");
     wait_until(cx, &view, "load", loaded(r"C:\t"));
     wait_watcher(&fs, dir_path);
 
@@ -2790,7 +2790,7 @@ fn disk_space_updates_after_file_operations(cx: &mut TestAppContext) {
             },
         },
     ]);
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\d");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\d");
     wait_until(cx, &view, "load", |v| {
         loaded(r"C:\d")(v) && v.places.len() > 2
     });
@@ -2844,7 +2844,7 @@ fn shortcuts_to_folders_open_inside_arke(cx: &mut TestAppContext) {
             false,
         ),
     ]);
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\s");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\s");
     wait_until(cx, &view, "load", loaded(r"C:\s"));
 
     right_click(&view, cx, Some(1));
@@ -2902,7 +2902,7 @@ fn cloud_folders_offer_keep_and_free_up_space(cx: &mut TestAppContext) {
         path: PathBuf::from(r"C:\od"),
         kind: PlaceKind::Cloud,
     });
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\od");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\od");
     wait_until(cx, &view, "load", |v| {
         loaded(r"C:\od")(v) && v.places.len() > 1
     });
@@ -2957,7 +2957,7 @@ fn pinned_shell_commands_show_in_the_main_menu(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\p");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
@@ -3172,7 +3172,7 @@ fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\q\b-big", vec![dir("deep"), file("x", 900)]);
     fs.insert_dir(r"C:\q\b-big\deep", vec![file("y", 100)]);
     fs.insert_dir(r"C:\q\c-mid", vec![file("x", 300)]);
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\q");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q");
     wait_until(cx, &view, "load", loaded(r"C:\q"));
     let all_sized = |v: &Explorer| {
         ["a-small", "b-big", "c-mid"]
@@ -3274,7 +3274,7 @@ fn size_order_follows_the_folder_being_shown(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\q", vec![dir("a-small"), dir("b-big")]);
     fs.insert_dir(r"C:\q\a-small", vec![file("x", 10)]);
     fs.insert_dir(r"C:\q\b-big", vec![file("x", 1000)]);
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\q");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q");
     wait_until(cx, &view, "load", loaded(r"C:\q"));
     // The sort has to travel with the tab into the next folders (per-tab views)
     cx.update(|_, cx| {
@@ -3436,7 +3436,7 @@ fn grid_view_loads_thumbnails_and_icons_without_blocking(cx: &mut TestAppContext
     fs.set_content(r"C:\pics\stuck.png", png_bytes(10, 10));
     fs.hang(r"C:\pics\stuck.png");
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\pics");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\pics");
     wait_until(cx, &view, "load", loaded(r"C:\pics"));
 
     cx.simulate_keystrokes("ctrl-shift-2");
@@ -3490,7 +3490,7 @@ fn network_folders_get_no_thumbnails_or_system_icons(cx: &mut TestAppContext) {
     );
     fs.set_content(r"\\server\share\a.png", png_bytes(10, 10));
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"\\server\share");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"\\server\share");
     wait_until(cx, &view, "load", loaded(r"\\server\share"));
     cx.simulate_keystrokes("ctrl-shift-2");
     for _ in 0..20 {
@@ -3566,7 +3566,7 @@ fn context_menu_items_selection_and_keyboard(cx: &mut TestAppContext) {
         ],
     );
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\c");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\c");
     wait_until(cx, &view, "load", loaded(r"C:\c"));
     // Order: docs, a.txt, b.txt, pack.zip.
 
@@ -3904,7 +3904,7 @@ fn split_panes_copy_to_the_other_side_and_switch_with_tab(cx: &mut TestAppContex
     fs.insert_many(r"C:\t\one", 3);
     fs.insert_many(r"C:\t\two", 1);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\t\one");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\t\one");
     let left = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &left, "load", loaded(r"C:\t\one"));
 
@@ -4203,7 +4203,7 @@ fn drag_selected_files_into_a_folder(cx: &mut TestAppContext) {
     );
     fs.insert_many(r"C:\d\target", 1);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\d");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\d");
     wait_until(cx, &view, "load", loaded(r"C:\d"));
     // Order: target, a.txt, b.txt, c.txt. Select a and b (the first Down lands on target).
     cx.simulate_keystrokes("down down shift-down");
@@ -4550,13 +4550,13 @@ fn whole_computer_search_includes_chosen_network_locations(cx: &mut TestAppConte
     fs.insert_dir(r"\nas\share", vec![dir("team")]);
     fs.insert_dir(r"\nas\share\team", vec![file("report-nas.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs.clone(), shell.clone(), r"C:\t");
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
     let global = cx.update(|_, cx| {
         GlobalSearch::init(
-            fs.clone(),
-            shell.clone(),
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
             Roots::Fixed(vec![PathBuf::from(r"C:\")]),
             None,
             cx,
@@ -4637,13 +4637,13 @@ fn search_box_scopes_reach_the_whole_computer(cx: &mut TestAppContext) {
         ],
     );
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs.clone(), shell.clone(), r"C:\t");
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
     let global = cx.update(|_, cx| {
         GlobalSearch::init(
-            fs.clone(),
-            shell.clone(),
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
             Roots::Fixed(vec![PathBuf::from(r"C:\")]),
             None,
             cx,
@@ -4804,13 +4804,13 @@ fn whole_pc_results_put_what_you_open_first(cx: &mut TestAppContext) {
         fs.insert_dir(dir, vec![file("README.md", 1)]);
     }
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs.clone(), shell.clone(), r"C:\t");
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
     cx.update(|_, cx| {
         GlobalSearch::init(
-            fs.clone(),
-            shell.clone(),
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
             Roots::Fixed(vec![PathBuf::from(r"C:\")]),
             None,
             cx,
@@ -5268,7 +5268,7 @@ fn copy_as_path_and_the_path_bar_menu(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"\\nas\share", vec![file("a.txt", 1), file("b.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"\\nas\share");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"\\nas\share");
     wait_until(cx, &view, "load", loaded(r"\\nas\share"));
     let copied = |shell: &FakeShell| shell.clipboard_text.lock().clone();
 
@@ -5352,7 +5352,7 @@ fn typing_a_command_in_the_path_bar_runs_it_here(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![dir("docs"), file("a.txt", 1)]);
     fs.insert_dir(r"C:\p\docs", vec![]);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\p");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
     let ran = |shell: &FakeShell| shell.ran.lock().clone();
 
@@ -5419,7 +5419,7 @@ fn alt_drop_asks_what_to_do(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\d", vec![dir("target"), file("a.txt", 1)]);
     fs.insert_many(r"C:\d\target", 1);
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\d");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\d");
     wait_until(cx, &view, "load", loaded(r"C:\d"));
     let sources = vec![PathBuf::from(r"C:\d\a.txt")];
     let dest = PathBuf::from(r"C:\d\target");
@@ -5583,7 +5583,7 @@ fn move_selection_into_a_new_folder(cx: &mut TestAppContext) {
     );
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\m");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m");
     wait_until(cx, &view, "load", loaded(r"C:\m"));
     wait_watcher(&fs, dir_path);
     // New folder, a.txt, b.txt: select a and b.
@@ -5627,7 +5627,7 @@ fn renaming_several_items_numbers_them(cx: &mut TestAppContext) {
     );
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:b");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:b");
     wait_until(cx, &view, "load", loaded(r"C:b"));
     wait_watcher(&fs, dir_path);
     // Album, a.jpg, b.png: select the first three with the cursor on b.png.
@@ -5701,7 +5701,7 @@ fn home_lists_the_ten_most_recent_files(cx: &mut TestAppContext) {
             used: now - Duration::from_secs(60 * i),
         })
         .collect();
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\t");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\t");
     ws.update_in(cx, |ws, window, cx| {
         ws.open_home_for_test(false, window, cx);
     });
@@ -5761,7 +5761,7 @@ fn browse_buttons_apply_the_chosen_file(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\o");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
     cx.dispatch_action(crate::workspace::OpenSettings);
     cx.run_until_parked();
     let browse = |cx: &mut VisualTestContext, image: bool, pick: Option<&str>| {
@@ -5889,7 +5889,7 @@ fn ctrl_y_redoes_the_last_undo_until_something_new_happens(cx: &mut TestAppConte
     fs.insert_dir(dir_path, vec![file("a.txt", 1), file("b.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     apply_to_fake_fs(&fs, &shell);
-    let (view, cx) = setup(cx, fs.clone(), shell.clone(), r"C:\redo");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\redo");
     wait_until(cx, &view, "load", loaded(r"C:\redo"));
     wait_watcher(&fs, dir_path);
     let recycle_b = FileOp::Delete {
@@ -6012,7 +6012,7 @@ fn right_button_drag_asks_what_to_do_on_drop(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\rd", vec![dir("sub"), file("a.txt", 1)]);
     fs.insert_dir(r"C:\rd\sub", vec![]);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, shell.clone(), r"C:\rd");
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\rd");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\rd"));
     cx.run_until_parked();
@@ -6116,8 +6116,10 @@ fn right_button_drag_asks_what_to_do_on_drop(cx: &mut TestAppContext) {
 #[test]
 fn remote_shell_passes_local_calls_through_and_keeps_servers_out() {
     let inner = Arc::new(FakeShell::default());
-    let shell =
-        crate::remote_shell::RemoteShell::new(inner.clone(), crate::remote_shell::test_remotes());
+    let shell = crate::remote_shell::RemoteShell::new(
+        Arc::clone(&inner) as Arc<dyn crate::shell::Shell>,
+        crate::remote_shell::test_remotes(),
+    );
     let local = Path::new(r"C:\docs\a.pdf");
     let server = Path::new("sftp://u@h/docs/a.pdf");
     assert!(shell.render_pdf(local, 0, (10, 10)).is_ok());
@@ -6145,7 +6147,7 @@ fn path_bar_file_path_opens_file_and_selects_it(cx: &mut TestAppContext) {
         vec![file("other.txt", 1), file(name, 10)],
     );
     let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, fs, shell.clone(), r"C:\home");
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\home");
     wait_until(cx, &view, "start folder", loaded(r"C:\home"));
     let target = PathBuf::from(r"C:\team\報告\Monthly\202611").join(name);
     cx.dispatch_action(FocusPathBar);

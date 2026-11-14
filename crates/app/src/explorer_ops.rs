@@ -604,7 +604,7 @@ impl Explorer {
     fn job_env(&self, transfer: bool, cx: &mut App) -> JobEnv {
         let settings = &crate::settings::SettingsStore::global(cx).read(cx).settings;
         JobEnv {
-            shell: self.services.shell.clone(),
+            shell: Arc::clone(&self.services.shell),
             owner: self.owner,
             serialize: settings.queue_same_drive,
             verify: settings.verify_copies,
@@ -630,14 +630,16 @@ impl Explorer {
             return self
                 .search_hit(self.search_cursor)
                 .zip(self.search_results.as_ref())
-                .map_or_default(|(hit, r)| vec![(r.root.join(&*hit.rel), hit.entry.name.clone())]);
+                .map_or_default(|(hit, r)| {
+                    vec![(r.root.join(&*hit.rel), Arc::clone(&hit.entry.name))]
+                });
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
         };
         view.iter()
             .filter(|e| self.selection.contains(&e.name))
-            .map(|e| (model.path.join(&*e.name), e.name.clone()))
+            .map(|e| (model.path.join(&*e.name), Arc::clone(&e.name)))
             .collect()
     }
 
@@ -664,13 +666,13 @@ impl Explorer {
             self.current_path().map(PathBuf::from)
         }
         .unwrap_or_default();
-        let names: HashSet<Arc<str>> = targets.iter().map(|(_, n)| n.clone()).collect();
+        let names: HashSet<Arc<str>> = targets.iter().map(|(_, n)| Arc::clone(n)).collect();
         let files = ClipboardFiles {
             paths: targets.into_iter().map(|(p, _)| p).collect(),
             cut,
         };
         let count = files.paths.len();
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("clipboard", move || {
             let result = shell.set_clipboard_files(&files);
@@ -726,7 +728,7 @@ impl Explorer {
         let Some(dest) = self.current_path().map(PathBuf::from) else {
             return;
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let env = self.job_env(true, cx);
         let tx = self.events_tx.clone();
         self.ops_running += 1;
@@ -930,7 +932,7 @@ impl Explorer {
         // Network shares, USB sticks and the like have no Recycle Bin: Windows would delete
         // those permanently, so say so and ask first, like a permanent delete.
         let (paths, no_bin): (Vec<PathBuf>, Vec<PathBuf>) = if recycle {
-            let shell = self.services.shell.clone();
+            let shell = Arc::clone(&self.services.shell);
             paths.into_iter().partition(|p| shell.has_recycle_bin(p))
         } else {
             (paths, Vec::new())
@@ -979,7 +981,7 @@ impl Explorer {
         }
         let name = self
             .cursor
-            .and_then(|ix| self.view()?.get(ix).map(|e| e.name.clone()));
+            .and_then(|ix| self.view()?.get(ix).map(|e| Arc::clone(&e.name)));
         let Some(name) = name else {
             return;
         };
@@ -990,7 +992,7 @@ impl Explorer {
             self.view().map_or_default(|v| {
                 v.iter()
                     .filter(|e| self.selection.contains(&e.name))
-                    .map(|e| e.name.clone())
+                    .map(|e| Arc::clone(&e.name))
                     .collect()
             })
         } else {
@@ -1129,7 +1131,7 @@ impl Explorer {
             arke_core::tree::join(arke_core::tree::parent(&renaming.name), &new_name);
         // Point the selection at the new name first so it gets selected when the watcher reports
         // it.
-        self.selection.select_name(new_name_arc.clone());
+        self.selection.select_name(Arc::clone(&new_name_arc));
         self.scroll_to_cursor = Some(ScrollStrategy::Nearest);
         let follow = OpFollowUp {
             dest: Some(dir.clone()),
@@ -1253,7 +1255,7 @@ impl Explorer {
         let name_arc = arke_core::tree::join(row.map(|r| &**r), &name);
         let follow = OpFollowUp {
             dest: Some(shown),
-            select: vec![name_arc.clone()],
+            select: vec![Arc::clone(&name_arc)],
             rename: Some((name_arc, kind == NewItem::File)),
             ..OpFollowUp::default()
         };
@@ -1359,7 +1361,7 @@ impl Explorer {
         let name_arc: Arc<str> = Arc::from(name.as_str());
         let follow = OpFollowUp {
             dest: Some(parent.clone()),
-            select: vec![name_arc.clone()],
+            select: vec![Arc::clone(&name_arc)],
             rename: Some((name_arc, false)),
             announce: Some(Announce::MovedToNewFolder(sources.len())),
             ..OpFollowUp::default()
@@ -1372,7 +1374,7 @@ impl Explorer {
             sources,
             dest: parent.join(&name),
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let env = self.job_env(false, cx);
         let tx = self.events_tx.clone();
         let owner = self.owner;
@@ -1536,7 +1538,7 @@ impl Explorer {
         } else {
             (None, Arc::new(crate::shell::OpProgress::default()))
         };
-        self.op_progress = Some((progress.clone(), verb));
+        self.op_progress = Some((Arc::clone(&progress), verb));
         (job, progress)
     }
 

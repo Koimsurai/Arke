@@ -10,6 +10,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use arke_core::NavKind;
@@ -346,8 +348,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let shell = self.services.shell.clone();
-        let remotes = self.services.remotes.clone();
+        let shell = Arc::clone(&self.services.shell);
+        let remotes = Arc::clone(&self.services.remotes);
         let dialog = cx.new(|cx| NetDialog::new(kind, shell, remotes, window, cx));
         let events = cx.subscribe_in(&dialog, window, Self::on_net_dialog);
         self.net_dialog = Some(NetDialogSlot {
@@ -541,7 +543,7 @@ impl Workspace {
             // Another program may have added or deleted files.
             this.refresh_disk_space(cx);
             // Shelf items may have been moved or deleted outside Arke.
-            let fs = this.services.fs.clone();
+            let fs = Arc::clone(&this.services.fs);
             crate::shelf::ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
             // Global search: probe network locations that were unreachable last time.
             if let Some(global) = crate::global_search::GlobalSearch::global(cx) {
@@ -1653,7 +1655,7 @@ impl Workspace {
                 Source::Workspace,
             );
         }
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let palette = cx.new(|cx| LocationPalette::new(current, candidates, shell, window, cx));
         let subscription = cx.subscribe_in(&palette, window, Self::on_palette_event);
         self.palette = Some((palette, subscription));
@@ -1879,12 +1881,12 @@ impl Workspace {
         if !cx.has_global::<PendingDragOut>() {
             return None;
         }
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         Some(
             gpui::canvas(
                 |_, _, _| (),
                 move |_, (), window, _| {
-                    let shell = shell.clone();
+                    let shell = Arc::clone(&shell);
                     window.on_mouse_event(move |e: &gpui::MouseMoveEvent, phase, window, cx| {
                         if phase != gpui::DispatchPhase::Bubble
                             || e.pressed_button != Some(MouseButton::Left)
@@ -1903,7 +1905,7 @@ impl Workspace {
                         // Keep Arke's drag alive (just hidden) so it can resume if the cursor comes back.
                         cx.set_global(crate::explorer::DraggingOutside);
                         window.refresh();
-                        let shell = shell.clone();
+                        let shell = Arc::clone(&shell);
                         let handle = window.window_handle();
                         // Enter the Windows drag loop only after this mouse event is handled, outside GPUI's event dispatch.
                         cx.spawn(async move |cx| {
@@ -2381,7 +2383,7 @@ pub(crate) trait TooltipBelowExt:
         let text: SharedString = text.into();
         let anchor: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>> =
             std::rc::Rc::default();
-        let probe = anchor.clone();
+        let probe = Rc::clone(&anchor);
         self.child(
             gpui::canvas(
                 move |bounds, _, _| probe.set(Some(bounds)),

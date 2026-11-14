@@ -56,7 +56,7 @@ impl CloudStates {
 
     /// States of the current folder's items, to look up while drawing rows.
     pub(crate) fn snapshot(&self) -> States {
-        self.states.clone()
+        Arc::clone(&self.states)
     }
 
     /// Whether `path` is inside a folder found to be in a sync root.
@@ -66,7 +66,8 @@ impl CloudStates {
 
     fn remember(&mut self, dir: &Path, states: &States) {
         self.cache.retain(|(d, _)| d != dir);
-        self.cache.push_back((dir.to_path_buf(), states.clone()));
+        self.cache
+            .push_back((dir.to_path_buf(), Arc::clone(states)));
         while self.cache.len() > CACHED_FOLDERS {
             self.cache.pop_front();
         }
@@ -97,7 +98,7 @@ impl Explorer {
                 .cache
                 .iter()
                 .find(|(d, _)| *d == path)
-                .map_or_default(|(_, s)| s.clone());
+                .map_or_default(|(_, s)| Arc::clone(s));
             self.cloud.dir = Some(path.clone());
             self.cloud.version = None;
             self.cloud.inflight = false;
@@ -126,16 +127,16 @@ impl Explorer {
             return;
         }
         let version = model.version;
-        let entries = model.entries.clone();
+        let entries = Arc::clone(&model.entries);
         self.cloud.version = Some(version);
         self.cloud.inflight = true;
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("cloud-scan", move || {
             let items: Vec<Arc<str>> = entries
                 .iter()
                 .filter(|e| e.wants_sync_check())
-                .map(|e| e.name.clone())
+                .map(|e| Arc::clone(&e.name))
                 .collect();
             let mut scan = shell.cloud_scan(&path, &items);
             if scan.sync_root {

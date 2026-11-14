@@ -220,7 +220,11 @@ mod tests {
             store.update(cx, SettingsStore::mark_loaded);
             follow_setting(
                 &store,
-                Handler::new(reg.clone(), backup.clone(), exe.clone()),
+                Handler::new(
+                    Arc::clone(&reg) as Arc<dyn Registry>,
+                    Arc::clone(&backup) as Arc<dyn BackupStore>,
+                    exe.clone(),
+                ),
                 cx,
             );
             store
@@ -269,8 +273,8 @@ mod tests {
             follow_setting(
                 &store,
                 Handler::new(
-                    reg.clone(),
-                    backup.clone(),
+                    Arc::clone(&reg) as Arc<dyn Registry>,
+                    Arc::clone(&backup) as Arc<dyn BackupStore>,
                     PathBuf::from(r"E:\New\arke.exe"),
                 ),
                 cx,
@@ -293,8 +297,8 @@ mod tests {
             follow_setting(
                 &store,
                 Handler::new(
-                    reg.clone(),
-                    backup.clone(),
+                    Arc::clone(&reg) as Arc<dyn Registry>,
+                    Arc::clone(&backup) as Arc<dyn BackupStore>,
                     PathBuf::from(r"C:\Old\arke.exe"),
                 ),
                 cx,

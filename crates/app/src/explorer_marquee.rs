@@ -184,12 +184,12 @@ impl Explorer {
         self.selection.select_names(base);
         self.selection.select_names(
             hits.iter()
-                .filter_map(|&ix| view.get(ix).map(|e| e.name.clone())),
+                .filter_map(|&ix| view.get(ix).map(|e| Arc::clone(&e.name))),
         );
         if let Some(&last) = hits.last() {
             self.cursor = Some(last);
             self.selection
-                .set_cursor_name(view.get(last).map(|e| e.name.clone()));
+                .set_cursor_name(view.get(last).map(|e| Arc::clone(&e.name)));
         }
     }
 
@@ -228,7 +228,7 @@ impl Explorer {
 
     /// Marquee layer over the list: measures the list, registers drag events, draws the box.
     pub(super) fn render_marquee(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let bounds = self.list_bounds.clone();
+        let bounds = Rc::clone(&self.list_bounds);
         let active = self.marquee.is_some();
         let follow = self.header_follow();
         let this = cx.entity();

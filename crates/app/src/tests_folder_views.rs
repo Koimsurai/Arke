@@ -1,6 +1,7 @@
 //! GPUI tests for remembering the view per folder (`folder_views.rs`, `explorer_folder_view.rs`).
 
 use gpui::AppContext;
+use std::sync::Arc;
 
 use super::*;
 use crate::explorer::ViewMode;
@@ -323,7 +324,7 @@ fn search_results_record_nothing(cx: &mut TestAppContext) {
 fn picks_while_opening_and_failed_opens(cx: &mut TestAppContext) {
     let fs = two_folders();
     fs.hang(r"C:\b");
-    let (view, cx) = setup(cx, fs.clone(), Arc::default(), r"C:\a");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\a");
     wait_until(cx, &view, "load a", loaded(r"C:\a"));
     view.update(cx, |v, cx| v.set_sort(by_size_descending(), cx));
 

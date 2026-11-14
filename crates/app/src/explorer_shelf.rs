@@ -2,6 +2,7 @@
 //! into the current folder.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{Context, Window};
 use rust_i18n::t;
@@ -114,7 +115,7 @@ impl Explorer {
 
     /// After a file operation: items on the shelf may have moved or been deleted.
     pub(super) fn recheck_shelf(&self, cx: &mut Context<Self>) {
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
     }
 }

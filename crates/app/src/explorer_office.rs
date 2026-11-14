@@ -214,7 +214,7 @@ impl Explorer {
         }
         view.pending = Some(index);
         let (path, size) = (preview.path.clone(), preview.entry.size);
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let tx = self.events_tx.clone();
         spawn_thread("preview-sheet", move || {
             let data = load_office(fs.as_ref(), &path, size, OfficeKind::Workbook, index);
@@ -693,7 +693,7 @@ pub(super) fn sheet_grid(
 /// The pane: the embedded thumbnail, or the first slide's text without one.
 pub(super) fn slides_pane(view: &SlidesView) -> AnyElement {
     match &view.thumb {
-        Some(image) => img(image.clone())
+        Some(image) => img(Arc::clone(image))
             .size_full()
             .aspect_ratio(PANE_IMAGE_RATIO)
             .object_fit(ObjectFit::Contain)

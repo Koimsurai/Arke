@@ -12,6 +12,8 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{ERROR_CANCELLED, GlobalFree, HANDLE, HGLOBAL, HWND, POINT};
@@ -520,7 +522,7 @@ pub(crate) fn perform_tracked(
         other => other,
     };
     HIDE_PROGRESS.set(true);
-    let (result, undo) = perform_recorded(op, owner, false, Some(progress.clone()));
+    let (result, undo) = perform_recorded(op, owner, false, Some(Arc::clone(progress)));
     HIDE_PROGRESS.set(false);
     let undo = match (undo, fast.is_empty()) {
         (undo, true) => undo,
@@ -752,7 +754,7 @@ pub(crate) fn undo_tracked(
 ) -> Result<OpOutcome, ShellError> {
     let recorder: IFileOperationProgressSink = Recorder {
         done: std::cell::RefCell::new(Vec::new()),
-        progress: Some(progress.clone()),
+        progress: Some(Arc::clone(progress)),
         failed: std::cell::RefCell::new(Vec::new()),
     }
     .into();
@@ -1116,7 +1118,7 @@ pub(crate) fn drag_out(
         // internal drag can take over.
         let home = windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow();
         let source = drag_source::ReturnAware::new(home);
-        let returned = source.returned.clone();
+        let returned = Rc::clone(&source.returned);
         let source: windows::Win32::System::Ole::IDropSource = source.into();
         let effect = SHDoDragDrop(
             None,
@@ -1946,7 +1948,7 @@ mod tests {
         };
         let progress = std::sync::Arc::new(crate::shell::OpProgress::default());
         let (tx, rx) = std::sync::mpsc::channel();
-        let seen = progress.clone();
+        let seen = Arc::clone(&progress);
         std::thread::spawn(move || {
             let _ = tx.send(perform_tracked(&op, None, &seen).0);
         });

@@ -6,6 +6,7 @@ use gpui::{
     Window, div, prelude::*, svg,
 };
 use rust_i18n::t;
+use std::sync::Arc;
 
 use super::Workspace;
 use super::sidebar::SidebarAction;
@@ -46,7 +47,7 @@ impl Workspace {
         } else {
             self.clear_pages_here();
         }
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let view = cx.new(|cx| RecycleBin::new(shell, window, cx));
         let events = cx.subscribe_in(&view, window, Self::on_recycle_event);
         self.recycle_page = Some(RecyclePage {

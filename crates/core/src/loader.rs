@@ -51,8 +51,8 @@ where
         });
         let work = Arc::new(work);
         for i in 0..threads.max(1) {
-            let shared = shared.clone();
-            let work = work.clone();
+            let shared = Arc::clone(&shared);
+            let work = Arc::clone(&work);
             let spawned = std::thread::Builder::new()
                 .name(format!("{name}-{i}"))
                 .spawn(move || worker(&shared, &*work));
@@ -139,7 +139,7 @@ mod tests {
 
     fn recorder() -> (Arc<Mutex<Vec<u32>>>, impl Fn(&u32) + Send + Sync + 'static) {
         let done = Arc::new(Mutex::new(Vec::new()));
-        let d = done.clone();
+        let d = Arc::clone(&done);
         (done, move |k: &u32| d.lock().push(*k))
     }
 

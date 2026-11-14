@@ -6,6 +6,7 @@ use super::*;
 use crate::net_dialog::{NetDialogKind, Protocol};
 use crate::settings::SettingsStore;
 use arke_remote::testing::{PASSWORD, USER, serve_sftp};
+use std::sync::Arc;
 
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("arke-app-remote-{tag}-{}", std::process::id()));
@@ -30,10 +31,10 @@ fn setup_remote<'a>(
     });
     let remotes = crate::remote_shell::test_remotes();
     let services = Services {
-        fs: Arc::new(arke_remote::RoutingFs::new(fs, remotes.clone())),
+        fs: Arc::new(arke_remote::RoutingFs::new(fs, Arc::clone(&remotes))),
         shell: Arc::new(crate::remote_shell::RemoteShell::new(
             Arc::new(FakeShell::default()),
-            remotes.clone(),
+            Arc::clone(&remotes),
         )),
         remotes,
     };

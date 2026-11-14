@@ -138,7 +138,7 @@ pub(crate) async fn connect(
     let handler = Client {
         known,
         pattern: host_pattern(&url.host, url.port),
-        refused: refused.clone(),
+        refused: Arc::clone(&refused),
     };
     let config = Arc::new(client::Config {
         inactivity_timeout: None,

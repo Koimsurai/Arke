@@ -103,7 +103,7 @@ impl Workspace {
     fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.shelf_open = !self.shelf_open;
         if self.shelf_open {
-            let fs = self.services.fs.clone();
+            let fs = Arc::clone(&self.services.fs);
             ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
         }
         cx.notify();
@@ -286,7 +286,7 @@ impl Workspace {
         self.active_view()
             .update(cx, |e, cx| e.add_dropped_to_shelf(items, cx));
         if unknown {
-            let fs = self.services.fs.clone();
+            let fs = Arc::clone(&self.services.fs);
             ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
         }
         cx.notify();

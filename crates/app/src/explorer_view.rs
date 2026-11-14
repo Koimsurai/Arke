@@ -11,6 +11,7 @@ use rust_i18n::t;
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -886,7 +887,7 @@ impl Explorer {
         let Some(entries) = self.view() else {
             return Vec::new();
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let cursor = self.cursor;
         let in_cloud = self.current_path().is_some_and(|p| self.in_cloud(p));
         let sync = self.cloud.snapshot();
@@ -894,16 +895,13 @@ impl Explorer {
         // Skip the cursor ring when the only selected item is the cursor, to avoid doubling the
         // selection background.
         let single = self.selection.len() <= 1;
-        let visible: Vec<Arc<str>> = range
-            .clone()
-            .filter_map(|ix| entries.get(ix).map(|e| e.name.clone()))
-            .collect();
+        let visible = names_in(&entries, range.clone());
         let cut = self.cut_flags(&visible, cx);
         let images = self.media_for(&entries, range.clone(), false, cx);
         let renaming = self
             .renaming
             .as_ref()
-            .map(|r| (r.name.clone(), (r.input.clone(), r.problem)));
+            .map(|r| (Arc::clone(&r.name), (r.input.clone(), r.problem)));
         let columns = self.columns_active();
         let rows = range
             .filter_map(|ix| entries.get(ix).map(|entry| (ix, entry)))
@@ -1032,7 +1030,7 @@ impl Explorer {
             .map_or(0, |r| r.end)
             .min(entries.len())
             .max(start);
-        let names: Vec<Arc<str>> = entries[start..end].iter().map(|e| e.name.clone()).collect();
+        let names = names_in(&entries, start..end);
         let cut = self.cut_flags(&names, cx);
         let images = self.media_for(&entries, start..end, true, cx);
         let cursor = self.cursor;
@@ -1041,7 +1039,7 @@ impl Explorer {
         let renaming = self
             .renaming
             .as_ref()
-            .map(|r| (r.name.clone(), (r.input.clone(), r.problem)));
+            .map(|r| (Arc::clone(&r.name), (r.input.clone(), r.problem)));
         let tile = self.tile();
         rows.into_iter()
             .map(|row| {
@@ -1207,7 +1205,7 @@ impl Explorer {
             .child(self.with_scrollbar(list, handle))
             .child(crate::scrollbar::hscrollbar(
                 base,
-                self.hscrollbar_drag.clone(),
+                Rc::clone(&self.hscrollbar_drag),
             ))
             .into_any_element()
     }
@@ -1228,7 +1226,7 @@ impl Explorer {
             .child(list)
             .child(crate::scrollbar::scrollbar(
                 handle.0.borrow().base_handle.clone(),
-                self.scrollbar_drag.clone(),
+                Rc::clone(&self.scrollbar_drag),
             ))
             .into_any_element()
     }
@@ -1388,7 +1386,7 @@ impl Explorer {
         let Some(results) = self.search_results.clone() else {
             return Vec::new();
         };
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let cursor = self.search_cursor;
         // "Search in this folder": locations start at that folder, below the folder shown.
         let base = self.search_in_name().map(PathBuf::from);
@@ -1440,7 +1438,7 @@ impl Explorer {
                                             })
                                             .min_w_0()
                                             .truncate()
-                                            .child(SharedString::from(entry.name.clone())),
+                                            .child(SharedString::from(Arc::clone(&entry.name))),
                                     )
                                     .children(hit.snippet.clone().map(|line| {
                                         div()
@@ -1711,7 +1709,7 @@ impl Explorer {
             .find(|job| Arc::ptr_eq(&job.progress, progress))
             .map(|job| (job.detail(), job.fraction()));
         if let Some((detail, fraction)) = job.filter(|_| !cancelling) {
-            let cancel = progress.clone();
+            let cancel = Arc::clone(progress);
             return toast(
                 "toast-ops",
                 Icon::Copy,
@@ -1746,7 +1744,7 @@ impl Explorer {
         } else {
             Progress::Indeterminate
         };
-        let cancel = progress.clone();
+        let cancel = Arc::clone(progress);
         toast(
             "toast-ops",
             Icon::Copy,
@@ -2546,6 +2544,13 @@ pub(crate) fn shown_name(entry: &Entry, show_ext: bool) -> SharedString {
 
 /// Space between the rename box's edge and its text: its padding plus the 1 px border.
 const RENAME_INSET: Pixels = px(4. + 1.);
+
+/// Names of the entries in `range` (indexes past the end are skipped).
+fn names_in(entries: &[Entry], range: Range<usize>) -> Vec<Arc<str>> {
+    range
+        .filter_map(|ix| entries.get(ix).map(|e| Arc::clone(&e.name)))
+        .collect()
+}
 
 /// Name text, or the inline rename box with its problem message (if any) underneath.
 ///

@@ -105,11 +105,14 @@ used; see the [changelog](CHANGELOG.md). Feedback in issues is welcome.
 
 <p align="center"><img src=".github/assets/search-compare.gif" alt="Searching all of C: for one file in File Explorer, Files and Arke (3× speed; the timer shows real seconds)"></p>
 
+<p align="center"><img src=".github/assets/delete-compare.gif" alt="Sending the same folder of 20,000 files (2.48 GB) to the Recycle Bin: Arke in 0.2 s, File Explorer in 47.3 s, then restoring it from the Recycle Bin (5× speed; the timers show real seconds)"></p>
+
 | | Arke | For comparison |
 | --- | --- | --- |
 | Build the whole-disk index from scratch (about 4 million files) | about 10 s, about 130 MB of memory afterwards | Everything 1.4.1: 21 s, about 400 MB |
 | Find one file anywhere on C: | results appear as you type | Files 4.3: about 26 s · File Explorer: no result after 30 s* |
 | Open a folder with 100,000 files | about 0.7 s, 128 MB | File Pilot 0.8.5: 1.0–1.4 s, 563 MB · File Explorer: 2–3 s |
+| Send 20,000 files (2.48 GB) to the Recycle Bin | 0.2 s | File Explorer: 47.3 s |
 
 \* The file was outside the folders Windows Search indexes. Inside them, File Explorer finds files
 much faster.
@@ -130,6 +133,10 @@ real-time antivirus scanning on, which slows every program down. File system cac
 - **Folder**: a folder of 100,000 generated files (`cargo run -p genfiles -- 100000`), opened from a
   cold start of each program; median of three runs after a warm-up, timed until the window stopped
   changing. File Pilot (free beta) is only in this test: it has no whole-disk search yet.
+- **Recycle Bin**: the same folder (20,000 files in 20 folders, 2.48 GB) sent to the Recycle Bin
+  from each program in one take, timed from Delete until the folder left the list. Arke uses its
+  fast Recycle Bin (on by default for local drives); both restore from the Windows Recycle Bin as
+  usual.
 
 Your numbers will differ. Arke logs its own timings in `%LOCALAPPDATA%\Arke\arke.log`.
 

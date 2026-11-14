@@ -330,6 +330,36 @@ fn switching_the_channel_drops_the_old_answer(cx: &mut TestAppContext) {
     ));
 }
 
+/// An installer that exits before installing (Windows' approval prompt declined, for an all-users
+/// install) leaves Arke open and saying the update didn't happen, instead of Arke being gone.
+#[gpui::test]
+fn an_installer_that_stops_early_leaves_arke_open(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let child = std::process::Command::new("cmd")
+        .args(["/c", "exit 1223"])
+        .spawn()
+        .unwrap();
+    cx.update(|_, cx| crate::update::watch_setup(child, cx));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !matches!(
+        cx.update(|_, cx| UpdateState::get(cx)),
+        UpdateState::Failed(_)
+    ) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the installer to exit"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        cx.run_until_parked();
+    }
+    match cx.update(|_, cx| UpdateState::get(cx)) {
+        UpdateState::Failed(message) => assert!(message.contains("installer"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// "Restart now" when the new exe can't start (here: not a program at all; on real PCs often
 /// antivirus): the previous exe goes back in place, so Arke keeps working after it quits, and
 /// the page says why.

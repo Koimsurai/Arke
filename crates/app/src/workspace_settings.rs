@@ -231,7 +231,7 @@ fn accent_color(accent: Accent) -> u32 {
 pub(super) const ABOUT: usize = 6;
 
 /// Changes a setting: applies now, saves in the background shortly after.
-fn set(cx: &mut App, f: impl FnOnce(&mut Settings)) {
+pub(super) fn set(cx: &mut App, f: impl FnOnce(&mut Settings)) {
     SettingsStore::global(cx).update(cx, |s, cx| s.update(f, cx));
 }
 
@@ -1847,6 +1847,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let long = options.len() > LONG_LIST;
     let button = div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .a11y_combo(label.clone(), open)
         .h(theme::H_CTL)
         .min_w(DROPDOWN_MIN_W)
@@ -1926,6 +1927,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
             let pick = pick.clone();
             div()
                 .id((id, ix))
+                .debug_selector(move || format!("{id}-{ix}"))
                 .a11y(gpui::Role::ListBoxOption, label.clone())
                 .aria_selected(on)
                 .aria_position_in_set(ix)
@@ -2069,6 +2071,7 @@ pub(super) fn expander(
         .child(
             div()
                 .id(id)
+                .debug_selector(move || id.to_owned())
                 .a11y_lazy(gpui::Role::Button, || title.to_string())
                 .aria_expanded(open)
                 .min_h(CARD_MIN_H)

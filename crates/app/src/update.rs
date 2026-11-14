@@ -491,6 +491,16 @@ pub(crate) fn start_check(channel: Channel, cx: &mut App) {
             return;
         };
         cx.update(|cx| {
+            // The channel changed while this was running: its answer is for the old one.
+            let now = crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .update_channel();
+            if now != channel {
+                UpdateState::set(cx, UpdateState::Idle);
+                start_check(now, cx);
+                return;
+            }
             let state = match result {
                 Ok(Some(release)) => UpdateState::Available(release),
                 Ok(None) => UpdateState::UpToDate,
@@ -572,6 +582,41 @@ pub(crate) fn restart(exe: &Path, cx: &mut App) {
 
 /// Automatic check after startup: when enabled and more than 20 hours since the last check (nightly
 /// ships daily).
+/// What to do with the shown result once the update channel changes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OnChannelChange {
+    /// A download is running or done: that release stays.
+    Keep,
+    /// Checks are off: drop the old channel's answer, don't contact GitHub.
+    Forget,
+    /// Check the new channel right away.
+    Check,
+}
+
+pub(crate) fn on_channel_change(state: &UpdateState, can_check: bool) -> OnChannelChange {
+    match state {
+        UpdateState::Downloading(..) | UpdateState::Ready(..) => OnChannelChange::Keep,
+        _ if can_check => OnChannelChange::Check,
+        _ => OnChannelChange::Forget,
+    }
+}
+
+/// The channel was changed in Settings. Without this the page kept showing the old channel's
+/// answer ("up to date") until the next check, so switching seemed to do nothing.
+pub(crate) fn channel_changed(channel: Channel, cx: &mut App) {
+    let auto = crate::settings::SettingsStore::global(cx)
+        .read(cx)
+        .settings
+        .update_auto;
+    let can_check = auto && !build_info::RELEASES_REPO.is_empty() && package_manager().is_none();
+    match on_channel_change(&UpdateState::get(cx), can_check) {
+        OnChannelChange::Keep => {}
+        OnChannelChange::Forget => UpdateState::set(cx, UpdateState::Idle),
+        // A check for the old channel may be running; it restarts itself when it lands.
+        OnChannelChange::Check => start_check(channel, cx),
+    }
+}
+
 pub(crate) fn auto_check(cx: &mut App) {
     let settings = crate::settings::SettingsStore::global(cx)
         .read(cx)
@@ -673,6 +718,54 @@ mod tests {
             "already up to date"
         );
         assert!(pick("not json", Channel::Stable, &current).is_none());
+    }
+
+    #[test]
+    fn changing_the_channel_rechecks_unless_a_download_holds_on() {
+        let release = Release {
+            version: "0.4.0-rc.1".into(),
+            exe_url: String::new(),
+            exe_name: String::new(),
+            size: 0,
+            sha_url: None,
+            notes: String::new(),
+            page: String::new(),
+        };
+        for state in [
+            UpdateState::Idle,
+            UpdateState::UpToDate,
+            UpdateState::Checking,
+            UpdateState::Available(release.clone()),
+            UpdateState::Failed("x".into()),
+        ] {
+            assert_eq!(on_channel_change(&state, true), OnChannelChange::Check);
+            assert_eq!(on_channel_change(&state, false), OnChannelChange::Forget);
+        }
+        let held = [
+            UpdateState::Downloading(release.clone(), 1, 2),
+            UpdateState::Ready(release, PathBuf::new()),
+        ];
+        for state in held {
+            assert_eq!(on_channel_change(&state, true), OnChannelChange::Keep);
+        }
+    }
+
+    /// Against the real releases: `cargo test -p arke live_channels -- --ignored`.
+    #[test]
+    #[ignore = "network"]
+    fn live_channels() {
+        let json = crate::win_http::get_text(
+            "https://api.github.com/repos/Koimsurai/Arke/releases?per_page=30",
+            &["Accept: application/vnd.github+json"],
+        )
+        .unwrap();
+        let current = v("0.3.0");
+        for channel in [Channel::Stable, Channel::Rc, Channel::Nightly] {
+            let found = pick(&json, channel, &current).map(|r| r.version);
+            println!("{channel:?} from 0.3.0: {found:?}");
+        }
+        assert!(pick(&json, Channel::Stable, &current).is_none_or(|r| !r.version.contains('-')));
+        assert!(pick(&json, Channel::Rc, &current).is_some());
     }
 
     #[test]

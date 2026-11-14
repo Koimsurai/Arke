@@ -845,3 +845,43 @@ fn rename_box_shows_the_name_in_every_view(cx: &mut TestAppContext) {
         cx.run_until_parked();
     }
 }
+
+/// Clicking inside the rename box moves the caret and keeps renaming. The press used to reach the
+/// row underneath, which took focus back to the list, and losing focus commits the rename (#69).
+/// The test window doesn't send blur events, so this checks where focus is.
+#[gpui::test]
+fn clicking_inside_the_rename_box_keeps_renaming(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\r", vec![file("report.txt", 1), file("b.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\r");
+    wait_until(cx, &view, "load", loaded(r"C:\r"));
+    for keys in ["", "ctrl-shift-2"] {
+        if !keys.is_empty() {
+            cx.simulate_keystrokes(keys);
+        }
+        cx.simulate_keystrokes("home f2");
+        cx.run_until_parked();
+        let shown = cx.debug_bounds("rename-box").expect("rename box drawn");
+        // The text, then the box's padding at its left edge.
+        for at in [
+            shown.center(),
+            gpui::point(shown.left() + px(2.), shown.center().y),
+        ] {
+            cx.simulate_click(at, gpui::Modifiers::none());
+            cx.run_until_parked();
+            let input_focused = cx.update(|window, cx| {
+                view.update(cx, |v, cx| {
+                    v.renaming.as_ref().is_some_and(|r| {
+                        gpui::Focusable::focus_handle(r.input.read(cx), cx).is_focused(window)
+                    })
+                })
+            });
+            assert!(
+                input_focused,
+                "{keys:?}: a click at {at:?} took focus from the rename box"
+            );
+        }
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+    }
+}

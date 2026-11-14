@@ -2562,6 +2562,11 @@ fn name_cell(
     match rename {
         Some((input, problem)) => div()
             .debug_selector(|| "rename-box".to_owned())
+            // Presses stay in the box: the row under it would take focus back to the list, which
+            // commits the rename, and a double-click would open the file (#69).
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
             .relative()
             .map(|d| {
                 if in_row {

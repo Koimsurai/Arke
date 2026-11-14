@@ -321,3 +321,30 @@ fn switching_the_channel_drops_the_old_answer(cx: &mut TestAppContext) {
         UpdateState::Downloading(..)
     ));
 }
+
+/// "Restart now" when the new exe can't start (here: not a program at all; on real PCs often
+/// antivirus): the previous exe goes back in place, so Arke keeps working after it quits, and
+/// the page says why.
+#[gpui::test]
+fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let dir = std::env::temp_dir().join(format!("arke-test-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("arke.exe");
+    std::fs::write(&exe, b"not a program").unwrap();
+    std::fs::write(dir.join("arke.exe.old"), b"the version that runs").unwrap();
+    cx.update(|_, cx| crate::update::restart(&exe, cx));
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&exe).unwrap(), b"the version that runs");
+    assert!(!dir.join("arke.exe.old").exists());
+    match cx.update(|_, cx| UpdateState::get(cx)) {
+        UpdateState::Failed(message) => {
+            assert!(message.contains("arke.exe"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -1120,6 +1120,10 @@ update.failed:
   en: "Couldn't update: %{error}"
   zh-TW: 無法更新：%{error}
   zh-CN: 无法更新：%{error}
+update.rolled_back:
+  en: "the new version couldn't start (antivirus software may have blocked it), so Arke stays on this version. Allow arke.exe in your antivirus and update again. (%{error})"
+  zh-TW: 新版本無法啟動（可能被防毒軟體擋下），Arke 維持在目前版本。請在防毒軟體中允許 arke.exe 後再更新一次。（%{error}）
+  zh-CN: 新版本无法启动（可能被杀毒软件拦截），Arke 保持在当前版本。请在杀毒软件中允许 arke.exe 后再更新一次。（%{error}）
 update.failed_short:
   en: Couldn't check
   zh-TW: 無法檢查

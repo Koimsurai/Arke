@@ -576,12 +576,34 @@ pub(crate) fn restart(exe: &Path, cx: &mut App) {
     };
     match spawned {
         Ok(_) => cx.quit(),
-        Err(e) => UpdateState::set(cx, UpdateState::Failed(e.to_string())),
+        // The installer changed nothing yet. The exe was already swapped, though: put the old one
+        // back, or Arke's next start (or the next folder opened) would run what can't start.
+        Err(e) if is_setup(exe) => UpdateState::set(cx, UpdateState::Failed(e.to_string())),
+        Err(e) => {
+            let message = match roll_back(exe) {
+                Ok(()) => t!("update.rolled_back", error = e.to_string()).into_owned(),
+                Err(undo) => format!("{e} ({undo})"),
+            };
+            log::warn!("update: the new version didn't start: {e}");
+            UpdateState::set(cx, UpdateState::Failed(message));
+        }
     }
 }
 
-/// Automatic check after startup: when enabled and more than 20 hours since the last check (nightly
-/// ships daily).
+/// Undoes [`install`] when the new exe can't be started (antivirus software often blocks a new,
+/// unsigned exe): the running version's file goes back to `exe`, the new one is dropped.
+fn roll_back(exe: &Path) -> std::io::Result<()> {
+    let old = old_path(exe);
+    if !old.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the previous version is gone",
+        ));
+    }
+    std::fs::remove_file(exe)?;
+    std::fs::rename(&old, exe)
+}
+
 /// What to do with the shown result once the update channel changes.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OnChannelChange {
@@ -617,6 +639,8 @@ pub(crate) fn channel_changed(channel: Channel, cx: &mut App) {
     }
 }
 
+/// Automatic check after startup: when enabled and more than 20 hours since the last check (nightly
+/// ships daily).
 pub(crate) fn auto_check(cx: &mut App) {
     let settings = crate::settings::SettingsStore::global(cx)
         .read(cx)
@@ -828,6 +852,25 @@ mod tests {
         assert!(is_setup(Path::new(r"C:\u\arke-0.4.0-setup.exe")));
         assert!(is_setup(Path::new(r"C:\u\arke-0.4.0-arm64-setup.exe")));
         assert!(!is_setup(Path::new(r"C:\u\arke-0.4.0.exe")));
+    }
+
+    #[test]
+    fn a_new_exe_that_cant_start_is_rolled_back() {
+        let dir = std::env::temp_dir().join(format!("arke-test-rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("arke.exe");
+        // What `install` leaves: the new exe in place, the running one beside it as .old.
+        std::fs::write(&exe, b"new").unwrap();
+        std::fs::write(old_path(&exe), b"old").unwrap();
+        roll_back(&exe).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+        assert!(!old_path(&exe).exists());
+        // Nothing to go back to: the new exe stays rather than leaving no exe at all.
+        std::fs::write(&exe, b"new").unwrap();
+        assert!(roll_back(&exe).is_err());
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -283,6 +283,10 @@ Each release comes with a SHA-256 checksum and a VirusTotal scan of the exes in 
 can always build it from source yourself. For releases after 0.1.0,
 `gh attestation verify arke-<version>.exe -R Koimsurai/Arke` confirms that an exe was built by this repository's release workflow.
 
+Some antivirus software blocks each new version until you allow it. If it stops the new version
+when Arke restarts after an update, Arke puts the version you had back and says so; allow
+`arke.exe` in your antivirus and update again.
+
 </details>
 
 <details>

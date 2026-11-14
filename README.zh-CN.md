@@ -250,6 +250,9 @@ Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（�
 发布说明里也有 exe 的 VirusTotal 扫描结果，你也随时可以从源代码自己编译。0.1.0 之后的版本可以用
 `gh attestation verify arke-<版本>.exe -R Koimsurai/Arke` 确认 exe 是由这个仓库的发布流程构建的。
 
+有些杀毒软件会拦截每个新版本，直到你允许为止。如果更新后重新启动时新版本被拦截，Arke 会换回你原来的版本
+并告诉你；在杀毒软件中允许 `arke.exe` 后再更新一次即可。
+
 </details>
 
 <details>

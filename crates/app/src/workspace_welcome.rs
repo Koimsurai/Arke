@@ -21,8 +21,12 @@ struct WelcomeChoice {
 
 impl gpui::Global for WelcomeChoice {}
 
-/// Whether the first-run card is due: first run, not answered, no shortcut yet.
+/// Whether the first-run card is due: first run, not answered, no shortcut yet, and not put in
+/// place by the installer (which made its own shortcut).
 pub(crate) fn welcome_due(cx: &App) -> bool {
+    if crate::update::installed_by_setup() {
+        return false;
+    }
     SettingsStore::try_global(cx).is_some_and(|store| {
         let store = store.read(cx);
         store.loaded

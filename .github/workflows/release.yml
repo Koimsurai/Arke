@@ -41,8 +41,8 @@ jobs:
       - name: test
         run: cargo nextest run --locked --workspace --profile ci
 
-  # The release has arke-<version>.exe (x64) and arke-<version>-arm64.exe, each with a .sha256,
-  # and THIRD_PARTY_LICENSES.md. Each architecture builds in its own job, at the same time (fat
+  # The release has arke-<version>.exe (x64) and arke-<version>-arm64.exe, their installers
+  # arke-<version>[-arm64]-setup.exe, each with a .sha256, and THIRD_PARTY_LICENSES.md. Each architecture builds in its own job, at the same time (fat
   # LTO makes each one long); ARM64 is cross-compiled (the runner image has the MSVC ARM64 build
   # tools). Tests run on x64 only.
   build:
@@ -65,12 +65,16 @@ jobs:
         id: version
         shell: bash
         run: bash .github/release-tag.sh
+      # The installers (installer/arke.iss) need Inno Setup 6.6 or later for dark mode.
+      - name: install Inno Setup
+        run: choco install innosetup --version 6.7.1 --no-progress -y
       - name: build
         shell: bash
         env:
           CHANNEL: ${{ steps.version.outputs.channel }}
           NUMBER: ${{ steps.version.outputs.number }}
           ARCH: ${{ matrix.arch }}
+          ARKE_REQUIRE_SETUP: "1"
         run: |
           args=("$CHANNEL" --arch "$ARCH")
           if [ -n "$NUMBER" ]; then args+=(--number "$NUMBER"); fi

@@ -12,7 +12,10 @@
 //! 7. Delete `%LOCALAPPDATA%\Arke` (index, log, downloaded updates) and, unless settings are
 //!    kept, `%APPDATA%\Arke` (settings, workspaces, trusted host keys).
 //! 8. Delete the exe once this process has exited (a hidden `cmd` that retries until the file is
-//!    free), unless Scoop or winget installed it: then the package manager owns it.
+//!    free), unless Scoop or winget installed it: then the package manager owns it. A copy the
+//!    installer put in place is left to its uninstaller, which runs this with `--quiet` first and
+//!    then removes the files, the Start menu shortcut and the entry in Settings > Apps; "Remove
+//!    Arke from this PC" starts that uninstaller instead.
 //!
 //! - Only Arke's own folders are deleted: a folder must be exactly `<base>\Arke` under the
 //!   expected base and never a drive root or a profile folder, otherwise it is refused.
@@ -77,6 +80,8 @@ pub(crate) struct Machine {
     pub(crate) local_appdata: Option<PathBuf>,
     /// The package manager that owns the exe.
     pub(crate) manager: Option<PackageManager>,
+    /// The installer put the exe here (`installer/arke.iss`); its uninstaller removes it.
+    pub(crate) setup: bool,
     /// The search service is installed.
     pub(crate) service: bool,
     /// Only touch the profile folders and the exe (see `ARKE_UNINSTALL_SANDBOX`).
@@ -98,6 +103,7 @@ impl Machine {
             appdata: env("APPDATA"),
             local_appdata: env("LOCALAPPDATA"),
             manager: crate::update::package_manager(),
+            setup: crate::update::installed_by_setup(),
             service: service && !sandbox,
             sandbox,
         })
@@ -131,6 +137,8 @@ pub(crate) enum Step {
     KeepSettings(PathBuf),
     DeleteExe(PathBuf),
     KeepExe(PackageManager),
+    /// The installer's uninstaller removes the files and the Start menu shortcut.
+    LeaveToSetup,
 }
 
 /// The steps for this PC, in order.
@@ -148,10 +156,13 @@ pub(crate) fn plan(m: &Machine, keep_settings: bool) -> Vec<Step> {
             .map(|a| arke(a).join("settings.json")),
     });
     if let Some(appdata) = &m.appdata {
-        steps.push(Step::DeleteShortcut(
-            Shortcut::StartMenu,
-            crate::win::start_menu_shortcut(appdata),
-        ));
+        // The installer's own Start menu shortcut goes with its uninstaller.
+        if !m.setup {
+            steps.push(Step::DeleteShortcut(
+                Shortcut::StartMenu,
+                crate::win::start_menu_shortcut(appdata),
+            ));
+        }
         steps.push(Step::DeleteShortcut(
             Shortcut::Startup,
             crate::win::autostart_shortcut(appdata),
@@ -173,6 +184,7 @@ pub(crate) fn plan(m: &Machine, keep_settings: bool) -> Vec<Step> {
     }
     steps.push(match m.manager {
         Some(manager) => Step::KeepExe(manager),
+        None if m.setup => Step::LeaveToSetup,
         None => Step::DeleteExe(m.exe.clone()),
     });
     steps
@@ -280,6 +292,7 @@ pub(crate) fn label(step: &Step) -> String {
             manager = m.name(),
             command = m.uninstall_command()
         ),
+        Step::LeaveToSetup => t!("uninstall.step_leave_to_setup"),
     }
     .into_owned()
 }
@@ -330,7 +343,7 @@ fn run_step(step: &Step, exe: &Path) -> Outcome {
         Step::ClearJumpList => crate::win_jumplist::clear()
             .map_or_else(|e| Outcome::Failed(e.to_string()), |()| Outcome::Done(None)),
         Step::DeleteData(folder) | Step::DeleteSettings(folder) => delete_folder(folder),
-        Step::KeepSettings(_) | Step::KeepExe(_) => Outcome::Done(None),
+        Step::KeepSettings(_) | Step::KeepExe(_) | Step::LeaveToSetup => Outcome::Done(None),
         Step::DeleteExe(path) => match check_exe(path) {
             Err(refused) => Outcome::Failed(refused.to_string()),
             Ok(()) => schedule_exe_deletion(path).map_or_else(
@@ -487,6 +500,22 @@ pub(crate) fn start_from_app(keep_settings: bool) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let exe = std::env::current_exe()?;
+    if crate::update::installed_by_setup()
+        && let Some(dir) = exe.parent()
+    {
+        // The installer's uninstaller: it runs `--uninstall --quiet` for Arke's own changes, then
+        // removes the files and the entry in Settings > Apps. The user already confirmed here.
+        return std::process::Command::new(dir.join(crate::update::SETUP_UNINSTALLER))
+            .arg("/SILENT")
+            .arg(if keep_settings {
+                "/KEEPSETTINGS"
+            } else {
+                "/REMOVESETTINGS"
+            })
+            .current_dir(std::env::temp_dir())
+            .spawn()
+            .map(drop);
+    }
     let mut command = std::process::Command::new(exe);
     command
         .arg(ARG)
@@ -512,6 +541,7 @@ mod tests {
             appdata: Some(root.join("Roaming")),
             local_appdata: Some(root.join("Local")),
             manager: None,
+            setup: false,
             service: false,
             sandbox: false,
         }
@@ -563,6 +593,28 @@ mod tests {
                 Step::DeleteSettings(PathBuf::from(r"C:\Users\me\AppData\Roaming\Arke")),
                 Step::DeleteExe(PathBuf::from(r"C:\Users\me\AppData\Tools\arke.exe")),
             ]
+        );
+    }
+
+    #[test]
+    fn leaves_an_installed_copy_to_its_uninstaller() {
+        let root = Path::new(r"C:\Users\me\AppData");
+        let mut m = machine(root);
+        m.exe = PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Arke\arke.exe");
+        m.setup = true;
+        let steps = plan(&m, false);
+        assert_eq!(steps.last(), Some(&Step::LeaveToSetup));
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, Step::DeleteShortcut(Shortcut::StartMenu, _))),
+            "the installer's shortcut goes with its uninstaller"
+        );
+        assert!(steps.contains(&Step::DeleteSettings(root.join("Roaming").join("Arke"))));
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, Step::DeleteShortcut(Shortcut::Startup, _)))
         );
     }
 

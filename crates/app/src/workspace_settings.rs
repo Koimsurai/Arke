@@ -1310,7 +1310,7 @@ impl Workspace {
             ),
             folder_views_card(s, cx),
         ];
-        let startup = vec![
+        let mut startup = vec![
             card(
                 Icon::WindowStart,
                 t!("settings.start_menu"),
@@ -1398,6 +1398,10 @@ impl Workspace {
                 }),
             ),
         ];
+        // The installer made its own Start menu shortcut; Arke's would only duplicate it.
+        if crate::update::installed_by_setup() {
+            startup.remove(0);
+        }
         let search = search_page(s, page, ui, cx);
         let update = super::update_page::update_card(s, page.expanded.contains("update"), ui, cx);
         let report = super::report_page::report_card(page.expanded.contains("report"), cx);

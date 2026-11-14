@@ -152,10 +152,41 @@ fn is_exe_for(name: &str, version: &str, suffix: &str) -> bool {
     name.eq_ignore_ascii_case(&format!("arke-{version}{suffix}.exe"))
 }
 
+/// Added to the asset name for the installer (`installer/arke.iss`): `arke-<version>-setup.exe`,
+/// `arke-<version>-arm64-setup.exe`.
+const SETUP_SUFFIX: &str = "-setup";
+
 /// Pick from the GitHub releases list the newest one visible on this channel, newer than `current`,
-/// with an exe for this architecture.
+/// with an exe for this architecture: the installer when the installer put this copy here (it
+/// keeps Settings > Apps up to date and can write to Program Files), else the single exe.
 pub(crate) fn pick(json: &str, channel: Channel, current: &Version) -> Option<Release> {
-    pick_for(json, channel, current, ARCH_SUFFIX)
+    let suffix = if installed_by_setup() {
+        format!("{ARCH_SUFFIX}{SETUP_SUFFIX}")
+    } else {
+        ARCH_SUFFIX.to_owned()
+    };
+    pick_for(json, channel, current, &suffix)
+}
+
+/// Whether the installer put the running exe where it is (its uninstaller sits next to it).
+pub(crate) fn installed_by_setup() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| std::env::current_exe().is_ok_and(|exe| setup_install_at(&exe)))
+}
+
+/// Whether `exe` is an installed copy: Inno Setup's `unins000.exe` is in the same folder.
+pub(crate) fn setup_install_at(exe: &Path) -> bool {
+    exe.parent()
+        .is_some_and(|dir| dir.join(SETUP_UNINSTALLER).is_file())
+}
+
+/// The uninstaller Inno Setup leaves next to the exe.
+pub(crate) const SETUP_UNINSTALLER: &str = "unins000.exe";
+
+/// Whether a downloaded update is the installer rather than the exe itself.
+fn is_setup(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem.to_string_lossy().ends_with(SETUP_SUFFIX))
 }
 
 /// [`pick`] for the architecture whose assets end in `suffix`.
@@ -272,6 +303,10 @@ pub(crate) fn download(
 /// Replace the running exe (background thread): `arke.exe` -> `arke.exe.old`, the new one becomes
 /// `arke.exe`. Returns the new exe's path.
 pub(crate) fn install(new_exe: &Path) -> Result<PathBuf, UpdateError> {
+    // The installer replaces the exe itself when it runs (`restart`).
+    if is_setup(new_exe) {
+        return Ok(new_exe.to_path_buf());
+    }
     let me = std::env::current_exe()?;
     let old = old_path(&me);
     let _ = std::fs::remove_file(&old);
@@ -291,10 +326,17 @@ fn old_path(exe: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// At startup: delete `arke.exe.old` left by the last update (background thread).
+/// At startup: delete `arke.exe.old` and installers left by the last update (background thread).
 pub(crate) fn clean_up_old() {
     if let Ok(me) = std::env::current_exe() {
         let _ = std::fs::remove_file(old_path(&me));
+    }
+    if let Some(Ok(entries)) = updates_dir().map(std::fs::read_dir) {
+        for entry in entries.flatten() {
+            if is_setup(&entry.path()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 }
 
@@ -509,11 +551,19 @@ pub(crate) fn start_download(release: Release, cx: &mut App) {
 }
 
 /// Restart into the new version: launch the new exe (it waits for this process to exit), then quit.
+/// An installer runs without its wizard (Windows asks for approval if Arke is installed for all
+/// users), closes this process if it is still running and starts the new version when done.
 pub(crate) fn restart(exe: &Path, cx: &mut App) {
-    let spawned = std::process::Command::new(exe)
-        .arg(AFTER_UPDATE_ARG)
-        .arg(std::process::id().to_string())
-        .spawn();
+    let spawned = if is_setup(exe) {
+        std::process::Command::new(exe)
+            .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LAUNCH"])
+            .spawn()
+    } else {
+        std::process::Command::new(exe)
+            .arg(AFTER_UPDATE_ARG)
+            .arg(std::process::id().to_string())
+            .spawn()
+    };
     match spawned {
         Ok(_) => cx.quit(),
         Err(e) => UpdateState::set(cx, UpdateState::Failed(e.to_string())),
@@ -659,5 +709,48 @@ mod tests {
             None,
             "no ARM64 exe in either release"
         );
+    }
+
+    #[test]
+    fn an_installed_copy_updates_through_the_installer() {
+        let json = r#"[
+          {"tag_name":"v0.4.0","draft":false,"body":"","html_url":"p",
+           "assets":[{"name":"arke-0.4.0.exe","browser_download_url":"x","size":1},
+                     {"name":"arke-0.4.0-setup.exe","browser_download_url":"s","size":3},
+                     {"name":"arke-0.4.0-setup.exe.sha256","browser_download_url":"ss"},
+                     {"name":"arke-0.4.0-arm64-setup.exe","browser_download_url":"as","size":4}]},
+          {"tag_name":"v0.3.0","draft":false,"body":"","html_url":"p",
+           "assets":[{"name":"arke-0.3.0.exe","browser_download_url":"old","size":1}]}
+        ]"#;
+        let current = v("0.2.0");
+        let setup = pick_for(json, Channel::Stable, &current, "-setup").unwrap();
+        assert_eq!(
+            (
+                setup.exe_url.as_str(),
+                setup.sha_url.as_deref(),
+                setup.exe_name.as_str()
+            ),
+            ("s", Some("ss"), "arke-0.4.0-setup.exe")
+        );
+        let arm = pick_for(json, Channel::Stable, &current, "-arm64-setup").unwrap();
+        assert_eq!(arm.exe_url, "as");
+        // Releases from before the installer have none: an installed copy waits for one.
+        assert!(pick_for(json, Channel::Stable, &v("0.4.0"), "-setup").is_none());
+        assert!(is_setup(Path::new(r"C:\u\arke-0.4.0-setup.exe")));
+        assert!(is_setup(Path::new(r"C:\u\arke-0.4.0-arm64-setup.exe")));
+        assert!(!is_setup(Path::new(r"C:\u\arke-0.4.0.exe")));
+    }
+
+    #[test]
+    fn tells_installed_copies_by_the_uninstaller_next_to_them() {
+        let dir = std::env::temp_dir().join(format!("arke-test-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("arke.exe");
+        std::fs::write(&exe, b"").unwrap();
+        assert!(!setup_install_at(&exe));
+        std::fs::write(dir.join(SETUP_UNINSTALLER), b"").unwrap();
+        assert!(setup_install_at(&exe));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -222,7 +222,10 @@ impl Workspace {
             .iter()
             .filter(|s| !matches!(s, Step::QuitArke))
             .map(|step| {
-                let kept = matches!(step, Step::KeepSettings(_) | Step::KeepExe(_));
+                let kept = matches!(
+                    step,
+                    Step::KeepSettings(_) | Step::KeepExe(_) | Step::LeaveToSetup
+                );
                 div()
                     .flex()
                     .gap(theme::S_8)

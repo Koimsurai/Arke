@@ -306,6 +306,16 @@ fn app_main(mut args: Args) {
         args.path = Some(abs);
     }
 
+    // `arke --quit` (the installer before it replaces the exe): returns once the resident Arke is
+    // gone, so its files are free.
+    if args.quit {
+        let gone = instance::quit_resident(Duration::from_secs(10));
+        log::info!(
+            "--quit: resident Arke {}",
+            if gone { "gone" } else { "still running" }
+        );
+        return;
+    }
     let linger = shell_window(&args);
     let listener = if args.background {
         // Background launch: if a resident process exists we're not needed; otherwise become
@@ -579,6 +589,10 @@ fn follow_start_menu_setting(
     services: &Services,
     cx: &mut App,
 ) {
+    // The installer made its own shortcut and removes it with Arke; the setting is hidden then.
+    if update::installed_by_setup() {
+        return;
+    }
     let shell = services.shell.clone();
     let mut applied: Option<bool> = None;
     let mut apply = move |store: &settings::SettingsStore| {

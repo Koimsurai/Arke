@@ -124,6 +124,10 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 到 [Releases](https://github.com/Koimsurai/Arke/releases) 下載 `arke-<版本>.exe`（ARM64 電腦用 `arke-<版本>-arm64.exe`）直接執行。
 只有一個執行檔，不用安裝程式也不用裝執行環境。設定存在 `%APPDATA%\Arke`。
 
+想用安裝程式的話，`arke-<版本>-setup.exe`（ARM64 用 `arke-<版本>-arm64-setup.exe`）會幫你的帳號安裝，
+不需要系統管理員權限；也可以選擇裝給所有使用者（Program Files）。它會加到開始功能表，並出現在
+「設定 › 應用程式」，從那裡就能解除安裝。Arke 的更新方式不變。
+
 目前還沒有程式碼簽章，第一次執行時 SmartScreen 可能會要你確認。
 
 Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（設定 › 關於）。
@@ -209,6 +213,8 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 在這些電腦上，Arke 於背景執行時會用鍵盤 hook 接手 Win+E：只在按住 Windows 鍵時看 E 這一個鍵，不記錄任何東西。設定存在 `%APPDATA%\Arke`，搜尋索引、記錄檔和下載的更新在
 `%LOCALAPPDATA%\Arke`。「登入 Windows 時啟動」是在「啟動」資料夾放一個捷徑，「在開始功能表顯示 Arke」則是在開始功能表資料夾放一個捷徑。SFTP 和 WebDAV 位置的密碼只有在你
 勾選「記住」時才會存進 Windows 認證管理員。只有選用的搜尋服務需要系統管理員同意。
+如果你用安裝程式安裝，它會新增 Windows 在「設定 › 應用程式」列出的解除安裝項目（寫在你的帳號下，
+裝給所有使用者時則寫在全機），只有裝給所有使用者時才需要系統管理員同意。
 
 </details>
 

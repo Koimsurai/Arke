@@ -37,6 +37,8 @@ pub(crate) enum TrayCommand {
     ToggleTakeover,
     /// Quit Arke
     Quit,
+    /// Show the update that was found (its notes and Download)
+    Update,
 }
 
 /// Message the notification area uses to report mouse actions
@@ -45,11 +47,14 @@ const ICON_ID: u32 = 1;
 const MENU_OPEN: usize = 1;
 const MENU_QUIT: usize = 2;
 const MENU_TAKEOVER: usize = 3;
+const MENU_UPDATE: usize = 4;
 
 static COMMANDS: OnceLock<flume::Sender<TrayCommand>> = OnceLock::new();
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 /// Whether "Open folders in Arke" is on, for the menu's check mark.
 static TAKEOVER: AtomicBool = AtomicBool::new(false);
+/// Version of an update that was found and isn't installed, for the menu.
+static UPDATE: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
 /// Message Windows broadcasts when the taskbar is recreated (id registered at runtime)
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
@@ -115,6 +120,11 @@ pub(crate) fn set_visible(visible: bool) -> bool {
 /// Tells the menu whether "Open folders in Arke" is on (shown as a check mark).
 pub(crate) fn set_takeover(on: bool) {
     TAKEOVER.store(on, Ordering::Relaxed);
+}
+
+/// Tells the menu about an update that was found (`None` once there is none to offer).
+pub(crate) fn set_update(version: Option<String>) {
+    *UPDATE.lock() = version;
 }
 
 /// Remove the icon (before quitting or when the setting is turned off). No-op if never added.
@@ -188,12 +198,22 @@ fn show_menu(hwnd: HWND) {
     let open: Vec<u16> = t!("tray.open").encode_utf16().chain([0]).collect();
     let takeover: Vec<u16> = t!("tray.takeover").encode_utf16().chain([0]).collect();
     let quit: Vec<u16> = t!("tray.quit").encode_utf16().chain([0]).collect();
+    let update: Option<Vec<u16>> = UPDATE.lock().as_ref().map(|version| {
+        t!("tray.update", version = version)
+            .encode_utf16()
+            .chain([0])
+            .collect()
+    });
     // SAFETY: the menu is created and destroyed here; strings are valid for the call.
     // SetForegroundWindow makes the menu close on outside clicks.
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             return;
         };
+        if let Some(update) = &update {
+            let _ = AppendMenuW(menu, MF_STRING, MENU_UPDATE, PCWSTR(update.as_ptr()));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        }
         let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN, PCWSTR(open.as_ptr()));
         let checked = if TAKEOVER.load(Ordering::Relaxed) {
             MF_CHECKED
@@ -227,6 +247,7 @@ fn show_menu(hwnd: HWND) {
         MENU_OPEN => send(TrayCommand::Open),
         MENU_TAKEOVER => send(TrayCommand::ToggleTakeover),
         MENU_QUIT => send(TrayCommand::Quit),
+        MENU_UPDATE => send(TrayCommand::Update),
         _ => {}
     }
 }

@@ -44,6 +44,8 @@ mod tabs;
 mod tests_columns;
 #[path = "tests_views.rs"]
 mod views;
+#[path = "tests_whats_new.rs"]
+mod whats_new;
 
 type OpHook = Box<dyn Fn(&FileOp) + Send + Sync>;
 /// A PDF page render request: path, page, box.

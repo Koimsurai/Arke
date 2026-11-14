@@ -3,7 +3,10 @@
 
 use std::borrow::Cow;
 
-use gpui::{AnyElement, App, ClickEvent, Context, SharedString, Window, div, prelude::*, px, svg};
+use gpui::{
+    AnimationExt as _, AnyElement, App, ClickEvent, Context, SharedString, Window, div, prelude::*,
+    px, svg,
+};
 use rust_i18n::t;
 
 use super::Workspace;
@@ -52,14 +55,19 @@ pub(super) fn update_card(
         t!("update.desc_short"),
         summary,
         open,
-        body(s, &state, ui),
+        body(s, &state, ui, cx.weak_entity()),
         cx,
     )
 }
 
 // One arm per update state, kept in order so they are easy to compare.
 #[allow(clippy::too_many_lines)]
-fn body(s: &Settings, state: &UpdateState, ui: &Ui) -> AnyElement {
+fn body(
+    s: &Settings,
+    state: &UpdateState,
+    ui: &Ui,
+    workspace: gpui::WeakEntity<Workspace>,
+) -> AnyElement {
     // Scoop or winget owns the exe: channels and checks don't apply, point at its command instead.
     if let Some(manager) = update::package_manager() {
         return div()
@@ -152,7 +160,7 @@ fn body(s: &Settings, state: &UpdateState, ui: &Ui) -> AnyElement {
             None,
         ),
         UpdateState::Available(release) => {
-            let page = release.page.clone();
+            let notes = release.clone();
             let actions = div()
                 .flex()
                 .gap(theme::S_8)
@@ -160,8 +168,15 @@ fn body(s: &Settings, state: &UpdateState, ui: &Ui) -> AnyElement {
                     "update-notes",
                     t!("update.notes"),
                     false,
-                    move |_, _, cx| {
-                        open_url(&page, cx);
+                    move |_, window, cx| {
+                        let notes = notes.clone();
+                        let _ = workspace.update(cx, |ws, cx| {
+                            ws.open_whats_new(
+                                super::whats_new_page::Mode::Available(notes),
+                                window,
+                                cx,
+                            );
+                        });
                     },
                 ))
                 .child(button(
@@ -180,22 +195,12 @@ fn body(s: &Settings, state: &UpdateState, ui: &Ui) -> AnyElement {
                 Some(actions),
             )
         }
-        UpdateState::Downloading(release, got, total) => {
-            #[allow(clippy::cast_precision_loss)]
-            let mb = |b: u64| b as f64 / 1_048_576.0;
-            status_line(
-                Icon::Refresh,
-                theme::text_muted(),
-                t!(
-                    "update.downloading",
-                    version = release.version,
-                    got = format!("{:.1}", mb(got)),
-                    total = format!("{:.1}", mb(total))
-                )
-                .into_owned(),
-                None,
-            )
-        }
+        UpdateState::Downloading(release, got, total) => status_line(
+            Icon::Refresh,
+            theme::text_muted(),
+            downloading_text(&release.version, got, total),
+            None,
+        ),
         UpdateState::Ready(release, exe) => status_line(
             Icon::Check,
             theme::signal(),
@@ -212,6 +217,19 @@ fn body(s: &Settings, state: &UpdateState, ui: &Ui) -> AnyElement {
     };
     out = out.child(line);
     out.into_any_element()
+}
+
+/// "Downloading 0.4.0: 12.3 / 35.2 MB".
+pub(super) fn downloading_text(version: &str, got: u64, total: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let mb = |b: u64| b as f64 / 1_048_576.0;
+    t!(
+        "update.downloading",
+        version = version,
+        got = format!("{:.1}", mb(got)),
+        total = format!("{:.1}", mb(total))
+    )
+    .into_owned()
 }
 
 fn release_version(state: &UpdateState) -> String {
@@ -306,6 +324,7 @@ pub(super) fn button(
 ) -> AnyElement {
     div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .a11y_lazy(gpui::Role::Button, || label.to_string())
         .h(theme::H_CTL_SM)
         .px(theme::S_12)
@@ -347,4 +366,152 @@ pub(super) fn sidebar_badge(cx: &App) -> Option<AnyElement> {
             .child(t!("update.badge").to_string())
             .into_any_element()
     })
+}
+
+/// Corner card for a new version found by the check (automatic or by hand), with What's new
+/// and Download; then the download's progress and Restart. Closing it hides it until a newer
+/// version comes (`update_dismissed`); the sidebar badge and Settings › About stay.
+pub(super) fn update_notice(cx: &mut Context<Workspace>) -> Option<AnyElement> {
+    if super::welcome::welcome_due(cx) || update::package_manager().is_some() {
+        return None;
+    }
+    let state = UpdateState::get(cx);
+    let release = match &state {
+        UpdateState::Available(r) | UpdateState::Downloading(r, ..) | UpdateState::Ready(r, _) => {
+            r.clone()
+        }
+        _ => return None,
+    };
+    let dismissed = crate::settings::SettingsStore::global(cx)
+        .read(cx)
+        .settings
+        .update_dismissed
+        .clone();
+    if dismissed.as_deref() == Some(release.version.as_str()) {
+        return None;
+    }
+    let body = match &state {
+        UpdateState::Downloading(r, got, total) => downloading_text(&r.version, *got, *total),
+        UpdateState::Ready(r, _) => t!("update.ready", version = r.version).into_owned(),
+        _ => t!("update.notice_body").into_owned(),
+    };
+    let workspace = cx.weak_entity();
+    let actions = match state {
+        UpdateState::Available(release) => {
+            let notes = release.clone();
+            vec![
+                button(
+                    "update-notice-notes",
+                    t!("update.notes"),
+                    false,
+                    move |_, window, cx| {
+                        let notes = notes.clone();
+                        let _ = workspace.update(cx, |ws, cx| {
+                            ws.open_whats_new(
+                                super::whats_new_page::Mode::Available(notes),
+                                window,
+                                cx,
+                            );
+                        });
+                    },
+                ),
+                button(
+                    "update-notice-install",
+                    t!("update.install"),
+                    true,
+                    move |_, _, cx| update::start_download(release.clone(), cx),
+                ),
+            ]
+        }
+        UpdateState::Ready(_, exe) => vec![button(
+            "update-notice-restart",
+            t!("update.restart"),
+            true,
+            move |_, _, cx| update::restart(&exe, cx),
+        )],
+        _ => Vec::new(),
+    };
+    Some(notice_card(&release.version, body, actions))
+}
+
+/// The notice's card: icon, title and text, a close button, and the actions underneath.
+fn notice_card(version: &str, body: String, actions: Vec<AnyElement>) -> AnyElement {
+    let title = t!("update.available", version = version).into_owned();
+    let dismiss = version.to_string();
+    let close = div()
+        .id("update-notice-close")
+        .debug_selector(|| "update-notice-close".to_owned())
+        .a11y(gpui::Role::Button, t!("palette.hint_close"))
+        .flex_none()
+        .size(theme::H_CTL_SM)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme::R_8)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::wash()))
+        .child(
+            svg()
+                .path(Icon::Close.path())
+                .size(theme::ICON_SM)
+                .text_color(theme::text_muted()),
+        )
+        .on_click(move |_, _, cx| {
+            let version = dismiss.clone();
+            crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+                s.update(|st| st.update_dismissed = Some(version), cx);
+            });
+        });
+    crate::motion::corner_card(
+        div()
+            .id("update-notice")
+            .debug_selector(|| "update-notice".to_owned())
+            .a11y(gpui::Role::Dialog, title.clone())
+            .occlude()
+            .w_full()
+            .p(theme::S_16)
+            .flex()
+            .flex_col()
+            .gap(theme::S_12)
+            .rounded(theme::R_12)
+            .bg(theme::overlay())
+            .shadow(theme::elev_float())
+            .text_size(theme::FS_13)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(theme::S_12)
+                    .child(
+                        svg()
+                            .path(Icon::Bolt.path())
+                            .flex_none()
+                            .mt(theme::S_2)
+                            .size(theme::ICON)
+                            .text_color(theme::signal()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(theme::S_4)
+                            .child(
+                                div()
+                                    .text_size(theme::FS_14)
+                                    .font_weight(theme::FW_STRONG)
+                                    .child(title),
+                            )
+                            .child(div().text_color(theme::text_muted()).child(body)),
+                    )
+                    .child(close),
+            )
+            .when(!actions.is_empty(), |d| {
+                d.child(div().flex().justify_end().gap(theme::S_8).children(actions))
+            })
+            .with_animation("update-notice-appear", crate::motion::enter(), |el, t| {
+                crate::motion::slide_in(el, t, 0., crate::motion::SLIDE)
+            }),
+    )
 }

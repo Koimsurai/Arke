@@ -522,7 +522,7 @@ pub(crate) mod test_support {
     }
 
     /// Bin items an earlier, interrupted run of the test `tag` left: their origin is one of its
-    /// sandboxes (which may be gone by now).
+    /// sandboxes (which may be gone by now). Long paths come back from the bin with `\\?\`.
     pub(crate) fn purge_leftovers(tag: &str) {
         let prefix = format!("arke-test-fastbin-{tag}-");
         let Ok(items) = crate::win_recycle::list() else {
@@ -531,9 +531,9 @@ pub(crate) mod test_support {
         let stale: Vec<crate::shell::RecycledItem> = items
             .into_iter()
             .filter(|item| {
-                item.from.starts_with(crate::win::long_temp_dir())
-                    && item
-                        .from
+                let from = arke_core::path::unverbatim(&item.from);
+                from.starts_with(crate::win::long_temp_dir())
+                    && from
                         .components()
                         .any(|c| c.as_os_str().to_string_lossy().starts_with(&prefix))
             })

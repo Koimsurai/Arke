@@ -32,6 +32,35 @@ fn git_commit() -> String {
         .map_or_default(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+/// What's new in an RC or nightly build: its changes aren't in the changelogs yet, so the
+/// pending changesets go into `OUT_DIR/pending_changesets.txt` (separated by a U+001E line) for
+/// `whats_new.rs`. Stable and dev builds get an empty file.
+fn pending_changesets(manifest: &std::path::Path, channel: &str) {
+    let dir = manifest.join("../../.changeset");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut texts: Vec<(PathBuf, String)> = Vec::new();
+    if matches!(channel, "rc" | "nightly")
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for path in entries.flatten().map(|e| e.path()) {
+            let changeset = path.extension().is_some_and(|e| e == "md")
+                && path.file_name().is_some_and(|n| n != "README.md");
+            if changeset && let Ok(text) = std::fs::read_to_string(&path) {
+                texts.push((path, text));
+            }
+        }
+    }
+    texts.sort();
+    let joined: Vec<String> = texts.into_iter().map(|(_, t)| t).collect();
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default());
+    if let Err(e) = std::fs::write(
+        out.join("pending_changesets.txt"),
+        joined.join("\n\u{1e}\n"),
+    ) {
+        panic!("writing pending_changesets.txt: {e}");
+    }
+}
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let version = env_or("ARKE_VERSION", || {
@@ -51,6 +80,8 @@ fn main() {
         "cargo:rerun-if-changed={}",
         git.join("refs/heads").display()
     );
+
+    pending_changesets(&manifest, &channel);
 
     println!("cargo:rerun-if-changed=arke.rc");
     println!("cargo:rerun-if-changed=assets/brand/arke.ico");

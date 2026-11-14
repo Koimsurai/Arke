@@ -511,6 +511,13 @@ pub(crate) struct Settings {
     pub(crate) update_channel_choice: Option<crate::build_info::Channel>,
     pub(crate) update_auto: bool,
     pub(crate) update_checked: Option<u64>,
+    /// The update whose notice bar was closed (`Some("0.4.0")`): it doesn't come back for that
+    /// version, only for a newer one.
+    pub(crate) update_dismissed: Option<String>,
+    /// What's new (`whats_new.rs`): open it after an update, and the version it last saw (`None`
+    /// before Arke 0.4 recorded it).
+    pub(crate) whats_new_auto: bool,
+    pub(crate) whats_new_seen: Option<String>,
     /// "Open with": custom apps (exe paths) and detected editors to hide.
     pub(crate) open_with_extra: Vec<PathBuf>,
     pub(crate) open_with_hidden: Vec<PathBuf>,
@@ -599,6 +606,9 @@ impl Default for Settings {
             update_channel_choice: None,
             update_auto: true,
             update_checked: None,
+            update_dismissed: None,
+            whats_new_auto: true,
+            whats_new_seen: None,
             open_with_extra: Vec::new(),
             open_with_hidden: Vec::new(),
             show_checkboxes: false,

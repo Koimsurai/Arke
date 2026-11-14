@@ -63,6 +63,7 @@ mod theme;
 mod tray;
 mod uninstall;
 mod update;
+mod whats_new;
 mod win;
 mod win_cloud;
 mod win_devnotify;
@@ -477,14 +478,20 @@ fn app_main(mut args: Args) {
             );
         }
         // Auto-update: delete the old binary left from last time; check a bit after startup so it
-        // doesn't compete.
+        // doesn't compete, then every hour while Arke keeps running (it can stay in the
+        // notification area for days). `auto_check` only checks when 20 hours have passed.
         if bench.is_none() {
             explorer::spawn_thread("update-cleanup", update::clean_up_old);
             cx.spawn(async |cx| {
                 cx.background_executor()
                     .timer(Duration::from_secs(15))
                     .await;
-                cx.update(update::auto_check);
+                loop {
+                    cx.update(update::auto_check);
+                    cx.background_executor()
+                        .timer(Duration::from_secs(3600))
+                        .await;
+                }
             })
             .detach();
         }
@@ -1091,6 +1098,27 @@ fn install_tray(cx: &mut App, services: &Services, store: &gpui::Entity<settings
                     tray::remove();
                     cx.quit();
                 }
+                tray::TrayCommand::Update => {
+                    // The window used last (or a new one) shows the update's notes, with Download.
+                    let window = last_window(cx).or_else(|| {
+                        open_explorer(cx, &services, None, None, Instant::now())
+                            .then(|| last_window(cx))
+                            .flatten()
+                    });
+                    if let (Some(window), update::UpdateState::Available(release)) =
+                        (window, update::UpdateState::get(cx))
+                    {
+                        let _ = window.update(cx, |ws, window, cx| {
+                            bring_to_front(window, None);
+                            ws.open_whats_new(
+                                workspace::whats_new_page::Mode::Available(release),
+                                window,
+                                cx,
+                            );
+                        });
+                        cx.activate(true);
+                    }
+                }
             });
         }
     })
@@ -1098,6 +1126,14 @@ fn install_tray(cx: &mut App, services: &Services, store: &gpui::Entity<settings
     // Quitting from elsewhere (arke --quit, last window closed) also removes the icon, so no ghost
     // icon lingers until hovered.
     cx.on_app_quit(|_| async { tray::remove() }).detach();
+    // The menu offers an update that was found (and not yet installed).
+    cx.observe_global::<update::UpdateState>(|cx| {
+        tray::set_update(match update::UpdateState::get(cx) {
+            update::UpdateState::Available(r) => Some(r.version),
+            _ => None,
+        });
+    })
+    .detach();
 }
 
 fn open_explorer(

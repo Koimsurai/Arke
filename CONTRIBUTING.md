@@ -68,12 +68,14 @@ prereleases; it still has a dry-run option that builds both exes without publish
 Record user-visible changes as changesets:
 
 ```bash
-cargo xtask change minor "Tabs can be reordered by dragging"
+cargo xtask change minor "Tabs can be reordered by dragging" --zh-TW "分頁可以拖曳排序" --zh-CN "标签页可以拖动排序"
 cargo xtask status
 ```
 
 `patch` is a fix, `minor` a feature, `major` a breaking change. The files in `.changeset/` use
-the same format as changesets and knope.
+the same format as changesets and knope, with the two translations added (see
+`.changeset/README.md`): Arke shows each version's notes in the user's language, from the three
+changelogs built into the exe.
 
 Stable release:
 

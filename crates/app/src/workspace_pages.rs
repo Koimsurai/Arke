@@ -60,6 +60,9 @@ impl Workspace {
         if self.home_open() {
             return self.home_focus(cx);
         }
+        if self.whats_new_open() {
+            return self.whats_new_focus(cx);
+        }
         None
     }
 
@@ -74,6 +77,9 @@ impl Workspace {
         }
         if self.home_page.as_ref().is_some_and(|p| owns(&p.owner)) {
             return Some((rust_i18n::t!("home.title").into_owned(), Icon::KfHome));
+        }
+        if self.whats_new.as_ref().is_some_and(|p| owns(&p.owner)) {
+            return Some((rust_i18n::t!("whats_new.title").into_owned(), Icon::Bolt));
         }
         None
     }
@@ -101,6 +107,13 @@ impl Workspace {
             .is_some_and(|p| p.owner.view == here)
         {
             self.home_page = None;
+        }
+        if self
+            .whats_new
+            .as_ref()
+            .is_some_and(|p| p.owner.view == here)
+        {
+            self.whats_new = None;
         }
     }
 
@@ -180,7 +193,12 @@ impl Workspace {
     /// Page shown in the active tab, if any.
     pub(crate) fn shown_page_for_test(&self) -> Option<String> {
         self.page_title(self.active_view().entity_id())
-            .filter(|_| self.home_open() || self.settings_open() || self.recycle_open())
+            .filter(|_| {
+                self.home_open()
+                    || self.settings_open()
+                    || self.recycle_open()
+                    || self.whats_new_open()
+            })
             .map(|(title, _)| title)
     }
 }

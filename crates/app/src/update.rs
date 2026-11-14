@@ -417,6 +417,11 @@ impl UpdateState {
         cx.refresh_windows();
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_for_test(cx: &mut App, state: Self) {
+        Self::set(cx, state);
+    }
+
     /// A new version is available (whether the sidebar shows a hint).
     pub(crate) fn has_news(cx: &App) -> bool {
         matches!(

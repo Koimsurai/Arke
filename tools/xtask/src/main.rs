@@ -1,9 +1,12 @@
 //! Arke release tool: `cargo xtask <command>`.
 //!
 //! ```text
-//! cargo xtask change <patch|minor|major> <text>   record a change (.changeset/*.md, knope format)
+//! cargo xtask change <patch|minor|major> <text> --zh-TW <text> --zh-CN <text>
+//!                                                 record a change (.changeset/*.md, knope format,
+//!                                                 with the translations; see notes.rs)
 //! cargo xtask status                              next version and pending changes
-//! cargo xtask version                             bump version from changesets, write CHANGELOG.md
+//! cargo xtask version                             bump version from changesets, write the three
+//!                                                 changelogs (CHANGELOG.md, .zh-TW.md, .zh-CN.md)
 //! cargo xtask release-version <stable|rc|nightly> [--number N]
 //!                                                 print the version a build would get
 //! cargo xtask licenses                            regenerate THIRD_PARTY_LICENSES.md (cargo-about)
@@ -33,6 +36,11 @@ use std::process::{Command, ExitCode};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use sha2::{Digest, Sha256};
 
+use notes::{Bump, ChangeText, LANGS};
+
+#[allow(dead_code)] // the reading half is for Arke's What's new page (whats_new.rs)
+mod notes;
+
 fn root() -> PathBuf {
     // tools/xtask -> workspace root
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,55 +49,20 @@ fn root() -> PathBuf {
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Bump {
-    Patch,
-    Minor,
-    Major,
-}
-
-impl Bump {
-    fn parse(s: &str) -> Option<Self> {
-        match s.trim() {
-            "patch" => Some(Self::Patch),
-            "minor" => Some(Self::Minor),
-            "major" => Some(Self::Major),
-            _ => None,
-        }
-    }
-
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Patch => "patch",
-            Self::Minor => "minor",
-            Self::Major => "major",
-        }
-    }
-
-    const fn heading(self) -> &'static str {
-        match self {
-            Self::Major => "Breaking changes",
-            Self::Minor => "Features",
-            Self::Patch => "Fixes",
-        }
-    }
-
-    /// On 0.x a major change only bumps the minor version, as in Cargo.
-    const fn apply(self, (major, minor, patch): (u64, u64, u64)) -> (u64, u64, u64) {
-        match self {
-            Self::Major if major == 0 => (0, minor + 1, 0),
-            Self::Major => (major + 1, 0, 0),
-            Self::Minor => (major, minor + 1, 0),
-            Self::Patch => (major, minor, patch + 1),
-        }
+/// On 0.x a major change only bumps the minor version, as in Cargo.
+const fn apply(bump: Bump, (major, minor, patch): (u64, u64, u64)) -> (u64, u64, u64) {
+    match bump {
+        Bump::Major if major == 0 => (0, minor + 1, 0),
+        Bump::Major => (major + 1, 0, 0),
+        Bump::Minor => (major, minor + 1, 0),
+        Bump::Patch => (major, minor, patch + 1),
     }
 }
 
 /// One changeset.
 struct Change {
     path: PathBuf,
-    bump: Bump,
-    summary: String,
+    text: ChangeText,
 }
 
 fn changesets() -> Vec<Change> {
@@ -108,26 +81,25 @@ fn changesets() -> Vec<Change> {
         .into_iter()
         .filter_map(|path| {
             let text = std::fs::read_to_string(&path).ok()?;
-            parse_change(&text).map(|(bump, summary)| Change {
-                path,
-                bump,
-                summary,
-            })
+            ChangeText::parse(&text).map(|text| Change { path, text })
         })
         .collect()
 }
 
-/// `---\ndefault: minor\n---\nsummary` -> (minor, summary).
-fn parse_change(text: &str) -> Option<(Bump, String)> {
-    let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
-    let rest = text.strip_prefix("---\n")?;
-    let (front, body) = rest.split_once("\n---")?;
-    let bump = front
-        .lines()
-        .filter_map(|l| l.split_once(':'))
-        .filter_map(|(_, v)| Bump::parse(v))
-        .max()?;
-    Some((bump, body.trim_start_matches('-').trim().to_string()))
+/// Changesets missing a translation, as `file (languages)`.
+fn untranslated(changes: &[Change]) -> Vec<String> {
+    changes
+        .iter()
+        .filter_map(|c| {
+            let missing: Vec<&str> = LANGS[1..]
+                .iter()
+                .copied()
+                .filter(|l| !c.text.has(l))
+                .collect();
+            let name = c.path.file_name()?.to_string_lossy().into_owned();
+            (!missing.is_empty()).then(|| format!("{name} ({})", missing.join(", ")))
+        })
+        .collect()
 }
 
 fn cargo_toml() -> PathBuf {
@@ -160,8 +132,12 @@ fn fmt_triple((a, b, c): (u64, u64, u64)) -> String {
 
 /// Version the pending changesets lead to (patch if there are none).
 fn next_version(changes: &[Change]) -> Result<(u64, u64, u64)> {
-    let bump = changes.iter().map(|c| c.bump).max().unwrap_or(Bump::Patch);
-    Ok(bump.apply(current_version()?))
+    let bump = changes
+        .iter()
+        .map(|c| c.text.bump)
+        .max()
+        .unwrap_or(Bump::Patch);
+    Ok(apply(bump, current_version()?))
 }
 
 /// Today's date (UTC) as YYYYMMDD.
@@ -305,36 +281,40 @@ fn release_notes(channel: &str, version: &str) -> String {
     if changes.is_empty() {
         return "(No changes recorded for this build.)".into();
     }
-    section(&changes)
+    section(&changes, "en")
 }
 
-/// Lists changes grouped by major, minor and patch.
-fn section(changes: &[Change]) -> String {
-    let mut out = String::new();
-    for bump in [Bump::Major, Bump::Minor, Bump::Patch] {
-        let items: Vec<&Change> = changes.iter().filter(|c| c.bump == bump).collect();
-        if items.is_empty() {
-            continue;
-        }
-        let _ = writeln!(out, "### {}\n", bump.heading());
-        for c in items {
-            let mut lines = c.summary.lines();
-            let _ = writeln!(out, "- {}", lines.next().unwrap_or_default());
-            for line in lines {
-                let _ = writeln!(out, "  {line}");
-            }
-        }
-        out.push('\n');
-    }
-    out.trim_end().to_string()
+/// Lists changes grouped by major, minor and patch, in `lang`.
+fn section(changes: &[Change], lang: &str) -> String {
+    let texts: Vec<&ChangeText> = changes.iter().map(|c| &c.text).collect();
+    notes::section(&texts, lang)
 }
 
 fn cmd_change(args: &[String]) -> Result<()> {
-    let bump = args
-        .first()
-        .and_then(|b| Bump::parse(b))
-        .context("usage: cargo xtask change <patch|minor|major> <summary>")?;
-    let summary = args[1..].join(" ");
+    const USAGE: &str =
+        "usage: cargo xtask change <patch|minor|major> <summary> --zh-TW <text> --zh-CN <text>";
+    let bump = args.first().and_then(|b| Bump::parse(b)).context(USAGE)?;
+    // English words until the first --lang option; each option takes the next argument.
+    let mut english = Vec::new();
+    let mut translations: Vec<(&str, String)> = Vec::new();
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        match arg.strip_prefix("--") {
+            Some(lang) => {
+                let lang = LANGS[1..]
+                    .iter()
+                    .copied()
+                    .find(|l| l.eq_ignore_ascii_case(lang))
+                    .with_context(|| format!("unknown option --{lang}; {USAGE}"))?;
+                let text = rest
+                    .next()
+                    .with_context(|| format!("--{lang} needs a text"))?;
+                translations.push((lang, text.trim().to_string()));
+            }
+            None => english.push(arg.as_str()),
+        }
+    }
+    let summary = english.join(" ");
     ensure!(!summary.trim().is_empty(), "a summary is required");
     let dir = root().join(".changeset");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -353,12 +333,22 @@ fn cmd_change(args: &[String]) -> Result<()> {
         format!("{stamp}-{slug}.md")
     };
     let path = dir.join(name);
-    std::fs::write(
-        &path,
-        format!("---\ndefault: {}\n---\n\n{}\n", bump.name(), summary.trim()),
-    )
-    .with_context(|| format!("writing {}", path.display()))?;
+    let mut texts: Vec<(&str, &str)> = vec![("en", summary.trim())];
+    texts.extend(translations.iter().map(|(l, t)| (*l, t.as_str())));
+    std::fs::write(&path, ChangeText::to_file(bump, &texts))
+        .with_context(|| format!("writing {}", path.display()))?;
     println!("recorded: {}", path.display());
+    let missing: Vec<&str> = LANGS[1..]
+        .iter()
+        .copied()
+        .filter(|l| !translations.iter().any(|(t, _)| t == l))
+        .collect();
+    if !missing.is_empty() {
+        println!(
+            "still to add before the release: {} (a <!-- lang --> block in the file)",
+            missing.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -372,7 +362,11 @@ fn cmd_status() -> Result<()> {
         changes.len()
     );
     if !changes.is_empty() {
-        println!("\n{}", section(&changes));
+        println!("\n{}", section(&changes, "en"));
+    }
+    let missing = untranslated(&changes);
+    if !missing.is_empty() {
+        println!("\nnot translated yet:\n  {}", missing.join("\n  "));
     }
     Ok(())
 }
@@ -382,6 +376,13 @@ fn cmd_version() -> Result<()> {
     ensure!(
         !changes.is_empty(),
         "no changesets: record what changed with cargo xtask change first"
+    );
+    let missing = untranslated(&changes);
+    ensure!(
+        missing.is_empty(),
+        "every changeset needs its zh-TW and zh-CN text (Arke shows the notes in the user's \
+         language); missing:\n  {}",
+        missing.join("\n  ")
     );
     let current = fmt_triple(current_version()?);
     let next = fmt_triple(next_version(&changes)?);
@@ -396,40 +397,44 @@ fn cmd_version() -> Result<()> {
         text.replacen(&old, &format!("version = \"{next}\""), 1),
     )
     .with_context(|| format!("writing {}", path.display()))?;
-    // CHANGELOG.md: newest version on top.
+    // The changelogs: newest version on top.
     let date = today();
-    let entry = format!(
-        "## {next} ({}-{}-{})\n\n{}\n\n",
-        &date[..4],
-        &date[4..6],
-        &date[6..],
-        section(&changes)
-    );
-    let changelog_path = root().join("CHANGELOG.md");
-    let changelog =
-        std::fs::read_to_string(&changelog_path).unwrap_or_else(|_| "# Changelog\n\n".into());
-    let (head, rest) = changelog
-        .find("\n## ")
-        .map_or((changelog.as_str(), ""), |at| changelog.split_at(at + 1));
-    let head = if head.trim().is_empty() {
-        "# Changelog\n\n"
-    } else {
-        head
-    };
-    std::fs::write(
-        &changelog_path,
-        format!("{}{entry}{rest}", head.trim_end().to_string() + "\n\n"),
-    )
-    .with_context(|| format!("writing {}", changelog_path.display()))?;
+    for lang in LANGS {
+        let entry = format!(
+            "## {next} ({}-{}-{})\n\n{}\n\n",
+            &date[..4],
+            &date[4..6],
+            &date[6..],
+            section(&changes, lang)
+        );
+        let changelog_path = root().join(notes::changelog_file(lang));
+        let changelog = std::fs::read_to_string(&changelog_path)
+            .unwrap_or_else(|_| notes::changelog_header(lang).into());
+        std::fs::write(&changelog_path, with_entry(&changelog, &entry, lang))
+            .with_context(|| format!("writing {}", changelog_path.display()))?;
+    }
     for c in &changes {
         std::fs::remove_file(&c.path).with_context(|| format!("removing {}", c.path.display()))?;
     }
     println!(
-        "{current} -> {next}: updated Cargo.toml and CHANGELOG.md, used {} changesets",
+        "{current} -> {next}: updated Cargo.toml and the changelogs, used {} changesets",
         changes.len()
     );
     println!("next: git commit, git tag v{next}, cargo xtask publish stable");
     Ok(())
+}
+
+/// `changelog` with `entry` above its newest version.
+fn with_entry(changelog: &str, entry: &str, lang: &str) -> String {
+    let (head, rest) = changelog
+        .find("\n## ")
+        .map_or((changelog, ""), |at| changelog.split_at(at + 1));
+    let head = if head.trim().is_empty() {
+        notes::changelog_header(lang)
+    } else {
+        head
+    };
+    format!("{}\n\n{entry}{rest}", head.trim_end())
 }
 
 /// A Windows architecture Arke ships for.
@@ -692,25 +697,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_changesets_like_knope() {
-        let (bump, text) =
-            parse_change("---\ndefault: minor\n---\n\nTabs can be reordered by dragging\n")
-                .unwrap();
-        assert_eq!(bump, Bump::Minor);
-        assert_eq!(text, "Tabs can be reordered by dragging");
-        assert!(parse_change("no front matter").is_none());
-        // Windows line endings; with several packages the largest bump wins.
-        let (bump, _) = parse_change("---\r\na: patch\r\nb: major\r\n---\r\nx\r\n").unwrap();
-        assert_eq!(bump, Bump::Major);
-    }
-
-    #[test]
     fn bumps_follow_cargo_for_zero_versions() {
-        assert_eq!(Bump::Patch.apply((0, 1, 0)), (0, 1, 1));
-        assert_eq!(Bump::Minor.apply((0, 1, 3)), (0, 2, 0));
-        assert_eq!(Bump::Major.apply((0, 1, 3)), (0, 2, 0));
-        assert_eq!(Bump::Major.apply((1, 2, 3)), (2, 0, 0));
-        assert_eq!(Bump::Minor.apply((1, 2, 3)), (1, 3, 0));
+        assert_eq!(apply(Bump::Patch, (0, 1, 0)), (0, 1, 1));
+        assert_eq!(apply(Bump::Minor, (0, 1, 3)), (0, 2, 0));
+        assert_eq!(apply(Bump::Major, (0, 1, 3)), (0, 2, 0));
+        assert_eq!(apply(Bump::Major, (1, 2, 3)), (2, 0, 0));
+        assert_eq!(apply(Bump::Minor, (1, 2, 3)), (1, 3, 0));
     }
 
     #[test]
@@ -730,6 +722,44 @@ mod tests {
         let targets: Vec<&str> = arm.iter().map(|a| a.target).collect();
         assert_eq!(targets, ["aarch64-pc-windows-msvc"]);
         assert!(arches(&args(&["stable", "--arch", "x86"])).is_err());
+    }
+
+    #[test]
+    fn new_versions_go_on_top_of_each_changelog() {
+        let entry = "## 0.4.0 (2026-11-20)
+
+### 新功能
+
+- 新的
+
+";
+        let old = "# 更新紀錄
+
+說明。
+
+## 0.3.0 (2026-11-13)
+
+- 舊的
+";
+        assert_eq!(
+            with_entry(old, entry, "zh-TW"),
+            "# 更新紀錄
+
+說明。
+
+## 0.4.0 (2026-11-20)
+
+### 新功能
+
+- 新的
+
+## 0.3.0 (2026-11-13)
+
+- 舊的
+"
+        );
+        // A missing changelog starts with its header.
+        assert!(with_entry("", entry, "zh-CN").starts_with("# 更新日志"));
     }
 
     #[test]

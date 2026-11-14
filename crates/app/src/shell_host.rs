@@ -13,6 +13,8 @@
 //! - An invoked item runs in the host that read it (some commands open dialogs or keep
 //!   working in the background). That host then retires: it takes no new requests and
 //!   exits once its windows have been closed for a while. A fresh standby replaces it.
+//! - A host that only read menus exits as soon as Arke closes it (Arke quitting, the installer
+//!   replacing the exe): nothing of the user's is running in it.
 //!
 //! Transport is one JSON message per line over stdin/stdout. Arke reads and writes on
 //! dedicated threads; the UI thread never waits on the host.
@@ -95,8 +97,8 @@ pub(crate) fn run() {
     );
 }
 
-/// Serves requests until input ends, then returns once this process has had no
-/// visible window for `linger`.
+/// Serves requests until input ends, then returns: right away if no command ran here,
+/// else once this process has had no visible window for `linger`.
 fn serve<R, W>(input: R, mut output: W, warm: bool, linger: Duration)
 where
     R: BufRead + Send + 'static,
@@ -118,6 +120,7 @@ where
     if warm {
         warm_up();
     }
+    let mut invoked = false;
     while let Ok(first) = rx.recv() {
         // Of queued queries only the last is read; earlier menus were already closed.
         let mut batch = vec![first];
@@ -147,12 +150,15 @@ where
                     item,
                     client_point,
                     owner,
-                } => HostReply {
-                    id,
-                    result: crate::win_menu::invoke(session, item, client_point, owner)
-                        .map(|()| Reply::Invoked)
-                        .map_err(|e| e.to_string()),
-                },
+                } => {
+                    invoked = true;
+                    HostReply {
+                        id,
+                        result: crate::win_menu::invoke(session, item, client_point, owner)
+                            .map(|()| Reply::Invoked)
+                            .map_err(|e| e.to_string()),
+                    }
+                }
                 HostRequest::Release { session } => {
                     crate::win_menu::release(session);
                     continue;
@@ -166,6 +172,9 @@ where
                 .write_all(line.as_bytes())
                 .and_then(|()| output.flush());
         }
+    }
+    if !invoked {
+        return;
     }
     let step = Duration::from_millis(500);
     let mut idle = Duration::ZERO;
@@ -565,6 +574,25 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A host that only read menus doesn't linger once Arke closes it, so quitting Arke (or the
+    /// installer replacing the exe) isn't held up by it.
+    #[test]
+    fn a_host_without_commands_exits_when_closed() {
+        let started = std::time::Instant::now();
+        let input = serde_json::to_string(&HostRequest::Release { session: 1 }).unwrap()
+            + "
+";
+        let mut output = Vec::new();
+        serve(
+            std::io::Cursor::new(input.into_bytes()),
+            &mut output,
+            false,
+            Duration::from_secs(30),
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(output.is_empty());
     }
 
     #[test]

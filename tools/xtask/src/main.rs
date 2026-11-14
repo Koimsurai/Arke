@@ -11,7 +11,8 @@
 //!                                                 print the version a build would get
 //! cargo xtask licenses                            regenerate THIRD_PARTY_LICENSES.md (cargo-about)
 //! cargo xtask build <stable|rc|nightly> [--number N] [--arch x64|arm64]
-//!                                                 package the exes into dist/ (exe, .sha256, notes,
+//!                                                 package the exes into dist/ (exe, installer,
+//!                                                 each with a .sha256, notes,
 //!                                                 THIRD_PARTY_LICENSES.md)
 //! cargo xtask publish <stable|rc|nightly> [--number N] [--arch x64|arm64] [--prebuilt]
 //!                                                 build (or with --prebuilt take what is in dist/),
@@ -20,7 +21,9 @@
 //! ```
 //!
 //! Both architectures are built unless `--arch` picks one: `arke-<version>.exe` (x64) and
-//! `arke-<version>-arm64.exe`. ARM64 needs the MSVC ARM64 build tools (Visual Studio component
+//! `arke-<version>-arm64.exe`, and with Inno Setup 6.6+ installed (or `ISCC` pointing at
+//! `ISCC.exe`) their installers `arke-<version>[-arm64]-setup.exe` (`installer/arke.iss`).
+//! `ARKE_REQUIRE_SETUP` makes a missing Inno Setup an error, as the release workflow wants. ARM64 needs the MSVC ARM64 build tools (Visual Studio component
 //! "MSVC ARM64/ARM64EC build tools") and `rustup target add aarch64-pc-windows-msvc`.
 //!
 //! Versions: stable is the `Cargo.toml` version; RC is the version the pending changesets lead to
@@ -480,8 +483,68 @@ fn exe_name(version: &str, arch: Arch) -> String {
     format!("arke-{version}{}.exe", arch.suffix)
 }
 
-/// Packages release builds as dist/arke-<version>[-arm64].exe, each with a .sha256, plus release
-/// notes. Returns (version, exe paths).
+/// Release asset name of the installer for `arch`.
+fn setup_name(version: &str, arch: Arch) -> String {
+    format!("arke-{version}{}-setup.exe", arch.suffix)
+}
+
+/// Inno Setup's compiler: `ISCC`, or where its installer puts it.
+fn iscc() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ISCC") {
+        return Some(PathBuf::from(path));
+    }
+    ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|base| {
+            let base = PathBuf::from(base);
+            if base.ends_with("Local") {
+                base.join("Programs")
+            } else {
+                base
+            }
+        })
+        .map(|base| base.join("Inno Setup 6").join("ISCC.exe"))
+        .find(|path| path.is_file())
+}
+
+/// Writes `<file>.sha256` next to `file` and returns the hash.
+fn write_sha256(file: &Path) -> Result<(String, u64)> {
+    let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+    let hash = Sha256::digest(&bytes)
+        .iter()
+        .fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+    let name = file
+        .file_name()
+        .map_or_default(|n| n.to_string_lossy().into_owned());
+    let sha_path = file.with_file_name(format!("{name}.sha256"));
+    std::fs::write(&sha_path, format!("{hash}  {name}\n"))
+        .with_context(|| format!("writing {}", sha_path.display()))?;
+    Ok((hash, bytes.len() as u64))
+}
+
+/// Builds the installer around `exe` with Inno Setup; returns its path.
+fn build_setup(iscc: &Path, version: &str, arch: Arch, exe: &Path, dist: &Path) -> Result<PathBuf> {
+    let status = Command::new(iscc)
+        .arg("/Q")
+        .arg(format!("/DAppVersion={version}"))
+        .arg(format!("/DArch={}", arch.name))
+        .arg(format!("/DSourceExe={}", exe.display()))
+        .arg(format!("/O{}", dist.display()))
+        .arg(root().join("installer").join("arke.iss"))
+        .status()
+        .with_context(|| format!("running {}", iscc.display()))?;
+    ensure!(status.success(), "Inno Setup failed");
+    let setup = dist.join(setup_name(version, arch));
+    ensure!(setup.is_file(), "{} was not made", setup.display());
+    Ok(setup)
+}
+
+/// Packages release builds as dist/arke-<version>[-arm64].exe and, with Inno Setup, the
+/// installers, each with a .sha256, plus release notes. Returns (version, file paths).
 fn cmd_build(args: &[String]) -> Result<(String, Vec<PathBuf>)> {
     let channel = args.first().map_or_default(String::as_str);
     let version = release_version(channel, args)?;
@@ -520,22 +583,29 @@ fn cmd_build(args: &[String]) -> Result<(String, Vec<PathBuf>)> {
             .join("arke.exe");
         std::fs::copy(&built, &exe)
             .with_context(|| format!("copying {} to {}", built.display(), exe.display()))?;
-        let bytes = std::fs::read(&exe).with_context(|| format!("reading {}", exe.display()))?;
-        let hash = Sha256::digest(&bytes)
-            .iter()
-            .fold(String::new(), |mut s, b| {
-                let _ = write!(s, "{b:02x}");
-                s
-            });
-        let sha_path = dist.join(format!("{file_name}.sha256"));
-        std::fs::write(&sha_path, format!("{hash}  {file_name}\n"))
-            .with_context(|| format!("writing {}", sha_path.display()))?;
+        let (hash, len) = write_sha256(&exe)?;
         println!(
             "done: {} ({:.1} MB, SHA-256 {hash})",
             exe.display(),
-            bytes.len() as f64 / 1_048_576.0
+            len as f64 / 1_048_576.0
         );
-        packaged.push(exe);
+        packaged.push(exe.clone());
+        match iscc() {
+            Some(iscc) => {
+                let setup = build_setup(&iscc, &version, arch, &exe, &dist)?;
+                let (hash, len) = write_sha256(&setup)?;
+                println!(
+                    "done: {} ({:.1} MB, SHA-256 {hash})",
+                    setup.display(),
+                    len as f64 / 1_048_576.0
+                );
+                packaged.push(setup);
+            }
+            None if std::env::var_os("ARKE_REQUIRE_SETUP").is_some() => {
+                bail!("Inno Setup not found (install it or set ISCC)")
+            }
+            None => println!("(Inno Setup not found: no installer)"),
+        }
     }
     let notes_path = dist.join(format!("arke-{version}.md"));
     std::fs::write(&notes_path, release_notes(channel, &version))
@@ -563,6 +633,16 @@ fn prebuilt(args: &[String]) -> Result<(String, Vec<PathBuf>)> {
             exe.display()
         );
         packaged.push(exe);
+        let setup = dist.join(setup_name(&version, arch));
+        if setup.is_file() {
+            packaged.push(setup);
+        } else {
+            ensure!(
+                std::env::var_os("ARKE_REQUIRE_SETUP").is_none(),
+                "{} not found",
+                setup.display()
+            );
+        }
     }
     ensure!(
         dist.join(LICENSES).is_file(),

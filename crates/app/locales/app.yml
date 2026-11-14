@@ -4221,6 +4221,10 @@ uninstall.step_keep_exe:
   en: "The program stays, since %{manager} installed it: remove it with %{command}"
   zh-TW: "程式本身由 %{manager} 管理，會留著：請用 %{command} 移除"
   zh-CN: "程序本身由 %{manager} 管理，会保留：请用 %{command} 卸载"
+uninstall.step_leave_to_setup:
+  en: "The program files, Start menu shortcut and entry in Settings › Apps go with Arke's uninstaller"
+  zh-TW: "程式檔案、開始功能表捷徑和「設定 › 應用程式」裡的項目，由 Arke 的解除安裝程式移除"
+  zh-CN: "程序文件、开始菜单快捷方式和“设置 › 应用”中的条目，由 Arke 的卸载程序移除"
 uninstall.none:
   en: "nothing to remove"
   zh-TW: "沒有需要移除的"

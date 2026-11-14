@@ -143,6 +143,11 @@ Download `arke-<version>.exe` (or `arke-<version>-arm64.exe` for ARM64 PCs) from
 [Releases](https://github.com/Koimsurai/Arke/releases) and run it. It's a single executable: no installer and no runtime. Settings are stored in
 `%APPDATA%\Arke`.
 
+Prefer an installer? `arke-<version>-setup.exe` (or `arke-<version>-arm64-setup.exe`) installs Arke
+for your account without administrator approval, or for all users in Program Files, and adds it to
+the Start menu and to Settings › Apps, where you can uninstall it. Arke's updates keep working the
+same way.
+
 Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time.
 
 Arke checks GitHub for a new version at most once a day and only installs one when you say so
@@ -238,7 +243,9 @@ it only reacts to E while a Windows key is held and records nothing. Settings li
 downloaded updates in `%LOCALAPPDATA%\Arke`. "Start when I sign in to Windows" is a shortcut in your Startup
 folder, and "Show Arke in the Start menu" one in your Start menu folder. Passwords for SFTP and WebDAV locations go to Windows Credential Manager, and only when
 you tick "Remember". The optional search service is the only part that needs administrator
-approval.
+approval. The installer, if you use it, adds the uninstall entry Windows lists in Settings › Apps
+(for your account, or for all users when you install it there) and asks for approval only for an
+all-users install.
 
 </details>
 

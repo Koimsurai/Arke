@@ -1,0 +1,41 @@
+# Comments on the issues a release fixes (the "(#N)" in its notes) once the release workflow has
+# published, or by hand for an existing tag. See .github/release-notice.sh.
+name: release notice
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.4.1
+        type: string
+        required: true
+      dry_run:
+        description: Only list what would be posted
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    # After a release run only if it published; its head branch is the tag it ran for.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: comment on the fixed issues
+        run: bash .github/release-notice.sh $DRY_RUN

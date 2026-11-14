@@ -272,6 +272,71 @@ pub(crate) enum Outcome {
     Failed(String),
 }
 
+/// Ends every other process running `exe` (this one excepted) and returns how many: what is
+/// left once the resident Arke has quit is context menu helpers finishing a command.
+fn stop_other_copies(exe: &Path) -> usize {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::ProcessStatus::EnumProcesses;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    };
+    let mut pids = vec![0u32; 4096];
+    let mut used = 0u32;
+    let bytes = u32::try_from(pids.len() * 4).unwrap_or(u32::MAX);
+    // SAFETY: `pids` is writable for `bytes` bytes; `used` is a valid out pointer.
+    if unsafe { EnumProcesses(pids.as_mut_ptr(), bytes, &raw mut used) }.is_err() {
+        return 0;
+    }
+    pids.truncate(used as usize / 4);
+    let me = std::process::id();
+    let mut stopped = 0;
+    for pid in pids.into_iter().filter(|&p| p != 0 && p != me) {
+        // SAFETY: plain Win32 calls; the handle is closed below.
+        let Ok(process) = (unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            )
+        }) else {
+            continue;
+        };
+        let mut buf = [0u16; 1024];
+        let mut len = u32::try_from(buf.len()).unwrap_or(0);
+        // SAFETY: `buf` is writable for `len` characters; the handle has query access.
+        let named = unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buf.as_mut_ptr()),
+                &raw mut len,
+            )
+        }
+        .is_ok();
+        let path = PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
+        if named && same_file(&path, exe) {
+            // SAFETY: the handle has terminate and synchronize access.
+            unsafe {
+                if TerminateProcess(process, 1).is_ok() {
+                    let _ = WaitForSingleObject(process, 3000);
+                    stopped += 1;
+                }
+            }
+        }
+        // SAFETY: closes the handle opened above.
+        let _ = unsafe { CloseHandle(process) };
+    }
+    stopped
+}
+
+/// Whether two paths name the same file, ignoring case (Windows paths).
+fn same_file(a: &Path, b: &Path) -> bool {
+    a.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+}
+
 /// Short description of a step, for the confirmation list and the summary.
 pub(crate) fn label(step: &Step) -> String {
     let path = |p: &Path| p.display().to_string();
@@ -305,7 +370,14 @@ fn io_error(err: &std::io::Error) -> Outcome {
 fn run_step(step: &Step, exe: &Path) -> Outcome {
     match step {
         Step::QuitArke => {
-            if crate::instance::quit_resident(Duration::from_secs(15)) {
+            let quit = crate::instance::quit_resident(Duration::from_secs(15));
+            // A context menu helper that just ran a command stays a while after Arke quits
+            // (`shell_host.rs`) and keeps the exe busy; Arke is going, so it goes too.
+            let stopped = stop_other_copies(exe);
+            if stopped > 0 {
+                log::info!("uninstall: stopped {stopped} leftover Arke processes");
+            }
+            if quit {
                 Outcome::Done(None)
             } else {
                 Outcome::Failed(t!("uninstall.still_running").into_owned())
@@ -594,6 +666,20 @@ mod tests {
                 Step::DeleteExe(PathBuf::from(r"C:\Users\me\AppData\Tools\arke.exe")),
             ]
         );
+    }
+
+    #[test]
+    fn matches_its_own_exe_only() {
+        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\Arke\arke.exe");
+        assert!(same_file(
+            Path::new(r"c:\users\ME\appdata\local\programs\arke\ARKE.EXE"),
+            exe
+        ));
+        assert!(!same_file(Path::new(r"D:\Arke\arke.exe"), exe));
+        assert!(!same_file(
+            Path::new(r"C:\Users\me\AppData\Local\Programs\Arke\arke.exe.old"),
+            exe
+        ));
     }
 
     #[test]

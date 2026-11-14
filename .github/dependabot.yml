@@ -20,6 +20,9 @@ updates:
     commit-message:
       prefix: chore(deps)
     groups:
+      # windows and windows-core must move together (and with what gpui-pre builds against)
+      windows:
+        patterns: ["windows", "windows-*"]
       minor-and-patch:
         update-types: [minor, patch]
     ignore:

@@ -33,7 +33,7 @@ windows = "0.62"
 # `#[implement]` expands to ::windows_core; keep in step with `windows`
 windows-core = "0.62"
 notify = "8"
-flume = "0.11"
+flume = "0.12"
 memmap2 = "0.9"
 # Fuzzy matching (Helix's engine). MPL-2.0, used unmodified; see THIRD_PARTY_NOTICES.md
 nucleo = "0.5"
@@ -55,7 +55,7 @@ log = "0.4"
 env_logger = "0.11"
 unicode-segmentation = "1"
 # Locks without poisoning (project rule: no std::sync::Mutex/RwLock/Condvar)
-parking_lot = "0.12"
+parking_lot = "0.13"
 # Typed errors for library and platform code (domain layers); tools use anyhow
 thiserror = "2"
 anyhow = "1"

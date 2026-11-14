@@ -236,3 +236,38 @@ fn update_notice_shows_the_notes_and_can_be_closed(cx: &mut TestAppContext) {
         "a newer version shows it again"
     );
 }
+
+/// The corner cards stay in the bottom right while they slide in: the slide sets `left` and `top`,
+/// which on the placed box itself pinned it to the top left, as tall as the window.
+#[gpui::test]
+fn corner_cards_stay_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    crate::motion::force_for_test(true);
+    cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(1000.)));
+    let in_corner = |cx: &mut VisualTestContext, id: &'static str| {
+        for wait in [0, 50, 400] {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(wait));
+            cx.run_until_parked();
+            let b = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} should be drawn"));
+            assert!(
+                b.origin.x > gpui::px(1000.) && b.size.height < gpui::px(400.),
+                "{id} after {wait} ms: {b:?}"
+            );
+        }
+    };
+    cx.update(|_, cx| UpdateState::set_for_test(cx, UpdateState::Available(release("0.4.0"))));
+    in_corner(cx, "update-notice");
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.set_first_run_for_test(true);
+            cx.notify();
+        });
+    });
+    in_corner(cx, "welcome");
+    crate::motion::force_for_test(false);
+}

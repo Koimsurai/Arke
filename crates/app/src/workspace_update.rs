@@ -462,58 +462,56 @@ fn notice_card(version: &str, body: String, actions: Vec<AnyElement>) -> AnyElem
                 s.update(|st| st.update_dismissed = Some(version), cx);
             });
         });
-    div()
-        .id("update-notice")
-        .debug_selector(|| "update-notice".to_owned())
-        .a11y(gpui::Role::Dialog, title.clone())
-        .occlude()
-        .absolute()
-        .bottom(theme::S_16)
-        .right(theme::S_16)
-        .w(px(360.))
-        .p(theme::S_16)
-        .flex()
-        .flex_col()
-        .gap(theme::S_12)
-        .rounded(theme::R_12)
-        .bg(theme::overlay())
-        .shadow(theme::elev_float())
-        .text_size(theme::FS_13)
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(theme::S_12)
-                .child(
-                    svg()
-                        .path(Icon::Bolt.path())
-                        .flex_none()
-                        .mt(theme::S_2)
-                        .size(theme::ICON)
-                        .text_color(theme::signal()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(theme::S_4)
-                        .child(
-                            div()
-                                .text_size(theme::FS_14)
-                                .font_weight(theme::FW_STRONG)
-                                .child(title),
-                        )
-                        .child(div().text_color(theme::text_muted()).child(body)),
-                )
-                .child(close),
-        )
-        .when(!actions.is_empty(), |d| {
-            d.child(div().flex().justify_end().gap(theme::S_8).children(actions))
-        })
-        .with_animation("update-notice-appear", crate::motion::enter(), |el, t| {
-            crate::motion::slide_in(el, t, 0., crate::motion::SLIDE)
-        })
-        .into_any_element()
+    crate::motion::corner_card(
+        div()
+            .id("update-notice")
+            .debug_selector(|| "update-notice".to_owned())
+            .a11y(gpui::Role::Dialog, title.clone())
+            .occlude()
+            .w_full()
+            .p(theme::S_16)
+            .flex()
+            .flex_col()
+            .gap(theme::S_12)
+            .rounded(theme::R_12)
+            .bg(theme::overlay())
+            .shadow(theme::elev_float())
+            .text_size(theme::FS_13)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(theme::S_12)
+                    .child(
+                        svg()
+                            .path(Icon::Bolt.path())
+                            .flex_none()
+                            .mt(theme::S_2)
+                            .size(theme::ICON)
+                            .text_color(theme::signal()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(theme::S_4)
+                            .child(
+                                div()
+                                    .text_size(theme::FS_14)
+                                    .font_weight(theme::FW_STRONG)
+                                    .child(title),
+                            )
+                            .child(div().text_color(theme::text_muted()).child(body)),
+                    )
+                    .child(close),
+            )
+            .when(!actions.is_empty(), |d| {
+                d.child(div().flex().justify_end().gap(theme::S_8).children(actions))
+            })
+            .with_animation("update-notice-appear", crate::motion::enter(), |el, t| {
+                crate::motion::slide_in(el, t, 0., crate::motion::SLIDE)
+            }),
+    )
 }

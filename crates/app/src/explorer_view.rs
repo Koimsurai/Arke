@@ -2866,6 +2866,7 @@ impl Render for Explorer {
             .on_action(cx.listener(Self::focus_path_bar))
             .on_action(cx.listener(Self::focus_filter))
             .on_action(cx.listener(Self::focus_search))
+            .on_action(cx.listener(Self::focus_computer_search))
             .on_action(cx.listener(Self::toggle_search_mode))
             .on_action(cx.listener(Self::copy_as_path))
             .on_action(cx.listener(Self::add_to_shelf))

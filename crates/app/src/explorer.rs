@@ -133,6 +133,8 @@ actions!(
         FocusPathBar,
         FocusFilter,
         FocusSearch,
+        /// Ctrl+K: the search box, searching the whole computer.
+        FocusComputerSearch,
         ToggleSearchMode,
         ToggleHidden,
         /// Ctrl+Shift+C: quoted paths of the selection, one per line, or the current folder if
@@ -209,6 +211,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-d", FocusPathBar, root),
         KeyBinding::new("ctrl-f", FocusFilter, root),
         KeyBinding::new("ctrl-shift-f", FocusSearch, root),
+        KeyBinding::new("ctrl-k", FocusComputerSearch, root),
         KeyBinding::new("alt-s", ToggleSearchMode, root),
         KeyBinding::new("ctrl-h", ToggleHidden, root),
         KeyBinding::new("ctrl-shift-c", CopyAsPath, root),
@@ -2223,6 +2226,16 @@ impl Explorer {
         self.focus_filter_input(window, cx);
     }
 
+    fn focus_computer_search(
+        &mut self,
+        _: &FocusComputerSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_scope(scope::Scope::Computer, cx);
+        self.focus_filter_input(window, cx);
+    }
+
     fn toggle_search_mode(
         &mut self,
         _: &ToggleSearchMode,
@@ -2236,6 +2249,14 @@ impl Explorer {
         };
         self.set_scope(next, cx);
         self.focus_filter_input(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn filter_focused_for_test(&self, window: &Window, cx: &App) -> bool {
+        self.filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
     }
 
     fn focus_filter_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {

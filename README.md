@@ -189,7 +189,7 @@ ranks higher; turn it off or clear it in Settings › Search.
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | Switch tabs |
 | Ctrl+Shift+S · Ctrl+Shift+D | Dual pane: synchronized browsing · compare folders |
 | Tab · Alt+C · Alt+M | Split view: switch panes · copy · move the selection to the other pane |
-| Ctrl+F · Ctrl+Shift+F | Search this folder · this folder and subfolders; Tab moves into the scope and filters |
+| Ctrl+F · Ctrl+Shift+F · Ctrl+K | Search this folder · this folder and subfolders · the whole computer; Tab moves into the scope and filters |
 | Ctrl+L · Alt+D | Edit the path |
 | Alt+← · Alt+→ · Alt+↑ | Back · forward · up |
 | F5 · Ctrl+R | Refresh |

@@ -166,7 +166,7 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | 切換分頁 |
 | Ctrl+Shift+S · Ctrl+Shift+D | 雙窗格：同步瀏覽 · 比較資料夾 |
 | Tab · Alt+C · Alt+M | 分割檢視：切換窗格 · 把選取的項目複製 · 移動到另一側 |
-| Ctrl+F · Ctrl+Shift+F | 搜尋目前資料夾 · 目前資料夾與子資料夾；Tab 進到範圍與篩選面板 |
+| Ctrl+F · Ctrl+Shift+F · Ctrl+K | 搜尋目前資料夾 · 目前資料夾與子資料夾 · 整台電腦；Tab 進到範圍與篩選面板 |
 | Ctrl+L · Alt+D | 編輯路徑 |
 | Alt+← · Alt+→ · Alt+↑ | 上一頁 · 下一頁 · 上一層 |
 | F5 · Ctrl+R | 重新整理 |

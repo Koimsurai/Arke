@@ -7,7 +7,8 @@
 //!                                           memory (see `bench_index.rs`)
 //!   arke --no-resident [path]   don't use or become the resident process
 //!   arke --quit                 quit the resident process
-//!   arke --home                 open Home (what Win+E runs while "Open folders in Arke" is on)
+//!   arke --home                 what Win+E runs while "Open folders in Arke" is on: opens a window
+//!                               like starting Arke (Settings › "New windows open to")
 //!   arke --restore-explorer     undo the folder handler registration and turn the setting off
 //!   arke --uninstall [--keep-settings] [--quiet] [--dry-run]
 //!                               remove Arke from this PC (see `uninstall.rs`)
@@ -165,7 +166,9 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             Some("--no-resident") => args.resident = false,
             Some("--quit") => args.quit = true,
             Some("--background") => args.background = true,
-            Some("--home") => args.page = Some(Page::Home),
+            // Win+E's registration (folder_handler.rs). It used to open Home; now Win+E starts
+            // like Arke itself, last tabs included (#73). The name stays: it is in the registry.
+            Some("--home") => {}
             Some("--restore-explorer") => args.restore_explorer = true,
             // Just updated: the old process's pid follows (already waited for at the start of
             // app_main).
@@ -252,9 +255,10 @@ fn main() -> std::process::ExitCode {
                 win::open_in_explorer(target);
                 return std::process::ExitCode::SUCCESS;
             }
+            // Win+E, Start or the taskbar meant "open the file explorer": start like Arke itself
+            // does, where Settings › "New windows open to" says (last tabs included) (#73).
             arke_core::takeover::Route::Arke(Target::Home) => {
                 args.path = None;
-                args.page = Some(Page::Home);
             }
             arke_core::takeover::Route::Arke(Target::RecycleBin) => {
                 args.path = None;
@@ -682,8 +686,10 @@ fn follow_win_e_hook(
     let services = services.clone();
     cx.spawn(async move |cx| {
         while rx.recv_async().await.is_ok() {
+            // Like starting Arke: where Settings › "New windows open to" says, last tabs
+            // included (#73).
             cx.update(|cx| {
-                open_target(cx, &services, Target::Home, &[], None);
+                open_in_front(cx, &services, None, None, Instant::now());
             });
         }
     })
@@ -1117,15 +1123,7 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
                         // A folder handed over by the shell or another program (#11).
                         open_target(cx, &services, Target::Folder(path.clone()), &[], None)
                     } else {
-                        match open_explorer_window(cx, &services, open.path, bench, started_at) {
-                            Some(handle) => {
-                                let _ =
-                                    handle.update(cx, |_, window, _| bring_to_front(window, None));
-                                cx.activate(true);
-                                true
-                            }
-                            None => false,
-                        }
+                        open_in_front(cx, &services, open.path, bench, started_at)
                     }
                 }
             });
@@ -1243,6 +1241,22 @@ fn open_explorer(
     open_explorer_window(cx, services, path, bench, started_at).is_some()
 }
 
+/// Opens a window (at `path`, or where the settings say) and brings it to the front.
+fn open_in_front(
+    cx: &mut App,
+    services: &Services,
+    path: Option<PathBuf>,
+    bench: Option<Bench>,
+    started_at: Instant,
+) -> bool {
+    let Some(handle) = open_explorer_window(cx, services, path, bench, started_at) else {
+        return false;
+    };
+    let _ = handle.update(cx, |_, window, _| bring_to_front(window, None));
+    cx.activate(true);
+    true
+}
+
 fn open_explorer_window(
     cx: &mut App,
     services: &Services,
@@ -1357,7 +1371,7 @@ mod arg_tests {
     #[test]
     fn home_and_restore_flags_are_not_paths() {
         let args = parse(&["--home"]);
-        assert!(args.page == Some(Page::Home) && args.path.is_none() && !args.restore_explorer);
+        assert!(args.page.is_none() && args.path.is_none() && !args.restore_explorer);
         let args = parse(&["--restore-explorer"]);
         assert!(args.restore_explorer && args.path.is_none() && args.page.is_none());
     }

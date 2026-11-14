@@ -51,7 +51,7 @@ pub(crate) struct OpenRequest {
     pub(crate) bench_out: Option<PathBuf>,
     /// Sender start time in Unix ms, so measurements start from the moment of launch
     pub(crate) launched_unix_ms: u64,
-    /// Open a page instead of a folder (`arke --home`, the Win+E registration, the Recycle Bin)
+    /// Open a page instead of a folder (the Recycle Bin; "home" from older versions' Win+E)
     pub(crate) page: Option<Page>,
 }
 

@@ -71,7 +71,7 @@ fn identity() -> arke_core::scrub::Identity {
 
 /// The report as sent: composed, then scrubbed. Runs on a background thread.
 fn prepare(s: &Settings, with_log: bool, mask_names: bool) -> String {
-    arke_core::scrub::scrub(&compose(s, with_log), &identity(), mask_names)
+    arke_core::scrub::scrub(&compose(s, with_log, true), &identity(), mask_names)
 }
 
 /// Why copying or saving the report failed.
@@ -135,6 +135,22 @@ fn settings_summary(s: &Settings) -> String {
     )
 }
 
+/// "Open folders in Arke" and Win+E: the settings, and who the registry says handles folders and
+/// Win+E now (read only). `with_registry` is false on the UI thread (the issue URL).
+fn shell_integration(s: &Settings, with_registry: bool) -> String {
+    let mut out = format!(
+        "- open folders in Arke {}, Win+E too {}, in a tab {}\n",
+        s.open_folders_in_arke, s.win_e_opens_arke, s.open_external_in_tab
+    );
+    if with_registry && let Ok(exe) = std::env::current_exe() {
+        for line in arke_core::folder_handler::describe(&crate::win_registry::UserRegistry, &exe) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Last lines of the log file. Runs on a background thread.
 fn recent_log() -> String {
     let Some(path) = crate::crashlog::log_path() else {
@@ -147,14 +163,17 @@ fn recent_log() -> String {
     lines[lines.len().saturating_sub(LOG_LINES)..].join("\n")
 }
 
-/// Full report text. Runs on a background thread.
-fn compose(s: &Settings, with_log: bool) -> String {
+/// Full report text. Runs on a background thread, except for the issue URL, which leaves out what
+/// needs reading (`with_registry`).
+fn compose(s: &Settings, with_log: bool, with_registry: bool) -> String {
     let mut out = format!(
-        "## {}\n\n{}\n## {}\n\n{}",
+        "## {}\n\n{}\n## {}\n\n{}\n## {}\n\n{}",
         t!("report.environment"),
         environment(),
         t!("report.settings"),
-        settings_summary(s)
+        settings_summary(s),
+        t!("report.shell"),
+        shell_integration(s, with_registry)
     );
     if with_log {
         use std::fmt::Write as _;
@@ -188,7 +207,7 @@ pub(super) fn issue_url(repo: &str, s: &Settings) -> String {
         t!("report.describe_here"),
         t!("report.steps"),
         t!("report.steps_hint"),
-        compose(s, false)
+        compose(s, false, false)
     ) + &format!("\n## {}\n\n{}\n", t!("report.log"), t!("report.paste_log"));
     let body = arke_core::scrub::scrub(&body, &identity(), true);
     format!(

@@ -769,6 +769,16 @@ pub(crate) fn list_selection(focused: bool) -> Rgba {
 }
 
 /// Settings cards: on the paper, slightly lighter (like Windows 11 Settings cards). Border uses `line()`.
+/// The page a text, Markdown or document preview sits on in the preview pane: a card with a hairline
+/// edge, so it reads as a sheet rather than a hole in the pane.
+pub(crate) fn preview_sheet<E: gpui::Styled>(element: E) -> E {
+    element
+        .rounded(R_8)
+        .border_1()
+        .border_color(line())
+        .bg(card())
+}
+
 pub(crate) fn card() -> Rgba {
     if is_dark() {
         alpha(hex(0xffffff), 0.045)
@@ -975,6 +985,17 @@ pub(crate) fn elev_2_active() -> Vec<BoxShadow> {
 }
 /// Floating surfaces: menus, popovers, tooltips, toasts, drag previews. They are always opaque
 /// (`overlay()`), so the dark theme can use the outline plus a lit inner edge.
+/// Tooltips: lighter than menus. No dark outline (on a small label it reads as a black ring), a
+/// faint edge and a short, soft shadow, so the tip floats without weighing on what it explains.
+pub(crate) fn elev_tooltip() -> Vec<BoxShadow> {
+    let drop = drop_shadow(alpha(p().veil, if is_dark() { 0.22 } else { 0.08 }), 2., 8.);
+    if is_dark() {
+        vec![inner_hairline(alpha(p().ink, 0.08)), drop]
+    } else {
+        vec![hairline(line()), drop]
+    }
+}
+
 pub(crate) fn elev_float() -> Vec<BoxShadow> {
     let drop = drop_shadow(
         alpha(p().veil, if is_dark() { 0.35 } else { 0.10 }),

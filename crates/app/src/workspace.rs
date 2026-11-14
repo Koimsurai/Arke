@@ -58,7 +58,7 @@ mod tabdrag;
 #[path = "workspace_uninstall.rs"]
 mod uninstall_page;
 #[path = "workspace_update.rs"]
-mod update_page;
+pub(crate) mod update_page;
 #[path = "workspace_welcome.rs"]
 mod welcome;
 #[path = "workspace_whats_new.rs"]
@@ -2435,7 +2435,7 @@ fn tooltip_card(text: &SharedString) -> gpui::Div {
         .when(long, |d| d.w(theme::TOOLTIP_MAX_W))
         .rounded(theme::R_8)
         .bg(theme::overlay())
-        .shadow(theme::elev_float())
+        .shadow(theme::elev_tooltip())
         .ui_font()
         .text_size(theme::FS_12)
         .text_color(theme::text())

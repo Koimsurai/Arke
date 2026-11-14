@@ -348,14 +348,20 @@ pub(super) fn document_body(
         .size_full()
         .overflow_y_scroll()
         .track_scroll(scroll)
-        // Quick Look reads like the Markdown page: a column on the stage's paper.
-        .when(large, |d| d.px(theme::S_32).py(theme::S_24))
-        .when(!large, |d| d.p(theme::S_12).rounded(theme::R_8).bg(theme::wash()))
+        // Quick Look reads like the Markdown page: a sheet on the stage.
+        .when(large, |d| d.p(theme::S_24))
+        .when(!large, |d| d.p(theme::S_12).map(theme::preview_sheet))
         .child(
             div().w_full().flex().justify_center().child(
                 div()
                     .w_full()
                     .max_w(theme::READ_W)
+                    .when(large, |d| {
+                        d.px(theme::S_32)
+                            .py(theme::S_24)
+                            .map(theme::preview_sheet)
+                            .rounded(theme::R_12)
+                    })
                     .child(document_view(doc, large)),
             ),
         )

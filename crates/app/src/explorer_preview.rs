@@ -5,7 +5,7 @@
 //!   thumbnail handlers).
 //! - Text and code: first 64 KB with encoding detection (UTF-8, UTF-16, legacy system code pages
 //!   like Big5); binary-looking files are skipped. Code gets line numbers and basic highlighting
-//!   (`arke_core::highlight`); Markdown gets basic layout (headings, lists, quotes, code blocks).
+//!   (`arke_core::highlight`); Markdown is parsed (`arke_core::markdown`) and laid out like GitHub.
 //! - PDFs: rendered by Windows (`win_pdf.rs`), the first page in the pane and every page in Quick
 //!   Look (Left/Right, Page Up/Down, Home/End turn pages), sized for the space in device pixels.
 //!   Recent pages are cached per tab.
@@ -164,7 +164,8 @@ pub(crate) enum PreviewBody {
     },
     /// A rendered PDF page
     Pdf(PdfView),
-    Markdown(SharedString),
+    /// Markdown, parsed
+    Markdown(Arc<arke_core::markdown::Doc>),
     /// Archive contents
     Archive(Arc<ArchiveListing>),
     /// Folder contents (folders first, natural name order) and total count
@@ -213,7 +214,7 @@ pub(crate) enum PreviewData {
         target: (u32, u32),
         render: PdfPage,
     },
-    Markdown(String),
+    Markdown(arke_core::markdown::Doc),
     Archive(ArchiveListing),
     Folder {
         entries: Vec<Entry>,
@@ -466,7 +467,7 @@ fn load(
                 return PreviewData::Nothing;
             };
             if is_markdown(path) {
-                return PreviewData::Markdown(markdown_lines(&text));
+                return PreviewData::Markdown(arke_core::markdown::parse(&markdown_lines(&text)));
             }
             let marks = path
                 .extension()
@@ -712,7 +713,7 @@ impl Explorer {
                         pending: None,
                     })
                 }
-                PreviewData::Markdown(text) => PreviewBody::Markdown(text.into()),
+                PreviewData::Markdown(doc) => PreviewBody::Markdown(Arc::new(doc)),
                 PreviewData::Archive(listing) => PreviewBody::Archive(Arc::new(listing)),
                 PreviewData::Folder { entries, total } => PreviewBody::Folder {
                     entries: Arc::new(entries),
@@ -954,6 +955,162 @@ impl Explorer {
 
     // ───────────────────────── Rendering ─────────────────────────
 
+    /// Under the preview, like File Explorer's details pane: the kind's icon, the name and
+    /// type · size on the left, the item's actions as icon buttons on the right.
+    fn pane_title(preview: &Preview, cx: &mut Context<Self>) -> AnyElement {
+        let mut subtitle = type_label(&preview.entry);
+        if !preview.entry.is_dir_like() {
+            subtitle = format!("{subtitle} · {}", format_size(preview.entry.size));
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap(theme::S_12)
+            .child(kind_icon(file_kind(&preview.entry), theme::ICON_LG))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(theme::FW_STRONG)
+                            .text_size(theme::FS_15)
+                            .child(SharedString::from(
+                                arke_core::tree::leaf(&preview.entry.name).to_owned(),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(theme::FS_12)
+                            .text_color(theme::text_subtle())
+                            .child(subtitle),
+                    ),
+            )
+            .child(Self::pane_actions(preview, cx))
+            .into_any_element()
+    }
+
+    /// Open, Open with, Copy path, Properties: what the context menu offers most for one item. Quiet
+    /// on purpose (small, with a light hover), so the preview stays the thing to look at.
+    fn pane_actions(preview: &Preview, cx: &mut Context<Self>) -> AnyElement {
+        let is_dir = preview.entry.is_dir_like();
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(theme::S_2)
+            .child(quiet_button(
+                "pane-open",
+                crate::assets::Icon::External,
+                true,
+                t!("menu.open"),
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    let Some((path, is_dir)) = this
+                        .preview
+                        .as_ref()
+                        .map(|p| (p.path.clone(), p.entry.is_dir_like()))
+                    else {
+                        return;
+                    };
+                    if is_dir {
+                        this.navigate(path, arke_core::NavKind::New, cx);
+                    } else {
+                        this.open_file(path, cx);
+                    }
+                }),
+            ))
+            .when(!is_dir, |d| {
+                d.child(quiet_button(
+                    "pane-open-with",
+                    crate::assets::Icon::OpenWith,
+                    true,
+                    t!("menu.choose_app"),
+                    cx.listener(|this, _: &ClickEvent, window, _| {
+                        if let Some(path) = this.preview.as_ref().map(|p| p.path.clone()) {
+                            this.choose_app(path, window);
+                        }
+                    }),
+                ))
+            })
+            .child(quiet_button(
+                "pane-copy-path",
+                crate::assets::Icon::CopyPath,
+                true,
+                t!("menu.copy_path"),
+                cx.listener(|this, _: &ClickEvent, _, _| {
+                    if let Some(p) = this.preview.as_ref() {
+                        this.copy_paths(&[(p.path.clone(), p.entry.is_dir_like())]);
+                    }
+                }),
+            ))
+            .child(quiet_button(
+                "pane-properties",
+                crate::assets::Icon::Info,
+                true,
+                t!("menu.properties"),
+                cx.listener(|this, _: &ClickEvent, window, _| {
+                    if let Some(p) = this.preview.as_ref() {
+                        this.run_shell_verb(
+                            &[(p.path.clone(), p.entry.is_dir_like())],
+                            "properties",
+                            window,
+                        );
+                    }
+                }),
+            ))
+            .into_any_element()
+    }
+
+    /// The rest of the details as a titled list: label on the left, value on the right, grouped by
+    /// spacing rather than lines.
+    fn pane_info(&self, preview: &Preview) -> AnyElement {
+        let shown = [t!("col.type").into_owned(), t!("col.size").into_owned()];
+        let rows: Vec<(String, String)> = self
+            .preview_details(preview)
+            .into_iter()
+            .filter(|(key, _)| !shown.contains(key))
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .text_size(theme::FS_12)
+            .gap(theme::S_6)
+            .child(
+                div()
+                    .pb(theme::S_2)
+                    .text_color(theme::text_subtle())
+                    .child(t!("preview.info").into_owned()),
+            )
+            .children(rows.into_iter().map(|(key, value)| {
+                div()
+                    .flex()
+                    .gap(theme::S_16)
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme::text_subtle())
+                            .child(key),
+                    )
+                    .child(
+                        // Keep the end of long paths (the levels nearest the file).
+                        div().flex_1().min_w_0().flex().justify_end().child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_start()
+                                .text_color(theme::text_muted())
+                                .child(value),
+                        ),
+                    )
+            }))
+            .into_any_element()
+    }
+
     fn preview_details(&self, preview: &Preview) -> Vec<(String, String)> {
         let shell = &self.services.shell;
         let mut rows = vec![(t!("col.type").to_string(), type_label(&preview.entry))];
@@ -1064,9 +1221,8 @@ impl Explorer {
                 .overflow_y_scroll()
                 .track_scroll(scroll)
                 .p(theme::S_12)
-                .rounded(theme::R_8)
-                .bg(theme::wash())
-                .child(markdown(text, false))
+                .map(theme::preview_sheet)
+                .child(super::markdown_view::markdown(text, false))
                 .into_any_element(),
             PreviewBody::Folder { entries, total } => {
                 Self::folder_list(&preview.path, entries, *total, scroll, None)
@@ -1578,15 +1734,8 @@ impl Explorer {
                 }
             }
         }))
-        .child(
-            div()
-                .font_weight(theme::FW_STRONG)
-                .text_size(theme::FS_15)
-                .child(SharedString::from(
-                    arke_core::tree::leaf(&preview.entry.name).to_owned(),
-                )),
-        )
-        .child(Self::details_grid(self.preview_details(preview)))
+        .child(Self::pane_title(preview, cx))
+        .child(self.pane_info(preview))
         .into_any_element()
     }
 
@@ -2065,15 +2214,60 @@ fn look_stage(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     )
 }
 
-/// What sits behind Quick Look's content: the darker stage for images and PDFs (so they read
-/// edge to edge), paper for text, the card itself for lists and empty states.
+/// A small icon button for actions next to content (the preview pane's title row): its icon
+/// lights up on a light wash under the mouse, where toolbars' `ghost_button` uses the stronger
+/// pressed wash.
+fn quiet_button(
+    id: &'static str,
+    icon: crate::assets::Icon,
+    enabled: bool,
+    tip: impl std::fmt::Display,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    use crate::a11y::A11yExt as _;
+    use crate::workspace::TooltipBelowExt as _;
+    let tip = SharedString::from(tip.to_string());
+    div()
+        .id(id)
+        .group(id)
+        .a11y_button(tip.clone())
+        .a11y_disabled(!enabled)
+        .size(theme::H_CTL_SM)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(theme::R_8)
+        .when(enabled, |d| {
+            d.cursor_pointer()
+                .hover(|s| s.bg(theme::wash()))
+                .on_click(on_click)
+        })
+        .child(
+            gpui::svg()
+                .path(icon.path())
+                .size(theme::ICON)
+                .text_color(theme::text_muted())
+                .when(enabled, |s| {
+                    s.group_hover(id, |s| s.text_color(theme::text()))
+                }),
+        )
+        .tooltip_below(tip)
+}
+
+/// What sits behind Quick Look's content: the darker stage for images, PDFs and pages to read (so
+/// they read edge to edge, or as a sheet), paper for text and code, the card itself for lists and
+/// empty states.
 fn look_backdrop(preview: &Preview) -> gpui::Rgba {
     match &preview.body {
-        PreviewBody::Image { .. } | PreviewBody::Pdf(_) | PreviewBody::Slides(_) => theme::stage(),
+        // Pages to read sit on the stage too, as a sheet (see the Markdown and document bodies).
+        PreviewBody::Image { .. }
+        | PreviewBody::Pdf(_)
+        | PreviewBody::Slides(_)
+        | PreviewBody::Markdown(_)
+        | PreviewBody::Document(_) => theme::stage(),
         PreviewBody::Loading(_) if on_stage(&preview.entry) => theme::stage(),
-        PreviewBody::Text { .. } | PreviewBody::Markdown(_) | PreviewBody::Document(_) => {
-            theme::surface()
-        }
+        PreviewBody::Text { .. } => theme::surface(),
         _ => theme::overlay(),
     }
 }
@@ -2527,13 +2721,16 @@ impl Explorer {
                     .items_center()
                     .overflow_y_scroll()
                     .track_scroll(&self.look_scroll)
+                    .p(theme::S_24)
                     .child(
                         div()
                             .w_full()
                             .max_w(theme::READ_W)
                             .px(theme::S_32)
                             .py(theme::S_24)
-                            .child(markdown(text, true)),
+                            .map(theme::preview_sheet)
+                            .rounded(theme::R_12)
+                            .child(super::markdown_view::markdown(text, true)),
                     )
                     .into_any_element();
                 return Self::with_preview_scrollbar(page, &self.look_scroll, &self.look_scrollbar);
@@ -2990,8 +3187,7 @@ fn code_view(lines: &Arc<Vec<CodeLine>>, large: bool, scroll: &gpui::ScrollHandl
         })
         .when(!large, |d| {
             d.p(theme::S_8)
-                .rounded(theme::R_8)
-                .bg(theme::wash())
+                .map(theme::preview_sheet)
                 .text_size(theme::FS_12)
         })
         .children(rows)
@@ -3011,152 +3207,6 @@ fn archive_summary(listing: &ArchiveListing) -> String {
         text.push_str(&t!("preview.archive_partial"));
     }
     text
-}
-
-/// Basic Markdown layout: headings, lists, quotes, rules, code blocks; inline `**` and `` ` ` `
-/// markers are stripped. Not full Markdown, just readable in a preview.
-fn markdown(text: &str, large: bool) -> AnyElement {
-    let body = if large { theme::FS_15 } else { theme::FS_13 };
-    let mut blocks: Vec<AnyElement> = Vec::new();
-    let mut code: Option<Vec<String>> = None;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            match code.take() {
-                Some(lines) => blocks.push(code_block(&lines.join("\n"))),
-                None => code = Some(Vec::new()),
-            }
-            continue;
-        }
-        if let Some(lines) = code.as_mut() {
-            lines.push(line.to_owned());
-            continue;
-        }
-        blocks.push(md_line(trimmed, body));
-    }
-    // Draw an unterminated code block anyway.
-    if let Some(lines) = code {
-        blocks.push(code_block(&lines.join("\n")));
-    }
-    div()
-        .flex()
-        .flex_col()
-        .gap(theme::S_4)
-        .ui_font()
-        .text_size(body)
-        .text_color(theme::text())
-        .children(blocks)
-        .into_any_element()
-}
-
-/// One Markdown line (outside code blocks).
-fn md_line(line: &str, body: gpui::Pixels) -> AnyElement {
-    if line.is_empty() {
-        return div().h(theme::S_4).into_any_element();
-    }
-    let heading = line.chars().take_while(|&c| c == '#').count();
-    if (1..=6).contains(&heading) && line[heading..].starts_with(' ') {
-        let size = match heading {
-            1 => theme::FS_20,
-            2 => theme::FS_15,
-            _ => body,
-        };
-        return div()
-            .mt(theme::S_4)
-            .text_size(size)
-            .font_weight(theme::FW_STRONG)
-            .child(inline(line[heading..].trim()))
-            .into_any_element();
-    }
-    if matches!(line, "---" | "***" | "___") {
-        return div()
-            .my(theme::S_4)
-            .h(px(1.))
-            .bg(theme::line())
-            .into_any_element();
-    }
-    if let Some(rest) = line.strip_prefix("> ").or_else(|| line.strip_prefix('>')) {
-        return div()
-            .pl(theme::S_8)
-            .border_l_2()
-            .border_color(theme::line_strong())
-            .text_color(theme::text_muted())
-            .child(inline(rest.trim()))
-            .into_any_element();
-    }
-    let bullet = ["- ", "* ", "+ "].iter().find_map(|b| line.strip_prefix(b));
-    let numbered = line
-        .split_once(". ")
-        .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
-    if bullet.is_some() || numbered.is_some() {
-        let (mark, rest) = match (bullet, numbered) {
-            (Some(rest), _) => ("•".to_owned(), rest),
-            (None, Some((n, rest))) => (format!("{n}."), rest),
-            (None, None) => (String::new(), line),
-        };
-        return div()
-            .flex()
-            .gap(theme::S_6)
-            .pl(theme::S_4)
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(theme::text_subtle())
-                    .child(mark),
-            )
-            .child(div().flex_1().min_w_0().child(inline(rest)))
-            .into_any_element();
-    }
-    div().child(inline(line)).into_any_element()
-}
-
-/// Strip inline markers (`**`/`__` for bold and italics, code backticks); links keep only their
-/// text.
-fn inline(text: &str) -> String {
-    let text = text.replace("**", "").replace("__", "").replace('`', "");
-    // [text](url) -> text
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text.as_str();
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find("](") else { break };
-        let Some(end) = after[close + 2..].find(')') else {
-            break;
-        };
-        out.push_str(&rest[..open]);
-        out.push_str(&after[..close]);
-        rest = &after[close + 2 + end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn code_block(text: &str) -> AnyElement {
-    div()
-        .p(theme::S_8)
-        .rounded(theme::R_4)
-        .bg(theme::wash_strong())
-        .font_family("Cascadia Mono")
-        .text_size(theme::FS_12)
-        .text_color(theme::text_muted())
-        .child(text.to_owned())
-        .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::inline;
-
-    #[test]
-    fn strips_inline_markup() {
-        assert_eq!(inline("a **bold** and `code`"), "a bold and code");
-        assert_eq!(
-            inline("see [the docs](https://x.y/z) now"),
-            "see the docs now"
-        );
-        assert_eq!(inline("[a](b) [c](d)"), "a c");
-        assert_eq!(inline("no [link here"), "no [link here");
-    }
 }
 
 #[cfg(test)]

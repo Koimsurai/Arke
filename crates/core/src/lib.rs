@@ -44,6 +44,7 @@ pub mod index_service;
 pub mod journal;
 pub mod link;
 pub mod loader;
+pub mod markdown;
 pub mod model;
 pub mod net;
 pub mod office;

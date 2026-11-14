@@ -250,7 +250,7 @@ fn release_version(state: &UpdateState) -> String {
 }
 
 /// Opens a URL in the default browser on a background thread.
-pub(super) fn open_url(url: &str, cx: &mut App) {
+pub(crate) fn open_url(url: &str, cx: &mut App) {
     if url.is_empty() {
         return;
     }

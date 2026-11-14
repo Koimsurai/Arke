@@ -55,6 +55,8 @@ pub(crate) mod groups;
 mod icons;
 #[path = "explorer_layout.rs"]
 mod layout;
+#[path = "explorer_markdown.rs"]
+mod markdown_view;
 #[path = "explorer_marquee.rs"]
 mod marquee;
 #[path = "explorer_opcenter.rs"]

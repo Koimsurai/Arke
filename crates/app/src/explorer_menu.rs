@@ -1522,7 +1522,7 @@ impl Explorer {
         }
     }
 
-    fn copy_paths(&self, targets: &[(PathBuf, bool)]) {
+    pub(super) fn copy_paths(&self, targets: &[(PathBuf, bool)]) {
         // Same as Explorer's "Copy as path": each path quoted, one per line.
         let text = if targets.is_empty() {
             self.current_path()
@@ -1915,7 +1915,12 @@ impl Explorer {
     /// process reads the menu, finds the item (including in submenus) and runs it, so third-party
     /// code
     /// stays in that process.
-    fn run_shell_verb(&self, targets: &[(PathBuf, bool)], verb: &'static str, window: &Window) {
+    pub(super) fn run_shell_verb(
+        &self,
+        targets: &[(PathBuf, bool)],
+        verb: &'static str,
+        window: &Window,
+    ) {
         fn find(entries: &[crate::shell::ShellMenuEntry], verb: &str) -> Option<u32> {
             entries.iter().find_map(|e| match e {
                 crate::shell::ShellMenuEntry::Item {

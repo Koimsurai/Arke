@@ -4389,7 +4389,10 @@ fn space_opens_quick_look_with_text_preview(cx: &mut TestAppContext) {
     wait_until(cx, &view, "Markdown preview", |v| {
         matches!(
             v.preview.as_ref().map(|p| &p.body),
-            Some(crate::explorer::PreviewBody::Markdown(t)) if t.contains("# Title")
+            Some(crate::explorer::PreviewBody::Markdown(doc)) if matches!(
+                doc.blocks.first(),
+                Some(arke_core::markdown::Block::Heading { level: 1, text }) if text.text == "Title"
+            )
         )
     });
     cx.simulate_keystrokes("up");

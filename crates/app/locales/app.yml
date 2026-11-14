@@ -3248,6 +3248,14 @@ preview.nothing_selected:
   en: Select an item to preview it
   zh-TW: "選取要預覽的項目"
   zh-CN: "选择要预览的项目"
+preview.info:
+  en: Info
+  zh-TW: 資訊
+  zh-CN: 信息
+preview.md_link_tip:
+  en: "%{url}\nCtrl+click to open"
+  zh-TW: "%{url}\nCtrl+點擊開啟"
+  zh-CN: "%{url}\nCtrl+点击打开"
 preview.in_last_column:
   en: Previewed in the last column
   zh-TW: "預覽顯示在最後一欄"

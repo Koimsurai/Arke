@@ -368,8 +368,10 @@ mod icon_wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
     use std::fmt::Write;
 
-    // serde's `with` requires the first parameter to be &FieldType.
-    #[allow(clippy::ref_option)]
+    #[allow(
+        clippy::ref_option,
+        reason = "serde's `with` requires the first parameter to be &FieldType"
+    )]
     pub(super) fn serialize<S: Serializer>(
         icon: &Option<Thumbnail>,
         s: S,

@@ -89,8 +89,7 @@ fn welcome_button(
 }
 
 /// The first-run card, bottom right, or `None` when not due.
-// One card, top to bottom.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, reason = "One card, top to bottom")]
 pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
     if !welcome_due(cx) {
         return None;

@@ -34,7 +34,6 @@ const MAX_ITEMS: usize = 20_000;
 pub(crate) fn in_sync_root(dir: &Path) -> bool {
     let wide = HSTRING::from(dir.as_os_str());
     let mut info = CF_SYNC_ROOT_BASIC_INFO::default();
-    #[allow(clippy::cast_possible_truncation)]
     let size = size_of::<CF_SYNC_ROOT_BASIC_INFO>() as u32;
     // SAFETY: `info` is a valid buffer of `size` bytes for the duration of the call.
     let result = unsafe {
@@ -66,7 +65,6 @@ fn not_in_sync(path: &Path, buffer: &mut [u64]) -> Option<bool> {
         )
     }
     .ok()?;
-    #[allow(clippy::cast_possible_truncation)]
     let len = std::mem::size_of_val(buffer) as u32;
     // SAFETY: `buffer` is u64-aligned (enough for CF_PLACEHOLDER_BASIC_INFO) and `len` bytes long.
     let result = unsafe {

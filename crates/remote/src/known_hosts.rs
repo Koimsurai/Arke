@@ -105,8 +105,10 @@ impl KnownHosts {
     }
 
     /// Trusts the key from now on, replacing an older key of the same type.
-    // The lock is held on purpose until the file is written.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "The lock is held on purpose until the file is written"
+    )]
     pub fn trust(&self, host: &HostKey) -> io::Result<()> {
         let Some(path) = &self.path else {
             let mut memory = self.memory.lock();

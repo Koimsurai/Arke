@@ -394,7 +394,9 @@ fn submit(
         .insert(id, done);
     let mut line = serde_json::to_string(&make(id)).map_err(ShellError::Encode)?;
     line.push('\n');
-    host.tx.send(line).map_err(|_| ShellError::HostGone)?;
+    host.tx
+        .send(line)
+        .map_err(|_hung_up| ShellError::HostGone)?;
     Ok(wait)
 }
 

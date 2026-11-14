@@ -117,6 +117,9 @@ arc_with_non_send_sync = "deny"
 
 unwrap_used = "warn"
 expect_used = "warn"
+unwrap_in_result = "warn"             # a function that returns Result passes errors on
+map_err_ignore = "warn"               # `map_err(|_| ..)` loses why it failed
+allow_attributes_without_reason = "warn" # every #[allow] says why
 panic = "warn"
 mutex_atomic = "warn"
 mutex_integer = "warn"

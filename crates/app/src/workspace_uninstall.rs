@@ -209,8 +209,10 @@ impl Workspace {
     }
 
     /// The confirmation over the settings page, or `None` when closed.
-    // The dialog reads top to bottom: title, list, option, notes, buttons.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The dialog reads top to bottom: title, list, option, notes, buttons"
+    )]
     pub(super) fn render_uninstall_dialog(
         &self,
         cx: &mut Context<Self>,

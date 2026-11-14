@@ -19,14 +19,12 @@ const MAX_SIDE: u32 = 4096;
 /// Pixel size that fits a `page_w` × `page_h` page (any unit) inside `max`, keeping its aspect
 /// ratio. Never 0, never past [`MAX_SIDE`].
 pub(crate) fn fit_page(page_w: f32, page_h: f32, max: (u32, u32)) -> (u32, u32) {
-    #[allow(clippy::cast_precision_loss)]
     let (mw, mh) = (
         max.0.clamp(1, MAX_SIDE) as f32,
         max.1.clamp(1, MAX_SIDE) as f32,
     );
     let (pw, ph) = (page_w.max(1.), page_h.max(1.));
     let scale = (mw / pw).min(mh / ph);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let side = |v: f32| ((v * scale).round() as u32).clamp(1, MAX_SIDE);
     (side(pw), side(ph))
 }
@@ -67,7 +65,7 @@ fn render(path: &Path, page: u32, max: (u32, u32)) -> Result<PdfRender, ShellErr
         .RenderWithOptionsToStreamAsync(&stream, &options)?
         .join()?;
     let _ = pdf_page.Close();
-    let len = u32::try_from(stream.Size()?).map_err(|_| ShellError::Unsupported)?;
+    let len = u32::try_from(stream.Size()?).map_err(|_too_big| ShellError::Unsupported)?;
     let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
     let loaded = reader.LoadAsync(len)?.join()?;
     let mut png = vec![0; loaded as usize];

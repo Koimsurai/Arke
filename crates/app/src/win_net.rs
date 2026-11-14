@@ -131,9 +131,11 @@ fn server_shares(server: &str) -> std::io::Result<Vec<Share>> {
             ));
         }
         if !buf.is_null() {
+            #[allow(
+                clippy::cast_ptr_alignment,
+                reason = "NetApiBufferAllocate memory is aligned for any record type"
+            )]
             // SAFETY: NetShareEnum returned `read` consecutive SHARE_INFO_1 records at buf.
-            // NetApiBufferAllocate memory is aligned for any record type.
-            #[allow(clippy::cast_ptr_alignment)]
             let records =
                 unsafe { std::slice::from_raw_parts(buf.cast::<SHARE_INFO_1>(), read as usize) };
             for record in records {

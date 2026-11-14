@@ -5,7 +5,16 @@
 //! [`cli::run`]: release builds run it as `arke.exe --indexd <command>`, and development can use
 //! the standalone `arke-indexd.exe`.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic,
+        reason = "a failing test should stop right there"
+    )
+)]
 
 pub mod cli;
 pub mod client;

@@ -83,7 +83,6 @@ impl IconSize {
         let px = if px.is_finite() { px } else { hi };
         let snapped = (px.clamp(lo, hi) / grain).round() * grain;
         // Clamped to 48..=192 above, so the cast is exact.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Self(snapped as u16)
     }
 
@@ -305,7 +304,6 @@ impl Explorer {
         }
         self.zoom_accum -= whole;
         // Clamped by `zoom` anyway; a wheel never sends anywhere near i32's range.
-        #[allow(clippy::cast_possible_truncation)]
         let steps = whole.clamp(-16., 16.) as i32;
         match zoom(self.view_mode, self.icon_size, steps) {
             Some(ZoomTarget::Icons(size)) => self.pick_icon_size(size, cx),

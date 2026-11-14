@@ -47,7 +47,6 @@ impl Visit {
 #[must_use]
 pub fn decay(weight: f64, elapsed: u64) -> f64 {
     // Seconds fit an f64 exactly far beyond any real elapsed time.
-    #[allow(clippy::cast_precision_loss)]
     let half_lives = elapsed as f64 / HALF_LIFE as f64;
     weight * 0.5f64.powf(half_lives)
 }
@@ -219,7 +218,6 @@ impl Frecency {
                 path: v.path.clone(),
                 is_dir: v.is_dir,
                 // Ranking needs only a rough value.
-                #[allow(clippy::cast_possible_truncation)]
                 value: v.value(now) as f32,
             })
             .filter(|i| f64::from(i.value) >= FORGET_BELOW)
@@ -229,7 +227,6 @@ impl Frecency {
             .items
             .iter()
             .filter_map(|(k, v)| {
-                #[allow(clippy::cast_possible_truncation)]
                 let value = v.value(now) as f32;
                 (f64::from(value) >= FORGET_BELOW).then(|| (k.clone(), value))
             })

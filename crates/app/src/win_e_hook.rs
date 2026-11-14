@@ -229,7 +229,10 @@ fn mask_start_menu() {
         },
     };
     let inputs = [key(KEYBD_EVENT_FLAGS::default()), key(KEYEVENTF_KEYUP)];
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "size_of::<INPUT>() is a few dozen bytes"
+    )]
     let size = std::mem::size_of::<INPUT>() as i32;
     // SAFETY: two fully initialised keyboard inputs.
     let _ = unsafe { SendInput(&inputs, size) };
@@ -271,7 +274,10 @@ mod tests {
             press(VK_E, true),
             press(VK_LWIN, true),
         ];
-        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "size_of::<INPUT>() is a few dozen bytes"
+        )]
         let size = std::mem::size_of::<INPUT>() as i32;
         // SAFETY: four fully initialised keyboard inputs.
         let sent = unsafe { SendInput(&keys, size) };

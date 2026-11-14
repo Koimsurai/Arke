@@ -10,7 +10,10 @@
 //! builds (they come daily) or dev builds, and not when Settings › About turns it off. The page
 //! is in `workspace_whats_new.rs`.
 
-#[allow(dead_code)] // the half that writes changesets and changelogs is for xtask
+#[allow(
+    dead_code,
+    reason = "the half that writes changesets and changelogs is for xtask"
+)]
 #[path = "../../../tools/xtask/src/notes.rs"]
 mod notes;
 
@@ -154,7 +157,6 @@ pub(crate) fn on_startup(
     }
 }
 
-#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod tests {
     use super::*;

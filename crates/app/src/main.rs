@@ -20,7 +20,16 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // Tests may unwrap and panic.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic,
+        reason = "a failing test should stop right there"
+    )
+)]
 
 // First, so the `tn!` macro is visible in every module below.
 #[macro_use]
@@ -121,8 +130,10 @@ enum BenchArg {
     Index,
 }
 
-// One bool per command line flag.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "One bool per command line flag"
+)]
 struct Args {
     path: Option<PathBuf>,
     bench: Option<BenchArg>,
@@ -283,9 +294,10 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-// Startup order (args, handoff to the resident process, window, settings-driven pieces) reads best
-// top to bottom in one place.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Startup order (args, handoff to the resident process, window, settings-driven pieces) reads best top to bottom in one place"
+)]
 fn app_main(mut args: Args) {
     if run_shell_host() {
         return;

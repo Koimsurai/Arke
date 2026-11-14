@@ -112,8 +112,10 @@ pub(crate) fn query(paths: &[PathBuf], background: bool) -> Result<ShellMenu, Sh
         background,
         done,
     })
-    .map_err(|_| ShellError::MenuThreadGone)?;
-    result.recv().map_err(|_| ShellError::MenuThreadNoReply)?
+    .map_err(|_hung_up| ShellError::MenuThreadGone)?;
+    result
+        .recv()
+        .map_err(|_hung_up| ShellError::MenuThreadNoReply)?
 }
 
 /// Invokes a menu item. Commands may open windows or run long, so call from a background thread.
@@ -132,8 +134,10 @@ pub(crate) fn invoke(
         owner,
         done,
     })
-    .map_err(|_| ShellError::MenuThreadGone)?;
-    result.recv().map_err(|_| ShellError::MenuThreadNoReply)?
+    .map_err(|_hung_up| ShellError::MenuThreadGone)?;
+    result
+        .recv()
+        .map_err(|_hung_up| ShellError::MenuThreadNoReply)?
 }
 
 /// Releases a menu without waiting.

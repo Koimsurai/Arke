@@ -30,7 +30,11 @@
 //! plus `-rc.N`; nightly is that version plus `-nightly.YYYYMMDD`. So 0.2.0-nightly < 0.2.0-rc.1
 //! < 0.2.0, which is how the update check compares them.
 
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "command-line tool: prints its output"
+)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -41,7 +45,10 @@ use sha2::{Digest, Sha256};
 
 use notes::{Bump, ChangeText, LANGS};
 
-#[allow(dead_code)] // the reading half is for Arke's What's new page (whats_new.rs)
+#[allow(
+    dead_code,
+    reason = "the reading half is for Arke's What's new page (whats_new.rs)"
+)]
 mod notes;
 
 fn root() -> PathBuf {
@@ -772,7 +779,7 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, reason = "a failing test should stop right there")]
 mod tests {
     use super::*;
 

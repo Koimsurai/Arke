@@ -13,7 +13,12 @@
 //!
 //! The outputs are committed; rerun only after changing the SVGs.
 
-#![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
+#![allow(
+    clippy::print_stdout,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "command-line tool: prints progress and stops on errors"
+)]
 
 use std::path::Path;
 

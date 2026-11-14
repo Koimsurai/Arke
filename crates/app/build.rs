@@ -10,8 +10,10 @@
 //! - Icon and file version info (`arke.rc` template). The icon is generated from SVG by
 //!   `cargo run -p genicon`.
 
-// A failing build script should panic; cargo shows the message and stops.
-#![allow(clippy::panic)]
+#![allow(
+    clippy::panic,
+    reason = "A failing build script should panic; cargo shows the message and stops"
+)]
 
 use std::path::PathBuf;
 

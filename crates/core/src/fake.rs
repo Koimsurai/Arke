@@ -96,8 +96,10 @@ impl FakeFs {
     }
 
     /// Adds or replaces an entry. Emits no watch event; call `emit_changed` if needed.
-    // False positive: `list` borrows from the guard until the last line.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "False positive: `list` borrows from the guard until the last line"
+    )]
     pub fn add_entry(&self, dir: &Path, entry: Entry) {
         let mut state = self.state.lock();
         let list = state.dirs.entry(dir.to_path_buf()).or_default();

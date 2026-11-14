@@ -129,7 +129,10 @@ impl<R: Read + Seek> Package<R> {
             return Err(OfficeError::Protected);
         }
         reader.seek(SeekFrom::Start(0))?;
-        let zip = zip::ZipArchive::new(reader).map_err(|_| OfficeError::Malformed)?;
+        let zip = zip::ZipArchive::new(reader).map_err(|e| {
+            log::debug!("office: not a readable zip: {e}");
+            OfficeError::Malformed
+        })?;
         if zip.len() > MAX_PARTS {
             return Err(OfficeError::Malformed);
         }
@@ -150,11 +153,15 @@ impl<R: Read + Seek> Package<R> {
         let Some(ix) = self.find(name) else {
             return Ok(None);
         };
-        let file = self.zip.by_index(ix).map_err(|_| OfficeError::Malformed)?;
+        let file = self.zip.by_index(ix).map_err(|e| {
+            log::debug!("office: part {ix} unreadable: {e}");
+            OfficeError::Malformed
+        })?;
         let mut bytes = Vec::new();
-        file.take(cap + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| OfficeError::Malformed)?;
+        file.take(cap + 1).read_to_end(&mut bytes).map_err(|e| {
+            log::debug!("office: part {ix} unreadable: {e}");
+            OfficeError::Malformed
+        })?;
         let truncated = bytes.len() as u64 > cap;
         bytes.truncate(usize::try_from(cap).unwrap_or(usize::MAX));
         Ok(Some(Part { bytes, truncated }))
@@ -495,8 +502,10 @@ struct TableBuild {
     cell: Option<String>,
 }
 
-// The flags track where the reader is (inside pPr, rPr, numPr, w:t) and the run's toggles.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "The flags track where the reader is (inside pPr, rPr, numPr, w:t) and the run's toggles"
+)]
 struct DocParser<'s> {
     styles: &'s HashMap<String, ParaStyle>,
     blocks: Vec<Block>,
@@ -1057,9 +1066,7 @@ fn format_date(
     if !value.is_finite() || !(0.0..2_958_466.0).contains(&value) {
         return None;
     }
-    #[allow(clippy::cast_possible_truncation)]
     let mut days = value.floor() as i64;
-    #[allow(clippy::cast_possible_truncation)]
     let mut secs = ((value - value.floor()) * 86_400.0).round() as i64;
     if secs >= 86_400 {
         days += 1;
@@ -1124,7 +1131,7 @@ struct RawCell {
 }
 
 /// Cells of a sheet part in the first [`SHEET_ROWS`] × [`SHEET_COLS`].
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, reason = "one pass over the sheet XML")]
 fn parse_sheet(part: &Part, sheet: &mut Sheet) -> Result<Vec<RawCell>, OfficeError> {
     struct Pending {
         row: u32,
@@ -1328,8 +1335,10 @@ struct SheetRef {
 
 /// Reads a workbook's sheet names and the cells of visible sheet `index` (the first if out of
 /// range).
-// One pass: sheet list, the sheet's cells, then only the styles and shared strings it uses.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One pass: sheet list, the sheet's cells, then only the styles and shared strings it uses"
+)]
 pub fn read_workbook(reader: impl Read + Seek, index: usize) -> Result<Workbook, OfficeError> {
     let mut pkg = Package::open(reader)?;
     let main = pkg.main_part("xl/workbook.xml")?;
@@ -1881,7 +1890,10 @@ fn flush_line<T>(line: &mut String, found: &mut dyn FnMut(&str) -> Option<T>) ->
 
 /// Builds small Office packages for tests (no binary fixtures in the repository).
 #[cfg(any(test, feature = "test-support"))]
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = "test fixtures: a broken fixture should stop the test"
+)]
 pub mod fixtures {
     use std::fmt::Write as _;
     use std::io::{Cursor, Write as _};

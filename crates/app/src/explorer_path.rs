@@ -410,7 +410,10 @@ impl Explorer {
     /// The whole path shows whenever it fits; only when it doesn't do levels collapse into "…",
     /// from the middle outwards (see [`super::layout::collapse_crumbs`]), keeping the drive and
     /// the current folder.
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "crumbs with their collapsed levels, taken apart right at the call"
+    )]
     fn shown_crumbs(
         &self,
         window: &Window,

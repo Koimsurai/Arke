@@ -169,7 +169,10 @@ pub(crate) fn pick(
         }
     }
     talked?;
-    let reply: Reply = serde_json::from_str(line.trim()).map_err(|_| ShellError::HostGone)?;
+    let reply: Reply = serde_json::from_str(line.trim()).map_err(|e| {
+        log::warn!("picker: unreadable reply from the shell host: {e}");
+        ShellError::HostGone
+    })?;
     reply.result.map_err(ShellError::Host)
 }
 

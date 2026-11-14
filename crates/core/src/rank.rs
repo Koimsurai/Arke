@@ -96,7 +96,6 @@ pub fn frecency_bonus(value: f32) -> i64 {
         return 0;
     }
     // Bounded by the cap below, so the cast can't overflow.
-    #[allow(clippy::cast_possible_truncation)]
     let bonus = (FRECENCY_SCALE * value.ln_1p()).round() as i64;
     bonus.clamp(0, MAX_FRECENCY_BONUS)
 }

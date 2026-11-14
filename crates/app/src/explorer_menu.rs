@@ -298,8 +298,10 @@ fn decorate(entries: &mut [MenuEntry]) {
     }
 }
 
-// Each bool is an independent row style (enabled, checked, bold, danger); an enum would read worse.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Each bool is an independent row style (enabled, checked, bold, danger); an enum would read worse"
+)]
 #[derive(Clone)]
 pub(crate) struct MenuItem {
     pub(crate) label: SharedString,
@@ -893,8 +895,10 @@ impl Explorer {
         }
     }
 
-    // One section per menu kind (background, single, multi), listed top to bottom as on screen.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One section per menu kind (background, single, multi), listed top to bottom as on screen"
+    )]
     fn build_menu(
         &self,
         targets: &[(PathBuf, bool)],
@@ -1270,8 +1274,10 @@ impl Explorer {
 
     // ───────────────────────── Running commands ─────────────────────────
 
-    // One arm per command; splitting it up would scatter them.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One arm per command; splitting it up would scatter them"
+    )]
     pub(crate) fn run_menu_command(
         &mut self,
         command: MenuCommand,
@@ -2243,8 +2249,10 @@ impl Explorer {
     }
 
     /// Every open level of `menu`. `leaving`: the dismissed menu's ghost, drawn inert while it fades.
-    // Positions and animation of the top level and each submenu are easier to follow side by side.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Positions and animation of the top level and each submenu are easier to follow side by side"
+    )]
     fn render_menu_levels(
         menu: &ContextMenu,
         leaving: bool,
@@ -2526,7 +2534,10 @@ impl Explorer {
             )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a row needs its menu, position, entry and highlight state"
+    )]
     fn render_menu_row(
         menu: &ContextMenu,
         level: usize,
@@ -2644,7 +2655,10 @@ impl Explorer {
 }
 
 /// What a row draws (separators have none).
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent parts a row may draw"
+)]
 struct RowParts {
     label: SharedString,
     enabled: bool,

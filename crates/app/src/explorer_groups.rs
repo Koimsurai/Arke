@@ -416,7 +416,6 @@ impl Explorer {
                 Some(Slot::Row(r, k)) if wanted.peek() == Some(&(*r, *k)) => {
                     wanted.next();
                     let row = tiles.next().unwrap_or_else(|| div().into_any_element());
-                    #[allow(clippy::cast_precision_loss)]
                     let up = slot_h * *k as f32;
                     div()
                         .h(slot_h)

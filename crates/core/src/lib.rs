@@ -6,7 +6,16 @@
 //! into Arke.
 
 // Tests may unwrap / panic.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic,
+        reason = "a failing test should stop right there"
+    )
+)]
 
 // Translations for user-facing text (type names, error messages). The app picks the
 // locale with rust_i18n::set_locale.

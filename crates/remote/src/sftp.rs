@@ -67,8 +67,10 @@ struct Client {
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    // The trait method is async; this check needs no awaiting.
-    #[allow(clippy::unused_async_trait_impl)]
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "The trait method is async; this check needs no awaiting"
+    )]
     async fn check_server_key(
         &mut self,
         key: &PublicKeyOrCertificate,
@@ -124,13 +126,19 @@ pub(crate) async fn connect(
         tokio::net::lookup_host((host.as_str(), url.port))
             .await
             .map(Iterator::collect)
-            .map_err(|_| RemoteError::NoSuchHost(host.clone()))
+            .map_err(|e| {
+                log::info!("sftp: {host} not found: {e}");
+                RemoteError::NoSuchHost(host.clone())
+            })
     })
     .await?;
     let stream = timed(CONNECT_TIMEOUT, async {
         tokio::net::TcpStream::connect(&addrs[..])
             .await
-            .map_err(|_| RemoteError::Unreachable(url.host_port()))
+            .map_err(|e| {
+                log::info!("sftp: can't connect to {}: {e}", url.host_port());
+                RemoteError::Unreachable(url.host_port())
+            })
     })
     .await?;
     let _ = stream.set_nodelay(true);
@@ -381,10 +389,7 @@ impl SftpConn {
     pub(crate) async fn read_head(&self, path: &str, len: u64) -> RemoteResult<Vec<u8>> {
         let file = self.open(path).await?;
         let mut bytes = Vec::new();
-        file.take(len)
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| RemoteError::Lost)?;
+        file.take(len).read_to_end(&mut bytes).await.map_err(lost)?;
         Ok(bytes)
     }
 
@@ -408,17 +413,23 @@ impl SftpConn {
     }
 }
 
+/// The connection broke mid-transfer; the reason goes to the log.
+fn lost(e: std::io::Error) -> RemoteError {
+    log::warn!("sftp: connection lost: {e}");
+    RemoteError::Lost
+}
+
 /// Writes all of `bytes` to a remote file.
 pub(crate) async fn write_chunk(
     file: &mut russh_sftp::client::fs::File,
     bytes: &[u8],
 ) -> RemoteResult<()> {
-    file.write_all(bytes).await.map_err(|_| RemoteError::Lost)
+    file.write_all(bytes).await.map_err(lost)
 }
 
 /// Flushes and closes a remote file being written.
 pub(crate) async fn finish(mut file: russh_sftp::client::fs::File) -> RemoteResult<()> {
-    file.shutdown().await.map_err(|_| RemoteError::Lost)
+    file.shutdown().await.map_err(lost)
 }
 
 /// Reads the next chunk (empty at the end).
@@ -426,5 +437,5 @@ pub(crate) async fn read_chunk(
     file: &mut russh_sftp::client::fs::File,
     buf: &mut [u8],
 ) -> RemoteResult<usize> {
-    file.read(buf).await.map_err(|_| RemoteError::Lost)
+    file.read(buf).await.map_err(lost)
 }

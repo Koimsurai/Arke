@@ -113,7 +113,10 @@ impl WinHttp {
 }
 
 impl Transport for WinHttp {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one WinHTTP request from open to close"
+    )]
     fn send(
         &self,
         request: Request<'_>,
@@ -168,7 +171,7 @@ impl Transport for WinHttp {
                         .map_err(fail)?;
                 }
                 Body::Stream { reader, len } => {
-                    let total = u32::try_from(len).map_err(|_| {
+                    let total = u32::try_from(len).map_err(|_too_big| {
                         RemoteError::Server("files over 4 GB can't be uploaded over WebDAV".into())
                     })?;
                     WinHttpSendRequest(req.0, None, None, 0, total, 0).map_err(fail)?;

@@ -487,8 +487,10 @@ fn truncated_note() -> AnyElement {
 
 /// A sheet as a grid: column letters and row numbers stay in place while the cells scroll both
 /// ways. Only the rows in view are built.
-// Header, gutter and cells share the same scroll math; split up they'd pass it all around.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Header, gutter and cells share the same scroll math; split up they'd pass it all around"
+)]
 pub(super) fn sheet_grid(
     view: &WorkbookView,
     large: bool,
@@ -513,12 +515,10 @@ pub(super) fn sheet_grid(
     let total_w = widths.iter().fold(px(0.), |a, w| a + *w);
     let rows = sheet.rows.len();
     let digits = rows.to_string().len();
-    #[allow(clippy::cast_precision_loss)]
     let num_w = px(8. * digits as f32 + 16.);
     let offset = scroll.offset();
     let (off_x, off_y) = ((-offset.x).max(px(0.)), (-offset.y).max(px(0.)));
     let viewport = scroll.bounds().size.height;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let (first, visible) = (
         ((off_y / CELL_H).floor().max(0.) as usize).min(rows),
         if viewport > px(0.) {
@@ -528,7 +528,6 @@ pub(super) fn sheet_grid(
         },
     );
     let last = (first + visible).min(rows);
-    #[allow(clippy::cast_precision_loss)]
     let row_y = |r: usize| CELL_H * r as f32;
     let hairline = |d: gpui::Div| d.border_color(theme::line());
 

@@ -810,7 +810,10 @@ mod tests {
     /// does too, and when it leaves one it leaves no record behind.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
-    #[allow(clippy::print_stderr)]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a live test run by hand reports what it saw"
+    )]
     fn items_in_use_are_treated_like_the_engine_treats_them() {
         use crate::win_inuse::test_support::lock_in_other_process;
         type Build = fn(&Path) -> PathBuf;
@@ -964,7 +967,10 @@ mod tests {
     /// can too, and then it comes back.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
-    #[allow(clippy::print_stderr)]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a live test run by hand reports what it saw"
+    )]
     fn long_paths_follow_the_engine() {
         let sb = Sandbox::new("long");
         let deep = |dir: &Path| -> PathBuf {
@@ -1071,7 +1077,10 @@ mod tests {
     /// `cargo test -p arke-app --bin arke fast_recycle_timing -- --ignored --nocapture`.
     #[test]
     #[ignore = "benchmark: writes 20,000 files to %TEMP% and uses the Recycle Bin"]
-    #[allow(clippy::print_stderr)]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn fast_recycle_timing() {
         let sb = Sandbox::new("timing");
         let dir = sb.0.join("many");

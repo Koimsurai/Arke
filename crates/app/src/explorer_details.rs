@@ -548,11 +548,7 @@ impl Explorer {
         let row = self.row_height();
         let top = -handle.0.borrow().base_handle.offset().y;
         let height = self.list_bounds.get().size.height;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "row counts on screen, never negative"
-        )]
+        // Row counts on screen, never negative.
         let (first, last) = (
             (top / row).floor().max(0.) as usize,
             ((top + height) / row).ceil().max(0.) as usize,

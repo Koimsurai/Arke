@@ -56,9 +56,7 @@ fn tail_items(item: Pixels) -> usize {
         return 0;
     }
     // A handful at most (3 rows, or one tile row), so the cast can't truncate.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let count = (LIST_TAIL / item).ceil() as usize;
-    count
+    (LIST_TAIL / item).ceil() as usize
 }
 
 /// How long regular toasts stay before closing
@@ -1738,7 +1736,6 @@ impl Explorer {
             )
             .into_owned()
         };
-        #[allow(clippy::cast_precision_loss)]
         let bar = if total > 0 && done > 0 {
             Progress::Fraction(so_far.min(total) as f32 / total as f32)
         } else {
@@ -1804,7 +1801,6 @@ impl Explorer {
         let mut toasts: Vec<AnyElement> = Vec::new();
         if let Some(job) = &self.extract_job {
             let p = job.progress;
-            #[allow(clippy::cast_precision_loss)]
             let progress = if p.total > 0 {
                 Progress::Fraction(p.done.min(p.total) as f32 / p.total as f32)
             } else {

@@ -9,8 +9,12 @@
 //! Safety: only creates or deletes under `std::env::temp_dir()`, and deletes only directories
 //! that carry this tool's marker file.
 
-// CLI tool: printing to the console and aborting on errors is intended.
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::expect_used,
+    reason = "CLI tool: printing to the console and aborting on errors is intended"
+)]
 
 use std::fs::{self, File};
 use std::io::Write;

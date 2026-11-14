@@ -824,7 +824,12 @@ mod tests {
     /// `cargo nextest run -p arke-core --run-ignored only --no-capture content_search_benchmark`.
     #[test]
     #[ignore = "benchmark"]
-    #[allow(clippy::print_stderr, clippy::too_many_lines, clippy::format_collect)]
+    #[allow(
+        clippy::print_stderr,
+        clippy::too_many_lines,
+        clippy::format_collect,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn content_search_benchmark() {
         use crate::office::fixtures as office;
         use crate::pdf_text::fixtures::pdf;

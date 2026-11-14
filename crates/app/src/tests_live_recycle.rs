@@ -58,7 +58,10 @@ fn settle(
 }
 
 #[gpui::test]
-#[allow(clippy::print_stderr)]
+#[allow(
+    clippy::print_stderr,
+    reason = "a live test run by hand reports what it did"
+)]
 #[ignore = "uses the real Recycle Bin (only this test's own temp items, restored at the end)"]
 fn delete_and_undo_through_arke_with_the_switch_on_and_off(cx: &mut TestAppContext) {
     let sb = Sandbox::new("arke");

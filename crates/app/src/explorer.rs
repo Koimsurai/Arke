@@ -421,7 +421,10 @@ pub(crate) enum ExplorerEvent {
 }
 
 /// Where this `Explorer` sits in its tab. Set by `Workspace` before every render.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about where the pane sits in its tab"
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PaneInfo {
     /// The tab is split into two panes.
@@ -531,8 +534,10 @@ struct Filtered {
     entries: Arc<Vec<Entry>>,
 }
 
-// UI flags are independent (editing path, loading, show hidden, ...) and don't fit a state machine.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "UI flags are independent (editing path, loading, show hidden, ...) and don't fit a state machine"
+)]
 pub(crate) struct Explorer {
     pub(crate) services: Services,
     events_tx: flume::Sender<AppEvent>,
@@ -812,8 +817,10 @@ pub(crate) fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
 }
 
 impl Explorer {
-    // Many fields, each needing an initial value; splitting this up would read worse.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Many fields, each needing an initial value; splitting this up would read worse"
+    )]
     pub(crate) fn new(
         services: Services,
         start_path: PathBuf,

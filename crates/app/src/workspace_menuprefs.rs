@@ -562,8 +562,10 @@ fn label(pref: &MenuPref) -> String {
 }
 
 /// Preview of the folder context menu: same order and look as the real one, hidden entries omitted.
-// Rows mirror the real menu order in one place; splitting them up makes that harder to compare.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Rows mirror the real menu order in one place; splitting them up makes that harder to compare"
+)]
 fn preview_menu(s: &Settings) -> AnyElement {
     // The "Open with" row shows the first editor the real menu would list, with its own icon, so
     // the preview matches the menu; "VS Code" with the generic icon when none is found.

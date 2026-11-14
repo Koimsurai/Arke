@@ -496,16 +496,13 @@ fn tree_keeps_rows_in_place_while_expanding_and_collapsing(cx: &mut TestAppConte
     let screen_y = |view: &Entity<Explorer>, cx: &mut VisualTestContext, name: &str| {
         view.update(cx, |v, _| {
             let ix = view_names(v).iter().position(|n| n == name).unwrap();
-            #[allow(clippy::cast_precision_loss)]
-            let y = row_h * ix as f32 + v.list_scroll_for_test().y;
-            y
+            row_h * ix as f32 + v.list_scroll_for_test().y
         })
     };
     // Scroll so f1 is a few rows below the top, inside the expanded rows of f0 and f1.
     let f1_row = view.update(cx, |v, _| {
         view_names(v).iter().position(|n| n == "f1").unwrap()
     });
-    #[allow(clippy::cast_precision_loss)]
     let scrolled = row_h * (f1_row as f32 - 3.);
     view.update(cx, |v, _| v.set_list_scroll_for_test(scrolled));
     paint(cx);

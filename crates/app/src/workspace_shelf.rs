@@ -133,8 +133,10 @@ impl Workspace {
     }
 
     /// The Shelf row and, when open, its items and actions.
-    // The row is one element chain (look, drop target, drag source, menu); split up it reads worse.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The row is one element chain (look, drop target, drag source, menu); split up it reads worse"
+    )]
     pub(super) fn render_shelf(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let held = ShelfStore::global(cx).read(cx).shelf().clone();
         let present: Vec<PathBuf> = held.present();
@@ -292,8 +294,10 @@ impl Workspace {
         cx.notify();
     }
 
-    // One row's look, drag, menu and remove button, kept together like the tree rows.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One row's look, drag, menu and remove button, kept together like the tree rows"
+    )]
     fn shelf_item_row(
         ix: usize,
         item: &ShelfItem,

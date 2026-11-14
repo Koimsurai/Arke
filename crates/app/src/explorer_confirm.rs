@@ -285,7 +285,10 @@ impl Explorer {
     }
 
     /// The veil and the dialog: entering, or (`leaving`: the ghost's animation id) fading out.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the veil and the dialog are one element tree"
+    )]
     fn confirm_dialog(
         confirm: &Confirm,
         leaving: Option<gpui::ElementId>,

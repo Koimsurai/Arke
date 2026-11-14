@@ -569,12 +569,10 @@ impl Explorer {
             // A header row (grouping) has no item: take the next item below it.
             let first = (top / row_h).floor().max(0.);
             // Not negative, and a row count.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let first = first as usize;
             (first..first + 4).find_map(|row| self.item_at_row(row))?
         };
         let entry = view.get(ix)?;
-        #[allow(clippy::cast_precision_loss)]
         let item_top = row_h * self.display_row(ix) as f32;
         Some(ScrollAnchor {
             name: Arc::clone(&entry.name),
@@ -595,7 +593,6 @@ impl Explorer {
         else {
             return;
         };
-        #[allow(clippy::cast_precision_loss)]
         let item_top = self.row_height() * self.display_row(ix) as f32;
         let top = (item_top - anchor.offset).max(px(0.));
         let state = self.scroll.0.borrow();

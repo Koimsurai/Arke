@@ -64,7 +64,7 @@ pub(crate) enum Roots {
     /// Local fixed drives (discovered in the background)
     LocalDrives,
     /// Explicit roots (tests)
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code, reason = "only tests use fixed roots"))]
     Fixed(Vec<PathBuf>),
 }
 

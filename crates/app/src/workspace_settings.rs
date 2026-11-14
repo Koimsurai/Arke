@@ -702,8 +702,10 @@ impl Workspace {
     }
 
     /// Settings page for the content area, or `None` when closed.
-    // The whole page layout (categories, content, scrollbar) is kept together so the structure is visible.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The whole page layout (categories, content, scrollbar) is kept together so the structure is visible"
+    )]
     pub(super) fn render_settings_page(
         &self,
         window: &Window,
@@ -934,7 +936,10 @@ impl Workspace {
     }
 
     /// Each category (name, icon) and its cards.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each category and its cards, in the order shown"
+    )]
     fn settings_sections(
         s: &Settings,
         page: &SettingsPage,
@@ -1821,8 +1826,10 @@ pub(super) fn choice<T: Copy + PartialEq + 'static>(
 
 /// [`choice`] where picking runs `pick` (not necessarily a setting), and `fonts` optionally gives
 /// each option's label its own font.
-// Button, list and outside layer are parts of one control; splitting them makes it harder to read.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Button, list and outside layer are parts of one control; splitting them makes it harder to read"
+)]
 pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     id: &'static str,
     options: &[(T, Cow<'static, str>)],
@@ -2055,7 +2062,10 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
 
 /// Expandable card. The whole header (icon, name, description, current value, chevron) is clickable;
 /// options appear below when expanded.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an expander takes its title, state and body parts"
+)]
 pub(super) fn expander(
     id: &'static str,
     icon: Icon,
@@ -2691,8 +2701,10 @@ fn background_summary(s: &Settings, page: &SettingsPage) -> AnyElement {
 /// Background image: thumbnail of the chosen file with Browse and Clear (or paste a path and
 /// press Enter), then opacity with a live preview of the file list paper. Can also be set from an
 /// image's context menu.
-// The card's two parts (choosing the image, then how strongly it shows) are kept together.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The card's two parts (choosing the image, then how strongly it shows) are kept together"
+)]
 fn background_body(
     s: &Settings,
     page: &SettingsPage,
@@ -2926,7 +2938,6 @@ fn opacity_slider(value: u8, dragging: std::rc::Rc<std::cell::Cell<bool>>) -> An
         f32::from(value.min(100)) / 100.,
         dragging,
         // 0 to 1 in, 0 to 100 out: the cast can't truncate.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         std::rc::Rc::new(|fraction: f32, _: &mut Window, cx: &mut App| {
             set_backdrop_opacity((fraction * 100.).round() as u8, cx);
         }),
@@ -3603,8 +3614,10 @@ fn journal_choice(current_mb: u64) -> u64 {
 /// Advanced: the change journal's max size per local disk (queried from the disk), which can be
 /// raised (UAC prompt). A larger journal lets Arke catch up after being closed longer without a
 /// full reindex, at the cost of disk space. Collapsed by default.
-// One card: a row per disk with its size dropdown, kept together for easier comparison.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One card: a row per disk with its size dropdown, kept together for easier comparison"
+)]
 fn journal_card(
     roots: Vec<PathBuf>,
     open: bool,

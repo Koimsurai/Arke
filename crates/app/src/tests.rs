@@ -3152,8 +3152,10 @@ fn folder_sizes_are_computed_in_the_background(cx: &mut TestAppContext) {
     assert_eq!(view.update(cx, |v, _| v.selected_size()), Some(1031));
 }
 
-// One scenario end to end: sizes arrive in the background while the sort is applied.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One scenario end to end: sizes arrive in the background while the sort is applied"
+)]
 #[gpui::test]
 fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
     use crate::explorer::FolderSize;
@@ -3539,8 +3541,10 @@ fn right_click(view: &Entity<Explorer>, cx: &mut VisualTestContext, row: Option<
     cx.run_until_parked();
 }
 
-// ContextMenu lives in a private explorer submodule, so `labels` can't be named by path.
-#[allow(clippy::redundant_closure_for_method_calls)]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so `labels` can't be named by path"
+)]
 fn menu_labels(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Option<Vec<String>> {
     view.update(cx, |v, _| v.context_menu.as_ref().map(|m| m.labels()))
 }
@@ -3553,7 +3557,11 @@ fn run_command(view: &Entity<Explorer>, cx: &mut VisualTestContext, command: Men
 }
 
 #[gpui::test]
-#[allow(clippy::too_many_lines, clippy::redundant_closure_for_method_calls)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::redundant_closure_for_method_calls,
+    reason = "one scenario end to end; menu labels come through a closure over a private type"
+)]
 fn context_menu_items_selection_and_keyboard(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(
@@ -3958,7 +3966,7 @@ fn split_panes_copy_to_the_other_side_and_switch_with_tab(cx: &mut TestAppContex
 ///    Developer-facing text (comments, logs, assertions, panic messages) and tests are exempt.
 /// 2. Every locale key used in code exists in the yml for every language.
 #[test]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, reason = "checks every locale key in one pass")]
 fn ui_text_comes_from_locales() {
     use std::collections::{BTreeMap, BTreeSet};
     let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

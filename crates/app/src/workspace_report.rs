@@ -336,8 +336,10 @@ impl Workspace {
     }
 }
 
-// The card reads top to bottom: what is sent, the options, the exact text, the actions.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The card reads top to bottom: what is sent, the options, the exact text, the actions"
+)]
 pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyElement {
     let repo = build_info::RELEASES_REPO;
     let note = cx.try_global::<ReportNote>().cloned().unwrap_or_default().0;

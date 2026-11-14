@@ -872,7 +872,10 @@ impl Workspace {
             }))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a tile needs its place, label, icon and state"
+    )]
     fn render_tile(
         ix: usize,
         path: &Path,
@@ -995,7 +998,6 @@ impl Workspace {
         };
         // Drives get free space on the right and a thin usage bar under the label.
         let space = space.filter(|&(_, total)| total > 0).map(|(free, total)| {
-            #[allow(clippy::cast_precision_loss)]
             let used = 1. - free as f32 / total as f32;
             DriveSpace {
                 free: arke_core::format::format_size(free),
@@ -1015,7 +1017,10 @@ impl Workspace {
     }
 
     /// An expandable folder; renders subfolders recursively when open.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a tree row needs its place, depth and state"
+    )]
     fn render_tree(
         &self,
         path: &Path,
@@ -1041,7 +1046,6 @@ impl Workspace {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu = self.tree_menu(path, depth, cx);
-        #[allow(clippy::cast_precision_loss)]
         let indent = INDENT * depth as f32;
         out.push(
             div()
@@ -1764,7 +1768,10 @@ impl Workspace {
     }
 
     /// One tab. `horizontal` uses the top tab strip style (wider, joined to the paper at the bottom).
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one tab's look, drag and menu together"
+    )]
     pub(super) fn render_tab(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let tab: &Tab = &self.tabs[ix];
         let active = ix == self.active;

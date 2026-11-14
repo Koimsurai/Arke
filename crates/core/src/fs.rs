@@ -216,8 +216,10 @@ fn arm_watcher(
 ) -> io::Result<Box<dyn crate::watches::Armed>> {
     use notify::Watcher;
     let (closed_tx, closed) = std::sync::mpsc::channel();
-    // notify's own API takes a std mutex here.
-    #[allow(clippy::disallowed_types)]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "notify's own API takes a std mutex here"
+    )]
     let handler: Arc<std::sync::Mutex<dyn notify::EventHandler>> = Arc::new(std::sync::Mutex::new(
         move |res: notify::Result<notify::Event>| forward(&on_event, res),
     ));

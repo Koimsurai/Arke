@@ -250,12 +250,18 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx);
     }
 
-    #[allow(clippy::unused_self)] // GPUI action listeners need the &mut self signature
+    #[allow(
+        clippy::unused_self,
+        reason = "GPUI action listeners need the &mut self signature"
+    )]
     fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Confirm);
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(
+        clippy::unused_self,
+        reason = "GPUI action listeners need the &mut self signature"
+    )]
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Cancel);
     }

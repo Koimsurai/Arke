@@ -658,7 +658,10 @@ fn row_button(
 }
 
 impl Render for WorkspacesPanel {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the panel's element tree reads top to bottom"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let list: Vec<SavedWorkspace> = WorkspaceStore::global(cx)
             .read(cx)

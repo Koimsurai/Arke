@@ -1,6 +1,12 @@
 //! A small WebDAV server for tests: plain HTTP on 127.0.0.1 over a folder.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    missing_docs,
+    reason = "test support: a failure should stop the test"
+)]
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, Read as _, Write as _};

@@ -74,7 +74,6 @@ impl Job {
     pub(crate) fn fraction(&self) -> Option<f32> {
         let total = self.progress.work_total.load(Ordering::Relaxed);
         let so_far = self.progress.work_done.load(Ordering::Relaxed);
-        #[allow(clippy::cast_precision_loss)]
         (total > 0 && so_far > 0).then(|| so_far.min(total) as f32 / total as f32)
     }
 
@@ -83,11 +82,6 @@ impl Job {
     fn bytes_so_far(&self) -> u64 {
         let total = self.progress.bytes_total.load(Ordering::Relaxed);
         match self.fraction() {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                clippy::cast_precision_loss
-            )]
             Some(f) if total > 0 => (f64::from(f) * total as f64) as u64,
             _ => self.progress.bytes.load(Ordering::Relaxed),
         }
@@ -117,12 +111,10 @@ impl Job {
             return None;
         }
         if let Some(bytes) = self.byte_rate() {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let size = arke_core::format::format_size(bytes.round() as u64);
             return Some(t!("ops.rate_bytes", size = size).into_owned());
         }
         self.rate().map(|rate| {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let per_second = rate.round() as usize;
             tn!("ops.rate", per_second).into_owned()
         })
@@ -179,7 +171,6 @@ impl Job {
                 self.fraction().map_or_else(
                     || t!("ops.state_verifying").into_owned(),
                     |f| {
-                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         let percent = (f * 100.).floor() as u32;
                         t!("ops.state_verifying_percent", percent = percent).into_owned()
                     },
@@ -188,7 +179,6 @@ impl Job {
             JobState::Running if self.done_items() == 0 => match self.fraction() {
                 // One large file: no item finished yet, but there is progress.
                 Some(f) => {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let percent = (f * 100.).floor() as u32;
                     let mut parts = vec![t!("ops.state_percent", percent = percent).into_owned()];
                     parts.extend(self.speed_text());
@@ -231,7 +221,6 @@ impl Job {
 
 /// Items per second; `None` when too short (fewer than two samples) or nothing moved.
 fn rate(items: u64, over: Duration) -> Option<f64> {
-    #[allow(clippy::cast_precision_loss)]
     (over >= Duration::from_secs(1) && items > 0).then(|| items as f64 / over.as_secs_f64())
 }
 

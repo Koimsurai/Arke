@@ -206,7 +206,6 @@ mod tests {
     fn filetime_conversion() {
         // 2023-11-14 22:13:20 UTC
         let ticks = 116_444_736_000_000_000u64 + 1_700_000_000 * 10_000_000;
-        #[allow(clippy::cast_possible_truncation)]
         let ft = FILETIME {
             dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
             dwHighDateTime: (ticks >> 32) as u32,

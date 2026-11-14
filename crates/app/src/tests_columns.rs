@@ -290,7 +290,6 @@ fn a_right_edge_divider_sizes_its_own_column(cx: &mut TestAppContext) {
     }
     let shorter = view.update(cx, |v, _| v.row_width_for_test()).unwrap();
     assert!(close(shorter, row - px(30.)), "rows end with the columns");
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let name_saved = f32::from(name_w - px(30.)).round() as u16;
     assert_eq!(saved_width(cx, Col::Name), Some(name_saved));
     assert_eq!(
@@ -335,7 +334,6 @@ fn double_clicking_a_divider_fits_the_column(cx: &mut TestAppContext) {
     let want = (crate::theme::ICON + crate::theme::S_12 + px(chars * 14. * 0.6) + px(4.)).ceil();
     let name = columns(&view, cx)[0].2;
     assert_eq!(name, want);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let saved = f32::from(want) as u16;
     assert_eq!(saved_width(cx, Col::Name), Some(saved));
     // Type fits its widest label ("TXT File" or the like), narrower than its default.

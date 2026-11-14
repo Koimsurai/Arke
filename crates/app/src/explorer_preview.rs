@@ -502,9 +502,10 @@ impl Explorer {
 
     /// Called on every render: when the preview is open and the cursor moved to another item,
     /// schedule a read.
-    // One pass over what can happen on a frame (same PDF resized, cache hit, cloud, load); split
-    // up, the order of the checks would be harder to follow.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One pass over what can happen on a frame (same PDF resized, cache hit, cloud, load); split up, the order of the checks would be harder to follow"
+    )]
     pub(super) fn sync_preview(&mut self, cx: &mut Context<Self>) {
         if !(self.quick_look || self.preview_shown() || self.hosts_shared_preview()) {
             return;
@@ -775,7 +776,6 @@ impl Explorer {
             let w = self.pane_frame_w();
             gpui::size(w, self.pdf_frame_h(w))
         };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let device = |v: Pixels| (f32::from(v) * scale).round().max(1.) as u32;
         (device(area.width), device(area.height))
     }
@@ -1459,9 +1459,10 @@ impl Explorer {
 
     /// What the side preview shows in `pane` (from [`Self::preview_frame`]): the item, a
     /// summary of a multiple selection, or a note that nothing is selected.
-    // Layouts for each kind (no selection, archive, folder, other) are kept together for easy
-    // comparison.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Layouts for each kind (no selection, archive, folder, other) are kept together for easy comparison"
+    )]
     pub(super) fn preview_column(&self, pane: gpui::Div, cx: &mut Context<Self>) -> AnyElement {
         // Several selected: previewing the cursor item means little, show a summary instead.
         if self.selection.len() > 1 && !self.search_mode {
@@ -2235,7 +2236,6 @@ const KINDS_SHOWN: usize = 6;
 
 /// Fit-to-window rect of the image within the image area (centered, aspect kept).
 fn fit_rect(view: Bounds<Pixels>, width: u32, height: u32) -> Bounds<Pixels> {
-    #[allow(clippy::cast_precision_loss)]
     let aspect = width as f32 / height.max(1) as f32;
     let (vw, vh) = (view.size.width, view.size.height);
     let fw = vw.min(vh * aspect);
@@ -2250,7 +2250,6 @@ fn fit_rect(view: Bounds<Pixels>, width: u32, height: u32) -> Bounds<Pixels> {
 }
 
 /// Image size at 100% (logical pixels).
-#[allow(clippy::cast_precision_loss)]
 fn actual_size(width: u32, height: u32, scale: f32) -> gpui::Size<Pixels> {
     gpui::size(px(width as f32 / scale), px(height as f32 / scale))
 }
@@ -2461,8 +2460,10 @@ impl Explorer {
     /// Quick Look body: images fill the stage and zoom with the wheel, toggle actual size on click
     /// and pan by drag; PDF pages sit on the stage with a page control; text reads like an editor;
     /// items without a preview get a large icon and an Open button.
-    // The image's mouse handling is one chain; the other kinds return early above it.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The image's mouse handling is one chain; the other kinds return early above it"
+    )]
     fn quick_look_body(
         &self,
         preview: &Preview,
@@ -2916,7 +2917,6 @@ mod zoom_tests {
 /// first row. `large` (Quick Look) fills the stage like an editor: a ruled gutter, roomier lines.
 fn code_view(lines: &Arc<Vec<CodeLine>>, large: bool, scroll: &gpui::ScrollHandle) -> AnyElement {
     let digits = lines.len().max(1).to_string().len();
-    #[allow(clippy::cast_precision_loss)]
     let numbers = px(8. * digits as f32 + 8.);
     let rows: Vec<AnyElement> = lines
         .iter()

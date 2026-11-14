@@ -106,7 +106,10 @@ fn remove_writable(
     match remove(path) {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied && meta.permissions().readonly() => {
             let mut perms = meta.permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
+            #[allow(
+                clippy::permissions_set_readonly_false,
+                reason = "Windows: clears the read-only attribute so the file can be deleted"
+            )]
             perms.set_readonly(false);
             fs::set_permissions(path, perms)?;
             remove(path)
@@ -149,7 +152,10 @@ mod tests {
     /// `cargo test -p arke-app --bin arke purge_timing -- --ignored --nocapture`.
     #[test]
     #[ignore = "benchmark: writes 20,000 files to %TEMP%"]
-    #[allow(clippy::print_stderr)]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn purge_timing() {
         let sb = Sandbox::new("timing");
         let dir = sb.0.join("many");

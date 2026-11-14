@@ -7,7 +7,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::unused_async_trait_impl,
-    missing_docs
+    missing_docs,
+    reason = "test support: a failure should stop the test; server trait methods are async but do plain file I/O"
 )]
 
 use std::collections::HashMap;

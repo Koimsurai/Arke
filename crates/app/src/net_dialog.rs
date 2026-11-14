@@ -872,7 +872,10 @@ impl NetDialog {
 }
 
 impl Render for NetDialog {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the dialog's element tree reads top to bottom"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, intro, ok) = self.texts();
         let is_map = matches!(self.kind, NetDialogKind::Map { .. });

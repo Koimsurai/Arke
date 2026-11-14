@@ -60,8 +60,10 @@ pub(super) fn update_card(
     )
 }
 
-// One arm per update state, kept in order so they are easy to compare.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One arm per update state, kept in order so they are easy to compare"
+)]
 fn body(
     s: &Settings,
     state: &UpdateState,
@@ -228,7 +230,6 @@ fn body(
 
 /// "Downloading 0.4.0: 12.3 / 35.2 MB".
 pub(super) fn downloading_text(version: &str, got: u64, total: u64) -> String {
-    #[allow(clippy::cast_precision_loss)]
     let mb = |b: u64| b as f64 / 1_048_576.0;
     t!(
         "update.downloading",

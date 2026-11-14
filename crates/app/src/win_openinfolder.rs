@@ -78,16 +78,14 @@ impl Drop for Pidl {
     }
 }
 
-// The macro-generated code and the shell's COM signatures trip several pedantic lints.
 #[allow(
     clippy::inline_always,
     clippy::ref_as_ptr,
     clippy::wildcard_imports,
     clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::unused_self,
-    clippy::unnecessary_wraps
+    clippy::unnecessary_wraps,
+    reason = "The macro-generated code and the shell's COM signatures trip several pedantic lints"
 )]
 mod com {
     use super::*;
@@ -516,7 +514,10 @@ pub(crate) fn start(
 }
 
 /// Runs the message loop; returns what the caller selected.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the message loop and its cases read best in one place"
+)]
 fn run(folder: &std::path::Path) -> Vec<PathBuf> {
     // SAFETY: first COM call on this thread; paired with CoUninitialize below when it succeeds.
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };

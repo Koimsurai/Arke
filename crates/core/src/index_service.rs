@@ -964,7 +964,7 @@ impl Shared {
 
     /// Walks all roots, swaps in and saves the result. Deferred while resources are tight (the
     /// current index keeps serving).
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, reason = "the build's steps, in order")]
     fn build(self: &Arc<Self>) {
         if !(self.opts.can_build)() {
             if !self.deferred.swap(true, Ordering::Relaxed) {

@@ -362,7 +362,10 @@ fn fonts_in<'a>(doc: &'a Document, resources: &'a Dictionary) -> Fonts<'a> {
 
 /// Builds small PDFs for tests (no binary fixtures in the repository).
 #[cfg(any(test, feature = "test-support"))]
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = "test fixtures: a broken fixture should stop the test"
+)]
 pub mod fixtures {
     use std::fmt::Write as _;
     use std::io::Write as _;

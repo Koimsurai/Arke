@@ -292,7 +292,7 @@ pub(crate) fn triple(version: &str) -> Option<((u64, u64, u64), bool)> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, reason = "a failing test should stop right there")]
 mod tests {
     use super::*;
 

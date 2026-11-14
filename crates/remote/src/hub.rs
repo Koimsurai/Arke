@@ -208,8 +208,10 @@ impl Remotes {
         Arc::clone(self.conns.lock().entry(url.origin()).or_default())
     }
 
-    // The slot stays locked while connecting, so concurrent requests share one connection.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "The slot stays locked while connecting, so concurrent requests share one connection"
+    )]
     async fn conn(&self, url: &RemoteUrl) -> RemoteResult<Arc<SftpConn>> {
         let slot = self.slot(url);
         let mut held = slot.lock().await;

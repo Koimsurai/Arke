@@ -270,8 +270,10 @@ impl Render for DraggedTab {
     }
 }
 
-// UI flags are independent (resizing, dragging, shelf open, ...) and don't fit a state machine.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "UI flags are independent (resizing, dragging, shelf open, ...) and don't fit a state machine"
+)]
 pub(crate) struct Workspace {
     services: Services,
     tabs: Vec<Tab>,
@@ -1961,7 +1963,10 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the window's element tree reads top to bottom"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::frame_probe::frame_started();
         crate::a11y::sync(window);

@@ -472,7 +472,11 @@ impl Index {
     /// Like [`Index::build`], but each root is first offered to `list` (the background service
     /// reads the MFT and lists a whole drive in seconds). Roots it can't list (no service, not
     /// NTFS, failure midway) are walked.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one entry point for every build input; the walk reads best in one place"
+    )]
     pub fn build_listed(
         fs: &dyn Fs,
         roots: &[PathBuf],
@@ -1115,7 +1119,7 @@ impl Index {
             u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
         let names = std::str::from_utf8(&bytes[layout.names..layout.names + layout.names_len])
-            .map_err(|_| bad_format())?
+            .map_err(|_not_utf8| bad_format())?
             .to_string();
         let count = layout.count;
         let mut nodes = Vec::with_capacity(count);
@@ -1170,7 +1174,7 @@ impl Index {
             len: layout.names_len,
         };
         std::str::from_utf8(&map[layout.names..layout.names + layout.names_len])
-            .map_err(|_| bad_format())?;
+            .map_err(|_not_utf8| bad_format())?;
         let column = |offset: usize| (Arc::clone(&map), offset, layout.count);
         let (m, o, n) = column(layout.nodes);
         let nodes: Column<Node> = Column::Mapped {
@@ -1297,7 +1301,7 @@ impl Layout {
         let mut roots = Vec::new();
         for _ in 0..root_count {
             let len = u32_at(take(4)?);
-            let s = std::str::from_utf8(take(len)?).map_err(|_| bad_format())?;
+            let s = std::str::from_utf8(take(len)?).map_err(|_not_utf8| bad_format())?;
             roots.push(PathBuf::from(s));
         }
         let mut cursors = Vec::with_capacity(roots.len());
@@ -1308,8 +1312,8 @@ impl Layout {
                 usn: u64_at(&c[9..17]).cast_signed(),
             }));
         }
-        let names_len = usize::try_from(u64_at(take(8)?)).map_err(|_| bad_format())?;
-        let count = usize::try_from(u64_at(take(8)?)).map_err(|_| bad_format())?;
+        let names_len = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
+        let count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
         let align = |pos: &mut usize| *pos = pos.div_ceil(8) * 8;
         let mut sections = [0usize; 5];
         let sizes_of = [
@@ -1750,7 +1754,7 @@ impl Overlay {
             let mut b = vec![0u8; len];
             r.read_exact(&mut b)?;
             Ok(PathBuf::from(
-                String::from_utf8(b).map_err(|_| bad_format())?,
+                String::from_utf8(b).map_err(|_not_utf8| bad_format())?,
             ))
         }
         let mut overlay = Self::default();
@@ -2740,7 +2744,10 @@ mod tests {
     /// --nocapture folder_size_speed`). Builds a tree under `%TEMP%` and removes it afterwards.
     #[test]
     #[ignore = "benchmark; run manually"]
-    #[allow(clippy::print_stdout)]
+    #[allow(
+        clippy::print_stdout,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn folder_size_speed() {
         let root = std::env::temp_dir().join(format!("arke-dirsize-bench-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -2819,7 +2826,10 @@ mod tests {
     /// index_speed`).
     #[test]
     #[ignore = "benchmark; run manually"]
-    #[allow(clippy::print_stdout)]
+    #[allow(
+        clippy::print_stdout,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn index_speed() {
         let mut index = Index {
             roots: vec![PathBuf::from(r"C:\")],
@@ -2862,7 +2872,10 @@ mod tests {
     /// visit history (`cargo test --release -p arke-core -- --ignored --nocapture rank_speed`).
     #[test]
     #[ignore = "benchmark; run manually"]
-    #[allow(clippy::print_stdout)]
+    #[allow(
+        clippy::print_stdout,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn rank_speed() {
         use crate::frecency::Frecency;
         use crate::rank::{RankSignals, Stat, frecent_hits, merge};
@@ -2963,7 +2976,10 @@ mod tests {
     /// --ignored --nocapture real_drive_index`
     #[test]
     #[ignore = "benchmark; run manually (walks the whole local drive)"]
-    #[allow(clippy::print_stdout)]
+    #[allow(
+        clippy::print_stdout,
+        reason = "a benchmark run by hand prints its timings"
+    )]
     fn real_drive_index() {
         let roots: Vec<PathBuf> = std::env::var("ARKE_INDEX_ROOTS")
             .unwrap_or_else(|_| r"C:\".into())

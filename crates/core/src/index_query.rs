@@ -570,11 +570,6 @@ fn parse_size(s: &str) -> Option<u64> {
         "t" | "tb" => KB * KB * KB * KB,
         _ => return None,
     };
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
     let bytes = (num * mult as f64) as u64;
     Some(bytes)
 }

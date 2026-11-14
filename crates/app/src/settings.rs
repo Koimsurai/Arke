@@ -370,7 +370,10 @@ pub(crate) enum Density {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one bool per on/off setting in settings.json"
+)]
 pub(crate) struct Settings {
     /// Pinned folders that do not fit on the tiles: the list under the tiles, in user order.
     pub(crate) pinned: Vec<PathBuf>,

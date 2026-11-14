@@ -91,7 +91,6 @@ impl Explorer {
             .filter(|row| row.state == JobState::Running)
             .collect();
         // Several running: ring shows the average; any unknown total makes it spin.
-        #[allow(clippy::cast_precision_loss)]
         let overall = running
             .iter()
             .map(|row| row.fraction)
@@ -163,7 +162,10 @@ impl Explorer {
 
 /// Top bar button: a ring while running, a check when done, and a dot if something finished while
 /// the list was closed.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the button shows each part of the progress state"
+)]
 fn button(
     busy: bool,
     overall: Option<f32>,
@@ -540,7 +542,6 @@ fn ring(fraction: Option<f32>, shown: std::rc::Rc<std::cell::Cell<f32>>) -> impl
                 let ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis());
-                #[allow(clippy::cast_precision_loss)]
                 let turn = (ms % SPINNER_PERIOD_MS) as f32 / SPINNER_PERIOD_MS as f32;
                 (turn, SPINNER_SWEEP)
             };
@@ -559,11 +560,9 @@ fn arc(
     start: f32,
     sweep: f32,
 ) -> Option<gpui::Path<Pixels>> {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let steps = ((sweep * 48.).ceil() as usize).max(2);
     let mut builder = PathBuilder::stroke(px(2.));
     for step in 0..=steps {
-        #[allow(clippy::cast_precision_loss)]
         let turn = start + sweep * step as f32 / steps as f32;
         let angle = turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
         let at = point(

@@ -148,6 +148,15 @@ for your account without administrator approval, or for all users in Program Fil
 the Start menu and to Settings › Apps, where you can uninstall it. Arke's updates keep working the
 same way.
 
+With [Scoop](https://scoop.sh):
+
+```bash
+scoop bucket add arke https://github.com/Koimsurai/scoop-bucket
+scoop install arke/arke
+```
+
+Scoop then keeps it up to date (`scoop update arke`), and Arke leaves updating to it.
+
 Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time.
 
 Arke checks GitHub for a new version at most once a day and only installs one when you say so
@@ -259,7 +268,7 @@ Windows" shortcuts, saved SFTP and WebDAV passwords, the jump list, `%LOCALAPPDA
 
 From a terminal or a script: `arke --uninstall`, with `--keep-settings`, `--quiet` (no dialogs,
 only the administrator prompt for the service) or `--dry-run` (only lists what it would remove).
-Installed with Scoop or winget (once Arke is available there)? `arke --uninstall` leaves the exe to the package manager; remove it
+Installed with Scoop or winget (once Arke is available on winget)? `arke --uninstall` leaves the exe to the package manager; remove it
 with `scoop uninstall arke` or `winget uninstall Koimsurai.Arke`.
 
 It also turns off "Open folders in Arke" and puts the previous folder handler back. Removing Arke by hand instead? Turn that setting off (or run `arke --restore-explorer`) **before** deleting the exe, so folders keep opening in File Explorer.

@@ -128,6 +128,15 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
 不需要管理员权限；也可以选择为所有用户安装（Program Files）。它会加到开始菜单，并出现在
 “设置 › 应用”中，可以从那里卸载。Arke 的更新方式不变。
 
+用 [Scoop](https://scoop.sh) 安装：
+
+```bash
+scoop bucket add arke https://github.com/Koimsurai/scoop-bucket
+scoop install arke/arke
+```
+
+之后由 Scoop 负责更新（`scoop update arke`），Arke 不会自己更新。
+
 目前还没有代码签名，第一次运行时 SmartScreen 可能会让你确认。
 
 Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（设置 › 关于）。
@@ -227,7 +236,7 @@ Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（�
 `%APPDATA%\Arke`（勾选“保留我的设置”则保留），最后删除 exe 本身，并列出删除了哪些内容。
 
 在终端或脚本里：`arke --uninstall`，可加 `--keep-settings`、`--quiet`（不弹对话框，只剩搜索服务的管理员
-提示）或 `--dry-run`（只列出会删除什么）。用 Scoop 或 winget 安装的话（等 Arke 上架之后），`arke --uninstall` 会把 exe 留给包
+提示）或 `--dry-run`（只列出会删除什么）。用 Scoop 或 winget 安装的话（winget 等 Arke 上架之后），`arke --uninstall` 会把 exe 留给包
 管理器，再用 `scoop uninstall arke` 或 `winget uninstall Koimsurai.Arke` 卸载。
 
 它也会关闭“用 Arke 打开文件夹”，把原来的文件夹打开程序还原。要自己手动卸载的话，删除可执行文件**之前**先关闭这个设置（或运行 `arke --restore-explorer`），文件夹才会继续用文件资源管理器打开。

@@ -128,6 +128,15 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 不需要系統管理員權限；也可以選擇裝給所有使用者（Program Files）。它會加到開始功能表，並出現在
 「設定 › 應用程式」，從那裡就能解除安裝。Arke 的更新方式不變。
 
+用 [Scoop](https://scoop.sh) 安裝：
+
+```bash
+scoop bucket add arke https://github.com/Koimsurai/scoop-bucket
+scoop install arke/arke
+```
+
+之後由 Scoop 負責更新（`scoop update arke`），Arke 不會自己更新。
+
 目前還沒有程式碼簽章，第一次執行時 SmartScreen 可能會要你確認。
 
 Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（設定 › 關於）。
@@ -227,7 +236,7 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 哪些項目。
 
 在終端機或指令碼裡：`arke --uninstall`，可加 `--keep-settings`、`--quiet`（不跳對話框，只剩搜尋服務的系統
-管理員提示）或 `--dry-run`（只列出會移除什麼）。用 Scoop 或 winget 安裝的話（等 Arke 上架之後），`arke --uninstall` 會把執行檔
+管理員提示）或 `--dry-run`（只列出會移除什麼）。用 Scoop 或 winget 安裝的話（winget 等 Arke 上架之後），`arke --uninstall` 會把執行檔
 留給套件管理員，再用 `scoop uninstall arke` 或 `winget uninstall Koimsurai.Arke` 移除。
 
 它也會關掉「用 Arke 開啟資料夾」，把原本的資料夾開啟程式還原。要自己手動移除的話，刪執行檔**之前**先關掉這個設定（或執行 `arke --restore-explorer`），資料夾才會繼續用檔案總管開。

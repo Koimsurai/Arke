@@ -593,7 +593,7 @@ pub(crate) enum OnChannelChange {
     Check,
 }
 
-pub(crate) fn on_channel_change(state: &UpdateState, can_check: bool) -> OnChannelChange {
+pub(crate) const fn on_channel_change(state: &UpdateState, can_check: bool) -> OnChannelChange {
     match state {
         UpdateState::Downloading(..) | UpdateState::Ready(..) => OnChannelChange::Keep,
         _ if can_check => OnChannelChange::Check,
@@ -760,10 +760,6 @@ mod tests {
         )
         .unwrap();
         let current = v("0.3.0");
-        for channel in [Channel::Stable, Channel::Rc, Channel::Nightly] {
-            let found = pick(&json, channel, &current).map(|r| r.version);
-            println!("{channel:?} from 0.3.0: {found:?}");
-        }
         assert!(pick(&json, Channel::Stable, &current).is_none_or(|r| !r.version.contains('-')));
         assert!(pick(&json, Channel::Rc, &current).is_some());
     }

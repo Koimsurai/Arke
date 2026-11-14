@@ -31,7 +31,7 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11" }
 
 windows = "0.62"
 # `#[implement]` expands to ::windows_core; keep in step with `windows`
-windows-core = "0.62"
+windows-core = "0.100"
 notify = "8"
 flume = "0.12"
 memmap2 = "0.9"

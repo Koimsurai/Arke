@@ -1008,6 +1008,10 @@ report.settings:
   en: Settings
   zh-TW: 設定
   zh-CN: 设置
+report.shell:
+  en: "Open folders in Arke and Win+E"
+  zh-TW: "用 Arke 開啟資料夾與 Win+E"
+  zh-CN: "用 Arke 打开文件夹与 Win+E"
 report.log:
   en: Recent log
   zh-TW: 最近的記錄

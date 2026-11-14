@@ -568,6 +568,51 @@ fn delete_empty(reg: &dyn Registry, mut keys: Vec<String>) -> Result<(), Error> 
     Ok(())
 }
 
+/// Who handles each command Arke can register, one line each, for problem reports: Win+E and the
+/// folder verbs, whether the command is this exe's, another Arke's or another program's, and whether
+/// `DelegateExecute` is empty (otherwise the shell's own handler wins over the command). Only reads.
+/// Gives exe file names, never paths.
+pub fn describe(reg: &dyn Registry, exe: &Path) -> Vec<String> {
+    let read = |key: &str, value: &str| reg.read(key, value).ok().flatten().and_then(|v| v.as_sz());
+    let mut keys: Vec<(String, String)> = FOLDER_VERBS
+        .iter()
+        .map(|verb| {
+            (
+                format!("folder {verb}"),
+                classes_key(&format!(r"Folder\shell\{verb}\command")),
+            )
+        })
+        .collect();
+    keys.push((
+        "Win+E".into(),
+        classes_key(&format!(r"CLSID\{WIN_E_CLSID}\shell\opennewwindow\command")),
+    ));
+    keys.into_iter()
+        .map(|(label, key)| {
+            let command = read(&key, "");
+            let who = match (
+                command.as_deref(),
+                command.as_deref().and_then(registered_exe),
+            ) {
+                (None, _) => "not set (File Explorer)".to_string(),
+                (_, Some(path)) if path == exe => "this Arke".to_string(),
+                (_, Some(path)) => format!(
+                    "another exe ({})",
+                    path.file_name()
+                        .map_or_default(|n| n.to_string_lossy().into_owned())
+                ),
+                (Some(_), None) => "another program".to_string(),
+            };
+            let delegate = match read(&key, "DelegateExecute").as_deref() {
+                None => "no DelegateExecute",
+                Some("") => "DelegateExecute empty",
+                Some(_) => "DelegateExecute set (the shell's own handler runs)",
+            };
+            format!("- {label}: {who}, {delegate}")
+        })
+        .collect()
+}
+
 /// A [`Registry`] in memory, for tests.
 #[derive(Default)]
 pub struct MemoryRegistry {
@@ -759,6 +804,38 @@ mod tests {
 
     fn exe() -> &'static Path {
         Path::new(EXE)
+    }
+
+    /// Problem reports say who handles Win+E and the folder verbs, by exe name only.
+    #[test]
+    fn describes_who_handles_each_command() {
+        let reg = MemoryRegistry::default();
+        assert_eq!(
+            describe(&reg, exe()),
+            [
+                "- folder open: not set (File Explorer), no DelegateExecute",
+                "- folder explore: not set (File Explorer), no DelegateExecute",
+                "- Win+E: not set (File Explorer), no DelegateExecute",
+            ]
+        );
+        reg.put(OPEN_CMD, "", &format!(r#""{EXE}" "%1""#));
+        reg.put(OPEN_CMD, "DelegateExecute", "");
+        reg.put(
+            EXPLORE_CMD,
+            "",
+            r#""C:\Users\me\Downloads\arke-0.2.0.exe" "%1""#,
+        );
+        reg.put(EXPLORE_CMD, "DelegateExecute", STOCK_DELEGATE);
+        reg.put(WIN_E_CMD, "", r#""C:\Files\Files.App.Launcher.exe""#);
+        reg.put(WIN_E_CMD, "DelegateExecute", "");
+        assert_eq!(
+            describe(&reg, exe()),
+            [
+                "- folder open: this Arke, DelegateExecute empty",
+                "- folder explore: another exe (arke-0.2.0.exe), DelegateExecute set (the shell's own handler runs)",
+                "- Win+E: another program, DelegateExecute empty",
+            ]
+        );
     }
 
     fn cmd(exe: &str) -> String {

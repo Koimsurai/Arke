@@ -25,7 +25,7 @@ impl Handler {
     /// `None` when the exe or the settings folder is unknown, or when a test environment asks to
     /// keep the shell alone.
     pub(crate) fn real() -> Option<Self> {
-        if !allowed_here(|name| std::env::var_os(name).is_some()) {
+        if !shell_allowed() {
             log::info!("folder handler: disabled by the environment");
             return None;
         }
@@ -102,6 +102,12 @@ fn settings_dir() -> Option<PathBuf> {
     crate::settings::default_path()?
         .parent()
         .map(Path::to_path_buf)
+}
+
+/// Whether this process may change how the shell opens folders (the registration, the Win+E
+/// hook); live checks and test runs turn it off through the environment.
+pub(crate) fn shell_allowed() -> bool {
+    allowed_here(|name| std::env::var_os(name).is_some())
 }
 
 /// Live checks (`ARKE_TAKEOVER_TEST_ROOT`) and `ARKE_NO_FOLDER_HANDLER` never touch the shell

@@ -205,7 +205,9 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 （shell 開任何資料夾都會啟動 Arke，包括瀏覽器、編輯器的「在資料夾中顯示」；Arke 不能顯示的，例如控制台，
 會直接交給檔案總管），以及打開「Win+E 和檔案總管圖示也開 Arke」時的 Win+E 處理程式。原本的內容會備份到
 `%APPDATA%\Arke\folder-handler-backup.json`，你關掉設定或執行 `arke --restore-explorer` 時原封不動放回去。
-對登錄無法涵蓋的情況（例如 `explorer.exe /select,...`），Arke 還是會在執行時留意新開的檔案總管視窗。設定存在 `%APPDATA%\Arke`，搜尋索引、記錄檔和下載的更新在
+對登錄無法涵蓋的情況（例如 `explorer.exe /select,...`），Arke 還是會在執行時留意新開的檔案總管視窗。
+有些電腦的 Windows 會把 Win+E 直接交給檔案總管、不經過登錄（Windows 從 2026 年底開始陸續推送這項改動），
+在這些電腦上，Arke 於背景執行時會用鍵盤 hook 接手 Win+E：只在按住 Windows 鍵時看 E 這一個鍵，不記錄任何東西。設定存在 `%APPDATA%\Arke`，搜尋索引、記錄檔和下載的更新在
 `%LOCALAPPDATA%\Arke`。「登入 Windows 時啟動」是在「啟動」資料夾放一個捷徑，「在開始功能表顯示 Arke」則是在開始功能表資料夾放一個捷徑。SFTP 和 WebDAV 位置的密碼只有在你
 勾選「記住」時才會存進 Windows 認證管理員。只有選用的搜尋服務需要系統管理員同意。
 

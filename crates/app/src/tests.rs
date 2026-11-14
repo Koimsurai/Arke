@@ -4506,6 +4506,38 @@ fn column_view_moves_with_arrows_and_lists_the_parent(cx: &mut TestAppContext) {
     });
 }
 
+/// Ctrl+K goes straight to whole-computer search from anywhere, the cursor in the search box and
+/// the typed text kept (#44); Ctrl+Shift+F goes back to subfolders.
+#[gpui::test]
+fn ctrl_k_searches_the_whole_computer(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:	", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:	");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:	"));
+    let in_box = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx))
+    };
+    assert!(!in_box(cx));
+    cx.simulate_keystrokes("ctrl-k");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
+    assert!(in_box(cx), "the cursor is in the search box");
+    cx.simulate_input("report");
+    view.update(cx, |v, _| assert_eq!(v.query, "report"));
+    cx.simulate_keystrokes("ctrl-shift-f");
+    view.update(cx, |v, _| {
+        assert_eq!(v.scope(), Scope::Subfolders);
+        assert_eq!(v.query, "report", "the text stays");
+    });
+    cx.simulate_keystrokes("ctrl-k");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
+    // Ctrl+F only puts the cursor back in the box; the scope stays.
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
+    assert!(in_box(cx));
+}
+
 /// Whole-PC search: network locations added by the user have their own index, and their results
 /// merge with local ones. Removing a location drops its results.
 #[gpui::test]

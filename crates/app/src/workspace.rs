@@ -128,6 +128,18 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-s", ToggleSyncBrowsing, ctx),
         KeyBinding::new("ctrl-shift-d", CompareFolders, ctx),
     ]);
+    // The folder keys also work on Home, which yields to the folder under it (#77).
+    let home = Some("HomePage");
+    cx.bind_keys([
+        KeyBinding::new("alt-left", crate::explorer::GoBack, home),
+        KeyBinding::new("alt-right", crate::explorer::GoForward, home),
+        KeyBinding::new("alt-up", crate::explorer::GoUp, home),
+        KeyBinding::new("ctrl-l", crate::explorer::FocusPathBar, home),
+        KeyBinding::new("alt-d", crate::explorer::FocusPathBar, home),
+        KeyBinding::new("ctrl-f", crate::explorer::FocusFilter, home),
+        KeyBinding::new("ctrl-shift-f", crate::explorer::FocusSearch, home),
+        KeyBinding::new("ctrl-k", crate::explorer::FocusComputerSearch, home),
+    ]);
 }
 
 struct Pane {
@@ -2060,6 +2072,26 @@ impl Render for Workspace {
                 this.open_workspaces(window, cx);
             }))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(|this, a: &crate::explorer::FocusComputerSearch, window, cx| {
+                this.home_key(window, cx, |e, window, cx| e.focus_computer_search(a, window, cx));
+            }))
+            .on_action(cx.listener(|this, a: &crate::explorer::FocusSearch, window, cx| {
+                this.home_key(window, cx, |e, window, cx| e.focus_search(a, window, cx));
+            }))
+            .on_action(cx.listener(|this, a: &crate::explorer::FocusFilter, window, cx| {
+                this.home_key(window, cx, |e, window, cx| e.focus_filter(a, window, cx));
+            }))
+            .on_action(cx.listener(|this, a: &crate::explorer::FocusPathBar, window, cx| {
+                this.home_key(window, cx, |e, window, cx| e.focus_path_bar(a, window, cx));
+            }))
+            .on_action(cx.listener(|this, a: &crate::explorer::GoUp, window, cx| {
+                this.home_key(window, cx, |e, window, cx| e.go_up(a, window, cx));
+            }))
+            // Forward from Home: the tab moves on, and Home follows it away (`home_follow_navigation`).
+            .on_action(cx.listener(|this, a: &crate::explorer::GoForward, window, cx| {
+                let view = this.active_view().clone();
+                view.update(cx, |e, cx| e.go_forward(a, window, cx));
+            }))
             .capture_action(cx.listener(|this, _: &crate::explorer::GoBack, window, cx| {
                 if this.back_closes_home(window, cx) {
                     cx.stop_propagation();

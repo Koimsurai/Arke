@@ -1393,7 +1393,7 @@ impl Explorer {
         }
     }
 
-    fn go_up(&mut self, _: &GoUp, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn go_up(&mut self, _: &GoUp, _: &mut Window, cx: &mut Context<Self>) {
         let Some(here) = self.display_path().map(Path::to_path_buf) else {
             return;
         };
@@ -2086,6 +2086,11 @@ impl Explorer {
                 }
                 .unwrap_or(0);
                 if ix < self.list_len() {
+                    // A folder opens in the list: the cursor goes there, as with a click, so the
+                    // search box doesn't stay focused and pop its options open (#76).
+                    if self.path_at(ix).is_some_and(|(_, is_dir)| is_dir) {
+                        window.focus(&self.list_focus, cx);
+                    }
                     self.open_index(ix, cx);
                 }
             }
@@ -2263,16 +2268,26 @@ impl Explorer {
         cx.notify();
     }
 
-    fn focus_filter(&mut self, _: &FocusFilter, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_filter(
+        &mut self,
+        _: &FocusFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.focus_filter_input(window, cx);
     }
 
-    fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_search(
+        &mut self,
+        _: &FocusSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.set_scope(scope::Scope::Subfolders, cx);
         self.focus_filter_input(window, cx);
     }
 
-    fn focus_computer_search(
+    pub(crate) fn focus_computer_search(
         &mut self,
         _: &FocusComputerSearch,
         window: &mut Window,
@@ -2910,7 +2925,12 @@ impl Explorer {
 
     // ───────────────────────── Path bar ─────────────────────────
 
-    fn focus_path_bar(&mut self, _: &FocusPathBar, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_path_bar(
+        &mut self,
+        _: &FocusPathBar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.start_edit_path(window, cx);
     }
 

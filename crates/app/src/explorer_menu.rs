@@ -990,7 +990,7 @@ impl Explorer {
         if single && !*is_dir && archive_kind(&name).is_some() {
             entries.push(MenuEntry::Separator);
             entries.push(item(
-                t!("menu.extract_to", name = folder_name_for(&name)),
+                t!("menu.extract_to", name = menu_name(&folder_name_for(&name))),
                 None,
                 C::ExtractToFolder,
             ));
@@ -1012,7 +1012,7 @@ impl Explorer {
             entries.push(item(
                 t!(
                     "menu.compress",
-                    name = format!("{}.zip", zip_stem_for(path, *is_dir))
+                    name = menu_name(&format!("{}.zip", zip_stem_for(path, *is_dir)))
                 ),
                 None,
                 C::Compress,
@@ -3001,6 +3001,21 @@ fn more_options() -> MenuEntry {
 
 /// Zip file stem: a folder's name, or a file's name without extension (`report.docx` becomes
 /// `report.zip`).
+/// A file name inside a menu label: a long one keeps its start and end (the extension) around an
+/// ellipsis, so the menu keeps its usual width (#87).
+fn menu_name(name: &str) -> String {
+    const MAX: usize = 28;
+    const HEAD: usize = 14;
+    const TAIL: usize = 10;
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= MAX {
+        return name.to_owned();
+    }
+    let head: String = chars[..HEAD].iter().collect();
+    let tail: String = chars[chars.len() - TAIL..].iter().collect();
+    format!("{head}…{tail}")
+}
+
 fn zip_stem_for(path: &std::path::Path, is_dir: bool) -> String {
     let stem = if is_dir {
         path.file_name()
@@ -3088,5 +3103,22 @@ mod submenu_tests {
             place_submenu((400., 640.), &[(640., 880.)], 240., 1000., false),
             (162., false)
         );
+    }
+}
+
+#[cfg(test)]
+mod menu_name_tests {
+    use super::menu_name;
+
+    #[test]
+    fn long_names_keep_their_start_and_extension() {
+        assert_eq!(menu_name("short.zip"), "short.zip");
+        let hash = "c4b7b6d1f5e8ce048749e09b4dae08795432903519a7e8c4f1d2b3a4c5d6e7f8.zip";
+        assert_eq!(menu_name(hash), "c4b7b6d1f5e8ce…d6e7f8.zip");
+        // Characters, not bytes: CJK names shorten without splitting a character.
+        let cjk = "這是一個非常非常長的中文檔案名稱用來測試右鍵選單會不會變得很寬.zip";
+        let short = menu_name(cjk);
+        assert_eq!(short.chars().count(), 25);
+        assert!(short.ends_with("變得很寬.zip"));
     }
 }

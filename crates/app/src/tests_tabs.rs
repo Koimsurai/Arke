@@ -1049,3 +1049,60 @@ fn within_the_current_tab_back_stays_in_the_tab(cx: &mut TestAppContext) {
         Some(p(r"C:\c"))
     );
 }
+
+/// Folder keys on Home (#77): Home yields to the folder under it, in the same tab, and the key
+/// acts there.
+#[gpui::test]
+fn folder_keys_work_on_home(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\t", 1);
+    fs.insert_many(r"C:\t\sub", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t\sub");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t\sub"));
+    let home = Some(rust_i18n::t!("home.title").into_owned());
+    let open_home = |cx: &mut VisualTestContext| {
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_home_for_test(false, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), home);
+    };
+
+    open_home(cx);
+    cx.simulate_keystrokes("ctrl-k");
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.tab_views().count()),
+        1,
+        "the tab stays"
+    );
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
+    assert!(cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx)));
+
+    cx.simulate_keystrokes("escape");
+    open_home(cx);
+    cx.simulate_keystrokes("alt-up");
+    wait_until(cx, &view, "up", loaded(r"C:\t"));
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+}
+
+/// Enter on a folder found from the search box opens it with the cursor in the list, as a click
+/// does, not in the search box with its options open (#76).
+#[gpui::test]
+fn enter_on_a_found_folder_moves_to_the_list(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![dir("needle"), file("other.txt", 1)]);
+    fs.insert_many(r"C:\t\needle", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("needle");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    wait_until(cx, &view, "open", loaded(r"C:\t\needle"));
+    assert!(!cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx)));
+}

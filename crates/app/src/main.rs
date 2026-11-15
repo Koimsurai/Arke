@@ -325,11 +325,18 @@ fn app_main(mut args: Args) {
     // `arke --quit` (the installer before it replaces the exe): returns once the resident Arke is
     // gone, so its files are free.
     if args.quit {
-        let gone = instance::quit_resident(Duration::from_secs(10));
-        log::info!(
-            "--quit: resident Arke {}",
-            if gone { "gone" } else { "still running" }
-        );
+        // Only this copy: the installer and uninstaller of one copy must not close another.
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        match instance::quit_resident_of(&exe, Duration::from_secs(10)) {
+            instance::Quit::Gone => log::info!("--quit: resident Arke gone"),
+            instance::Quit::StillRunning => log::info!("--quit: resident Arke still running"),
+            instance::Quit::OtherCopy(other) => log::info!(
+                "--quit: the resident Arke is another copy ({}), left running",
+                other.display()
+            ),
+        }
         return;
     }
     let linger = shell_window(&args);

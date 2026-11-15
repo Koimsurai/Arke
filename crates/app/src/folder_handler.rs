@@ -183,6 +183,11 @@ pub(crate) fn restore_folder_handler() -> Result<(), RestoreError> {
     }
 }
 
+/// Whether folders or Win+E are registered to this exe (and not to another copy of Arke).
+pub(crate) fn handled_by_this_exe() -> bool {
+    Handler::real().is_some_and(|h| folder_handler::handled_by(&*h.registry, &h.exe))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

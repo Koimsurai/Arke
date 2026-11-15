@@ -149,7 +149,9 @@ impl WhatsNewPage {
             UpdateState::Downloading(r, got, total) if r.version == release.version => {
                 line(super::update_page::downloading_text(&r.version, got, total))
             }
-            UpdateState::Ready(r, exe) if r.version == release.version => {
+            UpdateState::Ready(r, exe) | UpdateState::Canceled(r, exe)
+                if r.version == release.version =>
+            {
                 super::update_page::button(
                     "whats-new-restart",
                     t!("update.restart"),

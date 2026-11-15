@@ -568,6 +568,27 @@ fn delete_empty(reg: &dyn Registry, mut keys: Vec<String>) -> Result<(), Error> 
     Ok(())
 }
 
+/// Whether any folder verb or Win+E is registered to start `exe`. Removing one copy of Arke hands
+/// folders back only when they are this copy's: another copy keeps what it registered.
+pub fn handled_by(reg: &dyn Registry, exe: &Path) -> bool {
+    FOLDER_VERBS
+        .iter()
+        .map(|verb| classes_key(&format!(r"Folder\shell\{verb}\command")))
+        .chain(std::iter::once(classes_key(&format!(
+            r"CLSID\{WIN_E_CLSID}\shell\opennewwindow\command"
+        ))))
+        .filter_map(|key| reg.read(&key, "").ok().flatten().and_then(|v| v.as_sz()))
+        .filter_map(|command| registered_exe(&command))
+        .any(|path| same_exe(&path, exe))
+}
+
+/// Windows paths compare without case.
+fn same_exe(a: &Path, b: &Path) -> bool {
+    a.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+}
+
 /// Who handles each command Arke can register, one line each, for problem reports: Win+E and the
 /// folder verbs, whether the command is this exe's, another Arke's or another program's, and whether
 /// `DelegateExecute` is empty (otherwise the shell's own handler wins over the command). Only reads.
@@ -836,6 +857,18 @@ mod tests {
                 "- Win+E: another program, DelegateExecute empty",
             ]
         );
+    }
+
+    #[test]
+    fn knows_whose_folder_handler_it_is() {
+        let reg = MemoryRegistry::default();
+        assert!(!handled_by(&reg, exe()));
+        // Another copy of Arke registered itself.
+        reg.put(OPEN_CMD, "", r#""C:\Users\me\Tools\arke.exe" "%1""#);
+        assert!(!handled_by(&reg, exe()));
+        // Win+E alone is enough, and case doesn't matter.
+        reg.put(WIN_E_CMD, "", &format!("\"{}\" --home", EXE.to_uppercase()));
+        assert!(handled_by(&reg, exe()));
     }
 
     fn cmd(exe: &str) -> String {

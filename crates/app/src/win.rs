@@ -1078,35 +1078,8 @@ impl Shell for WinShell {
     }
 
     fn shortcut_target(&self, path: &Path) -> Option<(PathBuf, bool)> {
-        use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, WIN32_FIND_DATAW};
-        use windows::Win32::System::Com::{
-            CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
-        };
-        use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-        use windows::core::Interface;
         debug_assert!(!arke_core::fs::is_ui_thread());
-        let _com = crate::win_fileops::Com::init().ok()?;
-        let path_w = wide(path.as_os_str());
-        let mut buf = vec![0u16; 32_768];
-        let mut data = WIN32_FIND_DATAW::default();
-        // SAFETY: COM is initialized on this thread; path_w is NUL-terminated; buf and data are
-        // valid for the call. ShellLink is built in. Only the .lnk is read; no Resolve, so no UI.
-        unsafe {
-            let link: IShellLinkW =
-                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-            let file: IPersistFile = link.cast().ok()?;
-            file.Load(PCWSTR(path_w.as_ptr()), STGM_READ).ok()?;
-            link.GetPath(&mut buf, &raw mut data, 0).ok()?;
-        }
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        if len == 0 {
-            return None;
-        }
-        let target = PathBuf::from(String::from_utf16_lossy(&buf[..len]));
-        Some((
-            target,
-            data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
-        ))
+        read_shortcut(path)
     }
 
     fn create_shortcuts(
@@ -1849,4 +1822,85 @@ mod wsl_tests {
         assert_eq!(parse_wsl_list(&bytes), ["Ubuntu-24.04", "docker-desktop"]);
         assert!(parse_wsl_list(&[]).is_empty());
     }
+}
+
+/// What the shortcut at `path` points to, and whether that is a folder. Reads the `.lnk` only.
+pub(crate) fn read_shortcut(path: &Path) -> Option<(PathBuf, bool)> {
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, WIN32_FIND_DATAW};
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::Interface;
+    let _com = crate::win_fileops::Com::init().ok()?;
+    let path_w = wide(path.as_os_str());
+    let mut buf = vec![0u16; 32_768];
+    let mut data = WIN32_FIND_DATAW::default();
+    // SAFETY: COM is initialized on this thread; path_w is NUL-terminated; buf and data are
+    // valid for the call. ShellLink is built in. Only the .lnk is read; no Resolve, so no UI.
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let file: IPersistFile = link.cast().ok()?;
+        file.Load(PCWSTR(path_w.as_ptr()), STGM_READ).ok()?;
+        link.GetPath(&mut buf, &raw mut data, 0).ok()?;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    if len == 0 {
+        return None;
+    }
+    let target = PathBuf::from(String::from_utf16_lossy(&buf[..len]));
+    Some((
+        target,
+        data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+    ))
+}
+
+/// A string value from the registry (`REG_SZ` or `REG_EXPAND_SZ`, unexpanded), or `None`.
+pub(crate) fn read_reg_string(
+    root: windows::Win32::System::Registry::HKEY,
+    key: &str,
+    value: &str,
+) -> Option<String> {
+    use windows::Win32::System::Registry::{
+        RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    let (key, value) = (
+        wide(std::ffi::OsStr::new(key)),
+        wide(std::ffi::OsStr::new(value)),
+    );
+    let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
+    let mut bytes = 0u32;
+    // SAFETY: both names are NUL-terminated; this call only reads the size.
+    let sized = unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            flags,
+            None,
+            None,
+            Some(&raw mut bytes),
+        )
+    };
+    if sized.is_err() || bytes == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; bytes as usize / 2 + 1];
+    // SAFETY: `buf` holds at least `bytes` bytes; the names are NUL-terminated.
+    let read = unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            flags,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&raw mut bytes),
+        )
+    };
+    if read.is_err() {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len])).filter(|s| !s.is_empty())
 }

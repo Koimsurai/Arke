@@ -442,6 +442,9 @@ pub(crate) enum UpdateState {
     Downloading(Release, u64, u64),
     /// Downloaded and swapped; "Restart" switches to the new version
     Ready(Release, PathBuf),
+    /// The downloaded installer stopped before installing (the Windows approval prompt was
+    /// declined or timed out). It is kept: "Try again" runs it again.
+    Canceled(Release, PathBuf),
     /// What went wrong, as shown to the user (the typed error is turned into text here, where
     /// it reaches the UI).
     Failed(String),
@@ -468,7 +471,7 @@ impl UpdateState {
     pub(crate) fn has_news(cx: &App) -> bool {
         matches!(
             Self::get(cx),
-            Self::Available(_) | Self::Downloading(..) | Self::Ready(..)
+            Self::Available(_) | Self::Downloading(..) | Self::Ready(..) | Self::Canceled(..)
         )
     }
 }
@@ -630,10 +633,15 @@ pub(crate) fn watch_setup(mut child: std::process::Child, cx: &mut App) {
                 Ok(Some(0)) => cx.quit(),
                 Ok(code) => {
                     log::warn!("update: the installer exited with {code:?} before installing");
-                    UpdateState::set(
-                        cx,
-                        UpdateState::Failed(t!("update.setup_canceled").into_owned()),
-                    );
+                    // Keep the downloaded installer, the notice and the badge, so the user sees
+                    // why nothing happened and can try again.
+                    let state = match UpdateState::get(cx) {
+                        UpdateState::Ready(release, exe) | UpdateState::Canceled(release, exe) => {
+                            UpdateState::Canceled(release, exe)
+                        }
+                        _ => UpdateState::Failed(t!("update.setup_canceled").into_owned()),
+                    };
+                    UpdateState::set(cx, state);
                 }
                 Err(e) => UpdateState::set(cx, UpdateState::Failed(e.to_string())),
             }
@@ -669,7 +677,9 @@ pub(crate) enum OnChannelChange {
 
 pub(crate) const fn on_channel_change(state: &UpdateState, can_check: bool) -> OnChannelChange {
     match state {
-        UpdateState::Downloading(..) | UpdateState::Ready(..) => OnChannelChange::Keep,
+        UpdateState::Downloading(..) | UpdateState::Ready(..) | UpdateState::Canceled(..) => {
+            OnChannelChange::Keep
+        }
         _ if can_check => OnChannelChange::Check,
         _ => OnChannelChange::Forget,
     }
@@ -819,7 +829,8 @@ mod tests {
         }
         let held = [
             UpdateState::Downloading(release.clone(), 1, 2),
-            UpdateState::Ready(release, PathBuf::new()),
+            UpdateState::Ready(release.clone(), PathBuf::new()),
+            UpdateState::Canceled(release, PathBuf::new()),
         ];
         for state in held {
             assert_eq!(on_channel_change(&state, true), OnChannelChange::Keep);

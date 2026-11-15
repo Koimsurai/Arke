@@ -1128,6 +1128,18 @@ update.setup_canceled:
   en: "the installer stopped before installing (for example, the Windows approval prompt was declined), so Arke stays on this version. Update again to retry."
   zh-TW: 安裝程式在安裝前就結束了（例如在 Windows 的權限確認視窗按了「否」），Arke 維持在目前版本。再更新一次即可重試。
   zh-CN: 安装程序在安装前就退出了（例如在 Windows 的权限确认窗口点了“否”），Arke 保持在当前版本。再更新一次即可重试。
+update.canceled_short:
+  en: Not updated
+  zh-TW: 未更新
+  zh-CN: 未更新
+update.canceled:
+  en: "%{version} wasn't installed: the installer stopped before installing (for example, the Windows approval prompt was declined). Arke stays on this version."
+  zh-TW: 沒有安裝 %{version}：安裝程式在安裝前就結束了（例如在 Windows 的權限確認視窗按了「否」）。Arke 維持在目前版本。
+  zh-CN: 没有安装 %{version}：安装程序在安装前就退出了（例如在 Windows 的权限确认窗口点了“否”）。Arke 保持在当前版本。
+update.retry:
+  en: Try again
+  zh-TW: 再試一次
+  zh-CN: 再试一次
 update.failed_short:
   en: Couldn't check
   zh-TW: 無法檢查
@@ -4249,6 +4261,14 @@ uninstall.step_leave_to_setup:
   en: "The program files, Start menu shortcut and entry in Settings › Apps go with Arke's uninstaller"
   zh-TW: "程式檔案、開始功能表捷徑和「設定 › 應用程式」裡的項目，由 Arke 的解除安裝程式移除"
   zh-CN: "程序文件、开始菜单快捷方式和“设置 › 应用”中的条目，由 Arke 的卸载程序移除"
+uninstall.step_keep_shared:
+  en: "Another Arke stays at %{path}, so the search service, settings, saved passwords and index are kept for it"
+  zh-TW: "另一份 Arke 還在（%{path}），所以搜尋服務、設定、儲存的密碼和索引都留給它"
+  zh-CN: "另一份 Arke 还在（%{path}），所以搜索服务、设置、保存的密码和索引都留给它"
+uninstall.other_running:
+  en: "the Arke running now is another copy (%{path}), left open"
+  zh-TW: "正在執行的是另一份 Arke（%{path}），保持開著"
+  zh-CN: "正在运行的是另一份 Arke（%{path}），保持打开"
 uninstall.none:
   en: "nothing to remove"
   zh-TW: "沒有需要移除的"

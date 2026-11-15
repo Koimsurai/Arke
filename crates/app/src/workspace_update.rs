@@ -28,6 +28,7 @@ fn summary(state: &UpdateState) -> String {
         UpdateState::Available(r) => t!("update.available", version = r.version).into_owned(),
         UpdateState::Downloading(..) => t!("update.downloading_short").into_owned(),
         UpdateState::Ready(..) => t!("update.ready_short").into_owned(),
+        UpdateState::Canceled(..) => t!("update.canceled_short").into_owned(),
         UpdateState::Failed(_) => t!("update.failed_short").into_owned(),
     }
 }
@@ -223,6 +224,19 @@ fn body(
                 },
             )),
         ),
+        UpdateState::Canceled(release, exe) => status_line(
+            Icon::Close,
+            theme::danger(),
+            t!("update.canceled", version = release.version).into_owned(),
+            Some(button(
+                "update-retry",
+                t!("update.retry"),
+                true,
+                move |_, _, cx| {
+                    update::restart(&exe, cx);
+                },
+            )),
+        ),
     };
     out = out.child(line);
     out.into_any_element()
@@ -242,9 +256,10 @@ pub(super) fn downloading_text(version: &str, got: u64, total: u64) -> String {
 
 fn release_version(state: &UpdateState) -> String {
     match state {
-        UpdateState::Available(r) | UpdateState::Downloading(r, ..) | UpdateState::Ready(r, _) => {
-            r.version.clone()
-        }
+        UpdateState::Available(r)
+        | UpdateState::Downloading(r, ..)
+        | UpdateState::Ready(r, _)
+        | UpdateState::Canceled(r, _) => r.version.clone(),
         _ => String::new(),
     }
 }
@@ -385,9 +400,10 @@ pub(super) fn update_notice(cx: &mut Context<Workspace>) -> Option<AnyElement> {
     }
     let state = UpdateState::get(cx);
     let release = match &state {
-        UpdateState::Available(r) | UpdateState::Downloading(r, ..) | UpdateState::Ready(r, _) => {
-            r.clone()
-        }
+        UpdateState::Available(r)
+        | UpdateState::Downloading(r, ..)
+        | UpdateState::Ready(r, _)
+        | UpdateState::Canceled(r, _) => r.clone(),
         _ => return None,
     };
     let dismissed = crate::settings::SettingsStore::global(cx)
@@ -401,6 +417,7 @@ pub(super) fn update_notice(cx: &mut Context<Workspace>) -> Option<AnyElement> {
     let body = match &state {
         UpdateState::Downloading(r, got, total) => downloading_text(&r.version, *got, *total),
         UpdateState::Ready(r, _) => t!("update.ready", version = r.version).into_owned(),
+        UpdateState::Canceled(r, _) => t!("update.canceled", version = r.version).into_owned(),
         _ => t!("update.notice_body").into_owned(),
     };
     let workspace = cx.weak_entity();
@@ -434,6 +451,12 @@ pub(super) fn update_notice(cx: &mut Context<Workspace>) -> Option<AnyElement> {
         UpdateState::Ready(_, exe) => vec![button(
             "update-notice-restart",
             t!("update.restart"),
+            true,
+            move |_, _, cx| update::restart(&exe, cx),
+        )],
+        UpdateState::Canceled(_, exe) => vec![button(
+            "update-notice-retry",
+            t!("update.retry"),
             true,
             move |_, _, cx| update::restart(&exe, cx),
         )],

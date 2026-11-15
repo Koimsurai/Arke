@@ -13,7 +13,7 @@
 
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use windows::Win32::Foundation::{
@@ -342,6 +342,14 @@ fn send_to(name: Vec<u16>, req: &Request, timeout: Duration) -> SendOutcome {
 }
 
 fn exchange(name: &[u16], message: &[u8]) -> SendOutcome {
+    match connect(name) {
+        Ok(pipe) => talk(&pipe, message),
+        Err(outcome) => outcome,
+    }
+}
+
+/// Opens a client end of the resident pipe in message mode.
+fn connect(name: &[u16]) -> Result<Pipe, SendOutcome> {
     let pipe = loop {
         // SAFETY: name is a NUL-terminated UTF-16 string valid for the call.
         let opened = unsafe {
@@ -358,18 +366,18 @@ fn exchange(name: &[u16], message: &[u8]) -> SendOutcome {
         match opened {
             Ok(handle) => break Pipe(handle),
             Err(err) if err.code() == ERROR_FILE_NOT_FOUND.to_hresult() => {
-                return SendOutcome::NoServer;
+                return Err(SendOutcome::NoServer);
             }
             Err(err) if err.code() == ERROR_PIPE_BUSY.to_hresult() => {
                 // SAFETY: same as above.
                 if unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), 1000) }.as_bool() {
                     continue;
                 }
-                return SendOutcome::Failed;
+                return Err(SendOutcome::Failed);
             }
             Err(err) => {
                 log::warn!("resident pipe connect failed: {err}");
-                return SendOutcome::Failed;
+                return Err(SendOutcome::Failed);
             }
         }
     };
@@ -377,13 +385,25 @@ fn exchange(name: &[u16], message: &[u8]) -> SendOutcome {
     // SAFETY: pipe.0 is a valid pipe HANDLE; mode is valid for the call.
     let _ = unsafe { SetNamedPipeHandleState(pipe.0, Some(&raw const mode), None, None) };
 
+    Ok(pipe)
+}
+
+/// The process at the other end of a connected client pipe.
+fn server_pid(pipe: &Pipe) -> Option<u32> {
+    let mut pid = 0u32;
+    // SAFETY: pipe.0 is a valid pipe HANDLE; pid is a valid out pointer.
+    unsafe { GetNamedPipeServerProcessId(pipe.0, &raw mut pid) }
+        .is_ok()
+        .then_some(pid)
+}
+
+/// Sends one message on a connected pipe and reads the reply.
+fn talk(pipe: &Pipe, message: &[u8]) -> SendOutcome {
     // This process was just launched by the user and holds foreground rights; pass them to the
     // resident process so its new window can come to front.
-    let mut server_pid = 0u32;
-    // SAFETY: pipe.0 is a valid pipe HANDLE; server_pid is a valid out pointer.
-    if unsafe { GetNamedPipeServerProcessId(pipe.0, &raw mut server_pid) }.is_ok() {
+    if let Some(pid) = server_pid(pipe) {
         // SAFETY: plain Win32 call with no pointer arguments.
-        let _ = unsafe { AllowSetForegroundWindow(server_pid) };
+        let _ = unsafe { AllowSetForegroundWindow(pid) };
     }
 
     let mut written = 0u32;
@@ -410,27 +430,97 @@ fn pipe_exists(name: &[u16]) -> bool {
     free || unsafe { GetLastError() } == ERROR_SEM_TIMEOUT
 }
 
-/// Asks the resident process to quit and waits up to `timeout` for it to be gone (uninstall).
-/// Returns `false` if it is still there.
-pub(crate) fn quit_resident(timeout: Duration) -> bool {
-    quit_at(&pipe_name(), timeout)
+/// What [`quit_resident_of`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Quit {
+    /// No resident Arke, or it quit.
+    Gone,
+    /// It was asked but is still there after the timeout.
+    StillRunning,
+    /// The resident Arke runs another exe, so it was left alone.
+    OtherCopy(PathBuf),
 }
 
-fn quit_at(name: &[u16], timeout: Duration) -> bool {
+/// Asks the resident Arke to quit and waits up to `timeout` for it to be gone (`--quit`, the
+/// installer, uninstall), but only when it runs `exe`. The pipe is per user, not per copy: with a
+/// second copy of Arke installed, the resident one may be the other copy, which must keep running.
+pub(crate) fn quit_resident_of(exe: &Path, timeout: Duration) -> Quit {
+    quit_at(&pipe_name(), exe, timeout)
+}
+
+fn quit_at(name: &[u16], exe: &Path, timeout: Duration) -> Quit {
     if !pipe_exists(name) {
-        return true;
+        return Quit::Gone;
     }
-    let _ = send_to(name.to_vec(), &Request::Quit, CLIENT_TIMEOUT);
+    let (tx, rx) = flume::bounded(1);
+    let (pipe_name, exe) = (name.to_vec(), exe.to_path_buf());
+    let spawned = std::thread::Builder::new()
+        .name("arke-instance-quit".into())
+        .spawn(move || {
+            let Ok(pipe) = connect(&pipe_name) else {
+                let _ = tx.send(None);
+                return;
+            };
+            let other = server_pid(&pipe)
+                .and_then(process_exe)
+                .filter(|server| !same_file(server, &exe));
+            if other.is_none() {
+                let _ = talk(&pipe, &encode(&Request::Quit));
+            }
+            // Dropping the pipe without a message makes the other copy log one warning.
+            let _ = tx.send(other);
+        });
+    if spawned.is_err() {
+        return Quit::StillRunning;
+    }
+    if let Ok(Some(other)) = rx.recv_timeout(CLIENT_TIMEOUT) {
+        return Quit::OtherCopy(other);
+    }
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if !pipe_exists(name) {
             // The pipe closes as the process exits; give it a moment to finish.
             std::thread::sleep(Duration::from_millis(300));
-            return true;
+            return Quit::Gone;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    false
+    Quit::StillRunning
+}
+
+/// The full path of the exe process `pid` runs, if it can be read.
+pub(crate) fn process_exe(pid: u32) -> Option<PathBuf> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    // SAFETY: plain Win32 call; the handle is closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buf = [0u16; 1024];
+    let mut len = u32::try_from(buf.len()).unwrap_or(0);
+    // SAFETY: `buf` is writable for `len` characters; the handle has query access.
+    let named = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &raw mut len,
+        )
+    };
+    // SAFETY: closes the handle opened above.
+    let _ = unsafe { CloseHandle(process) };
+    named.ok()?;
+    Some(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+}
+
+/// Whether two paths are the same file: compared after resolving links when both exist, and
+/// without case (Windows paths).
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    let text = |p: &Path| p.as_os_str().to_string_lossy().to_lowercase();
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => text(&a) == text(&b),
+        _ => text(a) == text(b),
+    }
 }
 
 #[cfg(test)]
@@ -486,6 +576,34 @@ mod tests {
             );
         }
         assert!(listen_at(name).is_none());
+    }
+
+    /// `--quit` from one copy of Arke leaves another copy's resident process running.
+    #[test]
+    fn quit_only_asks_the_same_exe() {
+        let name = test_pipe("quit");
+        let (tx, rx) = flume::unbounded();
+        serve(listen_at(name.clone()).unwrap(), move |req| {
+            let _ = tx.send(req);
+            true
+        });
+        // The resident process is this test binary.
+        let me = std::env::current_exe().unwrap();
+        let other = Path::new(r"C:\Program Files\Arke\arke.exe");
+        match quit_at(&name, other, Duration::from_millis(100)) {
+            Quit::OtherCopy(exe) => assert!(same_file(&exe, &me), "{}", exe.display()),
+            outcome => panic!("expected another copy, got {outcome:?}"),
+        }
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        // Its own exe is asked; this server only records the request and keeps running.
+        assert_eq!(
+            quit_at(&name, &me, Duration::from_millis(100)),
+            Quit::StillRunning
+        );
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Request::Quit
+        );
     }
 
     #[test]
@@ -591,7 +709,15 @@ mod tests {
     fn sees_a_pipe_without_connecting() {
         let name = test_pipe("exists");
         assert!(!pipe_exists(&name));
-        assert!(quit_at(&name, Duration::from_millis(10)), "nothing to quit");
+        assert_eq!(
+            quit_at(
+                &name,
+                Path::new(r"C:\x\arke.exe"),
+                Duration::from_millis(10)
+            ),
+            Quit::Gone,
+            "nothing to quit"
+        );
         let listener = listen_at(name.clone()).unwrap();
         assert!(pipe_exists(&name));
         drop(listener);

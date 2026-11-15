@@ -360,6 +360,54 @@ fn an_installer_that_stops_early_leaves_arke_open(cx: &mut TestAppContext) {
     }
 }
 
+/// Declining the approval prompt for a downloaded installer keeps the corner notice up with the
+/// reason and Try again, and the sidebar badge; the installer is kept for the retry.
+#[gpui::test]
+fn a_declined_installer_keeps_the_notice_with_a_retry(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.update(|_, cx| Workspace::pretend_build_for_test("0.3.0", Some(Channel::Stable), cx));
+    let installer = PathBuf::from(r"C:\t\arke-0.4.0-setup.exe");
+    cx.update(|_, cx| {
+        UpdateState::set_for_test(cx, UpdateState::Ready(release("0.4.0"), installer.clone()));
+    });
+    // 1223: what an Inno Setup installer returns when its approval prompt is declined.
+    let child = std::process::Command::new("cmd")
+        .args(["/c", "exit 1223"])
+        .spawn()
+        .unwrap();
+    cx.update(|_, cx| crate::update::watch_setup(child, cx));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !matches!(
+        cx.update(|_, cx| UpdateState::get(cx)),
+        UpdateState::Canceled(..)
+    ) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the installer"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        cx.run_until_parked();
+    }
+    match cx.update(|_, cx| UpdateState::get(cx)) {
+        UpdateState::Canceled(r, exe) => {
+            assert_eq!((r.version.as_str(), exe), ("0.4.0", installer));
+        }
+        other => panic!("{other:?}"),
+    }
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("update-notice").is_some(),
+        "the notice stays"
+    );
+    assert!(cx.debug_bounds("update-notice-retry").is_some());
+    assert!(
+        cx.update(|_, cx| UpdateState::has_news(cx)),
+        "and the badge"
+    );
+}
+
 /// "Restart now" when the new exe can't start (here: not a program at all; on real PCs often
 /// antivirus): the previous exe goes back in place, so Arke keeps working after it quits, and
 /// the page says why.

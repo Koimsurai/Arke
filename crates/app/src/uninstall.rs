@@ -17,6 +17,10 @@
 //!    then removes the files, the Start menu shortcut and the entry in Settings > Apps; "Remove
 //!    Arke from this PC" starts that uninstaller instead.
 //!
+//! - Another copy of Arke for this user (see [`other_copies`]) shares the search service, the folder
+//!   handler, saved passwords, the jump list and both data folders. While one is left, only this
+//!   copy's exe (and what points at it: the folder handler, the "Start with Windows" shortcut)
+//!   goes, and only a resident process running this exe is asked to quit.
 //! - Only Arke's own folders are deleted: a folder must be exactly `<base>\Arke` under the
 //!   expected base and never a drive root or a profile folder, otherwise it is refused.
 //! - The app doesn't remove itself in-process: it starts `arke --uninstall --wait-pid <pid>` and
@@ -86,6 +90,21 @@ pub(crate) struct Machine {
     pub(crate) service: bool,
     /// Only touch the profile folders and the exe (see `ARKE_UNINSTALL_SANDBOX`).
     pub(crate) sandbox: bool,
+    /// Other copies of Arke this user keeps ([`other_copies`]).
+    pub(crate) others: Vec<PathBuf>,
+    /// What every copy shares but that points at this exe, so it goes with it.
+    pub(crate) ours: Ours,
+}
+
+/// Shared things that start this copy's exe (and not another copy's).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ours {
+    /// The folder handler (folder verbs or Win+E).
+    pub(crate) folder_handler: bool,
+    /// The Start menu shortcut, or there is none.
+    pub(crate) start_menu: bool,
+    /// The "Start with Windows" shortcut, or there is none.
+    pub(crate) startup: bool,
 }
 
 impl Machine {
@@ -98,16 +117,132 @@ impl Machine {
                 .filter(|p| p.is_absolute())
         };
         let sandbox = std::env::var_os(SANDBOX_ENV).is_some();
+        let exe = std::env::current_exe().ok()?;
+        let appdata = env("APPDATA");
+        // A shortcut that is missing or starts this exe is this copy's to remove.
+        let ours = |link: PathBuf| {
+            !link.exists()
+                || crate::win::read_shortcut(&link)
+                    .is_some_and(|(target, _)| crate::instance::same_file(&target, &exe))
+        };
+        let start_menu_ours = appdata
+            .as_ref()
+            .is_none_or(|a| ours(crate::win::start_menu_shortcut(a)));
+        let startup_ours = appdata
+            .as_ref()
+            .is_none_or(|a| ours(crate::win::autostart_shortcut(a)));
         Some(Self {
-            exe: std::env::current_exe().ok()?,
-            appdata: env("APPDATA"),
+            others: other_copies(&exe),
+            ours: Ours {
+                folder_handler: crate::folder_handler::handled_by_this_exe(),
+                start_menu: start_menu_ours,
+                startup: startup_ours,
+            },
+            appdata,
             local_appdata: env("LOCALAPPDATA"),
             manager: crate::update::package_manager(),
             setup: crate::update::installed_by_setup(),
             service: service && !sandbox,
             sandbox,
+            exe,
         })
     }
+}
+
+/// The installer's entry in Settings > Apps (`AppId` in `installer/arke.iss`).
+const SETUP_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{3593FF9D-559F-4CAF-98F5-21A310C846D4}_is1";
+
+/// Other copies of Arke this user has: installed by the installer (for this user or for all
+/// users), by winget or by Scoop, in the usual per-user folder, or running now in this session
+/// (a portable copy). They share the search service, the folder handler, saved passwords, the
+/// jump list and the data folders with this one. Only reads.
+pub(crate) fn other_copies(exe: &Path) -> Vec<PathBuf> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let mut candidates: Vec<PathBuf> = [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .filter_map(|root| {
+            crate::win::read_reg_string(root, SETUP_UNINSTALL_KEY, "InstallLocation")
+        })
+        .map(|dir| PathBuf::from(dir).join("arke.exe"))
+        .collect();
+    if let Some(local) = env("LOCALAPPDATA") {
+        candidates.push(local.join(r"Programs\Arke\arke.exe"));
+        // winget's portable install: Packages\Koimsurai.Arke_<source>\arke.exe
+        if let Ok(dirs) = std::fs::read_dir(local.join(r"Microsoft\WinGet\Packages")) {
+            candidates.extend(
+                dirs.flatten()
+                    .filter(|d| {
+                        d.file_name()
+                            .to_string_lossy()
+                            .starts_with("Koimsurai.Arke_")
+                    })
+                    .map(|d| d.path().join("arke.exe")),
+            );
+        }
+    }
+    let scoop_roots = [
+        env("SCOOP"),
+        env("SCOOP_GLOBAL"),
+        env("USERPROFILE").map(|p| p.join("scoop")),
+        env("ProgramData").map(|p| p.join("scoop")),
+    ];
+    candidates.extend(
+        scoop_roots
+            .into_iter()
+            .flatten()
+            .map(|root| root.join(r"apps\arke\current\arke.exe")),
+    );
+    candidates.extend(running_copies());
+    distinct_others(exe, candidates)
+}
+
+/// `candidates` that are files, aren't `exe` and aren't listed twice.
+fn distinct_others(exe: &Path, candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    use crate::instance::same_file;
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in candidates {
+        if path.is_file() && !same_file(&path, exe) && !out.iter().any(|o| same_file(o, &path)) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The exes of Arke processes in this session (`arke*.exe`, not the search service, which runs
+/// in session 0 as `arke-indexd.exe`).
+fn running_copies() -> Vec<PathBuf> {
+    use windows::Win32::System::ProcessStatus::EnumProcesses;
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    let mut pids = vec![0u32; 4096];
+    let mut used = 0u32;
+    let bytes = u32::try_from(pids.len() * 4).unwrap_or(u32::MAX);
+    // SAFETY: `pids` is writable for `bytes` bytes; `used` is a valid out pointer.
+    if unsafe { EnumProcesses(pids.as_mut_ptr(), bytes, &raw mut used) }.is_err() {
+        return Vec::new();
+    }
+    pids.truncate(used as usize / 4);
+    let session = |pid: u32| {
+        let mut id = 0u32;
+        // SAFETY: valid out pointer.
+        unsafe { ProcessIdToSessionId(pid, &raw mut id) }
+            .is_ok()
+            .then_some(id)
+    };
+    let mine = session(std::process::id());
+    pids.into_iter()
+        .filter(|&pid| pid != 0 && session(pid) == mine)
+        .filter_map(crate::instance::process_exe)
+        .filter(|path| {
+            let is_exe = path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+            let stem = path
+                .file_stem()
+                .map_or_default(|n| n.to_string_lossy().to_lowercase());
+            is_exe && stem.starts_with("arke") && stem != "arke-indexd"
+        })
+        .collect()
 }
 
 /// Which shortcut a step deletes.
@@ -139,10 +274,15 @@ pub(crate) enum Step {
     KeepExe(PackageManager),
     /// The installer's uninstaller removes the files and the Start menu shortcut.
     LeaveToSetup,
+    /// Another copy of Arke stays, with everything it shares with this one.
+    KeepShared(PathBuf),
 }
 
 /// The steps for this PC, in order.
 pub(crate) fn plan(m: &Machine, keep_settings: bool) -> Vec<Step> {
+    if let Some(other) = m.others.first() {
+        return plan_with_other_copy(m, other);
+    }
     let arke = |base: &PathBuf| base.join("Arke");
     let mut steps = vec![Step::QuitArke];
     if m.service {
@@ -181,6 +321,42 @@ pub(crate) fn plan(m: &Machine, keep_settings: bool) -> Vec<Step> {
         } else {
             Step::DeleteSettings(arke(appdata))
         });
+    }
+    steps.push(match m.manager {
+        Some(manager) => Step::KeepExe(manager),
+        None if m.setup => Step::LeaveToSetup,
+        None => Step::DeleteExe(m.exe.clone()),
+    });
+    steps
+}
+
+/// [`plan`] while `other` (another copy of Arke) stays: only this copy and what points at it go.
+fn plan_with_other_copy(m: &Machine, other: &Path) -> Vec<Step> {
+    let mut steps = vec![Step::QuitArke, Step::KeepShared(other.to_path_buf())];
+    if m.ours.folder_handler {
+        // Folders go back to File Explorer, so the shared setting reads off; the other copy can
+        // turn it on again for itself.
+        steps.push(Step::RestoreFolderHandler {
+            settings: m
+                .appdata
+                .as_ref()
+                .map(|a| a.join("Arke").join("settings.json")),
+        });
+    }
+    if let Some(appdata) = &m.appdata {
+        // Every copy uses the same shortcut names: only the ones that start this exe go.
+        if !m.setup && m.ours.start_menu {
+            steps.push(Step::DeleteShortcut(
+                Shortcut::StartMenu,
+                crate::win::start_menu_shortcut(appdata),
+            ));
+        }
+        if m.ours.startup {
+            steps.push(Step::DeleteShortcut(
+                Shortcut::Startup,
+                crate::win::autostart_shortcut(appdata),
+            ));
+        }
     }
     steps.push(match m.manager {
         Some(manager) => Step::KeepExe(manager),
@@ -315,7 +491,7 @@ fn stop_other_copies(exe: &Path) -> usize {
         }
         .is_ok();
         let path = PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-        if named && same_file(&path, exe) {
+        if named && crate::instance::same_file(&path, exe) {
             // SAFETY: the handle has terminate and synchronize access.
             unsafe {
                 if TerminateProcess(process, 1).is_ok() {
@@ -328,13 +504,6 @@ fn stop_other_copies(exe: &Path) -> usize {
         let _ = unsafe { CloseHandle(process) };
     }
     stopped
-}
-
-/// Whether two paths name the same file, ignoring case (Windows paths).
-fn same_file(a: &Path, b: &Path) -> bool {
-    a.as_os_str()
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
 }
 
 /// Short description of a step, for the confirmation list and the summary.
@@ -358,6 +527,7 @@ pub(crate) fn label(step: &Step) -> String {
             command = m.uninstall_command()
         ),
         Step::LeaveToSetup => t!("uninstall.step_leave_to_setup"),
+        Step::KeepShared(other) => t!("uninstall.step_keep_shared", path = path(other)),
     }
     .into_owned()
 }
@@ -370,17 +540,24 @@ fn io_error(err: &std::io::Error) -> Outcome {
 fn run_step(step: &Step, exe: &Path) -> Outcome {
     match step {
         Step::QuitArke => {
-            let quit = crate::instance::quit_resident(Duration::from_secs(15));
+            use crate::instance::Quit;
+            let quit = crate::instance::quit_resident_of(exe, Duration::from_secs(15));
             // A context menu helper that just ran a command stays a while after Arke quits
             // (`shell_host.rs`) and keeps the exe busy; Arke is going, so it goes too.
             let stopped = stop_other_copies(exe);
             if stopped > 0 {
                 log::info!("uninstall: stopped {stopped} leftover Arke processes");
             }
-            if quit {
-                Outcome::Done(None)
-            } else {
-                Outcome::Failed(t!("uninstall.still_running").into_owned())
+            match quit {
+                Quit::Gone => Outcome::Done(None),
+                Quit::StillRunning => Outcome::Failed(t!("uninstall.still_running").into_owned()),
+                Quit::OtherCopy(other) => Outcome::Skipped(
+                    t!(
+                        "uninstall.other_running",
+                        path = other.display().to_string()
+                    )
+                    .into_owned(),
+                ),
             }
         }
         Step::RemoveService => match crate::win::run_elevated(exe, "--indexd uninstall") {
@@ -415,7 +592,9 @@ fn run_step(step: &Step, exe: &Path) -> Outcome {
         Step::ClearJumpList => crate::win_jumplist::clear()
             .map_or_else(|e| Outcome::Failed(e.to_string()), |()| Outcome::Done(None)),
         Step::DeleteData(folder) | Step::DeleteSettings(folder) => delete_folder(folder),
-        Step::KeepSettings(_) | Step::KeepExe(_) | Step::LeaveToSetup => Outcome::Done(None),
+        Step::KeepSettings(_) | Step::KeepExe(_) | Step::LeaveToSetup | Step::KeepShared(_) => {
+            Outcome::Done(None)
+        }
         Step::DeleteExe(path) => match check_exe(path) {
             Err(refused) => Outcome::Failed(refused.to_string()),
             Ok(()) => schedule_exe_deletion(path).map_or_else(
@@ -616,6 +795,12 @@ mod tests {
             setup: false,
             service: false,
             sandbox: false,
+            others: Vec::new(),
+            ours: Ours {
+                folder_handler: true,
+                start_menu: true,
+                startup: true,
+            },
         }
     }
 
@@ -668,15 +853,88 @@ mod tests {
         );
     }
 
+    /// With another copy installed (say a per-user one next to an all-users test install), only
+    /// this copy goes: the service, passwords, jump list and data folders stay for the other.
+    #[test]
+    fn another_copy_keeps_what_is_shared() {
+        let root = Path::new(r"C:\Users\me\AppData");
+        let other = PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Arke\arke.exe");
+        let mut m = machine(root);
+        m.service = true;
+        m.others = vec![other.clone()];
+        // Settings would go without the other copy; with it they stay either way.
+        for keep in [false, true] {
+            assert_eq!(
+                plan(&m, keep),
+                vec![
+                    Step::QuitArke,
+                    Step::KeepShared(other.clone()),
+                    Step::RestoreFolderHandler {
+                        settings: Some(PathBuf::from(
+                            r"C:\Users\me\AppData\Roaming\Arke\settings.json"
+                        )),
+                    },
+                    Step::DeleteShortcut(
+                        Shortcut::StartMenu,
+                        PathBuf::from(
+                            r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Arke.lnk"
+                        )
+                    ),
+                    Step::DeleteShortcut(
+                        Shortcut::Startup,
+                        PathBuf::from(
+                            r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Arke.lnk"
+                        )
+                    ),
+                    Step::DeleteExe(PathBuf::from(r"C:\Users\me\AppData\Tools\arke.exe")),
+                ]
+            );
+        }
+        // The folder handler and shortcuts that start the other copy are left alone too; an
+        // installed copy leaves its files to the installer.
+        m.ours = Ours {
+            folder_handler: false,
+            start_menu: false,
+            startup: false,
+        };
+        m.setup = true;
+        assert_eq!(
+            plan(&m, false),
+            vec![Step::QuitArke, Step::KeepShared(other), Step::LeaveToSetup]
+        );
+    }
+
+    #[test]
+    fn other_copies_are_existing_files_listed_once() {
+        let dir =
+            std::env::temp_dir().join(format!("arke-uninstall-others-{}", std::process::id()));
+        let (me, other, missing) = (
+            dir.join("a").join("arke.exe"),
+            dir.join("b").join("arke.exe"),
+            dir.join("c").join("arke.exe"),
+        );
+        for exe in [&me, &other] {
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(exe, b"").unwrap();
+        }
+        let upper = PathBuf::from(other.to_string_lossy().to_uppercase());
+        let found = distinct_others(&me, [me.clone(), other.clone(), upper, missing]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, [other]);
+    }
+
     #[test]
     fn matches_its_own_exe_only() {
         let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\Arke\arke.exe");
-        assert!(same_file(
+        assert!(crate::instance::same_file(
             Path::new(r"c:\users\ME\appdata\local\programs\arke\ARKE.EXE"),
             exe
         ));
-        assert!(!same_file(Path::new(r"D:\Arke\arke.exe"), exe));
-        assert!(!same_file(
+        assert!(!crate::instance::same_file(
+            Path::new(r"D:\Arke\arke.exe"),
+            exe
+        ));
+        assert!(!crate::instance::same_file(
             Path::new(r"C:\Users\me\AppData\Local\Programs\Arke\arke.exe.old"),
             exe
         ));

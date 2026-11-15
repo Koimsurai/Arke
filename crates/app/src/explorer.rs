@@ -406,6 +406,10 @@ pub(crate) enum ExplorerEvent {
     },
     /// The back (`true`) or forward toolbar button: the workspace decides what it moves.
     HistoryButton(bool),
+    /// Back left a folder that was opened from Home: the workspace shows Home again.
+    BackToHome {
+        start: bool,
+    },
     /// An operation changed this remote folder (servers send no change notifications; panes
     /// showing it relist).
     RemoteChanged(PathBuf),
@@ -500,6 +504,8 @@ struct PendingNav {
     select: Vec<Arc<str>>,
     /// Per-folder view state to save or put back when this finishes.
     folder_view: folder_view::PendingView,
+    /// Opened from Home: `Some(start)`, where `start` says Home was where the tab started.
+    from_home: Option<bool>,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -548,6 +554,10 @@ pub(crate) struct Explorer {
     pub(crate) model: Option<DirModel>,
     pending: Option<PendingNav>,
     pub(crate) history: History,
+    /// The folder at this history depth was opened from Home (and whether Home was where the
+    /// tab started): back from it returns to Home, like a browser. Home is a page over the
+    /// list, not a folder, so the history itself can't hold it.
+    from_home: Option<(usize, bool)>,
     /// Back and forward button states set by the workspace when they follow the timeline
     /// across tabs (`workspace_nav.rs`); `None`: this pane's own history.
     pub(crate) global_nav: Option<(bool, bool)>,
@@ -883,6 +893,7 @@ impl Explorer {
             model: None,
             pending: None,
             history: History::default(),
+            from_home: None,
             global_nav: None,
             sort: defaults.0,
             seen_defaults: defaults,
@@ -1186,6 +1197,7 @@ impl Explorer {
             kind,
             select,
             folder_view,
+            from_home: None,
         });
         self.typeahead.reset();
         self.loading_task = Some(cx.spawn(async move |this, cx| {
@@ -1355,7 +1367,23 @@ impl Explorer {
 
     pub(crate) fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(target) = self.history.back_target() {
+            let home = self
+                .from_home
+                .filter(|&(at, _)| at == self.history.depth())
+                .map(|(_, start)| start);
             self.navigate(target.to_path_buf(), NavKind::Back, cx);
+            // This folder was opened from Home: Home comes back over the folder before it.
+            if let Some(start) = home {
+                cx.emit(ExplorerEvent::BackToHome { start });
+            }
+        }
+    }
+
+    /// The navigation just started was opened from Home (`start`: Home was where the tab
+    /// started, so there is nothing before it).
+    pub(crate) const fn opened_from_home(&mut self, start: bool) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.from_home = Some(start);
         }
     }
 
@@ -1743,7 +1771,16 @@ impl Explorer {
         let previous = self.model.as_ref().map(|m| m.path.clone());
         let stepped =
             pending.kind == NavKind::New && previous.as_deref().is_some_and(|p| p != path);
+        let depth_before = self.history.depth();
         self.history.commit(pending.kind, previous.as_deref(), path);
+        if let Some(start) = pending.from_home {
+            self.from_home = Some((self.history.depth(), start));
+        } else if pending.kind == NavKind::New
+            && self.from_home.is_some_and(|(at, _)| depth_before < at)
+        {
+            // A new folder after going back past the one opened from Home replaces it.
+            self.from_home = None;
+        }
         if pending.kind != NavKind::Refresh {
             // Going up selects the folder we came from; "Open file location" selects the given
             // item.

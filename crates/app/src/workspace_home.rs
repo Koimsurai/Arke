@@ -18,6 +18,10 @@ pub(super) struct HomeView {
     view: Entity<HomePage>,
     /// Tab that owns the page.
     pub(super) owner: super::pages::Owner,
+    /// Home is where the tab started (a new window or tab, or Home at startup): nothing was
+    /// shown before it, so back stops here. Otherwise back closes Home and shows the folder
+    /// under it, the one it was opened from.
+    start: bool,
     _events: Subscription,
 }
 
@@ -44,7 +48,7 @@ impl Workspace {
                 self.active_view()
                     .update(cx, |explorer, _| explorer.select_on_arrival(select));
             }
-            Target::Home => self.open_home(false, window, cx),
+            Target::Home => self.open_home_as(false, true, window, cx),
             Target::RecycleBin => self.open_recycle(false, window, cx),
         }
     }
@@ -56,6 +60,17 @@ impl Workspace {
 
     /// Switches to the tab that already has it open, otherwise opens it in a new or the current tab.
     pub(super) fn open_home(&mut self, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_home_as(new_tab, new_tab, window, cx);
+    }
+
+    /// [`Self::open_home`]; `start`: Home is where the tab starts (see [`HomeView::start`]).
+    pub(super) fn open_home_as(
+        &mut self,
+        new_tab: bool,
+        start: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let existing = self.home_page.as_ref().map(|p| p.owner.clone());
         if self.go_to_page(existing.as_ref(), window, cx) {
             return;
@@ -77,10 +92,51 @@ impl Workspace {
         self.home_page = Some(HomeView {
             view,
             owner: self.owner_here(new_tab, cx),
+            start,
             _events: events,
         });
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// What a folder tile on Home does (tests drive it without the page's own events).
+    #[cfg(test)]
+    pub(super) fn home_opens_folder(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(page) = &self.home_page {
+            let view = page.view.clone();
+            self.on_home_event(&view, &HomeEvent::OpenFolder(path), window, cx);
+        }
+    }
+
+    /// Back left a folder opened from Home in `view`'s tab: Home comes back over the folder
+    /// before it (only one Home page exists, so one open in another tab moves here).
+    pub(super) fn back_to_home(
+        &mut self,
+        view: &Entity<crate::explorer::Explorer>,
+        start: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_view().entity_id() != view.entity_id() {
+            return;
+        }
+        self.home_page = None;
+        self.open_home_as(false, start, window, cx);
+    }
+
+    /// Back while Home shows: Home opened over a folder closes and shows that folder again.
+    /// Returns whether it did; at the start of the tab there is nothing before Home.
+    pub(super) fn back_closes_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.home_open() || self.home_page.as_ref().is_some_and(|p| p.start) {
+            return false;
+        }
+        self.close_home(window, cx);
+        true
     }
 
     pub(super) fn close_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -102,13 +158,17 @@ impl Workspace {
             return;
         }
         // Home yields and the folder opens in the same tab, even if the tab was created for Home.
-        self.home_page = None;
+        // Back from that folder brings Home back.
+        let start = self.home_page.take().is_some_and(|p| p.start);
         self.focus_active(window, cx);
         let view = self.active_view().clone();
         match event {
             HomeEvent::OpenFolder(path) => {
                 let path = path.clone();
-                view.update(cx, |e, cx| e.navigate(path, arke_core::NavKind::New, cx));
+                view.update(cx, |e, cx| {
+                    e.navigate(path, arke_core::NavKind::New, cx);
+                    e.opened_from_home(start);
+                });
             }
             HomeEvent::OpenRecycle => self.open_recycle(false, window, cx),
             HomeEvent::OpenInNewTab(_) => {}
@@ -119,6 +179,7 @@ impl Workspace {
                 let (parent, name) = (parent.to_path_buf(), name.to_string_lossy().into());
                 view.update(cx, |e, cx| {
                     e.navigate_selecting(parent, arke_core::NavKind::New, Some(name), cx);
+                    e.opened_from_home(start);
                 });
             }
         }

@@ -757,7 +757,7 @@ impl Workspace {
         self.start_default = false;
         match store.settings.start_location {
             crate::settings::StartLocation::Home => {}
-            crate::settings::StartLocation::HomePage => self.open_home(false, window, cx),
+            crate::settings::StartLocation::HomePage => self.open_home_as(false, true, window, cx),
             crate::settings::StartLocation::LastFolder => {
                 if let Some(last) = store.last_session_folder.clone() {
                     self.active_view()
@@ -848,6 +848,35 @@ impl Workspace {
             .is_some_and(|g| g.0.read(cx).settings.tab_layout == TabLayout::Horizontal)
     }
 
+    /// A remote folder needs a login: asks for it, with the key file saved for that server.
+    fn remote_login(
+        &mut self,
+        path: &Path,
+        view: &Entity<Explorer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key_file = arke_core::remote::RemoteUrl::from_path(path).and_then(|url| {
+            SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .remote_places
+                .iter()
+                .filter_map(|p| Some((arke_core::remote::RemoteUrl::from_path(&p.url)?, p)))
+                .find(|(saved, _)| saved.same_origin(&url))
+                .and_then(|(_, p)| p.key_file.clone())
+        });
+        self.open_net_dialog(
+            NetDialogKind::RemoteLogin {
+                url: path.to_path_buf(),
+                key_file,
+            },
+            Some((view.clone(), path.to_path_buf())),
+            window,
+            cx,
+        );
+    }
+
     fn on_explorer_event(
         &mut self,
         source: &Entity<Explorer>,
@@ -875,30 +904,7 @@ impl Workspace {
             }
             ExplorerEvent::Activated => self.activate_pane(tab_ix, pane_ix, window, cx),
             ExplorerEvent::NetLogin(path) if arke_core::remote::is_remote(path) => {
-                let view = self
-                    .tabs
-                    .get(tab_ix)
-                    .and_then(|t| t.panes.get(pane_ix))
-                    .map(|p| p.view.clone());
-                let key_file = arke_core::remote::RemoteUrl::from_path(path).and_then(|url| {
-                    SettingsStore::global(cx)
-                        .read(cx)
-                        .settings
-                        .remote_places
-                        .iter()
-                        .filter_map(|p| Some((arke_core::remote::RemoteUrl::from_path(&p.url)?, p)))
-                        .find(|(saved, _)| saved.same_origin(&url))
-                        .and_then(|(_, p)| p.key_file.clone())
-                });
-                self.open_net_dialog(
-                    NetDialogKind::RemoteLogin {
-                        url: path.clone(),
-                        key_file,
-                    },
-                    view.map(|v| (v, path.clone())),
-                    window,
-                    cx,
-                );
+                self.remote_login(path, source, window, cx);
             }
             ExplorerEvent::NetLogin(path) => {
                 let view = self
@@ -917,6 +923,7 @@ impl Workspace {
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
             ExplorerEvent::HistoryButton(back) => self.history_button(source, *back, window, cx),
+            ExplorerEvent::BackToHome { start } => self.back_to_home(source, *start, window, cx),
             ExplorerEvent::Navigated { path, stepped } => {
                 if *stepped {
                     self.note_navigation(source.entity_id(), cx);
@@ -2046,7 +2053,9 @@ impl Render for Workspace {
             }))
             .on_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(|this, _: &crate::explorer::GoBack, window, cx| {
-                if Self::across_tabs(cx) {
+                if this.back_closes_home(window, cx) {
+                    cx.stop_propagation();
+                } else if Self::across_tabs(cx) {
                     cx.stop_propagation();
                     this.step_timeline(true, window, cx);
                 }
@@ -2058,11 +2067,15 @@ impl Render for Workspace {
                 }
             }))
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                if let MouseButton::Navigate(direction) = event.button
-                    && Self::across_tabs(cx)
-                {
+                let MouseButton::Navigate(direction) = event.button else {
+                    return;
+                };
+                let back = direction == gpui::NavigationDirection::Back;
+                if back && this.back_closes_home(window, cx) {
                     cx.stop_propagation();
-                    this.step_timeline(direction == gpui::NavigationDirection::Back, window, cx);
+                } else if Self::across_tabs(cx) {
+                    cx.stop_propagation();
+                    this.step_timeline(back, window, cx);
                 }
             }))
             // Mouse back/forward anywhere in the window (the sidebar, the tab list, Home and the

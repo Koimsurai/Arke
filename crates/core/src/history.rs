@@ -36,6 +36,11 @@ impl History {
         !self.forward.is_empty()
     }
 
+    /// How many steps back there are: the position of the current folder in the history.
+    pub const fn depth(&self) -> usize {
+        self.back.len()
+    }
+
     /// Directory a back navigation would open.
     pub fn back_target(&self) -> Option<&Path> {
         self.back.last().map(PathBuf::as_path)

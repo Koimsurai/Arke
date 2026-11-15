@@ -855,6 +855,84 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     assert_eq!(at(cx), Some(p(r"C:\b")));
 }
 
+/// #70: a folder opened from Home goes back to Home, like a browser. Home where the tab started
+/// is as far back as it goes; Home opened over a folder goes back to that folder.
+#[gpui::test]
+fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    let fs = FakeFs::new();
+    for dir in [r"C:\Users\me", r"C:\Users\me\Desktop", r"C:\work"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\Users\me");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "profile", loaded(r"C:\Users\me"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let back = |cx: &mut VisualTestContext| {
+        // Over the sidebar, as with Home showing there is no list to press over.
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Navigate(NavigationDirection::Back),
+            position: point(px(8.), px(300.)),
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+    };
+    let home = t!("home.title").into_owned();
+
+    // The reporter's steps: Home at startup, Desktop from Home, then back twice.
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_start_home_for_test(window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+    back(cx);
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(home.as_str()),
+        "back from Desktop shows Home"
+    );
+    back(cx);
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(home.as_str()),
+        "Home is where the tab started"
+    );
+
+    // Home opened over a folder: back from the folder opened from it shows Home, and back
+    // again closes Home on the folder it was opened from.
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\work"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "work", loaded(r"C:\work"));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    back(cx);
+    wait_until(cx, &view, "under Home: work", loaded(r"C:\work"));
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()));
+    back(cx);
+    assert_eq!(
+        page(cx),
+        None,
+        "back from Home shows the folder it was opened from"
+    );
+    assert_eq!(at(cx), Some(p(r"C:\work")));
+}
+
 /// Tab A goes a → b; a new tab B opens at c and goes to d. Returns the two list views.
 fn two_tabs_with_history(
     ws: &Entity<Workspace>,

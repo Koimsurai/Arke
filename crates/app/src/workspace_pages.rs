@@ -182,6 +182,21 @@ impl Workspace {
         self.open_home(new_tab, window, cx);
     }
 
+    /// Home as the start of the tab (Home at startup or in a new window).
+    pub(crate) fn open_start_home_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_home_as(false, true, window, cx);
+    }
+
+    /// A folder tile on Home was clicked.
+    pub(crate) fn home_open_folder_for_test(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.home_opens_folder(path, window, cx);
+    }
+
     pub(crate) fn open_settings_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings(&super::settings_panel::OpenSettings, window, cx);
     }

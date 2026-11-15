@@ -72,6 +72,11 @@ impl Workspace {
         }
     }
 
+    /// Whether a page covers the active tab.
+    pub(super) fn page_shown(&self) -> bool {
+        self.home_open() || self.settings_open() || self.recycle_open() || self.whats_new_open()
+    }
+
     /// Whether the page is visible, i.e. the active tab owns it.
     pub(super) fn shows(&self, owner: &Owner) -> bool {
         self.active_view().entity_id() == owner.view
@@ -239,6 +244,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.home_opens_folder(path, window, cx);
+    }
+
+    pub(crate) fn close_home_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_home(window, cx);
     }
 
     pub(crate) fn open_settings_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {

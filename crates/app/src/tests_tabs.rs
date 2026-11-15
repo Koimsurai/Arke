@@ -1125,3 +1125,31 @@ fn enter_on_a_found_folder_moves_to_the_list(cx: &mut TestAppContext) {
     wait_until(cx, &view, "open", loaded(r"C:\t\needle"));
     assert!(!cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx)));
 }
+
+/// #98: Home (or Settings) over a folder is where the user is, so the sidebar doesn't also mark
+/// the folder under it.
+#[gpui::test]
+fn a_page_over_a_folder_does_not_mark_the_folder_in_the_sidebar(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\Users\me\Downloads", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\Users\me\Downloads");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "downloads", loaded(r"C:\Users\me\Downloads"));
+    let here = |cx: &mut VisualTestContext| ws.update(cx, |ws, cx| ws.sidebar_here_for_test(cx));
+    assert_eq!(here(cx), Some(p(r"C:\Users\me\Downloads")));
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    assert_eq!(here(cx), None, "Home covers Downloads");
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_settings_for_test(window, cx)));
+    assert_eq!(here(cx), None, "Settings covers Downloads");
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_settings_for_test(window, cx)));
+    let home = t!("home.title").into_owned();
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), Some(home));
+    assert_eq!(here(cx), None, "back on Home");
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_home_for_test(window, cx)));
+    assert_eq!(
+        here(cx),
+        Some(p(r"C:\Users\me\Downloads")),
+        "the folder is marked again once nothing covers it"
+    );
+}

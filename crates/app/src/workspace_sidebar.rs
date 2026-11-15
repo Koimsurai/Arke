@@ -603,10 +603,21 @@ impl Workspace {
         out
     }
 
+    /// The folder the sidebar marks as the current location. None while a page (Home, Settings...)
+    /// covers the active tab: the folder under it isn't where the user is (#98).
+    fn sidebar_here(&self, cx: &App) -> Option<PathBuf> {
+        if self.page_shown() {
+            return None;
+        }
+        self.active_view()
+            .read(cx)
+            .display_path()
+            .map(Path::to_path_buf)
+    }
+
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let explorer = self.active_view().read(cx);
-        let current = explorer.display_path().map(Path::to_path_buf);
-        let places = explorer.places.clone();
+        let current = self.sidebar_here(cx);
+        let places = self.active_view().read(cx).places.clone();
         let pins = self.render_pins(current.as_deref(), cx);
         // This PC: user folders and all drives, all expandable.
         let mut devices = Vec::new();
@@ -1968,6 +1979,10 @@ impl Workspace {
 
     pub(crate) fn tree_children_for_test(&self, path: &Path) -> Option<Vec<PathBuf>> {
         self.tree_children.get(path).cloned().flatten()
+    }
+
+    pub(crate) fn sidebar_here_for_test(&self, cx: &App) -> Option<PathBuf> {
+        self.sidebar_here(cx)
     }
 
     pub(crate) fn tree_is_leaf_for_test(&self, path: &Path) -> bool {

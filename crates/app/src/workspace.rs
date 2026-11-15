@@ -2372,8 +2372,21 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(theme::S_4)
-            .pl(theme::S_8)
-            .child(Self::sidebar_toggle(cx))
+            // Collapsed, the toggle is centred over the rail's icons.
+            .map(|d| {
+                if theme::sidebar_collapsed() {
+                    d.child(
+                        div()
+                            .w(theme::RAIL_W)
+                            .flex_none()
+                            .flex()
+                            .justify_center()
+                            .child(Self::sidebar_toggle(cx)),
+                    )
+                } else {
+                    d.pl(theme::S_8).child(Self::sidebar_toggle(cx))
+                }
+            })
             .child(
                 div()
                     .flex()

@@ -1087,6 +1087,25 @@ fn folder_keys_work_on_home(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("alt-up");
     wait_until(cx, &view, "up", loaded(r"C:\t"));
     assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+
+    // The other pages over a tab do the same. Settings opens in a tab of its own: Ctrl+K closes
+    // that tab and searches from the folder tab it was opened from.
+    cx.simulate_keystrokes("escape");
+    ws.update_in(cx, crate::workspace::Workspace::open_settings_for_test);
+    cx.run_until_parked();
+    assert!(ws.update(cx, |ws, _| ws.shown_page_for_test()).is_some());
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 2);
+    cx.simulate_keystrokes("ctrl-k");
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.tab_views().count()),
+        1,
+        "no stray tab"
+    );
+    let shown = ws.update(cx, |ws, _| ws.active_view().clone());
+    assert_eq!(shown.entity_id(), view.entity_id());
+    shown.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
 }
 
 /// Enter on a folder found from the search box opens it with the cursor in the list, as a click

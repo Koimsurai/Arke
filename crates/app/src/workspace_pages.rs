@@ -28,6 +28,50 @@ impl Workspace {
         }
     }
 
+    /// A folder key pressed on a page that covers the active tab (Ctrl+K, Ctrl+F, Ctrl+L,
+    /// Alt+Up...): the page steps aside, the tab stays, and the key acts on the folder under it
+    /// (#77).
+    pub(super) fn page_key(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(
+            &mut crate::explorer::Explorer,
+            &mut Window,
+            &mut Context<crate::explorer::Explorer>,
+        ),
+    ) {
+        // A tab opened just for the page closes with it (unless it's the last), so the key acts
+        // on the tab that was there before instead of leaving a stray one. That tab may show a
+        // page too (What's new opened from Settings): step aside until a folder shows.
+        let mut stepped = false;
+        while let Some(owner) = self.take_shown_page() {
+            self.dismiss_page(&owner, window, cx);
+            stepped = true;
+        }
+        if !stepped {
+            return;
+        }
+        let view = self.active_view().clone();
+        view.update(cx, |e, cx| act(e, window, cx));
+        cx.notify();
+    }
+
+    /// Removes the page the active tab shows and returns its owner (`None` when a folder shows).
+    fn take_shown_page(&mut self) -> Option<Owner> {
+        if self.home_open() {
+            self.home_page.take().map(|p| p.owner)
+        } else if self.settings_open() {
+            self.settings_panel.take().map(|p| p.owner)
+        } else if self.recycle_open() {
+            self.recycle_page.take().map(|p| p.owner)
+        } else if self.whats_new_open() {
+            self.whats_new.take().map(|p| p.owner)
+        } else {
+            None
+        }
+    }
+
     /// Whether the page is visible, i.e. the active tab owns it.
     pub(super) fn shows(&self, owner: &Owner) -> bool {
         self.active_view().entity_id() == owner.view

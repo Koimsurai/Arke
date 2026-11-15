@@ -139,28 +139,6 @@ impl Workspace {
         true
     }
 
-    /// A folder key pressed on Home (Ctrl+K, Ctrl+F, Ctrl+L, Alt+Up...): Home yields to the folder
-    /// under it, the tab stays, and the key acts there (#77).
-    pub(super) fn home_key(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        act: impl FnOnce(
-            &mut crate::explorer::Explorer,
-            &mut Window,
-            &mut Context<crate::explorer::Explorer>,
-        ),
-    ) {
-        if !self.home_open() {
-            return;
-        }
-        self.home_page = None;
-        self.focus_active(window, cx);
-        let view = self.active_view().clone();
-        view.update(cx, |e, cx| act(e, window, cx));
-        cx.notify();
-    }
-
     pub(super) fn close_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(page) = self.home_page.take() {
             self.dismiss_page(&page.owner, window, cx);

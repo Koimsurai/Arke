@@ -22,4 +22,4 @@ PNGs = "PNGs"
 
 [files]
 # THIRD_PARTY_LICENSES.md is generated and quotes license texts and crate names verbatim
-extend-exclude = ["Cargo.lock", "THIRD_PARTY_LICENSES.md"]
+extend-exclude = ["Cargo.lock", "THIRD_PARTY_LICENSES.md", "third_party"]

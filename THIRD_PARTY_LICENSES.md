@@ -7710,6 +7710,7 @@ limitations under the License.
 
 Used by:
 
+- gpui-pre-windows 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-collections 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-derive-refineable 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-http-client 0.3.11 (https://github.com/zed-industries/zed)
@@ -7720,7 +7721,6 @@ Used by:
 - gpui-pre-shared-string 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-sum-tree 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-util 0.3.11 (https://github.com/zed-industries/zed)
-- gpui-pre-windows 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-ztracing-macro 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-ztracing 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre 0.3.11 (https://github.com/zed-industries/zed)

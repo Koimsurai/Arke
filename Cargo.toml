@@ -10,6 +10,8 @@ members = [
     "tools/xtask",
 ]
 default-members = ["crates/app", "crates/indexd"]
+# Patched copies of upstream crates (see third_party/README.md), not workspace members.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.5.0"
@@ -142,3 +144,8 @@ lto = "fat"
 codegen-units = 1
 opt-level = 3
 strip = "debuginfo"
+
+# GPUI's Windows renderer with Arke's fixes on top (third_party/README.md lists them). Re-apply
+# when gpui-pre is upgraded.
+[patch.crates-io]
+gpui-pre-windows = { path = "third_party/gpui-pre-windows" }

@@ -57,6 +57,11 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Closes the page the active tab shows, keeping the tab.
+    pub(super) fn drop_shown_page(&mut self) {
+        let _ = self.take_shown_page();
+    }
+
     /// Removes the page the active tab shows and returns its owner (`None` when a folder shows).
     fn take_shown_page(&mut self) -> Option<Owner> {
         if self.home_open() {

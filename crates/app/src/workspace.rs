@@ -1417,6 +1417,9 @@ impl Workspace {
     }
 
     fn navigate_active(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // A page over the tab gives way, even when the folder clicked is the one under it (#98);
+        // the tab stays.
+        self.drop_shown_page();
         let view = self.active_view().clone();
         view.update(cx, |e, cx| e.navigate(path, NavKind::New, cx));
         self.focus_active(window, cx);

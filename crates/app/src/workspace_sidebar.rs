@@ -1985,6 +1985,16 @@ impl Workspace {
         self.sidebar_here(cx)
     }
 
+    /// A quick access tile or tree row was clicked.
+    pub(crate) fn sidebar_open_for_test(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_active(path, window, cx);
+    }
+
     pub(crate) fn tree_is_leaf_for_test(&self, path: &Path) -> bool {
         self.tree_leaf.contains(path)
     }

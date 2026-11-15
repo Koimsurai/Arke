@@ -1152,4 +1152,38 @@ fn a_page_over_a_folder_does_not_mark_the_folder_in_the_sidebar(cx: &mut TestApp
         Some(p(r"C:\Users\me\Downloads")),
         "the folder is marked again once nothing covers it"
     );
+
+    // Clicking the folder under a page in the sidebar shows it: the page gives way, the tab
+    // stays.
+    for settings in [false, true] {
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                if settings {
+                    ws.open_settings_for_test(window, cx);
+                } else {
+                    ws.open_home_for_test(false, window, cx);
+                }
+            });
+        });
+        assert!(ws.update(cx, |ws, _| ws.shown_page_for_test()).is_some());
+        let tabs = ws.update(cx, |ws, cx| ws.tab_titles_for_test(cx));
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.sidebar_open_for_test(p(r"C:\Users\me\Downloads"), window, cx);
+            });
+        });
+        wait_until(
+            cx,
+            &view,
+            "downloads again",
+            loaded(r"C:\Users\me\Downloads"),
+        );
+        assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+        assert_eq!(here(cx), Some(p(r"C:\Users\me\Downloads")));
+        assert_eq!(
+            ws.update(cx, |ws, cx| ws.tab_titles_for_test(cx)).len(),
+            tabs.len(),
+            "the tab stays"
+        );
+    }
 }

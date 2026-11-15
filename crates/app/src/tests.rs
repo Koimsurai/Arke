@@ -1521,6 +1521,7 @@ fn restores_last_session_tabs(cx: &mut TestAppContext) {
                 ratio: 0.5,
                 pinned: true,
                 synced: false,
+                home: false,
             },
             SessionTab {
                 panes: vec![PathBuf::from(r"C:\t\one"), PathBuf::from(r"C:\t\two")],
@@ -1528,6 +1529,7 @@ fn restores_last_session_tabs(cx: &mut TestAppContext) {
                 ratio: 0.3,
                 pinned: false,
                 synced: true,
+                home: false,
             },
         ],
         active: 1,
@@ -1576,6 +1578,70 @@ fn restores_last_session_tabs(cx: &mut TestAppContext) {
             "snapshot should match the restored session"
         );
     });
+}
+
+/// A window closed while Home showed comes back on Home, over the folder it was opened from (#98).
+#[gpui::test]
+fn restores_home_from_the_last_session(cx: &mut TestAppContext) {
+    use crate::settings::{Session, SessionTab};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![dir("one")]);
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::text_input::bind_keys(cx);
+        crate::explorer::bind_keys(cx);
+        crate::workspace::bind_keys(cx);
+    });
+    let session = Session {
+        tabs: vec![SessionTab {
+            panes: vec![PathBuf::from(r"C:\t")],
+            active_pane: 0,
+            ratio: 0.5,
+            pinned: false,
+            synced: false,
+            home: true,
+        }],
+        active: 0,
+    };
+    let services = Services {
+        fs,
+        shell: Arc::new(FakeShell::default()),
+        remotes: crate::remote_shell::test_remotes(),
+    };
+    let restore = session.clone();
+    let (ws, cx) = cx.add_window_view(move |window, cx| {
+        Workspace::new(
+            services,
+            PathBuf::from(r"C:\t"),
+            false,
+            Some(restore),
+            None,
+            Instant::now(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(rust_i18n::t!("home.title").into_owned()),
+        "it opens on Home"
+    );
+    assert_eq!(ws.update(cx, |ws, cx| ws.session_snapshot(cx)), session);
+    // Back (the mouse button, over the sidebar) shows the folder under it, which the session no
+    // longer marks as Home.
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Navigate(gpui::NavigationDirection::Back),
+        position: gpui::point(gpui::px(8.), gpui::px(300.)),
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+    assert!(!ws.update(cx, |ws, cx| ws.session_snapshot(cx)).tabs[0].home);
 }
 
 #[gpui::test]

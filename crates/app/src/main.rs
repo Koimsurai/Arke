@@ -185,6 +185,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             // app_main).
             Some(update::AFTER_UPDATE_ARG) => {
                 let _ = it.next();
+                update::mark_just_updated();
             }
             _ => args.path = Some(path_arg(&arg)),
         }
@@ -1289,7 +1290,7 @@ fn open_explorer_window(
     let first_window = cx.windows().is_empty();
     let (last, session, place) = {
         let store = settings::SettingsStore::global(cx).read(cx);
-        let start = store.settings.start_location;
+        let start = update::start_location(store.settings.start_location);
         let last = (path.is_none() && store.loaded && start == settings::StartLocation::LastFolder)
             .then(|| store.settings.recent.first().cloned())
             .flatten();
@@ -1306,6 +1307,9 @@ fn open_explorer_window(
         let place = (first_window && bench.is_none())
             .then_some(store.settings.window)
             .flatten();
+        if store.loaded {
+            update::start_handled();
+        }
         (last, session, place)
     };
     let start_default = path.is_none() && last.is_none() && session.is_none();

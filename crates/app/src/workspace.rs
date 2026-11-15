@@ -665,6 +665,11 @@ impl Workspace {
                 tab.pinned = saved.pinned;
                 tab.synced = saved.synced && tab.is_split();
             }
+            if saved.home {
+                // Home over its folder, as it was left; back shows the folder.
+                self.active = tab_ix;
+                self.open_home_as(false, false, window, cx);
+            }
         }
         self.active = session.active.min(self.tabs.len() - 1);
         self.keep_pins_first();
@@ -674,10 +679,12 @@ impl Workspace {
 
     /// Snapshot of this window's tabs for the last session. Panes without a path are skipped.
     pub(crate) fn session_snapshot(&self, cx: &App) -> crate::settings::Session {
+        let home_tab = self.home_page.as_ref().and_then(|p| self.tab_of(&p.owner));
         let tabs: Vec<crate::settings::SessionTab> = self
             .tabs
             .iter()
-            .filter_map(|tab| {
+            .enumerate()
+            .filter_map(|(ix, tab)| {
                 let panes: Vec<PathBuf> = tab
                     .panes
                     .iter()
@@ -688,6 +695,7 @@ impl Workspace {
                     ratio: tab.ratio,
                     pinned: tab.pinned,
                     synced: tab.synced && panes.len() > 1,
+                    home: home_tab == Some(ix),
                     panes,
                 })
             })
@@ -757,7 +765,9 @@ impl Workspace {
             return;
         }
         self.start_default = false;
-        match store.settings.start_location {
+        let start = crate::update::start_location(store.settings.start_location);
+        crate::update::start_handled();
+        match start {
             crate::settings::StartLocation::Home => {}
             crate::settings::StartLocation::HomePage => self.open_home_as(false, true, window, cx),
             crate::settings::StartLocation::LastFolder => {
@@ -1113,13 +1123,9 @@ impl Workspace {
             return;
         }
         if self.tabs.len() == 1 {
-            // The last tab: the window stays on Home; closing Home itself closes the window.
-            if self.home_open() {
-                window.remove_window();
-            } else {
-                self.remember_closed(ix, cx);
-                self.open_home(false, window, cx);
-            }
+            // The last tab closes the window, like File Explorer and browsers (#98). The session
+            // keeps it, Home included, for the next start.
+            window.remove_window();
             return;
         }
         self.remember_closed(ix, cx);

@@ -340,6 +340,31 @@ pub(crate) fn clean_up_old() {
     }
 }
 
+/// This process is the new version the updater just started.
+static JUST_UPDATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--after-update` was given: the first window brings back the tabs open before the update.
+pub(crate) fn mark_just_updated() {
+    JUST_UPDATED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Where the first window opens: the setting, except right after an update, which brings back the
+/// tabs that were open (like a browser), so updating doesn't lose your place.
+pub(crate) fn start_location(
+    setting: crate::settings::StartLocation,
+) -> crate::settings::StartLocation {
+    if JUST_UPDATED.load(std::sync::atomic::Ordering::Relaxed) {
+        crate::settings::StartLocation::LastSession
+    } else {
+        setting
+    }
+}
+
+/// The first window has picked where to start; later windows follow the setting again.
+pub(crate) fn start_handled() {
+    JUST_UPDATED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// New version launched by the old one: wait for the old process to exit (up to 15 s) before taking
 /// over residency and single instance.
 pub(crate) fn wait_for_previous(args: &[String]) {
@@ -835,6 +860,28 @@ mod tests {
         for state in held {
             assert_eq!(on_channel_change(&state, true), OnChannelChange::Keep);
         }
+    }
+
+    /// Right after an update the first window brings back the last tabs, whatever the setting;
+    /// after that the setting applies again.
+    #[test]
+    fn the_start_after_an_update_restores_tabs() {
+        use crate::settings::StartLocation;
+        assert_eq!(start_location(StartLocation::Home), StartLocation::Home);
+        mark_just_updated();
+        assert_eq!(
+            start_location(StartLocation::Home),
+            StartLocation::LastSession
+        );
+        assert_eq!(
+            start_location(StartLocation::HomePage),
+            StartLocation::LastSession
+        );
+        start_handled();
+        assert_eq!(
+            start_location(StartLocation::HomePage),
+            StartLocation::HomePage
+        );
     }
 
     /// Against the real releases: `cargo test -p arke live_channels -- --ignored`.

@@ -349,6 +349,7 @@ mod tests {
             ratio: 0.5,
             pinned: false,
             synced: false,
+            home: false,
         }
     }
 

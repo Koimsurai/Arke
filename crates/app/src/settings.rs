@@ -197,6 +197,9 @@ pub(crate) struct SessionTab {
     /// Dual pane: browsing in one side repeats in the other.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) synced: bool,
+    /// Home was shown over this tab's folder, so it comes back on Home (#98).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) home: bool,
 }
 
 const fn half() -> f32 {
@@ -1196,6 +1199,7 @@ mod tests {
             ratio: 0.5,
             pinned: false,
             synced: false,
+            home: false,
         });
         let bytes = export_json(&mine).unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();

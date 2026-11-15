@@ -1067,8 +1067,11 @@ impl Explorer {
 
     /// The rest of the details as a titled list: label on the left, value on the right, grouped by
     /// spacing rather than lines.
-    fn pane_info(&self, preview: &Preview) -> AnyElement {
+    fn pane_info(&self, preview: &Preview, cx: &mut Context<Self>) -> AnyElement {
         let shown = [t!("col.type").into_owned(), t!("col.size").into_owned()];
+        let location = t!("col.location").into_owned();
+        // In search results the item's folder isn't the one on screen: its location goes there.
+        let reveal = self.search_mode;
         let rows: Vec<(String, String)> = self
             .preview_details(preview)
             .into_iter()
@@ -1086,27 +1089,62 @@ impl Explorer {
                     .child(t!("preview.info").into_owned()),
             )
             .children(rows.into_iter().map(|(key, value)| {
+                let icon = detail_icon(&key);
+                let link = reveal && key == location;
+                // A path wraps at its separators instead of being cut, so all of it shows; other
+                // values keep one line.
+                let value = div().min_w_0().text_color(theme::text_muted()).map(|d| {
+                    if key == location {
+                        d.child(wrappable_path(&value))
+                    } else {
+                        d.truncate().child(value)
+                    }
+                });
+                // A label column of fixed width with the value right after it, so the eye doesn't
+                // cross the pane to pair them.
                 div()
                     .flex()
-                    .gap(theme::S_16)
+                    .items_start()
+                    .gap(theme::S_12)
                     .child(
                         div()
+                            .w(DETAIL_LABEL_W)
                             .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(theme::S_6)
                             .text_color(theme::text_subtle())
+                            .children(icon.map(|icon| {
+                                gpui::svg()
+                                    .path(icon.path())
+                                    .size(px(14.))
+                                    .flex_none()
+                                    .text_color(theme::text_subtle())
+                            }))
                             .child(key),
                     )
-                    .child(
-                        // Keep the end of long paths (the levels nearest the file).
-                        div().flex_1().min_w_0().flex().justify_end().child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis_start()
-                                .text_color(theme::text_muted())
-                                .child(value),
-                        ),
-                    )
+                    .child(div().flex_1().min_w_0().map(|d| {
+                        if link {
+                            d.child(
+                                value
+                                    .id("pane-location")
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme::text()).underline())
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
+                                        if let Some(path) =
+                                            this.preview.as_ref().map(|p| p.path.clone())
+                                        {
+                                            let _ = this.events_tx.send(AppEvent::RevealPath(path));
+                                        }
+                                    }))
+                                    .tooltip(crate::workspace::tooltip(t!(
+                                        "menu.open_file_location"
+                                    ))),
+                            )
+                        } else {
+                            d.child(value)
+                        }
+                    }))
             }))
             .into_any_element()
     }
@@ -1735,7 +1773,7 @@ impl Explorer {
             }
         }))
         .child(Self::pane_title(preview, cx))
-        .child(self.pane_info(preview))
+        .child(self.pane_info(preview, cx))
         .into_any_element()
     }
 
@@ -2212,6 +2250,37 @@ fn look_stage(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
         card.width,
         (card.height - theme::H_BAR - theme::H_CTX - px(2.)).max(px(1.)),
     )
+}
+
+/// Width of the label column in the preview pane's Info list (the icon and the longest label).
+const DETAIL_LABEL_W: Pixels = px(96.);
+
+/// A path that may wrap after each separator: the line breaker doesn't break after a backslash by
+/// itself, so a zero-width space after every one gives it the place to. Spaces inside names become
+/// no-break spaces, so a name like "Project 2026" isn't split at its space.
+fn wrappable_path(path: &str) -> String {
+    path.replace(' ', "\u{a0}").replace('\\', "\\\u{200b}")
+}
+
+/// The small icon in front of a detail in the preview pane's Info list, by the detail's (translated)
+/// label.
+fn detail_icon(key: &str) -> Option<crate::assets::Icon> {
+    use crate::assets::Icon;
+    let icons = [
+        ("col.modified", Icon::Clock),
+        ("col.location", Icon::Folder),
+        ("preview.dimensions", Icon::Dimensions),
+        ("preview.taken", Icon::Calendar),
+        ("preview.camera", Icon::Camera),
+        ("preview.lens", Icon::Lens),
+        ("preview.exposure", Icon::Sun),
+        ("preview.encoding", Icon::FileExt),
+        ("preview.pages", Icon::PageLine),
+    ];
+    icons
+        .into_iter()
+        .find(|(label, _)| t!(*label) == key)
+        .map(|(_, icon)| icon)
 }
 
 /// A small icon button for actions next to content (the preview pane's title row): its icon
@@ -3256,6 +3325,17 @@ mod code_tests {
             .map(|(r, t)| (&lines[1].text[r.clone()], *t))
             .collect();
         assert_eq!(second, [("y */", Token::Comment), ("let", Token::Keyword)]);
+    }
+
+    /// A long location wraps between folders, not inside a name.
+    #[test]
+    fn paths_may_wrap_after_each_separator() {
+        assert_eq!(
+            wrappable_path(r"C:\Users\me\專案"),
+            "C:\\\u{200b}Users\\\u{200b}me\\\u{200b}專案"
+        );
+        assert_eq!(wrappable_path("plain"), "plain");
+        assert_eq!(wrappable_path(r"D:\My Files"), "D:\\\u{200b}My\u{a0}Files");
     }
 
     /// Markdown saved with lone CRs previewed empty (one line with a CR per paragraph), and a

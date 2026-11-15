@@ -150,6 +150,12 @@ icons![
     Globe => "globe",
     Power => "power",
     Info => "info",
+    Clock => "clock",
+    Calendar => "calendar",
+    Dimensions => "dimensions",
+    Camera => "camera",
+    Lens => "lens",
+    Sun => "sun",
     Window => "window",
     // One metaphor per command, so no two neighbors in a menu or settings page look alike
     Undo => "undo",

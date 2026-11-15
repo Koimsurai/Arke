@@ -7,12 +7,12 @@ design references and other third-party material are in `THIRD_PARTY_NOTICES.md`
 
 ## Overview
 
-- Apache License 2.0: 336
-- MIT License: 73
+- Apache License 2.0: 340
+- MIT License: 74
 - Unicode License v3: 25
 - ISC License: 22
 - BSD 3-Clause "New" or "Revised" License: 13
-- zlib License: 5
+- zlib License: 3
 - Creative Commons Zero v1.0 Universal: 2
 - Mozilla Public License 2.0: 2
 - BSD Zero Clause License: 1
@@ -4840,6 +4840,7 @@ Used by:
 - euclid 0.22.14 (https://github.com/servo/euclid)
 - event-listener-strategy 0.5.4 (https://github.com/smol-rs/event-listener-strategy)
 - event-listener 5.4.2 (https://github.com/smol-rs/event-listener)
+- fastrand 2.5.0 (https://github.com/smol-rs/fastrand)
 - filetime 0.2.29 (https://github.com/alexcrichton/filetime)
 - flate2 1.1.11 (https://github.com/rust-lang/flate2-rs)
 - form_urlencoded 1.2.2 (https://github.com/servo/rust-url)
@@ -4857,6 +4858,7 @@ Used by:
 - itertools 0.11.0 (https://github.com/rust-itertools/itertools)
 - itertools 0.14.0 (https://github.com/rust-itertools/itertools)
 - lock_api 0.4.14 (https://github.com/Amanieu/parking_lot)
+- lock_api 0.5.0 (https://github.com/Amanieu/parking_lot)
 - log 0.4.35 (https://github.com/rust-lang/log)
 - num-bigint 0.5.1 (https://github.com/rust-num/num-bigint)
 - num-complex 0.4.6 (https://github.com/rust-num/num-complex)
@@ -4866,6 +4868,8 @@ Used by:
 - once_cell 1.21.4 (https://github.com/matklad/once_cell)
 - parking 2.2.1 (https://github.com/smol-rs/parking)
 - parking_lot 0.12.5 (https://github.com/Amanieu/parking_lot)
+- parking_lot 0.13.0 (https://github.com/Amanieu/parking_lot)
+- parking_lot_core 0.10.0 (https://github.com/Amanieu/parking_lot)
 - parking_lot_core 0.9.12 (https://github.com/Amanieu/parking_lot)
 - percent-encoding 2.3.2 (https://github.com/servo/rust-url/)
 - png 0.17.16 (https://github.com/image-rs/image-png)
@@ -4888,6 +4892,7 @@ Used by:
 - svgtypes 0.16.2 (https://github.com/linebender/svgtypes)
 - tar 0.4.46 (https://github.com/composefs/tar-rs)
 - ttf-parser 0.25.1 (https://github.com/harfbuzz/ttf-parser)
+- unicase 2.10.0 (https://github.com/seanmonstar/unicase)
 - unicode-bidi-mirroring 0.4.0 (https://github.com/RazrFalcon/unicode-bidi-mirroring)
 - unicode-bidi 0.3.18 (https://github.com/servo/unicode-bidi)
 - unicode-ccc 0.4.0 (https://github.com/RazrFalcon/unicode-ccc)
@@ -7271,7 +7276,6 @@ limitations under the License.
 
 Used by:
 
-- flume 0.11.1 (https://github.com/zesterer/flume)
 - flume 0.12.0 (https://github.com/zesterer/flume)
 
 ````text
@@ -10665,6 +10669,37 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
+- pulldown-cmark 0.13.6 (https://github.com/raphlinus/pulldown-cmark)
+
+````text
+The MIT License
+
+Copyright 2015 Google Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+````
+
+## MIT License
+
+Used by:
+
 - spin 0.10.1 (https://github.com/mvdnes/spin-rs.git)
 - spin 0.9.9 (https://github.com/mvdnes/spin-rs.git)
 
@@ -11722,77 +11757,4 @@ the following restrictions:
     misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
-````
-
-## zlib License
-
-Used by:
-
-- nanorand 0.7.0 (https://github.com/Absolucy/nanorand-rs)
-
-````text
-The zlib/libpng License
-=======================
-
-Copyright (c) 2021 lucy
-
-This software is provided 'as-is', without any express or implied warranty. In
-no event will the authors be held liable for any damages arising from the use of
-this software.
-
-Permission is granted to anyone to use this software for any purpose, including
-commercial applications, and to alter it and redistribute it freely, subject to
-the following restrictions:
-
-1.  The origin of this software must not be misrepresented; you must not claim
-    that you wrote the original software. If you use this software in a product,
-    an acknowledgment in the product documentation would be appreciated but is
-    not required.
-
-2.  Altered source versions must be plainly marked as such, and must not be
-    misrepresented as being the original software.
-
-3.  This notice may not be removed or altered from any source distribution.
-
-````
-
-## zlib License
-
-Used by:
-
-- nanorand 0.7.0 (https://github.com/Absolucy/nanorand-rs)
-
-````text
-[![crates.io](https://img.shields.io/crates/v/nanorand.svg)](https://crates.io/crates/nanorand) [![docs.rs](https://docs.rs/nanorand/badge.svg)](https://docs.rs/nanorand)  [![License: Zlib](https://img.shields.io/badge/License-Zlib-brightgreen.svg)](https://opensource.org/licenses/Zlib) [![Tests](https://github.com/Absolucy/nanorand-rs/workflows/Tests/badge.svg?event=push&branch=master)](https://github.com/Absolucy/nanorand-rs/actions?query=workflow%3A%22Run+Tests%22) [![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/Absolucy/nanorand-rs.svg)](https://isitmaintained.com/project/Absolucy/nanorand-rs "Average time to resolve an issue") [![Percentage of issues still open](https://isitmaintained.com/badge/open/Absolucy/nanorand-rs.svg)](https://isitmaintained.com/project/Absolucy/nanorand-rs "Percentage of issues still open") ![Maintenance](https://img.shields.io/badge/maintenance-activly--developed-brightgreen.svg)
-
-# {{crate}}
-
-Current version: **{{version}}**
-
-{{readme}}
-
-## License
-
-The zlib/libpng License
-
-Copyright (c) 2022 Lucy <lucy@absolucy.moe>
-
-This software is provided 'as-is', without any express or implied warranty. In
-no event will the authors be held liable for any damages arising from the use of
-this software.
-
-Permission is granted to anyone to use this software for any purpose, including
-commercial applications, and to alter it and redistribute it freely, subject to
-the following restrictions:
-
-1.  The origin of this software must not be misrepresented; you must not claim
-    that you wrote the original software. If you use this software in a product,
-    an acknowledgment in the product documentation would be appreciated but is
-    not required.
-
-2.  Altered source versions must be plainly marked as such, and must not be
-    misrepresented as being the original software.
-
-3.  This notice may not be removed or altered from any source distribution.
-
 ````

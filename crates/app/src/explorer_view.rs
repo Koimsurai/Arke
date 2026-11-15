@@ -759,10 +759,11 @@ impl Explorer {
                 },
             )
             // Click without drag: in a multi-selection, select only this item.
-            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if this.on_row_click(ix, event, cx) {
                     return;
                 }
+                this.on_row_released(ix, event, window, cx);
                 if this.click_select == Some(ix) && event.click_count() == 1 {
                     this.click_select = None;
                     if let Some(view) = this.view() {
@@ -848,14 +849,25 @@ impl Explorer {
         entry: &Entry,
         rename_input: Option<(Entity<TextInput>, Option<NameError>)>,
         (in_cloud, sync): (bool, Option<arke_core::entry::CloudSync>),
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let press: NamePress =
+            Box::new(cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                this.on_name_pressed(ix);
+            }));
         div()
             .flex_1()
             .min_w_0()
             .flex()
             .items_center()
             .gap(theme::S_12)
-            .child(name_cell(entry, rename_input, self.show_extensions, true))
+            .child(name_cell(
+                entry,
+                rename_input,
+                self.show_extensions,
+                true,
+                Some(press),
+            ))
             .children(super::compare::compare_badge(
                 self.compare_mark(&entry.name),
             ))
@@ -943,6 +955,7 @@ impl Explorer {
                                 entry,
                                 rename_input,
                                 (in_cloud, sync.get(&entry.name).copied()),
+                                cx,
                             )),
                     )
                     .when(columns, |d| d.children(Self::column_row_tail(entry)))
@@ -1016,6 +1029,35 @@ impl Explorer {
 
     /// Rows of grid tiles: each row is a contiguous run of items (when grouped, a group's last row
     /// may be partial).
+    /// A tile's name (two lines at most), or its rename box.
+    fn tile_label(
+        &self,
+        ix: usize,
+        entry: &Entry,
+        rename_input: Option<(Entity<TextInput>, Option<NameError>)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match rename_input {
+            Some(rename) => name_cell(entry, Some(rename), true, false, None),
+            None => div()
+                .w_full()
+                .text_center()
+                .line_clamp(2)
+                // Two lines can't fit (long name with no break points): ellipsize the second line
+                // rather than clipping the sides.
+                .text_ellipsis()
+                .text_size(theme::FS_12)
+                .child(shown_name(entry, self.show_extensions))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                        this.on_name_pressed(ix);
+                    }),
+                )
+                .into_any_element(),
+        }
+    }
+
     pub(super) fn render_tile_rows(
         &mut self,
         rows: Vec<Range<usize>>,
@@ -1055,19 +1097,7 @@ impl Explorer {
                             .filter(|(name, _)| *name == entry.name)
                             .map(|(_, rename)| rename.clone());
                         let image = images.get(k).cloned().flatten();
-                        let label = match rename_input {
-                            Some(rename) => name_cell(entry, Some(rename), true, false),
-                            None => div()
-                            .w_full()
-                            .text_center()
-                            .line_clamp(2)
-                            // Two lines can't fit (long name with no break points): ellipsize the
-                            // second line rather than clipping the sides.
-                            .text_ellipsis()
-                            .text_size(theme::FS_12)
-                            .child(shown_name(entry, self.show_extensions))
-                            .into_any_element(),
-                        };
+                        let label = self.tile_label(ix, entry, rename_input, cx);
                         // Folder compare badge in the tile's top-right
                         let badge = super::compare::compare_badge(self.compare_mark(&entry.name))
                             .map(|badge| {
@@ -2557,17 +2587,23 @@ fn names_in(entries: &[Entry], range: Range<usize>) -> Vec<Arc<str>> {
         .collect()
 }
 
+/// Listener for a press on an item's name.
+type NamePress = Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App)>;
+
 /// Name text, or the inline rename box with its problem message (if any) underneath.
 ///
 /// `in_row`: Details rows pull the box left by its inset, so the text stays exactly where the
 /// name was drawn instead of jumping right when renaming starts (grid tiles center the name, so
 /// they don't need it). In a tile the box spans the tile's width: tiles center their children,
 /// so without a width it would shrink to its border and hide the name (#38).
+///
+/// `on_press`: a press on the name itself (not the space after it), for click-to-rename (#89).
 fn name_cell(
     entry: &Entry,
     rename: Option<(Entity<TextInput>, Option<NameError>)>,
     show_ext: bool,
     in_row: bool,
+    on_press: Option<NamePress>,
 ) -> AnyElement {
     match rename {
         Some((input, problem)) => div()
@@ -2611,8 +2647,20 @@ fn name_cell(
         None => div()
             .flex_1()
             .min_w_0()
-            .truncate()
-            .child(shown_name(entry, show_ext))
+            .flex()
+            .child(
+                div()
+                    .debug_selector({
+                        let name = Arc::clone(&entry.name);
+                        move || format!("name:{name}")
+                    })
+                    .min_w_0()
+                    .truncate()
+                    .child(shown_name(entry, show_ext))
+                    .when_some(on_press, |d, press| {
+                        d.on_mouse_down(MouseButton::Left, press)
+                    }),
+            )
             .into_any_element(),
     }
 }

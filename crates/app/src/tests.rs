@@ -6780,3 +6780,86 @@ fn only_the_process_start_pane_is_a_cold_start(cx: &mut TestAppContext) {
     let second = pane(cx);
     assert!(!second.update(cx, |v, _| v.metrics.cold_start));
 }
+
+/// #89: a slow second click on the name of the only selected item renames it once the
+/// double-click time has passed, like Explorer. Not a double-click, a click beside the name, a
+/// key in between, or the click that selects.
+#[gpui::test]
+fn slow_second_click_on_the_name_renames(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        Path::new(r"C:\r"),
+        vec![file("report.docx", 1), file("a.txt", 1)],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\r");
+    wait_until(cx, &view, "load", loaded(r"C:\r"));
+    cx.simulate_resize(gpui::size(px(1200.), px(700.)));
+    cx.run_until_parked();
+    let name_at = |cx: &mut VisualTestContext, selector: &'static str| {
+        cx.debug_bounds(selector).expect("name drawn").center()
+    };
+    let renaming = |cx: &mut VisualTestContext| {
+        view.update(cx, |v, _| v.renaming.as_ref().map(|r| r.name.to_string()))
+    };
+    let wait = |cx: &mut VisualTestContext| {
+        cx.executor()
+            .advance_clock(crate::win::double_click_time() + Duration::from_millis(50));
+        cx.run_until_parked();
+    };
+    let a = name_at(cx, "name:a.txt");
+
+    cx.simulate_click(a, Modifiers::none());
+    wait(cx);
+    assert_eq!(renaming(cx), None, "the click that selects doesn't rename");
+    cx.simulate_click(a, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(renaming(cx), None, "not before the double-click time");
+    wait(cx);
+    assert_eq!(renaming(cx).as_deref(), Some("a.txt"));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(renaming(cx), None);
+
+    // A double-click opens instead.
+    cx.simulate_click(a, Modifiers::none());
+    cx.simulate_event(MouseDownEvent {
+        position: a,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position: a,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    wait(cx);
+    assert_eq!(renaming(cx), None, "double-click");
+
+    // A key between the click and the wait.
+    cx.simulate_click(a, Modifiers::none());
+    cx.simulate_keystrokes("a");
+    wait(cx);
+    assert_eq!(renaming(cx), None, "a key in between");
+
+    // Beside the name, in the same (selected) row.
+    cx.simulate_click(gpui::point(a.x + px(420.), a.y), Modifiers::none());
+    wait(cx);
+    assert_eq!(renaming(cx), None, "beside the name");
+    assert_eq!(
+        view.update(cx, |v, _| selected_names(v)),
+        ["a.txt"],
+        "still selected"
+    );
+
+    // Another item: the first click on it only selects it.
+    let report = name_at(cx, "name:report.docx");
+    cx.simulate_click(report, Modifiers::none());
+    wait(cx);
+    assert_eq!(renaming(cx), None, "selecting another item");
+    cx.simulate_click(report, Modifiers::none());
+    wait(cx);
+    assert_eq!(renaming(cx).as_deref(), Some("report.docx"));
+}

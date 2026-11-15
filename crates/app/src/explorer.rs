@@ -753,6 +753,13 @@ pub(crate) struct Explorer {
     /// Press inside a multi-selection: keep the selection (it may be dragged) and narrow to this
     /// item on release if no drag happened.
     click_select: Option<usize>,
+    /// The last press landed on this item's name (set by the name, read by the item's handler,
+    /// which runs after it).
+    name_pressed: Option<usize>,
+    /// A press on the name of the only selected item (#89): released without a second click, it
+    /// renames once the double-click time has passed, like Explorer.
+    rename_press: Option<Arc<str>>,
+    rename_wait: Option<Task<()>>,
     /// List density (settings, shared by all tabs).
     pub(crate) density: Density,
     /// Preview pane on the right is open (settings).
@@ -1021,6 +1028,9 @@ impl Explorer {
             pane: PaneInfo::default(),
             compare: None,
             click_select: None,
+            name_pressed: None,
+            rename_press: None,
+            rename_wait: None,
             density: settings.read(cx).settings.density,
             preview_pane: settings.read(cx).settings.preview_pane,
             preview_cue: crate::motion::Cue::default(),
@@ -2854,9 +2864,30 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let list_was_focused = self.list_focus.is_focused(window);
+        let on_name = self.name_pressed.take() == Some(ix);
         window.focus(&self.list_focus, cx);
         self.row_pressed = true;
         let m = event.modifiers;
+        self.rename_wait = None;
+        self.rename_press = None;
+        // Explorer's slow second click: the item was already the only selection, the list
+        // already had focus (the click isn't the one bringing Arke or the list back), and the
+        // press is on the name.
+        if on_name
+            && list_was_focused
+            && event.click_count == 1
+            && !event.first_mouse
+            && !(m.control || m.shift || m.alt || m.platform)
+            && !self.search_mode
+            && self.renaming.is_none()
+            && !crate::prefs::single_click()
+            && self.selection.len() == 1
+            && let Some(entry) = self.view().and_then(|v| v.get(ix).cloned())
+            && self.selection.contains(&entry.name)
+        {
+            self.rename_press = Some(entry.name);
+        }
         if self.search_mode {
             self.search_cursor = Some(ix);
         } else if let Some(view) = self.view() {
@@ -2884,6 +2915,47 @@ impl Explorer {
             self.open_index(ix, cx);
         }
         cx.notify();
+    }
+
+    /// The press on the selected item's name was released without a drag: rename once the
+    /// double-click time has passed with no other click or key (#89).
+    pub(super) fn on_row_released(
+        &mut self,
+        ix: usize,
+        event: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = self.rename_press.take() else {
+            return;
+        };
+        if event.click_count() != 1
+            || self
+                .view()
+                .and_then(|v| v.get(ix).map(|e| Arc::clone(&e.name)))
+                .is_none_or(|n| n != name)
+        {
+            return;
+        }
+        let wait = crate::win::double_click_time();
+        self.rename_wait = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.rename_wait = None;
+                if this.renaming.is_none()
+                    && this.list_focus.is_focused(window)
+                    && this.selection.len() == 1
+                    && this.selection.contains(&name)
+                {
+                    this.start_rename(name, window, cx);
+                }
+            });
+        }));
+    }
+
+    /// Records a press on an item's name; the item's own press handler runs next.
+    pub(super) const fn on_name_pressed(&mut self, ix: usize) {
+        self.name_pressed = Some(ix);
     }
 
     /// Single-click mode: opens on release if there was no drag and no Ctrl/Shift. Returns whether
@@ -2930,6 +3002,8 @@ impl Explorer {
         if !self.list_focus.is_focused(window) {
             return;
         }
+        // A key between the clicks and the rename: no rename (#89).
+        self.rename_wait = None;
         let ks = &event.keystroke;
         if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform {
             return;

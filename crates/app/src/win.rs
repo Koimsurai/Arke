@@ -374,6 +374,13 @@ pub(crate) fn animations_enabled() -> bool {
     asked.is_err() || on.as_bool()
 }
 
+/// The system double-click time (Settings > Bluetooth & devices > Mouse); 500 ms by default.
+pub(crate) fn double_click_time() -> std::time::Duration {
+    // SAFETY: no arguments, no side effects.
+    let ms = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
+    std::time::Duration::from_millis(u64::from(if ms == 0 { 500 } else { ms }))
+}
+
 /// Windows accent color as 0xRRGGBB. Asks DWM only (no registry); cheap enough for the UI thread.
 pub(crate) fn system_accent() -> Option<u32> {
     use windows::Win32::Graphics::Dwm::DwmGetColorizationColor;

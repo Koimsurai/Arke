@@ -3,9 +3,9 @@
 # with, as they appear in the release notes; pull requests are skipped.
 #
 # Each issue gets one comment for the first RC that has its fix and one for the stable release; a
-# hidden marker in the comment keeps later RCs and reruns from repeating it. The stable comment also
-# drops the "fixed in next release" label. Issues stay open: closing is left to a person, once the
-# reporter has had a chance to say whether it works.
+# hidden marker in the comment keeps later RCs and reruns from repeating it. The stable release also
+# closes the issue and drops the "fixed in next release" label; an issue reopened after that (the
+# marker is there) is left alone.
 #
 #   TAG=v0.4.1 GH_REPO=owner/name bash .github/release-notice.sh [--dry-run]
 set -euo pipefail
@@ -41,13 +41,23 @@ for n in $numbers; do
     echo "#$n: already told, skipped"
     continue
   fi
+  stable=false
+  [[ "$marker" == *stable* ]] && stable=true
   if $dry_run; then
     echo "#$n ($state): would comment: $text"
+    if $stable && [ "$state" = open ]; then
+      echo "#$n: would close"
+    fi
     continue
   fi
   gh issue comment "$n" --body "$text"$'\n\n'"$marker"
-  if [[ "$marker" == *stable* ]]; then
+  if $stable; then
     gh issue edit "$n" --remove-label "fixed in next release" >/dev/null 2>&1 || true
+    if [ "$state" = open ]; then
+      gh issue close "$n" --reason completed
+      echo "#$n: commented and closed"
+      continue
+    fi
   fi
   echo "#$n: commented"
 done

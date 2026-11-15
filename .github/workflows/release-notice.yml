@@ -1,5 +1,6 @@
 # Comments on the issues a release fixes (the "(#N)" in its notes) once the release workflow has
-# published, or by hand for an existing tag. See .github/release-notice.sh.
+# published, or by hand for an existing tag; a stable release also closes them. See
+# .github/release-notice.sh.
 name: release notice
 
 on:

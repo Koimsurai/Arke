@@ -729,13 +729,22 @@ pub(crate) struct ModePreview {
     pub(crate) accent: Rgba,
 }
 
-pub(crate) fn mode_preview(dark: bool) -> ModePreview {
-    let palette = if dark { dark_palette() } else { &LIGHT };
+/// Colors for a theme tile: light, or dark in the near-black or `gray` shade. The stored tint and
+/// accent are worked out for the shade in use, so the other dark tile shows its plain palette
+/// with the accent.
+pub(crate) fn mode_preview(dark: bool, gray: bool) -> ModePreview {
+    let palette = match (dark, gray) {
+        (false, _) => &LIGHT,
+        (true, false) => &DARK,
+        (true, true) => &GRAY,
+    };
     let slot = usize::from(dark);
+    let in_use = !dark || gray == DARK_GRAY.load(Ordering::Relaxed);
     let stored = |value: u32| (value != NO_ACCENT).then(|| hex(value));
+    let tinted = |value: u32| stored(value).filter(|_| in_use);
     ModePreview {
-        frame: stored(TINT[slot].load(Ordering::Relaxed)).unwrap_or(palette.ground),
-        paper: stored(PAPER_TINT[slot].load(Ordering::Relaxed)).unwrap_or(palette.surface),
+        frame: tinted(TINT[slot].load(Ordering::Relaxed)).unwrap_or(palette.ground),
+        paper: tinted(PAPER_TINT[slot].load(Ordering::Relaxed)).unwrap_or(palette.surface),
         ink: alpha(palette.ink, palette.a_muted),
         ink_faint: alpha(palette.ink, palette.a_disabled),
         accent: stored(ACCENT[slot * 2].load(Ordering::Relaxed)).unwrap_or(palette.signal),

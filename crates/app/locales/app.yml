@@ -628,14 +628,10 @@ tint.accent:
   en: Match accent
   zh-TW: "跟隨強調色"
   zh-CN: 跟随强调色
-settings.dark_shade_black:
-  en: Black
-  zh-TW: 黑
-  zh-CN: 黑
-settings.dark_shade_gray:
-  en: Gray
-  zh-TW: 灰
-  zh-CN: 灰
+settings.theme_gray:
+  en: Dark gray
+  zh-TW: 深灰
+  zh-CN: 深灰
 settings.material:
   en: "Background material"
   zh-TW: "背景材質"

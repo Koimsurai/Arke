@@ -387,7 +387,51 @@ pub(crate) const DARK: Palette = Palette {
     kind_c: 0.12,
 };
 
+/// Dark, gray: the dark theme of Arke 0.4 and earlier, a softer gray with white text, kept for
+/// those who prefer it. Contrast on surface/ground: muted 7.6/8.1, subtle 4.8/5.0, signal 6.6/7.5.
+pub(crate) const GRAY: Palette = Palette {
+    ground: hex(0x1c1c1c),
+    surface: hex(0x272727),
+    // Floating layers sit clearly above the paper (#272727); at #2c2c2c menus melted into it.
+    overlay: hex(0x353535),
+    ink: hex(0xf3f3f3),
+    danger_surface: hex(0x442726),
+    a_muted: 0.70,
+    a_subtle: 0.52,
+    a_disabled: 0.32,
+    a_line: 0.09,
+    a_line_strong: 0.20,
+    a_wash: 0.05,
+    a_wash_strong: 0.09,
+    a_signal_wash: 0.15,
+    ..DARK
+};
+
+/// What differs between the two dark shades besides the palette.
+struct DarkShade {
+    /// Base of the translucent paper under Mica.
+    mica_paper: u32,
+    /// How much of the frame color lies over Mica (untinted).
+    frame_over_mica: f32,
+    /// Neutral selection strength.
+    selection: f32,
+}
+
+const BLACK_SHADE: DarkShade = DarkShade {
+    mica_paper: 0x001e_1f22,
+    // Half, so the near-black ground still reads through the material.
+    frame_over_mica: 0.5,
+    selection: 0.11,
+};
+const GRAY_SHADE: DarkShade = DarkShade {
+    mica_paper: 0x003a_3a3a,
+    frame_over_mica: 0.35,
+    selection: 0.13,
+};
+
 static IS_DARK: AtomicBool = AtomicBool::new(false);
+/// The dark theme uses the gray shade ([`GRAY`]) instead of the near-black one ([`DARK`]).
+static DARK_GRAY: AtomicBool = AtomicBool::new(false);
 static MICA: AtomicBool = AtomicBool::new(false);
 /// Bumped on every mode or accent change. Each window remembers the version it drew and repaints fully on mismatch.
 static LOOK: AtomicU32 = AtomicU32::new(0);
@@ -448,7 +492,7 @@ pub(crate) fn set_accent(color: Option<u32>) -> bool {
         Some(rgb) => {
             let color = hex(rgb & 0x00ff_ffff);
             let (light, on_light) = accent_for(color, &LIGHT);
-            let (dark, on_dark) = accent_for(color, &DARK);
+            let (dark, on_dark) = accent_for(color, dark_palette());
             [pack(light), pack(on_light), pack(dark), pack(on_dark)]
         }
     };
@@ -456,7 +500,7 @@ pub(crate) fn set_accent(color: Option<u32>) -> bool {
         None => [NO_ACCENT; 2],
         Some(_) => [
             wash_strength(hex(values[0]), &LIGHT).to_bits(),
-            wash_strength(hex(values[2]), &DARK).to_bits(),
+            wash_strength(hex(values[2]), dark_palette()).to_bits(),
         ],
     };
     for (slot, value) in ACCENT_WASH.iter().zip(washes) {
@@ -616,8 +660,8 @@ static PAPER_TINT: [AtomicU32; 4] = [
 const TINT_CHROMA: f32 = 0.035;
 /// Paper gets half the tint: same hue as the frame, without skewing file icon and thumbnail colors.
 const PAPER_TINT_CHROMA: f32 = 0.016;
-/// Base color of the translucent paper under Mica (light, dark theme).
-const MICA_PAPER: [u32; 2] = [0x00ff_ffff, 0x001e_1f22];
+/// Base color of the translucent paper under Mica in the light theme (dark: [`DarkShade`]).
+const MICA_PAPER_LIGHT: u32 = 0x00ff_ffff;
 
 /// Tints the frame with the hue of `color` (`None` is neutral gray). Returns whether it changed.
 pub(crate) fn set_tint(color: Option<u32>) -> bool {
@@ -625,7 +669,10 @@ pub(crate) fn set_tint(color: Option<u32>) -> bool {
         None => [NO_ACCENT; 2],
         Some(rgb) => {
             let color = hex(rgb & 0x00ff_ffff);
-            [pack(tint_for(color, &LIGHT)), pack(tint_for(color, &DARK))]
+            [
+                pack(tint_for(color, &LIGHT)),
+                pack(tint_for(color, dark_palette())),
+            ]
         }
     };
     let paper = match color {
@@ -635,9 +682,9 @@ pub(crate) fn set_tint(color: Option<u32>) -> bool {
             let like = |base: Rgba| pack(tint_like(color, base, PAPER_TINT_CHROMA));
             [
                 like(LIGHT.surface),
-                like(DARK.surface),
-                like(hex(MICA_PAPER[0])),
-                like(hex(MICA_PAPER[1])),
+                like(dark_palette().surface),
+                like(hex(MICA_PAPER_LIGHT)),
+                like(hex(dark_shade().mica_paper)),
             ]
         }
     };
@@ -683,7 +730,7 @@ pub(crate) struct ModePreview {
 }
 
 pub(crate) fn mode_preview(dark: bool) -> ModePreview {
-    let palette = if dark { &DARK } else { &LIGHT };
+    let palette = if dark { dark_palette() } else { &LIGHT };
     let slot = usize::from(dark);
     let stored = |value: u32| (value != NO_ACCENT).then(|| hex(value));
     ModePreview {
@@ -738,8 +785,34 @@ pub(crate) fn is_dark() -> bool {
     IS_DARK.load(Ordering::Relaxed)
 }
 
+/// Picks the dark theme's shade: gray (Arke 0.4's) or near-black. Returns whether it changed;
+/// set it before the accent and tint, which are worked out against the palette.
+pub(crate) fn set_dark_gray(gray: bool) -> bool {
+    let changed = DARK_GRAY.swap(gray, Ordering::Relaxed) != gray;
+    if changed {
+        LOOK.fetch_add(1, Ordering::Relaxed);
+    }
+    changed
+}
+
+fn dark_palette() -> &'static Palette {
+    if DARK_GRAY.load(Ordering::Relaxed) {
+        &GRAY
+    } else {
+        &DARK
+    }
+}
+
+fn dark_shade() -> &'static DarkShade {
+    if DARK_GRAY.load(Ordering::Relaxed) {
+        &GRAY_SHADE
+    } else {
+        &BLACK_SHADE
+    }
+}
+
 fn p() -> &'static Palette {
-    if is_dark() { &DARK } else { &LIGHT }
+    if is_dark() { dark_palette() } else { &LIGHT }
 }
 
 const fn alpha(c: Rgba, a: f32) -> Rgba {
@@ -775,14 +848,13 @@ pub(crate) fn frame() -> Rgba {
     if !mica() {
         return base;
     }
-    // Use a heavier layer when tinted, otherwise the material washes out the color. Dark: half,
-    // so the near-black ground still reads through the material.
+    // Use a heavier layer when tinted, otherwise the material washes out the color.
     alpha(
         base,
         if tinted() {
             0.78
         } else if is_dark() {
-            0.5
+            dark_shade().frame_over_mica
         } else {
             0.35
         },
@@ -794,14 +866,27 @@ pub(crate) fn paper() -> Rgba {
     if !mica() {
         return surface();
     }
-    let base = paper_tint(2).unwrap_or_else(|| hex(MICA_PAPER[usize::from(is_dark())]));
+    let base = paper_tint(2).unwrap_or_else(|| {
+        hex(if is_dark() {
+            dark_shade().mica_paper
+        } else {
+            MICA_PAPER_LIGHT
+        })
+    });
     alpha(base, if is_dark() { 0.45 } else { 0.7 })
 }
 
 /// Selected items in navigation-style lists (sidebar, recycle bin rows, settings pages): a
 /// neutral wash strong enough to read at a glance on its own.
 pub(crate) fn selection() -> Rgba {
-    alpha(p().ink, if is_dark() { 0.11 } else { 0.10 })
+    alpha(
+        p().ink,
+        if is_dark() {
+            dark_shade().selection
+        } else {
+            0.10
+        },
+    )
 }
 
 /// Selected rows in the file list and keyboard-driven pickers: the accent wash while the list
@@ -1296,7 +1381,7 @@ mod tests {
             Icon::Cloud,
             Icon::Drive,
         ];
-        for (dark, p) in [(false, &LIGHT), (true, &DARK)] {
+        for (dark, p) in [(false, &LIGHT), (true, &DARK), (true, &GRAY)] {
             let lines = places.map(|icon| {
                 let (line, _) = place_tint_in(icon, p, dark).expect("tinted");
                 for bg in [p.surface, p.ground] {
@@ -1320,8 +1405,12 @@ mod tests {
     #[test]
     fn text_roles_meet_contrast_targets() {
         // Read the palettes directly instead of the global mode and accent, which other tests change concurrently.
-        for (dark, p) in [(false, &LIGHT), (true, &DARK)] {
-            let selection = if dark { 0.11 } else { 0.10 };
+        let shades = [
+            (false, &LIGHT, 0.10),
+            (true, &DARK, BLACK_SHADE.selection),
+            (true, &GRAY, GRAY_SHADE.selection),
+        ];
+        for (dark, p, selection) in shades {
             for bg in [p.surface, p.ground] {
                 assert!(
                     contrast(alpha(p.ink, p.a_muted), bg) >= 7.0,
@@ -1390,7 +1479,7 @@ mod tests {
             0xfff4c2, 0x10203a, 0x808080,
         ]);
         for rgb in colors {
-            for palette in [&LIGHT, &DARK] {
+            for palette in [&LIGHT, &DARK, &GRAY] {
                 let (signal, on) = accent_for(hex(rgb), palette);
                 for bg in [palette.surface, palette.ground] {
                     assert!(
@@ -1417,7 +1506,7 @@ mod tests {
     /// Selected rows stand out from the paper the same with any preset accent as with Arke orange.
     #[test]
     fn accent_washes_stand_out_alike() {
-        for palette in [&LIGHT, &DARK] {
+        for palette in [&LIGHT, &DARK, &GRAY] {
             let arke = contrast(
                 mix(palette.surface, palette.signal, palette.a_signal_wash),
                 palette.surface,
@@ -1441,7 +1530,7 @@ mod tests {
         tints.extend((0..36).map(|i| accent_from_hue(i as f32 * 10.)));
         tints.extend([0x000000, 0xffffff, 0xff0000, 0xffff00, 0x0000ff]);
         for rgb in tints {
-            for palette in [&LIGHT, &DARK] {
+            for palette in [&LIGHT, &DARK, &GRAY] {
                 let bg = tint_for(hex(rgb), palette);
                 let paper = tint_like(hex(rgb), palette.surface, PAPER_TINT_CHROMA);
                 let ink = |a: f32| alpha(palette.ink, a);

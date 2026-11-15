@@ -29,8 +29,8 @@ use crate::assets::Icon;
 use crate::explorer::ViewMode;
 use crate::scrollbar::ScrollbarDrag;
 use crate::settings::{
-    Accent, Density, FolderOrder, Language, Material, NavScope, Settings, SettingsStore, SortBy,
-    StartLocation, TabLayout, ThemeMode, Tint,
+    Accent, DarkShade, Density, FolderOrder, Language, Material, NavScope, Settings, SettingsStore,
+    SortBy, StartLocation, TabLayout, ThemeMode, Tint,
 };
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme;
@@ -2399,24 +2399,90 @@ fn theme_body(s: &Settings) -> AnyElement {
         ),
         (ThemeMode::System, t!("settings.theme_system"), system),
     ];
+    let tiles =
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(theme::S_8)
+            .children(
+                options
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (mode, label, preview))| {
+                        tile(
+                            ("theme", ix),
+                            label.into_owned(),
+                            s.theme == mode,
+                            (width, height),
+                            preview,
+                            move |st| st.theme = mode,
+                        )
+                    }),
+            );
     div()
         .flex()
-        .flex_wrap()
+        .flex_col()
+        .gap(theme::S_12)
+        .child(tiles)
+        .child(dark_shade_switch(s.dark_shade))
+        .into_any_element()
+}
+
+/// Which dark the dark theme (and System at night) uses: near-black or Arke 0.4's gray.
+fn dark_shade_switch(current: DarkShade) -> AnyElement {
+    let segment = |shade: DarkShade, id: &'static str, label: Cow<'static, str>| {
+        let active = current == shade;
+        div()
+            .id(id)
+            .a11y_lazy(gpui::Role::RadioButton, {
+                let label = label.clone();
+                move || label.to_string()
+            })
+            .aria_toggled(crate::a11y::toggled(active))
+            .h(theme::H_CTL_SM)
+            .px(theme::S_12)
+            .flex()
+            .items_center()
+            .rounded(theme::R_4)
+            .cursor_pointer()
+            .text_color(if active {
+                theme::text()
+            } else {
+                theme::text_subtle()
+            })
+            .when(active, |d| {
+                d.bg(theme::segment_thumb()).shadow(theme::elev_thumb())
+            })
+            .when(!active, |d| d.hover(|s| s.bg(theme::wash())))
+            .child(label.into_owned())
+            .on_click(move |_, _, cx| set(cx, move |st| st.dark_shade = shade))
+    };
+    div()
+        .flex()
+        .items_center()
         .gap(theme::S_8)
-        .children(
-            options
-                .into_iter()
-                .enumerate()
-                .map(|(ix, (mode, label, preview))| {
-                    tile(
-                        ("theme", ix),
-                        label.into_owned(),
-                        s.theme == mode,
-                        (width, height),
-                        preview,
-                        move |st| st.theme = mode,
-                    )
-                }),
+        .child(
+            div()
+                .text_color(theme::text_muted())
+                .child(t!("settings.theme_dark").into_owned()),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(theme::S_2)
+                .p(theme::S_2)
+                .rounded(theme::R_8)
+                .bg(theme::segment_track())
+                .child(segment(
+                    DarkShade::Black,
+                    "dark-shade-black",
+                    t!("settings.dark_shade_black"),
+                ))
+                .child(segment(
+                    DarkShade::Gray,
+                    "dark-shade-gray",
+                    t!("settings.dark_shade_gray"),
+                )),
         )
         .into_any_element()
 }

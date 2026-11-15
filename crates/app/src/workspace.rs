@@ -463,6 +463,8 @@ fn apply_theme(window: &mut Window, cx: &mut App) {
         });
     let look = SettingsStore::global(cx).read(cx).settings.clone();
     let accent = chosen_accent(look.accent);
+    // Before the accent and tint: they are worked out against the dark palette.
+    theme::set_dark_gray(look.dark_shade == crate::settings::DarkShade::Gray);
     theme::set_accent(accent);
     theme::set_tint(match look.tint {
         crate::settings::Tint::None => None,

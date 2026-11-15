@@ -149,6 +149,15 @@ impl From<Tint> for String {
     }
 }
 
+/// Background of the dark theme: near-black (since 0.5) or the gray of Arke 0.4 and earlier.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DarkShade {
+    #[default]
+    Black,
+    Gray,
+}
+
 /// Window background material. Mica needs Windows 11; everything else is solid.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -411,6 +420,8 @@ pub(crate) struct Settings {
     /// stay in Windows Credential Manager.
     pub(crate) remote_places: Vec<RemotePlace>,
     pub(crate) theme: ThemeMode,
+    /// Background of the dark theme.
+    pub(crate) dark_shade: DarkShade,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -563,6 +574,7 @@ impl Default for Settings {
             accent: Accent::default(),
             tint: Tint::default(),
             material: Material::default(),
+            dark_shade: DarkShade::default(),
             font: String::new(),
             background_image: None,
             background_opacity: 20,
@@ -1148,6 +1160,16 @@ mod tests {
         bytes.extend_from_slice(br#"{"global_search": true, "show_hidden": true}"#);
         let s = parse_settings(&bytes, Path::new("settings.json")).unwrap();
         assert!(s.global_search && s.show_hidden);
+    }
+
+    /// Settings from before 0.5 get the new near-black dark theme; the gray one is a choice.
+    #[test]
+    fn dark_shade_defaults_to_black() {
+        let old = parse_settings(br#"{"theme": "dark"}"#, Path::new("settings.json")).unwrap();
+        assert_eq!(old.dark_shade, DarkShade::Black);
+        let gray =
+            parse_settings(br#"{"dark_shade": "gray"}"#, Path::new("settings.json")).unwrap();
+        assert_eq!(gray.dark_shade, DarkShade::Gray);
     }
 
     /// Settings saved before the Recycle Bin moved into the pinned list keep it pinned.

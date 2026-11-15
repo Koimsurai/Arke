@@ -2078,6 +2078,8 @@ impl Render for Workspace {
                     this.step_timeline(back, window, cx);
                 }
             }))
+            // A two-finger touchpad swipe anywhere in the window goes back or forward (#70).
+            .on_scroll(cx.listener(Self::on_swipe))
             // Mouse back/forward anywhere in the window (the sidebar, the tab list, Home and the
             // other pages) move the active tab; over a list the pane itself handles them (#8).
             .on_mouse_down(

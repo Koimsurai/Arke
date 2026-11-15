@@ -451,6 +451,8 @@ pub(crate) struct Settings {
     pub(crate) open_external_in_tab: bool,
     /// What back and forward move through.
     pub(crate) nav_scope: NavScope,
+    /// A two-finger swipe left or right on a precision touchpad goes back or forward (#70).
+    pub(crate) swipe_nav: bool,
     /// Same-drive Recycle Bin moves done directly instead of through the Windows
     /// engine (`win_fast_recycle.rs`).
     pub(crate) fast_recycle: bool,
@@ -579,6 +581,7 @@ impl Default for Settings {
             win_e_opens_arke: false,
             open_external_in_tab: true,
             nav_scope: NavScope::AcrossTabs,
+            swipe_nav: true,
             fast_recycle: true,
             language: Language::default(),
             confirm_recycle: false,

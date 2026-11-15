@@ -855,6 +855,61 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     assert_eq!(at(cx), Some(p(r"C:\b")));
 }
 
+/// #70: a two-finger swipe on a touchpad (sideways wheel messages in fractions of a notch) goes
+/// back or forward once per swipe; a mouse wheel tilted sideways (whole notches) and a short swipe
+/// don't, and neither does a swipe with the setting off.
+#[gpui::test]
+fn touchpad_swipes_go_back_and_forward(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollEvent, point, px};
+    let fs = FakeFs::new();
+    for dir in [r"C:\a", r"C:\b"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    view.update(cx, |e, cx| e.navigate(p(r"C:\b"), NavKind::New, cx));
+    wait_until(cx, &view, "b", loaded(r"C:\b"));
+    let at = |cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        view.update(cx, |e, _| e.display_path().map(Path::to_path_buf))
+    };
+    // A swipe is a burst of messages; bursts are kept apart by waiting out the gap.
+    let swipe = |cx: &mut VisualTestContext, lines: f32, count: usize| {
+        for _ in 0..count {
+            cx.simulate_event(ScrollEvent {
+                position: point(px(400.), px(300.)),
+                delta: ScrollDelta::Lines(point(lines, 0.)),
+                ..ScrollEvent::default()
+            });
+        }
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    };
+    swipe(cx, 0.75, 4);
+    assert_eq!(at(cx), Some(p(r"C:\b")), "a short swipe doesn't count");
+    swipe(cx, 0.75, 12);
+    assert_eq!(
+        at(cx),
+        Some(p(r"C:\a")),
+        "fingers right: back, one step only"
+    );
+    swipe(cx, -0.75, 12);
+    assert_eq!(at(cx), Some(p(r"C:\b")), "fingers left: forward");
+    swipe(cx, 3., 4);
+    assert_eq!(
+        at(cx),
+        Some(p(r"C:\b")),
+        "a tilted mouse wheel sends whole notches"
+    );
+
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, _| s.settings.swipe_nav = false);
+    });
+    swipe(cx, 0.75, 12);
+    assert_eq!(at(cx), Some(p(r"C:\b")), "the setting is off");
+}
+
 /// #70: a folder opened from Home goes back to Home, like a browser. Home where the tab started
 /// is as far back as it goes; Home opened over a folder goes back to that folder.
 #[gpui::test]

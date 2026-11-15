@@ -1185,6 +1185,14 @@ impl Workspace {
                 ),
             ),
             card(
+                Icon::ArrowRight,
+                t!("settings.swipe_nav"),
+                Some(t!("settings.swipe_nav_desc")),
+                switch("swipe-nav", s.swipe_nav, |st| {
+                    st.swipe_nav = !st.swipe_nav;
+                }),
+            ),
+            card(
                 Icon::Trash,
                 t!("settings.fast_recycle"),
                 Some(t!("settings.fast_recycle_desc")),
@@ -1470,7 +1478,7 @@ impl Workspace {
             files,
             &[
                 (Some(t!("settings.group_show")), &[0, 2, 1, 5, 6, 7, 8]),
-                (Some(t!("settings.group_behavior")), &[4, 3, 11, 12, 13, 14]),
+                (Some(t!("settings.group_behavior")), &[4, 3, 11, 12, 13, 14, 15]),
                 (Some(t!("settings.group_confirm")), &[9, 10]),
             ],
         );

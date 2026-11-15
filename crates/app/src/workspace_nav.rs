@@ -5,10 +5,13 @@
 //! then only ever move the pane they act on.
 //!
 //! Alt+Left/Right, the mouse buttons and the panes' toolbar buttons all come through here when
-//! the timeline is on (caught before the panes see them).
+//! the timeline is on (caught before the panes see them). So does a two-finger swipe on a
+//! touchpad (#70).
+
+use std::time::{Duration, Instant};
 
 use arke_core::timeline::{Step, Timeline};
-use gpui::{App, Context, EntityId, Window};
+use gpui::{App, Context, EntityId, ScrollDelta, ScrollEvent, Window};
 
 use super::Workspace;
 use crate::explorer::{GoBack, GoForward};
@@ -21,7 +24,24 @@ pub(super) struct NavState {
     last_active: Option<EntityId>,
     /// Back or forward is switching panes itself: not a new step.
     replaying: bool,
+    swipe: Swipe,
 }
+
+/// A two-finger swipe across the touchpad, as Windows reports it: horizontal wheel messages in
+/// fractions of a notch, with no start or end. Messages closer than [`SWIPE_GAP`] are one swipe,
+/// inertia included, and one swipe moves one step.
+#[derive(Default)]
+struct Swipe {
+    /// Lines moved sideways so far, positive toward back.
+    lines: f32,
+    last: Option<Instant>,
+    done: bool,
+}
+
+/// A pause longer than this starts a new swipe.
+const SWIPE_GAP: Duration = Duration::from_millis(250);
+/// How far a swipe goes before it counts, in wheel lines (a notch is three by default).
+const SWIPE_LINES: f32 = 6.;
 
 impl Workspace {
     /// Whether back and forward follow the timeline across tabs (the default).
@@ -107,6 +127,79 @@ impl Workspace {
             }
         }
         self.sync_nav_buttons(cx);
+    }
+
+    /// A sideways scroll anywhere in the window: a two-finger swipe on a precision touchpad goes
+    /// back (fingers moving right) or forward, like a browser, once the list can't scroll that
+    /// way itself. A mouse wheel tilted sideways sends whole notches and is left alone.
+    pub(super) fn on_swipe(
+        &mut self,
+        event: &ScrollEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ScrollDelta::Lines(delta) = event.delta else {
+            return;
+        };
+        if delta.y != 0. || delta.x == 0. || !SettingsStore::global(cx).read(cx).settings.swipe_nav
+        {
+            return;
+        }
+        let now = Instant::now();
+        let ongoing = self
+            .nav
+            .swipe
+            .last
+            .is_some_and(|last| now.duration_since(last) < SWIPE_GAP);
+        if !ongoing {
+            if delta.x.fract() == 0. {
+                return;
+            }
+            self.nav.swipe = Swipe::default();
+        }
+        let swipe = &mut self.nav.swipe;
+        swipe.last = Some(now);
+        let back = delta.x > 0.;
+        let list_scrolls =
+            self.page_focus(cx).is_none() && self.active_view().read(cx).can_scroll_sideways(back);
+        let swipe = &mut self.nav.swipe;
+        if list_scrolls || (swipe.lines != 0. && (swipe.lines > 0.) != back) {
+            swipe.lines = 0.;
+        }
+        if list_scrolls {
+            return;
+        }
+        swipe.lines += delta.x;
+        if swipe.done || swipe.lines.abs() < SWIPE_LINES {
+            return;
+        }
+        swipe.done = true;
+        self.go_in_history(back, window, cx);
+    }
+
+    /// Back or forward from outside a pane (mouse buttons, swipes): closes Home opened over a
+    /// folder, else follows the timeline or moves the active pane.
+    pub(super) fn go_in_history(
+        &mut self,
+        back: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if back && self.back_closes_home(window, cx) {
+            return;
+        }
+        if Self::across_tabs(cx) {
+            self.step_timeline(back, window, cx);
+            return;
+        }
+        let view = self.active_view().clone();
+        view.update(cx, |e, cx| {
+            if back {
+                e.go_back(&GoBack, window, cx);
+            } else {
+                e.go_forward(&GoForward, window, cx);
+            }
+        });
     }
 
     /// A pane's back or forward toolbar button: the timeline when it is on, else that pane.

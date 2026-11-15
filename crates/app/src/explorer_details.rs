@@ -128,6 +128,21 @@ impl Explorer {
     }
 
     /// The scroll handle of the list under the header (search results or the folder's list).
+    /// Whether the list can still scroll sideways toward its start (`toward_start`) or its end:
+    /// only Details columns wider than the pane scroll that way.
+    pub(crate) fn can_scroll_sideways(&self, toward_start: bool) -> bool {
+        if self.cols.is_none() {
+            return false;
+        }
+        let handle = self.header_list();
+        let (at, max) = (handle.offset().x, handle.max_offset().x);
+        if toward_start {
+            at < px(-0.5)
+        } else {
+            -at < max - px(0.5)
+        }
+    }
+
     fn header_list(&self) -> gpui::ScrollHandle {
         let handle = if self.search_mode {
             &self.search_scroll

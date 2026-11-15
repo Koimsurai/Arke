@@ -1154,6 +1154,8 @@ impl Explorer {
             ),
         )
         .track_scroll(&self.scroll)
+        // A sideways swipe is back or forward (#70), not a scroll down the list.
+        .map(sideways_is_not_down)
         .pt(theme::S_4)
         .flex_1();
         self.with_scrollbar(list, &self.scroll)
@@ -1173,6 +1175,8 @@ impl Explorer {
             ),
         )
         .track_scroll(&self.scroll)
+        // A sideways swipe is back or forward (#70), not a scroll down the list.
+        .map(sideways_is_not_down)
         .pl(theme::S_8)
         .pr(theme::S_8 + layout::LIST_GUTTER)
         .flex_1();
@@ -1511,6 +1515,8 @@ impl Explorer {
                         }),
                     )
                     .track_scroll(&self.search_scroll)
+                    // A sideways swipe is back or forward (#70), not a scroll down the list.
+                    .map(sideways_is_not_down)
                     .pl(theme::S_8)
                     .pr(theme::S_8 + layout::LIST_GUTTER)
                     .flex_1();
@@ -3235,4 +3241,12 @@ impl Explorer {
             }),
         )
     }
+}
+
+/// Scrolls the list only along the axis of the gesture: a sideways swipe on a touchpad is back
+/// or forward (#70), and without this GPUI turns it into a scroll down a list that only scrolls
+/// vertically.
+fn sideways_is_not_down(mut list: gpui::UniformList) -> gpui::UniformList {
+    list.style().restrict_scroll_to_axis = Some(true);
+    list
 }

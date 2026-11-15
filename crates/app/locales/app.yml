@@ -1624,6 +1624,14 @@ settings.nav_scope_within:
   en: "Within the current tab"
   zh-TW: "只在目前分頁"
   zh-CN: "只在当前标签页"
+settings.swipe_nav:
+  en: "Swipe to go back and forward"
+  zh-TW: "滑動切換上一頁／下一頁"
+  zh-CN: "滑动切换上一页／下一页"
+settings.swipe_nav_desc:
+  en: "Swipe left or right with two fingers on the touchpad"
+  zh-TW: "在觸控板上用兩指左右滑動"
+  zh-CN: "在触控板上用两指左右滑动"
 settings.fast_recycle:
   en: "Fast Recycle Bin"
   zh-TW: "快速丟回收筒"

@@ -2087,8 +2087,14 @@ impl Explorer {
                 .unwrap_or(0);
                 if ix < self.list_len() {
                     // A folder opens in the list: the cursor goes there, as with a click, so the
-                    // search box doesn't stay focused and pop its options open (#76).
-                    if self.path_at(ix).is_some_and(|(_, is_dir)| is_dir) {
+                    // search box doesn't stay focused and pop its options open (#76). So may a
+                    // shortcut, which opens its folder here too.
+                    let shortcut =
+                        |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"));
+                    if self
+                        .path_at(ix)
+                        .is_some_and(|(path, is_dir)| is_dir || shortcut(&path))
+                    {
                         window.focus(&self.list_focus, cx);
                     }
                     self.open_index(ix, cx);

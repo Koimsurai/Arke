@@ -142,7 +142,6 @@ pub(super) fn panel_heading(
         .justify_between()
         .gap(theme::S_8)
         .min_h(theme::S_24)
-        .px(theme::S_4)
         .child(
             div()
                 .text_size(theme::FS_12)
@@ -936,7 +935,6 @@ impl Explorer {
         });
         let status = div()
             .min_h(theme::S_24)
-            .px(theme::S_4)
             .flex()
             .items_center()
             .gap(theme::S_8)
@@ -956,12 +954,8 @@ impl Explorer {
                 d.children(index_controls(cursor, cx))
             });
         let footer = div()
-            .pt(theme::S_8)
-            .px(theme::S_4)
             .flex()
             .justify_end()
-            .border_t_1()
-            .border_color(theme::line())
             .text_size(theme::FS_12)
             .text_color(theme::text_subtle())
             .child(if keyboard {
@@ -976,10 +970,11 @@ impl Explorer {
             .a11y(gpui::Role::Group, t!("search.panel"))
             .relative()
             .w(theme::SEARCH_PANEL_W)
-            .p(theme::S_12)
+            .p(theme::S_16)
             .flex()
             .flex_col()
-            .gap(theme::S_8)
+            // Sections apart, their parts close: everything on one left edge.
+            .gap(theme::S_16)
             // No border: GPUI draws it over the children, through an open filter menu.
             .rounded(theme::R_8)
             .bg(theme::overlay())
@@ -991,19 +986,25 @@ impl Explorer {
                 cx.stop_propagation();
             })
             .child(super::filters::panel_measure(&self.panel_geometry))
-            .child(panel_heading(t!("scope.section"), None))
             .child(
                 div()
-                    .id("scope-group")
-                    .a11y(gpui::Role::RadioGroup, t!("scope.section"))
-                    .p(theme::S_2)
                     .flex()
-                    .gap(theme::S_2)
-                    .rounded(theme::R_8)
-                    .bg(theme::segment_track())
-                    .children(segments),
+                    .flex_col()
+                    .gap(theme::S_8)
+                    .child(panel_heading(t!("scope.section"), None))
+                    .child(
+                        div()
+                            .id("scope-group")
+                            .a11y(gpui::Role::RadioGroup, t!("scope.section"))
+                            .p(theme::S_2)
+                            .flex()
+                            .gap(theme::S_2)
+                            .rounded(theme::R_8)
+                            .bg(theme::segment_track())
+                            .children(segments),
+                    )
+                    .child(status),
             )
-            .child(status)
             .child(self.render_filter_section(cursor, cx))
             .child(footer)
             // Last, so it covers what is below its button.

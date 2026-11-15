@@ -3004,15 +3004,17 @@ fn more_options() -> MenuEntry {
 /// A file name inside a menu label: a long one keeps its start and end (the extension) around an
 /// ellipsis, so the menu keeps its usual width (#87).
 fn menu_name(name: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation as _;
     const MAX: usize = 28;
     const HEAD: usize = 14;
     const TAIL: usize = 10;
-    let chars: Vec<char> = name.chars().collect();
-    if chars.len() <= MAX {
+    // By grapheme, so an emoji sequence or a letter with its accents is never split.
+    let graphemes: Vec<&str> = name.graphemes(true).collect();
+    if graphemes.len() <= MAX {
         return name.to_owned();
     }
-    let head: String = chars[..HEAD].iter().collect();
-    let tail: String = chars[chars.len() - TAIL..].iter().collect();
+    let head = graphemes[..HEAD].concat();
+    let tail = graphemes[graphemes.len() - TAIL..].concat();
     format!("{head}…{tail}")
 }
 
@@ -3120,5 +3122,11 @@ mod menu_name_tests {
         let short = menu_name(cjk);
         assert_eq!(short.chars().count(), 25);
         assert!(short.ends_with("變得很寬.zip"));
+        // A family emoji (one grapheme of seven characters) stays whole at either end.
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}";
+        let emoji = format!("{family}{}{family}.zip", "x".repeat(40));
+        let short = menu_name(&emoji);
+        assert!(short.starts_with(family), "{short}");
+        assert!(short.ends_with(&format!("x{family}.zip")), "{short}");
     }
 }

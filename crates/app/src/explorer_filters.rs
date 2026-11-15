@@ -696,6 +696,8 @@ impl Explorer {
             .a11y_disabled(!usable)
             .when(at, gpui::StatefulInteractiveElement::aria_active_descendant)
             .min_h(theme::H_CTL)
+            // The text lines up with the rest of the panel; hover and focus reach past it.
+            .mx(-theme::S_8)
             .px(theme::S_8)
             .py(theme::S_4)
             .flex()
@@ -711,11 +713,6 @@ impl Explorer {
             .when(usable, |d| {
                 d.cursor_pointer().hover(|s| s.bg(theme::wash()))
             })
-            .child(contents_icon(if on {
-                theme::signal()
-            } else {
-                theme::text_muted()
-            }))
             .child(
                 div()
                     .flex_1()
@@ -906,25 +903,6 @@ const fn type_term(t: TypeFilter) -> &'static str {
     }
 }
 
-/// A page with lines of text: the outline and the lines drawn on top of each other.
-fn contents_icon(color: gpui::Rgba) -> impl IntoElement {
-    let layer = |icon: Icon| {
-        svg()
-            .absolute()
-            .top_0()
-            .left_0()
-            .path(icon.path())
-            .size(theme::ICON)
-            .text_color(color)
-    };
-    div()
-        .relative()
-        .flex_none()
-        .size(theme::ICON)
-        .child(layer(Icon::PageLine))
-        .child(layer(Icon::FtText))
-}
-
 /// Down chevron of a closed dropdown.
 fn chevron() -> impl IntoElement {
     svg()
@@ -958,7 +936,7 @@ fn switch_look(on: bool, usable: bool) -> impl IntoElement {
         } else {
             theme::wash_strong()
         })
-        .when(!usable, |d| d.opacity(0.6))
+        .when(!usable, |d| d.opacity(0.4))
         .child(
             div()
                 .size(px(14.))

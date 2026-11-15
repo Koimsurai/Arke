@@ -115,7 +115,9 @@ Name: "{autodesktop}\Arke"; Filename: "{app}\arke.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\arke.exe"; Description: "{cm:LaunchProgram,Arke}"; Flags: nowait postinstall skipifsilent runasoriginaluser
-Filename: "{app}\arke.exe"; Check: LaunchAfterUpdate; Flags: nowait runasoriginaluser
+; After an update Arke reopens the tabs that were open (`--after-update`; 0: the old process is
+; already gone, there is nothing to wait for).
+Filename: "{app}\arke.exe"; Parameters: "--after-update 0"; Check: LaunchAfterUpdate; Flags: nowait runasoriginaluser
 
 [Code]
 var

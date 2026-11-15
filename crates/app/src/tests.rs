@@ -725,6 +725,26 @@ fn wait_until(
     }
 }
 
+/// Like [`wait_until`] for work that streams its results on a timer (content search): the test
+/// clock only moves when asked, so a slow reader thread would leave the stream waiting forever.
+fn wait_until_ticking(
+    cx: &mut VisualTestContext,
+    view: &Entity<Explorer>,
+    what: &str,
+    pred: impl Fn(&Explorer) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if view.update(cx, |v, _| pred(v)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        cx.executor().advance_clock(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn loaded(path: &str) -> impl Fn(&Explorer) -> bool + '_ {
     move |v| {
         v.current_path() == Some(Path::new(path)) && v.model.as_ref().is_some_and(|m| m.complete)
@@ -1342,7 +1362,7 @@ fn filter_chips_and_content_search(cx: &mut TestAppContext) {
         view.update(cx, |v, _| v.query.clone()),
         r#"content:"invoice""#
     );
-    wait_until(cx, &view, "content matches in this folder", |v| {
+    wait_until_ticking(cx, &view, "content matches in this folder", |v| {
         view_names(v) == ["memo.txt"] && !v.content_searching()
     });
 
@@ -1353,7 +1373,7 @@ fn filter_chips_and_content_search(cx: &mut TestAppContext) {
             v.keep_filter_focus(window, cx);
         });
     });
-    wait_until(cx, &view, "content matches in subfolders", |v| {
+    wait_until_ticking(cx, &view, "content matches in subfolders", |v| {
         final_hits(v).len() == 2
     });
     let lines: Vec<String> = view.update(cx, |v, _| {
@@ -1388,11 +1408,7 @@ fn content_search_finds_text_inside_documents(cx: &mut TestAppContext) {
     };
     fs.set_content(r"C:\c\letter.docx", docx("Please pay Invoice 12"));
     fs.set_content(r"C:\c\other.docx", docx("nothing to see"));
-    fs.set_content(
-        r"C:\c
-otes.txt",
-        b"nothing".to_vec(),
-    );
+    fs.set_content(r"C:\c\notes.txt", b"nothing".to_vec());
     fs.set_content(
         r"C:\c\sub\scan.pdf",
         arke_core::pdf_text::fixtures::pdf(&[&["cover page"], &["發票 invoice 13"]], true),
@@ -1402,7 +1418,7 @@ otes.txt",
     cx.dispatch_action(FocusFilter);
     cx.simulate_input("invoice");
     cx.update(|window, cx| view.update(cx, |v, cx| v.toggle_contents(window, cx)));
-    wait_until(cx, &view, "document matches in this folder", |v| {
+    wait_until_ticking(cx, &view, "document matches in this folder", |v| {
         view_names(v) == ["letter.docx"] && !v.content_searching()
     });
     cx.update(|window, cx| {
@@ -1411,7 +1427,7 @@ otes.txt",
             v.keep_filter_focus(window, cx);
         });
     });
-    wait_until(cx, &view, "document matches in subfolders", |v| {
+    wait_until_ticking(cx, &view, "document matches in subfolders", |v| {
         final_hits(v).len() == 2
     });
     let mut found: Vec<(String, String)> = view.update(cx, |v, _| {

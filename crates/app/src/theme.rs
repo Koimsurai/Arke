@@ -354,32 +354,35 @@ pub(crate) const LIGHT: Palette = Palette {
     kind_c: 0.15,
 };
 
-/// Dark. Contrast on surface/ground: muted 7.6/8.1, subtle 4.8/5.0, signal 6.6/7.5.
+/// Dark: a near-black ground with small steps up for paper and floating layers, and text well
+/// below white (like Linear), so the window stays calm and only what matters is bright. The text
+/// roles still meet their targets. Contrast on surface/ground: muted 7.2/7.6, subtle 4.6/4.8,
+/// signal 7.8/8.4.
 pub(crate) const DARK: Palette = Palette {
-    ground: hex(0x1c1c1c),
-    surface: hex(0x272727),
-    // Floating layers sit clearly above the paper (#272727); at #2c2c2c menus melted into it.
-    overlay: hex(0x353535),
-    ink: hex(0xf3f3f3),
+    ground: hex(0x101012),
+    surface: hex(0x18191b),
+    // Floating layers sit clearly above the paper.
+    overlay: hex(0x222326),
+    ink: hex(0xcdd0d5),
     // Tailwind orange-400: saturated orange, not salmon.
     signal: hex(0xfb923c),
     danger: hex(0xf07a8c),
-    danger_surface: hex(0x442726),
+    danger_surface: hex(0x331e20),
     synced: hex(0x6ccb5f),
     diff_unique: hex(0x60cdff),
     diff_changed: hex(0xf2c661),
     on_signal: hex(0x1a0f0a),
     veil: hex(0x000000),
     frame_tint: 0.,
-    a_muted: 0.70,
-    a_subtle: 0.52,
-    a_disabled: 0.32,
-    a_line: 0.09,
-    a_line_strong: 0.20,
-    a_wash: 0.05,
-    a_wash_strong: 0.09,
-    // The signal is bright, so its wash stays low enough to keep text at 10:1.
-    a_signal_wash: 0.15,
+    a_muted: 0.77,
+    a_subtle: 0.58,
+    a_disabled: 0.34,
+    a_line: 0.08,
+    a_line_strong: 0.16,
+    a_wash: 0.045,
+    a_wash_strong: 0.08,
+    // The signal is bright, so its wash stays low (text on it stays above 9.5:1).
+    a_signal_wash: 0.10,
     kind_l: 0.74,
     kind_c: 0.12,
 };
@@ -410,6 +413,10 @@ static ACCENT: [AtomicU32; 4] = [
     AtomicU32::new(NO_ACCENT),
     AtomicU32::new(NO_ACCENT),
 ];
+
+/// Wash strength of the custom accent (light, dark theme) as `f32` bits; `NO_ACCENT` means the
+/// palette's own.
+static ACCENT_WASH: [AtomicU32; 2] = [AtomicU32::new(NO_ACCENT), AtomicU32::new(NO_ACCENT)];
 
 /// Minimum contrast of the signal color against the background when used for text or icons.
 const ACCENT_CONTRAST: f32 = 4.5;
@@ -445,6 +452,16 @@ pub(crate) fn set_accent(color: Option<u32>) -> bool {
             [pack(light), pack(on_light), pack(dark), pack(on_dark)]
         }
     };
+    let washes = match color {
+        None => [NO_ACCENT; 2],
+        Some(_) => [
+            wash_strength(hex(values[0]), &LIGHT).to_bits(),
+            wash_strength(hex(values[2]), &DARK).to_bits(),
+        ],
+    };
+    for (slot, value) in ACCENT_WASH.iter().zip(washes) {
+        slot.store(value, Ordering::Relaxed);
+    }
     let mut changed = false;
     for (slot, value) in ACCENT.iter().zip(values) {
         changed |= slot.swap(value, Ordering::Relaxed) != value;
@@ -511,6 +528,26 @@ fn accent_for(color: Rgba, palette: &Palette) -> (Rgba, Rgba) {
 fn pack(c: Rgba) -> u32 {
     let channel = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
     (channel(c.r) << 16) | (channel(c.g) << 8) | channel(c.b)
+}
+
+/// How strongly `signal` washes selected rows so they stand out from the paper as much as with Arke
+/// orange: a fixed alpha leaves dark accents (blue, red) fainter than light ones (orange, amber).
+/// Same contrast against the paper also means text on the wash reads the same.
+fn wash_strength(signal: Rgba, palette: &Palette) -> f32 {
+    let target = contrast(
+        mix(palette.surface, palette.signal, palette.a_signal_wash),
+        palette.surface,
+    );
+    let (mut low, mut high) = (palette.a_signal_wash * 0.5, palette.a_signal_wash * 2.);
+    for _ in 0..16 {
+        let mid = f32::midpoint(low, high);
+        if contrast(mix(palette.surface, signal, mid), palette.surface) < target {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    high
 }
 
 /// Custom accent for the current theme (`None` if not set). `which`: 0 is the signal, 1 the text on it.
@@ -580,7 +617,7 @@ const TINT_CHROMA: f32 = 0.035;
 /// Paper gets half the tint: same hue as the frame, without skewing file icon and thumbnail colors.
 const PAPER_TINT_CHROMA: f32 = 0.016;
 /// Base color of the translucent paper under Mica (light, dark theme).
-const MICA_PAPER: [u32; 2] = [0x00ff_ffff, 0x003a_3a3a];
+const MICA_PAPER: [u32; 2] = [0x00ff_ffff, 0x001e_1f22];
 
 /// Tints the frame with the hue of `color` (`None` is neutral gray). Returns whether it changed.
 pub(crate) fn set_tint(color: Option<u32>) -> bool {
@@ -738,8 +775,18 @@ pub(crate) fn frame() -> Rgba {
     if !mica() {
         return base;
     }
-    // Use a heavier layer when tinted, otherwise the material washes out the color.
-    alpha(base, if tinted() { 0.78 } else { 0.35 })
+    // Use a heavier layer when tinted, otherwise the material washes out the color. Dark: half,
+    // so the near-black ground still reads through the material.
+    alpha(
+        base,
+        if tinted() {
+            0.78
+        } else if is_dark() {
+            0.5
+        } else {
+            0.35
+        },
+    )
 }
 
 /// Paper (list, preview): a translucent layer over the material under Mica (like WinUI's Layer), solid surface otherwise.
@@ -754,7 +801,7 @@ pub(crate) fn paper() -> Rgba {
 /// Selected items in navigation-style lists (sidebar, recycle bin rows, settings pages): a
 /// neutral wash strong enough to read at a glance on its own.
 pub(crate) fn selection() -> Rgba {
-    alpha(p().ink, if is_dark() { 0.13 } else { 0.10 })
+    alpha(p().ink, if is_dark() { 0.11 } else { 0.10 })
 }
 
 /// Selected rows in the file list and keyboard-driven pickers: the accent wash while the list
@@ -872,7 +919,13 @@ pub(crate) fn signal() -> Rgba {
 }
 /// Selected row.
 pub(crate) fn signal_wash() -> Rgba {
-    alpha(signal(), p().a_signal_wash)
+    let value = ACCENT_WASH[usize::from(is_dark())].load(Ordering::Relaxed);
+    let strength = if value == NO_ACCENT {
+        p().a_signal_wash
+    } else {
+        f32::from_bits(value)
+    };
+    alpha(signal(), strength)
 }
 /// Keyboard cursor and focus rings.
 pub(crate) fn signal_line() -> Rgba {
@@ -1268,7 +1321,7 @@ mod tests {
     fn text_roles_meet_contrast_targets() {
         // Read the palettes directly instead of the global mode and accent, which other tests change concurrently.
         for (dark, p) in [(false, &LIGHT), (true, &DARK)] {
-            let selection = if dark { 0.13 } else { 0.10 };
+            let selection = if dark { 0.11 } else { 0.10 };
             for bg in [p.surface, p.ground] {
                 assert!(
                     contrast(alpha(p.ink, p.a_muted), bg) >= 7.0,
@@ -1280,15 +1333,16 @@ mod tests {
                 );
                 assert!(contrast(p.signal, bg) >= 4.5, "signal dark={dark}");
             }
-            assert!(contrast(p.ink, mix(p.surface, p.signal, p.a_signal_wash)) >= 10.0);
+            // Selected rows: far above AAA (7:1) even with the dark theme's softer text.
+            assert!(contrast(p.ink, mix(p.surface, p.signal, p.a_signal_wash)) >= 9.5);
             // The neutral selection is deliberately strong (it has to show on gray paper), which
             // costs a little contrast in the dark theme: still far above AAA's 7:1.
             assert!(
-                contrast(p.ink, mix(p.surface, p.ink, selection)) >= 9.0,
+                contrast(p.ink, mix(p.surface, p.ink, selection)) >= 8.5,
                 "selection dark={dark}: {:.2}",
                 contrast(p.ink, mix(p.surface, p.ink, selection))
             );
-            assert!(contrast(p.ink, mix(p.surface, p.ink, p.a_wash_strong)) >= 10.0);
+            assert!(contrast(p.ink, mix(p.surface, p.ink, p.a_wash_strong)) >= 9.5);
             // Folder compare badges: their text on their own wash over the paper.
             for color in [p.diff_unique, p.diff_changed] {
                 let washed = mix(p.surface, color, 0.12);
@@ -1350,11 +1404,31 @@ mod tests {
                     "{rgb:06x} text on it is too faint: {:.2}",
                     contrast(on, signal)
                 );
-                let washed = mix(palette.surface, signal, palette.a_signal_wash);
+                let washed = mix(palette.surface, signal, wash_strength(signal, palette));
                 assert!(
-                    contrast(palette.ink, washed) >= 10.0,
-                    "{rgb:06x} text on its wash is below 10:1: {:.2}",
+                    contrast(palette.ink, washed) >= 9.5,
+                    "{rgb:06x} text on its wash is below 9.5:1: {:.2}",
                     contrast(palette.ink, washed)
+                );
+            }
+        }
+    }
+
+    /// Selected rows stand out from the paper the same with any preset accent as with Arke orange.
+    #[test]
+    fn accent_washes_stand_out_alike() {
+        for palette in [&LIGHT, &DARK] {
+            let arke = contrast(
+                mix(palette.surface, palette.signal, palette.a_signal_wash),
+                palette.surface,
+            );
+            for &(name, rgb) in &ACCENT_PRESETS {
+                let (signal, _) = accent_for(hex(rgb), palette);
+                let washed = mix(palette.surface, signal, wash_strength(signal, palette));
+                let ratio = contrast(washed, palette.surface);
+                assert!(
+                    (ratio - arke).abs() < 0.01,
+                    "{name}: {ratio:.3} vs {arke:.3}"
                 );
             }
         }
@@ -1500,13 +1574,13 @@ mod tests {
         let (light, on) = accent_for(hex(0x0078d4), &LIGHT);
         assert_eq!(pack(on), 0xffffff);
         let (_, _, hue) = to_oklch(hex(0x0078d4));
-        let (l_light, _, h_light) = to_oklch(light);
+        let (_, _, h_light) = to_oklch(light);
         assert!((h_light - hue).abs() < 2., "{h_light} vs {hue}");
-        // Dark theme: same hue, much lighter.
+        // Dark theme: same hue, light enough to read on the dark paper.
         let (dark, _) = accent_for(hex(0x0078d4), &DARK);
-        let (l_dark, _, h_dark) = to_oklch(dark);
+        let (_, _, h_dark) = to_oklch(dark);
         assert!((h_dark - hue).abs() < 2., "{h_dark} vs {hue}");
-        assert!(l_dark > l_light + 0.1);
+        assert!(contrast(dark, DARK.surface) >= ACCENT_CONTRAST);
         // A dark enough color stays unchanged in the light theme.
         let (same, _) = accent_for(hex(0x8e4ec6), &LIGHT);
         assert_eq!(pack(same), 0x8e4ec6);

@@ -1868,6 +1868,7 @@ impl Overlay {
         let mut matcher = Matcher::new(nucleo::Config::DEFAULT.match_paths());
         let mut buf = Vec::new();
         let mut indices = Vec::new();
+        let mut fresh = Vec::new();
         for (path, (info, _)) in &self.added {
             if (!show_hidden && info.hidden) || seen.contains(path) {
                 continue;
@@ -1900,16 +1901,29 @@ impl Overlay {
                     continue;
                 }
             }
-            out.push(IndexHit {
-                highlights: crate::filter::char_ranges_to_bytes(&name, &mut indices),
-                path: path.clone(),
-                is_dir: info.is_dir,
-                size: info.size,
-                modified: (info.modified != 0)
-                    .then(|| UNIX_EPOCH + Duration::from_secs(info.modified)),
-                score,
-            });
+            fresh.push((
+                name.len(),
+                IndexHit {
+                    highlights: crate::filter::char_ranges_to_bytes(&name, &mut indices),
+                    path: path.clone(),
+                    is_dir: info.is_dir,
+                    size: info.size,
+                    modified: (info.modified != 0)
+                        .then(|| UNIX_EPOCH + Duration::from_secs(info.modified)),
+                    score,
+                },
+            ));
         }
+        // `added` iterates in no fixed order. Break ties the way the index does (shorter name
+        // first), then by path, so equal scores keep one order and the same ones survive the limit.
+        fresh.sort_unstable_by(|(a_len, a), (b_len, b)| {
+            b.score
+                .cmp(&a.score)
+                .then(a_len.cmp(b_len))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        out.extend(fresh.into_iter().map(|(_, hit)| hit));
+        // Stable: at equal scores, index hits keep their order ahead of the added ones.
         out.sort_by_key(|h| Reverse(h.score));
         out.truncate(limit);
         out
@@ -2354,6 +2368,37 @@ mod tests {
         assert!(Index::read_from(&mut &b"garbage!"[..]).is_err());
         bytes.truncate(bytes.len() - 3);
         assert!(Index::read_from(&mut bytes.as_slice()).is_err());
+    }
+
+    /// Files added after the build that score the same come back in the same order every time,
+    /// and the same ones survive the limit: shorter names first, then by path, like the index.
+    #[test]
+    fn overlay_ties_keep_a_fixed_order() {
+        let file = Some(Seen {
+            is_dir: false,
+            hidden: false,
+            size: 5,
+            modified: 0,
+        });
+        let names: Vec<String> = (0..40)
+            .map(|i| format!(r"C:\new\report-{i:02}.md"))
+            .chain([r"C:\new\z\report.md".to_owned()])
+            .collect();
+        let build = |order: &mut dyn Iterator<Item = &String>| {
+            let mut overlay = Overlay::default();
+            for name in order {
+                overlay.record(PathBuf::from(name), file);
+            }
+            paths(&overlay.apply(Vec::new(), &q("report"), 10, false))
+        };
+        let forward = build(&mut names.iter());
+        let backward = build(&mut names.iter().rev());
+        assert_eq!(forward, backward);
+        // The shortest name wins the tie; the rest follow by path.
+        assert_eq!(forward[0], r"C:\new\z\report.md");
+        let mut expected = names[..9].to_vec();
+        expected.sort();
+        assert_eq!(forward[1..], expected[..]);
     }
 
     #[test]

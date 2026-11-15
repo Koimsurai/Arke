@@ -94,7 +94,7 @@ Shell extensions from other programs run in a separate process, so a buggy one c
   It registers Arke as the folder handler for your account and is undone when you turn it off.
   File Explorer you start yourself (Win+E, the taskbar, Start) stays File Explorer unless you also
   turn on "Win+E and the File Explorer icon open Arke too".
-- Screen reader support, x64 and ARM64 builds (ARM64 not yet tested on real ARM hardware),
+- Screen reader support, x64 and ARM64 builds (both tested on real hardware),
   taskbar jump list, safe USB eject, system tray, settings backup. English, Simplified and
   Traditional Chinese.
 

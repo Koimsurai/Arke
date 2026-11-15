@@ -1275,3 +1275,29 @@ fn a_new_window_follows_startup_when_settings_are_already_read(cx: &mut TestAppC
         );
     }
 }
+
+/// Ctrl+B collapses the sidebar to a column of icons and back (#91); the setting keeps it.
+#[gpui::test]
+fn ctrl_b_collapses_the_sidebar(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    assert!(cx.debug_bounds("sidebar-rail").is_none());
+
+    cx.simulate_keystrokes("ctrl-b");
+    cx.run_until_parked();
+    assert!(settings(cx).sidebar_collapsed);
+    assert_eq!(crate::theme::sidebar_width(), crate::theme::RAIL_W);
+    assert!(
+        cx.debug_bounds("sidebar-rail").is_some(),
+        "the column of icons shows"
+    );
+
+    cx.simulate_keystrokes("ctrl-b");
+    cx.run_until_parked();
+    assert!(!settings(cx).sidebar_collapsed);
+    assert_eq!(crate::theme::sidebar_width(), crate::theme::SIDEBAR_W);
+    assert!(cx.debug_bounds("sidebar-rail").is_none());
+}

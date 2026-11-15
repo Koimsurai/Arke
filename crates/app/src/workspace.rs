@@ -41,6 +41,8 @@ pub(crate) mod menuprefs;
 mod nav;
 #[path = "workspace_pages.rs"]
 mod pages;
+#[path = "workspace_rail.rs"]
+mod rail;
 #[path = "workspace_recycle.rs"]
 mod recycle_page;
 #[path = "workspace_report.rs"]
@@ -90,7 +92,9 @@ actions!(
         /// Dual pane: select the items the comparison marked, in both panes.
         SelectDifferences,
         /// The saved workspaces panel.
-        OpenWorkspaces
+        OpenWorkspaces,
+        /// Collapses the sidebar to a column of icons, or expands it (Ctrl+B, #91).
+        ToggleSidebar
     ]
 );
 
@@ -127,6 +131,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-pageup", PrevTab, ctx),
         KeyBinding::new("ctrl-shift-s", ToggleSyncBrowsing, ctx),
         KeyBinding::new("ctrl-shift-d", CompareFolders, ctx),
+        KeyBinding::new("ctrl-b", ToggleSidebar, ctx),
     ]);
     // The folder keys also work on the pages that cover a tab (Home, Settings, the Recycle Bin,
     // What's new), which step aside for the folder under them (#77).
@@ -482,6 +487,7 @@ fn apply_theme(window: &mut Window, cx: &mut App) {
     let accent = chosen_accent(look.accent);
     // Before the accent and tint: they are worked out against the dark palette.
     theme::set_dark_gray(look.dark_shade == crate::settings::DarkShade::Gray);
+    theme::set_sidebar_collapsed(look.sidebar_collapsed);
     theme::set_accent(accent);
     theme::set_tint(match look.tint {
         crate::settings::Tint::None => None,
@@ -1628,8 +1634,8 @@ impl Workspace {
         let reserve = self
             .shared_preview
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
-        let width = window.viewport_size().width - theme::SIDEBAR_W - reserve;
-        let ratio = (event.position.x - theme::SIDEBAR_W) / width;
+        let width = window.viewport_size().width - theme::sidebar_width() - reserve;
+        let ratio = (event.position.x - theme::sidebar_width()) / width;
         // Keep at least PANE_MIN per side so the top bar and columns do not get crushed.
         let min = (PANE_MIN / width).min(0.5);
         self.tabs[self.active].ratio = ratio.clamp(min, 1. - min);
@@ -1985,7 +1991,7 @@ impl Workspace {
 
     /// Content area width (right of the sidebar), from the last painted viewport width.
     fn panes_width_hint(&self) -> gpui::Pixels {
-        self.last_viewport_width - theme::SIDEBAR_W
+        self.last_viewport_width - theme::sidebar_width()
     }
 }
 
@@ -2032,17 +2038,21 @@ impl Render for Workspace {
             .flex_1()
             .min_h_0()
             .child(
-                // Left column: title row (window drag area) and sidebar.
+                // Left column: title row (window drag area) and sidebar, or the column of icons
+                // it collapses to.
                 div()
-                    .w(theme::SIDEBAR_W)
+                    .w(theme::sidebar_width())
                     .flex_none()
                     .h_full()
                     .flex()
                     .flex_col()
-                    .when(!horizontal, |d| d.child(self.render_brand_row(cx)))
-                    .child(self.render_home_button(cx))
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_settings_button(cx)),
+                    .when(theme::sidebar_collapsed(), |d| d.child(self.render_rail(cx)))
+                    .when(!theme::sidebar_collapsed(), |d| {
+                        d.when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+                            .child(self.render_home_button(cx))
+                            .child(self.render_sidebar(cx))
+                            .child(self.render_settings_button(cx))
+                    }),
             )
             // Settings and Recycle Bin pages replace the panes; the sidebar stays.
             .child(match self.render_settings_page(window, cx) {
@@ -2071,6 +2081,7 @@ impl Render for Workspace {
             .text_size(theme::FS_14)
             .when(self.resizing, gpui::Styled::cursor_col_resize)
             .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_active))
@@ -2334,6 +2345,7 @@ impl Workspace {
                 nav(|e, w, cx| e.refresh(&Refresh, w, cx)),
             ))
             .child(drag_area("brand", cx).h_full().flex_1().min_w_0())
+            .child(div().pr(theme::S_8).child(Self::sidebar_toggle(cx)))
     }
 
     /// Horizontal tabs: tabs on the top row like a browser, caption buttons on the far right.
@@ -2361,6 +2373,7 @@ impl Workspace {
             .items_center()
             .gap(theme::S_4)
             .pl(theme::S_8)
+            .child(Self::sidebar_toggle(cx))
             .child(
                 div()
                     .flex()

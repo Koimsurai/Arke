@@ -190,6 +190,32 @@ pub(crate) const H_HEADER: Pixels = px(30.);
 
 /// Sidebar width, including the left margin.
 pub(crate) const SIDEBAR_W: Pixels = px(248.);
+/// Width of the collapsed sidebar: a column of icons (#91).
+pub(crate) const RAIL_W: Pixels = px(52.);
+
+static SIDEBAR_COLLAPSED: AtomicBool = AtomicBool::new(false);
+
+/// Collapses or expands the sidebar. Returns whether it changed; windows must repaint if so.
+pub(crate) fn set_sidebar_collapsed(collapsed: bool) -> bool {
+    let changed = SIDEBAR_COLLAPSED.swap(collapsed, Ordering::Relaxed) != collapsed;
+    if changed {
+        LOOK.fetch_add(1, Ordering::Relaxed);
+    }
+    changed
+}
+
+pub(crate) fn sidebar_collapsed() -> bool {
+    SIDEBAR_COLLAPSED.load(Ordering::Relaxed)
+}
+
+/// The sidebar's width now: full, or the column of icons.
+pub(crate) fn sidebar_width() -> Pixels {
+    if sidebar_collapsed() {
+        RAIL_W
+    } else {
+        SIDEBAR_W
+    }
+}
 pub(crate) const FILTER_W: Pixels = px(220.);
 /// Narrowest the path bar gets on a short path, so it stays an easy click target; the rest of
 /// the title bar drags the window.

@@ -425,6 +425,8 @@ pub(crate) struct Settings {
     pub(crate) theme: ThemeMode,
     /// Background of the dark theme.
     pub(crate) dark_shade: DarkShade,
+    /// The sidebar is collapsed to a column of icons (Ctrl+B).
+    pub(crate) sidebar_collapsed: bool,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -578,6 +580,7 @@ impl Default for Settings {
             tint: Tint::default(),
             material: Material::default(),
             dark_shade: DarkShade::default(),
+            sidebar_collapsed: false,
             font: String::new(),
             background_image: None,
             background_opacity: 20,

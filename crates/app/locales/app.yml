@@ -26,6 +26,14 @@ sidebar.this_pc:
   en: This PC
   zh-TW: 此電腦
   zh-CN: 此电脑
+sidebar.collapse:
+  en: Collapse sidebar
+  zh-TW: 收合側邊欄
+  zh-CN: 收起侧边栏
+sidebar.expand:
+  en: Expand sidebar
+  zh-TW: 展開側邊欄
+  zh-CN: 展开侧边栏
 sidebar.tabs:
   en: Tabs
   zh-TW: 分頁

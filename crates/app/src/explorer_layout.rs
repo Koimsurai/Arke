@@ -294,7 +294,7 @@ mod tests {
     fn input(bar: f32) -> FitInput {
         FitInput {
             bar: px(bar),
-            window: px(bar) + theme::SIDEBAR_W,
+            window: px(bar) + theme::sidebar_width(),
             details: true,
             checkboxes: false,
             columns_view: false,
@@ -447,7 +447,7 @@ mod tests {
         let with_preview = |bar: Pixels| {
             let mut i = input(0.);
             i.bar = bar;
-            i.window = bar + theme::SIDEBAR_W;
+            i.window = bar + theme::sidebar_width();
             i.wants_preview = true;
             fit(&i)
         };

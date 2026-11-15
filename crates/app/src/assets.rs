@@ -131,6 +131,7 @@ icons![
     Check => "check",
     Settings => "settings",
     Menu => "menu",
+    Sidebar => "sidebar",
     // Settings card icons
     Theme => "theme",
     Accent => "accent",

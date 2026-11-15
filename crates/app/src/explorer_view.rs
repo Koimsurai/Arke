@@ -2824,7 +2824,8 @@ impl Explorer {
         self.screen = (window.viewport_size(), window.scale_factor());
         let window_w = window.viewport_size().width;
         // A split tab's shared preview takes its room first; the panes share the rest.
-        self.paper_width = (window_w - theme::SIDEBAR_W - self.pane.reserve) * self.pane.share;
+        self.paper_width =
+            (window_w - theme::sidebar_width() - self.pane.reserve) * self.pane.share;
         self.bar_width = self.paper_width
             + if self.pane.trailing {
                 self.pane.reserve

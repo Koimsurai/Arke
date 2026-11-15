@@ -568,7 +568,10 @@ impl Shell for WinShell {
             }
         }
         // Cloud folders such as OneDrive go before drives, as in Windows Explorer.
-        places.extend(cloud_roots().into_iter().map(|(label, path)| Place {
+        let (roots, pinned) = (cloud_roots(), pinned_cloud_folders());
+        let cloud = crate::cloud_places::pick(&roots, &pinned);
+        log_cloud_folders(&roots, &pinned, &cloud);
+        places.extend(cloud.into_iter().map(|(label, path)| Place {
             label,
             path,
             kind: PlaceKind::Cloud,
@@ -1722,14 +1725,14 @@ pub(crate) fn network_drive_roots() -> Vec<PathBuf> {
 
 /// Cloud sync roots registered with Windows via the Cloud Files API, as (label, path). Only reads
 /// the registration: no network, doesn't wake the sync client. Call from a background thread.
-fn cloud_roots() -> Vec<(String, PathBuf)> {
+fn cloud_roots() -> Vec<crate::cloud_places::SyncRoot> {
     use windows::Storage::IStorageItem;
     use windows::Storage::Provider::StorageProviderSyncRootManager;
     use windows::Win32::System::Com::COINIT_MULTITHREADED;
     use windows::core::Interface;
     // SAFETY: this background thread's own COM init; CoUninitialize only on success.
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    let read = || -> windows::core::Result<Vec<(String, PathBuf)>> {
+    let read = || -> windows::core::Result<Vec<crate::cloud_places::SyncRoot>> {
         let roots = StorageProviderSyncRootManager::GetCurrentSyncRoots()?;
         let mut out = Vec::new();
         for ix in 0..roots.Size()? {
@@ -1745,8 +1748,17 @@ fn cloud_roots() -> Vec<(String, PathBuf)> {
             } else {
                 name
             };
-            if !out.iter().any(|(_, p)| *p == path) {
-                out.push((label, path));
+            let id = root.Id()?.to_string();
+            let provider = id.split('!').next().unwrap_or_default().to_owned();
+            if !out
+                .iter()
+                .any(|r: &crate::cloud_places::SyncRoot| r.path == path)
+            {
+                out.push(crate::cloud_places::SyncRoot {
+                    provider,
+                    label,
+                    path,
+                });
             }
         }
         Ok(out)
@@ -1757,6 +1769,163 @@ fn cloud_roots() -> Vec<(String, PathBuf)> {
         unsafe { CoUninitialize() };
     }
     roots
+}
+
+/// Which cloud folders came from where, for reports like #93. Every tab loads the places, so only
+/// when it changes.
+fn log_cloud_folders(
+    roots: &[crate::cloud_places::SyncRoot],
+    pinned: &[crate::cloud_places::Pinned],
+    shown: &[(String, PathBuf)],
+) {
+    static LOGGED: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
+    let line = format!(
+        "cloud folders: sync roots {:?}, pinned {:?}, shown {:?}",
+        roots
+            .iter()
+            .map(|r| (&r.provider, &r.path))
+            .collect::<Vec<_>>(),
+        pinned.iter().map(|p| &p.path).collect::<Vec<_>>(),
+        shown.iter().map(|(_, p)| p).collect::<Vec<_>>()
+    );
+    let mut logged = LOGGED.lock();
+    if *logged != line {
+        log::info!("{line}");
+        *logged = line;
+    }
+}
+
+/// Folders pinned to File Explorer's navigation pane (`Desktop\NameSpace` items with
+/// `System.IsPinnedToNameSpaceTree`), the way cloud providers add theirs: name and target folder
+/// (`TargetFolderPath`, or `TargetKnownFolder` for OneDrive). Reads the registry only.
+fn pinned_cloud_folders() -> Vec<crate::cloud_places::Pinned> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const NAMESPACE: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace";
+    let mut out = Vec::new();
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        for clsid in reg_subkeys(hive, NAMESPACE) {
+            // Per-user classes win over machine ones, as in HKEY_CLASSES_ROOT.
+            let class = [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+                .into_iter()
+                .map(|h| (h, format!(r"Software\Classes\CLSID\{clsid}")))
+                .find(|(h, k)| reg_key_exists(*h, k));
+            let Some((h, class)) = class else { continue };
+            if read_reg_dword(h, &class, "System.IsPinnedToNameSpaceTree") != Some(1) {
+                continue;
+            }
+            let bag = format!(r"{class}\Instance\InitPropertyBag");
+            let target = read_reg_string(h, &bag, "TargetFolderPath")
+                .map(|p| PathBuf::from(expand_env(&p)))
+                .or_else(|| {
+                    let id = read_reg_string(h, &bag, "TargetKnownFolder")?;
+                    known_folder(&GUID::try_from(id.trim_matches(['{', '}'])).ok()?)
+                });
+            let Some(path) = target else { continue };
+            let label = read_reg_string(h, &class, "").unwrap_or_else(|| {
+                path.file_name()
+                    .map_or_default(|n| n.to_string_lossy().into_owned())
+            });
+            out.push(crate::cloud_places::Pinned { label, path });
+        }
+    }
+    out
+}
+
+/// Names of a registry key's subkeys (empty if it can't be opened). Read only.
+fn reg_subkeys(root: windows::Win32::System::Registry::HKEY, key: &str) -> Vec<String> {
+    use windows::Win32::System::Registry::{
+        HKEY, KEY_READ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW,
+    };
+    let name = wide(std::ffi::OsStr::new(key));
+    let mut handle = HKEY::default();
+    // SAFETY: name is NUL-terminated; the handle is closed below.
+    let opened =
+        unsafe { RegOpenKeyExW(root, PCWSTR(name.as_ptr()), None, KEY_READ, &raw mut handle) };
+    if opened.is_err() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut buf = [0u16; 256];
+    for index in 0.. {
+        let mut len = buf.len() as u32;
+        // SAFETY: buf holds len UTF-16 units; the other out params are optional.
+        let result = unsafe {
+            RegEnumKeyExW(
+                handle,
+                index,
+                Some(windows::core::PWSTR(buf.as_mut_ptr())),
+                &raw mut len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if result.is_err() {
+            break;
+        }
+        out.push(String::from_utf16_lossy(&buf[..len as usize]));
+    }
+    // SAFETY: opened above.
+    let _ = unsafe { RegCloseKey(handle) };
+    out
+}
+
+/// Whether a registry key exists. Read only.
+fn reg_key_exists(root: windows::Win32::System::Registry::HKEY, key: &str) -> bool {
+    use windows::Win32::System::Registry::{HKEY, KEY_READ, RegCloseKey, RegOpenKeyExW};
+    let name = wide(std::ffi::OsStr::new(key));
+    let mut handle = HKEY::default();
+    // SAFETY: name is NUL-terminated; the handle is closed right away.
+    let opened =
+        unsafe { RegOpenKeyExW(root, PCWSTR(name.as_ptr()), None, KEY_READ, &raw mut handle) };
+    if opened.is_ok() {
+        // SAFETY: opened above.
+        let _ = unsafe { RegCloseKey(handle) };
+    }
+    opened.is_ok()
+}
+
+/// A `REG_DWORD` value, or `None`.
+fn read_reg_dword(
+    root: windows::Win32::System::Registry::HKEY,
+    key: &str,
+    value: &str,
+) -> Option<u32> {
+    use windows::Win32::System::Registry::{RRF_RT_REG_DWORD, RegGetValueW};
+    let (key, value) = (
+        wide(std::ffi::OsStr::new(key)),
+        wide(std::ffi::OsStr::new(value)),
+    );
+    let mut data = 0u32;
+    let mut bytes = 4u32;
+    // SAFETY: names are NUL-terminated; data is the 4-byte buffer RRF_RT_REG_DWORD needs.
+    unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&raw mut data).cast()),
+            Some(&raw mut bytes),
+        )
+    }
+    .is_ok()
+    .then_some(data)
+}
+
+/// `%USERPROFILE%\x` and the like, expanded.
+fn expand_env(text: &str) -> String {
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    let src = wide(std::ffi::OsStr::new(text));
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: src is NUL-terminated; buf is writable for its length.
+    let len = unsafe { ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf)) } as usize;
+    if len == 0 || len > buf.len() {
+        return text.to_owned();
+    }
+    String::from_utf16_lossy(&buf[..len.saturating_sub(1)])
 }
 
 /// Installed WSL distros. `wsl.exe --list --quiet` lists names without starting any distro.

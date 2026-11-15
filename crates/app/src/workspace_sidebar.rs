@@ -627,6 +627,28 @@ impl Workspace {
             .map(|ix| self.render_tab(ix, cx))
             .collect();
 
+        let tab_count = tabs.len();
+        // Places (pins, This PC, Network) and the vertical tab list each scroll on their own. When
+        // the window is short, both shrink (each by its share of the height) instead of the tabs
+        // falling below the fold, where nothing showed they were there. With room to spare,
+        // nothing changes: the places take their height and the tabs follow right under them.
+        let horizontal = Self::horizontal_tabs(cx);
+        let places_area = div()
+            .id("sidebar-places")
+            .flex()
+            .flex_col()
+            // With tabs on top there is nothing below, so the places fill the sidebar.
+            .when(horizontal, gpui::Styled::flex_1)
+            .when(!horizontal, gpui::Styled::flex_initial)
+            // At least two rows stay visible, so it's clear this part scrolls too.
+            .min_h(theme::H_ROW * 2.)
+            .gap(theme::S_2)
+            .overflow_y_scroll()
+            .children(pins)
+            .children(self.render_shelf(cx))
+            .child(section_label(t!("sidebar.this_pc")))
+            .children(devices)
+            .children(network);
         div()
             .id("sidebar")
             .a11y(gpui::Role::Tree, t!("a11y.sidebar"))
@@ -638,47 +660,55 @@ impl Workspace {
             .pr(theme::S_8)
             .pb(theme::S_8)
             .gap(theme::S_2)
-            .overflow_y_scroll()
-            .children(pins)
-            .children(self.render_shelf(cx))
-            .child(section_label(t!("sidebar.this_pc")))
-            .children(devices)
-            .children(network)
-            .when(!Self::horizontal_tabs(cx), |d| {
+            .child(places_area)
+            .when(!horizontal, |d| {
                 d.child(
-                    div()
-                        .flex()
-                        .items_end()
-                        .child(div().flex_1().child(section_label(t!("sidebar.tabs"))))
-                        .child(Self::workspaces_button(cx))
-                        .child(tab_layout_button(false, cx)),
-                )
-                // Dragging an unpinned tab turns the New tab row into the pin zone (same
-                // height, so the tabs under the cursor don't move).
-                .child(match self.pin_drop_zone(cx) {
-                    Some(zone) => zone.into_any_element(),
-                    None => Self::render_new_tab_row(cx).into_any_element(),
-                })
-                .child(
-                    div()
-                        .id("tab-list")
-                        .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
-                        .flex()
-                        .flex_col()
-                        .gap(theme::S_2)
-                        .children(tabs)
-                        // Dropping in the gaps between tabs moves the tab to the end.
-                        .on_drop(cx.listener(Self::drop_tab_at_end)),
-                )
-                // Dropping in the empty space below the last tab moves it to the end.
-                .child(
-                    div()
-                        .id("tab-list-end")
-                        .flex_1()
-                        .min_h(theme::S_32)
-                        .on_drop(cx.listener(Self::drop_tab_at_end)),
-                )
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_end()
+                            .child(div().flex_1().child(section_label(t!("sidebar.tabs"))))
+                            .child(Self::workspaces_button(cx))
+                            .child(tab_layout_button(false, cx)),
+                    )
+                    // Dragging an unpinned tab turns the New tab row into the pin zone (same
+                    // height, so the tabs under the cursor don't move).
+                    .child(
+                        div().flex_none().child(match self.pin_drop_zone(cx) {
+                            Some(zone) => zone.into_any_element(),
+                            None => Self::render_new_tab_row(cx).into_any_element(),
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("tab-list")
+                            .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
+                            .flex()
+                            .flex_col()
+                            .flex_initial()
+                            // Keeps up to three tabs in view however short the window gets.
+                            .min_h(Self::tab_list_min_height(tab_count))
+                            .gap(theme::S_2)
+                            .overflow_y_scroll()
+                            .children(tabs)
+                            // Dropping in the gaps between tabs moves the tab to the end.
+                            .on_drop(cx.listener(Self::drop_tab_at_end)),
+                    )
+                    // Dropping in the empty space below the last tab moves it to the end.
+                    .child(
+                        div()
+                            .id("tab-list-end")
+                            .flex_1()
+                            .min_h(theme::S_32)
+                            .on_drop(cx.listener(Self::drop_tab_at_end)),
+                    )
             })
+    }
+
+    /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
+    fn tab_list_min_height(tabs: usize) -> Pixels {
+        let shown = tabs.min(3) as f32;
+        (theme::H_ROW + theme::S_2) * shown
     }
 
     /// Drops a tab onto empty space in the tab strip or list: moves it to the end.

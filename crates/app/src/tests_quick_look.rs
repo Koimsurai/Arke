@@ -162,7 +162,9 @@ fn wheel_turns_pdf_pages_after_scrolling_them(cx: &mut TestAppContext) {
             .last()
             .is_some_and(|r| r.2.1 > fitted.1)
     };
-    wait_until(cx, &view, "zoomed page rendered larger", |_| rendered_larger());
+    wait_until(cx, &view, "zoomed page rendered larger", |_| {
+        rendered_larger()
+    });
     assert_eq!(view.update(cx, |v, _| pdf_page(v)), Some(0));
     assert!(view.update(cx, |v, _| v.look_scroll.max_offset().y) > px(0.));
 

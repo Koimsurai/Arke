@@ -31,6 +31,8 @@ use crate::workspace::{CloseTab, NewTab, Workspace};
 mod column_view;
 #[path = "tests_folder_views.rs"]
 mod folder_views;
+#[path = "tests_idle.rs"]
+mod idle;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;

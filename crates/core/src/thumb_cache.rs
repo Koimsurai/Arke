@@ -161,6 +161,12 @@ impl Memory {
         self.map.clear();
         self.bytes = 0;
     }
+
+    /// Like [`Self::clear`], and also gives the table's memory back.
+    fn release(&mut self) {
+        self.map = HashMap::new();
+        self.bytes = 0;
+    }
 }
 
 /// The cache folder: one file per thumbnail in 256 subfolders, with a size cap.
@@ -333,6 +339,16 @@ impl ThumbCache {
     /// Compressed thumbnail in memory, without touching the disk (cheap enough for the UI thread).
     pub fn in_memory(&self, key: &ThumbKey) -> Option<Arc<[u8]>> {
         self.memory.lock().get(key)
+    }
+
+    /// Bytes of compressed thumbnails held in memory.
+    pub fn memory_bytes(&self) -> usize {
+        self.memory.lock().bytes
+    }
+
+    /// Frees the memory layer and keeps the cache folder, so thumbnails come back from disk.
+    pub fn release_memory(&self) {
+        self.memory.lock().release();
     }
 
     /// The thumbnail from memory, else from disk, else made by `source` and stored in both. On a

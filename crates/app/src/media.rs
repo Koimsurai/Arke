@@ -298,19 +298,35 @@ impl MediaStore {
         v
     }
 
-    /// Frees every decoded image and forgets what was wanted, like scrolling far away and back
-    /// (tests).
-    #[cfg(test)]
+    /// Frees every decoded image and forgets what was wanted, like scrolling far away and back.
+    /// Used when the last window closes, and by tests.
     pub(crate) fn drop_decoded(&mut self, cx: &mut App) {
         for (_, image) in self.cache.drain() {
             if let Some(image) = image {
                 cx.drop_image(image, None);
             }
         }
-        self.order.clear();
+        self.cache.shrink_to_fit();
+        self.order = VecDeque::new();
         self.bytes = 0;
-        self.main_wanted.clear();
-        self.last_wanted.clear();
+        self.main_wanted = Vec::new();
+        self.side_wanted = Vec::new();
+        self.last_wanted = Vec::new();
+    }
+
+    /// Decoded bytes held (tests).
+    #[cfg(test)]
+    pub(crate) const fn decoded_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// With no window open: frees decoded images and the in-memory compressed thumbnails. The
+    /// disk cache stays, so the next window gets its thumbnails back without decoding again.
+    pub(crate) fn release_all(cx: &mut App) {
+        if let Some(store) = cx.try_global::<GlobalMedia>().map(|g| g.0.clone()) {
+            store.update(cx, |store, cx| store.drop_decoded(cx));
+        }
+        thumb_cache().release_memory();
     }
 
     /// Loaded image (`None` if failed or not loaded yet).

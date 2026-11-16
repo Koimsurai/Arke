@@ -61,6 +61,7 @@ mod prefs;
 mod quicklook;
 mod recycle_bin;
 mod remote_shell;
+mod resident;
 mod saved_workspaces;
 mod scrollbar;
 mod search_history;
@@ -551,6 +552,10 @@ fn app_main(mut args: Args) {
         if let Some(listener) = listener {
             start_resident_service(cx, listener, services);
             quit_with_last_window_unless_resident(cx);
+            resident::watch(cx);
+            if background {
+                resident::enter(cx);
+            }
         }
         if !benchmarking {
             prewarm_shell_host();

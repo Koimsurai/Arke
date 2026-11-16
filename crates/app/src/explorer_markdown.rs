@@ -19,9 +19,15 @@ const MONO: &str = "Cascadia Mono";
 
 /// One Markdown document. `large` is Quick Look: bigger text and more room between blocks.
 pub(super) fn markdown(doc: &Doc, large: bool) -> AnyElement {
+    markdown_at(doc, large, 1.)
+}
+
+/// [`markdown`] with its text scaled by `zoom` (Quick Look's Ctrl+wheel).
+pub(super) fn markdown_at(doc: &Doc, large: bool, zoom: f32) -> AnyElement {
     let layout = Layout {
         large,
-        body: if large { theme::FS_15 } else { theme::FS_13 },
+        zoom,
+        body: if large { theme::FS_15 } else { theme::FS_13 } * zoom,
         next_id: Cell::new(0),
     };
     div()
@@ -53,6 +59,8 @@ impl Tone {
 
 struct Layout {
     large: bool,
+    /// Text scale; `body` already includes it
+    zoom: f32,
     body: gpui::Pixels,
     /// Ids for text with links (each needs its own).
     next_id: Cell<usize>,
@@ -90,8 +98,8 @@ impl Layout {
     /// `#` and `##` get a rule below, like GitHub; the rest step down in size and color.
     fn heading(&self, level: u8, text: &Inline) -> AnyElement {
         let size = match (level, self.large) {
-            (1, _) | (2, true) => theme::FS_20,
-            (2, false) | (3, true) => theme::FS_15,
+            (1, _) | (2, true) => theme::FS_20 * self.zoom,
+            (2, false) | (3, true) => theme::FS_15 * self.zoom,
             _ => self.body,
         };
         let tone = if level >= 4 {
@@ -177,7 +185,7 @@ impl Layout {
                     div()
                         .px(theme::S_12)
                         .pt(theme::S_8)
-                        .text_size(theme::FS_11)
+                        .text_size(theme::FS_11 * self.zoom)
                         .text_color(theme::text_subtle())
                         .child(lang.to_owned()),
                 )
@@ -187,11 +195,13 @@ impl Layout {
                     .px(theme::S_12)
                     .py(theme::S_8)
                     .font_family(MONO)
-                    .text_size(if self.large {
-                        theme::FS_13
-                    } else {
-                        theme::FS_12
-                    })
+                    .text_size(
+                        if self.large {
+                            theme::FS_13
+                        } else {
+                            theme::FS_12
+                        } * self.zoom,
+                    )
                     .child(StyledText::new(text.to_owned()).with_highlights(highlights)),
             )
             .into_any_element()

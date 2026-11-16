@@ -916,6 +916,12 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (command_line, dir);
         Err(ShellError::Unsupported)
     }
+    /// Runs QuickLook (`exe`, see `quicklook.rs`) with `item`, which toggles its preview of it.
+    /// Returns once it has started. Background thread.
+    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
+        let _ = (exe, item);
+        Err(ShellError::Unsupported)
+    }
     /// Local (year, month, day, hour, minute, second), for archive modification times. Pure.
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         let _ = time;

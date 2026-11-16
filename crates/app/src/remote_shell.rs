@@ -734,6 +734,12 @@ impl Shell for RemoteShell {
         }
         self.inner.run_in(command_line, dir)
     }
+    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
+        if remote(item).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.run_quicklook(exe, item)
+    }
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         self.inner.local_parts(time)
     }

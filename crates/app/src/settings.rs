@@ -400,6 +400,9 @@ pub(crate) struct Settings {
     pub(crate) density: Density,
     /// Preview pane on the right.
     pub(crate) preview_pane: bool,
+    /// Space hands the item to QuickLook (QL-Win) instead of Arke's Quick Look (offered only
+    /// when it is installed).
+    pub(crate) space_quicklook: bool,
     /// Ctrl+T searches the whole PC. Needs an index, off by default.
     pub(crate) global_search: bool,
     /// Global search skips build and package cache folders (`node_modules`, Rust `target`, ...).
@@ -567,6 +570,7 @@ impl Default for Settings {
             tab_layout: TabLayout::default(),
             density: Density::default(),
             preview_pane: false,
+            space_quicklook: false,
             global_search: false,
             search_network: Vec::new(),
             search_network_auto: true,

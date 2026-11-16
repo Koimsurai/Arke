@@ -244,7 +244,7 @@ impl Explorer {
     /// Quick Look on a workbook: the grid, with sheet tabs below when there are several.
     pub(super) fn workbook_look(&self, view: &WorkbookView, cx: &mut Context<Self>) -> AnyElement {
         let grid = Self::with_preview_scrollbar(
-            sheet_grid(view, true, &self.look_scroll),
+            sheet_grid_at(view, Some(self.doc_zoom()), &self.look_scroll),
             &self.look_scroll,
             &self.look_scrollbar,
         );
@@ -300,12 +300,24 @@ impl Explorer {
         let fit = fit_rect(Bounds::new(Point::default(), self.look_page_area()), 16, 9);
         let pages = view.deck.slides.len();
         let page = view.page.min(pages.saturating_sub(1));
-        let card = slide_card(
+        let card = slide_card_at(
             view.deck.slides.get(page),
             Some(fit.size),
             true,
+            self.doc_zoom(),
             &self.look_scroll,
         );
+        // Zoomed text can outgrow the card, which then scrolls.
+        let card = div()
+            .relative()
+            .flex_none()
+            .w(fit.size.width)
+            .h(fit.size.height)
+            .child(card)
+            .child(crate::scrollbar::scrollbar(
+                self.look_scroll.clone(),
+                std::rc::Rc::clone(&self.look_scrollbar),
+            ));
         div()
             .size_full()
             .pt(PDF_PAD)
@@ -343,6 +355,17 @@ pub(super) fn document_body(
     large: bool,
     scroll: &gpui::ScrollHandle,
 ) -> AnyElement {
+    document_at(doc, large.then_some(1.), scroll)
+}
+
+/// [`document_body`]; `zoom` is Quick Look's text scale (`None` in the pane).
+pub(super) fn document_at(
+    doc: &Document,
+    zoom: Option<f32>,
+    scroll: &gpui::ScrollHandle,
+) -> AnyElement {
+    let large = zoom.is_some();
+    let zoom = zoom.unwrap_or(1.);
     div()
         .id("preview-document")
         .size_full()
@@ -355,27 +378,29 @@ pub(super) fn document_body(
             div().w_full().flex().justify_center().child(
                 div()
                     .w_full()
-                    .max_w(theme::READ_W)
+                    // Zoomed text keeps as many words per line, up to the stage's width.
+                    .max_w(theme::READ_W * zoom)
                     .when(large, |d| {
                         d.px(theme::S_32)
                             .py(theme::S_24)
                             .map(theme::preview_sheet)
                             .rounded(theme::R_12)
                     })
-                    .child(document_view(doc, large)),
+                    .child(document_view(doc, large, zoom)),
             ),
         )
         .into_any_element()
 }
 
-fn document_view(doc: &Document, large: bool) -> AnyElement {
-    let body = if large { theme::FS_15 } else { theme::FS_13 };
+fn document_view(doc: &Document, large: bool, zoom: f32) -> AnyElement {
+    let body = if large { theme::FS_15 } else { theme::FS_13 } * zoom;
+    let small = theme::FS_12 * zoom;
     let blocks = doc.blocks.iter().map(|block| match block {
         Block::Heading { level, spans } => div()
             .mt(theme::S_4)
             .text_size(match level {
-                1 => theme::FS_20,
-                2 => theme::FS_15,
+                1 => theme::FS_20 * zoom,
+                2 => theme::FS_15 * zoom,
                 _ => body,
             })
             .font_weight(theme::FW_STRONG)
@@ -395,7 +420,7 @@ fn document_view(doc: &Document, large: bool) -> AnyElement {
             )
             .child(div().flex_1().min_w_0().child(rich(spans)))
             .into_any_element(),
-        Block::Table(rows) => table_view(rows),
+        Block::Table(rows) => table_view(rows, small),
         Block::PageBreak => div()
             .my(theme::S_8)
             .h(px(1.))
@@ -412,7 +437,7 @@ fn document_view(doc: &Document, large: bool) -> AnyElement {
                     .py(theme::S_4)
                     .rounded(theme::R_4)
                     .bg(theme::wash_strong())
-                    .text_size(theme::FS_12)
+                    .text_size(small)
                     .text_color(theme::text_subtle())
                     .child(kind_icon(arke_core::filetype::FileKind::Image, px(14.)))
                     .child(t!("preview.office_image").into_owned()),
@@ -453,7 +478,7 @@ fn rich(spans: &[Span]) -> StyledText {
 }
 
 /// A table as an even grid with hairlines.
-fn table_view(rows: &[Vec<String>]) -> AnyElement {
+fn table_view(rows: &[Vec<String>], text: Pixels) -> AnyElement {
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
     div()
         .my(theme::S_4)
@@ -462,7 +487,7 @@ fn table_view(rows: &[Vec<String>]) -> AnyElement {
         .rounded(theme::R_4)
         .border_1()
         .border_color(theme::line())
-        .text_size(theme::FS_12)
+        .text_size(text)
         .children(rows.iter().enumerate().map(|(r, row)| {
             div()
                 .flex()
@@ -493,15 +518,26 @@ fn truncated_note() -> AnyElement {
 
 /// A sheet as a grid: column letters and row numbers stay in place while the cells scroll both
 /// ways. Only the rows in view are built.
-#[allow(
-    clippy::too_many_lines,
-    reason = "Header, gutter and cells share the same scroll math; split up they'd pass it all around"
-)]
 pub(super) fn sheet_grid(
     view: &WorkbookView,
     large: bool,
     scroll: &gpui::ScrollHandle,
 ) -> AnyElement {
+    sheet_grid_at(view, large.then_some(1.), scroll)
+}
+
+/// [`sheet_grid`]; `zoom` is Quick Look's text scale (`None` in the pane). Rows and columns grow
+/// with the text.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Header, gutter and cells share the same scroll math; split up they'd pass it all around"
+)]
+fn sheet_grid_at(
+    view: &WorkbookView,
+    zoom: Option<f32>,
+    scroll: &gpui::ScrollHandle,
+) -> AnyElement {
+    let large = zoom.is_some();
     let sheet = &view.book.sheet;
     if sheet.rows.is_empty() {
         return div()
@@ -516,25 +552,28 @@ pub(super) fn sheet_grid(
             .child(t!("preview.sheet_empty").into_owned())
             .into_any_element();
     }
-    let scale = if large { 13. / 12. } else { 1. };
+    let zoom = zoom.unwrap_or(1.);
+    // Quick Look's text is 13 px instead of 12.
+    let scale = if large { 13. / 12. } else { 1. } * zoom;
+    let cell_h = CELL_H * zoom;
     let widths: Vec<Pixels> = view.widths.iter().map(|w| px(w * scale)).collect();
     let total_w = widths.iter().fold(px(0.), |a, w| a + *w);
     let rows = sheet.rows.len();
     let digits = rows.to_string().len();
-    let num_w = px(8. * digits as f32 + 16.);
+    let num_w = px((8. * digits as f32 + 16.) * zoom);
     let offset = scroll.offset();
     let (off_x, off_y) = ((-offset.x).max(px(0.)), (-offset.y).max(px(0.)));
     let viewport = scroll.bounds().size.height;
     let (first, visible) = (
-        ((off_y / CELL_H).floor().max(0.) as usize).min(rows),
+        ((off_y / cell_h).floor().max(0.) as usize).min(rows),
         if viewport > px(0.) {
-            (viewport / CELL_H).ceil() as usize + 2
+            (viewport / cell_h).ceil() as usize + 2
         } else {
             40
         },
     );
     let last = (first + visible).min(rows);
-    let row_y = |r: usize| CELL_H * r as f32;
+    let row_y = |r: usize| cell_h * r as f32;
     let hairline = |d: gpui::Div| d.border_color(theme::line());
 
     let letters = div()
@@ -558,7 +597,7 @@ pub(super) fn sheet_grid(
         }));
     let header = hairline(
         div()
-            .h(CELL_H)
+            .h(cell_h)
             .flex_none()
             .flex()
             .bg(theme::wash())
@@ -584,7 +623,7 @@ pub(super) fn sheet_grid(
         .children((first..last).map(|r| {
             hairline(
                 div()
-                    .h(CELL_H)
+                    .h(cell_h)
                     .flex_none()
                     .flex()
                     .items_center()
@@ -614,7 +653,7 @@ pub(super) fn sheet_grid(
         .flex_col()
         .children(sheet.rows[first..last].iter().map(|row| {
             div()
-                .h(CELL_H)
+                .h(cell_h)
                 .flex()
                 .flex_none()
                 .children(widths.iter().enumerate().map(|(c, w)| {
@@ -671,7 +710,7 @@ pub(super) fn sheet_grid(
             .border_1()
             .overflow_hidden()
             .ui_font()
-            .text_size(if large { theme::FS_13 } else { theme::FS_12 })
+            .text_size(if large { theme::FS_13 } else { theme::FS_12 } * zoom)
             .text_color(theme::text()),
     )
     .child(header)
@@ -721,8 +760,20 @@ fn slide_card(
     large: bool,
     scroll: &gpui::ScrollHandle,
 ) -> AnyElement {
+    slide_card_at(slide, size, large, 1., scroll)
+}
+
+/// [`slide_card`] with its text scaled by `zoom` (Quick Look's Ctrl+wheel); the card keeps its
+/// size and scrolls when the text no longer fits.
+fn slide_card_at(
+    slide: Option<&Slide>,
+    size: Option<gpui::Size<Pixels>>,
+    large: bool,
+    zoom: f32,
+    scroll: &gpui::ScrollHandle,
+) -> AnyElement {
     let (title_size, line_size) = if large {
-        (theme::FS_24, theme::FS_15)
+        (theme::FS_24 * zoom, theme::FS_15 * zoom)
     } else {
         (theme::FS_13, theme::FS_11)
     };

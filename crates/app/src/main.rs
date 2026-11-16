@@ -57,6 +57,7 @@ mod op_center;
 mod op_queue;
 mod palette;
 mod prefs;
+mod quicklook;
 mod recycle_bin;
 mod remote_shell;
 mod saved_workspaces;
@@ -487,6 +488,7 @@ fn app_main(mut args: Args) {
         if bench.is_none() {
             follow_drive_removals(cx);
             teracopy::detect_in_background();
+            quicklook::detect_in_background();
         }
         if resident && bench.is_none() {
             install_tray(cx, &services, &store);

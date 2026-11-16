@@ -38,6 +38,8 @@ mod motion;
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
+#[path = "tests_quick_look.rs"]
+mod quick_look;
 #[path = "tests_remote.rs"]
 mod remote;
 #[path = "tests_tabs.rs"]
@@ -117,6 +119,8 @@ struct FakeShell {
     fail_delete: Mutex<Vec<(PathBuf, FailReason, Vec<crate::shell::Holder>)>>,
     /// Paths whose drive has no Recycle Bin.
     no_bin: Mutex<Vec<PathBuf>>,
+    /// QuickLook runs (exe, item).
+    quicklook_runs: Mutex<Vec<(PathBuf, PathBuf)>>,
 }
 
 impl FakeShell {
@@ -589,6 +593,17 @@ impl Shell for FakeShell {
 
     fn decode_ansi(&self, bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "run_quicklook called on the UI thread"
+        );
+        self.quicklook_runs
+            .lock()
+            .push((exe.to_path_buf(), item.to_path_buf()));
+        Ok(())
     }
 
     /// Every fake PDF has 5 pages; the page is a gray image fitting the box.

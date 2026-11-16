@@ -40,9 +40,9 @@ use std::rc::Rc;
 
 use arke_core::exif::PhotoInfo;
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, Pixels, Point, RenderImage, ScrollEvent, SharedString, Window,
-    anchored, canvas, deferred, div, img, point, prelude::*, px,
+    AnyElement, Bounds, ClickEvent, Context, DispatchPhase, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, RenderImage, ScrollEvent, SharedString,
+    Window, anchored, canvas, deferred, div, img, point, prelude::*, px,
 };
 use rust_i18n::t;
 
@@ -490,6 +490,12 @@ impl Explorer {
     /// would contradict the status line. Quick Look follows the cursor regardless, since Space on
     /// the cursor item asks for it explicitly.
     fn preview_target(&self) -> Option<(PathBuf, Entry)> {
+        self.item_target(self.quick_look)
+    }
+
+    /// [`preview_target`](Self::preview_target); `follow_cursor` takes the cursor item even when
+    /// it isn't selected (Quick Look).
+    fn item_target(&self, follow_cursor: bool) -> Option<(PathBuf, Entry)> {
         if self.search_mode {
             // Search results are single-select: the cursor is the selection.
             let hit = self.search_hit(Some(self.current_cursor()?))?;
@@ -500,8 +506,8 @@ impl Explorer {
         let view = self.view()?;
         let at_cursor = self.current_cursor().and_then(|ix| view.get(ix));
         let entry = match at_cursor {
-            Some(entry) if self.quick_look || self.selection.contains(&entry.name) => entry,
-            _ if self.quick_look || self.selection.len() != 1 => return None,
+            Some(entry) if follow_cursor || self.selection.contains(&entry.name) => entry,
+            _ if follow_cursor || self.selection.len() != 1 => return None,
             _ => {
                 let name = self.selection.names().next()?;
                 view.iter().find(|e| e.name == *name)?
@@ -765,6 +771,39 @@ impl Explorer {
         }
     }
 
+    /// Space: the user's own QuickLook app when that setting is on and it's installed (it toggles
+    /// its preview itself, so Space again closes it), otherwise Arke's Quick Look.
+    pub(super) fn space_preview(&mut self, cx: &mut Context<Self>) {
+        let exe = crate::settings::SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .space_quicklook
+            .then(crate::quicklook::found)
+            .flatten();
+        // Servers (SFTP, WebDAV) are Arke's own; QuickLook can't read them.
+        let item = exe
+            .filter(|_| !self.quick_look)
+            .and_then(|_| self.item_target(true))
+            .filter(|(path, _)| !arke_core::remote::is_remote(path));
+        let (Some(exe), Some((item, _))) = (exe, item) else {
+            self.toggle_quick_look(cx);
+            return;
+        };
+        let exe = exe.to_path_buf();
+        let shell = Arc::clone(&self.services.shell);
+        let tx = self.events_tx.clone();
+        spawn_thread("quicklook", move || {
+            if let Err(e) = shell.run_quicklook(&exe, &item) {
+                log::warn!("QuickLook did not start: {e}");
+                let _ = tx.send(AppEvent::Notice(Err(t!(
+                    "error.quicklook_failed",
+                    error = e
+                )
+                .into_owned())));
+            }
+        });
+    }
+
     /// Space: toggle Quick Look. Closing fades the card out; the item (and zoom) stay until the
     /// fade is over so the ghost doesn't change under it.
     pub(super) fn toggle_quick_look(&mut self, cx: &mut Context<Self>) {
@@ -796,6 +835,8 @@ impl Explorer {
     /// preview pane shows it.
     fn after_quick_look(&mut self, cx: &mut Context<Self>) {
         self.reset_zoom(cx);
+        self.zoom.doc = DOC_ZOOM_NORMAL;
+        self.zoom.wheel = 0.;
         if !self.preview_pane {
             self.set_preview(None, cx);
         }
@@ -815,7 +856,7 @@ impl Explorer {
     fn pdf_target(&self) -> (u32, u32) {
         let scale = self.screen.1;
         let area = if self.quick_look {
-            self.look_page_area()
+            self.look_pdf_box(scale)
         } else {
             let w = self.pane_frame_w();
             gpui::size(w, self.pdf_frame_h(w))
@@ -1393,8 +1434,22 @@ impl Explorer {
         entries: &Arc<Vec<Entry>>,
         total: usize,
         scroll: &gpui::ScrollHandle,
+        cx: Option<&mut Context<Self>>,
+    ) -> AnyElement {
+        Self::folder_list_at(dir, entries, total, None, scroll, cx)
+    }
+
+    /// [`folder_list`](Self::folder_list); `zoom` is Quick Look's text scale (`None` in the
+    /// pane, which keeps the text size around it).
+    fn folder_list_at(
+        dir: &Path,
+        entries: &Arc<Vec<Entry>>,
+        total: usize,
+        zoom: Option<f32>,
+        scroll: &gpui::ScrollHandle,
         mut cx: Option<&mut Context<Self>>,
     ) -> AnyElement {
+        let scale = zoom.unwrap_or(1.);
         if entries.is_empty() {
             return div()
                 .size_full()
@@ -1412,7 +1467,7 @@ impl Explorer {
             .map(|(ix, entry)| {
                 let row = div()
                     .id(("preview-row", ix))
-                    .h(theme::S_24 + theme::S_4)
+                    .h((theme::S_24 + theme::S_4) * scale)
                     .px(theme::S_8)
                     .flex()
                     .flex_none()
@@ -1420,7 +1475,7 @@ impl Explorer {
                     .gap(theme::S_8)
                     .rounded(theme::R_8)
                     .when(entry.is_hidden(), |d| d.text_color(theme::text_subtle()))
-                    .child(kind_icon(file_kind(entry), theme::ICON))
+                    .child(kind_icon(file_kind(entry), theme::ICON * scale))
                     .child(
                         div()
                             .flex_1()
@@ -1456,6 +1511,7 @@ impl Explorer {
             .flex_col()
             .overflow_y_scroll()
             .track_scroll(scroll)
+            .when_some(zoom, |d, zoom| d.text_size(theme::FS_14 * zoom))
             .children(rows)
             .when(more > 0, |d| {
                 d.child(
@@ -1478,6 +1534,17 @@ impl Explorer {
 
     /// Archive contents: dimmed parent folder, name, size.
     fn archive_list(listing: &ArchiveListing, scroll: &gpui::ScrollHandle) -> AnyElement {
+        Self::archive_list_at(listing, None, scroll)
+    }
+
+    /// [`archive_list`](Self::archive_list); `zoom` is Quick Look's text scale (`None` in the
+    /// pane, which keeps the text size around it).
+    fn archive_list_at(
+        listing: &ArchiveListing,
+        zoom: Option<f32>,
+        scroll: &gpui::ScrollHandle,
+    ) -> AnyElement {
+        let scale = zoom.unwrap_or(1.);
         let rows: Vec<AnyElement> = listing
             .items
             .iter()
@@ -1500,13 +1567,13 @@ impl Explorer {
                 };
                 div()
                     .id(("archive-row", ix))
-                    .h(theme::S_24 + theme::S_4)
+                    .h((theme::S_24 + theme::S_4) * scale)
                     .px(theme::S_8)
                     .flex()
                     .flex_none()
                     .items_center()
                     .gap(theme::S_8)
-                    .child(kind_icon(kind, theme::ICON))
+                    .child(kind_icon(kind, theme::ICON * scale))
                     .child(
                         div()
                             .flex_1()
@@ -1529,7 +1596,7 @@ impl Explorer {
                         d.child(
                             div()
                                 .flex_none()
-                                .text_size(theme::FS_12)
+                                .text_size(theme::FS_12 * scale)
                                 .text_color(theme::text_subtle())
                                 .child(format_size(item.size)),
                         )
@@ -1546,6 +1613,7 @@ impl Explorer {
             .flex_col()
             .overflow_y_scroll()
             .track_scroll(scroll)
+            .when_some(zoom, |d, zoom| d.text_size(theme::FS_14 * zoom))
             .children(rows)
             .when(more > 0 || !listing.complete, |d| {
                 d.child(
@@ -1924,8 +1992,8 @@ impl Explorer {
             .items_center()
             .justify_center()
             .bg(theme::scrim_strong())
-            // The wheel belongs to Quick Look (images zoom with it); the list must not scroll
-            // underneath.
+            // The wheel belongs to Quick Look (it scrolls documents and zooms images); the list
+            // must not scroll underneath.
             .on_scroll(|_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_quick_look(cx)))
             .child(crate::motion::appear(
@@ -1954,6 +2022,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
+            .debug_selector(|| "ql-stage".into())
             .flex_1()
             .min_h_0()
             .relative()
@@ -1961,6 +2030,105 @@ impl Explorer {
             .border_color(theme::line())
             .bg(look_backdrop(preview))
             .child(self.quick_look_body(preview, window, cx))
+            .children(self.doc_zoom_chip(preview, cx))
+            .child(Self::look_wheel_capture(cx))
+    }
+
+    /// Document zoom chip ("150%"), shown only while zoomed; a click goes back to 100%. Images
+    /// have their own.
+    fn doc_zoom_chip(&self, preview: &Preview, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.zoom.doc == DOC_ZOOM_NORMAL
+            || matches!(
+                preview.body,
+                PreviewBody::Image { .. } | PreviewBody::Loading(_) | PreviewBody::Nothing
+            )
+        {
+            return None;
+        }
+        let tip = SharedString::from(t!("preview.doc_zoom_tip").into_owned());
+        Some(floating(
+            div().id("ql-doc-zoom-pill").child(
+                div()
+                    .id("ql-doc-zoom")
+                    .debug_selector(|| "ql-doc-zoom".into())
+                    .a11y_button(tip.clone())
+                    .h(theme::H_CTL)
+                    .px(theme::S_12)
+                    .flex()
+                    .items_center()
+                    .rounded(theme::R_FULL)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
+                    .tooltip(super::tooltip(tip))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.reset_doc_zoom(cx);
+                    }))
+                    .child(format!("{:.0}%", self.doc_zoom() * 100.)),
+            ),
+            true,
+        ))
+    }
+
+    /// Quick Look's PDF page on the stage, with the page control. Zoomed past fitting, the page
+    /// sits in a scroll view: the wheel scrolls it, then turns the page.
+    fn pdf_look(&self, view: &PdfView, cx: &mut Context<Self>) -> AnyElement {
+        let controls = (view.render.pages > 1).then(|| Self::page_controls(view, cx));
+        if self.doc_zoom() <= 1. {
+            return div()
+                .size_full()
+                .pt(PDF_PAD)
+                .px(PDF_PAD)
+                .pb(PDF_PAD_BOTTOM)
+                .child(Self::pdf_page_view(
+                    &view.render,
+                    self.look_pdf_area(),
+                    true,
+                ))
+                .children(controls)
+                .into_any_element();
+        }
+        let page = fit_rect(
+            Bounds::new(Point::default(), self.look_pdf_area()),
+            view.render.width,
+            view.render.height,
+        )
+        .size;
+        let sheet = div()
+            .w(page.width)
+            .h(page.height)
+            .flex_none()
+            .rounded(theme::R_4)
+            .overflow_hidden()
+            .shadow(theme::elev_float())
+            .child(img(Arc::clone(&view.render.image)).size_full());
+        // Sized explicitly: centered while narrower than the stage, scrolling sideways when wider.
+        let width = (page.width + PDF_PAD * 2.).max(self.look_area().width);
+        let scroller = div()
+            .id("ql-pdf-scroll")
+            .size_full()
+            .overflow_scroll()
+            .track_scroll(&self.look_scroll)
+            .child(
+                div()
+                    .w(width)
+                    .flex()
+                    .justify_center()
+                    .pt(PDF_PAD)
+                    .px(PDF_PAD)
+                    .pb(PDF_PAD_BOTTOM)
+                    .child(sheet),
+            )
+            .into_any_element();
+        div()
+            .relative()
+            .size_full()
+            .child(Self::with_preview_scrollbar(
+                scroller,
+                &self.look_scroll,
+                &self.look_scrollbar,
+            ))
+            .children(controls)
+            .into_any_element()
     }
 
     /// Floating page control over a multi-page PDF: previous, "Page 2 of 14", next.
@@ -2571,9 +2739,15 @@ const PDF_PAD: Pixels = theme::S_24;
 const PDF_PAD_BOTTOM: Pixels = px(56.);
 
 /// Quick Look zoom: fit to window by default; the wheel zooms around the pointer, a click toggles
-/// actual size (one image pixel per screen pixel), and a drag pans.
-#[derive(Default)]
+/// actual size (one image pixel per screen pixel), and a drag pans. Everything else (text,
+/// documents, listings, PDF pages) zooms in steps with Ctrl+wheel, kept from item to item until
+/// Quick Look closes.
 pub(crate) struct Zoom {
+    /// Step in [`DOC_ZOOMS`] for everything but images
+    doc: usize,
+    /// Wheel notches not yet turned into a document zoom step or a page turn (touchpads send
+    /// fractions)
+    wheel: f32,
     on: bool,
     /// Displayed size relative to actual size (1.0 = 100%) while `on`.
     scale: f32,
@@ -2588,6 +2762,29 @@ pub(crate) struct Zoom {
     /// Image area bounds, known after paint
     view: Rc<Cell<Bounds<Pixels>>>,
 }
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            doc: DOC_ZOOM_NORMAL,
+            wheel: 0.,
+            on: false,
+            scale: 0.,
+            full: None,
+            generation: 0,
+            pan: Point::default(),
+            press: None,
+            view: Rc::default(),
+        }
+    }
+}
+
+/// Quick Look's document zoom steps (text size, or PDF page size relative to fitting the stage).
+const DOC_ZOOMS: [f32; 10] = [0.75, 0.9, 1., 1.1, 1.25, 1.5, 1.75, 2., 2.5, 3.];
+const DOC_ZOOM_NORMAL: usize = 2;
+/// Longest side (device pixels) a zoomed PDF page is rendered at; past it the page is scaled up
+/// (a full-screen page at 300 % would otherwise be a 100 MB bitmap).
+const PDF_ZOOM_SIDE: f32 = 4096.;
 
 /// Preview pane frame ratio: pane width minus 32 padding, to height
 const PANE_IMAGE_RATIO: f32 = 268. / 200.;
@@ -2832,6 +3029,204 @@ impl Explorer {
         )
     }
 
+    /// Box a PDF page is drawn in at the document zoom: the page area scaled.
+    fn look_pdf_area(&self) -> gpui::Size<Pixels> {
+        let area = self.look_page_area();
+        let zoom = self.doc_zoom();
+        gpui::size(area.width * zoom, area.height * zoom)
+    }
+
+    /// Box a Quick Look PDF page is rendered for (logical pixels): the zoomed page area, no
+    /// larger than [`PDF_ZOOM_SIDE`] device pixels on its long side (`scale` is the window's).
+    fn look_pdf_box(&self, scale: f32) -> gpui::Size<Pixels> {
+        let area = self.look_pdf_area();
+        let long = f32::from(area.width.max(area.height)) * scale;
+        let shrink = (PDF_ZOOM_SIDE / long.max(1.)).min(1.);
+        gpui::size(area.width * shrink, area.height * shrink)
+    }
+
+    /// Quick Look's document zoom (1.0 = normal).
+    pub(crate) fn doc_zoom(&self) -> f32 {
+        DOC_ZOOMS[self.zoom.doc.min(DOC_ZOOMS.len() - 1)]
+    }
+
+    /// Ctrl+wheel in Quick Look: `notches` (positive = in) zoom an image around `at`, or step the
+    /// document zoom once per whole notch.
+    fn look_zoom_wheel(
+        &mut self,
+        at: Point<Pixels>,
+        notches: f32,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            self.preview.as_ref().map(|p| &p.body),
+            Some(PreviewBody::Image { .. })
+        ) {
+            self.wheel_zoom(at, notches, scale, cx);
+            return;
+        }
+        self.zoom.wheel += notches;
+        let whole = self.zoom.wheel.trunc();
+        if whole != 0. {
+            self.zoom.wheel -= whole;
+            // A wheel never sends anywhere near i32's range; the steps are clamped anyway.
+            self.step_doc_zoom(whole.clamp(-16., 16.) as i32, cx);
+        }
+    }
+
+    /// Moves the document zoom `steps` steps (clamped to [`DOC_ZOOMS`]).
+    fn step_doc_zoom(&mut self, steps: i32, cx: &mut Context<Self>) {
+        let last = DOC_ZOOMS.len() - 1;
+        let next = self
+            .zoom
+            .doc
+            .saturating_add_signed(steps as isize)
+            .min(last);
+        if next != self.zoom.doc {
+            self.zoom.doc = next;
+            cx.notify();
+        }
+    }
+
+    /// Ctrl+= / Ctrl+- (`Some(±1)`) and Ctrl+0 (`None`) while Quick Look is open; otherwise the
+    /// keys pass on.
+    pub(super) fn look_zoom_key(
+        &mut self,
+        steps: Option<i32>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.quick_look {
+            cx.propagate();
+            return;
+        }
+        let image = matches!(
+            self.preview.as_ref().map(|p| &p.body),
+            Some(PreviewBody::Image { .. })
+        );
+        match steps {
+            Some(steps) if image => {
+                let center = self.zoom.view.get().center();
+                self.wheel_zoom(center, steps as f32, window.scale_factor(), cx);
+            }
+            Some(steps) => self.step_doc_zoom(steps, cx),
+            None if image => {
+                self.zoom.on = false;
+                cx.notify();
+            }
+            None => self.reset_doc_zoom(cx),
+        }
+    }
+
+    /// Document zoom back to 100%.
+    fn reset_doc_zoom(&mut self, cx: &mut Context<Self>) {
+        if self.zoom.doc != DOC_ZOOM_NORMAL {
+            self.zoom.doc = DOC_ZOOM_NORMAL;
+            cx.notify();
+        }
+    }
+
+    /// Plain wheel over a PDF or slides in Quick Look: scrolls the page while it can (zoomed in),
+    /// then turns to the next or previous one, landing on its top or bottom so reading flows on.
+    /// Returns whether the wheel was used for a page turn.
+    fn look_wheel_pages(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        let (pages, scrolls) = match self.preview.as_ref().map(|p| &p.body) {
+            // The fitted page isn't in a scroll view; only a zoomed one is.
+            Some(PreviewBody::Pdf(view)) => (view.render.pages, self.doc_zoom() > 1.),
+            Some(PreviewBody::Slides(view)) => (
+                u32::try_from(view.deck.slides.len()).unwrap_or(u32::MAX),
+                true,
+            ),
+            _ => return false,
+        };
+        if pages < 2 || delta.y == px(0.) {
+            return false;
+        }
+        let down = delta.y < px(0.);
+        if scrolls {
+            let (offset, max) = (self.look_scroll.offset().y, self.look_scroll.max_offset().y);
+            let at_edge = if down {
+                offset <= -max + px(0.5)
+            } else {
+                offset >= px(-0.5)
+            };
+            if !at_edge {
+                self.zoom.wheel = 0.;
+                return false;
+            }
+        }
+        let line = px(20.);
+        self.zoom.wheel += delta.y / (line * 3.);
+        if self.zoom.wheel.abs() < 1. {
+            return true;
+        }
+        self.zoom.wheel = 0.;
+        let turn = if down { PageTurn::Next } else { PageTurn::Prev };
+        let x = self.look_scroll.offset().x;
+        let before = self.look_page();
+        self.turn_pdf_page(turn, cx);
+        // At the first or last page nothing turns and the page stays where it is.
+        if self.look_page() != before {
+            self.look_scroll.set_offset(point(x, px(0.)));
+            if !down {
+                // Going back lands at the page's end.
+                self.look_scroll.scroll_to_bottom();
+            }
+        }
+        true
+    }
+
+    /// The PDF page or slide Quick Look shows (or is about to).
+    fn look_page(&self) -> Option<usize> {
+        match self.preview.as_ref().map(|p| &p.body) {
+            Some(PreviewBody::Pdf(view)) => {
+                Some(view.pending.map_or(view.page, |(page, _)| page) as usize)
+            }
+            Some(PreviewBody::Slides(view)) => Some(view.page),
+            _ => None,
+        }
+    }
+
+    /// Invisible layer over Quick Look's stage taking Ctrl+wheel (zoom) and, on PDFs and slides,
+    /// the wheel at a page's end (page turns) before the content scrolls (capture phase).
+    fn look_wheel_capture(cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity();
+        canvas(
+            |bounds, _, _| bounds,
+            move |_, bounds, window, _| {
+                window.on_mouse_event(move |e: &ScrollEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture || !bounds.contains(&e.position) {
+                        return;
+                    }
+                    let line = px(20.);
+                    let delta = e.delta.pixel_delta(line);
+                    let scale = window.scale_factor();
+                    let used = this.update(cx, |this, cx| {
+                        if !this.quick_look {
+                            return false;
+                        }
+                        if e.modifiers.control {
+                            this.look_zoom_wheel(e.position, delta.y / (line * 3.), scale, cx);
+                            return true;
+                        }
+                        this.look_wheel_pages(delta, cx)
+                    });
+                    if used {
+                        cx.stop_propagation();
+                    }
+                });
+            },
+        )
+        // Pinned to the corner: without insets an absolute box sits where it would flow, below
+        // the stage's content.
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    }
+
     /// Quick Look body: images fill the stage and zoom with the wheel, toggle actual size on click
     /// and pan by drag; PDF pages sit on the stage with a page control; text reads like an editor;
     /// items without a preview get a large icon and an Open button.
@@ -2854,6 +3249,7 @@ impl Explorer {
             .into_any_element()
         };
         let kind = file_kind(&preview.entry);
+        let zoom = self.doc_zoom();
         let (width, height, image) = match &preview.body {
             PreviewBody::Image {
                 image,
@@ -2861,25 +3257,10 @@ impl Explorer {
                 height,
                 ..
             } => (*width, *height, image),
-            PreviewBody::Pdf(view) => {
-                return div()
-                    .size_full()
-                    .pt(PDF_PAD)
-                    .px(PDF_PAD)
-                    .pb(PDF_PAD_BOTTOM)
-                    .child(Self::pdf_page_view(
-                        &view.render,
-                        self.look_page_area(),
-                        true,
-                    ))
-                    .when(view.render.pages > 1, |d| {
-                        d.child(Self::page_controls(view, cx))
-                    })
-                    .into_any_element();
-            }
+            PreviewBody::Pdf(view) => return self.pdf_look(view, cx),
             PreviewBody::Text { lines, .. } => {
                 return Self::with_preview_scrollbar(
-                    code_view(lines, true, &self.look_scroll),
+                    code_view_at(lines, Some(zoom), &self.look_scroll),
                     &self.look_scroll,
                     &self.look_scrollbar,
                 );
@@ -2897,12 +3278,13 @@ impl Explorer {
                     .child(
                         div()
                             .w_full()
-                            .max_w(theme::READ_W)
+                            // Zoomed text keeps as many words per line, up to the stage's width.
+                            .max_w(theme::READ_W * zoom)
                             .px(theme::S_32)
                             .py(theme::S_24)
                             .map(theme::preview_sheet)
                             .rounded(theme::R_12)
-                            .child(super::markdown_view::markdown(text, true)),
+                            .child(super::markdown_view::markdown_at(text, true, zoom)),
                     )
                     .into_any_element();
                 return Self::with_preview_scrollbar(page, &self.look_scroll, &self.look_scrollbar);
@@ -2938,7 +3320,7 @@ impl Explorer {
             }
             PreviewBody::Document(doc) => {
                 return Self::with_preview_scrollbar(
-                    office::document_body(doc, true, &self.look_scroll),
+                    office::document_at(doc, Some(zoom), &self.look_scroll),
                     &self.look_scroll,
                     &self.look_scrollbar,
                 );
@@ -2957,7 +3339,20 @@ impl Explorer {
                 return div().size_full().into_any_element();
             }
             PreviewBody::Loading(_) | PreviewBody::Folder { .. } | PreviewBody::Archive(_) => {
-                let body = Self::preview_body(preview, &self.look_scroll);
+                let body = match &preview.body {
+                    PreviewBody::Archive(listing) => {
+                        Self::archive_list_at(listing, Some(zoom), &self.look_scroll)
+                    }
+                    PreviewBody::Folder { entries, total } => Self::folder_list_at(
+                        &preview.path,
+                        entries,
+                        *total,
+                        Some(zoom),
+                        &self.look_scroll,
+                        None,
+                    ),
+                    _ => Self::preview_body(preview, &self.look_scroll),
+                };
                 let body = if Self::scrolls(&preview.body) {
                     Self::with_preview_scrollbar(body, &self.look_scroll, &self.look_scrollbar)
                 } else {
@@ -3296,8 +3691,20 @@ mod zoom_tests {
 /// Text and code: line numbers on the left; long lines wrap and the number stays aligned to the
 /// first row. `large` (Quick Look) fills the stage like an editor: a ruled gutter, roomier lines.
 fn code_view(lines: &Arc<Vec<CodeLine>>, large: bool, scroll: &gpui::ScrollHandle) -> AnyElement {
+    code_view_at(lines, large.then_some(1.), scroll)
+}
+
+/// [`code_view`]; `zoom` is Quick Look's text scale (`None` in the pane).
+fn code_view_at(
+    lines: &Arc<Vec<CodeLine>>,
+    zoom: Option<f32>,
+    scroll: &gpui::ScrollHandle,
+) -> AnyElement {
+    let large = zoom.is_some();
+    let zoom = zoom.unwrap_or(1.);
     let digits = lines.len().max(1).to_string().len();
-    let numbers = px(8. * digits as f32 + 8.);
+    // Line numbers take about 8 px a digit at normal size.
+    let numbers = px((8. * digits as f32 + 8.) * zoom);
     let rows: Vec<AnyElement> = lines
         .iter()
         .enumerate()
@@ -3356,7 +3763,7 @@ fn code_view(lines: &Arc<Vec<CodeLine>>, large: bool, scroll: &gpui::ScrollHandl
         .font_family("Cascadia Mono")
         .when(large, |d| {
             d.py(theme::S_12)
-                .text_size(theme::FS_13)
+                .text_size(theme::FS_13 * zoom)
                 .line_height(gpui::relative(1.6))
         })
         .when(!large, |d| {

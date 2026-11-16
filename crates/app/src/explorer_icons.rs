@@ -290,7 +290,8 @@ impl Explorer {
 
     /// Ctrl+wheel over the list. Returns whether the event was used (so the list doesn't scroll).
     fn on_zoom_wheel(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) -> bool {
-        if self.search_mode || self.view_mode == ViewMode::Columns {
+        // Quick Look covers the list and zooms its own preview.
+        if self.quick_look || self.search_mode || self.view_mode == ViewMode::Columns {
             return false;
         }
         let notches = match event.delta {

@@ -1694,6 +1694,15 @@ impl Explorer {
             .on_action(cx.listener(Self::open_location))
             .on_action(cx.listener(Self::move_left))
             .on_action(cx.listener(Self::move_right))
+            .on_action(cx.listener(|this, _: &super::LookZoomIn, window, cx| {
+                this.look_zoom_key(Some(1), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &super::LookZoomOut, window, cx| {
+                this.look_zoom_key(Some(-1), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &super::LookZoomReset, window, cx| {
+                this.look_zoom_key(None, window, cx);
+            }))
             .child(body)
             .children(self.render_marquee(cx))
             .child(Self::render_zoom_capture(cx))

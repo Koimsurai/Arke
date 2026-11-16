@@ -1404,6 +1404,14 @@ settings.preview_desc:
   en: "Shows the selected item on the right; Space for quick look"
   zh-TW: "在右側預覽選取的項目；空白鍵快速預覽"
   zh-CN: "在右侧预览选中的项目；按空格键快速预览"
+settings.space_quicklook:
+  en: Space opens QuickLook
+  zh-TW: 空白鍵開啟 QuickLook
+  zh-CN: 空格键打开 QuickLook
+settings.space_quicklook_tip:
+  en: "Space opens QuickLook (found at %{path}) instead of Arke's quick look"
+  zh-TW: "空白鍵改用 QuickLook（位於 %{path}）預覽，而不是 Arke 的快速預覽"
+  zh-CN: "空格键改用 QuickLook（位于 %{path}）预览，而不是 Arke 的快速预览"
 settings.startup:
   en: Startup
   zh-TW: 啟動
@@ -1740,6 +1748,10 @@ error.terminal_failed:
   en: "Couldn't open a terminal: %{error}"
   zh-TW: "無法開啟終端機：%{error}"
   zh-CN: "无法打开终端：%{error}"
+error.quicklook_failed:
+  en: "Couldn't start QuickLook: %{error}"
+  zh-TW: "無法啟動 QuickLook：%{error}"
+  zh-CN: "无法启动 QuickLook：%{error}"
 settings.folder_sizes:
   en: "Calculate folder sizes"
   zh-TW: "計算資料夾大小"
@@ -4121,6 +4133,10 @@ preview.zoom_tip:
   en: Switch between fit and actual size (the wheel zooms too)
   zh-TW: 在符合視窗與實際大小間切換（也可用滾輪縮放）
   zh-CN: 在适应窗口与实际大小间切换（也可用滚轮缩放）
+preview.doc_zoom_tip:
+  en: Back to 100% (Ctrl+wheel or Ctrl+= and Ctrl+- zoom)
+  zh-TW: 回到 100%（以 Ctrl+滾輪或 Ctrl+= 與 Ctrl+- 縮放）
+  zh-CN: 回到 100%（以 Ctrl+滚轮或 Ctrl+= 与 Ctrl+- 缩放）
 preview.pages_n_one:
   en: "1 page"
   zh-TW: "%{count} 頁"

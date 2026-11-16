@@ -1189,9 +1189,7 @@ impl Workspace {
                 Icon::Preview,
                 t!("settings.preview"),
                 Some(t!("settings.preview_desc")),
-                switch("preview", s.preview_pane, |st| {
-                    st.preview_pane = !st.preview_pane;
-                }),
+                preview_controls(s),
             ),
             card(
                 Icon::ArrowLeft,
@@ -1588,6 +1586,51 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
             t!("settings.clear_thumbnail_cache", size = size),
             cx.listener(|_, _: &ClickEvent, _, cx| Workspace::clear_thumbnail_cache(cx)),
         ))
+        .child(toggle)
+        .into_any_element()
+}
+
+/// The preview pane switch, and when QuickLook (QL-Win) is installed, a chip beside it that
+/// hands Space to QuickLook (kept in this row rather than a row of its own).
+fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
+    let toggle = switch("preview", s.preview_pane, |st| {
+        st.preview_pane = !st.preview_pane;
+    });
+    let Some(exe) = crate::quicklook::found() else {
+        return toggle;
+    };
+    let on = s.space_quicklook;
+    let tip =
+        SharedString::from(t!("settings.space_quicklook_tip", path = exe.display()).into_owned());
+    let chip = div()
+        .id("space-quicklook")
+        .a11y_toggle(tip.clone(), on)
+        .h(theme::S_24)
+        .px(theme::S_12)
+        .flex()
+        .items_center()
+        .rounded(theme::R_FULL)
+        .border_1()
+        .cursor_pointer()
+        .text_size(theme::FS_12)
+        .tooltip(super::tooltip(tip))
+        .when(on, |d| {
+            d.bg(theme::signal_wash())
+                .border_color(theme::signal_line())
+                .text_color(theme::text())
+        })
+        .when(!on, |d| {
+            d.border_color(theme::line_strong())
+                .text_color(theme::text_subtle())
+                .hover(|s| s.bg(theme::wash()))
+        })
+        .child(t!("settings.space_quicklook").into_owned())
+        .on_click(|_, _, cx| set(cx, |st| st.space_quicklook = !st.space_quicklook));
+    div()
+        .flex()
+        .items_center()
+        .gap(theme::S_12)
+        .child(chip)
         .child(toggle)
         .into_any_element()
 }

@@ -161,6 +161,10 @@ actions!(
         FocusOtherPane,
         /// Ctrl+Shift+A: put the selection on the shelf.
         AddToShelf,
+        /// Ctrl+= / Ctrl+- / Ctrl+0 in Quick Look: zoom the preview in, out, back to normal.
+        LookZoomIn,
+        LookZoomOut,
+        LookZoomReset,
     ]
 );
 
@@ -202,6 +206,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-m", MoveToPeer, list),
         KeyBinding::new("tab", FocusOtherPane, list),
         KeyBinding::new("shift-tab", FocusOtherPane, list),
+        // Only while Quick Look is open; otherwise they pass on.
+        KeyBinding::new("ctrl-=", LookZoomIn, list),
+        KeyBinding::new("ctrl--", LookZoomOut, list),
+        KeyBinding::new("ctrl-0", LookZoomReset, list),
         // Down in the filter box moves focus to the list.
         KeyBinding::new("down", SelectNext, filter),
         KeyBinding::new("alt-up", GoUp, root),
@@ -3017,7 +3025,7 @@ impl Explorer {
             return;
         }
         if text == " " && !self.typeahead.is_typing(Instant::now()) {
-            self.toggle_quick_look(cx);
+            self.space_preview(cx);
             cx.stop_propagation();
             return;
         }

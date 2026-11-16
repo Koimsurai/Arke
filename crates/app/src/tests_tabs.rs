@@ -1187,3 +1187,33 @@ fn a_page_over_a_folder_does_not_mark_the_folder_in_the_sidebar(cx: &mut TestApp
         );
     }
 }
+
+/// A page that opened its own tab (Settings) closes back to the tab it was opened from, not to
+/// whichever tab is next to it.
+#[gpui::test]
+fn closing_a_page_tab_returns_to_the_tab_it_came_from(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    for dir in [r"C:\a", r"C:\b"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+
+    // Settings opens right after a, before b.
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_settings_for_test(window, cx)));
+    assert_eq!(active(&ws, cx), 1);
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_settings_for_test(window, cx)));
+    assert_eq!(active(&ws, cx), 0, "back on a, not b");
+    assert_eq!(ws.update(cx, |ws, cx| ws.tab_titles_for_test(cx)).len(), 2);
+
+    // The tab it came from was closed meanwhile: the next tab shows, as before.
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_settings_for_test(window, cx)));
+    ws.update_in(cx, |ws, window, cx| ws.close_tab(0, window, cx));
+    let settings_tab = active(&ws, cx);
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_settings_for_test(window, cx)));
+    assert_eq!(ws.update(cx, |ws, cx| ws.tab_titles_for_test(cx)), ["b"]);
+    assert_eq!(active(&ws, cx), 0, "settings was tab {settings_tab}");
+}

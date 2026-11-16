@@ -317,6 +317,8 @@ pub(crate) struct Workspace {
     recycle_page: Option<recycle_page::RecyclePage>,
     home_page: Option<home_page::HomeView>,
     whats_new: Option<whats_new_page::WhatsNewView>,
+    /// The tab a page tab is being opened from, until the page takes it as its opener.
+    page_opener: Option<gpui::EntityId>,
     /// Window opened without a path: once settings load, switch to the last session if configured.
     start_default: bool,
     /// Dragging the divider between the panes.
@@ -612,6 +614,7 @@ impl Workspace {
             recycle_page: None,
             home_page: None,
             whats_new: None,
+            page_opener: None,
             start_default,
             resizing: false,
             dragging_tab: None,

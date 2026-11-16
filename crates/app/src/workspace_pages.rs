@@ -15,16 +15,21 @@ pub(super) struct Owner {
     path: Option<PathBuf>,
     /// The tab was opened just for this page, so closing the page closes the tab too.
     own_tab: bool,
+    /// For an own tab: the tab it was opened from, shown again when the page closes (like a
+    /// browser), instead of whichever tab happens to be next to it.
+    opener: Option<EntityId>,
 }
 
 impl Workspace {
     /// Makes the active tab the owner.
-    pub(super) fn owner_here(&self, own_tab: bool, cx: &App) -> Owner {
+    pub(super) fn owner_here(&mut self, own_tab: bool, cx: &App) -> Owner {
+        let opener = self.page_opener.take().filter(|_| own_tab);
         let view = self.active_view();
         Owner {
             view: view.entity_id(),
             path: view.read(cx).display_path().map(PathBuf::from),
             own_tab,
+            opener,
         }
     }
 
@@ -191,6 +196,7 @@ impl Workspace {
     pub(super) fn open_page_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.current_dir(cx);
         let at = self.active + 1;
+        self.page_opener = Some(self.active_view().entity_id());
         self.open_tab(path, at, true, window, cx);
     }
 
@@ -205,7 +211,17 @@ impl Workspace {
             && let Some(ix) = self.tab_of(owner)
             && self.tabs.len() > 1
         {
+            let opener = owner.opener.and_then(|view| {
+                self.tabs
+                    .iter()
+                    .position(|t| t.panes.iter().any(|p| p.view.entity_id() == view))
+            });
             self.close_tab(ix, window, cx);
+            if let Some(opener) = opener.map(|o| if o > ix { o - 1 } else { o })
+                && opener != self.active
+            {
+                self.activate(opener, window, cx);
+            }
         } else {
             self.focus_active(window, cx);
         }

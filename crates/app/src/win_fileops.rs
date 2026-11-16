@@ -115,6 +115,8 @@ mod recorder {
         /// Failed items (path when known, display name, reason), reported together when Windows
         /// shows no error UI.
         pub(super) failed: std::cell::RefCell<Vec<(Option<PathBuf>, String, HRESULT)>>,
+        /// For a delete: only these items count as done (see [`super::TopItems`]).
+        pub(super) top: Option<super::TopItems>,
     }
 
     /// One completed item.
@@ -328,7 +330,19 @@ mod recorder {
             hr: HRESULT,
             now: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
-            self.tick();
+            match &self.top {
+                Some(top) => {
+                    if super::finished(hr)
+                        && item
+                            .as_ref()
+                            .and_then(item_path)
+                            .is_some_and(|p| top.first_finish(&p))
+                    {
+                        self.tick();
+                    }
+                }
+                None => self.tick(),
+            }
             self.check(hr, item.as_ref());
             // When recycling, `now` is the item in the Recycle Bin; for permanent deletes it
             // is null and nothing is recorded.
@@ -378,6 +392,65 @@ mod recorder {
 }
 
 use recorder::{Done, Recorder};
+
+/// The items a delete was given. The engine also reports items inside them and reports failed
+/// items, and after "Delete permanently?" the same item again, so counting every report showed more
+/// items done than were selected. Only these count, each once.
+struct TopItems {
+    /// [`recycled_key`] of each item, plus its short (8.3) form, which the engine may report.
+    keys: std::collections::HashSet<(String, String)>,
+    counted: std::cell::RefCell<std::collections::HashSet<(String, String)>>,
+}
+
+impl TopItems {
+    fn new(paths: &[PathBuf], shorts: &[((String, String), PathBuf)]) -> Self {
+        let keys = paths
+            .iter()
+            .filter_map(|path| {
+                let plain = arke_core::path::unverbatim(path);
+                Some(recycled_key(plain.parent()?, plain.file_name()?))
+            })
+            .chain(shorts.iter().map(|(short, _)| short.clone()))
+            .collect();
+        Self {
+            keys,
+            counted: std::cell::RefCell::default(),
+        }
+    }
+
+    /// Whether `path` is one of the items, seen finished for the first time.
+    fn first_finish(&self, path: &Path) -> bool {
+        let plain = arke_core::path::unverbatim(path);
+        let (Some(folder), Some(name)) = (plain.parent(), plain.file_name()) else {
+            return false;
+        };
+        let name = name.to_string_lossy().to_lowercase();
+        // Cheap name check first: inside a folder deleted for good there can be many thousands.
+        if !self.keys.iter().any(|(_, n)| *n == name) {
+            return false;
+        }
+        let key = recycled_key(folder, std::ffi::OsStr::new(&name));
+        self.keys.contains(&key) && self.counted.borrow_mut().insert(key)
+    }
+}
+
+/// The engine finished the item. Success codes include a recycled folder's "don't process
+/// children"; skipped and retried items are not done.
+fn finished(hr: HRESULT) -> bool {
+    use windows::Win32::UI::Shell::{
+        COPYENGINE_S_NOT_HANDLED, COPYENGINE_S_PENDING, COPYENGINE_S_USER_IGNORED,
+        COPYENGINE_S_USER_RETRY,
+    };
+    (hr.is_ok()
+        && ![
+            COPYENGINE_S_USER_IGNORED,
+            COPYENGINE_S_USER_RETRY,
+            COPYENGINE_S_NOT_HANDLED,
+            COPYENGINE_S_PENDING,
+        ]
+        .contains(&hr))
+        || is_gone(hr)
+}
 
 /// Item already gone (e.g. a link target deleted earlier in the batch); treated as done.
 fn is_gone(hr: HRESULT) -> bool {
@@ -567,6 +640,7 @@ fn perform_recorded(
         done: std::cell::RefCell::new(Vec::new()),
         progress,
         failed: std::cell::RefCell::new(Vec::new()),
+        top: recycled.map(|paths| TopItems::new(paths, &shorts)),
     }
     .into();
     let mut failed = Vec::new();
@@ -760,6 +834,11 @@ pub(crate) fn undo_tracked(
         done: std::cell::RefCell::new(Vec::new()),
         progress: Some(Arc::clone(progress)),
         failed: std::cell::RefCell::new(Vec::new()),
+        // Undoing a copy recycles the copies: count those like any recycle.
+        top: match undo {
+            Undo::Remove(paths) => Some(TopItems::new(paths, &[])),
+            Undo::PutBack(_) => None,
+        },
     }
     .into();
     HIDE_PROGRESS.set(true);
@@ -2043,13 +2122,79 @@ mod tests {
     /// Runs an operation the way the app does (Arke's progress, no Windows error UI), failing the
     /// test instead of hanging if Windows shows a dialog.
     fn tracked(op: FileOp) -> (Result<OpOutcome, ShellError>, Option<Undo>) {
-        let progress = std::sync::Arc::new(crate::shell::OpProgress::default());
+        tracked_with(op, &Arc::new(crate::shell::OpProgress::default()))
+    }
+
+    fn tracked_with(
+        op: FileOp,
+        progress: &Arc<crate::shell::OpProgress>,
+    ) -> (Result<OpOutcome, ShellError>, Option<Undo>) {
+        let progress = Arc::clone(progress);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(perform_tracked(&op, None, &progress));
         });
         rx.recv_timeout(Duration::from_secs(30))
             .expect("the operation did not finish: Windows may be showing a dialog")
+    }
+
+    /// Recycling two folders where one holds a file in use: the engine reports both, the failed one
+    /// too, but only the folder that went to the bin counts as done.
+    #[test]
+    fn recycle_progress_counts_only_the_selected_items() {
+        use std::sync::atomic::Ordering;
+        let sb = Sandbox::new("recycle-count");
+        sb.file(r"free\a.txt", "a");
+        sb.file(r"free\deep\b.txt", "b");
+        sb.file(r"busy\c.txt", "c");
+        let locked = sb.file(r"busy\deep\locked.txt", "l");
+        let (free, busy) = (sb.0.join("free"), sb.0.join("busy"));
+        let holder = crate::win_inuse::test_support::lock_in_other_process(&locked);
+        let progress = Arc::new(crate::shell::OpProgress::default());
+        let (result, undo) = tracked_with(
+            FileOp::Delete {
+                paths: vec![free.clone(), busy.clone()],
+                recycle: true,
+            },
+            &progress,
+        );
+        drop(holder);
+        let error = result
+            .as_ref()
+            .map_or_else(ToString::to_string, |_| String::new());
+        assert!(!free.exists(), "{error}");
+        assert!(busy.exists(), "{error}");
+        assert_eq!(progress.done.load(Ordering::Relaxed), 1, "{error}");
+        if let Some(undo) = undo {
+            let _ = super::undo(&undo, None, true);
+        }
+    }
+
+    /// What the engine reports when a folder can't be recycled and goes for good after "Delete
+    /// permanently?": items inside it, a failure, the folder again. Each given item counts once.
+    #[test]
+    fn delete_progress_counts_each_given_item_once() {
+        use windows::Win32::UI::Shell::{
+            COPYENGINE_S_DONT_PROCESS_CHILDREN, COPYENGINE_S_USER_IGNORED,
+        };
+        let sb = Sandbox::new("top-items");
+        let (a, b) = (sb.0.join("a"), sb.0.join("b"));
+        let top = TopItems::new(&[a.clone(), b.clone()], &[]);
+        assert!(!top.first_finish(&a.join("node_modules")));
+        assert!(top.first_finish(&arke_core::path::verbatim(&a)));
+        assert!(!top.first_finish(&a));
+        assert!(top.first_finish(&PathBuf::from(b.to_string_lossy().to_uppercase())));
+        assert!(!top.first_finish(&sb.0.join("c")));
+
+        assert!(finished(windows::Win32::Foundation::S_OK));
+        assert!(finished(COPYENGINE_S_DONT_PROCESS_CHILDREN));
+        assert!(finished(
+            windows::Win32::Foundation::ERROR_FILE_NOT_FOUND.to_hresult()
+        ));
+        assert!(!finished(COPYENGINE_S_USER_IGNORED));
+        assert!(!finished(
+            windows::Win32::Foundation::ERROR_ACCESS_DENIED.to_hresult()
+        ));
     }
 
     fn failures_of(result: &Result<OpOutcome, ShellError>) -> Vec<(String, FailReason)> {

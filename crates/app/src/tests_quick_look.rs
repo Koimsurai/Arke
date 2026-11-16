@@ -154,17 +154,15 @@ fn wheel_turns_pdf_pages_after_scrolling_them(cx: &mut TestAppContext) {
     wheel(cx, 3., ctrl());
     wheel(cx, 3., ctrl());
     wheel(cx, 3., ctrl());
-    cx.run_until_parked();
-    let zoomed = shell
-        .pdf_renders
-        .lock()
-        .last()
-        .map(|r| r.2)
-        .expect("rendered");
-    assert!(
-        zoomed.1 > fitted.1,
-        "zoomed page rendered larger: {zoomed:?}"
-    );
+    // The larger render runs in the background.
+    let rendered_larger = || {
+        shell
+            .pdf_renders
+            .lock()
+            .last()
+            .is_some_and(|r| r.2.1 > fitted.1)
+    };
+    wait_until(cx, &view, "zoomed page rendered larger", |_| rendered_larger());
     assert_eq!(view.update(cx, |v, _| pdf_page(v)), Some(0));
     assert!(view.update(cx, |v, _| v.look_scroll.max_offset().y) > px(0.));
 

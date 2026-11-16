@@ -80,6 +80,10 @@ drive.removable:
   en: Removable Disk
   zh-TW: 卸除式磁碟
   zh-CN: 可移动磁盘
+drive.floppy:
+  en: Floppy Disk Drive
+  zh-TW: 軟碟機
+  zh-CN: 软盘驱动器
 drive.cdrom:
   en: CD Drive
   zh-TW: 光碟機

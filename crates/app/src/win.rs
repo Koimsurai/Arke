@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Storage::FileSystem::{
-    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, QueryDosDeviceW,
 };
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -486,6 +486,44 @@ fn locale_for(system: &str) -> &'static str {
     }
 }
 
+/// The device behind a drive letter (`\Device\Floppy0`, `\Device\HarddiskVolume3`...), from the
+/// DOS device table only: no drive is touched.
+fn dos_device(letter: char) -> Option<String> {
+    let name = wide(std::ffi::OsStr::new(&format!("{letter}:")));
+    let mut buf = [0u16; 512];
+    // SAFETY: name is NUL-terminated; buf outlives the call and its length is passed.
+    let len = unsafe { QueryDosDeviceW(PCWSTR(name.as_ptr()), Some(&mut buf)) } as usize;
+    // The result is a list of NUL-terminated strings; the first is the current mapping.
+    let first = buf.get(..len)?.split(|&c| c == 0).next()?;
+    (!first.is_empty()).then(|| String::from_utf16_lossy(first))
+}
+
+/// A removable drive is a floppy drive when its device is one (`\Device\Floppy0`, also USB
+/// floppy drives), or, when that can't be told, when it has A: or B:, which Windows keeps for them.
+fn looks_like_floppy(letter: char, device: Option<&str>) -> bool {
+    device.map_or(matches!(letter, 'A' | 'B'), |device| {
+        device.to_ascii_lowercase().starts_with(r"\device\floppy")
+    })
+}
+
+/// Logs the removable drives left out for having no disk, once per change (the list reloads
+/// often), so a missing drive in a report can be explained (#125).
+fn log_hidden_drives(mask: u32) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static LAST: AtomicU32 = AtomicU32::new(0);
+    if LAST.swap(mask, Ordering::Relaxed) == mask || mask == 0 {
+        return;
+    }
+    let letters: Vec<String> = (0..26u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| format!("{}:", char::from(b'A' + i)))
+        .collect();
+    log::info!(
+        "removable drives without a disk, not listed: {}",
+        letters.join(" ")
+    );
+}
+
 /// Free and total bytes on removable media, if any is inserted, without the "insert a disk" prompt.
 fn media_space(root: &[u16]) -> Option<(u64, u64)> {
     use windows::Win32::System::Diagnostics::Debug::{
@@ -579,6 +617,8 @@ impl Shell for WinShell {
 
         // SAFETY: no arguments; reads the current drive letter bitmask.
         let mask = unsafe { GetLogicalDrives() };
+        // Removable drives left out for having no disk, logged when that set changes.
+        let mut hidden = 0u32;
         for i in 0..26u8 {
             if mask & (1 << i) == 0 {
                 continue;
@@ -588,16 +628,22 @@ impl Shell for WinShell {
             let root_w = wide(std::ffi::OsStr::new(&root));
             // SAFETY: root_w is NUL-terminated. GetDriveTypeW reads local mount info only.
             let drive_type = unsafe { GetDriveTypeW(PCWSTR(root_w.as_ptr())) };
+            // Floppy drives are listed like Explorer does, disk or not, and never read: asking a
+            // floppy for its free space spins the drive (#125).
+            let floppy = drive_type == DRIVE_REMOVABLE
+                && looks_like_floppy(letter, dos_device(letter).as_deref());
             // Skip empty removable slots (card readers, USB): opening them only gives "device not
             // ready", and Explorer hides them too. Empty slots answer without a disk prompt.
-            let removable_space = (drive_type == DRIVE_REMOVABLE)
+            let removable_space = (drive_type == DRIVE_REMOVABLE && !floppy)
                 .then(|| media_space(&root_w))
                 .flatten();
-            if drive_type == DRIVE_REMOVABLE && removable_space.is_none() {
+            if drive_type == DRIVE_REMOVABLE && !floppy && removable_space.is_none() {
+                hidden |= 1 << i;
                 continue;
             }
             // Labels only for fixed drives; network or optical drives can block or ask for media.
             let (label, remote) = match drive_type {
+                DRIVE_REMOVABLE if floppy => (t!("drive.floppy").into_owned(), false),
                 DRIVE_FIXED => (
                     volume_label(&root_w).unwrap_or_else(|| t!("drive.local").into_owned()),
                     false,
@@ -617,6 +663,7 @@ impl Shell for WinShell {
                 kind: PlaceKind::Drive { remote, space },
             });
         }
+        log_hidden_drives(hidden);
         places.extend(wsl_distros().into_iter().map(|name| Place {
             path: PathBuf::from(format!(r"\\wsl.localhost\{name}")),
             label: name,
@@ -2072,4 +2119,29 @@ pub(crate) fn read_reg_string(
     }
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     Some(String::from_utf16_lossy(&buf[..len])).filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod floppy_tests {
+    use super::*;
+
+    #[test]
+    fn floppy_drives_are_told_by_their_device() {
+        assert!(looks_like_floppy('A', Some(r"\Device\Floppy0")));
+        // A USB floppy drive can get any letter.
+        assert!(looks_like_floppy('F', Some(r"\Device\Floppy1")));
+        // A card reader or USB stick moved to A: is not one.
+        assert!(!looks_like_floppy('A', Some(r"\Device\HarddiskVolume7")));
+        assert!(!looks_like_floppy('E', Some(r"\Device\HarddiskVolume7")));
+        // Unknown device: A: and B: are kept for floppy drives.
+        assert!(looks_like_floppy('B', None));
+        assert!(!looks_like_floppy('E', None));
+    }
+
+    #[test]
+    fn the_dos_device_table_answers_for_the_system_drive() {
+        let device = dos_device('C').expect("C: is mapped");
+        assert!(device.starts_with(r"\Device\"), "{device}");
+        assert!(!looks_like_floppy('C', Some(&device)));
+    }
 }

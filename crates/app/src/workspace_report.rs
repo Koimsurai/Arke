@@ -108,7 +108,8 @@ fn settings_summary(s: &Settings) -> String {
         "- theme {:?}, material {:?}, density {:?}, tabs {:?}\n\
          - view {:?}, sort {:?}{}, folders {:?}, groups {}\n\
          - hidden {}, protected {}, extensions {}, thumbnails {} (network {}), folder sizes {}\n\
-         - single click {}, check boxes {}, preview {}, search this PC {}, keep running {}\n",
+         - single click {}, check boxes {}, preview {}, search this PC {}, keep running {}\n\
+         - start {:?}\n",
         s.theme,
         s.material,
         s.density,
@@ -133,6 +134,7 @@ fn settings_summary(s: &Settings) -> String {
         s.preview_pane,
         s.global_search,
         s.keep_running,
+        s.start_location,
     )
 }
 
@@ -589,6 +591,7 @@ mod tests {
         // Multi-byte UTF-8 is percent-encoded byte by byte.
         assert_eq!(encode("a b/中"), "a%20b%2F%E4%B8%AD");
         let report = compose(&crate::settings::Settings::default(), false, false);
+        assert!(report.contains("- start Home\n"), "the start location (#116)");
         let url = issue_url("me/arke-releases", &report);
         assert!(url.starts_with(
             "https://github.com/me/arke-releases/issues/new?template=bug_report.yml&title="

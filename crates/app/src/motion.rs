@@ -3,7 +3,9 @@
 //! Every animation in Arke uses one of these durations and easings:
 //!
 //! - [`FAST`] (120 ms): a control changing state in place (switch thumb).
-//! - [`BASE`] (180 ms): a surface entering or moving: menus, flyouts, dialogs, toasts, Quick Look,
+//! - [`MENU`] (80 ms): a context menu or submenu appearing. A short fade in place, no slide, like
+//!   Windows 11 menus: a menu is opened to pick from right away, so it shouldn't travel.
+//! - [`BASE`] (180 ms): a surface entering or moving: flyouts, dialogs, toasts, Quick Look,
 //!   panels, the view switch crossfade, tabs and tiles sliding after a reorder.
 //! - [`EXIT`] (120 ms): a surface leaving after it was dismissed. Shorter than entering, so closing
 //!   never feels like waiting.
@@ -12,8 +14,8 @@
 //! Entering eases out ([`ease_out`]: fast start, soft landing). Leaving moves away eased in
 //! ([`ease_in`]) but fades linearly, so it visibly starts on the very next frame (an eased-in fade
 //! stays near full opacity for its first half and reads as a delay).
-//! Offsets are [`NUDGE`] (flyouts dropping from their button), [`SLIDE`] (menus, palette, dialogs)
-//! and [`SLIDE_LG`] (Quick Look card, preview pane).
+//! Offsets are [`NUDGE`] (flyouts dropping from their button), [`SLIDE`] (palette, dialogs) and
+//! [`SLIDE_LG`] (Quick Look card, preview pane). Context menus don't move, entering or leaving.
 //!
 //! Nothing that should be instant is animated: folder switches, tab switches, list navigation,
 //! selection, typing, scrolling, resizing by drag. Hover and press styles are instant too (GPUI has
@@ -38,6 +40,8 @@ use gpui::{
 
 /// A control changing state in place.
 pub(crate) const FAST: Duration = Duration::from_millis(120);
+/// A context menu appearing.
+pub(crate) const MENU: Duration = Duration::from_millis(80);
 /// A surface entering or moving.
 pub(crate) const BASE: Duration = Duration::from_millis(180);
 /// A dismissed surface leaving.
@@ -105,6 +109,12 @@ pub(crate) fn enter() -> Animation {
     Animation::new(BASE).with_easing(ease_out)
 }
 
+/// A context menu appearing ([`MENU`], eased out: most of the fade lands on the first frame, so
+/// it reads as instant without popping). Draw it with [`fade_in`].
+pub(crate) fn menu_enter() -> Animation {
+    Animation::new(MENU).with_easing(ease_out)
+}
+
 /// A control changing state in place ([`FAST`], eased out).
 pub(crate) fn fast() -> Animation {
     Animation::new(FAST).with_easing(ease_out)
@@ -127,6 +137,14 @@ pub(crate) fn slide_in<E: Styled>(el: E, t: f32, dx: f32, dy: f32) -> E {
     el.opacity(t.clamp(0., 1.))
         .left(px(dx * (1. - t)))
         .top(px(dy * (1. - t)))
+}
+
+/// Element at progress `t` (0 to 1): fades in where it is.
+pub(crate) fn fade_in<E: Styled>(el: E, t: f32) -> E {
+    if !enabled() {
+        return el;
+    }
+    el.opacity(t.clamp(0., 1.))
 }
 
 /// A card in the window's bottom right corner (the first-run card, the update notice), 360 px wide.
@@ -347,6 +365,20 @@ mod tests {
     fn exits_are_shorter_than_entrances() {
         assert!(EXIT < BASE);
         assert!(FAST <= EXIT);
+    }
+
+    /// Menus open faster than any other surface, and only fade: no offset, so they appear exactly
+    /// where they are drawn. Reduced motion draws them as they are.
+    #[test]
+    fn menus_fade_in_place_quickly() {
+        assert!(MENU < EXIT && MENU <= Duration::from_millis(100));
+        force_for_test(true);
+        let mut el = fade_in(div(), 0.25);
+        let style = el.style();
+        assert!(style.opacity.is_some_and(|o| (o - 0.25).abs() < 1e-6));
+        assert!(style.inset.left.is_none() && style.inset.top.is_none());
+        force_for_test(false);
+        assert!(fade_in(div(), 0.25).style().opacity.is_none());
     }
 
     #[test]

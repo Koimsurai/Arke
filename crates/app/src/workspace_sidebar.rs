@@ -1612,14 +1612,14 @@ impl Workspace {
                             .text_size(theme::FS_14)
                             .text_color(theme::text())
                             .children(rows)
-                            // Like the list's context menu: slides down and fades in, again for
-                            // each new right-click position.
+                            // Like the list's context menu: fades in, again for each new
+                            // right-click position.
                             .with_animation(
                                 gpui::ElementId::Name(
                                     format!("sidebar-menu-{:?}", menu.position).into(),
                                 ),
-                                crate::motion::enter(),
-                                |el, t| crate::motion::slide_in(el, t, 0., -crate::motion::SLIDE),
+                                crate::motion::menu_enter(),
+                                crate::motion::fade_in,
                             ),
                     ),
             )

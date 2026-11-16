@@ -901,9 +901,11 @@ impl RecycleBin {
                 menu_row("recycle-menu-purge", Icon::Trash, t!("recycle.purge"), true)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.ask_purge_chosen(cx))),
             )
-            .with_animation("recycle-menu-appear", crate::motion::enter(), |el, t| {
-                crate::motion::slide_in(el, t, 0., -crate::motion::SLIDE)
-            });
+            .with_animation(
+                "recycle-menu-appear",
+                crate::motion::menu_enter(),
+                crate::motion::fade_in,
+            );
         let menu = deferred(
             anchored()
                 .position(position)

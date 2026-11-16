@@ -69,8 +69,6 @@ pub(crate) fn bind_keys(cx: &mut App) {
 const SUBMENU_DELAY: Duration = Duration::from_millis(180);
 /// Row ids for submenu alignment are `level * LEVEL_STRIDE + row`.
 const LEVEL_STRIDE: usize = 1000;
-/// Menu entrance and exit: slide this far (see `motion.rs`).
-const MENU_SLIDE: f32 = crate::motion::SLIDE;
 static NEXT_MENU: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2304,35 +2302,34 @@ impl Explorer {
                 outer,
                 ElementId::Name(format!("menu-{}-leave", menu.serial).into()),
                 0.,
-                -MENU_SLIDE / 2.,
+                0.,
             )
         } else {
             outer
-            .key_context("ContextMenu")
-            .track_focus(&menu.focus)
-            .on_action(cx.listener(Self::menu_up))
-            .on_action(cx.listener(Self::menu_down))
-            .on_action(cx.listener(Self::menu_left))
-            .on_action(cx.listener(Self::menu_right))
-            .on_action(cx.listener(Self::menu_confirm))
-            .on_action(cx.listener(Self::menu_dismiss))
-            .on_mouse_down_out(cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                let inside = geometry
-                    .borrow()
-                    .panels
-                    .iter()
-                    .any(|(&level, b)| level > 0 && b.contains(&e.position));
-                if !inside {
-                    this.close_menu(window, cx);
-                }
-            }))
-            // Slide down and fade in.
-            .with_animation(
-                ElementId::Name(format!("menu-{}", menu.serial).into()),
-                crate::motion::enter(),
-                |panel, t| crate::motion::slide_in(panel, t, 0., -MENU_SLIDE),
-            )
-            .into_any_element()
+                .key_context("ContextMenu")
+                .track_focus(&menu.focus)
+                .on_action(cx.listener(Self::menu_up))
+                .on_action(cx.listener(Self::menu_down))
+                .on_action(cx.listener(Self::menu_left))
+                .on_action(cx.listener(Self::menu_right))
+                .on_action(cx.listener(Self::menu_confirm))
+                .on_action(cx.listener(Self::menu_dismiss))
+                .on_mouse_down_out(cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    let inside = geometry
+                        .borrow()
+                        .panels
+                        .iter()
+                        .any(|(&level, b)| level > 0 && b.contains(&e.position));
+                    if !inside {
+                        this.close_menu(window, cx);
+                    }
+                }))
+                .with_animation(
+                    ElementId::Name(format!("menu-{}", menu.serial).into()),
+                    crate::motion::menu_enter(),
+                    crate::motion::fade_in,
+                )
+                .into_any_element()
         };
         panels.push(
             deferred(
@@ -2387,8 +2384,7 @@ impl Explorer {
                 }
             }
             let (anchor, x) = (Anchor::TopLeft, px(left));
-            // Slide out from the opening side and fade in; replays when switching submenus.
-            let slide = if right_side { -MENU_SLIDE } else { MENU_SLIDE };
+            // Fades in; replays when switching submenus.
             let path = menu.open[..level]
                 .iter()
                 .map(ToString::to_string)
@@ -2400,14 +2396,14 @@ impl Explorer {
                     panel,
                     ElementId::Name(format!("menu-{}-{path}-leave", menu.serial).into()),
                     0.,
-                    -MENU_SLIDE / 2.,
+                    0.,
                 )
             } else {
                 panel
                     .with_animation(
                         ElementId::Name(format!("menu-{}-{path}", menu.serial).into()),
-                        crate::motion::enter(),
-                        move |panel, t| crate::motion::slide_in(panel, t, slide, 0.),
+                        crate::motion::menu_enter(),
+                        crate::motion::fade_in,
                     )
                     .into_any_element()
             };

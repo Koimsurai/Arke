@@ -1040,6 +1040,10 @@ impl Explorer {
         match rename_input {
             Some(rename) => name_cell(entry, Some(rename), true, false, None),
             None => div()
+                .debug_selector({
+                    let name = Arc::clone(&entry.name);
+                    move || format!("name:{name}")
+                })
                 .w_full()
                 .text_center()
                 .line_clamp(2)
@@ -1468,6 +1472,10 @@ impl Explorer {
                                     .gap(theme::S_12)
                                     .child(
                                         div()
+                                            .debug_selector({
+                                                let name = Arc::clone(&entry.name);
+                                                move || format!("name:{name}")
+                                            })
                                             .when(hit.snippet.is_some(), |d| {
                                                 d.flex_none().max_w(px(240.))
                                             })

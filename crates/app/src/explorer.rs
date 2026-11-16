@@ -2942,7 +2942,9 @@ impl Explorer {
             cx.background_executor().timer(wait).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.rename_wait = None;
+                // Search results can't be renamed; a search may have started meanwhile.
                 if this.renaming.is_none()
+                    && !this.search_mode
                     && this.list_focus.is_focused(window)
                     && this.selection.len() == 1
                     && this.selection.contains(&name)

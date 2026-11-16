@@ -6781,38 +6781,61 @@ fn only_the_process_start_pane_is_a_cold_start(cx: &mut TestAppContext) {
     assert!(!second.update(cx, |v, _| v.metrics.cold_start));
 }
 
+/// Folder `C:\r` with `report.docx` and `a.txt`, in a window wide enough for the Details columns.
+fn click_rename_setup(
+    cx: &mut TestAppContext,
+    shell: Arc<FakeShell>,
+) -> (Entity<Explorer>, &mut VisualTestContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        Path::new(r"C:\r"),
+        vec![file("report.docx", 1), file("a.txt", 1)],
+    );
+    let (view, cx) = setup(cx, fs, shell, r"C:\r");
+    wait_until(cx, &view, "load", loaded(r"C:\r"));
+    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(700.)));
+    cx.run_until_parked();
+    (view, cx)
+}
+
+/// Center of an item's drawn name (`name:<name>`).
+fn name_at(cx: &mut VisualTestContext, selector: &'static str) -> gpui::Point<gpui::Pixels> {
+    cx.debug_bounds(selector).expect("name drawn").center()
+}
+
+fn renaming(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Option<String> {
+    view.update(cx, |v, _| v.renaming.as_ref().map(|r| r.name.to_string()))
+}
+
+/// Lets the system double-click time pass, after which a pending click-to-rename starts.
+fn past_double_click_time(cx: &mut VisualTestContext) {
+    cx.executor()
+        .advance_clock(crate::win::double_click_time() + Duration::from_millis(50));
+    cx.run_until_parked();
+}
+
 /// #89: a slow second click on the name of the only selected item renames it once the
 /// double-click time has passed, like Explorer. Not a double-click, a click beside the name, a
 /// key in between, or the click that selects.
 #[gpui::test]
 fn slow_second_click_on_the_name_renames(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, px};
-    let fs = FakeFs::new();
-    fs.insert_dir(
-        Path::new(r"C:\r"),
-        vec![file("report.docx", 1), file("a.txt", 1)],
-    );
-    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\r");
-    wait_until(cx, &view, "load", loaded(r"C:\r"));
-    cx.simulate_resize(gpui::size(px(1200.), px(700.)));
-    cx.run_until_parked();
-    let name_at = |cx: &mut VisualTestContext, selector: &'static str| {
-        cx.debug_bounds(selector).expect("name drawn").center()
-    };
-    let renaming = |cx: &mut VisualTestContext| {
-        view.update(cx, |v, _| v.renaming.as_ref().map(|r| r.name.to_string()))
-    };
-    let wait = |cx: &mut VisualTestContext| {
-        cx.executor()
-            .advance_clock(crate::win::double_click_time() + Duration::from_millis(50));
-        cx.run_until_parked();
-    };
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = click_rename_setup(cx, Arc::clone(&shell));
+    let renaming = |cx: &mut VisualTestContext| renaming(&view, cx);
+    let wait = past_double_click_time;
     let a = name_at(cx, "name:a.txt");
 
     cx.simulate_click(a, Modifiers::none());
     wait(cx);
     assert_eq!(renaming(cx), None, "the click that selects doesn't rename");
     cx.simulate_click(a, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(renaming(cx), None, "not right away");
+    // The wait is the system's double-click time, not a guess of ours.
+    let time = crate::win::double_click_time();
+    cx.executor()
+        .advance_clock(time.saturating_sub(Duration::from_millis(50)));
     cx.run_until_parked();
     assert_eq!(renaming(cx), None, "not before the double-click time");
     wait(cx);
@@ -6837,6 +6860,18 @@ fn slow_second_click_on_the_name_renames(cx: &mut TestAppContext) {
     });
     wait(cx);
     assert_eq!(renaming(cx), None, "double-click");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while shell.opened.lock().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the double-click didn't open the file"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        shell.opened.lock().as_slice(),
+        [PathBuf::from(r"C:\r\a.txt")]
+    );
 
     // A key between the click and the wait.
     cx.simulate_click(a, Modifiers::none());
@@ -6862,4 +6897,114 @@ fn slow_second_click_on_the_name_renames(cx: &mut TestAppContext) {
     cx.simulate_click(report, Modifiers::none());
     wait(cx);
     assert_eq!(renaming(cx).as_deref(), Some("report.docx"));
+}
+
+/// #89: a click on the selected item's name with Ctrl, Shift or Alt, a drag that starts there, or
+/// a click on another item before the wait ends doesn't rename.
+#[gpui::test]
+fn click_to_rename_skips_modifiers_drags_and_other_items(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, point, px};
+    let (view, cx) = click_rename_setup(cx, Arc::default());
+    let renaming = |cx: &mut VisualTestContext| renaming(&view, cx);
+    let selected = |cx: &mut VisualTestContext| view.update(cx, |v, _| selected_names(v));
+    let a = name_at(cx, "name:a.txt");
+    let report = name_at(cx, "name:report.docx");
+    // Through the other item: a click on `a` while it's selected would be the slow second click.
+    let select_a = |cx: &mut VisualTestContext| {
+        cx.simulate_click(report, Modifiers::none());
+        cx.simulate_click(a, Modifiers::none());
+        past_double_click_time(cx);
+        assert_eq!(selected(cx), ["a.txt"]);
+        assert_eq!(renaming(cx), None);
+    };
+
+    for (modifiers, what) in [
+        (Modifiers::control(), "ctrl"),
+        (Modifiers::shift(), "shift"),
+        (Modifiers::alt(), "alt"),
+    ] {
+        select_a(cx);
+        cx.simulate_click(a, modifiers);
+        past_double_click_time(cx);
+        assert_eq!(renaming(cx), None, "{what}");
+    }
+
+    // Dragged a little along its own name and dropped there.
+    select_a(cx);
+    cx.simulate_mouse_down(a, MouseButton::Left, Modifiers::none());
+    let along = point(a.x + px(12.), a.y);
+    cx.simulate_mouse_move(along, Some(MouseButton::Left), Modifiers::none());
+    cx.simulate_mouse_up(along, MouseButton::Left, Modifiers::none());
+    past_double_click_time(cx);
+    assert_eq!(renaming(cx), None, "drag");
+    assert_eq!(selected(cx), ["a.txt"]);
+    assert_eq!(
+        view.update(cx, |v, _| view_names(v)).len(),
+        2,
+        "the drag moved nothing"
+    );
+
+    // The slow second click, then another item before the wait ends.
+    select_a(cx);
+    cx.simulate_click(a, Modifiers::none());
+    cx.simulate_click(report, Modifiers::none());
+    past_double_click_time(cx);
+    assert_eq!(renaming(cx), None, "another item clicked meanwhile");
+    assert_eq!(selected(cx), ["report.docx"]);
+}
+
+/// #89: works on the name in the Icons and column views too; on a tile, only the name (not the
+/// icon above it) does.
+#[gpui::test]
+fn click_to_rename_in_icons_and_column_views(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, point, px};
+    let (view, cx) = click_rename_setup(cx, Arc::default());
+    for what in ["icons", "columns"] {
+        if what == "icons" {
+            cx.dispatch_action(crate::explorer::ViewIcons);
+        } else {
+            cx.dispatch_action(crate::explorer::ViewColumns);
+        }
+        cx.run_until_parked();
+        let a = name_at(cx, "name:a.txt");
+        // `a` may still be selected from the last view: select the other item first.
+        cx.simulate_click(name_at(cx, "name:report.docx"), Modifiers::none());
+        cx.simulate_click(a, Modifiers::none());
+        past_double_click_time(cx);
+        assert_eq!(renaming(&view, cx), None, "{what}: the click that selects");
+        if what == "icons" {
+            let icon = point(a.x, a.y - px(24.));
+            cx.simulate_click(icon, Modifiers::none());
+            past_double_click_time(cx);
+            assert_eq!(renaming(&view, cx), None, "the tile's icon");
+            assert_eq!(view.update(cx, |v, _| selected_names(v)), ["a.txt"]);
+        }
+        cx.simulate_click(a, Modifiers::none());
+        past_double_click_time(cx);
+        assert_eq!(renaming(&view, cx).as_deref(), Some("a.txt"), "{what}");
+        cx.simulate_keystrokes("escape");
+        assert_eq!(renaming(&view, cx), None);
+    }
+}
+
+/// #89: search results can't be renamed, so clicking a result's name again doesn't either.
+#[gpui::test]
+fn click_to_rename_not_in_search_results(cx: &mut TestAppContext) {
+    use gpui::Modifiers;
+    let (view, cx) = click_rename_setup(cx, Arc::default());
+    let report = name_at(cx, "name:report.docx");
+    cx.simulate_click(report, Modifiers::none());
+    past_double_click_time(cx);
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["report.docx"]);
+
+    cx.dispatch_action(FocusSearch);
+    cx.simulate_input("report");
+    wait_until(cx, &view, "search results", |v| final_hits(v).len() == 1);
+    let hit = name_at(cx, "name:report.docx");
+    for _ in 0..2 {
+        cx.simulate_click(hit, Modifiers::none());
+        past_double_click_time(cx);
+    }
+    assert_eq!(renaming(&view, cx), None);
+    assert!(view.update(cx, |v, _| v.search_mode));
 }

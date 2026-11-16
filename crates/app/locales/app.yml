@@ -2038,6 +2038,14 @@ menu.move_to_new_folder:
   en: Move to new folder
   zh-TW: 移到新資料夾
   zh-CN: 移到新文件夹
+menu.copy_to_other_pane:
+  en: Copy to other pane
+  zh-TW: 複製到另一個窗格
+  zh-CN: 复制到另一个窗格
+menu.move_to_other_pane:
+  en: Move to other pane
+  zh-TW: 移到另一個窗格
+  zh-CN: 移到另一个窗格
 menu.new_text_file:
   en: New text document
   zh-TW: 新增文字文件

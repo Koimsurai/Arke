@@ -108,6 +108,10 @@ pub(crate) enum MenuCommand {
     Compress,
     /// Move the selection into a new folder.
     MoveToNewFolder,
+    /// Split view: copy the selection to the other pane's folder (Alt+C).
+    CopyToPeer,
+    /// Split view: move the selection to the other pane's folder (Alt+M).
+    MoveToPeer,
     /// Use this image as the Arke background.
     SetBackground,
     /// Import this `.json` as an Arke settings backup.
@@ -250,8 +254,8 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
         C::Open => Icon::Open,
         C::OpenInNewTab => Icon::TabOpen,
         C::OpenInNewWindow | C::DropShortcut => Icon::External,
-        C::Cut | C::DropMove => Icon::Cut,
-        C::Copy | C::CopyAddress | C::DropCopy => Icon::Copy,
+        C::Cut | C::DropMove | C::MoveToPeer => Icon::Cut,
+        C::Copy | C::CopyAddress | C::DropCopy | C::CopyToPeer => Icon::Copy,
         C::Paste => Icon::Paste,
         C::Rename | C::EditAddress => Icon::Rename,
         C::Delete | C::ClearHistory => Icon::Trash,
@@ -620,6 +624,15 @@ impl ContextMenu {
         }
         self.shell_slot = Some(new_slot);
         self.pinned_rows = added;
+    }
+
+    /// Test helper: the shortcut shown on the top-level item labeled `label`.
+    #[cfg(test)]
+    pub(crate) fn shortcut_of(&self, label: &str) -> Option<&'static str> {
+        self.entries.iter().find_map(|e| match e {
+            MenuEntry::Item(i) if i.label.as_ref() == label => i.shortcut,
+            _ => None,
+        })
     }
 
     /// Test helper: checked items at the top level.
@@ -1042,6 +1055,20 @@ impl Explorer {
                 C::MoveToNewFolder,
             ));
         }
+        // Split view: Alt+C / Alt+M are hard to find from the keyboard alone.
+        if self.pane.peer.is_some() {
+            entries.push(MenuEntry::Separator);
+            entries.push(item(
+                t!("menu.copy_to_other_pane"),
+                Some("Alt+C"),
+                C::CopyToPeer,
+            ));
+            entries.push(item(
+                t!("menu.move_to_other_pane"),
+                Some("Alt+M"),
+                C::MoveToPeer,
+            ));
+        }
         entries.push(MenuEntry::Separator);
         if single && *is_dir {
             entries.push(item(t!("menu.open_new_window"), None, C::OpenInNewWindow));
@@ -1401,6 +1428,7 @@ impl Explorer {
             C::OpenTerminal => self.open_terminal(&targets),
             C::Compress => self.start_compress(&targets, cx),
             C::MoveToNewFolder => self.move_into_new_folder(cx),
+            C::CopyToPeer | C::MoveToPeer => self.transfer_to_peer(command == C::MoveToPeer, cx),
             C::OpenInNewWindow => {
                 if let Some((path, true)) = targets.first().cloned() {
                     open_in_new_window(path);

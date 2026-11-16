@@ -553,6 +553,64 @@ fn copies_to_the_other_pane_select_what_arrived(cx: &mut TestAppContext) {
     assert_eq!(left.update(cx, |e, _| selected_names(e)), ["b.txt"]);
 }
 
+/// The item menu offers "Copy to/Move to other pane" (Alt+C / Alt+M) only in a split tab, and
+/// they copy like the shortcuts do.
+#[gpui::test]
+fn item_menu_copies_to_the_other_pane_only_when_split(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\l", vec![file("a.txt", 1), file("b.txt", 1)]);
+    fs.insert_dir(r"C:\r", vec![file("z.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    {
+        let fs = Arc::clone(&fs);
+        *shell.on_op.lock() = Some(Box::new(move |op| {
+            let FileOp::Copy { sources, dest } = op else {
+                return;
+            };
+            let names: Vec<&str> = sources
+                .iter()
+                .map(|p| p.file_name().unwrap().to_str().unwrap())
+                .collect();
+            for name in &names {
+                fs.add_file(dest, name, 1);
+            }
+            fs.emit_changed(dest, &names);
+        }));
+    }
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\l");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\l"));
+    let copy = t!("menu.copy_to_other_pane").into_owned();
+    let mv = t!("menu.move_to_other_pane").into_owned();
+
+    right_click(&first, cx, Some(1));
+    let labels = menu_labels(&first, cx).expect("a menu opens");
+    assert!(
+        !labels.contains(&copy) && !labels.contains(&mv),
+        "one pane: nothing to copy to, {labels:?}"
+    );
+
+    let (left, right) = split_to(&ws, cx, r"C:\r");
+    right_click(&left, cx, Some(1));
+    let labels = menu_labels(&left, cx).expect("a menu opens");
+    let at = labels.iter().position(|l| *l == copy).expect("copy item");
+    assert_eq!(labels.get(at + 1), Some(&mv), "move right under copy");
+    let shortcuts = left.update(cx, |e, _| {
+        let menu = e.context_menu.as_ref().expect("still open");
+        [menu.shortcut_of(&copy), menu.shortcut_of(&mv)]
+    });
+    assert_eq!(shortcuts, [Some("Alt+C"), Some("Alt+M")]);
+
+    run_command(&left, cx, MenuCommand::CopyToPeer);
+    wait_until(cx, &right, "the copy is selected on the right", |e| {
+        selected_names(e) == ["b.txt"]
+    });
+    assert!(
+        matches!(shell.ops.lock().as_slice(), [FileOp::Copy { dest, .. }] if dest == Path::new(r"C:\r")),
+        "copied into the other pane's folder"
+    );
+}
+
 /// Closing a split from the right side keeps the two folders in their on-screen order: the left
 /// one becomes the tab before.
 #[gpui::test]

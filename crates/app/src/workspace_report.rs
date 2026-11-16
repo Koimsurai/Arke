@@ -107,7 +107,7 @@ fn environment() -> String {
 fn settings_summary(s: &Settings) -> String {
     format!(
         "- theme {:?}, material {:?}, density {:?}, tabs {:?}\n\
-         - view {:?}, sort {:?}{}, folders {:?}, groups {}\n\
+         - view {:?}, sort {:?}{}, folders {:?}, groups {}, per-folder views {}\n\
          - hidden {}, protected {}, extensions {}, thumbnails {} (network {}), folder sizes {}\n\
          - single click {}, check boxes {}, preview {}, search this PC {}, keep running {}\n\
          - start {:?}\n",
@@ -124,6 +124,7 @@ fn settings_summary(s: &Settings) -> String {
         },
         s.folders,
         s.group_rows,
+        s.remember_folder_views,
         s.show_hidden,
         s.show_protected,
         s.show_extensions,
@@ -618,6 +619,10 @@ mod tests {
         assert!(
             report.contains("- start Home\n"),
             "the start location (#116)"
+        );
+        assert!(
+            report.contains(", per-folder views true\n"),
+            "whether folders remember their views (#124)"
         );
         let url = issue_url("me/arke-releases", &report);
         assert!(url.starts_with(

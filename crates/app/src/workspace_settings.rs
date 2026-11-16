@@ -1117,9 +1117,7 @@ impl Workspace {
                 Icon::Image,
                 t!("settings.show_thumbnails"),
                 Some(t!("settings.show_thumbnails_desc")),
-                switch("show-thumbnails", s.show_thumbnails, |st| {
-                    st.show_thumbnails = !st.show_thumbnails;
-                }),
+                thumbnail_controls(s, cx),
             ),
             card(
                 Icon::NetDrive,
@@ -1512,6 +1510,20 @@ impl Workspace {
     }
 
     /// "Open folder": selects the settings file in Windows Explorer, on a background thread.
+    /// Deletes the thumbnail cache in the background, then redraws (the button goes away).
+    fn clear_thumbnail_cache(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let cleared = cx
+                .background_spawn(async { crate::media::thumb_cache().clear() })
+                .await;
+            if let Err(err) = cleared {
+                log::warn!("clearing the thumbnail cache: {err}");
+            }
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
     fn reveal_settings_file(&self, cx: &mut Context<Self>) {
         let Some(path) = crate::settings::default_path() else {
             return;
@@ -1521,6 +1533,32 @@ impl Workspace {
             let _ = shell.reveal_in_explorer(&path, true);
         });
     }
+}
+
+/// "Show thumbnails": the switch, with "Clear cache (size)" beside it while the cache holds
+/// anything (the size is counted at startup, off the UI thread).
+fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>) -> AnyElement {
+    let toggle = switch("show-thumbnails", s.show_thumbnails, |st| {
+        st.show_thumbnails = !st.show_thumbnails;
+    });
+    let Some(bytes) = crate::media::thumb_cache()
+        .counted_disk_bytes()
+        .filter(|&b| b > 0)
+    else {
+        return toggle;
+    };
+    let size = arke_core::format::format_size_base(bytes, s.decimal_sizes);
+    div()
+        .flex()
+        .items_center()
+        .gap(theme::S_12)
+        .child(text_button(
+            "clear-thumbnail-cache",
+            t!("settings.clear_thumbnail_cache", size = size),
+            cx.listener(|_, _: &ClickEvent, _, cx| Workspace::clear_thumbnail_cache(cx)),
+        ))
+        .child(toggle)
+        .into_any_element()
 }
 
 /// About header: the app mark, the name and the version. The only place the version is shown.

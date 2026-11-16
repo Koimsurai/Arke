@@ -1,22 +1,26 @@
 //! Thumbnail and system icon cache, one per app, shared by all tabs and windows.
 //!
 //! - Thumbnails: 3 background threads read via `Fs::read` and decode with `arke_core::thumbs`.
+//!   Each result is also kept compressed ([`arke_core::thumb_cache`]) in memory and on disk, so
+//!   seeing it again costs a 0.1–0.2 ms decode instead of reading the original.
 //! - System icons: 1 background thread (COM STA), only for `.exe`, `.lnk`, `.ico`.
 //! - Both only on local fixed drives (cached per drive letter; the check itself runs in the
 //!   background).
 //! - The visible tab calls [`MediaStore::want`] every frame with visible items first; requests
 //!   scrolled away are dropped before work starts (`arke_core::loader`).
-//! - The cache has a memory budget; least recently used entries are freed and removed from the GPU
-//!   atlas.
+//! - Decoded images have a small budget: least recently used ones are freed and removed from the GPU
+//!   atlas, but never the ones on screen or one page around it. Scrolling back decodes them again
+//!   from the compressed copy, on the UI thread while it fits in a few milliseconds.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use arke_core::Entry;
 use arke_core::filetype::{MAX_THUMBNAIL_SOURCE, can_thumbnail, wants_system_icon};
 use arke_core::loader::Loader;
+use arke_core::thumb_cache::{ThumbCache, ThumbKey};
 use arke_core::thumbs::{SOURCE_SIZES, THUMBNAIL_SIZE, Thumbnail, decode_thumbnail};
 use gpui::{App, AppContext, Context, Entity, Global, RenderImage, Task};
 
@@ -24,8 +28,31 @@ use crate::explorer::Services;
 
 /// System icon pixel size (the grid shows them at 64 px, the list at 16).
 pub(crate) const SYSTEM_ICON_SIZE: u32 = 64;
-/// Cache budget (decoded pixel bytes). A 192px thumbnail is about 150 KB, so roughly 800 fit.
-const CACHE_BUDGET: usize = 128 * 1024 * 1024;
+/// Decoded pixel bytes kept beyond what is on screen and a page around it. A 192px thumbnail is
+/// about 150 KB, so roughly 100 fit; the compressed copies cover the rest.
+const CACHE_BUDGET: usize = 16 * 1024 * 1024;
+/// Compressed thumbnails in memory: 5–15 KB each, so several thousand.
+const COMPRESSED_BUDGET: usize = 48 * 1024 * 1024;
+/// The disk cache folder's cap (`%LOCALAPPDATA%\Arke\thumbs`): tens of thousands of thumbnails.
+const DISK_CAP: u64 = 256 * 1024 * 1024;
+/// Time per frame for decoding compressed thumbnails on the UI thread (the rest go to the loader).
+const SYNC_DECODE: Duration = Duration::from_millis(3);
+
+/// Thumbnails the background loader was asked for (tests).
+#[cfg(test)]
+pub(crate) static THUMBNAIL_LOADS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Compressed thumbnails in memory and on disk, for every window. Tests keep them in memory only.
+pub(crate) fn thumb_cache() -> &'static ThumbCache {
+    static CACHE: OnceLock<ThumbCache> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let dir = std::env::var_os("LOCALAPPDATA")
+            .filter(|_| !cfg!(test))
+            .map(|d| PathBuf::from(d).join("Arke").join("thumbs"));
+        ThumbCache::new(COMPRESSED_BUDGET, dir.map(|d| (d, DISK_CAP)))
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MediaKind {
@@ -75,6 +102,15 @@ impl MediaKey {
             kind,
             px,
         })
+    }
+
+    fn thumb_key(&self) -> ThumbKey {
+        ThumbKey {
+            path: self.path.clone(),
+            modified: self.modified,
+            size: self.size,
+            px: self.px,
+        }
     }
 }
 
@@ -144,10 +180,13 @@ impl MediaStore {
             let fs = Arc::clone(&services.fs);
             let tx = tx.clone();
             Loader::new("thumbnail", 3, move |key: &MediaKey| {
-                let thumb = fs
-                    .read(&key.path, MAX_THUMBNAIL_SOURCE)
-                    .ok()
-                    .and_then(|bytes| decode_thumbnail(&bytes, key.px.max(1)).ok());
+                #[cfg(test)]
+                THUMBNAIL_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let thumb = thumb_cache().load(&key.thumb_key(), || {
+                    fs.read(&key.path, MAX_THUMBNAIL_SOURCE)
+                        .ok()
+                        .and_then(|bytes| decode_thumbnail(&bytes, key.px.max(1)).ok())
+                });
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), thumb));
             })
         };
@@ -159,6 +198,7 @@ impl MediaStore {
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), icon));
             })
         };
+        thumb_cache().count_in_background();
         let task = cx.spawn(async move |this, cx| {
             while let Ok(event) = rx.recv_async().await {
                 if this.update(cx, |this, cx| this.handle(event, cx)).is_err() {
@@ -192,12 +232,7 @@ impl MediaStore {
                     MediaKind::Thumbnail => self.thumbs.acknowledge(&key),
                     MediaKind::SystemIcon => self.icons.acknowledge(&key),
                 }
-                let size = thumb.as_ref().map_or(0, |t| t.rgba.len());
-                let image = thumb.and_then(to_render_image);
-                if self.cache.insert(key.clone(), image).is_none() {
-                    self.order.push_back(key);
-                    self.bytes += size;
-                }
+                self.insert(key, thumb);
                 self.evict(cx);
             }
             MediaEvent::LocalDisk(root, local) => {
@@ -208,17 +243,40 @@ impl MediaStore {
         cx.notify();
     }
 
+    fn insert(&mut self, key: MediaKey, thumb: Option<Thumbnail>) {
+        let size = thumb.as_ref().map_or(0, |t| t.rgba.len());
+        let image = thumb.and_then(to_render_image);
+        if self.cache.insert(key.clone(), image).is_none() {
+            self.order.push_back(key);
+            self.bytes += size;
+        }
+    }
+
+    /// Frees the least recently used decoded images over the budget, except the wanted ones.
     fn evict(&mut self, cx: &mut App) {
+        if self.bytes <= CACHE_BUDGET {
+            return;
+        }
+        let wanted: HashSet<&MediaKey> = self.last_wanted.iter().collect();
+        let mut kept = VecDeque::new();
         while self.bytes > CACHE_BUDGET {
             let Some(key) = self.order.pop_front() else {
                 break;
             };
+            if wanted.contains(&key) {
+                kept.push_back(key);
+                continue;
+            }
             if let Some(Some(image)) = self.cache.remove(&key) {
                 self.bytes = self.bytes.saturating_sub(image_bytes(&image));
                 // Remove from every window's GPU atlas; dropping the reference alone leaves the
                 // texture in video memory.
                 cx.drop_image(image, None);
             }
+        }
+        // Still on screen: back at the old end, in the same order.
+        while let Some(key) = kept.pop_back() {
+            self.order.push_front(key);
         }
     }
 
@@ -238,6 +296,21 @@ impl MediaStore {
             .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
+    }
+
+    /// Frees every decoded image and forgets what was wanted, like scrolling far away and back
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn drop_decoded(&mut self, cx: &mut App) {
+        for (_, image) in self.cache.drain() {
+            if let Some(image) = image {
+                cx.drop_image(image, None);
+            }
+        }
+        self.order.clear();
+        self.bytes = 0;
+        self.main_wanted.clear();
+        self.last_wanted.clear();
     }
 
     /// Loaded image (`None` if failed or not loaded yet).
@@ -306,13 +379,38 @@ impl MediaStore {
         }
     }
 
-    /// Items the main list needs now (in priority order). Already cached ones are skipped.
-    pub(crate) fn want(&mut self, keys: Vec<MediaKey>) {
+    /// Items the main list needs now (in priority order). Already cached ones are skipped; ones
+    /// with a compressed copy in memory are decoded right away while that stays within a few
+    /// milliseconds, so scrolling back shows them in the same frame.
+    pub(crate) fn want(&mut self, keys: Vec<MediaKey>, cx: &mut Context<Self>) {
         if keys == self.main_wanted {
             return;
         }
+        let start = Instant::now();
+        let mut decoded = false;
+        for key in &keys {
+            if start.elapsed() > SYNC_DECODE {
+                break;
+            }
+            if key.kind != MediaKind::Thumbnail || self.cache.contains_key(key) {
+                continue;
+            }
+            if let Some(thumb) = thumb_cache()
+                .in_memory(&key.thumb_key())
+                .and_then(|bytes| arke_core::thumb_cache::decode(&bytes))
+            {
+                self.insert(key.clone(), Some(thumb));
+                decoded = true;
+            }
+        }
         self.main_wanted = keys;
         self.apply_wanted();
+        // Not now: this runs while a window draws, and `drop_image` skips the window being
+        // updated, so its GPU atlas would keep every freed thumbnail.
+        if decoded {
+            let this = cx.entity();
+            cx.defer(move |cx| this.update(cx, |this, cx| this.evict(cx)));
+        }
     }
 
     /// Items for the side column: queued after the main list and never cancel it.

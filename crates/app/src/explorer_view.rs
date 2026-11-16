@@ -959,7 +959,7 @@ impl Explorer {
     }
 
     /// Thumbnails or system icons for visible items (once loaded), and hand the visible range plus
-    /// one page ahead to the media cache.
+    /// a page ahead and a page back to the media cache.
     fn media_for(
         &mut self,
         entries: &[Entry],
@@ -981,14 +981,17 @@ impl Explorer {
                 .and_then(|e| MediaKey::sized(&dir, e, thumb_px))
         };
         let keys: Vec<Option<MediaKey>> = range.clone().map(key).collect();
+        // A page ahead, then a page back (scrolling back finds them still decoded).
         let prefetch_end = (range.end + range.len()).min(entries.len());
+        let prefetch_start = range.start.saturating_sub(range.len());
         let wanted: Vec<MediaKey> = keys
             .iter()
             .flatten()
             .cloned()
             .chain((range.end..prefetch_end).filter_map(key))
+            .chain((prefetch_start..range.start).rev().filter_map(key))
             .collect();
-        self.media.update(cx, |m, _| m.want(wanted));
+        self.media.update(cx, |m, cx| m.want(wanted, cx));
         let media = self.media.read(cx);
         // A thumbnail decoded for another icon size stands in until this size's arrives.
         keys.iter()

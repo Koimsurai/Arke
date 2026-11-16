@@ -59,6 +59,7 @@ pub mod service;
 pub mod sort;
 pub mod takeover;
 pub mod text;
+pub mod thumb_cache;
 pub mod thumbs;
 pub mod timeline;
 pub mod tree;

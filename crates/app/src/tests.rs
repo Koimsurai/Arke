@@ -3564,6 +3564,46 @@ fn grid_view_loads_thumbnails_and_icons_without_blocking(cx: &mut TestAppContext
     fs.release_all();
 }
 
+/// A thumbnail whose decoded image was freed comes back in the next frame from its compressed
+/// copy, without reading the file again (here the file can't be read at all).
+#[gpui::test]
+fn freed_thumbnails_come_back_from_the_compressed_copy_at_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\pics", vec![file("a.png", 100), file("b.png", 100)]);
+    fs.set_content(r"C:\pics\a.png", png_bytes(400, 200));
+    fs.set_content(r"C:\pics\b.png", png_bytes(50, 50));
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), shell, r"C:\pics");
+    wait_until(cx, &view, "load", loaded(r"C:\pics"));
+    cx.simulate_keystrokes("ctrl-shift-2");
+    let both = vec![
+        (PathBuf::from(r"C:\pics\a.png"), MediaKind::Thumbnail),
+        (PathBuf::from(r"C:\pics\b.png"), MediaKind::Thumbnail),
+    ];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while loaded_media(&view, cx) != both {
+        assert!(Instant::now() < deadline, "{:?}", loaded_media(&view, cx));
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    fs.hang(r"C:\pics\a.png");
+    fs.hang(r"C:\pics\b.png");
+    view.update(cx, |v, cx| v.media.update(cx, |m, cx| m.drop_decoded(cx)));
+    assert!(loaded_media(&view, cx).is_empty());
+    let loads = crate::media::THUMBNAIL_LOADS.load(std::sync::atomic::Ordering::Relaxed);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(loaded_media(&view, cx), both);
+    assert_eq!(
+        crate::media::THUMBNAIL_LOADS.load(std::sync::atomic::Ordering::Relaxed),
+        loads,
+        "decoded in the frame, not handed to the loader"
+    );
+    fs.release_all();
+}
+
 /// Network locations get no thumbnails and no system icons (local disks only).
 #[gpui::test]
 fn network_folders_get_no_thumbnails_or_system_icons(cx: &mut TestAppContext) {

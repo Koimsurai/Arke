@@ -1428,6 +1428,10 @@ settings.show_thumbnails_desc:
   en: "For pictures in Large icons view"
   zh-TW: "大圖示檢視中的圖片"
   zh-CN: "大图标视图中的图片"
+settings.clear_thumbnail_cache:
+  en: "Clear cache (%{size})"
+  zh-TW: "清除快取（%{size}）"
+  zh-CN: "清除缓存（%{size}）"
 settings.network_thumbnails:
   en: "Thumbnails on network locations"
   zh-TW: "網路位置也顯示縮圖"

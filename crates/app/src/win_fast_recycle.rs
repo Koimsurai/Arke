@@ -75,6 +75,10 @@ const NOTIFY_EACH_MAX: usize = 64;
 /// for every item made a delete of many loose files quadratic; here it is asked once per drive,
 /// and once more to confirm Windows counted the first item moved there. The bytes in the bin are
 /// then kept up to date locally.
+///
+/// What is left per item is creating its `$I` record and the rename, each about 2 ms with
+/// real-time antivirus. Items go one at a time: doing them on 4 threads was no faster and on 8
+/// was slower (they all change the same bin folder).
 #[derive(Default)]
 pub(crate) struct Batch {
     /// This user's SID, if Group Policy leaves the bin to Arke; looked up when first needed.
@@ -131,13 +135,17 @@ impl Batch {
             now_filetime(),
             &arke_core::path::unverbatim(path),
         );
-        // The record is read back before anything moves: what is on disk must be what was meant.
+        // The whole record must be in place before anything moves: after it is closed (when
+        // antivirus may still take it away) it is still there at full length. Only its metadata
+        // is read: reading it back opened it again, which cost about an eighth of each item
+        // (real-time antivirus scans every open for reading) and only read the cache anyway.
         let written = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&info)
             .and_then(|mut f| f.write_all(&record));
-        if written.is_err() || fs::read(&info).ok().as_deref() != Some(record.as_slice()) {
+        let in_place = || fs::symlink_metadata(&info).is_ok_and(|m| m.len() == record.len() as u64);
+        if written.is_err() || !in_place() {
             let _ = fs::remove_file(&info);
             return None;
         }
@@ -1275,5 +1283,39 @@ mod tests {
         eprintln!("{} in the bin; purging them", binned.len());
         purge(&binned);
         assert_eq!(result, Ok(OpOutcome::Done));
+    }
+
+    /// The same kind of delete through the Windows engine, for comparison (fewer files: the
+    /// engine is slower). Run alone, like `loose_files_timing`: it turns fast recycle off.
+    #[test]
+    #[ignore = "benchmark: uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a benchmark run by hand prints its timings"
+    )]
+    fn engine_loose_files_timing() {
+        const FILES: usize = 2_000;
+        let sb = Sandbox::new("engine-loose");
+        let files = loose_files(&sb, "engine-loose", FILES);
+        let progress = std::sync::Arc::default();
+        set_enabled(false);
+        let started = std::time::Instant::now();
+        let (result, _) = crate::win_fileops::perform_tracked(
+            &FileOp::Delete {
+                paths: files,
+                recycle: true,
+            },
+            None,
+            &progress,
+        );
+        let took = started.elapsed();
+        eprintln!(
+            "engine recycle of {FILES} loose files: {took:?}, {:?}",
+            result.as_ref().map_err(ToString::to_string)
+        );
+        let binned = recycled_from(&sb.0);
+        eprintln!("{} in the bin; purging them", binned.len());
+        purge(&binned);
+        assert!(result.is_ok());
     }
 }

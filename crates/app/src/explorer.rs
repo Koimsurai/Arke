@@ -324,6 +324,8 @@ pub(crate) enum AppEvent {
         generation: u64,
         data: preview::PreviewData,
     },
+    /// A page rendered for the preview pane's page list
+    PanePdfPage(preview::RenderedPage),
     /// Creation time of the previewed item, read when its entry came without one (search hits).
     PreviewCreated {
         generation: u64,
@@ -1595,6 +1597,7 @@ impl Explorer {
                 self.handle_extract_done(result, folder, cx);
             }
             AppEvent::Preview { generation, data } => self.handle_preview(generation, data, cx),
+            AppEvent::PanePdfPage(page) => self.handle_pane_pdf_page(page, cx),
             AppEvent::PreviewCreated {
                 generation,
                 created,

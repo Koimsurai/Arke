@@ -6,16 +6,17 @@
 //! - Text and code: first 64 KB with encoding detection (UTF-8, UTF-16, legacy system code pages
 //!   like Big5); binary-looking files are skipped. Code gets line numbers and basic highlighting
 //!   (`arke_core::highlight`); Markdown is parsed (`arke_core::markdown`) and laid out like GitHub.
-//! - PDFs: rendered by Windows (`win_pdf.rs`), the first page in the pane and every page in Quick
-//!   Look (Left/Right, Page Up/Down, Home/End turn pages), sized for the space in device pixels.
-//!   Recent pages are cached per tab.
+//! - PDFs: rendered by Windows (`win_pdf.rs`), sized for the space in device pixels. The pane
+//!   scrolls through every page (`explorer_pdf_pane.rs`), Quick Look turns them (Left/Right, Page
+//!   Up/Down, Home/End). Recent Quick Look pages are cached per tab.
 //! - Archives: list the contents without extracting (zip reads only the central directory, tar
 //!   stops at a limit).
 //! - Folders: list the contents (in column view the third column is the next level; clicking enters
 //!   and selects).
 //! - Office Open XML (`explorer_office.rs`): Word text with basic structure, Excel sheets as a grid
-//!   (Quick Look switches sheets), PowerPoint's embedded thumbnail in the pane and slide text cards
-//!   in Quick Look (page keys turn slides). Parsed by Arke itself; no Office or preview handlers.
+//!   (Quick Look switches sheets), PowerPoint's embedded thumbnail and every slide's text in the
+//!   pane, slide text cards in Quick Look (page keys turn slides). Parsed by Arke itself; no
+//!   Office or preview handlers.
 //! - Anything else: large icon and details.
 //!
 //! Quick Look is a card over the dimmed window, sized from the window: a title bar (name, details,
@@ -51,9 +52,12 @@ use office::{SlidesView, WorkbookView, load_office};
 
 #[path = "explorer_office.rs"]
 mod office;
+#[path = "explorer_pdf_pane.rs"]
+mod pdf_pane;
 use crate::a11y::A11yExt as _;
 use crate::shell::Shell;
 use crate::theme::{self, UiFont as _};
+pub(crate) use pdf_pane::RenderedPage;
 
 /// Delay after the cursor stops before reading, so holding an arrow key doesn't read every row. The
 /// test clock doesn't advance on its own, so tests skip the delay.
@@ -247,6 +251,8 @@ pub(crate) struct PdfView {
     target: (u32, u32),
     /// A page (and box) being rendered to replace this one
     pending: Option<(u32, (u32, u32))>,
+    /// The pane's own pages, scrolled through
+    pane: pdf_pane::PanePages,
 }
 
 /// Where Quick Look goes for a page key.
@@ -562,6 +568,7 @@ impl Explorer {
                         render,
                         target: pdf_target,
                         pending: None,
+                        pane: pdf_pane::PanePages::default(),
                     }),
                 }),
                 cx,
@@ -654,7 +661,10 @@ impl Explorer {
             Some(Preview {
                 body: PreviewBody::Pdf(view),
                 ..
-            }) => cx.drop_image(view.render.image, None),
+            }) => {
+                view.pane.release(cx);
+                cx.drop_image(view.render.image, None);
+            }
             Some(Preview {
                 body: PreviewBody::Slides(view),
                 ..
@@ -722,6 +732,7 @@ impl Explorer {
                         render,
                         target,
                         pending: None,
+                        pane: pdf_pane::PanePages::default(),
                     })
                 }
                 PreviewData::Markdown(doc) => PreviewBody::Markdown(Arc::new(doc)),
@@ -1839,7 +1850,19 @@ impl Explorer {
         };
         pane.child(div().h(frame_h).flex_none().child({
             if let PreviewBody::Pdf(view) = &preview.body {
-                Self::pdf_page_view(&view.render, gpui::size(frame_w, frame_h), false)
+                if view.render.pages > 1 {
+                    self.pane_pdf_pages(view, gpui::size(frame_w, frame_h), cx)
+                } else {
+                    Self::pdf_page_view(&view.render, gpui::size(frame_w, frame_h), false)
+                }
+            } else if let PreviewBody::Slides(view) = &preview.body
+                && view.deck.slides.len() > 1
+            {
+                Self::with_preview_scrollbar(
+                    office::slides_list(view, frame_w, &self.preview_scroll),
+                    &self.preview_scroll,
+                    &self.preview_scrollbar,
+                )
             } else {
                 let body = Self::preview_body(preview, &self.preview_scroll);
                 if Self::scrolls(&preview.body) {

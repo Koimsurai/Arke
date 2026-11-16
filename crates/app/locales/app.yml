@@ -3977,6 +3977,10 @@ preview.next_slide:
   en: Next slide
   zh-TW: 下一張投影片
   zh-CN: 下一张幻灯片
+preview.slide_n:
+  en: "Slide %{n}"
+  zh-TW: "第 %{n} 張投影片"
+  zh-CN: "第 %{n} 张幻灯片"
 preview.slide_no_text:
   en: No text on this slide
   zh-TW: 這張投影片沒有文字

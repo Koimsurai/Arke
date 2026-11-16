@@ -3,8 +3,9 @@
 //! Parsing is Arke's own (`arke_core::office`, zip + XML) and runs on the preview thread; Office,
 //! COM and shell preview handlers are never involved, so no third-party code runs in Arke's
 //! process. Documents show their text with basic structure, workbooks one sheet as a grid (Quick
-//! Look has sheet tabs; other sheets load on demand), presentations their embedded thumbnail in
-//! the pane and the slides as text cards in Quick Look, turned with the PDF page keys.
+//! Look has sheet tabs; other sheets load on demand), presentations their slides as text cards:
+//! scrolled through in the pane (the embedded thumbnail standing in for the first), turned with
+//! the PDF page keys in Quick Look. Arke has no slide renderer; the thumbnail is the only picture.
 //!
 //! The old binary formats (`.doc`, `.xls`, `.ppt`) are deliberately not parsed: OLE binary
 //! formats are large to support for little gain, so they keep the kind icon like other files.
@@ -72,6 +73,12 @@ impl SlidesView {
             thumb,
             page: 0,
         }
+    }
+
+    /// Whether the embedded thumbnail decoded (tests).
+    #[cfg(test)]
+    pub(crate) const fn has_thumb(&self) -> bool {
+        self.thumb.is_some()
     }
 
     /// Drops the thumbnail from the GPU atlas.
@@ -146,12 +153,10 @@ pub(super) fn load_office(
     })
 }
 
-/// Documents and workbooks get a page-shaped frame in the pane, like PDFs.
+/// Documents, workbooks and presentations (their slide list) get a page-shaped frame in the
+/// pane, like PDFs.
 pub(super) fn page_shaped(entry: &Entry) -> bool {
-    matches!(
-        office::office_kind(&entry.name),
-        Some(OfficeKind::Document | OfficeKind::Workbook)
-    )
+    office::office_kind(&entry.name).is_some()
 }
 
 /// Extra detail rows: sheet and slide counts.
@@ -765,22 +770,129 @@ fn slide_card(
                 .child(slide.title.clone()),
         )
     })
-    .children(slide.lines.iter().map(|(depth, text)| {
+    .children(
+        slide
+            .lines
+            .iter()
+            .map(|(depth, text)| bullet(*depth, text, indent, line_size)),
+    )
+    .into_any_element()
+}
+
+/// One of a slide's text lines, indented by its level.
+fn bullet(depth: u8, text: &str, indent: Pixels, size: Pixels) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .gap(theme::S_8)
+        .pl(indent * f32::from(depth))
+        .text_size(size)
+        .text_color(theme::text_muted())
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme::text_subtle())
+                .child("•"),
+        )
+        .child(div().flex_1().min_w_0().child(text.to_owned()))
+}
+
+/// The pane on a presentation with several slides: each slide under its number, the embedded
+/// thumbnail as the first (it is a picture of it) and the others as text cards, `width` wide.
+/// Text is all there is to show of the rest without a slide renderer.
+pub(super) fn slides_list(
+    view: &SlidesView,
+    width: Pixels,
+    scroll: &gpui::ScrollHandle,
+) -> AnyElement {
+    let slides = &view.deck.slides;
+    let items = slides.iter().enumerate().map(|(ix, slide)| {
+        let body = match &view.thumb {
+            Some(image) if ix == 0 => {
+                let size = image.size(0);
+                let ratio = size.height.0 as f32 / size.width.0.max(1) as f32;
+                div()
+                    .w_full()
+                    .h(width * ratio)
+                    .rounded(theme::R_8)
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(theme::line())
+                    .child(img(Arc::clone(image)).size_full())
+                    .into_any_element()
+            }
+            _ => slide_text(slide),
+        };
         div()
             .flex()
             .flex_none()
-            .gap(theme::S_8)
-            .pl(indent * f32::from(*depth))
-            .text_size(line_size)
-            .text_color(theme::text_muted())
+            .flex_col()
+            .gap(theme::S_4)
+            .debug_selector(move || format!("pane-slide-{}", ix + 1))
             .child(
                 div()
-                    .flex_none()
+                    .text_size(theme::FS_11)
                     .text_color(theme::text_subtle())
-                    .child("•"),
+                    .child(
+                        t!(
+                            "preview.slide_n",
+                            n = arke_core::format::format_count(ix + 1)
+                        )
+                        .into_owned(),
+                    ),
             )
-            .child(div().flex_1().min_w_0().child(text.clone()))
-    }))
+            .child(body)
+    });
+    div()
+        .id("pane-slides")
+        .size_full()
+        .flex()
+        .flex_col()
+        .gap(theme::S_12)
+        .overflow_y_scroll()
+        .track_scroll(scroll)
+        .children(items)
+        .when(view.deck.count > slides.len(), |d| {
+            d.child(truncated_note())
+        })
+        .into_any_element()
+}
+
+/// A slide's text as a card in the pane's list, as tall as its text.
+fn slide_text(slide: &Slide) -> AnyElement {
+    let card = div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .gap(theme::S_4)
+        .p(theme::S_12)
+        .rounded(theme::R_8)
+        .border_1()
+        .border_color(theme::line())
+        .bg(theme::card())
+        .ui_font()
+        .text_color(theme::text());
+    if slide.title.is_empty() && slide.lines.is_empty() {
+        return card
+            .text_size(theme::FS_11)
+            .text_color(theme::text_subtle())
+            .child(t!("preview.slide_no_text").into_owned())
+            .into_any_element();
+    }
+    card.when(!slide.title.is_empty(), |d| {
+        d.child(
+            div()
+                .text_size(theme::FS_13)
+                .font_weight(theme::FW_STRONG)
+                .child(slide.title.clone()),
+        )
+    })
+    .children(
+        slide
+            .lines
+            .iter()
+            .map(|(depth, text)| bullet(*depth, text, theme::S_12, theme::FS_11)),
+    )
     .into_any_element()
 }
 

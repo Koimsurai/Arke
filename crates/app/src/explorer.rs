@@ -513,6 +513,24 @@ pub(crate) struct Metrics {
     pub(crate) first_frame: Option<Duration>,
     pub(crate) first_listing: Option<Duration>,
     listing_ready: bool,
+    /// The pane the process started with, the only one whose timings are a cold start.
+    pub(crate) cold_start: bool,
+}
+
+/// When the process started (set by `main`). The pane created with exactly this time is the first
+/// window's; any other pane (a later window, or a restored tab first shown hours later) would log
+/// its first frame as a "cold start" hours long.
+static PROCESS_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+pub(crate) fn mark_process_start(at: Instant) {
+    let _ = PROCESS_START.set(at);
+}
+
+/// Whether a pane created with `started_at` logs the cold-start timings; true at most once.
+fn claim_cold_start(started_at: Instant) -> bool {
+    static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    PROCESS_START.get() == Some(&started_at)
+        && !CLAIMED.swap(true, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Inputs a filter result depends on: directory, content version, sort, query. Any change means
@@ -1037,7 +1055,10 @@ impl Explorer {
             last_timing: None,
             window_title: String::new(),
             started_at,
-            metrics: Metrics::default(),
+            metrics: Metrics {
+                cold_start: claim_cold_start(started_at),
+                ..Metrics::default()
+            },
             bench,
             loading_task: None,
             sort_task: None,
@@ -3074,21 +3095,26 @@ impl Explorer {
         }
 
         let since_start = self.started_at.elapsed();
+        let cold = self.metrics.cold_start;
         if self.metrics.first_frame.is_none() {
             self.metrics.first_frame = Some(since_start);
-            log::info!(
-                "cold start: first frame {:.1} ms",
-                since_start.as_secs_f64() * 1e3
-            );
+            if cold {
+                log::info!(
+                    "cold start: first frame {:.1} ms",
+                    since_start.as_secs_f64() * 1e3
+                );
+            }
         }
         let listing_ready = self.metrics.listing_ready && self.metrics.first_listing.is_none();
         if listing_ready {
             self.metrics.first_listing = Some(since_start);
-            log::info!(
-                "cold start: first full listing {:.1} ms ({} items)",
-                since_start.as_secs_f64() * 1e3,
-                self.entry_count()
-            );
+            if cold {
+                log::info!(
+                    "cold start: first full listing {:.1} ms ({} items)",
+                    since_start.as_secs_f64() * 1e3,
+                    self.entry_count()
+                );
+            }
         }
 
         // Scroll metrics count rows; a grid row holds several items.

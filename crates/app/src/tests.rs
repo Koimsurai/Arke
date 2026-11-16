@@ -6632,3 +6632,42 @@ fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
     let (_, offset) = panel(cx);
     assert!(offset < px(0.), "scrolled down to the last row: {offset:?}");
 }
+
+/// Only the pane created with the process start time logs a cold start. Any other pane (a window
+/// opened later, or a restored tab first drawn hours later) would log hours as a cold start.
+#[gpui::test]
+fn only_the_process_start_pane_is_a_cold_start(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\home", 3);
+    let process_start = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+    crate::explorer::mark_process_start(process_start);
+    let (later, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\home");
+    wait_until(cx, &later, "load C:\\home", loaded(r"C:\home"));
+    assert!(!later.update(cx, |v, _| v.metrics.cold_start));
+
+    let pane = |cx: &mut VisualTestContext| {
+        let services = Services {
+            fs: Arc::<FakeFs>::clone(&fs),
+            shell: Arc::new(FakeShell::default()),
+            remotes: crate::remote_shell::test_remotes(),
+        };
+        cx.update(|window, cx| {
+            cx.new(|cx| {
+                Explorer::new(
+                    services,
+                    PathBuf::from(r"C:\home"),
+                    None,
+                    process_start,
+                    window,
+                    cx,
+                )
+            })
+        })
+    };
+    let first = pane(cx);
+    assert!(first.update(cx, |v, _| v.metrics.cold_start));
+    // Once only, even for another pane given the same time.
+    let second = pane(cx);
+    assert!(!second.update(cx, |v, _| v.metrics.cold_start));
+}

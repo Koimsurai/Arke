@@ -307,6 +307,7 @@ fn app_main(mut args: Args) {
     // Launched by the old version (auto-update): wait for it to exit before taking over residency.
     update::wait_for_previous(&std::env::args().collect::<Vec<_>>());
     let started_at = Instant::now();
+    explorer::mark_process_start(started_at);
     let launched_unix_ms = unix_ms_now();
     crashlog::init();
     motion::refresh_system_setting();

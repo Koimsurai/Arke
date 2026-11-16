@@ -2508,9 +2508,11 @@ fn segment(
 
 /// Window buttons styled like the other icon buttons (rounded, same stroke), not imitating Windows.
 /// Clicks are still handled by the system (`WindowControlArea`), so maximize gets the Windows 11
-/// snap layouts menu.
+/// snap layouts menu. Maximized, they also take the screen edge above them and Close the corner
+/// (`caption.rs`).
 pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
     let maximized = window.is_maximized();
+    let gap = theme::S_2;
     let button = |id: &'static str, icon: Icon, area: WindowControlArea, close: bool| {
         div()
             .id(id)
@@ -2539,12 +2541,13 @@ pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
                         d.group_hover(id, |s| s.text_color(theme::on_signal()))
                     }),
             )
+            .child(crate::caption::edge_hit(area, close, gap))
     };
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(theme::S_2)
+        .gap(gap)
         .pl(theme::S_8)
         .child(button(
             "win-min",

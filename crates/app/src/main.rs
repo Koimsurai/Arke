@@ -41,6 +41,7 @@ mod bench;
 mod bench_index;
 mod brand;
 mod build_info;
+mod caption;
 mod cloud_places;
 mod crashlog;
 mod explorer;

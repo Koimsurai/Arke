@@ -76,9 +76,10 @@ const NOTIFY_EACH_MAX: usize = 64;
 /// and once more to confirm Windows counted the first item moved there. The bytes in the bin are
 /// then kept up to date locally.
 ///
-/// What is left per item is creating its `$I` record and the rename, each about 2 ms with
-/// real-time antivirus. Items go one at a time: doing them on 4 threads was no faster and on 8
-/// was slower (they all change the same bin folder).
+/// What is left per item is creating its `$I` record and the rename; real-time antivirus sets
+/// their cost (0.2 ms each with Defender, about 2 ms with another product, measured). Items go
+/// one at a time: on 4 threads they were no faster with one and ten times slower with the other
+/// (they all change the same bin folder).
 #[derive(Default)]
 pub(crate) struct Batch {
     /// This user's SID, if Group Policy leaves the bin to Arke; looked up when first needed.
@@ -137,8 +138,9 @@ impl Batch {
         );
         // The whole record must be in place before anything moves: after it is closed (when
         // antivirus may still take it away) it is still there at full length. Only its metadata
-        // is read: reading it back opened it again, which cost about an eighth of each item
-        // (real-time antivirus scans every open for reading) and only read the cache anyway.
+        // is read: reading it back opened it again right after it was written, which real-time
+        // antivirus scans before letting the read through (with Defender two thirds of each
+        // item), and it only read the cache anyway.
         let written = fs::OpenOptions::new()
             .write(true)
             .create_new(true)

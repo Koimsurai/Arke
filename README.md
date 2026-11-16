@@ -45,8 +45,16 @@ Shell extensions from other programs run in a separate process, so a buggy one c
     <td width="50%"><img src=".github/assets/context-menu.png" alt="Arke's context menu"></td>
   </tr>
   <tr>
-    <td>Details, icons and columns views, light and dark themes, accent colors and backdrops.</td>
+    <td>Details, icons and columns views, with a preview pane for most kinds of files.</td>
     <td>A fast context menu of its own, with the full Windows menu one click away.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/quick-look.png" alt="Quick Look showing a Markdown file"></td>
+    <td width="50%"><img src=".github/assets/themes.png" alt="Theme and accent color settings"></td>
+  </tr>
+  <tr>
+    <td>Quick Look (Space) shows Markdown the way GitHub does, and images, PDF, Office files and code.</td>
+    <td>Light, dark and dark gray themes, accent colors, and a background tint or image.</td>
   </tr>
 </table>
 
@@ -58,6 +66,7 @@ Shell extensions from other programs run in a separate process, so a buggy one c
   synchronized browsing and folder compare.
 - Spring-loaded folders, a shelf for collecting files from different folders, and a Home page
   with recent files, drives and network locations.
+- Swipe with two fingers on a touchpad to go back and forward, like in a browser.
 
 **Preview**
 - A resizable preview pane and Quick Look (Space) for images, PDF, Word, Excel and PowerPoint,

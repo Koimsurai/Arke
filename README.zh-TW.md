@@ -39,8 +39,16 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
     <td width="50%"><img src=".github/assets/context-menu.png" alt="Arke 的右鍵選單"></td>
   </tr>
   <tr>
-    <td>詳細資料、圖示、欄位三種檢視，淺色與深色主題，可換強調色與背景。</td>
+    <td>詳細資料、圖示、欄位三種檢視，大部分檔案都能在預覽窗格直接看。</td>
     <td>Arke 自己的右鍵選單，速度快；完整的 Windows 選單也只差一下。</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/quick-look.png" alt="快速預覽 Markdown 檔案"></td>
+    <td width="50%"><img src=".github/assets/themes.png" alt="主題與強調色設定"></td>
+  </tr>
+  <tr>
+    <td>快速預覽（空白鍵）像 GitHub 一樣顯示 Markdown，也能看圖片、PDF、Office 檔和程式碼。</td>
+    <td>淺色、深色、深灰三種主題，可換強調色、背景色調或背景圖片。</td>
   </tr>
 </table>
 
@@ -50,6 +58,7 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 - 每個資料夾記得自己的檢視和排序。
 - 分頁可以固定、存成工作區。分頁分成左右兩個窗格時共用一個預覽，可以同步瀏覽、比對資料夾。
 - 拖曳時自動打開資料夾、用「暫存架」收集不同資料夾的檔案，首頁有最近的檔案、磁碟和網路位置。
+- 在觸控板上用兩指左右滑動來上一頁、下一頁，跟瀏覽器一樣。
 
 **預覽**
 - 可調寬度的預覽窗格與快速預覽（空白鍵）：圖片、PDF、Word、Excel、PowerPoint、有語法上色的

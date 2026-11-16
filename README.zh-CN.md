@@ -39,8 +39,16 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
     <td width="50%"><img src=".github/assets/context-menu.png" alt="Arke 的右键菜单"></td>
   </tr>
   <tr>
-    <td>详细信息、图标、分栏三种视图，浅色和深色主题，可以换强调色和背景。</td>
+    <td>详细信息、图标、分栏三种视图，大部分文件都能在预览窗格里直接查看。</td>
     <td>Arke 自己的右键菜单，弹出很快；完整的 Windows 菜单也只差一步。</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/quick-look.png" alt="快速预览 Markdown 文件"></td>
+    <td width="50%"><img src=".github/assets/themes.png" alt="主题和强调色设置"></td>
+  </tr>
+  <tr>
+    <td>快速预览（空格键）像 GitHub 一样显示 Markdown，也能看图片、PDF、Office 文件和代码。</td>
+    <td>浅色、深色、深灰三种主题，可以换强调色、背景色调或背景图片。</td>
   </tr>
 </table>
 
@@ -50,6 +58,7 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
 - 每个文件夹记得自己的视图和排序。
 - 标签页可以固定、存成工作区。标签页分成左右两个窗格时共用一个预览，可以同步浏览、比较文件夹。
 - 拖动时自动打开文件夹，用“暂存架”收集不同文件夹里的文件，主页有最近的文件、磁盘和网络位置。
+- 在触控板上用两指左右滑动来后退、前进，和浏览器一样。
 
 **预览**
 - 可调宽度的预览窗格和快速预览（空格键）：图片、PDF、Word、Excel、PowerPoint、带语法高亮的

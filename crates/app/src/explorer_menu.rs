@@ -527,6 +527,8 @@ pub(crate) struct ContextMenu {
     /// selected.
     keyboard: bool,
     geometry: Rc<RefCell<MenuGeometry>>,
+    /// Scroll position of each level: a level taller than the window scrolls (#114).
+    scrolls: RefCell<Vec<gpui::ScrollHandle>>,
     hover_task: Option<Task<()>>,
 }
 
@@ -553,8 +555,18 @@ impl ContextMenu {
             serial: NEXT_MENU.fetch_add(1, Ordering::Relaxed),
             keyboard: false,
             geometry: Rc::default(),
+            scrolls: RefCell::default(),
             hover_task: None,
         }
+    }
+
+    /// The scroll handle of `level`, made on first use.
+    fn scroll(&self, level: usize) -> gpui::ScrollHandle {
+        let mut scrolls = self.scrolls.borrow_mut();
+        if scrolls.len() <= level {
+            scrolls.resize_with(level + 1, gpui::ScrollHandle::new);
+        }
+        scrolls[level].clone()
     }
 
     /// Entries at `level` (0 is the top level).
@@ -661,6 +673,15 @@ impl ContextMenu {
     #[cfg(test)]
     pub(crate) const fn depth(&self) -> usize {
         self.open.len()
+    }
+
+    /// Test helper: where `level` was drawn, and how far it is scrolled.
+    #[cfg(test)]
+    pub(crate) fn panel_for_test(&self, level: usize) -> (Option<Bounds<Pixels>>, Pixels) {
+        (
+            self.geometry.borrow().panels.get(&level).copied(),
+            self.scroll(level).offset().y,
+        )
     }
 }
 
@@ -1115,6 +1136,9 @@ impl Explorer {
         };
         menu.highlighted = Some(selectable[next]);
         menu.keyboard = true;
+        // Keep it in view when the level scrolls (its first child is the measuring canvas).
+        menu.scroll(menu.open.len())
+            .scroll_to_item(selectable[next] + 1);
         cx.notify();
     }
 
@@ -2272,7 +2296,9 @@ impl Explorer {
             .clone();
         let mut panels: Vec<AnyElement> = Vec::new();
         // Top level sits at the right-click position; clicking outside every level closes it.
-        let outer = Self::render_menu_panel(menu, 0, &pinned, cx);
+        // A level never taller than the window: past that it scrolls (#114).
+        let max_h = window.viewport_size().height - theme::S_8 * 2.;
+        let outer = Self::render_menu_panel(menu, 0, &pinned, max_h, cx);
         let outer = if leaving {
             crate::motion::leave(
                 outer,
@@ -2368,7 +2394,7 @@ impl Explorer {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(".");
-            let panel = Self::render_menu_panel(menu, level, &pinned, cx);
+            let panel = Self::render_menu_panel(menu, level, &pinned, max_h, cx);
             let panel = if leaving {
                 crate::motion::leave(
                     panel,
@@ -2406,6 +2432,7 @@ impl Explorer {
         menu: &ContextMenu,
         level: usize,
         pinned: &[String],
+        max_h: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let entries = menu.level(level);
@@ -2428,6 +2455,9 @@ impl Explorer {
             .occlude()
             .min_w(px(240.))
             .max_w(px(420.))
+            .max_h(max_h)
+            .overflow_y_scroll()
+            .track_scroll(&menu.scroll(level))
             .py(theme::S_4)
             .rounded(theme::R_12)
             .bg(theme::overlay())

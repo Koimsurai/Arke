@@ -6600,3 +6600,35 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
     click(cx, size_button.center());
     assert_eq!(menu(cx), None, "its own button closes it");
 }
+
+/// #114: a menu taller than the window stays inside it and scrolls; the keyboard brings the
+/// highlighted row into view.
+#[gpui::test]
+fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    cx.simulate_resize(size(px(900.), px(260.)));
+    cx.run_until_parked();
+    right_click(&view, cx, Some(0));
+    cx.run_until_parked();
+    let panel = |cx: &mut VisualTestContext| {
+        view.update(cx, |v, _| {
+            v.context_menu.as_ref().unwrap().panel_for_test(0)
+        })
+    };
+    let (bounds, offset) = panel(cx);
+    let bounds = bounds.expect("menu drawn");
+    assert!(
+        bounds.top() >= px(0.) && bounds.bottom() <= px(260.),
+        "{bounds:?}"
+    );
+    assert_eq!(offset, px(0.));
+    // Up from nothing highlights the last row, at the bottom: the menu scrolls to it.
+    cx.simulate_keystrokes("up");
+    cx.run_until_parked();
+    let (_, offset) = panel(cx);
+    assert!(offset < px(0.), "scrolled down to the last row: {offset:?}");
+}

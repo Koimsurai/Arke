@@ -591,7 +591,10 @@ mod tests {
         // Multi-byte UTF-8 is percent-encoded byte by byte.
         assert_eq!(encode("a b/中"), "a%20b%2F%E4%B8%AD");
         let report = compose(&crate::settings::Settings::default(), false, false);
-        assert!(report.contains("- start Home\n"), "the start location (#116)");
+        assert!(
+            report.contains("- start Home\n"),
+            "the start location (#116)"
+        );
         let url = issue_url("me/arke-releases", &report);
         assert!(url.starts_with(
             "https://github.com/me/arke-releases/issues/new?template=bug_report.yml&title="

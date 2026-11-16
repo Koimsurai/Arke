@@ -42,6 +42,8 @@ use gpui::*;
 struct TrackedWindow {
     handle: SafeHwnd,
     frame_signal: Arc<PlatformFrameSignal>,
+    /// Arke: whether the window needs vsync ticks (see `frame_gate.rs`).
+    frames: Arc<WindowFrames>,
 }
 
 impl TrackedWindow {
@@ -57,6 +59,8 @@ pub struct WindowsPlatform {
     initial_windowing: RefCell<Option<WindowingRequest>>,
     /// Set to stop the current `VSyncProvider` thread, which runs while windowed.
     vsync_stop: RefCell<Option<Arc<AtomicBool>>>,
+    /// Arke: wakes the `VSyncProvider` thread when it sleeps because no window needs frames.
+    vsync_wake: Arc<VSyncWake>,
     // The below members will never change throughout the entire lifecycle of the app.
     /// Created with `headless()`: never windowed, and without a real text system.
     headless: bool,
@@ -283,6 +287,7 @@ impl WindowsPlatform {
             raw_window_handles,
             initial_windowing: RefCell::new(None),
             vsync_stop: RefCell::new(None),
+            vsync_wake: VSyncWake::new()?,
             headless,
             icon,
             background_executor,
@@ -328,6 +333,7 @@ impl WindowsPlatform {
             directx_devices: self.inner.state.directx_devices.borrow().clone().unwrap(),
             invalidate_devices: self.invalidate_devices.clone(),
             draw_coordinator: self.inner.state.draw_coordinator.clone(),
+            vsync_wake: self.vsync_wake.clone(),
         }
     }
 
@@ -436,6 +442,8 @@ impl WindowsPlatform {
             // Not joined: the thread can be sending this thread a message. It exits after its
             // next vsync, and drops its reference to the devices then.
             stop.store(true, Ordering::Release);
+            // Arke: with no window left it is asleep; wake it so it can exit.
+            self.vsync_wake.notify();
         }
         if let Some(text_system) = &self.direct_write_text_system {
             text_system.release_gpu();
@@ -458,12 +466,38 @@ impl WindowsPlatform {
         let all_windows = Arc::downgrade(&self.raw_window_handles);
         let text_system = Arc::downgrade(direct_write_text_system);
         let invalidate_devices = self.invalidate_devices.clone();
+        let vsync_wake = self.vsync_wake.clone();
 
         std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                let mut device_removed = DeviceRemovedEvent::register(&directx_device.device);
                 loop {
+                    // Arke: sleep while no visible window needs frames, instead of waking the UI
+                    // thread on every vblank (see `frame_gate.rs`).
+                    {
+                        let Some(all_windows) = all_windows.upgrade() else {
+                            break;
+                        };
+                        vsync_wake.reset();
+                        // After the reset, so a stop signaled before it is still seen.
+                        if stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let ticking = all_windows
+                            .read()
+                            .iter()
+                            .any(|window| !window.frames.is_idle() && is_shown(window.as_raw()));
+                        drop(all_windows);
+                        if !ticking
+                            && !invalidate_devices.load(Ordering::Acquire)
+                            && vsync_wake.wait(device_removed.as_ref())
+                                == WakeReason::DeviceRemoved
+                        {
+                            log::info!("device removed while no window was drawing");
+                        }
+                    }
                     let signal_source = vsync_provider.wait_for_vsync();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
@@ -481,22 +515,26 @@ impl WindowsPlatform {
                         ) {
                             panic!("Device lost: {err}");
                         }
+                        device_removed = DeviceRemovedEvent::register(&directx_device.device);
                     }
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
                     };
                     for hwnd in all_windows.read().iter() {
+                        if !is_shown(hwnd.as_raw()) {
+                            // Hidden windows may not consume WM_PAINT until shown again. Arke:
+                            // nor are they invalidated; showing or restoring one wakes it
+                            // (`report_visibility`).
+                            hwnd.frame_signal.take();
+                            continue;
+                        }
+                        if hwnd.frames.is_idle() {
+                            continue;
+                        }
+                        if let Some(signal_at) = signal_at {
+                            hwnd.frame_signal.record(signal_at, signal_source);
+                        }
                         unsafe {
-                            if let Some(signal_at) = signal_at {
-                                if IsWindowVisible(hwnd.as_raw()).as_bool()
-                                    && !IsIconic(hwnd.as_raw()).as_bool()
-                                {
-                                    hwnd.frame_signal.record(signal_at, signal_source);
-                                } else {
-                                    // Hidden windows may not consume WM_PAINT until shown again.
-                                    hwnd.frame_signal.take();
-                                }
-                            }
                             RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
                                 .ok()
                                 .log_err();
@@ -774,6 +812,7 @@ impl Platform for WindowsPlatform {
         self.raw_window_handles.write().push(TrackedWindow {
             handle: handle.into(),
             frame_signal: window.state.frame_signal.clone(),
+            frames: window.state.frames.clone(),
         });
 
         Ok(Box::new(window))
@@ -1477,6 +1516,7 @@ impl Drop for WindowsPlatform {
     fn drop(&mut self) {
         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
             stop.store(true, Ordering::Release);
+            self.vsync_wake.notify();
         }
         unsafe {
             if let Some(notification) = self.suspend_resume_notification.borrow_mut().take() {
@@ -1510,6 +1550,8 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) invalidate_devices: Arc<AtomicBool>,
     /// Shared with [`WindowsPlatformState::draw_coordinator`] and every other window.
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
+    /// Arke: wakes the vsync thread when the window needs frames.
+    pub(crate) vsync_wake: Arc<VSyncWake>,
 }
 
 struct PlatformWindowCreateContext {
@@ -1725,6 +1767,11 @@ fn load_icon() -> Result<HICON> {
 fn should_auto_hide_scrollbars() -> Result<bool> {
     let ui_settings = UISettings::new()?;
     Ok(ui_settings.AutoHideScrollBars()?)
+}
+
+/// Visible and not minimized: the windows the vsync thread ticks.
+fn is_shown(hwnd: HWND) -> bool {
+    unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
 }
 
 fn check_device_lost(device: &ID3D11Device) -> bool {

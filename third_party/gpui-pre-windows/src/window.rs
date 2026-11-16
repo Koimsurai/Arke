@@ -55,6 +55,8 @@ pub struct WindowsWindowState {
 
     pub callbacks: Callbacks,
     pub frame_signal: Arc<PlatformFrameSignal>,
+    /// Arke: whether the vsync thread should keep ticking this window (see `frame_gate.rs`).
+    pub(crate) frames: Arc<WindowFrames>,
     pub input_handler: Cell<Option<PlatformInputHandler>>,
     pub ime_enabled: Cell<bool>,
     pub pending_surrogate: Cell<Option<u16>>,
@@ -124,6 +126,7 @@ impl WindowsWindowState {
         disable_direct_composition: bool,
         invalidate_devices: Arc<AtomicBool>,
         draw_coordinator: Rc<DrawCoordinator>,
+        vsync_wake: Arc<VSyncWake>,
     ) -> Result<Self> {
         let scale_factor = {
             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
@@ -171,6 +174,7 @@ impl WindowsWindowState {
             min_size,
             callbacks,
             frame_signal: Arc::new(PlatformFrameSignal::new()),
+            frames: Arc::new(WindowFrames::new(vsync_wake)),
             input_handler: Cell::new(input_handler),
             ime_enabled: Cell::new(true),
             pending_surrogate: Cell::new(pending_surrogate),
@@ -282,6 +286,7 @@ impl WindowsWindowInner {
             context.disable_direct_composition,
             context.invalidate_devices.clone(),
             context.draw_coordinator.clone(),
+            context.vsync_wake.clone(),
         )?;
 
         Ok(Rc::new(Self {
@@ -433,6 +438,7 @@ struct WindowCreateContext {
     directx_devices: DirectXDevices,
     invalidate_devices: Arc<AtomicBool>,
     draw_coordinator: Rc<DrawCoordinator>,
+    vsync_wake: Arc<VSyncWake>,
     parent_hwnd: Option<HWND>,
 }
 
@@ -461,6 +467,7 @@ impl WindowsWindow {
             directx_devices,
             invalidate_devices,
             draw_coordinator,
+            vsync_wake,
         } = creation_info;
         register_window_class(icon);
         let parent_hwnd = if params.kind == WindowKind::Dialog {
@@ -546,6 +553,7 @@ impl WindowsWindow {
             directx_devices,
             invalidate_devices,
             draw_coordinator,
+            vsync_wake,
             parent_hwnd,
         };
         let creation_result = unsafe {
@@ -974,6 +982,22 @@ impl PlatformWindow for WindowsWindow {
         self.state.callbacks.request_frame.set(Some(callback));
     }
 
+    // Arke: GPUI calls the frame waker whenever a window needs a frame, so the vsync thread can
+    // stop ticking idle windows (see `frame_gate.rs`).
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let frames = Arc::downgrade(&self.state.frames);
+        Some(Rc::new(move || {
+            if let Some(frames) = frames.upgrade() {
+                frames.wake();
+            }
+        }))
+    }
+
+    // GPUI calls this without the frame waker when a window only needs a present.
+    fn schedule_frame(&self) {
+        self.state.frames.wake();
+    }
+
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
         self.state.callbacks.input.set(Some(callback));
     }
@@ -1041,6 +1065,9 @@ impl PlatformWindow for WindowsWindow {
             .borrow_mut()
             .draw(scene, self.state.background_appearance.get())
             .log_err();
+        // Arke: a window that presented gets one more tick, which serves anything GPUI deferred
+        // meanwhile (a request that came in during a synchronous draw) before it goes idle.
+        self.state.frames.wake();
     }
 
     #[cfg(feature = "test-support")]

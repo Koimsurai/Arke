@@ -267,6 +267,8 @@ impl WindowsWindowInner {
             self.state
                 .invalidate_devices
                 .store(true, std::sync::atomic::Ordering::Release);
+            // Arke: the vsync thread handles it, so it must not be asleep.
+            self.state.frames.wake();
         }
         if let Some(mut callback) = self.state.callbacks.resize.take() {
             callback(new_logical_size, scale_factor);
@@ -1285,6 +1287,9 @@ impl WindowsWindowInner {
     // update completes, as activation does. The state is read at delivery so
     // a burst of messages collapses to the final value.
     fn report_visibility(self: &Rc<Self>) {
+        // Arke: hidden and minimized windows aren't ticked; tick again once shown, so whatever
+        // changed meanwhile gets drawn.
+        self.state.frames.wake();
         if self.state.last_visibility.get().is_none() {
             return;
         }
@@ -1361,7 +1366,9 @@ impl WindowsWindowInner {
             // loop until the in-progress draw unwinds. The vsync thread
             // re-invalidates every window on each vsync (see
             // `begin_vsync_thread`), so the deferred frame still gets drawn,
-            // at most one vsync late.
+            // at most one vsync late. Arke: only busy windows are ticked, so
+            // mark this one busy.
+            self.state.frames.wake();
             unsafe { ValidateRect(Some(handle), None).ok().log_err() };
             return Some(0);
         };
@@ -1389,12 +1396,15 @@ impl WindowsWindowInner {
             (None, FrameRequestSource::NativeCallback),
             |(at, source)| (Some(at), source),
         );
+        // Arke: the window goes idle unless GPUI presents or asks for another frame meanwhile.
+        self.state.frames.begin_frame();
         request_frame(RequestFrameOptions {
             require_presentation: false,
             force_render,
             signal_at,
             signal_source,
         });
+        self.state.frames.end_frame();
 
         self.state.callbacks.request_frame.set(Some(request_frame));
         self.update_ime_enabled(handle);

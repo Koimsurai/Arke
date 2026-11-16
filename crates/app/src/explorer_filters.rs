@@ -658,6 +658,19 @@ impl Explorer {
                         .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                             cx.stop_propagation();
                         })
+                        // A press anywhere else closes it, like any menu. Its own button is left
+                        // to the button's click, which closes it (closing here would reopen it).
+                        .on_mouse_down_out({
+                            let geometry = Rc::clone(&self.panel_geometry);
+                            cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                                let on_button = geometry.borrow().buttons[facet_slot(facet)]
+                                    .is_some_and(|b| b.contains(&e.position));
+                                if !on_button && this.filter_menu == Some(facet) {
+                                    this.filter_menu = None;
+                                    cx.notify();
+                                }
+                            })
+                        })
                         .min_w(theme::FILTER_MENU_W)
                         .p(theme::S_4)
                         .flex()
@@ -948,6 +961,18 @@ fn switch_look(on: bool, usable: bool) -> impl IntoElement {
                     theme::text_muted()
                 }),
         )
+}
+
+#[cfg(test)]
+impl Explorer {
+    /// The search panel's bounds and `facet`'s button, as last drawn.
+    pub(crate) fn panel_geometry_for_test(
+        &self,
+        facet: Facet,
+    ) -> (Option<Bounds<Pixels>>, Option<Bounds<Pixels>>) {
+        let g = self.panel_geometry.borrow();
+        (g.panel, g.buttons[facet_slot(facet)])
+    }
 }
 
 #[cfg(test)]

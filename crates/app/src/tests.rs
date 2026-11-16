@@ -6540,3 +6540,47 @@ fn going_back_to_an_ancestor_selects_the_folder_on_the_way(cx: &mut TestAppConte
     cx.run_until_parked();
     assert_eq!(view.update(cx, |e, _| selected_names(e)), vec!["b"]);
 }
+
+/// A filter's menu closes on a press anywhere outside it, like any menu: blank space in the
+/// panel, another filter (whose menu opens instead) or its own button.
+#[gpui::test]
+fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
+    use arke_core::index_query::Facet;
+    use gpui::{Modifiers, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\k", vec![file("a.jpg", 1), file("memo.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\k");
+    wait_until(cx, &view, "load", loaded(r"C:\k"));
+    cx.dispatch_action(FocusFilter);
+    cx.run_until_parked();
+    let menu = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.update(cx, |v, _| v.panel_state_for_test(window).2))
+            .map(|(facet, _)| facet)
+    };
+    let geometry = |cx: &mut VisualTestContext, facet| {
+        let (panel, button) = view.update(cx, |v, _| v.panel_geometry_for_test(facet));
+        (panel.expect("panel drawn"), button.expect("button drawn"))
+    };
+    let (panel, type_button) = geometry(cx, Facet::Type);
+    let (_, size_button) = geometry(cx, Facet::Size);
+    let click = |cx: &mut VisualTestContext, at| {
+        cx.simulate_click(at, Modifiers::none());
+        cx.run_until_parked();
+    };
+
+    click(cx, type_button.center());
+    assert_eq!(menu(cx), Some(Facet::Type));
+    // Blank space at the panel's top right corner.
+    click(cx, point(panel.right() - px(8.), panel.top() + px(8.)));
+    assert_eq!(menu(cx), None, "blank space in the panel");
+    assert!(
+        !view.update(cx, |v, _| v.panel_dismissed_for_test()),
+        "the panel stays"
+    );
+
+    click(cx, type_button.center());
+    click(cx, size_button.center());
+    assert_eq!(menu(cx), Some(Facet::Size), "another filter opens its menu");
+    click(cx, size_button.center());
+    assert_eq!(menu(cx), None, "its own button closes it");
+}

@@ -231,8 +231,52 @@ pub(crate) fn tinted(icon: Icon, size: Pixels, color: impl Into<Hsla>) -> AnyEle
     }
 }
 
+/// Progress ring track: the whole circle the arcs of [`ring_arc`] run along.
+pub(crate) const RING_TRACK: &str = "ring/track.svg";
+/// Arc lengths the ring is drawn with: `ring_arc` rounds to 1/RING_STEPS of a turn.
+const RING_STEPS: u32 = 48;
+
+/// Progress ring arc of `sweep` turns, clockwise from 12 o'clock. Made when first loaded (see
+/// [`ring_svg`]); GPUI rasterizes each length once, and the spinner rotates the same sprite.
+pub(crate) fn ring_arc(sweep: f32) -> String {
+    let steps = (sweep.clamp(0., 1.) * RING_STEPS as f32).round() as u32;
+    format!("ring/arc-{}.svg", steps.clamp(1, RING_STEPS))
+}
+
+/// The SVG for a [`RING_TRACK`] or [`ring_arc`] path: a 2-unit stroke of radius 7 on the 16-unit
+/// grid, like the icons.
+fn ring_svg(path: &str) -> Option<String> {
+    let shape = if path == RING_TRACK {
+        r#"<circle cx="8" cy="8" r="7"/>"#.to_owned()
+    } else {
+        let steps: u32 = path
+            .strip_prefix("ring/arc-")?
+            .strip_suffix(".svg")?
+            .parse()
+            .ok()?;
+        if !(1..=RING_STEPS).contains(&steps) {
+            return None;
+        }
+        if steps == RING_STEPS {
+            r#"<circle cx="8" cy="8" r="7"/>"#.to_owned()
+        } else {
+            let turn = steps as f32 / RING_STEPS as f32;
+            let angle = turn * std::f32::consts::TAU;
+            let (x, y) = (8. + 7. * angle.sin(), 8. - 7. * angle.cos());
+            let large = u8::from(turn > 0.5);
+            format!(r#"<path d="M8 1A7 7 0 {large} 1 {x:.3} {y:.3}"/>"#)
+        }
+    };
+    Some(format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="2">{shape}</svg>"##
+    ))
+}
+
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path.starts_with("ring/") {
+            return Ok(ring_svg(path).map(|svg| Cow::Owned(svg.into_bytes())));
+        }
         let name = path
             .strip_prefix("icons/")
             .and_then(|p| p.strip_suffix(".svg"));
@@ -256,6 +300,25 @@ impl AssetSource for Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The progress ring's layers load for every length it can be drawn with, and nothing else.
+    #[test]
+    fn ring_arcs_load_for_every_length() {
+        let load = |path: &str| Assets.load(path).unwrap();
+        for sweep in [0., 0.01, 0.04, 0.25, 0.5, 0.51, 0.99, 1.] {
+            let path = ring_arc(sweep);
+            let svg = load(&path).unwrap_or_else(|| panic!("{path}"));
+            let svg = String::from_utf8_lossy(&svg);
+            assert!(svg.contains(r#"viewBox="0 0 16 16""#), "{svg}");
+        }
+        assert_eq!(ring_arc(0.25), "ring/arc-12.svg");
+        assert!(load(RING_TRACK).is_some());
+        assert!(load("ring/arc-0.svg").is_none());
+        assert!(load("ring/arc-49.svg").is_none());
+        // More than half a turn takes the long way round.
+        let long = load(&ring_arc(0.75)).unwrap();
+        assert!(String::from_utf8_lossy(&long).contains("0 1 1 "));
+    }
 
     /// Every icon is drawn on the same 16-unit grid, so icons line up at any size.
     #[test]

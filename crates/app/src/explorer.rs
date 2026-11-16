@@ -832,8 +832,8 @@ pub(crate) struct Explorer {
     /// Scroll position and scrollbar for scrollable content in the preview pane and Quick Look
     /// (text, folders, archives).
     pub(crate) preview_scroll: gpui::ScrollHandle,
-    /// Where the progress ring is drawn now; eases toward the real progress.
-    pub(crate) ring_shown: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Where the progress ring is drawn now (eases toward the real progress), and its next frame.
+    pub(crate) ring: std::rc::Rc<op_view::RingState>,
     pub(crate) preview_scrollbar: crate::scrollbar::ScrollbarDrag,
     pub(crate) look_scroll: gpui::ScrollHandle,
     pub(crate) look_scrollbar: crate::scrollbar::ScrollbarDrag,
@@ -1076,7 +1076,7 @@ impl Explorer {
             scrollbar_drag: crate::scrollbar::ScrollbarDrag::default(),
             hscrollbar_drag: crate::scrollbar::ScrollbarDrag::default(),
             preview_scroll: gpui::ScrollHandle::new(),
-            ring_shown: std::rc::Rc::default(),
+            ring: std::rc::Rc::default(),
             preview_scrollbar: crate::scrollbar::ScrollbarDrag::default(),
             look_scroll: gpui::ScrollHandle::new(),
             look_scrollbar: crate::scrollbar::ScrollbarDrag::default(),

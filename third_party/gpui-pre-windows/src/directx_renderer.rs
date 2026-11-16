@@ -74,8 +74,9 @@ struct DirectXResources {
     render_target_view: Option<ID3D11RenderTargetView>,
 
     // Path intermediate textures (with MSAA). Arke: made on the first frame that draws a path
-    // and dropped on resize, instead of always. They take 20 of the 28 bytes per window pixel,
-    // and on GPUs that share system memory they count as the process's private bytes (#95).
+    // and dropped on resize or on the next frame without paths, instead of always. They take 20
+    // of the 28 bytes per window pixel, and on GPUs that share system memory they count as the
+    // process's private bytes (#95).
     paths: Option<PathTextures>,
 
     // Cached viewport
@@ -356,6 +357,12 @@ impl DirectXRenderer {
             // skip drawing this frame, we just recovered from a device lost event
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
+        }
+        // Arke: a frame without paths drops the path textures until a path is drawn again.
+        if scene.paths.is_empty()
+            && let Some(resources) = self.resources.as_mut()
+        {
+            resources.paths = None;
         }
         self.render(scene, background_appearance)?;
         self.present()

@@ -346,6 +346,105 @@ fn double_clicking_a_divider_fits_the_column(cx: &mut TestAppContext) {
     );
 }
 
+/// Painted bounds of `selector`, which must be drawn.
+fn drawn(cx: &mut VisualTestContext, selector: &'static str) -> gpui::Bounds<Pixels> {
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is not drawn"))
+}
+
+/// Drags the preview pane's edge (its left border) by `dx`.
+fn drag_preview_edge(cx: &mut VisualTestContext, dx: Pixels) {
+    let pane = drawn(cx, "preview-pane");
+    let at = point(pane.left() + px(3.), pane.center().y);
+    cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        at + point(dx / 2., px(0.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(at + point(dx, px(0.)), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(at + point(dx, px(0.)), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// A reported layout: a 1600 px window with the sidebar, the preview pane dragged to 336 px,
+/// Date created on and some columns sized by hand. The columns fit beside the preview pane
+/// (Name gives way, the hand-sized columns keep their widths), also after widening the pane or a
+/// column by dragging; once Name is at its minimum the list scrolls, and its end clears the
+/// preview pane.
+#[gpui::test]
+fn columns_fit_beside_the_preview_pane(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1), file("b.txt", 2)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\p");
+    cx.simulate_resize(gpui::size(px(1600.), px(900.)));
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    change_settings(cx, |st| {
+        st.preview_pane = true;
+        st.preview_width = Some(336);
+        st.show_created = true;
+        st.column_widths.set(Col::Created, Some(149));
+        st.column_widths.set(Col::Type, Some(149));
+        st.column_widths.set(Col::Size, Some(75));
+    });
+    assert_eq!(view.update(cx, |v, _| v.fit_for_test()), (true, 336.));
+    let hand_sized = |cx: &mut VisualTestContext| {
+        [Col::Modified, Col::Created, Col::Type, Col::Size].map(|col| {
+            let cols = columns(&view, cx);
+            cols.iter().find(|c| c.0 == col).map(|c| c.2)
+        })
+    };
+    let widths = [140., 149., 149., 75.].map(|w| Some(px(w)));
+    let size_clears_the_preview = |cx: &mut VisualTestContext, when: &str| {
+        let size = drawn(cx, "details-header-size");
+        let pane = drawn(cx, "preview-pane");
+        assert!(
+            size.right() <= pane.left(),
+            "{when}: the Size header ends at {:?}, under the preview pane from {:?}",
+            size.right(),
+            pane.left()
+        );
+    };
+    let scroll_max =
+        |cx: &mut VisualTestContext| view.update(cx, |v, _| v.list_scroll_max_for_test().x);
+
+    size_clears_the_preview(cx, "336 px preview");
+    assert!(scroll_max(cx) < px(0.5), "fits without scrolling");
+    assert_eq!(hand_sized(cx), widths);
+
+    // A wider preview pane: Name narrows to make room, the others keep their widths.
+    let name = columns(&view, cx)[0].2;
+    drag_preview_edge(cx, px(-100.));
+    assert_eq!(view.update(cx, |v, _| v.fit_for_test()), (true, 436.));
+    assert_eq!(columns(&view, cx)[0].2, name - px(100.));
+    size_clears_the_preview(cx, "436 px preview");
+    assert!(scroll_max(cx) < px(0.5), "still fits without scrolling");
+    assert_eq!(hand_sized(cx), widths);
+
+    // Sizing Size by hand: its divider follows the cursor (Name holds still during the drag),
+    // and Name gives up the room on release, down to its minimum.
+    drag_divider(&view, cx, Col::Size, px(40.));
+    let widths = [140., 149., 149., 115.].map(|w| Some(px(w)));
+    assert_eq!(hand_sized(cx), widths);
+    assert_eq!(saved_width(cx, Col::Size), Some(115));
+    assert_eq!(columns(&view, cx)[0].2, crate::theme::COL_NAME);
+
+    // Wider still: Name stays at its minimum, and the list scrolls to its last column.
+    drag_preview_edge(cx, px(-150.));
+    assert_eq!(columns(&view, cx)[0].2, crate::theme::COL_NAME);
+    assert_eq!(hand_sized(cx), widths);
+    assert!(scroll_max(cx) > px(0.), "too wide for the list: it scrolls");
+    let list = view.update(cx, |v, _| v.list_bounds_for_test());
+    cx.simulate_event(gpui::ScrollEvent {
+        position: list.origin + point(px(80.), px(40.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(-2000.), px(0.))),
+        ..gpui::ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    size_clears_the_preview(cx, "scrolled to the end");
+}
+
 /// Links get their target in the Link target column (read in the background) and "Go to link
 /// target", which opens the target's folder with the target selected.
 #[gpui::test]

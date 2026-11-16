@@ -56,22 +56,20 @@ pub(super) struct Columns {
     pub(super) row: Pixels,
 }
 
-/// What the default columns (Modified, Type and Size, with their gaps and the row's padding)
-/// take next to Name; the automatic Name width is what's left of the pane after them.
-const DEFAULT_OTHERS: Pixels = px(12. + 16. + (12. + 140.) + (12. + 130.) + (12. + 84.));
-
 /// The Details columns in a list with `room` for rows (the pane less [`LIST_CHROME`]). `name` is
-/// the width the user gave the Name column; until then it takes what the default columns would
-/// leave, kept between [`theme::COL_NAME`] and [`theme::COL_NAME_MAX`] so it's roomy in a wide
-/// window without pushing the other columns far away. It follows the pane only, never the other
-/// columns (`others`, left to right), so sizing one of them never moves Name's edge.
+/// the width the user gave the Name column; until then it takes what the other columns
+/// (`others`, left to right, as shown and sized) leave, kept between [`theme::COL_NAME`] and
+/// [`theme::COL_NAME_MAX`] so it's roomy in a wide window without pushing the other columns far
+/// away. So Name gives way first when the pane narrows (the preview pane widens, a column is
+/// switched on or sized wider); only once it's at its minimum do the columns scroll.
 pub(super) fn columns(room: Pixels, name: Option<Pixels>, others: &[Pixels]) -> Columns {
     let rest = others.iter().fold(px(0.), |sum, w| sum + COL_GAP + *w);
+    let pad = ROW_PAD_L + ROW_PAD_R;
     let name =
-        name.unwrap_or_else(|| (room - DEFAULT_OTHERS).clamp(theme::COL_NAME, theme::COL_NAME_MAX));
+        name.unwrap_or_else(|| (room - pad - rest).clamp(theme::COL_NAME, theme::COL_NAME_MAX));
     Columns {
         name,
-        row: ROW_PAD_L + ROW_PAD_R + name + rest,
+        row: pad + name + rest,
     }
 }
 
@@ -410,16 +408,12 @@ mod tests {
         assert_eq!(wide.row - narrow.row, px(60.));
     }
 
-    /// Until the user sizes it, Name takes what the default columns leave, between its bounds: a
+    /// Until the user sizes it, Name takes what the other columns leave, between its bounds: a
     /// wide window gets a roomy name and blank space after the columns, a narrow one the minimum
-    /// (and scrolls sideways). Other columns' widths don't move it.
+    /// (and scrolls sideways). A wider or an extra column takes its room from Name.
     #[test]
     fn the_default_name_width_follows_the_room() {
         let rest = OTHERS.iter().fold(px(0.), |s, w| s + COL_GAP + *w) + ROW_PAD_L + ROW_PAD_R;
-        assert_eq!(
-            rest, DEFAULT_OTHERS,
-            "in step with the theme's default widths"
-        );
         let mid = columns(rest + px(380.), None, &OTHERS);
         assert_eq!(mid.name, px(380.));
         assert_eq!(mid.row, rest + px(380.), "fills the room exactly");
@@ -427,11 +421,18 @@ mod tests {
         assert_eq!(wide.name, theme::COL_NAME_MAX);
         assert!(wide.row < px(2400.), "blank background after the columns");
         let wider = [theme::COL_MODIFIED, theme::COL_TYPE, px(200.)];
-        assert_eq!(
-            columns(rest + px(380.), None, &wider).name,
-            px(380.),
-            "a wider Size doesn't squeeze the name"
-        );
+        let c = columns(rest + px(380.), None, &wider);
+        assert_eq!(c.name, px(380.) - (px(200.) - theme::COL_SIZE));
+        assert_eq!(c.row, rest + px(380.), "a wider Size still fits");
+        let more = [
+            theme::COL_MODIFIED,
+            theme::COL_MODIFIED,
+            theme::COL_TYPE,
+            theme::COL_SIZE,
+        ];
+        let c = columns(rest + px(420.), None, &more);
+        assert_eq!(c.name, px(420.) - COL_GAP - theme::COL_MODIFIED);
+        assert_eq!(c.row, rest + px(420.), "so does an extra column");
         let narrow = columns(px(300.), None, &OTHERS);
         assert_eq!(narrow.name, theme::COL_NAME);
         assert!(

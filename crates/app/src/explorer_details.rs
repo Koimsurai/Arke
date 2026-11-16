@@ -99,8 +99,9 @@ impl Explorer {
     }
 
     /// The fixed-width columns of the Details view or search results in this pane (`None` in the
-    /// grid and the column view, whose rows span the list).
-    pub(super) fn compute_columns(&self) -> Option<layout::Columns> {
+    /// grid and the column view, whose rows span the list). `held_name` keeps an automatic Name
+    /// width as it is (see `before_render`).
+    pub(super) fn compute_columns(&self, held_name: Option<Pixels>) -> Option<layout::Columns> {
         let others: Vec<Pixels> = if self.search_mode {
             vec![
                 theme::COL_LOCATION,
@@ -114,7 +115,7 @@ impl Explorer {
         };
         Some(layout::columns(
             self.pane_width - layout::LIST_CHROME,
-            crate::prefs::user_width(Col::Name),
+            crate::prefs::user_width(Col::Name).or(held_name),
             &others,
         ))
     }
@@ -317,6 +318,7 @@ impl Explorer {
         let label: SharedString = col.label().into_owned().into();
         let cell = div()
             .id(("details-header", col as usize))
+            .debug_selector(move || format!("details-header-{}", col.key()))
             .a11y_column_header(label.clone(), key.map(|(_, ascending)| ascending))
             .flex()
             .h_full()

@@ -2838,7 +2838,13 @@ impl Explorer {
             } else {
                 px(0.)
             };
-        self.cols = self.compute_columns();
+        // While a column divider is dragged, Name keeps its width: fitting it to the other
+        // columns live would move the dragged column's left edge, which the drag measures from.
+        // It fits again on release.
+        let held_name = (self.column_resized && cx.has_active_drag())
+            .then(|| self.cols.map(|c| c.name))
+            .flatten();
+        self.cols = self.compute_columns(held_name);
         self.header_x.set(None);
         // Preview pane edge released: save the width (app-wide).
         if self.preview_resized && !cx.has_active_drag() {
@@ -3044,6 +3050,7 @@ impl Explorer {
             self.preview_cue.wrap(
                 div()
                 .id("preview-pane")
+                .debug_selector(|| "preview-pane".to_owned())
                 .a11y(gpui::Role::Region, t!("settings.preview"))
                 .when_some(
                     description,

@@ -6,8 +6,11 @@
 //! - **Changes**: one recursive watch per root. Changed paths accumulate briefly, then get `stat`ed
 //!   in the background (attributes only, no open, so cloud placeholders aren't downloaded) and
 //!   recorded in the [`Overlay`].
-//! - **Rebuild**: when the overlay grows too large or watch events are lost (buffer overflow).
-//!   Records already reflected in the new index are dropped afterwards.
+//! - **Merge**: when the overlay grows too large, it is folded into a new saved index
+//!   ([`Index::merged`]) without walking again.
+//! - **Rebuild**: when too many changes arrive at once or watch events are lost (buffer overflow);
+//!   each one logs its [`Rebuild`] reason. Records already reflected in the new index are dropped
+//!   afterwards.
 //! - **Queries**: [`IndexService::search`] is fast but still belongs on a background thread. When a
 //!   query extends the previous one (`car` -> `carg`), only the previous matches are searched.
 //!
@@ -38,19 +41,36 @@ use crate::journal::{Change, Cursor, Journal, JournalEvent};
 use crate::rank::Stat;
 
 /// Rebuild once the overlay exceeds this many records.
+#[cfg(not(test))]
 const OVERLAY_MAX: usize = 100_000;
+#[cfg(test)]
+const OVERLAY_MAX: usize = 20;
 /// List at most this many items in a moved-in folder; more means rebuild.
+#[cfg(not(test))]
 const MOVED_IN_MAX: usize = 50_000;
+#[cfg(test)]
+const MOVED_IN_MAX: usize = 10;
 /// After lost watch events, minimum time since the last rebuild before rebuilding again (busy
 /// system drives overflow often, and a rebuild takes tens of seconds).
 const RESCAN_MIN_GAP: Duration = Duration::from_hours(1);
 /// How often to check whether the index is stale while running.
 const REFRESH_CHECK: Duration = Duration::from_mins(10);
-/// How often to save a checkpoint with a journal (latest position + changes since the build).
+/// How often to consider saving a checkpoint with a journal (latest position + changes since the
+/// build); [`checkpoint_due`] decides whether one is written.
 #[cfg(not(test))]
 const CHECKPOINT_EVERY: Duration = Duration::from_mins(2);
 #[cfg(test)]
 const CHECKPOINT_EVERY: Duration = Duration::from_millis(40);
+/// When checkpoints are written (see [`CheckpointPolicy::due`]).
+const CHECKPOINTS: CheckpointPolicy = if cfg!(test) {
+    CheckpointPolicy {
+        records: 1_000,
+        max_age: Duration::from_millis(400),
+        position_age: Duration::from_millis(1200),
+    }
+} else {
+    CheckpointPolicy::DEFAULT
+};
 /// Checkpoint file magic.
 const CHECKPOINT_MAGIC: &[u8; 8] = b"ARKECKP1";
 /// How often to ask again when a rebuild is deferred (low memory, power saving).
@@ -123,6 +143,53 @@ pub struct IndexStatus {
     pub waiting: bool,
 }
 
+/// Why a whole root is walked (or listed from the MFT) again; logged with every rebuild so a
+/// report shows what keeps triggering them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rebuild {
+    /// No saved index (first run, or the file is gone).
+    NoIndex,
+    /// The saved index can't be read (damaged, older format).
+    Unreadable,
+    /// The saved index was built with other roots, build-folder or exclusion settings.
+    SettingsChanged,
+    /// Older than [`IndexOptions::refresh_after`] (volumes without the journal miss changes
+    /// made while Arke was closed).
+    Stale,
+    /// The saved journal position doesn't connect to the journal on disk (recreated, wrapped).
+    JournalMismatch,
+    /// The journal lost records while following.
+    JournalGap,
+    /// The folder watcher lost events (its buffer overflowed).
+    WatchOverflow,
+    /// This many changes recorded since the build.
+    OverlayFull(usize),
+    /// This many changes arrived at once (e.g. replaying a long absence).
+    TooManyChanges(usize),
+    /// A folder moved in holds more than this many items.
+    LargeMoveIn(usize),
+    /// Asked for ("Rebuild" in settings).
+    Requested,
+}
+
+impl std::fmt::Display for Rebuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::NoIndex => f.write_str("no saved index"),
+            Self::Unreadable => f.write_str("saved index unreadable"),
+            Self::SettingsChanged => f.write_str("index settings changed"),
+            Self::Stale => f.write_str("saved index too old"),
+            Self::JournalMismatch => f.write_str("journal doesn't match the saved index"),
+            Self::JournalGap => f.write_str("journal gap"),
+            Self::WatchOverflow => f.write_str("folder watch lost events"),
+            Self::OverlayFull(n) => write!(f, "{n} changes since the last build"),
+            Self::TooManyChanges(n) => write!(f, "{n} changes at once"),
+            Self::LargeMoveIn(n) => write!(f, "moved-in folder with over {n} items"),
+            Self::Requested => f.write_str("requested"),
+        }
+    }
+}
+
 /// Global search index kept up to date in the background (see the module docs).
 pub struct IndexService {
     shared: Arc<Shared>,
@@ -148,6 +215,21 @@ struct Shared {
     checkpointed: Mutex<Vec<Option<Cursor>>>,
     /// Positions read from the checkpoint at startup (newer than the ones saved at build time).
     resumed_from: Mutex<Vec<Option<Cursor>>>,
+    /// When the last checkpoint was written in this run and the overlay sequence it covered.
+    last_checkpoint: Mutex<Option<(Instant, u64)>>,
+    /// Checkpoints written and their total bytes (to keep SSD writes in check; tests read them).
+    checkpoint_writes: std::sync::atomic::AtomicU64,
+    checkpoint_bytes: std::sync::atomic::AtomicU64,
+    /// Why there is no usable saved index (set by `load_cache`).
+    no_index: Mutex<Rebuild>,
+    /// Reason of a rebuild waiting for resources ([`IndexOptions::can_build`]).
+    deferred_reason: Mutex<Option<Rebuild>>,
+    /// Reason of the last rebuild started.
+    last_rebuild: Mutex<Option<Rebuild>>,
+    /// Folding the overlay into the index ([`Shared::merge`]): not a walk, no progress to show.
+    merging: AtomicBool,
+    /// Merges done so far.
+    merges: std::sync::atomic::AtomicU64,
     /// Cache of which folders are Rust projects (their `target` is build output).
     cargo_targets: Mutex<std::collections::HashMap<PathBuf, bool>>,
     /// Changed paths waiting for stat (`true`: moved-in folder, list its contents too).
@@ -223,6 +305,14 @@ impl IndexService {
             latest: Mutex::new(Vec::new()),
             checkpointed: Mutex::new(Vec::new()),
             resumed_from: Mutex::new(Vec::new()),
+            last_checkpoint: Mutex::new(None),
+            checkpoint_writes: std::sync::atomic::AtomicU64::new(0),
+            checkpoint_bytes: std::sync::atomic::AtomicU64::new(0),
+            no_index: Mutex::new(Rebuild::NoIndex),
+            deferred_reason: Mutex::new(None),
+            last_rebuild: Mutex::new(None),
+            merging: AtomicBool::new(false),
+            merges: std::sync::atomic::AtomicU64::new(0),
             cargo_targets: Mutex::new(std::collections::HashMap::new()),
             pending: Mutex::new(Vec::new()),
             draining: AtomicBool::new(false),
@@ -259,8 +349,9 @@ impl IndexService {
                         shared.building.store(false, Ordering::Release);
                         (shared.on_change)();
                     }
-                    Start::Resume(_) | Start::Build => shared.build(),
-                    Start::NoJournal if shared.is_stale() => shared.build(),
+                    Start::Resume(_) => shared.build(Rebuild::Stale),
+                    Start::Build(reason) => shared.build(reason),
+                    Start::NoJournal if shared.is_stale() => shared.build(shared.stale_reason()),
                     Start::NoJournal => {
                         // Saved index is fresh enough: no rewalk.
                         shared.building.store(false, Ordering::Release);
@@ -287,13 +378,14 @@ impl IndexService {
                         shared.save_checkpoint();
                     }
                     if shared.deferred.load(Ordering::Relaxed) && (shared.opts.can_build)() {
-                        shared.request_build();
+                        let reason = shared.deferred_reason.lock().unwrap_or(Rebuild::Stale);
+                        shared.request_build(reason);
                     }
                     if since_check >= REFRESH_CHECK {
                         since_check = Duration::ZERO;
                         // No periodic rebuild needed if every root is journaled.
                         if shared.has_unjournaled() && shared.is_stale() {
-                            shared.request_build();
+                            shared.request_build(shared.stale_reason());
                         }
                     }
                 }
@@ -305,11 +397,9 @@ impl IndexService {
     /// Current status for display; cheap, fine on the UI thread.
     pub fn status(&self) -> IndexStatus {
         let count = self.shared.index.read().as_ref().map(|i| i.len());
-        let scanning = self
-            .shared
-            .building
-            .load(Ordering::Relaxed)
-            .then(|| self.shared.progress.scanned.load(Ordering::Relaxed));
+        let scanning = (self.shared.building.load(Ordering::Relaxed)
+            && !self.shared.merging.load(Ordering::Relaxed))
+        .then(|| self.shared.progress.scanned.load(Ordering::Relaxed));
         let live = self.shared.live.load(Ordering::Relaxed) > 0;
         IndexStatus {
             count,
@@ -327,9 +417,23 @@ impl IndexService {
         limit: usize,
         show_hidden: bool,
     ) -> Vec<IndexHit> {
+        self.search_until(input, clock, limit, show_hidden, &AtomicBool::new(false))
+            .unwrap_or_default()
+    }
+
+    /// [`IndexService::search`] that gives up once `cancel` is set (the user typed on and a newer
+    /// query replaced this one): `None`, and the scan stops within one chunk.
+    pub fn search_until(
+        &self,
+        input: &str,
+        clock: Clock,
+        limit: usize,
+        show_hidden: bool,
+        cancel: &AtomicBool,
+    ) -> Option<Vec<IndexHit>> {
         let index = self.shared.index.read().clone();
         let Some(index) = index else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         let query = Query::parse(input, clock);
         let narrowable = can_narrow(input);
@@ -351,7 +455,11 @@ impl IndexService {
             threads,
             within: within.as_deref().map(Vec::as_slice),
             collect_matched: can_store(input),
+            cancel: Some(cancel),
         });
+        if result.cancelled {
+            return None;
+        }
         if let Some(ids) = result.matched {
             *self.shared.narrow.lock() = Some(Narrow {
                 index: Arc::downgrade(&index),
@@ -360,10 +468,12 @@ impl IndexService {
                 ids: Arc::new(ids),
             });
         }
-        self.shared
-            .overlay
-            .lock()
-            .apply(result.hits, &query, limit, show_hidden)
+        Some(
+            self.shared
+                .overlay
+                .lock()
+                .apply(result.hits, &query, limit, show_hidden),
+        )
     }
 
     /// Visited items matching `input` that this index covers, read from disk: the index's top hits
@@ -446,7 +556,72 @@ impl IndexService {
 
     /// Rewalks (no-op if a build is already running).
     pub fn rebuild(&self) {
-        self.shared.request_build();
+        self.shared.request_build(Rebuild::Requested);
+    }
+
+    /// Times the recorded changes were folded into the index instead of a rebuild.
+    pub fn merges(&self) -> u64 {
+        self.shared.merges.load(Ordering::Relaxed)
+    }
+
+    /// Why the last rebuild started; `None` if none ran (the saved index was used as is).
+    pub fn last_rebuild(&self) -> Option<Rebuild> {
+        *self.shared.last_rebuild.lock()
+    }
+
+    /// Checkpoints written by this service so far, and their total size in bytes.
+    pub fn checkpoint_writes(&self) -> (u64, u64) {
+        (
+            self.shared.checkpoint_writes.load(Ordering::Relaxed),
+            self.shared.checkpoint_bytes.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The last checkpoint holds every recorded change and the latest journal position.
+    #[cfg(test)]
+    fn checkpoint_is_current(&self) -> bool {
+        let shared = &self.shared;
+        let seq = shared.overlay.lock().seq();
+        shared.last_checkpoint.lock().is_some_and(|(_, s)| s == seq)
+            && *shared.checkpointed.lock() == *shared.latest.lock()
+    }
+}
+
+/// When to write a checkpoint.
+///
+/// Every checkpoint rewrites all changes since the build (a few MB on a busy disk), so they are
+/// spaced out. A restart replays the journal from the saved position anyway, so an older one
+/// only means a few more records to replay, never lost changes; only if the journal wrapped past
+/// it would a restart rebuild, and a journal holds far more than `max_age` of changes.
+struct CheckpointPolicy {
+    /// Write once this many changes piled up since the last one...
+    records: u64,
+    /// ...or once the last one is this old and anything changed.
+    max_age: Duration,
+    /// Only the journal position moved (changes outside the index, like temp files): keep it
+    /// fresh enough that a restart still finds it in the journal.
+    position_age: Duration,
+}
+
+impl CheckpointPolicy {
+    const DEFAULT: Self = Self {
+        records: 20_000,
+        max_age: Duration::from_mins(10),
+        position_age: Duration::from_mins(30),
+    };
+
+    /// Whether to write one now. `changes`: records since the last one; `moved`: the journal
+    /// position moved; `age`: time since the last one this run (`None`: none yet, so the
+    /// position on disk may be from an earlier run and is refreshed right away).
+    const fn due(&self, changes: u64, moved: bool, age: Option<Duration>) -> bool {
+        let Some(age) = age else {
+            return changes > 0 || moved;
+        };
+        if changes > 0 {
+            changes >= self.records || age.as_nanos() >= self.max_age.as_nanos()
+        } else {
+            moved && age.as_nanos() >= self.position_age.as_nanos()
+        }
     }
 }
 
@@ -464,7 +639,7 @@ enum Start {
     NoJournal,
     /// Journal available but the saved position doesn't connect (no save, journal replaced):
     /// rebuild.
-    Build,
+    Build(Rebuild),
     /// Resume from saved positions (same order as `roots`, `None` for unjournaled ones).
     Resume(Vec<Option<Cursor>>),
 }
@@ -480,6 +655,15 @@ impl Shared {
         self.age().is_none_or(|age| age >= self.opts.refresh_after)
     }
 
+    /// Reason for a rebuild because [`Shared::is_stale`]: too old, or no usable index at all.
+    fn stale_reason(&self) -> Rebuild {
+        if self.index.read().is_some() {
+            Rebuild::Stale
+        } else {
+            *self.no_index.lock()
+        }
+    }
+
     /// Loads the saved index: picks the newer of `cache` and its alternate (see [`alt_path`]),
     /// mapped directly rather than copied into memory. The other one is deleted.
     fn load_cache(&self) {
@@ -487,6 +671,7 @@ impl Shared {
             return;
         };
         let mut best: Option<(Index, PathBuf)> = None;
+        let mut missing = Rebuild::NoIndex;
         for candidate in [path.clone(), alt_path(path)] {
             match Index::open(&candidate) {
                 // Roots or the skip-build-dirs setting changed: the old index is unusable.
@@ -502,9 +687,12 @@ impl Shared {
                         best = Some((index, candidate));
                     }
                 }
-                Ok(_) => {}
+                Ok(_) => missing = Rebuild::SettingsChanged,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => {
+                    if missing == Rebuild::NoIndex {
+                        missing = Rebuild::Unreadable;
+                    }
                     log::info!(
                         "global search index unusable, rebuilding {}: {err}",
                         candidate.display()
@@ -513,6 +701,7 @@ impl Shared {
             }
         }
         let Some((index, from)) = best else {
+            *self.no_index.lock() = missing;
             return;
         };
         log::info!("loaded index: {} items ({})", index.len(), from.display());
@@ -544,7 +733,7 @@ impl Shared {
         }
         let index = self.index.read().clone();
         let Some(index) = index else {
-            return Start::Build;
+            return Start::Build(*self.no_index.lock());
         };
         let mut saved = Vec::with_capacity(now.len());
         let resumed = self.resumed_from.lock().clone();
@@ -565,10 +754,10 @@ impl Shared {
                 }
                 (Some(_), _) => {
                     log::info!(
-                        "global search: journal for {} doesn't match the index, rebuilding",
+                        "global search: journal for {} doesn't match the index",
                         self.opts.roots[i].display()
                     );
-                    return Start::Build;
+                    return Start::Build(Rebuild::JournalMismatch);
                 }
             }
         }
@@ -665,8 +854,14 @@ impl Shared {
                 if caught_up.swap(false, Ordering::Relaxed) {
                     self.live.fetch_sub(1, Ordering::Relaxed);
                 }
-                log::info!("global search: journal gap, rebuilding");
-                self.request_build();
+                log::info!(
+                    "global search: journal gap on {}",
+                    self.opts
+                        .roots
+                        .get(root)
+                        .map_or_default(|r| r.display().to_string())
+                );
+                self.request_build(Rebuild::JournalGap);
             }
         }
     }
@@ -685,7 +880,17 @@ impl Shared {
         // Take positions before checking the queue: anything arriving later has a newer position
         // and is replayed on restart, never lost.
         let cursors = self.latest.lock().clone();
-        if cursors.iter().all(Option::is_none) || cursors == *self.checkpointed.lock() {
+        if cursors.iter().all(Option::is_none) {
+            return;
+        }
+        let moved = cursors != *self.checkpointed.lock();
+        let last = *self.last_checkpoint.lock();
+        let changes = self
+            .overlay
+            .lock()
+            .seq()
+            .saturating_sub(last.map_or(0, |(_, seq)| seq));
+        if !CHECKPOINTS.due(changes, moved, last.map(|(at, _)| at.elapsed())) {
             return;
         }
         if !self.pending.lock().is_empty()
@@ -711,14 +916,24 @@ impl Shared {
                 None => bytes.extend_from_slice(&[0; 17]),
             }
         }
-        if self.overlay.lock().write_to(&mut bytes).is_err() {
-            return;
-        }
+        let seq = {
+            let overlay = self.overlay.lock();
+            if overlay.write_to(&mut bytes).is_err() {
+                return;
+            }
+            overlay.seq()
+        };
         let path = checkpoint_path(cache);
         let tmp = path.with_extension("checkpoint.tmp");
         let written = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path));
         match written {
-            Ok(()) => *self.checkpointed.lock() = cursors,
+            Ok(()) => {
+                *self.checkpointed.lock() = cursors;
+                *self.last_checkpoint.lock() = Some((Instant::now(), seq));
+                self.checkpoint_writes.fetch_add(1, Ordering::Relaxed);
+                self.checkpoint_bytes
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            }
             Err(err) => log::warn!("failed to save index checkpoint {}: {err}", path.display()),
         }
     }
@@ -810,7 +1025,7 @@ impl Shared {
             WatchEvent::Changed(paths) => self.enqueue(paths.into_iter().map(|p| (p, false))),
             WatchEvent::Rescan => {
                 if self.age().is_none_or(|age| age >= RESCAN_MIN_GAP) {
-                    self.request_build();
+                    self.request_build(Rebuild::WatchOverflow);
                 }
             }
         }
@@ -855,14 +1070,14 @@ impl Shared {
                 is_indexable(roots, p) && !self.in_build_dir(p) && !self.rules.is_inside_excluded(p)
             }));
             // Too many at once (e.g. replaying a long absence): a rebuild is faster.
-            let too_many = pending.len() > OVERLAY_MAX;
-            if too_many {
+            let too_many = (pending.len() > OVERLAY_MAX).then_some(pending.len());
+            if too_many.is_some() {
                 pending.clear();
             }
             too_many
         };
-        if too_many {
-            self.request_build();
+        if let Some(count) = too_many {
+            self.request_build(Rebuild::TooManyChanges(count));
             return;
         }
         if !self.draining.swap(true, Ordering::AcqRel) {
@@ -916,11 +1131,12 @@ impl Shared {
                     .lock()
                     .record(path.clone(), Some(Seen::of(&entry)));
                 if walk && !self.record_tree(&path) {
-                    self.request_build();
+                    self.request_build(Rebuild::LargeMoveIn(MOVED_IN_MAX));
                 }
             }
-            if self.overlay.lock().len() > OVERLAY_MAX {
-                self.request_build();
+            let recorded = self.overlay.lock().len();
+            if recorded > OVERLAY_MAX {
+                self.request_build(Rebuild::OverlayFull(recorded));
             }
         }
     }
@@ -953,14 +1169,18 @@ impl Shared {
     }
 
     /// Rebuilds in the background (no-op if already building).
-    fn request_build(self: &Arc<Self>) {
-        if self.stopped.load(Ordering::Relaxed) || self.building.swap(true, Ordering::AcqRel) {
+    fn request_build(self: &Arc<Self>, reason: Rebuild) {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.building.swap(true, Ordering::AcqRel) {
+            log::debug!("global search: already rebuilding ({reason})");
             return;
         }
         let weak = Arc::downgrade(self);
         spawn("index-build", &self.opts.thread_init, move || {
             if let Some(shared) = weak.upgrade() {
-                shared.build();
+                shared.build(reason);
             }
         });
     }
@@ -968,16 +1188,29 @@ impl Shared {
     /// Walks all roots, swaps in and saves the result. Deferred while resources are tight (the
     /// current index keeps serving).
     #[allow(clippy::too_many_lines, reason = "the build's steps, in order")]
-    fn build(self: &Arc<Self>) {
+    fn build(self: &Arc<Self>, reason: Rebuild) {
         if !(self.opts.can_build)() {
+            *self.deferred_reason.lock() = Some(reason);
             if !self.deferred.swap(true, Ordering::Relaxed) {
-                log::info!("global search: low memory or power saving, deferring index update");
+                log::info!(
+                    "global search: low memory or power saving, deferring index update ({reason})"
+                );
             }
             self.building.store(false, Ordering::Release);
             (self.on_change)();
             return;
         }
         self.deferred.store(false, Ordering::Relaxed);
+        *self.deferred_reason.lock() = None;
+        // Too many changes since the build: fold them in, no need to walk again.
+        if matches!(reason, Rebuild::OverlayFull(_)) && self.merge() {
+            return;
+        }
+        *self.last_rebuild.lock() = Some(reason);
+        log::info!(
+            "global search: rebuilding {}: {reason}",
+            crate::index::roots_label(&self.opts.roots)
+        );
         self.building.store(true, Ordering::Release);
         self.progress.scanned.store(0, Ordering::Relaxed);
         (self.on_change)();
@@ -1053,6 +1286,21 @@ impl Shared {
             index.len(),
             started.elapsed().as_secs_f32()
         );
+        let (index, replaced) = self.save_and_map(index);
+        self.overlay.lock().prune_before(seq);
+        self.building.store(false, Ordering::Release);
+        self.set_index(index);
+        // Old file: can't be deleted while queries still use it; leave it (overwritten next save,
+        // cleaned at startup).
+        if let Some(old) = replaced {
+            let _ = std::fs::remove_file(old);
+        }
+        self.follow_all(&cursors);
+    }
+
+    /// Writes `index` to the cache file not currently mapped and maps it instead (the in-memory
+    /// copy can then go). Returns the index to use and the file it replaces.
+    fn save_and_map(&self, index: Index) -> (Index, Option<PathBuf>) {
         let mut index = index;
         let mut replaced = None;
         if let Some(path) = &self.opts.cache {
@@ -1076,15 +1324,65 @@ impl Shared {
                 Err(err) => log::warn!("failed to save index file {}: {err}", target.display()),
             }
         }
-        self.overlay.lock().prune_before(seq);
+        (index, replaced)
+    }
+
+    /// Folds the overlay into a new index instead of walking again ([`Index::merged`]); on a
+    /// developer disk this replaces a full rebuild every hour or so. `false` if there is nothing
+    /// to merge into or it was stopped: rebuild then.
+    fn merge(self: &Arc<Self>) -> bool {
+        let Some(index) = self.index.read().clone() else {
+            return false;
+        };
+        let started = Instant::now();
+        // Positions first, then check that every change up to them is applied (like checkpoints).
+        // Not quiet: the merged index keeps the old positions and the journal replays a little
+        // more after a restart.
+        let cursors = self.latest.lock().clone();
+        let quiet = self.pending.lock().is_empty() && !self.draining.load(Ordering::Acquire);
+        let (overlay, seq) = {
+            let overlay = self.overlay.lock();
+            (overlay.clone(), overlay.seq())
+        };
+        self.merging.store(true, Ordering::Release);
+        (self.on_change)();
+        let merged = index.merged(&overlay, &self.rules, &self.stopped);
+        let recorded = overlay.len();
+        drop(overlay);
+        let Some(crate::index::Merged {
+            index: mut merged,
+            unplaced,
+        }) = merged
+        else {
+            self.merging.store(false, Ordering::Release);
+            return false;
+        };
+        if quiet && unplaced.is_empty() && cursors.iter().any(Option::is_some) {
+            merged = merged.with_cursors(cursors);
+        }
+        let items = merged.len();
+        let (merged, replaced) = self.save_and_map(merged);
+        self.overlay.lock().prune_merged(seq, &unplaced);
+        // The checkpoint on disk belongs to the old index: write one for this one soon.
+        *self.last_checkpoint.lock() = None;
+        self.checkpointed.lock().clear();
+        self.merges.fetch_add(1, Ordering::Relaxed);
+        self.merging.store(false, Ordering::Release);
         self.building.store(false, Ordering::Release);
-        self.set_index(index);
-        // Old file: can't be deleted while queries still use it; leave it (overwritten next save,
-        // cleaned at startup).
+        self.set_index(merged);
         if let Some(old) = replaced {
             let _ = std::fs::remove_file(old);
         }
-        self.follow_all(&cursors);
+        log::info!(
+            "global search: folded {} changes into the index of {}, no rewalk ({} items, {} \
+             left over, {:.1} s)",
+            recorded - unplaced.len(),
+            crate::index::roots_label(&self.opts.roots),
+            items,
+            unplaced.len(),
+            started.elapsed().as_secs_f32()
+        );
+        true
     }
 }
 
@@ -1634,8 +1932,9 @@ mod tests {
             journal.push(a.join("new-report.txt"), false);
             wait("followed new file", || found(&svc, "new-report").len() == 1);
             wait("checkpoint saved", || dir.join("index.checkpoint").exists());
-            // Wait for it to write the latest position.
-            std::thread::sleep(Duration::from_millis(200));
+            // Wait for it to write the latest position (checkpoints are spaced out by
+            // CHECKPOINT_MAX_AGE).
+            wait("checkpoint with the change", || svc.checkpoint_is_current());
         }
         // While closed: the journal wraps and the build-time position is gone.
         journal.forget_all();
@@ -1698,6 +1997,271 @@ mod tests {
         wait("journal refollowed", || journal.follow_calls() > calls);
         drop(svc);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cancelled query returns nothing instead of partial results.
+    #[test]
+    fn cancelled_searches_return_nothing() {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\a",
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let svc = IndexService::start(fs, opts(None), || {});
+        wait("built", || ready(&svc));
+        let run = |cancel: bool| {
+            svc.search_until(
+                "report",
+                Clock::default(),
+                10,
+                false,
+                &AtomicBool::new(cancel),
+            )
+            .map(|hits| hits.len())
+        };
+        assert_eq!(run(false), Some(1));
+        assert_eq!(run(true), None);
+    }
+
+    /// Every rebuild carries its reason (it goes into the log line): first build, too many
+    /// changes at once, asked for, settings changed. Too many changes since the build no longer
+    /// rebuild: they are folded into the index without walking.
+    #[test]
+    fn rebuilds_say_why() {
+        let (dir, cache) = temp_cache("reasons");
+        let me = Path::new(r"C:\Users\me");
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            me,
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        {
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                opts(Some(cache.clone())),
+                || {},
+            );
+            wait("first build", || ready(&svc));
+            assert_eq!(svc.last_rebuild(), Some(Rebuild::NoIndex));
+
+            // Changes trickle in until the overlay holds more than OVERLAY_MAX records: merged,
+            // not walked again.
+            let walked = fs.read_dir_calls();
+            for i in 0..=OVERLAY_MAX {
+                let name = format!("note-{i}.txt");
+                fs.add_file(me, &name, 1);
+                fs.emit(
+                    Path::new(r"C:\"),
+                    &WatchEvent::Changed(vec![me.join(&name)]),
+                );
+                wait("change recorded", || {
+                    svc.merges() > 0 || found(&svc, &format!("note-{i}.txt")).len() == 1
+                });
+            }
+            wait("merged", || svc.merges() == 1 && ready(&svc));
+            assert_eq!(fs.read_dir_calls(), walked, "no rewalk");
+            assert_eq!(svc.last_rebuild(), Some(Rebuild::NoIndex));
+            assert_eq!(svc.shared.overlay.lock().len(), 0);
+            assert_eq!(found(&svc, "note-20.txt"), [r"C:\Users\me\note-20.txt"]);
+
+            // More than OVERLAY_MAX at once: rebuilt.
+            let burst: Vec<PathBuf> = (0..=OVERLAY_MAX)
+                .map(|i| {
+                    let name = format!("burst-{i}.txt");
+                    fs.add_file(me, &name, 1);
+                    me.join(name)
+                })
+                .collect();
+            fs.emit(Path::new(r"C:\"), &WatchEvent::Changed(burst));
+            wait("burst rebuild", || {
+                svc.last_rebuild() == Some(Rebuild::TooManyChanges(OVERLAY_MAX + 1))
+            });
+            wait("rebuilt", || {
+                ready(&svc)
+                    && found(&svc, "burst-3.txt").contains(&r"C:\Users\me\burst-3.txt".into())
+            });
+            svc.rebuild();
+            wait("asked", || svc.last_rebuild() == Some(Rebuild::Requested));
+            wait("rebuilt", || ready(&svc));
+        }
+        // Saved with build folders indexed; now they are skipped: the save doesn't fit.
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            IndexOptions {
+                skip_build_dirs: true,
+                ..opts(Some(cache))
+            },
+            || {},
+        );
+        wait("settings rebuild", || ready(&svc));
+        assert_eq!(svc.last_rebuild(), Some(Rebuild::SettingsChanged));
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            Rebuild::OverlayFull(100_001).to_string(),
+            "100001 changes since the last build"
+        );
+        assert_eq!(Rebuild::JournalGap.to_string(), "journal gap");
+    }
+
+    /// With the journal: a merge saves an index that already holds the changes, a checkpoint for
+    /// it follows, and a restart after the journal wrapped picks both up without a rewalk.
+    #[test]
+    fn merged_changes_survive_a_restart() {
+        let (dir, cache) = temp_cache("merge");
+        let a = Path::new(r"C:\a");
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            a,
+            vec![Entry::new("gone-report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let journal = FakeJournal::new(9);
+        {
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
+            wait("first build", || ready(&svc) && svc.status().live);
+            fs.remove(a, "gone-report.txt");
+            journal.push(a.join("gone-report.txt"), false);
+            for i in 0..=OVERLAY_MAX {
+                let name = format!("new-report-{i}.txt");
+                fs.add_file(a, &name, 1);
+                journal.push(a.join(&name), false);
+                wait("applied", || {
+                    svc.merges() > 0 || found(&svc, &name).len() == 1
+                });
+            }
+            wait("merged", || svc.merges() == 1 && ready(&svc));
+            wait("checkpoint for the merged index", || {
+                svc.checkpoint_is_current()
+            });
+        }
+        journal.forget_all();
+        let walked = fs.read_dir_calls();
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
+        wait("resumed", || ready(&svc) && svc.status().live);
+        assert_eq!(fs.read_dir_calls(), walked, "no rewalk");
+        assert_eq!(svc.last_rebuild(), None);
+        assert!(found(&svc, "gone-report").is_empty());
+        assert_eq!(
+            svc.search("new-report", Clock::default(), 100, false).len(),
+            OVERLAY_MAX + 1
+        );
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Steady churn (a change every few ms, like a build running) no longer rewrites the
+    /// checkpoint at every tick: it is written once enough changed or the last one is old
+    /// enough, and the final state still makes it to disk.
+    #[test]
+    fn checkpoints_are_spaced_out_under_steady_churn() {
+        let (dir, cache) = temp_cache("churn");
+        let a = Path::new(r"C:\a");
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            a,
+            vec![Entry::new("old-report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let journal = FakeJournal::new(4);
+        let started;
+        {
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
+            wait("first build", || ready(&svc) && svc.status().live);
+            started = Instant::now();
+            let mut i = 0;
+            while started.elapsed() < Duration::from_millis(1600) {
+                let name = format!("tmp-{}.obj", i % 15);
+                fs.add_file(a, &name, i);
+                journal.push(a.join(&name), false);
+                i += 1;
+                // Long enough for each change to be applied (checkpoints wait for that).
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            let ticks = started.elapsed().as_millis() / CHECKPOINT_EVERY.as_millis();
+            let (writes, _) = svc.checkpoint_writes();
+            // Before: one per tick that found the queue empty (over 10 here). Now: the first,
+            // then one per `max_age` (about 4).
+            assert!(
+                writes <= 7,
+                "{writes} checkpoints in {ticks} ticks under steady churn"
+            );
+            // The last changes still reach the disk soon after things calm down.
+            fs.add_file(a, "last-report.txt", 1);
+            journal.push(a.join("last-report.txt"), false);
+            wait("final checkpoint", || svc.checkpoint_is_current());
+        }
+        // A restart after the journal wrapped resumes from that checkpoint: nothing rewalked,
+        // nothing lost.
+        journal.forget_all();
+        let walked = fs.read_dir_calls();
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
+        wait("resumed", || ready(&svc) && svc.status().live);
+        assert_eq!(fs.read_dir_calls(), walked, "no rewalk");
+        assert_eq!(found(&svc, "last-report"), [r"C:\a\last-report.txt"]);
+        assert_eq!(svc.last_rebuild(), None);
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Write volume of checkpoints over a day on a busy developer disk, old rule against new.
+    /// Model from the field log: about 37 changes/s, rebuilt at 100k changes (every ~45 min), a
+    /// checkpoint costing ~100 bytes per recorded change.
+    #[test]
+    fn checkpoint_policy_cuts_daily_writes() {
+        let tick = Duration::from_mins(2);
+        let per_tick = 37 * 120;
+        let simulate = |due: &dyn Fn(u64, Option<Duration>) -> bool| {
+            let (mut overlay, mut bytes, mut since, mut changed) = (0u64, 0u64, None, 0u64);
+            for _ in 0..(24 * 30) {
+                overlay += per_tick;
+                changed += per_tick;
+                since = since.map(|s: Duration| s + tick);
+                if overlay > 100_000 {
+                    // Rebuild: the overlay starts over.
+                    overlay = 0;
+                    changed = 0;
+                    continue;
+                }
+                if due(changed, since) {
+                    bytes += overlay * 100;
+                    changed = 0;
+                    since = Some(Duration::ZERO);
+                }
+            }
+            bytes
+        };
+        let policy = CheckpointPolicy::DEFAULT;
+        let before = simulate(&|_, _| true);
+        let after = simulate(&|changes, age| policy.due(changes, true, age));
+        // About 3.6 GB a day before, 0.8 GB after.
+        assert!(
+            after * 4 <= before,
+            "before {} MB/day, after {} MB/day",
+            before >> 20,
+            after >> 20
+        );
+        assert!(policy.due(1, false, None), "first one in a run right away");
+        assert!(!policy.due(0, false, Some(Duration::from_hours(5))));
+        assert!(policy.due(policy.records, true, Some(Duration::ZERO)));
+        assert!(!policy.due(1, true, Some(Duration::ZERO)));
+        assert!(policy.due(1, true, Some(policy.max_age)));
+        assert!(!policy.due(0, true, Some(policy.max_age)));
+        assert!(policy.due(0, true, Some(policy.position_age)));
     }
 
     #[test]

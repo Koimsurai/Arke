@@ -494,8 +494,8 @@ fn locale_for(system: &str) -> &'static str {
 }
 
 /// The device behind a drive letter (`\Device\Floppy0`, `\Device\HarddiskVolume3`...), from the
-/// DOS device table only: no drive is touched.
-fn dos_device(letter: char) -> Option<String> {
+/// DOS device table only: no drive is touched. A `subst` drive maps to `\??\` plus its folder.
+pub(crate) fn dos_device(letter: char) -> Option<String> {
     let name = wide(std::ffi::OsStr::new(&format!("{letter}:")));
     let mut buf = [0u16; 512];
     // SAFETY: name is NUL-terminated; buf outlives the call and its length is passed.

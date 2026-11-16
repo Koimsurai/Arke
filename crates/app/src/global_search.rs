@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arke_core::Fs;
 use arke_core::index::IndexHit;
@@ -488,15 +489,28 @@ impl GlobalSearch {
             self.net.iter().filter_map(|n| n.service.clone()).collect();
         let history = crate::search_history::SearchHistory::snapshot_for_search(cx);
         let signals = rank_signals(history.clone());
+        // Set when the returned task is dropped: the caller replaced it with a newer query, so
+        // this one stops scanning instead of finishing for nobody.
+        let cancel = Arc::new(AtomicBool::new(false));
         // Its own thread rather than the executor's pool: reading visited items from disk blocks.
         let (tx, rx) = flume::bounded(1);
+        let flag = Arc::clone(&cancel);
         crate::explorer::spawn_thread("global-search", move || {
+            let cancel = flag.as_ref();
             let clock = crate::win::clock();
             // Top hits from each index, merged and ordered by match quality, then by what the
             // user opens and where it is (`arke_core::rank`).
-            let mut hits = service.search(&query, clock, limit, false);
+            let Some(mut hits) = service.search_until(&query, clock, limit, false, cancel) else {
+                return;
+            };
             for service in &net {
-                hits.extend(service.search(&query, clock, limit, false));
+                let Some(more) = service.search_until(&query, clock, limit, false, cancel) else {
+                    return;
+                };
+                hits.extend(more);
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return;
             }
             // Visited items the local index matched but didn't rank high enough to return. Not
             // for network locations: reading an item there can hang on a sleeping NAS.
@@ -508,10 +522,10 @@ impl GlobalSearch {
                 hits, extra, &parsed, &signals, limit,
             ));
         });
-        Some(
-            cx.background_executor()
-                .spawn(async move { rx.recv_async().await.unwrap_or_default() }),
-        )
+        Some(cx.background_executor().spawn(async move {
+            let _cancel_on_drop = CancelOnDrop(cancel);
+            rx.recv_async().await.unwrap_or_default()
+        }))
     }
 
     /// Install or remove the background service (UAC prompt). Restarts indexing afterwards to use
@@ -579,6 +593,15 @@ impl GlobalSearch {
         if let Some(service) = &self.service {
             service.rebuild();
         }
+    }
+}
+
+/// Sets the flag when dropped (a search task dropped before its result arrived).
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -710,15 +733,127 @@ pub(crate) fn toggle_local_exclusion(path: PathBuf, cx: &mut App) {
     });
 }
 
-/// Roots of local fixed drives (no network or removable drives). Call from a background thread.
+/// Roots of local fixed drives (no network or removable drives), each volume once: `subst`
+/// drives and extra letters for an already listed volume are left out. Call from a background
+/// thread.
 pub(crate) fn local_drives(shell: &dyn Shell) -> Vec<PathBuf> {
-    shell
+    let roots = shell
         .load_places()
         .into_iter()
         .filter(|p| matches!(p.kind, PlaceKind::Drive { remote: false, .. }))
         .map(|p| p.path)
         .filter(|p| shell.is_local_disk(p))
-        .collect()
+        .collect();
+    distinct_volumes(roots, |root| {
+        drive_of(root)
+            .and_then(crate::win::dos_device)
+            .map(|device| DriveTarget::parse(&device))
+    })
+}
+
+/// What a drive letter points at, from the DOS device table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DriveTarget {
+    /// A volume (`\Device\HarddiskVolume3`).
+    Volume(String),
+    /// A folder on another drive (`subst S: C:\Users\me\Demo` maps S: to `\??\C:\Users\me\Demo`).
+    Folder(PathBuf),
+}
+
+impl DriveTarget {
+    pub(crate) fn parse(device: &str) -> Self {
+        match device.strip_prefix(r"\??\") {
+            Some(folder) => Self::Folder(PathBuf::from(folder)),
+            None => Self::Volume(device.to_ascii_lowercase()),
+        }
+    }
+}
+
+/// Drive letter of a path (`C:\Users` to `C`).
+fn drive_of(path: &std::path::Path) -> Option<char> {
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return None;
+    };
+    match prefix.kind() {
+        Prefix::Disk(l) | Prefix::VerbatimDisk(l) => Some(char::from(l).to_ascii_uppercase()),
+        _ => None,
+    }
+}
+
+/// Drops roots that would index a volume a second time: a `subst` drive whose folder lies on
+/// another root (followed through chained `subst`s), and a second letter for a volume already
+/// listed. Roots whose target is unknown are kept.
+pub(crate) fn distinct_volumes(
+    roots: Vec<PathBuf>,
+    target: impl Fn(&std::path::Path) -> Option<DriveTarget>,
+) -> Vec<PathBuf> {
+    let targets: Vec<Option<DriveTarget>> = roots.iter().map(|r| target(r)).collect();
+    let folder_of = |letter: char| {
+        roots.iter().zip(&targets).find_map(|(r, t)| match t {
+            Some(DriveTarget::Folder(f)) if drive_of(r) == Some(letter) => Some(f.clone()),
+            _ => None,
+        })
+    };
+    // Where a subst folder really is: rewrite the drive while it is itself a subst drive.
+    let resolve = |folder: &std::path::Path| {
+        let mut folder = folder.to_path_buf();
+        for _ in 0..8 {
+            let Some(base) = drive_of(&folder).and_then(folder_of) else {
+                break;
+            };
+            // Past `C:` and `\`.
+            let rest: PathBuf = folder.components().skip(2).collect();
+            folder = base.join(rest);
+        }
+        folder
+    };
+    let mut volumes: Vec<&str> = Vec::new();
+    let mut kept = Vec::with_capacity(roots.len());
+    for (root, t) in roots.iter().zip(&targets) {
+        match t {
+            Some(DriveTarget::Folder(folder)) => {
+                let real = resolve(folder);
+                let covered = roots.iter().zip(&targets).find(|(r, t)| {
+                    !matches!(t, Some(DriveTarget::Folder(_))) && is_within(&real, r.as_path())
+                });
+                if let Some((other, _)) = covered {
+                    log::info!(
+                        "global search: {} is {} on {}, not indexed twice",
+                        root.display(),
+                        real.display(),
+                        other.display()
+                    );
+                    continue;
+                }
+            }
+            Some(DriveTarget::Volume(volume)) => {
+                if volumes.contains(&volume.as_str()) {
+                    log::info!(
+                        "global search: {} is a volume already indexed, skipped",
+                        root.display()
+                    );
+                    continue;
+                }
+                volumes.push(volume);
+            }
+            None => {}
+        }
+        kept.push(root.clone());
+    }
+    kept
+}
+
+/// Whether `path` is `root` or inside it (any letter case).
+fn is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let p = path.to_string_lossy().to_lowercase();
+    let r = root
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_lowercase();
+    p == r
+        || p.strip_prefix(&r)
+            .is_some_and(|rest| rest.starts_with('\\'))
 }
 
 /// `%LOCALAPPDATA%\Arke\index.bin` (string handling only).
@@ -882,5 +1017,52 @@ mod tests {
         st.global_search = false;
         assert_eq!(local_search_state(&st, Path::new(r"C:\Work")), None);
         assert!(same_path(Path::new(r"C:\Games\"), Path::new(r"c:\GAMES")));
+    }
+
+    /// A `subst` drive is a folder of another drive, and a volume can have more than one letter:
+    /// each volume is indexed once (a `subst` drive used to be walked a second time).
+    #[test]
+    fn each_volume_is_indexed_once() {
+        let p = PathBuf::from;
+        let table = |root: &Path| {
+            let device = match root.to_str()? {
+                r"C:\" => r"\Device\HarddiskVolume3",
+                r"D:\" => r"\Device\HarddiskVolume5",
+                // Same volume as D: under a second letter.
+                r"E:\" => r"\Device\HARDDISKVOLUME5",
+                r"S:\" => r"\??\C:\Users\me\AppData\Local\Temp\Arke Demo",
+                // subst of a subst: still on C:.
+                r"T:\" => r"\??\S:\nested",
+                // subst of a folder on a drive that isn't indexed (skipped in settings).
+                r"U:\" => r"\??\F:\Media",
+                _ => return None,
+            };
+            Some(DriveTarget::parse(device))
+        };
+        let roots = ["C:\\", "D:\\", "E:\\", "S:\\", "T:\\", "U:\\", "V:\\"].map(p);
+        assert_eq!(
+            distinct_volumes(roots.to_vec(), table),
+            ["C:\\", "D:\\", "U:\\", "V:\\"].map(p),
+            "S: and T: are folders on C:, E: is D: again; U: and the unknown V: stay"
+        );
+        // Order doesn't matter: a subst drive listed before its drive is still dropped.
+        assert_eq!(
+            distinct_volumes(["S:\\", "C:\\"].map(p).to_vec(), table),
+            [p("C:\\")]
+        );
+        assert_eq!(
+            DriveTarget::parse(r"\??\C:\Users"),
+            DriveTarget::Folder(p(r"C:\Users"))
+        );
+    }
+
+    /// The real DOS device table: a fixed drive maps to a volume device, never to a folder.
+    #[test]
+    fn the_system_drive_is_a_volume() {
+        let device = crate::win::dos_device('C').expect("C: exists");
+        assert!(
+            matches!(DriveTarget::parse(&device), DriveTarget::Volume(v) if v.starts_with(r"\device\")),
+            "{device}"
+        );
     }
 }

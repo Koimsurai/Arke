@@ -333,6 +333,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "pulldown-cmark",
  "quick-xml 0.42.0",
+ "rayon-core",
  "rust-i18n",
  "serde",
  "serde_json",

@@ -36,6 +36,8 @@ windows = "0.62"
 windows-core = "0.62"
 notify = "8"
 flume = "0.12"
+# Search index scan threads, kept between queries (already in the build through image and gpui)
+rayon-core = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 memmap2 = "0.9"
 # Fuzzy matching (Helix's engine). MPL-2.0, used unmodified; see THIRD_PARTY_NOTICES.md

@@ -184,15 +184,15 @@ impl<R: Read + Seek> Package<R> {
             let (Event::Start(e) | Event::Empty(e)) = event else {
                 continue;
             };
-            if e.local_name().as_ref() != b"Relationship"
-                || attr(&e, b"TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("external"))
+            if e.local_name().as_ref() != "Relationship"
+                || attr(&e, "TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("external"))
             {
                 continue;
             }
-            if let (Some(id), Some(target)) = (attr(&e, b"Id"), attr(&e, b"Target")) {
+            if let (Some(id), Some(target)) = (attr(&e, "Id"), attr(&e, "Target")) {
                 rels.push(Rel {
                     id,
-                    kind: attr(&e, b"Type").unwrap_or_default(),
+                    kind: attr(&e, "Type").unwrap_or_default(),
                     target: resolve(dir, &target),
                 });
             }
@@ -240,8 +240,9 @@ fn resolve(dir: &str, target: &str) -> String {
     parts.join("/")
 }
 
-/// Streaming XML events from a part. A syntax error in a part the cap cut short is just the cut,
-/// so it ends the part; in a complete part it's [`OfficeError::Malformed`].
+/// Streaming XML events from a part. A syntax or UTF-8 error in a part the cap cut short is just
+/// the cut (which may split a character), so it ends the part; in a complete part it's
+/// [`OfficeError::Malformed`].
 struct Xml<'a> {
     reader: Reader<&'a [u8]>,
     truncated: bool,
@@ -270,7 +271,7 @@ impl<'a> Xml<'a> {
 }
 
 /// An attribute by local name (the prefix is ignored), unescaped.
-fn attr(e: &BytesStart, name: &[u8]) -> Option<String> {
+fn attr(e: &BytesStart, name: &str) -> Option<String> {
     let mut attrs = e.attributes();
     attrs.with_checks(false);
     attrs
@@ -285,7 +286,7 @@ fn attr(e: &BytesStart, name: &[u8]) -> Option<String> {
 
 /// A WordprocessingML toggle (`<w:b/>`, `<w:b w:val="0"/>`).
 fn toggle(e: &BytesStart) -> bool {
-    attr(e, b"val").is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "off" | "none"))
+    attr(e, "val").is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "off" | "none"))
 }
 
 /// The character a reference (`&amp;`, `&#x41;`) stands for; unknown entities are dropped.
@@ -294,11 +295,11 @@ fn ref_char(r: &BytesRef) -> Option<char> {
         return Some(c);
     }
     match &**r {
-        b"lt" => Some('<'),
-        b"gt" => Some('>'),
-        b"amp" => Some('&'),
-        b"apos" => Some('\''),
-        b"quot" => Some('"'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "amp" => Some('&'),
+        "apos" => Some('\''),
+        "quot" => Some('"'),
         _ => None,
     }
 }
@@ -306,8 +307,8 @@ fn ref_char(r: &BytesRef) -> Option<char> {
 /// Text of a text or reference event, if it is one.
 fn event_text(event: &Event) -> Option<String> {
     match event {
-        Event::Text(t) => t.xml10_content().ok().map(Cow::into_owned),
-        Event::CData(t) => t.decode().ok().map(Cow::into_owned),
+        Event::Text(t) => Some(t.xml10_content().into_owned()),
+        Event::CData(t) => Some((**t).to_owned()),
         Event::GeneralRef(r) => ref_char(r).map(String::from),
         _ => None,
     }
@@ -400,40 +401,40 @@ fn parse_styles(part: &Part) -> Result<HashMap<String, ParaStyle>, OfficeError> 
                 let empty = matches!(event, Event::Empty(_));
                 let name = e.local_name();
                 match name.as_ref() {
-                    b"style" => {
-                        let paragraph = attr(e, b"type").is_none_or(|t| t == "paragraph");
-                        current = attr(e, b"styleId")
+                    "style" => {
+                        let paragraph = attr(e, "type").is_none_or(|t| t == "paragraph");
+                        current = attr(e, "styleId")
                             .filter(|_| paragraph)
                             .map(|id| (id, ParaStyle::default()));
                     }
-                    b"name" => {
+                    "name" => {
                         if let Some((_, style)) = current.as_mut()
-                            && let Some(level) = attr(e, b"val").and_then(|n| heading_from_name(&n))
+                            && let Some(level) = attr(e, "val").and_then(|n| heading_from_name(&n))
                         {
                             style.heading = Some(level);
                         }
                     }
-                    b"basedOn" => {
+                    "basedOn" => {
                         if let Some((_, style)) = current.as_mut() {
-                            style.based_on = attr(e, b"val");
+                            style.based_on = attr(e, "val");
                         }
                     }
-                    b"outlineLvl" => {
+                    "outlineLvl" => {
                         if let Some((_, style)) = current.as_mut()
                             && let Some(level) = outline_level(e)
                         {
                             style.heading.get_or_insert(level);
                         }
                     }
-                    b"numPr" => {
+                    "numPr" => {
                         in_numpr = !empty;
                         if let Some((_, style)) = current.as_mut() {
                             style.list = Some(true);
                         }
                     }
-                    b"numId" if in_numpr => {
+                    "numId" if in_numpr => {
                         if let Some((_, style)) = current.as_mut()
-                            && attr(e, b"val").as_deref() == Some("0")
+                            && attr(e, "val").as_deref() == Some("0")
                         {
                             style.list = Some(false);
                         }
@@ -442,12 +443,12 @@ fn parse_styles(part: &Part) -> Result<HashMap<String, ParaStyle>, OfficeError> 
                 }
             }
             Event::End(e) => match e.local_name().as_ref() {
-                b"style" => {
+                "style" => {
                     if let Some((id, style)) = current.take() {
                         styles.insert(id, style);
                     }
                 }
-                b"numPr" => in_numpr = false,
+                "numPr" => in_numpr = false,
                 _ => {}
             },
             _ => {}
@@ -458,7 +459,7 @@ fn parse_styles(part: &Part) -> Result<HashMap<String, ParaStyle>, OfficeError> 
 
 /// `<w:outlineLvl w:val="0"/>` as a 1-based heading level (9 is body text).
 fn outline_level(e: &BytesStart) -> Option<u8> {
-    attr(e, b"val")?
+    attr(e, "val")?
         .parse::<u8>()
         .ok()
         .filter(|&v| v < 9)
@@ -527,64 +528,64 @@ impl DocParser<'_> {
     fn start(&mut self, e: &BytesStart, empty: bool) {
         let name = e.local_name();
         match name.as_ref() {
-            b"p" => {
+            "p" => {
                 self.para = Some(Para::default());
                 self.in_ppr = false;
             }
-            b"pPr" => self.in_ppr = !empty,
-            b"pStyle" if self.in_ppr => {
+            "pPr" => self.in_ppr = !empty,
+            "pStyle" if self.in_ppr => {
                 if let Some(para) = self.para.as_mut() {
-                    para.style = attr(e, b"val");
+                    para.style = attr(e, "val");
                 }
             }
-            b"outlineLvl" if self.in_ppr => {
+            "outlineLvl" if self.in_ppr => {
                 if let Some(para) = self.para.as_mut() {
                     para.outline = outline_level(e);
                 }
             }
-            b"numPr" if self.in_ppr => {
+            "numPr" if self.in_ppr => {
                 self.in_numpr = !empty;
                 if let Some(para) = self.para.as_mut() {
                     para.list.get_or_insert(0);
                 }
             }
-            b"ilvl" if self.in_numpr => {
+            "ilvl" if self.in_numpr => {
                 if let Some(para) = self.para.as_mut() {
-                    let level = attr(e, b"val").and_then(|v| v.parse::<u8>().ok());
+                    let level = attr(e, "val").and_then(|v| v.parse::<u8>().ok());
                     para.list = Some(level.unwrap_or(0).min(8));
                 }
             }
-            b"numId" if self.in_numpr => {
+            "numId" if self.in_numpr => {
                 if let Some(para) = self.para.as_mut()
-                    && attr(e, b"val").as_deref() == Some("0")
+                    && attr(e, "val").as_deref() == Some("0")
                 {
                     para.no_list = true;
                 }
             }
-            b"pageBreakBefore" if self.in_ppr => {
+            "pageBreakBefore" if self.in_ppr => {
                 if let Some(para) = self.para.as_mut() {
                     para.break_before = toggle(e);
                 }
             }
-            b"rPr" => self.in_rpr = !empty,
-            b"r" => {
+            "rPr" => self.in_rpr = !empty,
+            "r" => {
                 self.bold = false;
                 self.italic = false;
             }
-            b"b" if self.in_rpr && !self.in_ppr => self.bold = toggle(e),
-            b"i" if self.in_rpr && !self.in_ppr => self.italic = toggle(e),
-            b"t" if !self.in_ppr => self.in_t = !empty,
-            b"tab" | b"ptab" if !self.in_ppr => self.push_text("    "),
-            b"br" if !self.in_ppr => {
-                if attr(e, b"type").as_deref() == Some("page") {
+            "b" if self.in_rpr && !self.in_ppr => self.bold = toggle(e),
+            "i" if self.in_rpr && !self.in_ppr => self.italic = toggle(e),
+            "t" if !self.in_ppr => self.in_t = !empty,
+            "tab" | "ptab" if !self.in_ppr => self.push_text("    "),
+            "br" if !self.in_ppr => {
+                if attr(e, "type").as_deref() == Some("page") {
                     self.page_break();
                 } else {
                     self.push_text("\n");
                 }
             }
-            b"cr" if !self.in_ppr => self.push_text("\n"),
-            b"noBreakHyphen" => self.push_text("-"),
-            b"drawing" | b"pict" | b"object" => {
+            "cr" if !self.in_ppr => self.push_text("\n"),
+            "noBreakHyphen" => self.push_text("-"),
+            "drawing" | "pict" | "object" => {
                 if let Some(para) = self.para.as_mut() {
                     para.image = true;
                 }
@@ -592,14 +593,14 @@ impl DocParser<'_> {
                     self.skip = 1;
                 }
             }
-            b"Fallback" | b"sectPr" | b"txbxContent" if !empty => self.skip = 1,
-            b"tbl" => self.tables.push(TableBuild::default()),
-            b"tr" => {
+            "Fallback" | "sectPr" | "txbxContent" if !empty => self.skip = 1,
+            "tbl" => self.tables.push(TableBuild::default()),
+            "tr" => {
                 if let Some(table) = self.tables.last_mut() {
                     table.row = Some(Vec::new());
                 }
             }
-            b"tc" => {
+            "tc" => {
                 if let Some(table) = self.tables.last_mut() {
                     table.cell = Some(String::new());
                 }
@@ -608,21 +609,21 @@ impl DocParser<'_> {
         }
     }
 
-    fn end(&mut self, name: &[u8]) {
+    fn end(&mut self, name: &str) {
         match name {
-            b"pPr" => self.in_ppr = false,
-            b"rPr" => self.in_rpr = false,
-            b"numPr" => self.in_numpr = false,
-            b"t" => self.in_t = false,
-            b"p" => self.finish_para(),
-            b"tc" => {
+            "pPr" => self.in_ppr = false,
+            "rPr" => self.in_rpr = false,
+            "numPr" => self.in_numpr = false,
+            "t" => self.in_t = false,
+            "p" => self.finish_para(),
+            "tc" => {
                 if let Some(table) = self.tables.last_mut()
                     && let Some(cell) = table.cell.take()
                 {
                     table.row.get_or_insert_default().push(cell);
                 }
             }
-            b"tr" => {
+            "tr" => {
                 if let Some(table) = self.tables.last_mut()
                     && let Some(row) = table.row.take()
                 {
@@ -633,7 +634,7 @@ impl DocParser<'_> {
                     }
                 }
             }
-            b"tbl" => {
+            "tbl" => {
                 let Some(table) = self.tables.pop() else {
                     return;
                 };
@@ -1012,23 +1013,23 @@ fn parse_number_formats(part: &Part) -> Result<Vec<Format>, OfficeError> {
     while let Some(event) = xml.next()? {
         match event {
             Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
-                b"numFmt" => {
+                "numFmt" => {
                     if let (Some(id), Some(code)) = (
-                        attr(&e, b"numFmtId").and_then(|v| v.parse().ok()),
-                        attr(&e, b"formatCode"),
+                        attr(&e, "numFmtId").and_then(|v| v.parse().ok()),
+                        attr(&e, "formatCode"),
                     ) {
                         custom.insert(id, code);
                     }
                 }
-                b"cellXfs" => in_xfs = true,
-                b"xf" if in_xfs => xf_ids.push(
-                    attr(&e, b"numFmtId")
+                "cellXfs" => in_xfs = true,
+                "xf" if in_xfs => xf_ids.push(
+                    attr(&e, "numFmtId")
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0),
                 ),
                 _ => {}
             },
-            Event::End(e) if e.local_name().as_ref() == b"cellXfs" => in_xfs = false,
+            Event::End(e) if e.local_name().as_ref() == "cellXfs" => in_xfs = false,
             _ => {}
         }
     }
@@ -1191,24 +1192,22 @@ fn parse_sheet(part: &Part, sheet: &mut Sheet) -> Result<Vec<RawCell>, OfficeErr
             Event::Start(e) | Event::Empty(e) => {
                 let empty = matches!(event, Event::Empty(_));
                 match e.local_name().as_ref() {
-                    b"dimension" => {
-                        if let Some(r) = attr(e, b"ref") {
+                    "dimension" => {
+                        if let Some(r) = attr(e, "ref") {
                             let last = r.rsplit(':').next().unwrap_or(&r);
                             sheet.total_rows = parse_ref(last).1;
                         }
                     }
-                    b"row" => {
-                        row = attr(e, b"r")
-                            .and_then(|r| r.parse().ok())
-                            .unwrap_or(row + 1);
+                    "row" => {
+                        row = attr(e, "r").and_then(|r| r.parse().ok()).unwrap_or(row + 1);
                         col = 0;
                         if row > SHEET_ROWS {
                             sheet.more_rows = true;
                             break;
                         }
                     }
-                    b"c" => {
-                        let (c, r) = attr(e, b"r").map_or((None, None), |r| parse_ref(&r));
+                    "c" => {
+                        let (c, r) = attr(e, "r").map_or((None, None), |r| parse_ref(&r));
                         col = c.unwrap_or(col + 1);
                         let at_row = r.unwrap_or(row);
                         if col > SHEET_COLS {
@@ -1218,8 +1217,8 @@ fn parse_sheet(part: &Part, sheet: &mut Sheet) -> Result<Vec<RawCell>, OfficeErr
                             let pending = Pending {
                                 row: at_row,
                                 col,
-                                kind: attr(e, b"t"),
-                                style: attr(e, b"s").and_then(|s| s.parse().ok()).unwrap_or(0),
+                                kind: attr(e, "t"),
+                                style: attr(e, "s").and_then(|s| s.parse().ok()).unwrap_or(0),
                                 value: String::new(),
                                 inline: String::new(),
                             };
@@ -1230,23 +1229,23 @@ fn parse_sheet(part: &Part, sheet: &mut Sheet) -> Result<Vec<RawCell>, OfficeErr
                             }
                         }
                     }
-                    b"v" if !empty => in_v = cell.is_some(),
-                    b"is" if !empty => in_is = cell.is_some(),
-                    b"t" if in_is && !empty => in_t = true,
-                    b"rPh" if !empty => skip = 1,
+                    "v" if !empty => in_v = cell.is_some(),
+                    "is" if !empty => in_is = cell.is_some(),
+                    "t" if in_is && !empty => in_t = true,
+                    "rPh" if !empty => skip = 1,
                     _ => {}
                 }
             }
             Event::End(e) => match e.local_name().as_ref() {
-                b"v" => in_v = false,
-                b"is" => in_is = false,
-                b"t" => in_t = false,
-                b"c" => {
+                "v" => in_v = false,
+                "is" => in_is = false,
+                "t" => in_t = false,
+                "c" => {
                     if let Some(pending) = cell.take() {
                         finish(pending, &mut cells);
                     }
                 }
-                b"sheetData" => break,
+                "sheetData" => break,
                 _ => {}
             },
             _ => {
@@ -1292,17 +1291,17 @@ fn parse_shared_strings(
         }
         match &event {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"si" => current = Some(String::new()),
-                b"t" => in_t = current.is_some(),
-                b"rPh" => skip = 1,
+                "si" => current = Some(String::new()),
+                "t" => in_t = current.is_some(),
+                "rPh" => skip = 1,
                 _ => {}
             },
-            Event::Empty(e) if e.local_name().as_ref() == b"si" => {
+            Event::Empty(e) if e.local_name().as_ref() == "si" => {
                 ix += 1;
             }
             Event::End(e) => match e.local_name().as_ref() {
-                b"t" => in_t = false,
-                b"si" => {
+                "t" => in_t = false,
+                "si" => {
                     if let Some(text) = current.take()
                         && wanted.contains(&ix)
                     {
@@ -1351,14 +1350,14 @@ pub fn read_workbook(reader: impl Read + Seek, index: usize) -> Result<Workbook,
             continue;
         };
         match e.local_name().as_ref() {
-            b"sheet" => {
-                if let (Some(name), Some(rel)) = (attr(&e, b"name"), attr(&e, b"id")) {
-                    let hidden = attr(&e, b"state").is_some_and(|s| s != "visible");
+            "sheet" => {
+                if let (Some(name), Some(rel)) = (attr(&e, "name"), attr(&e, "id")) {
+                    let hidden = attr(&e, "state").is_some_and(|s| s != "visible");
                     sheet_refs.push(SheetRef { name, rel, hidden });
                 }
             }
-            b"workbookPr" => {
-                date1904 = attr(&e, b"date1904").is_some_and(|v| v == "1" || v == "true");
+            "workbookPr" => {
+                date1904 = attr(&e, "date1904").is_some_and(|v| v == "1" || v == "true");
             }
             _ => {}
         }
@@ -1517,40 +1516,40 @@ fn parse_slide(part: &Part) -> Result<(Slide, bool), OfficeError> {
             Event::Start(e) | Event::Empty(e) => {
                 let empty = matches!(event, Event::Empty(_));
                 match e.local_name().as_ref() {
-                    b"sp" if !empty => {
+                    "sp" if !empty => {
                         shape = Some(Shape {
                             title: false,
                             paras: Vec::new(),
                         });
                     }
-                    b"ph" => {
+                    "ph" => {
                         if let Some(shape) = shape.as_mut() {
                             shape.title =
-                                matches!(attr(e, b"type").as_deref(), Some("title" | "ctrTitle"));
+                                matches!(attr(e, "type").as_deref(), Some("title" | "ctrTitle"));
                         }
                     }
-                    b"p" if !empty => paragraph = Some((0, String::new())),
-                    b"pPr" => {
+                    "p" if !empty => paragraph = Some((0, String::new())),
+                    "pPr" => {
                         if let Some(paragraph) = paragraph.as_mut() {
-                            paragraph.0 = attr(e, b"lvl")
+                            paragraph.0 = attr(e, "lvl")
                                 .and_then(|l| l.parse::<u8>().ok())
                                 .unwrap_or(0)
                                 .min(8);
                         }
                     }
-                    b"t" if !empty => in_t = paragraph.is_some(),
-                    b"br" => {
+                    "t" if !empty => in_t = paragraph.is_some(),
+                    "br" => {
                         if let Some(paragraph) = paragraph.as_mut() {
                             paragraph.1.push('\n');
                         }
                     }
-                    b"Fallback" if !empty => skip = 1,
+                    "Fallback" if !empty => skip = 1,
                     _ => {}
                 }
             }
             Event::End(e) => match e.local_name().as_ref() {
-                b"t" => in_t = false,
-                b"p" => {
+                "t" => in_t = false,
+                "p" => {
                     if let Some((level, text)) = paragraph.take() {
                         let text = text.trim().to_owned();
                         if !text.is_empty() {
@@ -1561,7 +1560,7 @@ fn parse_slide(part: &Part) -> Result<(Slide, bool), OfficeError> {
                         }
                     }
                 }
-                b"sp" => {
+                "sp" => {
                     if let Some(shape) = shape.take() {
                         add(&mut slide, shape.paras, shape.title);
                     }
@@ -1594,7 +1593,7 @@ pub fn read_presentation(reader: impl Read + Seek) -> Result<Presentation, Offic
     let mut xml = Xml::new(&part);
     while let Some(event) = xml.next()? {
         if let Event::Start(e) | Event::Empty(e) = event
-            && e.local_name().as_ref() == b"sldId"
+            && e.local_name().as_ref() == "sldId"
             && let Some(rel) = rel_attr(&e)
         {
             ids.push(rel);
@@ -1636,7 +1635,7 @@ fn rel_attr(e: &BytesStart) -> Option<String> {
     attrs.with_checks(false);
     attrs
         .flatten()
-        .find(|a| a.key.local_name().as_ref() == b"id" && a.key.prefix().is_some())
+        .find(|a| a.key.local_name().as_ref() == "id" && a.key.prefix().is_some())
         .and_then(|a| {
             a.normalized_value(XmlVersion::Implicit1_0)
                 .ok()
@@ -1658,47 +1657,47 @@ const STOP_EVERY: u32 = 2048;
 /// Which elements of one kind of part hold searchable text.
 struct TextSpec {
     /// The element whose text is one line: a paragraph, a shared string, a cell
-    line: &'static [u8],
+    line: &'static str,
     /// Elements holding text
-    text: &'static [&'static [u8]],
+    text: &'static [&'static str],
     /// Empty elements that stand for a space (tabs, line breaks)
-    space: &'static [&'static [u8]],
+    space: &'static [&'static str],
     /// Subtrees skipped (phonetic guides, fallback copies of the same text)
-    skip: &'static [&'static [u8]],
+    skip: &'static [&'static str],
     /// Lines whose text isn't text: a cell holding a shared-string index
     shared_index: bool,
 }
 
 /// Paragraphs of WordprocessingML (and DrawingML text boxes inside it).
 const WORD_TEXT: TextSpec = TextSpec {
-    line: b"p",
-    text: &[b"t"],
-    space: &[b"tab", b"br", b"cr"],
-    skip: &[b"Fallback"],
+    line: "p",
+    text: &["t"],
+    space: &["tab", "br", "cr"],
+    skip: &["Fallback"],
     shared_index: false,
 };
 /// Paragraphs of a slide.
 const SLIDE_TEXT: TextSpec = TextSpec {
-    line: b"p",
-    text: &[b"t"],
-    space: &[b"br", b"tab"],
-    skip: &[b"Fallback"],
+    line: "p",
+    text: &["t"],
+    space: &["br", "tab"],
+    skip: &["Fallback"],
     shared_index: false,
 };
 /// Entries of the shared string table.
 const SHARED_TEXT: TextSpec = TextSpec {
-    line: b"si",
-    text: &[b"t"],
+    line: "si",
+    text: &["t"],
     space: &[],
-    skip: &[b"rPh"],
+    skip: &["rPh"],
     shared_index: false,
 };
 /// Cell values and inline strings of a sheet.
 const CELL_TEXT: TextSpec = TextSpec {
-    line: b"c",
-    text: &[b"v", b"t"],
+    line: "c",
+    text: &["v", "t"],
     space: &[],
-    skip: &[b"rPh", b"f"],
+    skip: &["rPh", "f"],
     shared_index: true,
 };
 
@@ -1748,7 +1747,7 @@ pub fn search_text<T>(
             let mut xml = Xml::new(&part);
             while let Some(event) = xml.next()? {
                 if let Event::Start(e) | Event::Empty(e) = event
-                    && e.local_name().as_ref() == b"sldId"
+                    && e.local_name().as_ref() == "sldId"
                     && let Some(rel) = rel_attr(&e)
                 {
                     ids.push(rel);
@@ -1830,7 +1829,7 @@ fn scan_text<T>(
                         return Some(hit);
                     }
                     line_depth += 1;
-                    shared_index = spec.shared_index && attr(e, b"t").as_deref() == Some("s");
+                    shared_index = spec.shared_index && attr(e, "t").as_deref() == Some("s");
                 } else if spec.text.contains(&name) {
                     text_depth += 1;
                 }
@@ -2156,6 +2155,68 @@ mod tests {
     }
 
     #[test]
+    fn document_text_resolves_references_cdata_and_cjk() {
+        let p = |runs: &str| format!("<w:p>{runs}</w:p>");
+        let body = [
+            p(&run(
+                "a &lt;b&gt; &quot;c&quot; &apos;d&apos; &#x41;&#66; &#x4E2D;&#25991;",
+            )),
+            p(&run("中文 テキスト 한국어")),
+            p("<w:r><w:t><![CDATA[x < y & z]]></w:t></w:r>"),
+            // DTD entities are never expanded: an unknown one is dropped.
+            p(&run("before &custom; after")),
+        ]
+        .concat();
+        let doc = doc(&body);
+        let texts: Vec<String> = doc
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::Paragraph(spans) => text(spans),
+                other => panic!("paragraph expected, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "a <b> \"c\" 'd' AB 中文",
+                "中文 テキスト 한국어",
+                "x < y & z",
+                "before  after",
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_in_a_complete_part_is_malformed() {
+        let mut xml = b"<w:document><w:body><w:p><w:r><w:t>bad ".to_vec();
+        xml.extend_from_slice(&[0xFF, 0xFE]);
+        xml.extend_from_slice(b"</w:t></w:r></w:p></w:body></w:document>");
+        let part = Part {
+            bytes: xml,
+            truncated: false,
+        };
+        assert!(matches!(
+            parse_document(&part, &HashMap::new()),
+            Err(OfficeError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn a_cap_inside_a_multibyte_character_ends_the_part() {
+        let xml = "<w:document><w:body><w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>中文";
+        // Cut after the first byte of the last character.
+        let cut = xml.len() - "文".len() + 1;
+        let part = Part {
+            bytes: xml.as_bytes()[..cut].to_vec(),
+            truncated: true,
+        };
+        let doc = parse_document(&part, &HashMap::new()).unwrap();
+        assert_eq!(doc.blocks.len(), 1);
+        assert!(matches!(&doc.blocks[0], Block::Paragraph(spans) if text(spans) == "first"));
+    }
+
+    #[test]
     fn document_tables_breaks_and_images() {
         let cell = |t: &str| format!("<w:tc><w:p>{}</w:p></w:tc>", run(t));
         let body = [
@@ -2246,6 +2307,16 @@ mod tests {
         let doc = read_document(Cursor::new(bomb)).unwrap();
         assert!(doc.truncated);
         assert!(matches!(&doc.blocks[0], Block::Paragraph(s) if text(s) == "start"));
+    }
+
+    #[test]
+    fn workbook_names_and_strings_are_unescaped() {
+        let data = r#"<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>&#x4E2D;&amp;文</t></is></c></row>"#;
+        let bytes = fixtures::xlsx(&[("R&amp;D &#x4E2D;文", data)], &["売上 &lt;合計&gt;"], "");
+        let book = read_workbook(Cursor::new(bytes), 0).unwrap();
+        assert_eq!(book.names, ["R&D 中文"]);
+        let row: Vec<&str> = book.sheet.rows[0].iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(row, ["売上 <合計>", "中&文"]);
     }
 
     #[test]

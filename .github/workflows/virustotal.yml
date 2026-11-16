@@ -66,14 +66,29 @@ jobs:
               if [ "$i" -lt "$last" ]; then echo "${links[$i]} ·"; else echo "${links[$i]}"; fi
             done
           } > vt-links.md
-      - name: add the links to the release notes
+      # Then which file to download. Both go after the changes: Arke shows the notes in its update
+      # notice and stops reading at the VirusTotal line, so neither shows up in the app.
+      - name: add the links and the download guide to the release notes
         run: |
           set -euo pipefail
           gh release view "$TAG" --json body --jq .body > notes.md
+          cp notes.md before.md
           if grep -q '^VirusTotal scans of this release:' notes.md; then
             echo "the notes already list VirusTotal scans; left as they are"
-            exit 0
+          else
+            printf '\n\n' >> notes.md
+            cat vt-links.md >> notes.md
           fi
-          printf '\n\n' >> notes.md
-          cat vt-links.md >> notes.md
+          if ! grep -q '^\*\*Which file?\*\*' notes.md; then
+            v="${TAG#v}"
+            cat >> notes.md <<EOF
+
+          **Which file?** Both are the same Arke: same features, same updates, settings in \`%APPDATA%\Arke\`.
+
+          - \`arke-$v.exe\`: portable. One exe that runs from any folder; nothing is installed, so it isn't in the Start menu or in Settings › Apps. To remove it: Settings › About › Remove Arke from this PC.
+          - \`arke-$v-setup.exe\`: installer. Installs for your account (no administrator approval) or for all users in Program Files, and adds Arke to the Start menu and to Settings › Apps, where you can uninstall it.
+          - \`-arm64\` in the name: the same for ARM64 PCs. \`.sha256\`: each file's checksum.
+          EOF
+          fi
+          if cmp -s notes.md before.md; then exit 0; fi
           gh release edit "$TAG" --notes-file notes.md

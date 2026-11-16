@@ -155,14 +155,18 @@ Run `arke --bench index` to measure the index on your machine.
 
 ## Install
 
-Download `arke-<version>.exe` (or `arke-<version>-arm64.exe` for ARM64 PCs) from
-[Releases](https://github.com/Koimsurai/Arke/releases) and run it. It's a single executable: no installer and no runtime. Settings are stored in
-`%APPDATA%\Arke`.
+Download from [Releases](https://github.com/Koimsurai/Arke/releases). Both downloads are the same
+Arke, with the same features and updates, and both keep settings in `%APPDATA%\Arke`:
 
-Prefer an installer? `arke-<version>-setup.exe` (or `arke-<version>-arm64-setup.exe`) installs Arke
-for your account without administrator approval, or for all users in Program Files, and adds it to
-the Start menu and to Settings › Apps, where you can uninstall it. Arke's updates keep working the
-same way.
+- **Portable**, `arke-<version>.exe`: a single exe with no runtime that runs from any folder. Nothing
+  is installed, so it isn't in the Start menu or in Settings › Apps; Settings › About › **Remove Arke
+  from this PC** removes it.
+- **Installer**, `arke-<version>-setup.exe`: installs Arke for your account without administrator
+  approval, or for all users in Program Files, and adds it to the Start menu and to Settings › Apps,
+  where you can uninstall it.
+
+On ARM64 PCs, use the `-arm64` files (`arke-<version>-arm64.exe`,
+`arke-<version>-arm64-setup.exe`).
 
 With [Scoop](https://scoop.sh):
 

@@ -136,12 +136,15 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 
 ## 安裝
 
-到 [Releases](https://github.com/Koimsurai/Arke/releases) 下載 `arke-<版本>.exe`（ARM64 電腦用 `arke-<版本>-arm64.exe`）直接執行。
-只有一個執行檔，不用安裝程式也不用裝執行環境。設定存在 `%APPDATA%\Arke`。
+到 [Releases](https://github.com/Koimsurai/Arke/releases) 下載。兩種下載是同一個 Arke，功能和更新方式都一樣，設定也都存在 `%APPDATA%\Arke`：
 
-想用安裝程式的話，`arke-<版本>-setup.exe`（ARM64 用 `arke-<版本>-arm64-setup.exe`）會幫你的帳號安裝，
-不需要系統管理員權限；也可以選擇裝給所有使用者（Program Files）。它會加到開始功能表，並出現在
-「設定 › 應用程式」，從那裡就能解除安裝。Arke 的更新方式不變。
+- **免安裝版** `arke-<版本>.exe`：只有一個執行檔，不用裝執行環境，放在哪個資料夾都能執行。
+  它不會安裝任何東西，所以不在開始功能表，也不在「設定 › 應用程式」；要移除就用 設定 › 關於 ›
+  **從這台電腦移除 Arke**。
+- **安裝版** `arke-<版本>-setup.exe`：幫你的帳號安裝，不需要系統管理員權限；也可以選擇裝給所有
+  使用者（Program Files）。它會加到開始功能表和「設定 › 應用程式」，從那裡就能解除安裝。
+
+ARM64 電腦請用檔名有 `-arm64` 的版本（`arke-<版本>-arm64.exe`、`arke-<版本>-arm64-setup.exe`）。
 
 用 [Scoop](https://scoop.sh) 安裝：
 

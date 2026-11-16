@@ -136,12 +136,15 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
 
 ## 安装
 
-到 [Releases](https://github.com/Koimsurai/Arke/releases) 下载 `arke-<版本>.exe`（ARM64 电脑用 `arke-<版本>-arm64.exe`）直接运行。
-只有一个 exe，不需要安装程序，也不需要装运行库。设置保存在 `%APPDATA%\Arke`。
+到 [Releases](https://github.com/Koimsurai/Arke/releases) 下载。两种下载是同一个 Arke，功能和更新方式都一样，设置也都保存在 `%APPDATA%\Arke`：
 
-想用安装程序的话，`arke-<版本>-setup.exe`（ARM64 用 `arke-<版本>-arm64-setup.exe`）会为你的账户安装，
-不需要管理员权限；也可以选择为所有用户安装（Program Files）。它会加到开始菜单，并出现在
-“设置 › 应用”中，可以从那里卸载。Arke 的更新方式不变。
+- **免安装版** `arke-<版本>.exe`：只有一个 exe，不需要装运行库，放在哪个文件夹都能运行。
+  它不会安装任何东西，所以不在开始菜单，也不在“设置 › 应用”中；要删除就用 设置 › 关于 ›
+  **从这台电脑卸载 Arke**。
+- **安装版** `arke-<版本>-setup.exe`：为你的账户安装，不需要管理员权限；也可以选择为所有用户
+  安装（Program Files）。它会加到开始菜单和“设置 › 应用”中，可以从那里卸载。
+
+ARM64 电脑请用文件名带 `-arm64` 的版本（`arke-<版本>-arm64.exe`、`arke-<版本>-arm64-setup.exe`）。
 
 用 [Scoop](https://scoop.sh) 安装：
 

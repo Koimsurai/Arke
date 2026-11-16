@@ -842,6 +842,12 @@ impl Shell for WinShell {
         })
     }
 
+    fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
+        owner.is_some_and(|h| {
+            win_fileops::other_window_at_cursor(windows::Win32::Foundation::HWND(h as *mut _))
+        })
+    }
+
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,

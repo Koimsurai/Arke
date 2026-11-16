@@ -1294,6 +1294,30 @@ fn drag_data_object(
     .or_else(|_| plain())
 }
 
+/// Whether the top-level window under the cursor is another one than `home`: another program's
+/// window on top of Arke (a launcher toolbar, an always-on-top window), or outside Arke
+/// altogether. Windows that ignore the mouse (the drag image) aren't counted.
+pub(crate) fn other_window_at_cursor(home: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetCursorPos, WindowFromPoint,
+    };
+    if home.is_invalid() {
+        return false;
+    }
+    // SAFETY: plain window queries with valid out pointers.
+    unsafe {
+        let mut cursor = POINT::default();
+        if GetCursorPos(&raw mut cursor).is_err() {
+            return false;
+        }
+        let hit = WindowFromPoint(cursor);
+        if hit.is_invalid() {
+            return false;
+        }
+        GetAncestor(hit, GA_ROOT) != home
+    }
+}
+
 /// What the drop target did with dragged-out files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DragOutcome {
@@ -1344,9 +1368,10 @@ mod drag_source {
             }
         }
 
-        /// Whether the cursor is inside the Arke client area.
+        /// Whether the cursor is inside the Arke client area, on Arke itself rather than on
+        /// another program's window on top of it (#128).
         fn cursor_home(&self) -> bool {
-            if self.home.is_invalid() {
+            if self.home.is_invalid() || super::other_window_at_cursor(self.home) {
                 return false;
             }
             // SAFETY: pointers are valid; home is this thread's window and can't close during

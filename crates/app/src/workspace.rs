@@ -1957,10 +1957,13 @@ impl Workspace {
                             return;
                         }
                         let size = window.viewport_size();
+                        // Over another program's window on top of Arke (a launcher toolbar, an
+                        // always-on-top window) counts as outside: the drop is for it (#128).
                         let inside = e.position.x >= px(0.)
                             && e.position.y >= px(0.)
                             && e.position.x < size.width
-                            && e.position.y < size.height;
+                            && e.position.y < size.height
+                            && !shell.covered_at_cursor(Explorer::owner_from(window));
                         if inside || !cx.has_global::<PendingDragOut>() {
                             return;
                         }

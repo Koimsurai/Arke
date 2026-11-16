@@ -92,6 +92,8 @@ struct FakeShell {
     ran: Mutex<Vec<(String, PathBuf)>>,
     /// When dragging out to another app, simulate dragging back into Arke.
     drag_returns: std::sync::atomic::AtomicBool,
+    /// Another program's window is on top of Arke at the cursor.
+    covered: std::sync::atomic::AtomicBool,
     /// Extra places (e.g. Downloads pointing at a temp folder).
     extra_places: Mutex<Vec<Place>>,
     /// Drag images built (request, whether a cached thumbnail existed).
@@ -321,6 +323,10 @@ impl Shell for FakeShell {
         } else {
             crate::shell::DragOutEnd::Finished
         })
+    }
+
+    fn covered_at_cursor(&self, _owner: Option<isize>) -> bool {
+        self.covered.load(Ordering::Relaxed)
     }
 
     fn drag_image(
@@ -1722,6 +1728,46 @@ fn dragging_files_out_of_the_window_hands_them_to_windows(cx: &mut TestAppContex
         "image should show the item under the cursor"
     );
     cx.update(|_, cx| assert!(!cx.has_active_drag(), "Arke's own drag should have ended"));
+}
+
+/// A drag over another program's window on top of Arke (a launcher toolbar, an always-on-top
+/// window) goes to Windows drag and drop even inside Arke's bounds, so the drop lands there
+/// instead of moving the files into the pane underneath (#128).
+#[gpui::test]
+fn dragging_over_a_window_on_top_of_arke_hands_off_to_windows(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let start = point(bounds.left() + px(60.), bounds.top() + row * 1.5);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        start + point(px(30.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    wait_for_drag_image(cx);
+    assert!(shell.dragged_out.lock().is_empty());
+    // Still inside the window, but now over another program's window.
+    shell.covered.store(true, Ordering::Relaxed);
+    cx.simulate_mouse_move(
+        start + point(px(80.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        *shell.dragged_out.lock(),
+        [vec![PathBuf::from(r"C:\o\b.txt")]]
+    );
+    cx.update(|_, cx| assert!(!cx.has_active_drag(), "Arke's own drag should have ended"));
+    assert!(shell.ops().is_empty(), "nothing moved inside Arke");
 }
 
 /// Dragging out and back in: Windows drag is cancelled and Arke's own drag resumes. Dropping on a

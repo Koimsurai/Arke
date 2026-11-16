@@ -567,6 +567,9 @@ impl Shell for RemoteShell {
         }
         self.inner.drag_out(paths, image)
     }
+    fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
+        self.inner.covered_at_cursor(owner)
+    }
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,

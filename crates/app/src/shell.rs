@@ -752,6 +752,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (paths, image);
         Ok(DragOutEnd::Finished)
     }
+    /// Whether another program's window is on top of `owner` at the cursor, such as a launcher
+    /// toolbar or an always-on-top window: a drag over it belongs to Windows drag and drop even
+    /// inside Arke's bounds (#128). UI thread, no file system access.
+    fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
+        let _ = owner;
+        false
+    }
     /// Builds the drag image. `base` is an existing thumbnail; falls back to the system icon. Background thread.
     fn drag_image(
         &self,

@@ -25,6 +25,7 @@ mod changes;
 mod install;
 mod logger;
 mod mft;
+mod power;
 mod server;
 mod service;
 mod usn;

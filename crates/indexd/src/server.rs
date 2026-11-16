@@ -29,17 +29,22 @@ use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ImpersonateNamedPipeClient,
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
-use windows::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentThread, OpenThreadToken, SetEvent,
+};
 use windows::Win32::UI::Shell::{GetProfilesDirectoryW, GetUserProfileDirectoryW};
 use windows::core::{PCWSTR, PWSTR};
 
 use crate::changes::{Cached, Privacy, to_changes};
-use crate::usn::{ReadError, Volume};
+use crate::usn::{ReadError, Volume, Wait, Waiter};
 
 /// Max concurrent connections (one per drive from Arke, plus short cursor queries).
 const MAX_CLIENTS: usize = 16;
-/// Journal poll interval when there are no new changes.
+/// Journal poll interval when there are no new changes and waiting reads aren't available.
 const POLL: Duration = Duration::from_millis(300);
+/// A waiting read that keeps waking with nothing to read this many times in a row means it
+/// doesn't really wait here; poll instead.
+const MAX_EMPTY_WAKES: u32 = 3;
 /// Ping interval when there are no changes.
 const PING: Duration = Duration::from_secs(10);
 /// Buffer size for one journal read.
@@ -66,6 +71,8 @@ pub(crate) struct Server {
     last_active: Mutex<Instant>,
     /// Only one MFT read at a time (heavy on disk and memory).
     listing: Mutex<()>,
+    /// Set on stop, waking journal followers blocked in a waiting read.
+    stop_event: Option<OwnedHandle>,
     /// Tests only: profile folders of identified clients.
     #[cfg(test)]
     seen_profiles: Mutex<Vec<Option<PathBuf>>>,
@@ -81,6 +88,10 @@ impl Server {
             config,
             stop: AtomicBool::new(false),
             listing: Mutex::new(()),
+            // SAFETY: plain unnamed manual-reset event, closed by OwnedHandle.
+            stop_event: unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+                .ok()
+                .map(OwnedHandle),
             active: AtomicUsize::new(0),
             last_active: Mutex::new(Instant::now()),
             #[cfg(test)]
@@ -92,6 +103,10 @@ impl Server {
     /// wake the accept loop.
     pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(event) = &self.stop_event {
+            // SAFETY: event is a valid event handle owned by the server.
+            let _ = unsafe { SetEvent(event.0) };
+        }
         let name = wide(&self.config.pipe_name);
         // SAFETY: name is NUL-terminated and valid for the call; the handle is closed right away.
         if let Ok(h) = unsafe {
@@ -334,7 +349,8 @@ impl Server {
         write_reply(io, &Reply::ListDone)
     }
 
-    /// Sends changes from `from`; once caught up, polls for new ones.
+    /// Sends changes from `from`; once caught up, waits for new ones (a waiting journal read,
+    /// woken by the file system; polling where that isn't available).
     fn follow(
         &self,
         io: &mut PipeIo,
@@ -356,6 +372,14 @@ impl Server {
         let mut last_sent = Instant::now();
         let mut buf = vec![0u8; READ_BUF];
         let mut resolve = Cached::new(|frn| volume.path_of(frn));
+        let mut waiter = self.stop_event.as_ref().and_then(|_| {
+            Waiter::open(root)
+                .inspect_err(|err| {
+                    log::info!("{}: no waiting reads, polling: {err}", root.display());
+                })
+                .ok()
+        });
+        let mut empty_wakes = 0u32;
         loop {
             if self.stopped() {
                 return Ok(());
@@ -377,9 +401,45 @@ impl Server {
                     write_reply(io, &Reply::Ping)?;
                     last_sent = Instant::now();
                 }
-                std::thread::sleep(POLL);
+                match (&waiter, &self.stop_event) {
+                    (Some(w), Some(stop)) => {
+                        // Wake for the next ping at the latest (it also notices a gone client).
+                        let left = PING
+                            .saturating_sub(last_sent.elapsed())
+                            .max(Duration::from_millis(50));
+                        // Waking with nothing to read, or a failed wait, counts against the
+                        // waiter; one poll interval is slept after a failure so it can't spin.
+                        let failed = match w.wait(data.id, usn, left, stop.0) {
+                            Ok(Wait::Ready) => None,
+                            Ok(Wait::TimedOut | Wait::Stopped) => {
+                                empty_wakes = 0;
+                                continue;
+                            }
+                            Err(err) => {
+                                std::thread::sleep(POLL);
+                                Some(err)
+                            }
+                        };
+                        empty_wakes += 1;
+                        if empty_wakes > MAX_EMPTY_WAKES {
+                            match failed {
+                                Some(err) => log::info!(
+                                    "{}: waiting reads keep failing, polling: {err}",
+                                    root.display()
+                                ),
+                                None => log::info!(
+                                    "{}: waiting reads return early, polling",
+                                    root.display()
+                                ),
+                            }
+                            waiter = None;
+                        }
+                    }
+                    _ => std::thread::sleep(POLL),
+                }
                 continue;
             }
+            empty_wakes = 0;
             usn = next;
             let changes = to_changes(&records, &mut resolve, privacy);
             if !changes.is_empty() {

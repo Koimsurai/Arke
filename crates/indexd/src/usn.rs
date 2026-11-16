@@ -14,20 +14,22 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_NAME, ERROR_JOURNAL_DELETE_IN_PROGRESS, ERROR_JOURNAL_ENTRY_DELETED,
-    ERROR_JOURNAL_NOT_ACTIVE, GENERIC_READ, HANDLE,
+    CloseHandle, ERROR_INVALID_NAME, ERROR_INVALID_USER_BUFFER, ERROR_IO_PENDING,
+    ERROR_JOURNAL_DELETE_IN_PROGRESS, ERROR_JOURNAL_ENTRY_DELETED, ERROR_JOURNAL_NOT_ACTIVE,
+    GENERIC_READ, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ExtendedFileIdType, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES,
-    FILE_ID_128, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_NAME_NORMALIZED,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdType,
-    GETFINALPATHNAMEBYHANDLE_FLAGS, GetFinalPathNameByHandleW, OPEN_EXISTING, OpenFileById,
-    VOLUME_NAME_DOS,
+    CreateFileW, ExtendedFileIdType, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED,
+    FILE_FLAGS_AND_ATTRIBUTES, FILE_ID_128, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0,
+    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FileIdType, GETFINALPATHNAMEBYHANDLE_FLAGS, GetFinalPathNameByHandleW,
+    OPEN_EXISTING, OpenFileById, VOLUME_NAME_DOS,
 };
-use windows::Win32::System::IO::DeviceIoControl;
+use windows::Win32::System::IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Ioctl::{
     FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_USN_JOURNAL, READ_USN_JOURNAL_DATA_V1, USN_JOURNAL_DATA_V2,
 };
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForMultipleObjects};
 use windows::core::PCWSTR;
 
 pub(crate) const REASON_DATA_OVERWRITE: u32 = 0x1;
@@ -365,6 +367,181 @@ impl Volume {
     }
 }
 
+/// Outcome of [`Waiter::wait`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Wait {
+    /// Records past the start position exist (or the journal changed state); read them.
+    Ready,
+    TimedOut,
+    /// The stop event was set.
+    Stopped,
+}
+
+/// Sleeps until the journal has new records instead of polling: an overlapped journal read with
+/// `BytesToWaitFor`, which the file system completes once a record past the start position is
+/// written. Timeouts and stops cancel it (`CancelIoEx`) and wait for the cancellation to land, so
+/// no read is left pointing at freed buffers.
+pub(crate) struct Waiter {
+    handle: HANDLE,
+    event: HANDLE,
+    /// `FSCTL_READ_USN_JOURNAL` (volume handle, admin) or the unprivileged variant (tests).
+    code: u32,
+}
+
+// SAFETY: plain kernel handles; a Waiter is used by one thread at a time.
+unsafe impl Send for Waiter {}
+
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        // SAFETY: both handles are owned by this struct and not yet closed; no read is pending
+        // (`wait` never returns with one in flight).
+        unsafe {
+            let _ = CloseHandle(self.handle);
+            let _ = CloseHandle(self.event);
+        }
+    }
+}
+
+impl Waiter {
+    /// Opens the volume (`\\.\C:`, needs admin) for waiting reads.
+    pub(crate) fn open(root: &Path) -> windows::core::Result<Self> {
+        let letter = drive_letter(root)
+            .ok_or_else(|| windows::core::Error::from_hresult(ERROR_INVALID_NAME.to_hresult()))?;
+        Self::open_path(
+            &format!(r"\\.\{letter}:"),
+            GENERIC_READ.0,
+            FILE_FLAG_OVERLAPPED,
+            FSCTL_READ_USN_JOURNAL,
+        )
+    }
+
+    /// Opens a drive root for the unprivileged journal read, which works without admin and waits
+    /// the same way. Lets tests exercise real waiting and cancelling.
+    #[cfg(test)]
+    pub(crate) fn open_unprivileged(root: &Path) -> windows::core::Result<Self> {
+        use windows::Win32::System::Ioctl::FSCTL_READ_UNPRIVILEGED_USN_JOURNAL;
+        Self::open_path(
+            &root.to_string_lossy(),
+            FILE_READ_ATTRIBUTES.0,
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_BACKUP_SEMANTICS,
+            FSCTL_READ_UNPRIVILEGED_USN_JOURNAL,
+        )
+    }
+
+    fn open_path(
+        path: &str,
+        access: u32,
+        flags: FILE_FLAGS_AND_ATTRIBUTES,
+        code: u32,
+    ) -> windows::core::Result<Self> {
+        let name: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: name is a NUL-terminated UTF-16 string valid for the call.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(name.as_ptr()),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                flags,
+                None,
+            )
+        }?;
+        // SAFETY: plain event creation (manual reset, unnamed); closed in Drop.
+        let event = match unsafe { CreateEventW(None, true, false, PCWSTR::null()) } {
+            Ok(event) => event,
+            Err(err) => {
+                // SAFETY: handle was opened above and is not used again.
+                let _ = unsafe { CloseHandle(handle) };
+                return Err(err);
+            }
+        };
+        Ok(Self {
+            handle,
+            event,
+            code,
+        })
+    }
+
+    /// Waits up to `timeout` for a record past `start` in journal `journal`, or until `stop` is
+    /// signaled. Errors (no journal, unsupported) mean waiting doesn't work here; poll instead.
+    pub(crate) fn wait(
+        &self,
+        journal: u64,
+        start: i64,
+        timeout: std::time::Duration,
+        stop: HANDLE,
+    ) -> windows::core::Result<Wait> {
+        let input = READ_USN_JOURNAL_DATA_V1 {
+            StartUsn: start,
+            ReasonMask: u32::MAX,
+            ReturnOnlyOnClose: 0,
+            // No time limit in the request itself: timing out is done by cancelling.
+            Timeout: 0,
+            BytesToWaitFor: 1,
+            UsnJournalID: journal,
+            MinMajorVersion: MIN_MAJOR,
+            MaxMajorVersion: MAX_MAJOR,
+        };
+        // Same size as the regular reads and 8-byte aligned, as the file system wants. The
+        // contents are thrown away: the caller reads again with the regular read.
+        let mut buf = vec![0u64; 64 * 1024 / 8];
+        let mut overlapped = OVERLAPPED {
+            hEvent: self.event,
+            ..Default::default()
+        };
+        // SAFETY: event is a valid event handle owned by self.
+        unsafe { ResetEvent(self.event) }?;
+        // SAFETY: input, buf and overlapped live on this frame until the read has completed or
+        // been cancelled and reaped below.
+        let started = unsafe {
+            DeviceIoControl(
+                self.handle,
+                self.code,
+                Some((&raw const input).cast()),
+                size_of::<READ_USN_JOURNAL_DATA_V1>() as u32,
+                Some(buf.as_mut_ptr().cast()),
+                (buf.len() * 8) as u32,
+                None,
+                Some(&raw mut overlapped),
+            )
+        };
+        match started {
+            Ok(()) => return Ok(Wait::Ready),
+            Err(err) if err.code() == ERROR_IO_PENDING.to_hresult() => {}
+            Err(err) => return Err(err),
+        }
+        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: both handles are valid events.
+        let woke = unsafe { WaitForMultipleObjects(&[self.event, stop], false, ms) };
+        let mut moved = 0u32;
+        if woke == WAIT_OBJECT_0 {
+            // SAFETY: the read on this handle and overlapped has completed (its event is set).
+            let done = unsafe {
+                GetOverlappedResult(self.handle, &raw const overlapped, &raw mut moved, false)
+            };
+            return match done {
+                // A read that had to wait completes with ERROR_INVALID_USER_BUFFER and no data
+                // once a record lands (seen with the unprivileged variant: the file system fills
+                // the buffer from another context). The wake is what counts; the caller reads
+                // the records with the regular read.
+                Err(err) if err.code() != ERROR_INVALID_USER_BUFFER.to_hresult() => Err(err),
+                _ => Ok(Wait::Ready),
+            };
+        }
+        // SAFETY: cancels only this read; then block until it is done with buf and overlapped.
+        unsafe {
+            let _ = CancelIoEx(self.handle, Some(&raw const overlapped));
+            let _ = GetOverlappedResult(self.handle, &raw const overlapped, &raw mut moved, true);
+        }
+        Ok(if woke == WAIT_TIMEOUT {
+            Wait::TimedOut
+        } else {
+            Wait::Stopped
+        })
+    }
+}
+
 /// `\\?\C:\a\b` to `C:\a\b`; other forms (`\\?\UNC\...`, volume GUIDs) are rejected.
 pub(crate) fn strip_verbatim(path: &Path) -> Option<PathBuf> {
     let s = path.to_str().map(str::to_owned).or_else(|| {
@@ -635,6 +812,109 @@ pub(crate) mod tests {
             used >> 20
         );
         assert!(max > 0);
+    }
+
+    /// Journal ID and next USN of the volume holding `root`, without admin.
+    fn journal_of(root: &Path) -> (u64, i64) {
+        let name: Vec<u16> = root
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: as in journal_size.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(name.as_ptr()),
+                FILE_READ_ATTRIBUTES.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+        }
+        .unwrap();
+        let volume = Volume { handle };
+        let data = volume
+            .query()
+            .expect("the temp folder's drive has a journal");
+        (data.id, data.next)
+    }
+
+    fn temp_root() -> PathBuf {
+        let temp = std::env::temp_dir();
+        PathBuf::from(format!("{}\\", &temp.to_string_lossy()[..2]))
+    }
+
+    fn stop_event() -> crate::sec::OwnedHandle {
+        // SAFETY: plain unnamed manual-reset event, closed by OwnedHandle.
+        crate::sec::OwnedHandle(unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.unwrap())
+    }
+
+    /// The waiting read on a real NTFS volume (the unprivileged variant needs no admin and waits
+    /// the same way): a new record wakes it right away, and timeouts and stops cancel it cleanly.
+    #[test]
+    fn waits_for_records_instead_of_polling() {
+        use std::time::{Duration, Instant};
+        let root = temp_root();
+        let (journal, next) = journal_of(&root);
+        let waiter = Waiter::open_unprivileged(&root).unwrap();
+        let stop = stop_event();
+
+        // A file created a little later wakes the wait long before its timeout.
+        let file = std::env::temp_dir().join(format!("arke-usn-wait-{}.txt", std::process::id()));
+        let writer = {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                std::fs::write(&file, b"x").unwrap();
+            })
+        };
+        let started = Instant::now();
+        let woke = waiter.wait(journal, next, Duration::from_secs(10), stop.0);
+        writer.join().unwrap();
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(woke.unwrap(), Wait::Ready);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // Nothing past a far position: the timeout cancels the read.
+        let far = next + (1 << 40);
+        let started = Instant::now();
+        let woke = waiter.wait(journal, far, Duration::from_millis(200), stop.0);
+        assert_eq!(woke.unwrap(), Wait::TimedOut);
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(190) && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+
+        // Stopping wakes it at once.
+        let raw = stop.0.0 as isize;
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            // SAFETY: the event outlives this thread (joined below).
+            unsafe { windows::Win32::System::Threading::SetEvent(HANDLE(raw as *mut _)) }.unwrap();
+        });
+        let started = Instant::now();
+        let woke = waiter.wait(journal, far, Duration::from_secs(10), stop.0);
+        stopper.join().unwrap();
+        assert_eq!(woke.unwrap(), Wait::Stopped);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // The waiter is reusable after a cancel: a set stop event returns right away.
+        assert_eq!(
+            waiter
+                .wait(journal, far, Duration::from_secs(10), stop.0)
+                .unwrap(),
+            Wait::Stopped
+        );
     }
 
     #[test]

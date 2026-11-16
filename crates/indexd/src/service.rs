@@ -96,6 +96,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
         return;
     };
     config.idle = Some(IDLE);
+    crate::power::run_as_background();
     let server = Server::new(config);
     let _ = SERVER.set(Arc::clone(&server));
     report(SERVICE_RUNNING, 0);

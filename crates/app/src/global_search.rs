@@ -68,6 +68,10 @@ pub(crate) enum Roots {
     Fixed(Vec<PathBuf>),
 }
 
+/// Most items one network location's index holds. A share can be far larger than anyone searches
+/// (a NAS with years of files), and walking all of it keeps the NAS and Arke busy for hours.
+const NET_MAX_ITEMS: usize = 2_000_000;
+
 /// Index of one network location.
 pub(crate) struct NetIndex {
     pub(crate) root: PathBuf,
@@ -344,6 +348,7 @@ impl GlobalSearch {
                 skip_build_dirs,
                 passive: !online,
                 excluded: Vec::new(),
+                max_items: Some(NET_MAX_ITEMS),
             };
             let service = IndexService::start(fs, options, move || {
                 let _ = changed_tx.send(());
@@ -603,6 +608,7 @@ pub(crate) fn local_index_options(
         skip_build_dirs,
         passive: false,
         excluded,
+        max_items: None,
     }
 }
 

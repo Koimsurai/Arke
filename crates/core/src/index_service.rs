@@ -96,6 +96,8 @@ pub struct IndexOptions {
     pub passive: bool,
     /// User-excluded folders (the folder itself is findable, its contents are not indexed).
     pub excluded: Vec<PathBuf>,
+    /// Stop walking past this many items (network locations); `None` for no limit.
+    pub max_items: Option<usize>,
 }
 
 impl IndexOptions {
@@ -103,6 +105,7 @@ impl IndexOptions {
         BuildRules {
             skip_build_dirs: self.skip_build_dirs,
             excluded: self.excluded.clone(),
+            max_items: self.max_items,
         }
     }
 }
@@ -1045,7 +1048,8 @@ impl Shared {
             return;
         }
         log::info!(
-            "global search index built: {} items, {:.1} s",
+            "global search index built: {}, {} items, {:.1} s",
+            crate::index::roots_label(&self.opts.roots),
             index.len(),
             started.elapsed().as_secs_f32()
         );
@@ -1156,6 +1160,7 @@ mod tests {
             skip_build_dirs: false,
             passive: false,
             excluded: Vec::new(),
+            max_items: None,
         }
     }
 
@@ -1295,6 +1300,7 @@ mod tests {
         let rules = BuildRules {
             skip_build_dirs: false,
             excluded: vec![PathBuf::from(r"D:\Media\"), PathBuf::from(r"E:\")],
+            max_items: None,
         };
         assert!(rules.is_inside_excluded(Path::new(r"d:\media\a.mp4")));
         assert!(!rules.is_inside_excluded(Path::new(r"D:\Media")));
@@ -1304,6 +1310,7 @@ mod tests {
         let same = BuildRules {
             skip_build_dirs: true,
             excluded: vec![PathBuf::from(r"e:\"), PathBuf::from(r"d:\media")],
+            max_items: None,
         };
         assert_eq!(rules.fingerprint(), same.fingerprint());
         assert_ne!(rules.fingerprint(), 0);

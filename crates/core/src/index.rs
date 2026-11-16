@@ -46,12 +46,22 @@ const FLAG_LINK: u8 = 4;
 /// A real folder whose contents are not in the index (build folders, exclusions, hidden system
 /// folders, cloud placeholder folders).
 const FLAG_PRUNED: u8 = 8;
-/// Folders never entered: the system recycle bin, restore data and Windows Update staging.
-const SKIP_DIRS: [&str; 4] = [
+/// Folders never entered: the system recycle bin, restore data and Windows Update staging, and on
+/// NAS shares their snapshots (each a full copy of the share), recycle bins and thumbnail caches
+/// (Synology, QNAP, NetApp and others).
+const SKIP_DIRS: [&str; 12] = [
     "$recycle.bin",
     "system volume information",
     "$windows.~bt",
     "$windows.~ws",
+    "#snapshot",
+    "#recycle",
+    "@eadir",
+    "@recycle",
+    "@recently-snapshot",
+    ".@__thumb",
+    ".snapshot",
+    "~snapshot",
 ];
 /// Build output and package cache folders (not entered with "skip build folders", but the folder
 /// itself stays findable): often hundreds of thousands of churning files nobody searches for.
@@ -215,6 +225,9 @@ pub struct BuildRules {
     pub skip_build_dirs: bool,
     /// User-excluded folders: the folder itself is findable, its contents are not indexed.
     pub excluded: Vec<PathBuf>,
+    /// Stop entering folders once the index holds this many items (network shares, which can be
+    /// far larger than anyone searches); `None` for no limit.
+    pub max_items: Option<usize>,
 }
 
 /// Path comparison key: lowercase, no trailing `\`.
@@ -463,7 +476,7 @@ impl Index {
             thread_init,
             &BuildRules {
                 skip_build_dirs,
-                excluded: Vec::new(),
+                ..BuildRules::default()
             },
             &|_, _| Err(io::ErrorKind::Unsupported.into()),
         )
@@ -521,19 +534,23 @@ impl Index {
                 }
             }
         }
+        // Set once the index reaches `rules.max_items`: queued folders are no longer listed.
+        let full = AtomicBool::new(false);
         std::thread::scope(|scope| {
             for _ in 0..threads.max(1) {
                 let work_rx = work_rx.clone();
                 let done_tx = done_tx.clone();
+                let full = &full;
                 scope.spawn(move || {
                     thread_init();
                     while let Ok((id, path)) = work_rx.recv() {
-                        let entries: Vec<Entry> = if cancel.load(Ordering::Relaxed) {
-                            Vec::new()
-                        } else {
-                            fs.read_dir(&path)
-                                .map_or_default(|iter| iter.filter_map(Result::ok).collect())
-                        };
+                        let entries: Vec<Entry> =
+                            if cancel.load(Ordering::Relaxed) || full.load(Ordering::Relaxed) {
+                                Vec::new()
+                            } else {
+                                fs.read_dir(&path)
+                                    .map_or_default(|iter| iter.filter_map(Result::ok).collect())
+                            };
                         if done_tx.send((id, entries)).is_err() {
                             return;
                         }
@@ -548,6 +565,19 @@ impl Index {
                     break;
                 };
                 pending -= 1;
+                if full.load(Ordering::Relaxed) {
+                    // Past the limit: only drain what was already queued.
+                    continue;
+                }
+                if rules.max_items.is_some_and(|max| index.len() >= max) {
+                    full.store(true, Ordering::Relaxed);
+                    log::warn!(
+                        "global search: {} has more than {} items, indexing stops there",
+                        roots_label(roots),
+                        index.len()
+                    );
+                    continue;
+                }
                 progress.scanned.fetch_add(entries.len(), Ordering::Relaxed);
                 let parent_path = index.path_of(parent);
                 index.add_entries(parent, Some(&parent_path), &entries, rules, |id, entry| {
@@ -2021,6 +2051,15 @@ impl OverlayTrie {
     }
 }
 
+/// Roots for log lines (`C:\, D:\`).
+pub fn roots_label(roots: &[PathBuf]) -> String {
+    roots
+        .iter()
+        .map(|r| r.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Whether the walk enters this folder: only plain folders. Not symlinks/junctions (cycles or
 /// duplicates), not cloud placeholder folders (listing recalls from the cloud), not
 /// hidden+system folders or the recycle bin.
@@ -2169,6 +2208,7 @@ mod tests {
                 &BuildRules {
                     skip_build_dirs: true,
                     excluded: vec![PathBuf::from(r"c:\users\me\proj\SRC")],
+                    max_items: None,
                 },
                 list,
             )
@@ -2213,6 +2253,84 @@ mod tests {
         assert_eq!(all_paths(&index), [r"C:\", r"D:\", r"D:\walked.txt"]);
         // The name pool shrank too, so dedup never points into the removed span.
         assert_eq!(&*index.names, r"C:\D:\walked.txt");
+    }
+
+    /// A NAS share's snapshots are each a full copy of the share: walking them never ends on a
+    /// share with many snapshots. They, the NAS recycle bin and thumbnail folders aren't entered.
+    #[test]
+    fn skips_nas_snapshots_recycle_bins_and_thumbnails() {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"\\nas\share",
+            vec![
+                dir("docs"),
+                dir("#snapshot"),
+                dir("#recycle"),
+                dir("@eaDir"),
+            ],
+        );
+        fs.insert_dir(r"\\nas\share\docs", vec![file("plan.xlsx")]);
+        fs.insert_dir(r"\\nas\share\#snapshot", vec![dir("GMT+08-2026.11.16")]);
+        fs.insert_dir(
+            r"\\nas\share\#snapshot\GMT+08-2026.11.16",
+            vec![file("plan.xlsx")],
+        );
+        fs.insert_dir(r"\\nas\share\#recycle", vec![file("old-plan.xlsx")]);
+        fs.insert_dir(r"\\nas\share\@eaDir", vec![file("plan.xlsx@SynoEAStream")]);
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"\\nas\share")],
+            1,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        assert_eq!(
+            all_paths(&index),
+            [
+                r"\\nas\share",
+                r"\\nas\share\#recycle",
+                r"\\nas\share\#snapshot",
+                r"\\nas\share\@eaDir",
+                r"\\nas\share\docs",
+                r"\\nas\share\docs\plan.xlsx",
+            ]
+        );
+    }
+
+    /// With a limit, the walk stops entering folders once the index is that big, so a huge share
+    /// can't keep growing the index for hours.
+    #[test]
+    fn stops_walking_at_the_item_limit() {
+        let fs = FakeFs::new();
+        let folders: Vec<Entry> = (0..20).map(|i| dir(&format!("d{i:02}"))).collect();
+        fs.insert_dir(r"\\nas\big", folders);
+        for i in 0..20 {
+            fs.insert_dir(
+                format!(r"\\nas\big\d{i:02}"),
+                (0..10).map(|j| file(&format!("f{j}.txt"))).collect(),
+            );
+        }
+        let build = |max_items| {
+            Index::build_listed(
+                fs.as_ref(),
+                &[PathBuf::from(r"\\nas\big")],
+                1,
+                &AtomicBool::new(false),
+                &BuildProgress::default(),
+                &|| {},
+                &BuildRules {
+                    max_items,
+                    ..BuildRules::default()
+                },
+                &|_, _| Err(io::ErrorKind::Unsupported.into()),
+            )
+        };
+        assert_eq!(build(None).len(), 1 + 20 + 200);
+        let capped = build(Some(50)).len();
+        // One folder's contents may land after the limit is reached, nothing more.
+        assert!((50..=50 + 10).contains(&capped), "{capped} items");
     }
 
     #[test]

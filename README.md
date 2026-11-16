@@ -97,7 +97,11 @@ Shell extensions from other programs run in a separate process, so a buggy one c
 - Big folders go to the Recycle Bin at once on local drives: 20,000 files in about a quarter of a
   second instead of 40 s, since Windows doesn't check every file first. Restore works as usual, and
   anything it can't vouch for (network drives, OneDrive, files in use, policies) is left to Windows.
-  It can be turned off in settings.
+  It can be turned off in settings. Loose files take a few milliseconds each, still two to six times
+  faster than Windows.
+- Quiet when idle: nothing on screen changing means nothing redrawn, minimized included. Folder
+  sizes, indexing and the search service run at low priority in Windows' efficiency mode, and with
+  only the tray icon left Arke frees its caches.
 - Optionally (experimental) open folders in Arke instead of File Explorer (folders opened from other
   apps included), also "Show in folder" from browsers and "Open file location" from other apps.
   It registers Arke as the folder handler for your account and is undone when you turn it off.

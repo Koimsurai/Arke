@@ -1600,14 +1600,18 @@ impl Explorer {
     }
 
     /// Divider on the preview pane's left edge: drag to resize the pane (app-wide), double click
-    /// to go back to the automatic width. Same feel as the Details column dividers.
+    /// to go back to the automatic width. Same feel as the Details column dividers. In the column
+    /// view it is the current folder column's divider instead (drag to size that column, double
+    /// click to fit it to its names; the preview takes the rest).
     /// `in_gap`: a split tab's shared preview, whose edge is the gap left of its paper.
     pub(super) fn preview_resize_handle(
         &self,
         in_gap: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let dragging = self.preview_resized && cx.has_active_drag();
+        let dragging = (self.preview_resized
+            || self.view_column_resized == Some(crate::prefs::ViewColumn::Current))
+            && cx.has_active_drag();
         let edge = DraggedPreviewEdge(cx.entity_id());
         let gap = super::layout::SHARED_GAP;
         div()
@@ -1640,13 +1644,23 @@ impl Explorer {
             // the cursor moved, so it neither jumps to the cursor nor lags by the drag threshold.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, _, _| {
+                cx.listener(move |this, e: &MouseDownEvent, _, _| {
                     this.preview_drag_start = Some((e.position.x, this.preview_w()));
+                    // In the column view this edge is the current folder column's divider.
+                    this.view_column_drag = (this.columns_active() && !in_gap).then(|| {
+                        let current = crate::prefs::ViewColumn::Current;
+                        (current, e.position.x, this.view_column_shown_width(current))
+                    });
                 }),
             )
             .on_drag(edge, |_, _, _, cx| cx.new(|_| super::details::ColumnDragView))
-            .on_click(cx.listener(|this, e: &ClickEvent, _, cx| {
-                if e.click_count() >= 2 {
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if e.click_count() < 2 {
+                    return;
+                }
+                if this.columns_active() && !in_gap {
+                    this.fit_view_column(crate::prefs::ViewColumn::Current, window, cx);
+                } else {
                     crate::prefs::set_preview_width(None);
                     this.preview_resized = true;
                     this.save_preview_width(cx);
@@ -1663,7 +1677,14 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         let pane = e.drag(cx).0;
-        let Some((from, start)) = self.preview_drag_start.filter(|_| pane == cx.entity_id()) else {
+        if pane != cx.entity_id() {
+            return;
+        }
+        if let Some((col, from, start)) = self.view_column_drag {
+            self.drag_view_column(col, start + e.event.position.x - from, cx);
+            return;
+        }
+        let Some((from, start)) = self.preview_drag_start else {
             return;
         };
         let room = match self.pane.preview_host {

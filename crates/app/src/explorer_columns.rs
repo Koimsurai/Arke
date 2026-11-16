@@ -7,6 +7,11 @@
 //!
 //! The parent is listed in the background (`Fs::read_dir`, never on the UI thread) and only when
 //! the folder changes.
+//!
+//! The parent and current columns can be sized like Finder's: drag the divider on a column's right
+//! edge (the current column's is the preview's edge), double-click it to fit the column to its
+//! longest name. The widths are app-wide, the same in every folder. Names cut off by a narrow
+//! column show in full in a tooltip.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -15,17 +20,25 @@ use std::sync::Arc;
 use arke_core::filetype::FileKind;
 use arke_core::{Entry, NavKind};
 use gpui::{
-    AnyElement, ClickEvent, Context, ScrollStrategy, UniformListScrollHandle, div, prelude::*, px,
-    uniform_list,
+    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, Pixels, ScrollStrategy,
+    SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 
 use super::view::listed_visual;
-use super::{AppEvent, Explorer, ViewMode, spawn_thread};
+use super::{AppEvent, Explorer, ViewMode, layout, spawn_thread};
 use crate::media::MediaKey;
+use crate::prefs::ViewColumn;
 use crate::theme;
 
-/// Width of the left (parent) column
-pub(super) const PARENT_W: gpui::Pixels = px(240.);
+/// Default width of the left (parent) column
+pub(super) const PARENT_W: Pixels = px(240.);
+/// Fitting measures at most this many names, the longest by character count: enough to find the
+/// widest one without shaping every name of a huge folder.
+const FIT_CANDIDATES: usize = 256;
+
+/// The parent column's divider being dragged, in this pane.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DraggedParentEdge(gpui::EntityId);
 
 pub(crate) struct ParentColumn {
     pub(crate) dir: PathBuf,
@@ -103,6 +116,7 @@ impl Explorer {
     fn render_parent_rows(
         &mut self,
         range: Range<usize>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(column) = &self.parent_column else {
@@ -136,6 +150,7 @@ impl Explorer {
             Vec::new()
         };
         let show_ext = self.show_extensions;
+        let width = Self::parent_column_width();
         let start = range.start;
         range
             .filter_map(|ix| entries.get(ix).map(|e| (ix, e)))
@@ -145,8 +160,13 @@ impl Explorer {
                 let is_dir = entry.is_dir_like();
                 let name: Arc<str> = Arc::clone(&entry.name);
                 let parent = dir.clone();
+                let shown = super::view::shown_name(entry, show_ext);
+                let cut = name_width(window, &shown) > width - parent_row_chrome(is_dir);
                 div()
                     .id(("parent-col", ix))
+                    .when(cut, |d| {
+                        d.tooltip(super::view::tooltip(SharedString::from(&*entry.name)))
+                    })
                     .relative()
                     .h(theme::H_ROW_COMPACT)
                     .px(theme::S_8)
@@ -175,7 +195,7 @@ impl Explorer {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(super::view::shown_name(entry, show_ext)),
+                            .child(shown),
                     )
                     .when(is_dir, |d| d.child(chevron()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -200,7 +220,7 @@ impl Explorer {
     /// Left column of the column view.
     pub(super) fn render_parent_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let column = div()
-            .w(PARENT_W)
+            .w(Self::parent_column_width())
             .flex_none()
             .h_full()
             .flex()
@@ -225,8 +245,8 @@ impl Explorer {
                 uniform_list(
                     "parent-column",
                     entries.len(),
-                    cx.processor(|this, range: Range<usize>, _window, cx| {
-                        this.render_parent_rows(range, cx)
+                    cx.processor(|this, range: Range<usize>, window, cx| {
+                        this.render_parent_rows(range, window, cx)
                     }),
                 )
                 .track_scroll(&parent.scroll)
@@ -238,9 +258,225 @@ impl Explorer {
 
     /// Middle column rows show only the name; folders get a trailing arrow.
     pub(super) fn column_row_tail(entry: &Entry) -> Option<AnyElement> {
-        (entry.is_dir_like() && arke_core::filetype::file_kind(entry) == FileKind::Folder)
-            .then(|| chevron().into_any_element())
+        Self::column_row_tail_shown(entry).then(|| chevron().into_any_element())
     }
+
+    /// Width of the parent column: what the user gave it, or the default.
+    pub(super) fn parent_column_width() -> Pixels {
+        crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or(PARENT_W)
+    }
+
+    /// How wide `col` is drawn (the current column: what the parent left of the list at the last
+    /// paint, so also while it fills the room).
+    pub(super) fn view_column_shown_width(&self, col: ViewColumn) -> Pixels {
+        let parent = Self::parent_column_width();
+        match col {
+            ViewColumn::Parent => parent,
+            ViewColumn::Current => (self.list_bounds.get().size.width - parent).max(px(0.)),
+        }
+    }
+
+    /// Widest `col` may be made in this pane now.
+    fn view_column_room(&self, col: ViewColumn) -> Pixels {
+        let input = self.fit_input(self.paper_width, self.screen.0.width);
+        match col {
+            ViewColumn::Parent => layout::parent_room(&input),
+            ViewColumn::Current => layout::current_room(&input),
+        }
+    }
+
+    /// A divider moved during a drag: size `col` to `width`, kept between the minimum and what
+    /// the pane leaves. Saved on release (see `before_render`).
+    pub(super) fn drag_view_column(
+        &mut self,
+        col: ViewColumn,
+        width: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let width = width.clamp(layout::VIEW_COLUMN_MIN, self.view_column_room(col));
+        crate::prefs::set_view_column_width(col, Some(width));
+        self.view_column_resized = Some(col);
+        cx.notify();
+    }
+
+    /// A divider was double-clicked: fit `col` to its longest name (within the fit bounds and
+    /// what the pane leaves), and save it.
+    pub(super) fn fit_view_column(
+        &mut self,
+        col: ViewColumn,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entries = match col {
+            ViewColumn::Parent => self.parent_column.as_ref().and_then(|c| c.entries.clone()),
+            ViewColumn::Current => self.view(),
+        };
+        let Some(entries) = entries.filter(|e| !e.is_empty()) else {
+            return;
+        };
+        let show_ext = self.show_extensions;
+        let mut names: Vec<SharedString> = entries
+            .iter()
+            .map(|e| super::view::shown_name(e, show_ext))
+            .collect();
+        names.sort_unstable_by_key(|n| std::cmp::Reverse(n.chars().count()));
+        names.truncate(FIT_CANDIDATES);
+        let widest = names
+            .iter()
+            .map(|n| name_width(window, n))
+            .fold(px(0.), Ord::max);
+        let chrome = match col {
+            ViewColumn::Parent => parent_row_chrome(true),
+            ViewColumn::Current => self.current_row_chrome(true),
+        };
+        // A little air so subpixel rounding never truncates the widest name.
+        let width = (chrome + widest + theme::S_4)
+            .ceil()
+            .clamp(layout::VIEW_COLUMN_MIN, layout::VIEW_COLUMN_FIT_MAX)
+            .min(self.view_column_room(col));
+        log::info!("column view fit: {col:?} {width:?}");
+        crate::prefs::set_view_column_width(col, Some(width));
+        self.view_column_resized = Some(col);
+        self.save_view_column_widths(cx);
+    }
+
+    /// After sizing a column view column: save the widths to settings (shared by all windows).
+    pub(crate) fn save_view_column_widths(&mut self, cx: &mut Context<Self>) {
+        if self.view_column_resized.take().is_none() {
+            return;
+        }
+        let widths = crate::prefs::stored_view_column_widths();
+        log::info!("column view widths: {widths:?}");
+        crate::settings::SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(|st| st.column_view_widths = widths, cx);
+        });
+        cx.notify();
+    }
+
+    /// Room a current column row takes besides its name: the list's padding and gutter, the row's
+    /// padding, the checkbox and icon, and the folder arrow (`chevron`).
+    fn current_row_chrome(&self, chevron: bool) -> Pixels {
+        let mut w = theme::S_8 * 2.
+            + layout::LIST_GUTTER
+            + layout::ROW_PAD_L
+            + layout::ROW_PAD_R
+            + self.name_lead(None);
+        if chevron {
+            w += layout::COL_GAP + theme::ICON_SM;
+        }
+        w
+    }
+
+    /// Which of the current column's rows in `range` cut their name off (they get a tooltip with
+    /// the whole name). Empty outside the column view.
+    pub(super) fn column_name_tips(&self, range: Range<usize>, window: &Window) -> Vec<bool> {
+        if !self.columns_active() {
+            return Vec::new();
+        }
+        let Some(entries) = self.view() else {
+            return Vec::new();
+        };
+        let width = self.view_column_shown_width(ViewColumn::Current);
+        let in_cloud = self.current_path().is_some_and(|p| self.in_cloud(p));
+        range
+            .filter_map(|ix| entries.get(ix))
+            .map(|entry| {
+                let mut room = width - self.current_row_chrome(Self::column_row_tail_shown(entry));
+                // The sync or compare badge after the name, roughly.
+                if in_cloud {
+                    room -= theme::S_12 + theme::ICON;
+                }
+                if self.compare_mark(&entry.name).is_some() {
+                    room -= theme::S_12 + px(64.);
+                }
+                name_width(
+                    window,
+                    &super::view::shown_name(entry, self.show_extensions),
+                ) > room
+            })
+            .collect()
+    }
+
+    /// Whether a middle column row ends with a folder arrow.
+    fn column_row_tail_shown(entry: &Entry) -> bool {
+        entry.is_dir_like() && arke_core::filetype::file_kind(entry) == FileKind::Folder
+    }
+
+    /// The parent column's divider, over its right border (drawn above the current column, whose
+    /// left padding it covers, so rows on either side keep their clicks): drag to size the
+    /// column, double-click to fit it to its names.
+    pub(super) fn render_parent_divider(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dragging = self.view_column_resized == Some(ViewColumn::Parent) && cx.has_active_drag();
+        div()
+            .id("parent-column-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(Self::parent_column_width() - theme::S_4)
+            .w(theme::S_8)
+            // Presses stay here: the list under it would clear the selection.
+            .occlude()
+            .cursor_col_resize()
+            .group("parent-column-resize")
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(theme::S_4 - px(1.))
+                    .w(px(2.))
+                    .when(dragging, |d| d.bg(theme::signal()))
+                    .when(!dragging, |d| {
+                        d.group_hover("parent-column-resize", |s| s.bg(theme::signal_line()))
+                    }),
+            )
+            // Like the preview's edge: the drag moves the divider by as much as the cursor moved
+            // since the press, so it neither jumps nor lags by the drag threshold.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, _, _| {
+                    this.view_column_drag =
+                        Some((ViewColumn::Parent, e.position.x, Self::parent_column_width()));
+                }),
+            )
+            .on_drag(DraggedParentEdge(cx.entity_id()), |_, _, _, cx| {
+                cx.new(|_| super::details::ColumnDragView)
+            })
+            .on_drag_move(cx.listener(
+                |this, e: &gpui::DragMoveEvent<DraggedParentEdge>, _, cx| {
+                    if e.drag(cx).0 != cx.entity_id() {
+                        return;
+                    }
+                    if let Some((ViewColumn::Parent, from, start)) = this.view_column_drag {
+                        this.drag_view_column(
+                            ViewColumn::Parent,
+                            start + e.event.position.x - from,
+                            cx,
+                        );
+                    }
+                },
+            ))
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                if e.click_count() >= 2 {
+                    this.fit_view_column(ViewColumn::Parent, window, cx);
+                }
+            }))
+    }
+}
+
+/// Room a parent column row takes besides its name: the column's border, the list's and the
+/// row's padding, the icon, and the folder arrow (`chevron`).
+fn parent_row_chrome(chevron: bool) -> Pixels {
+    let mut w = px(1.) + theme::S_8 * 4. + theme::ICON + theme::S_8;
+    if chevron {
+        w += theme::S_8 + theme::ICON_SM;
+    }
+    w
+}
+
+/// Width of a row's name as drawn.
+fn name_width(window: &Window, name: &str) -> Pixels {
+    super::details::text_width(window, name, theme::FS_14, gpui::FontWeight::NORMAL)
 }
 
 fn chevron() -> impl IntoElement {
@@ -258,5 +494,11 @@ impl Explorer {
             .as_ref()
             .and_then(|c| c.entries.as_ref())
             .map_or_default(|e| e.iter().map(|e| e.name.to_string()).collect())
+    }
+
+    /// Which of the current column's names are cut off (and get a tooltip).
+    pub(crate) fn current_name_tips_for_test(&self, window: &Window) -> Vec<bool> {
+        let len = self.view().map_or(0, |v| v.len());
+        self.column_name_tips(0..len, window)
     }
 }

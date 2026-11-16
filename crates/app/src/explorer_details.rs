@@ -419,21 +419,7 @@ impl Explorer {
     /// The width `col` needs for its header and the rows on screen (`None` without rows).
     fn content_width(&self, col: Col, window: &Window) -> Option<Pixels> {
         let measure = |text: &str, size: Pixels, weight: gpui::FontWeight| {
-            if text.is_empty() {
-                return px(0.);
-            }
-            let run = gpui::TextRun {
-                len: text.len(),
-                font: theme::ui_font_at(weight),
-                color: gpui::Hsla::default(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            window
-                .text_system()
-                .shape_line(SharedString::from(text.to_owned()), size, &[run], None)
-                .width
+            text_width(window, text, size, weight)
         };
         let text_w = |text: &str, size: Pixels| measure(text, size, gpui::FontWeight::NORMAL);
         let widths = if self.search_mode {
@@ -458,7 +444,7 @@ impl Explorer {
 
     /// What comes before the name text in the Name column: the checkbox, the tree's indent and
     /// chevron at `depth`, and the icon, each with its gap.
-    fn name_lead(&self, depth: Option<u16>) -> Pixels {
+    pub(super) fn name_lead(&self, depth: Option<u16>) -> Pixels {
         let mut w = theme::ICON + layout::COL_GAP;
         if self.show_checkboxes && !self.search_mode {
             w += theme::ICON + layout::COL_GAP;
@@ -756,6 +742,30 @@ fn text_cell(col: Col, text: impl Into<SharedString>) -> AnyElement {
         .text_color(theme::text_muted())
         .child(text.into())
         .into_any_element()
+}
+
+/// Width of `text` drawn in the UI font at `size` and `weight`.
+pub(super) fn text_width(
+    window: &Window,
+    text: &str,
+    size: Pixels,
+    weight: gpui::FontWeight,
+) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    let run = gpui::TextRun {
+        len: text.len(),
+        font: theme::ui_font_at(weight),
+        color: gpui::Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(SharedString::from(text.to_owned()), size, &[run], None)
+        .width
 }
 
 /// The extension as written in the name, with its dot (".JPG"); empty for folders and names

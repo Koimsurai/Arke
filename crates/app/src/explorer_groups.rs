@@ -504,7 +504,7 @@ impl Explorer {
                     run = Some(match run {
                         Some(r) if r.end == *ix => r.start..ix + 1,
                         Some(r) => {
-                            out.extend(self.render_rows(r, focused, cx));
+                            out.extend(self.render_rows(r, focused, &[], cx));
                             *ix..ix + 1
                         }
                         None => *ix..ix + 1,
@@ -516,7 +516,7 @@ impl Explorer {
                     count,
                 }) => {
                     if let Some(r) = run.take() {
-                        out.extend(self.render_rows(r, focused, cx));
+                        out.extend(self.render_rows(r, focused, &[], cx));
                     }
                     out.push(self.group_header(row, label.clone(), *start, *count, None, cx));
                 }
@@ -524,7 +524,7 @@ impl Explorer {
             }
         }
         if let Some(r) = run {
-            out.extend(self.render_rows(r, focused, cx));
+            out.extend(self.render_rows(r, focused, &[], cx));
         }
         out
     }

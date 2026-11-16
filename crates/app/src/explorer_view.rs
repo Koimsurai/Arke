@@ -887,10 +887,12 @@ impl Explorer {
             })
     }
 
+    /// `tips`: which of the rows get a tooltip with their whole name (column view names cut off).
     pub(super) fn render_rows(
         &mut self,
         range: Range<usize>,
         focused: bool,
+        tips: &[bool],
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let started = Instant::now();
@@ -929,6 +931,9 @@ impl Explorer {
                     .show_checkboxes
                     .then(|| self.item_checkbox(ix, is_selected, cx));
                 self.row_shell(ix, is_selected, is_cursor, focused, cx)
+                    .when(tips.get(k).copied().unwrap_or(false), |d| {
+                        d.tooltip(tooltip(SharedString::from(&*entry.name)))
+                    })
                     .a11y_item(ix, is_selected, cursor == Some(ix), || {
                         self.item_a11y_label(entry)
                     })
@@ -1205,9 +1210,12 @@ impl Explorer {
             "files",
             self.display_len(len) + tail_items(self.row_height()),
             cx.processor(
-                move |this, range: Range<usize>, _window, cx| match this.groups() {
-                    Some(groups) => this.render_grouped_rows(&groups, range, focused, cx),
-                    None => this.render_rows(range, focused, cx),
+                move |this, range: Range<usize>, window, cx| {
+                    if let Some(groups) = this.groups() {
+                        return this.render_grouped_rows(&groups, range, focused, cx);
+                    }
+                    let tips = this.column_name_tips(range.clone(), window);
+                    this.render_rows(range, focused, &tips, cx)
                 },
             ),
         )
@@ -1600,6 +1608,7 @@ impl Explorer {
                     let list = self.details_list(view_len.unwrap_or(0), focused, cx);
                     if self.columns_active() {
                         div()
+                            .relative()
                             .flex()
                             .flex_1()
                             .min_h_0()
@@ -1613,6 +1622,7 @@ impl Explorer {
                                     .pt(theme::S_4)
                                     .child(list),
                             )
+                            .child(self.render_parent_divider(cx))
                             .into_any_element()
                     } else {
                         list
@@ -2913,6 +2923,13 @@ impl Explorer {
                 let _ = this.update(cx, Self::save_preview_width);
             });
         }
+        // Column view divider released: save the column widths (app-wide).
+        if self.view_column_resized.is_some() && !cx.has_active_drag() {
+            let this = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = this.update(cx, Self::save_view_column_widths);
+            });
+        }
         self.poll_pending_create(cx);
         self.poll_pending_rename(window, cx);
         self.schedule_notice_dismiss(cx);
@@ -3082,7 +3099,8 @@ impl Explorer {
             // A split tab's preview pane is drawn once for the tab, not by each side.
             wants_preview: (self.preview_pane && !self.pane.split) || self.columns_active(),
             preview_user: crate::prefs::preview_width(),
-            parent_w: super::columns::PARENT_W,
+            parent_w: Self::parent_column_width(),
+            current_w: crate::prefs::view_column_width(crate::prefs::ViewColumn::Current),
             location_w: theme::COL_LOCATION,
             col_w: crate::prefs::Col::ALL.map(|col| {
                 // Search results always show modified and size.

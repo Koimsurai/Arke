@@ -27,6 +27,8 @@ use crate::shell::{
 };
 use crate::workspace::{CloseTab, NewTab, Workspace};
 
+#[path = "tests_column_view.rs"]
+mod column_view;
 #[path = "tests_folder_views.rs"]
 mod folder_views;
 #[cfg(windows)]

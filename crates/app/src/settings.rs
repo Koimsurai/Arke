@@ -334,6 +334,18 @@ impl ColumnWidths {
     }
 }
 
+/// Column view widths the user dragged or fitted, in pixels (`None`: the default). One set for
+/// every folder, so the columns don't jump while browsing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ColumnViewWidths {
+    /// The parent folder's column.
+    pub(crate) parent: Option<u16>,
+    /// The current folder's column; the preview takes the rest. `None`: it fills what the
+    /// preview leaves.
+    pub(crate) current: Option<u16>,
+}
+
 /// Where folders sort.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -511,6 +523,8 @@ pub(crate) struct Settings {
     pub(crate) column_widths: ColumnWidths,
     /// Width the preview pane was dragged to, app-wide (`None`: follows the window).
     pub(crate) preview_width: Option<u16>,
+    /// Column view: the parent and current folder columns' widths.
+    pub(crate) column_view_widths: ColumnViewWidths,
     pub(crate) show_type: bool,
     pub(crate) show_size: bool,
     /// Extension, Attributes (R/H/S/A) and Link target columns, hidden by default.
@@ -620,6 +634,7 @@ impl Default for Settings {
             show_created: false,
             column_widths: ColumnWidths::default(),
             preview_width: None,
+            column_view_widths: ColumnViewWidths::default(),
             show_type: true,
             show_size: true,
             show_extension: false,

@@ -599,6 +599,10 @@ pub(crate) struct Explorer {
     pub(crate) preview_resized: bool,
     /// Pressed on the preview pane's edge: where (x), and the pane's width then.
     preview_drag_start: Option<(Pixels, Pixels)>,
+    /// A column view column was dragged but its width is not saved yet (saved on release).
+    pub(crate) view_column_resized: Option<crate::prefs::ViewColumn>,
+    /// Pressed on a column view divider: which column, where (x), and the column's width then.
+    view_column_drag: Option<(crate::prefs::ViewColumn, Pixels, Pixels)>,
     /// Where the symlinks and junctions in this folder point (Link target column).
     link_targets: details::LinkTargets,
     /// Alt-drop with the menu still open: files to drop and destination.
@@ -937,6 +941,8 @@ impl Explorer {
             column_resized: false,
             preview_resized: false,
             preview_drag_start: None,
+            view_column_resized: None,
+            view_column_drag: None,
             link_targets: details::LinkTargets::default(),
             pending_drop: None,
             right_press: None,

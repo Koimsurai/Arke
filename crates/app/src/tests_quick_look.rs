@@ -174,8 +174,14 @@ fn wheel_turns_pdf_pages_after_scrolling_them(cx: &mut TestAppContext) {
         "the first notch scrolls the page"
     );
     assert_eq!(view.update(cx, |v, _| pdf_page(v)), Some(0));
+    // Stop once the turn is asked for: the page renders in the background, and more notches
+    // before it lands would scroll the new page.
+    let turning_to = |v: &Explorer| match v.preview.as_ref().map(|p| &p.body) {
+        Some(PreviewBody::Pdf(view)) => Some(view.turning_to()),
+        _ => None,
+    };
     for _ in 0..60 {
-        if view.update(cx, |v, _| pdf_page(v)) == Some(1) {
+        if view.update(cx, |v, _| turning_to(v)) == Some(1) {
             break;
         }
         wheel(cx, -3., Modifiers::none());

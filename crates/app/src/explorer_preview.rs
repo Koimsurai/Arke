@@ -255,6 +255,14 @@ pub(crate) struct PdfView {
     pane: pdf_pane::PanePages,
 }
 
+#[cfg(test)]
+impl PdfView {
+    /// The page being turned to while it renders, else the one on screen.
+    pub(crate) fn turning_to(&self) -> u32 {
+        self.pending.map_or(self.page, |(page, _)| page)
+    }
+}
+
 /// Where Quick Look goes for a page key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PageTurn {

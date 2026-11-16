@@ -1,4 +1,4 @@
-# Blank issues stay on: Settings › About › Report a problem opens one prefilled with the report.
+# Blank issues stay on for anything the forms do not fit. Settings › About › Report a problem opens the bug form filled in.
 blank_issues_enabled: true
 contact_links:
   - name: Security vulnerability

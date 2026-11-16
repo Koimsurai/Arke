@@ -208,21 +208,54 @@ fn encode(text: &str) -> String {
     })
 }
 
-/// New-issue URL with title, environment and settings. The log stays on the clipboard for the user to paste.
-pub(super) fn issue_url(repo: &str, s: &Settings) -> String {
-    let body = format!(
-        "{}\n\n## {}\n\n{}\n\n{}",
-        t!("report.describe_here"),
-        t!("report.steps"),
-        t!("report.steps_hint"),
-        compose(s, false, false)
-    ) + &format!("\n## {}\n\n{}\n", t!("report.log"), t!("report.paste_log"));
-    let body = arke_core::scrub::scrub(&body, &identity(), true);
-    format!(
-        "https://github.com/{repo}/issues/new?title={}&body={}",
-        encode(&t!("report.default_title")),
-        encode(&body)
-    )
+/// GitHub turns away longer new-issue URLs.
+const MAX_URL: usize = 7_500;
+
+/// New-issue URL on the bug report form, filled in: version, Windows and build in their fields,
+/// and in Log the report itself (already scrubbed) with as many of the latest log lines as the URL
+/// can hold. The whole report is on the clipboard as well.
+pub(super) fn issue_url(repo: &str, report: &str) -> String {
+    let windows = crate::win::windows_version()
+        .map_or_else(String::new, |(a, b, c)| format!("{a}.{b} (build {c})"));
+    let arch = if cfg!(target_arch = "aarch64") {
+        "ARM64"
+    } else {
+        "x64"
+    };
+    let url = |log: &str| {
+        format!(
+            "https://github.com/{repo}/issues/new?template=bug_report.yml&title={}&version={}&windows={}&arch={}&log={}",
+            encode(&t!("report.default_title")),
+            encode(build_info::VERSION),
+            encode(&windows),
+            arch,
+            encode(log)
+        )
+    };
+    // Drop the oldest log lines (right after the log heading and its fence) until it fits; the
+    // newest stay.
+    let lines: Vec<&str> = report.lines().collect();
+    let heading = format!("## {}", t!("report.log"));
+    let log_start = lines
+        .iter()
+        .position(|l| *l == heading)
+        .map_or(lines.len(), |i| i + 3);
+    let mut skip = 0;
+    loop {
+        let kept = if skip == 0 {
+            report.to_owned()
+        } else {
+            let mut kept: Vec<&str> = lines[..log_start.min(lines.len())].to_vec();
+            kept.push("…");
+            kept.extend(&lines[(log_start + skip).min(lines.len())..]);
+            kept.join("\n")
+        };
+        let candidate = url(&kept);
+        if candidate.len() <= MAX_URL || log_start + skip >= lines.len() {
+            return candidate;
+        }
+        skip += 5;
+    }
 }
 
 /// Prepares the report again in the background (card opened, an option changed, Refresh).
@@ -262,26 +295,28 @@ fn text_to_send(cx: &App) -> (Option<String>, bool, bool) {
 }
 
 impl Workspace {
-    /// Copies the full report to the clipboard, then opens `then_open` (the issue URL) if given.
-    fn copy_report(&mut self, then_open: Option<String>, cx: &mut Context<Self>) {
+    /// Copies the full report to the clipboard, then, with `repo`, opens a new issue there filled
+    /// in with it ([`issue_url`]).
+    fn copy_report(&mut self, repo: Option<&'static str>, cx: &mut Context<Self>) {
         let settings = SettingsStore::global(cx).read(cx).settings.clone();
         let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let (shown, with_log, mask) = text_to_send(cx);
-        let (tx, rx) = flume::bounded::<Result<String, ReportError>>(1);
+        let (tx, rx) = flume::bounded::<(Result<String, ReportError>, Option<String>)>(1);
         crate::explorer::spawn_thread("report-copy", move || {
             let text = shown.unwrap_or_else(|| prepare(&settings, with_log, mask));
             let result = shell
                 .set_clipboard_text(&text)
                 .map(|()| t!("report.copied").into_owned())
                 .map_err(ReportError::from);
-            let _ = tx.send(result);
+            let url = repo.map(|repo| issue_url(repo, &text));
+            let _ = tx.send((result, url));
         });
         cx.spawn(async move |_, cx| {
-            if let Ok(result) = rx.recv_async().await {
+            if let Ok((result, url)) = rx.recv_async().await {
                 cx.update(|cx| {
                     let ok = result.is_ok();
                     cx.set_global(ReportNote(Some(result.map_err(|e| e.to_string()))));
-                    if ok && let Some(url) = &then_open {
+                    if ok && let Some(url) = &url {
                         open_url(url, cx);
                     }
                     cx.refresh_windows();
@@ -289,6 +324,22 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// Closes Settings and shows the log file, selected, in the active tab.
+    fn reveal_log(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let Some(path) = crate::crashlog::log_path() else {
+            return;
+        };
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        self.close_settings(&super::settings_panel::CloseSettings, window, cx);
+        let name = Arc::from(name.to_string_lossy().as_ref());
+        let dir = dir.to_path_buf();
+        self.active_view().clone().update(cx, |v, cx| {
+            v.navigate_selecting(dir, arke_core::NavKind::New, Some(name), cx);
+        });
     }
 
     /// Saves a timestamped report `.txt` to Downloads and selects it in the file list.
@@ -345,16 +396,13 @@ pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyE
     let note = cx.try_global::<ReportNote>().cloned().unwrap_or_default().0;
     let mut actions = div().flex().flex_wrap().gap(theme::S_8);
     if !repo.is_empty() {
-        let settings = SettingsStore::global(cx).read(cx).settings.clone();
-        let url = issue_url(repo, &settings);
         let workspace = cx.entity().downgrade();
         actions = actions.child(button(
             "report-github",
             t!("report.github"),
             true,
             move |_, _, cx: &mut App| {
-                let url = url.clone();
-                let _ = workspace.update(cx, |ws, cx| ws.copy_report(Some(url), cx));
+                let _ = workspace.update(cx, |ws, cx| ws.copy_report(Some(repo), cx));
             },
         ));
     }
@@ -376,6 +424,18 @@ pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyE
             let _ = workspace.update(cx, Workspace::save_report);
         },
     ));
+    // Only when logging to a file (not in a debug build, which logs to the console).
+    if crate::crashlog::log_path().is_some() {
+        let workspace = cx.entity().downgrade();
+        actions = actions.child(button(
+            "report-log-file",
+            t!("report.open_log"),
+            false,
+            move |_, window, cx: &mut App| {
+                let _ = workspace.update(cx, |ws, cx| ws.reveal_log(window, cx));
+            },
+        ));
+    }
     let d = draft(cx);
     // Prepared when the card is first opened; Refresh picks up newer log lines.
     if open && d.text.is_none() && !d.loading {
@@ -521,19 +581,48 @@ pub(super) fn check_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, issue_url};
+    use super::{MAX_URL, compose, encode, issue_url};
+    use rust_i18n::t;
 
     #[test]
     fn issue_urls_are_encoded_and_short_enough() {
         // Multi-byte UTF-8 is percent-encoded byte by byte.
         assert_eq!(encode("a b/中"), "a%20b%2F%E4%B8%AD");
-        let url = issue_url("me/arke-releases", &crate::settings::Settings::default());
-        assert!(url.starts_with("https://github.com/me/arke-releases/issues/new?title="));
+        let report = compose(&crate::settings::Settings::default(), false, false);
+        let url = issue_url("me/arke-releases", &report);
+        assert!(url.starts_with(
+            "https://github.com/me/arke-releases/issues/new?template=bug_report.yml&title="
+        ));
+        assert!(url.contains(&format!("&version={}", encode(crate::build_info::VERSION))));
+        assert!(url.contains("&arch=x64") || url.contains("&arch=ARM64"));
         assert!(
-            url.len() < 8000,
-            "GitHub rejects URLs this long: {}",
-            url.len()
+            url.contains(&format!("&log={}", &encode(&report)[..40])),
+            "the report goes in Log"
         );
         assert!(!url.contains(' '));
+    }
+
+    /// A long log is cut from the oldest lines: the report's sections and the newest lines stay.
+    #[test]
+    fn a_long_log_keeps_its_newest_lines() {
+        let lines: Vec<String> = (0..400)
+            .map(|i| format!("[2026-11-16T00:00:00Z INFO  arke] line number {i} with some words"))
+            .collect();
+        let report = format!(
+            "## Environment\n\n- Arke: x\n\n## {}\n\n```\n{}\n```\n",
+            t!("report.log"),
+            lines.join("\n")
+        );
+        let url = issue_url("me/arke", &report);
+        assert!(url.len() <= MAX_URL, "{}", url.len());
+        assert!(
+            url.contains(&encode("line number 399 ")),
+            "newest line kept"
+        );
+        assert!(
+            !url.contains(&encode("line number 0 ")),
+            "oldest line dropped"
+        );
+        assert!(url.contains(&encode("## Environment")), "sections kept");
     }
 }

@@ -269,6 +269,14 @@ Shell 整合）都是 Windows 專用的。需要的話歡迎開 issue 說說你�
 
 </details>
 
+## 回報問題
+
+最方便的是從 Arke 裡回報：**設定 › 關於 › 回報問題 › 在 GitHub 回報**。它會填好 Arke 和 Windows
+版本、主要設定和最近的記錄，帳戶、電腦、伺服器和檔案名稱都會先遮掉。也可以複製回報內容或存成文字檔，用其他方式
+傳；「顯示記錄檔」會直接打開記錄檔。
+
+如果 Arke 打不開，記錄檔在 `%LOCALAPPDATA%\Arke\arke.log`。
+
 ## 從原始碼建置
 
 需要 Windows 10 或 11、MSVC 建置工具與 rustup；Rust 版本寫在 `rust-toolchain.toml`，會自動安裝。

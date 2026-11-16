@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        The quickest way to report a bug is from Arke itself: **Settings › About › Report a problem › Open an issue on GitHub**. It fills in your version, Windows build and settings, with your account, computer and server names taken out. Use this form if Arke won't start or you'd rather write it yourself.
+        The quickest way to report a bug is from Arke itself: **Settings › About › Report a problem › Open an issue on GitHub**. It opens this form with your version, Windows build, settings and recent log already filled in, with your account, computer, server and file names taken out. Fill it in yourself if Arke won't start.
   - type: textarea
     id: what-happened
     attributes:
@@ -53,7 +53,7 @@ body:
     id: log
     attributes:
       label: Log
-      description: The last lines of `%LOCALAPPDATA%\Arke\arke.log`, if they look related. Check them for names you'd rather not share.
+      description: Filled in when you report from Arke (Settings › About › Report a problem), with names taken out. Otherwise the last lines of `%LOCALAPPDATA%\Arke\arke.log`; check them for names you'd rather not share.
       render: text
   - type: checkboxes
     id: searched

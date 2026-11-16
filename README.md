@@ -305,6 +305,15 @@ need.
 
 </details>
 
+## Reporting a problem
+
+The easiest way is from Arke: **Settings › About › Report a problem › Open an issue on GitHub**.
+It fills in your Arke and Windows versions, the main settings and the latest log lines, with your
+account, computer, server and file names taken out. You can also copy the report or save it as a
+file and send it another way, and **Show log file** opens the log itself.
+
+If Arke won't start, the log is `%LOCALAPPDATA%\Arke\arke.log`.
+
 ## Building from source
 
 You need Windows 10 or 11, the MSVC build tools and rustup; the toolchain version is pinned in

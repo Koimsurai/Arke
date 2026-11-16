@@ -992,6 +992,10 @@ report.save:
   en: Save as text file
   zh-TW: 存成文字檔
   zh-CN: 保存为文本文件
+report.open_log:
+  en: Show log file
+  zh-TW: 顯示記錄檔
+  zh-CN: 显示日志文件
 report.copied:
   en: "Copied. Paste it into the GitHub issue."
   zh-TW: "已複製，請貼到 GitHub 的回報欄位"
@@ -1028,22 +1032,6 @@ report.default_title:
   en: "Problem: "
   zh-TW: 問題：
   zh-CN: 问题：
-report.describe_here:
-  en: "What happened, and what did you expect?"
-  zh-TW: 發生了什麼事？原本預期會怎樣？
-  zh-CN: 发生了什么？原本预期是怎样的？
-report.steps:
-  en: "Steps to reproduce"
-  zh-TW: "重現步驟"
-  zh-CN: 复现步骤
-report.steps_hint:
-  en: "1. \n2. \n3. "
-  zh-TW: "1. \n2. \n3. "
-  zh-CN: "1. \n2. \n3. "
-report.paste_log:
-  en: (The full report, including the log, is on your clipboard; paste it here)
-  zh-TW: （完整的回報與記錄已經複製到剪貼簿，請貼在這裡）
-  zh-CN: （完整的反馈和日志已复制到剪贴板，请粘贴在这里）
 update.title:
   en: Updates
   zh-TW: 更新

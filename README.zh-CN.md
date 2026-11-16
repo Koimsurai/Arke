@@ -269,6 +269,14 @@ Shell 集成）都是 Windows 专用的。有需要的话欢迎开 issue 说说�
 
 </details>
 
+## 反馈问题
+
+最方便的是从 Arke 里反馈：**设置 › 关于 › 反馈问题 › 在 GitHub 上反馈**。它会填好 Arke 和 Windows
+版本、主要设置和最近的日志，账户、计算机、服务器和文件名都会先遮掉。也可以复制反馈内容或保存为文本文件，用其他
+方式发送；「显示日志文件」会直接打开日志文件。
+
+如果 Arke 打不开，日志文件在 `%LOCALAPPDATA%\Arke\arke.log`。
+
 ## 从源代码编译
 
 需要 Windows 10 或 11、MSVC 生成工具和 rustup；Rust 版本写在 `rust-toolchain.toml` 里，会自动安装。

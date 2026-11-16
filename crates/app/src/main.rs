@@ -94,6 +94,7 @@ mod win_net;
 mod win_openinfolder;
 mod win_pdf;
 mod win_picker;
+mod win_power;
 mod win_purge;
 mod win_recycle;
 mod win_registry;
@@ -309,7 +310,10 @@ fn app_main(mut args: Args) {
     // Launched by the old version (auto-update): wait for it to exit before taking over residency.
     update::wait_for_previous(&std::env::args().collect::<Vec<_>>());
     let started_at = Instant::now();
-    explorer::mark_process_start(started_at);
+    // A launch in the background opens no window; any it opens later is no cold start.
+    if !args.background {
+        explorer::mark_process_start(started_at);
+    }
     let launched_unix_ms = unix_ms_now();
     crashlog::init();
     motion::refresh_system_setting();
@@ -714,7 +718,8 @@ fn follow_win_e_hook(
             // Like starting Arke: where Settings › "New windows open to" says, last tabs
             // included (#73).
             cx.update(|cx| {
-                open_in_front(cx, &services, None, None, Instant::now());
+                let now = Instant::now();
+                open_in_front(cx, &services, None, None, now, now);
             });
         }
     })
@@ -794,6 +799,19 @@ fn open_target(
     select: &[String],
     explorer_thread: Option<u32>,
 ) -> bool {
+    open_target_timed(cx, services, target, select, explorer_thread, None)
+}
+
+/// [`open_target`]; a window it opens for a request that arrived at `received` is timed from then
+/// in the log.
+fn open_target_timed(
+    cx: &mut App,
+    services: &Services,
+    target: Target,
+    select: &[String],
+    explorer_thread: Option<u32>,
+    received: Option<Instant>,
+) -> bool {
     let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
     if target != Target::Home
         && let Some(host) = tab_host(cx)
@@ -813,7 +831,8 @@ fn open_target(
             std::env::var_os("USERPROFILE").map_or_else(|| PathBuf::from("C:\\"), PathBuf::from)
         }
     };
-    let Some(window) = open_explorer_window(cx, services, Some(start), None, Instant::now()) else {
+    let opened = open_explorer_window(cx, services, Some(start), None, Instant::now(), received);
+    let Some(window) = opened else {
         return false;
     };
     let shown = window.update(cx, |workspace, window, cx| {
@@ -1117,10 +1136,11 @@ fn hand_off(request: &Request) -> HandOff {
 }
 
 fn start_resident_service(cx: &mut App, listener: instance::Listener, services: Services) {
-    let (tx, rx) = flume::unbounded::<(Request, flume::Sender<bool>)>();
+    let (tx, rx) = flume::unbounded::<(Request, Instant, flume::Sender<bool>)>();
     instance::serve(listener, move |request| {
+        let received = Instant::now();
         let (ack_tx, ack_rx) = flume::bounded(1);
-        if tx.send((request, ack_tx)).is_err() {
+        if tx.send((request, received, ack_tx)).is_err() {
             return false;
         }
         // If the UI thread doesn't handle it in time, reply failure so the sender opens its own
@@ -1130,7 +1150,7 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
             .unwrap_or(false)
     });
     cx.spawn(async move |cx| {
-        while let Ok((request, ack)) = rx.recv_async().await {
+        while let Ok((request, received, ack)) = rx.recv_async().await {
             let handled = cx.update(|cx| match request {
                 Request::Quit => {
                     cx.quit();
@@ -1146,9 +1166,10 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
                         open_target(cx, &services, page.target(), &[], None)
                     } else if let (Some(path), None) = (&open.path, &bench) {
                         // A folder handed over by the shell or another program (#11).
-                        open_target(cx, &services, Target::Folder(path.clone()), &[], None)
+                        let target = Target::Folder(path.clone());
+                        open_target_timed(cx, &services, target, &[], None, Some(received))
                     } else {
-                        open_in_front(cx, &services, open.path, bench, started_at)
+                        open_in_front(cx, &services, open.path, bench, started_at, received)
                     }
                 }
             });
@@ -1263,18 +1284,21 @@ fn open_explorer(
     bench: Option<Bench>,
     started_at: Instant,
 ) -> bool {
-    open_explorer_window(cx, services, path, bench, started_at).is_some()
+    open_explorer_window(cx, services, path, bench, started_at, None).is_some()
 }
 
-/// Opens a window (at `path`, or where the settings say) and brings it to the front.
+/// Opens a window (at `path`, or where the settings say) and brings it to the front. `received`:
+/// when the request for it arrived, which its start is timed from in the log.
 fn open_in_front(
     cx: &mut App,
     services: &Services,
     path: Option<PathBuf>,
     bench: Option<Bench>,
     started_at: Instant,
+    received: Instant,
 ) -> bool {
-    let Some(handle) = open_explorer_window(cx, services, path, bench, started_at) else {
+    let Some(handle) = open_explorer_window(cx, services, path, bench, started_at, Some(received))
+    else {
         return false;
     };
     let _ = handle.update(cx, |_, window, _| bring_to_front(window, None));
@@ -1288,6 +1312,7 @@ fn open_explorer_window(
     path: Option<PathBuf>,
     bench: Option<Bench>,
     started_at: Instant,
+    received: Option<Instant>,
 ) -> Option<gpui::WindowHandle<Workspace>> {
     // The startup path is string handling only; existence isn't checked, since startup must not
     // touch locations that might block. No path given: if settings say "last location/last tabs",
@@ -1351,7 +1376,7 @@ fn open_explorer_window(
         },
         move |window, cx| {
             cx.new(|cx| {
-                Workspace::new(
+                let mut workspace = Workspace::new(
                     services,
                     start_path,
                     start_default,
@@ -1360,7 +1385,12 @@ fn open_explorer_window(
                     started_at,
                     window,
                     cx,
-                )
+                );
+                // Before the first frame, which `open_window` draws before it returns.
+                if let Some(received) = received {
+                    workspace.time_from_request(received);
+                }
+                workspace
             })
         },
     );

@@ -54,6 +54,8 @@ flate2 = "1"
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["ppmd"] }
 # Thumbnails; same version as gpui so decoded frames can be handed over directly
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
+# Thumbnails: JPEGs decoded at 1/2 to 1/8 size in the DCT, so a big photo is never held at full size
+jpeg-decoder = { version = "0.3", default-features = false }
 log = "0.4"
 env_logger = "0.11"
 unicode-segmentation = "1"

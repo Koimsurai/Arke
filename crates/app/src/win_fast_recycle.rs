@@ -56,85 +56,169 @@ const PROBE_RECORDS: usize = 8;
 
 /// Puts `path` in its drive's Recycle Bin directly. Returns where it went (the `$R` item), or
 /// `None` when this path isn't eligible or anything failed before it moved, so the Windows
-/// engine should handle it.
+/// engine should handle it. One item as a batch of its own (Arke deletes through [`Batch`]).
+#[cfg(test)]
 pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
-    if !policy_allows() {
-        return None;
-    }
-    let root = drive_root(path)?;
-    if !local_ntfs(&root) {
-        return None;
-    }
-    let bin = root.join("$Recycle.Bin").join(user_sid()?);
-    if !bin.is_dir() || !layout_is_known(&bin) {
-        return None;
-    }
-    let meta = fs::symlink_metadata(path).ok()?;
-    // Links, junctions and cloud placeholders (OneDrive and the like keep a reparse point on every
-    // item they sync) stay with the engine, which knows what each of them needs.
-    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return None;
-    }
-    let size = if meta.is_dir() {
-        tree_size(path)?
-    } else {
-        meta.len()
-    };
-    if !fits(&root, size) {
-        return None;
-    }
-    let ext = bin_extension(path);
-    let (info, item) = free_names(&bin, &ext)?;
-    let record = encode(
-        VERSION,
-        size,
-        now_filetime(),
-        &arke_core::path::unverbatim(path),
-    );
-    // The record is read back before anything moves: what is on disk must be what was meant.
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&info)
-        .and_then(|mut f| f.write_all(&record));
-    if written.is_err() || fs::read(&info).ok().as_deref() != Some(record.as_slice()) {
-        let _ = fs::remove_file(&info);
-        return None;
-    }
-    let (_, count_before) = bin_state(&root)?;
-    if let Err(err) = move_no_replace(
-        &arke_core::path::verbatim(path),
-        &arke_core::path::verbatim(&item),
-    ) {
-        log::info!(
-            "fast recycle: {} stays with the engine: {err}",
-            path.display()
+    let mut batch = Batch::default();
+    let item = batch.recycle(path);
+    batch.finish();
+    item
+}
+
+/// Most items reported to Explorer one by one; past this a batch reports each folder they left
+/// once instead.
+const NOTIFY_EACH_MAX: usize = 64;
+
+/// One delete of any number of items. What doesn't change from item to item is checked once:
+/// Group Policy and the user for the batch; per drive the file system, the bin folder, its `$I`
+/// layout, its settings and what it holds. `SHQueryRecycleBinW` lists the whole bin, so asking it
+/// for every item made a delete of many loose files quadratic; here it is asked once per drive,
+/// and once more to confirm Windows counted the first item moved there. The bytes in the bin are
+/// then kept up to date locally.
+#[derive(Default)]
+pub(crate) struct Batch {
+    /// This user's SID, if Group Policy leaves the bin to Arke; looked up when first needed.
+    user: std::cell::OnceCell<Option<String>>,
+    /// Per drive root; `None` for a drive whose bin stays with the engine.
+    drives: std::collections::HashMap<PathBuf, Option<Drive>>,
+    /// Items moved, and whether each was a folder, for Explorer's change notifications.
+    moved: Vec<(PathBuf, bool)>,
+}
+
+struct Drive {
+    bin: PathBuf,
+    /// The bin's maximum size, MB.
+    max_mb: u32,
+    /// Bytes in the bin: what Windows reported at the start, plus what this batch added.
+    used: u64,
+    /// Items Windows counted at the start, until it has been seen counting one moved here.
+    unconfirmed: Option<u64>,
+}
+
+impl Batch {
+    /// Like [`recycle`], for one item of the batch.
+    pub(crate) fn recycle(&mut self, path: &Path) -> Option<PathBuf> {
+        let sid = self
+            .user
+            .get_or_init(|| policy_allows().then(user_sid).flatten())
+            .clone()?;
+
+        let root = drive_root(path)?;
+        let drive = self
+            .drives
+            .entry(root.clone())
+            .or_insert_with(|| Drive::check(&root, &sid))
+            .as_mut()?;
+        let meta = fs::symlink_metadata(path).ok()?;
+        // Links, junctions and cloud placeholders (OneDrive and the like keep a reparse point on
+        // every item they sync) stay with the engine, which knows what each of them needs.
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return None;
+        }
+        let size = if meta.is_dir() {
+            tree_size(path)?
+        } else {
+            meta.len()
+        };
+        if !has_room(drive.used, size, drive.max_mb) {
+            return None;
+        }
+        let ext = bin_extension(path);
+        let (info, item) = free_names(&drive.bin, &ext)?;
+        let record = encode(
+            VERSION,
+            size,
+            now_filetime(),
+            &arke_core::path::unverbatim(path),
         );
-        let _ = fs::remove_file(&info);
-        return None;
-    }
-    // Windows must count the new item; if it doesn't, put everything back and let the engine
-    // do it. (A crash between the record and the move leaves the item where it was and an `$I`
-    // with no item, which Windows lists as nothing to restore; no data moves without a record.)
-    if bin_state(&root).is_none_or(|(_, count)| count <= count_before) {
-        log::warn!(
-            "fast recycle: Windows didn't count {}; put back",
-            path.display()
-        );
-        if move_no_replace(
-            &arke_core::path::verbatim(&item),
-            &arke_core::path::verbatim(path),
-        )
-        .is_ok()
-        {
+        // The record is read back before anything moves: what is on disk must be what was meant.
+        let written = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&info)
+            .and_then(|mut f| f.write_all(&record));
+        if written.is_err() || fs::read(&info).ok().as_deref() != Some(record.as_slice()) {
             let _ = fs::remove_file(&info);
             return None;
         }
+        if let Err(err) = move_no_replace(
+            &arke_core::path::verbatim(path),
+            &arke_core::path::verbatim(&item),
+        ) {
+            log::info!(
+                "fast recycle: {} stays with the engine: {err}",
+                path.display()
+            );
+            let _ = fs::remove_file(&info);
+            return None;
+        }
+        // The first item moved to a drive's bin: Windows must count it. If it doesn't, put it
+        // back, and this item and every later one on the drive go to the engine. (A crash
+        // between the record and the move leaves the item where it was and an `$I` with no
+        // item, which Windows lists as nothing to restore; no data moves without a record.)
+        if let Some(count_before) = drive.unconfirmed {
+            if bin_state(&root).is_none_or(|(_, count)| count <= count_before) {
+                log::warn!(
+                    "fast recycle: Windows didn't count {}; put back",
+                    path.display()
+                );
+                let back = move_no_replace(
+                    &arke_core::path::verbatim(&item),
+                    &arke_core::path::verbatim(path),
+                );
+                if back.is_ok() {
+                    let _ = fs::remove_file(&info);
+                    self.drives.insert(root, None);
+                    return None;
+                }
+            }
+            drive.unconfirmed = None;
+        }
+        drive.used = drive.used.saturating_add(size);
+        self.moved.push((path.to_path_buf(), meta.is_dir()));
+        #[cfg(test)]
+        TAKEN.fetch_add(1, Ordering::Relaxed);
+        Some(item)
     }
-    notify(path, meta.is_dir(), &bin);
-    #[cfg(test)]
-    TAKEN.fetch_add(1, Ordering::Relaxed);
-    Some(item)
+
+    /// Tells Explorer windows and the desktop icon what changed. Call once, after the last item.
+    pub(crate) fn finish(self) {
+        if self.moved.is_empty() {
+            return;
+        }
+        let bins: Vec<&Path> = self
+            .drives
+            .values()
+            .flatten()
+            .filter(|d| d.unconfirmed.is_none())
+            .map(|d| d.bin.as_path())
+            .collect();
+        notify(&self.moved, &bins);
+    }
+}
+
+impl Drive {
+    /// The drive's bin, if it can take items directly; `None` leaves the drive to the engine.
+    fn check(root: &Path, sid: &str) -> Option<Self> {
+        if !local_ntfs(root) {
+            return None;
+        }
+        let bin = root.join("$Recycle.Bin").join(sid);
+        if !bin.is_dir() || !layout_is_known(&bin) {
+            return None;
+        }
+        let (max_mb, nuke) = bin_settings(root)?;
+        if nuke {
+            return None;
+        }
+        let (used, count) = bin_state(root)?;
+        Some(Self {
+            bin,
+            max_mb,
+            used,
+            unconfirmed: Some(count),
+        })
+    }
 }
 
 /// The part of the name the bin item keeps: from the last dot on, as Windows takes it, so a name
@@ -259,21 +343,6 @@ fn tree_size(dir: &Path) -> Option<u64> {
     Some(total)
 }
 
-/// The drive's bin keeps items (not "delete right away") and has room for `size` more bytes.
-/// Read from the bin's own settings; anything unclear means no.
-fn fits(root: &Path, size: u64) -> bool {
-    let Some((max_mb, nuke)) = bin_settings(root) else {
-        return false;
-    };
-    if nuke {
-        return false;
-    }
-    let Some((used, _)) = bin_state(root) else {
-        return false;
-    };
-    has_room(used, size, max_mb)
-}
-
 /// `size` more bytes fit in a bin holding `used` bytes of at most `max_mb` megabytes.
 fn has_room(used: u64, size: u64, max_mb: u32) -> bool {
     used.saturating_add(size) <= u64::from(max_mb).saturating_mul(1024 * 1024)
@@ -362,6 +431,8 @@ fn bin_state(root: &Path) -> Option<(u64, u64)> {
         cbSize: size_of::<SHQUERYRBINFO>() as u32,
         ..Default::default()
     };
+    #[cfg(test)]
+    BIN_QUERIES.fetch_add(1, Ordering::Relaxed);
     // SAFETY: root is NUL-terminated; info is a properly sized out struct.
     unsafe { SHQueryRecycleBinW(&root, &raw mut info) }.ok()?;
     Some((
@@ -402,34 +473,45 @@ fn now_filetime() -> i64 {
     (i64::from(ft.dwHighDateTime) << 32) | i64::from(ft.dwLowDateTime)
 }
 
-/// Lets Explorer windows and the desktop icon catch up: the item left its folder and the bin
-/// changed.
-fn notify(from: &Path, was_dir: bool, bin: &Path) {
+/// Lets Explorer windows and the desktop icon catch up: the items left their folders and the bins
+/// changed. Up to [`NOTIFY_EACH_MAX`] items are reported one by one; past that each folder they
+/// left is reported once, as changed.
+fn notify(moved: &[(PathBuf, bool)], bins: &[&Path]) {
     use windows::Win32::UI::Shell::{
-        SHCNE_DELETE, SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNF_FLUSHNOWAIT, SHCNF_PATHW, SHChangeNotify,
+        SHCNE_DELETE, SHCNE_ID, SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNF_FLUSHNOWAIT, SHCNF_PATHW,
+        SHChangeNotify,
     };
     // shellapi.h; not in the windows crate.
     windows_core::link!("shell32.dll" "system" fn SHUpdateRecycleBinIcon());
-    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
-    let from = wide(from);
-    let bin = wide(bin);
-    let event = if was_dir { SHCNE_RMDIR } else { SHCNE_DELETE };
-    // SAFETY: NUL-terminated paths that outlive the calls.
-    unsafe {
-        SHChangeNotify(
-            event,
-            SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
-            Some(from.as_ptr().cast()),
-            None,
-        );
-        SHChangeNotify(
-            SHCNE_UPDATEDIR,
-            SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
-            Some(bin.as_ptr().cast()),
-            None,
-        );
-        SHUpdateRecycleBinIcon();
+    let send = |event: SHCNE_ID, path: &Path| {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        unsafe {
+            SHChangeNotify(
+                event,
+                SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                Some(wide.as_ptr().cast()),
+                None,
+            );
+        }
+    };
+    if moved.len() <= NOTIFY_EACH_MAX {
+        for (from, was_dir) in moved {
+            send(if *was_dir { SHCNE_RMDIR } else { SHCNE_DELETE }, from);
+        }
+    } else {
+        let mut folders: Vec<&Path> = moved.iter().filter_map(|(p, _)| p.parent()).collect();
+        folders.sort_unstable();
+        folders.dedup();
+        for folder in folders {
+            send(SHCNE_UPDATEDIR, folder);
+        }
     }
+    for bin in bins {
+        send(SHCNE_UPDATEDIR, bin);
+    }
+    // SAFETY: no arguments.
+    unsafe { SHUpdateRecycleBinIcon() };
 }
 
 /// A `$I` record.
@@ -482,6 +564,11 @@ fn decode(bytes: &[u8]) -> Option<Record> {
         path: String::from_utf16(units.strip_suffix(&[0])?).ok()?,
     })
 }
+
+/// Calls to `SHQueryRecycleBinW`, which lists the whole bin each time.
+#[cfg(test)]
+pub(crate) static BIN_QUERIES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Items the fast path took (tests tell it from the engine with this).
 #[cfg(test)]
@@ -1096,5 +1183,97 @@ mod tests {
         );
         assert!(now.is_some());
         purge(&recycled_from(&sb.0));
+    }
+
+    /// `count` small files named `arke-test-<tag>-NNNNN.txt` directly in the sandbox.
+    fn loose_files(sb: &Sandbox, tag: &str, count: usize) -> Vec<PathBuf> {
+        (0..count)
+            .map(|i| {
+                let path = sb.0.join(format!("arke-test-{tag}-{i:05}.txt"));
+                fs::write(&path, b"x").unwrap();
+                path
+            })
+            .collect()
+    }
+
+    /// Deletes `paths` to the bin the way Arke's own progress does it.
+    fn delete_tracked(
+        paths: Vec<PathBuf>,
+        progress: &std::sync::Arc<crate::shell::OpProgress>,
+    ) -> (Result<OpOutcome, String>, Option<Undo>) {
+        set_enabled(true);
+        let (result, undo) = crate::win_fileops::perform_tracked(
+            &FileOp::Delete {
+                paths,
+                recycle: true,
+            },
+            None,
+            progress,
+        );
+        (result.map_err(|e| e.to_string()), undo)
+    }
+
+    /// Many loose files in one delete: what Windows reports about the bin (a call that lists the
+    /// whole bin) is asked for once per drive, not three times per file.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn loose_files_ask_about_the_bin_once() {
+        const FILES: usize = 30;
+        let sb = Sandbox::new("batch");
+        let files = loose_files(&sb, "batch", FILES);
+        let progress = std::sync::Arc::default();
+        let before = BIN_QUERIES.load(Ordering::Relaxed);
+        let (result, undo) = delete_tracked(files.clone(), &progress);
+        let queries = BIN_QUERIES.load(Ordering::Relaxed) - before;
+        let binned = recycled_from(&sb.0);
+        purge(&binned);
+        assert_eq!(result, Ok(OpOutcome::Done));
+        assert_eq!(binned.len(), FILES, "all of them in the bin");
+        assert!(files.iter().all(|f| !f.exists()));
+        assert!(matches!(undo, Some(Undo::PutBack(items)) if items.len() == FILES));
+        assert!(queries <= 2, "{queries} bin queries for {FILES} files");
+    }
+
+    /// Cancel stops the fast path before the next item, like it stops the engine.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn cancel_stops_the_fast_path() {
+        let sb = Sandbox::new("cancel");
+        let files = loose_files(&sb, "cancel", 5);
+        let progress = std::sync::Arc::<crate::shell::OpProgress>::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        let (result, _) = delete_tracked(files.clone(), &progress);
+        let binned = recycled_from(&sb.0);
+        purge(&binned);
+        assert_eq!(result, Ok(OpOutcome::Cancelled));
+        assert!(binned.is_empty(), "{} went to the bin", binned.len());
+        assert!(files.iter().all(|f| f.exists()));
+    }
+
+    /// Timing for 20,000 loose files in one delete. Run with
+    /// `cargo test -p arke-app --bin arke loose_files_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark: writes 20,000 files to %TEMP% and uses the Recycle Bin"]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a benchmark run by hand prints its timings"
+    )]
+    fn loose_files_timing() {
+        const FILES: usize = 20_000;
+        let sb = Sandbox::new("loose");
+        let files = loose_files(&sb, "loose", FILES);
+        let progress = std::sync::Arc::default();
+        let before = BIN_QUERIES.load(Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        let (result, _) = delete_tracked(files, &progress);
+        let took = started.elapsed();
+        let queries = BIN_QUERIES.load(Ordering::Relaxed) - before;
+        eprintln!(
+            "fast recycle of {FILES} loose files: {took:?}, {queries} bin queries, {result:?}"
+        );
+        let binned = recycled_from(&sb.0);
+        eprintln!("{} in the bin; purging them", binned.len());
+        purge(&binned);
+        assert_eq!(result, Ok(OpOutcome::Done));
     }
 }

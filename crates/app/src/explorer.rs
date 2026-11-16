@@ -528,21 +528,47 @@ pub(crate) struct Metrics {
     pub(crate) first_frame: Option<Duration>,
     pub(crate) first_listing: Option<Duration>,
     listing_ready: bool,
-    /// The pane the process started with, the only one whose timings are a cold start.
-    pub(crate) cold_start: bool,
+    /// What this pane's first frame and listing are logged as, if anything.
+    pub(crate) clock: StartClock,
+    /// First frame, timed by `clock`.
+    pub(crate) clock_first_frame: Option<Duration>,
 }
 
-/// When the process started (set by `main`). The pane created with exactly this time is the first
-/// window's; any other pane (a later window, or a restored tab first shown hours later) would log
-/// its first frame as a "cold start" hours long.
+/// How a pane's first frame and first full listing are logged. A window hands its timing to the
+/// pane it shows in its first frame (`Workspace::render`); every other pane is untimed, since it
+/// may first be drawn hours later (a restored tab, a folder under Home).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartClock {
+    #[default]
+    Untimed,
+    /// The window the process started with: a cold start, from process start.
+    Cold(Instant),
+    /// A window the resident process opened when asked: from when the request arrived.
+    Request(Instant),
+}
+
+impl StartClock {
+    /// A new window's: a cold start if it is the window the process started with.
+    pub(crate) fn for_window(started_at: Instant) -> Self {
+        if claim_cold_start(started_at) {
+            Self::Cold(started_at)
+        } else {
+            Self::Untimed
+        }
+    }
+}
+
+/// When the process started (set by `main`, except for a launch in the background, which opens
+/// no window). The window created with exactly this time is the first one; any other window (one
+/// a resident Arke opens hours later) would log hours as a "cold start".
 static PROCESS_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 pub(crate) fn mark_process_start(at: Instant) {
     let _ = PROCESS_START.set(at);
 }
 
-/// Whether a pane created with `started_at` logs the cold-start timings; true at most once.
-fn claim_cold_start(started_at: Instant) -> bool {
+/// Whether a window created with `started_at` logs the cold-start timings; true at most once.
+pub(crate) fn claim_cold_start(started_at: Instant) -> bool {
     static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     PROCESS_START.get() == Some(&started_at)
         && !CLAIMED.swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -1086,10 +1112,7 @@ impl Explorer {
             last_timing: None,
             window_title: String::new(),
             started_at,
-            metrics: Metrics {
-                cold_start: claim_cold_start(started_at),
-                ..Metrics::default()
-            },
+            metrics: Metrics::default(),
             bench,
             loading_task: None,
             sort_task: None,
@@ -3186,6 +3209,13 @@ impl Explorer {
 
     // ───────────────────────── Per frame ─────────────────────────
 
+    /// Takes the window's start timing: this pane is the one its first frame shows.
+    pub(crate) const fn time_start(&mut self, clock: StartClock) {
+        if self.metrics.first_frame.is_none() {
+            self.metrics.clock = clock;
+        }
+    }
+
     fn on_frame(&mut self, window: &mut Window, cx: &App) {
         let title = match self.display_path() {
             Some(_) => format!("{} - Arke", self.tab_title()),
@@ -3197,25 +3227,32 @@ impl Explorer {
         }
 
         let since_start = self.started_at.elapsed();
-        let cold = self.metrics.cold_start;
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
         if self.metrics.first_frame.is_none() {
             self.metrics.first_frame = Some(since_start);
-            if cold {
-                log::info!(
-                    "cold start: first frame {:.1} ms",
-                    since_start.as_secs_f64() * 1e3
-                );
+            if let StartClock::Cold(at) | StartClock::Request(at) = self.metrics.clock {
+                self.metrics.clock_first_frame = Some(at.elapsed());
+            }
+            if let StartClock::Cold(at) = self.metrics.clock {
+                log::info!("cold start: first frame {:.1} ms", ms(at.elapsed()));
             }
         }
         let listing_ready = self.metrics.listing_ready && self.metrics.first_listing.is_none();
         if listing_ready {
             self.metrics.first_listing = Some(since_start);
-            if cold {
-                log::info!(
+            match self.metrics.clock {
+                StartClock::Cold(at) => log::info!(
                     "cold start: first full listing {:.1} ms ({} items)",
-                    since_start.as_secs_f64() * 1e3,
+                    ms(at.elapsed()),
                     self.entry_count()
-                );
+                ),
+                StartClock::Request(at) => log::info!(
+                    "opened on request: first frame {:.1} ms, first full listing {:.1} ms ({} items)",
+                    self.metrics.clock_first_frame.map_or(-1.0, ms),
+                    ms(at.elapsed()),
+                    self.entry_count()
+                ),
+                StartClock::Untimed => {}
             }
         }
 

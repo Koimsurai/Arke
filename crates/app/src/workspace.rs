@@ -25,7 +25,7 @@ use rust_i18n::t;
 
 use crate::a11y::A11yExt as _;
 use crate::bench::Bench;
-use crate::explorer::{Explorer, ExplorerEvent, PaneInfo, Services, kind_icon};
+use crate::explorer::{Explorer, ExplorerEvent, PaneInfo, Services, StartClock, kind_icon};
 use crate::net_dialog::{NetDialog, NetDialogEvent, NetDialogKind};
 use crate::palette::{Candidate, LocationPalette, PaletteEvent, Source, Target};
 use crate::settings::{SettingsStore, TabLayout};
@@ -361,6 +361,8 @@ pub(crate) struct Workspace {
     bounds_task: Option<gpui::Task<()>>,
     /// Look version this window last rendered ([`theme::look`]).
     look_seen: u32,
+    /// How this window's start is timed; handed to the pane its first frame shows.
+    start_clock: StartClock,
 }
 
 /// Open network dialog, plus the tab and path to reopen after a successful login.
@@ -648,6 +650,7 @@ impl Workspace {
             _bounds: bounds,
             bounds_task: None,
             look_seen: theme::look(),
+            start_clock: StartClock::for_window(started_at),
         };
         let pane = this.make_pane(start_path, bench, started_at, window, cx);
         this.tabs.push(Tab::new(pane));
@@ -833,6 +836,23 @@ impl Workspace {
                     .update(cx, |v, cx| v.navigate(first, NavKind::New, cx));
                 self.restore_session(&session, window, cx);
             }
+        }
+    }
+
+    /// A window the resident process opened on request: time its start from `received`, when
+    /// the request arrived. Call before the window's first frame.
+    pub(crate) const fn time_from_request(&mut self, received: Instant) {
+        self.start_clock = StartClock::Request(received);
+    }
+
+    /// The window's first frame shows the active tab's panes: the active one takes the window's
+    /// start timing. A page on top (Home, Settings) means no folder's start is timed.
+    fn hand_start_clock(&self, clock: StartClock, cx: &mut Context<Self>) {
+        if clock == StartClock::Untimed {
+            return;
+        }
+        if let Some(view) = self.tabs.get(self.active).map(Tab::view) {
+            view.update(cx, |pane, _| pane.time_start(clock));
         }
     }
 
@@ -2031,6 +2051,8 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::frame_probe::frame_started();
         crate::a11y::sync(window);
+        // Only the first frame times the start.
+        let start_clock = std::mem::take(&mut self.start_clock);
         self.last_viewport_width = window.viewport_size().width;
         self.after_drag(cx);
         self.tab_drag.frame();
@@ -2073,10 +2095,14 @@ impl Render for Workspace {
                     Some(page) => page,
                     None => match self.render_home_page(window, cx) {
                         Some(page) => page,
-                        None => match self.render_whats_new_page(window, cx) {
-                            Some(page) => page,
-                            None => self.render_panes(cx),
-                        },
+                        None => {
+                            if let Some(page) = self.render_whats_new_page(window, cx) {
+                                page
+                            } else {
+                                self.hand_start_clock(start_clock, cx);
+                                self.render_panes(cx)
+                            }
+                        }
                     },
                 },
             });

@@ -21,6 +21,73 @@
 // locale with rust_i18n::set_locale.
 rust_i18n::i18n!("locales", fallback = "en");
 
+/// Tests: how much a piece of code allocates at most. Counted for the whole process, since memory
+/// is often freed on another thread than the one that allocated it (decoders hand rows to worker
+/// threads), so it is exact only with no other test running at the same time, as under nextest.
+#[cfg(test)]
+pub(crate) mod alloc_peak {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    static NOW: AtomicIsize = AtomicIsize::new(0);
+    static PEAK: AtomicIsize = AtomicIsize::new(0);
+
+    struct Counting;
+
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    fn add(bytes: isize) {
+        let now = NOW.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        PEAK.fetch_max(now, Ordering::Relaxed);
+    }
+
+    // SAFETY: every call goes straight to the system allocator; only the counters are added.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller's layout, passed on.
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                add(layout.size().cast_signed());
+            }
+            ptr
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: as above.
+            let ptr = unsafe { System.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                add(layout.size().cast_signed());
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller's pointer and layout, from `alloc` above.
+            unsafe { System.dealloc(ptr, layout) };
+            add(-layout.size().cast_signed());
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // SAFETY: as above.
+            let new = unsafe { System.realloc(ptr, layout, new_size) };
+            if !new.is_null() {
+                add(new_size.cast_signed() - layout.size().cast_signed());
+            }
+            new
+        }
+    }
+
+    /// Runs `f` and returns its result with the most bytes allocated at once while it ran, above
+    /// what was allocated when it started.
+    pub(crate) fn during<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let base = NOW.load(Ordering::Relaxed);
+        PEAK.store(base, Ordering::Relaxed);
+        let out = f();
+        let peak = PEAK.load(Ordering::Relaxed);
+        (out, (peak - base).max(0).cast_unsigned())
+    }
+}
 pub mod archive;
 pub mod compare;
 pub mod content;

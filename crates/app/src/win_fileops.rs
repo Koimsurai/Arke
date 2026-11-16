@@ -576,8 +576,16 @@ pub(crate) fn perform_tracked(
             recycle: true,
         } if crate::win_fast_recycle::enabled() => {
             let mut left = Vec::new();
+            let mut batch = crate::win_fast_recycle::Batch::default();
+            let mut cancelled = false;
             for path in paths {
-                match crate::win_fast_recycle::recycle(path) {
+                // Like the engine: stop before the next item; what is in the bin stays there,
+                // and undo puts it back.
+                if progress.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
+                match batch.recycle(path) {
                     Some(now) => {
                         progress
                             .done
@@ -587,8 +595,17 @@ pub(crate) fn perform_tracked(
                     None => left.push(path.clone()),
                 }
             }
-            if left.is_empty() {
-                return (Ok(OpOutcome::Done), Some(Undo::PutBack(fast)));
+            batch.finish();
+            if cancelled || left.is_empty() {
+                let outcome = if cancelled {
+                    OpOutcome::Cancelled
+                } else {
+                    OpOutcome::Done
+                };
+                return (
+                    Ok(outcome),
+                    (!fast.is_empty()).then_some(Undo::PutBack(fast)),
+                );
             }
             rest = FileOp::Delete {
                 paths: left,

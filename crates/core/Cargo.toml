@@ -17,6 +17,7 @@ flume.workspace = true
 memmap2.workspace = true
 parking_lot.workspace = true
 image.workspace = true
+jpeg-decoder.workspace = true
 zip.workspace = true
 quick-xml.workspace = true
 lopdf.workspace = true
@@ -31,6 +32,11 @@ serde_json.workspace = true
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = ["Win32_System_LibraryLoader", "Win32_System_SystemInformation"]
+
+[target.'cfg(windows)'.dev-dependencies.windows]
+# The thumbnail memory benchmark reads the process's peak private bytes
+workspace = true
+features = ["Win32_System_ProcessStatus", "Win32_System_Threading"]
 
 [dev-dependencies]
 # Tests build their own 7z fixtures (with CJK names) instead of shipping binaries

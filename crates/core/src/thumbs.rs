@@ -4,7 +4,8 @@
 
 use std::io::Cursor;
 
-use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
+use image::metadata::Orientation;
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 use crate::exif::PhotoInfo;
 
@@ -87,10 +88,16 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Result<Thumbnail, Decode
 }
 
 /// Like [`decode_thumbnail`], plus original size and capture info for the preview pane.
+///
+/// Memory stays low however big the image: a JPEG is decoded straight at a reduced size where
+/// that still covers `max_side`, and the image is shrunk before it is turned upright, so no
+/// second full-size copy is made. What must be decoded at full size and is big takes turns with
+/// other such decodes (thumbnail threads run side by side).
 pub fn decode_photo(bytes: &[u8], max_side: u32) -> Result<Photo, DecodeError> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|source| DecodeError::Sniff { source })?;
+    let format = reader.format();
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
@@ -103,18 +110,31 @@ pub fn decode_photo(bytes: &[u8], max_side: u32) -> Result<Photo, DecodeError> {
         .ok()
         .flatten()
         .and_then(|raw| crate::exif::parse(&raw));
-    let mut image =
-        DynamicImage::from_decoder(decoder).map_err(|source| DecodeError::Pixels { source })?;
-    if let Some(orientation) = orientation {
-        image.apply_orientation(orientation);
-    }
-    let (width, height) = (image.width(), image.height());
-    // thumbnail() uses a faster downscaler than resize(), better for many thumbnails.
-    let small = if width > max_side || height > max_side {
-        image.thumbnail(max_side, max_side)
+    let (raw_width, raw_height) = decoder.dimensions();
+    let (width, height) = if orientation.is_some_and(turns_sideways) {
+        (raw_height, raw_width)
     } else {
-        image
+        (raw_width, raw_height)
     };
+    let scaled = (format == Some(ImageFormat::Jpeg)
+        && (raw_width > max_side || raw_height > max_side))
+        .then(|| jpeg_scaled(bytes, raw_width, raw_height, max_side))
+        .flatten();
+    let mut small = if let Some(image) = scaled {
+        fit(image, max_side)
+    } else {
+        let big = decoder.total_bytes() > BIG_DECODE;
+        let _turn = big.then(|| BIG_DECODES.lock());
+        #[cfg(test)]
+        let _probe = big.then(probe::enter);
+        let image =
+            DynamicImage::from_decoder(decoder).map_err(|source| DecodeError::Pixels { source })?;
+        // Shrunk before the turn ends, so only one full-size image is held at a time.
+        fit(image, max_side)
+    };
+    if let Some(orientation) = orientation {
+        small.apply_orientation(orientation);
+    }
     let rgba = small.to_rgba8();
     Ok(Photo {
         image: Thumbnail {
@@ -128,10 +148,190 @@ pub fn decode_photo(bytes: &[u8], max_side: u32) -> Result<Photo, DecodeError> {
     })
 }
 
+/// `image` shrunk to fit in `max_side` × `max_side`; never enlarged.
+fn fit(image: DynamicImage, max_side: u32) -> DynamicImage {
+    // thumbnail() uses a faster downscaler than resize(), better for many thumbnails.
+    if image.width() > max_side || image.height() > max_side {
+        image.thumbnail(max_side, max_side)
+    } else {
+        image
+    }
+}
+
+/// An orientation that swaps width and height.
+const fn turns_sideways(orientation: Orientation) -> bool {
+    matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    )
+}
+
+/// A `width`×`height` JPEG decoded at 1/2, 1/4 or 1/8 of its size (scaled in the DCT, so the
+/// full-size pixels never exist), the smallest of those that still covers the thumbnail fitting
+/// `max_side`. `None` when no reduction covers it, or that decoder can't (CMYK, 12-bit, or a
+/// file it rejects); the full-size decoder does it then.
+fn jpeg_scaled(bytes: &[u8], width: u32, height: u32, max_side: u32) -> Option<DynamicImage> {
+    let fit = f64::from(max_side) / f64::from(width.max(height));
+    let want = |side: u32| ((f64::from(side) * fit).ceil() as u16).max(1);
+    let mut decoder = jpeg_decoder::Decoder::new(bytes);
+    decoder.set_max_decoding_buffer_size(MAX_DECODE_ALLOC as usize);
+    decoder.read_info().ok()?;
+    let (w, h) = decoder.scale(want(width), want(height)).ok()?;
+    // Not reduced at all: the usual decoder is faster for that.
+    if u32::from(w) >= width {
+        return None;
+    }
+    let pixels = decoder.decode().ok()?;
+    let (w, h) = (u32::from(w), u32::from(h));
+    match decoder.info()?.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => {
+            image::RgbImage::from_raw(w, h, pixels).map(DynamicImage::ImageRgb8)
+        }
+        jpeg_decoder::PixelFormat::L8 => {
+            image::GrayImage::from_raw(w, h, pixels).map(DynamicImage::ImageLuma8)
+        }
+        _ => None,
+    }
+}
+
+/// Full-size decodes at least this large (decoded bytes, about 8 megapixels of RGB) take turns.
+const BIG_DECODE: u64 = 24 * 1024 * 1024;
+
+/// Held by a big full-size decode, until its image is shrunk.
+static BIG_DECODES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Counts full-size decodes of big images running at once (tests check they take turns).
+#[cfg(test)]
+mod probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NOW: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static MOST: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) struct Running;
+
+    pub(super) fn enter() -> Running {
+        let now = NOW.fetch_add(1, Ordering::SeqCst) + 1;
+        MOST.fetch_max(now, Ordering::SeqCst);
+        Running
+    }
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            NOW.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::{ImageFormat, Rgba, RgbaImage};
+
+    /// Tests that decode big images take turns, so the allocation peak measured is one test's.
+    static BIG: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    /// A `w`×`h` JPEG of a gradient, with an EXIF orientation when given.
+    fn jpeg_bytes(w: u32, h: u32, orientation: Option<u16>) -> Vec<u8> {
+        use image::codecs::jpeg::JpegEncoder;
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        });
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 80)
+            .encode_image(&img)
+            .unwrap();
+        let Some(orientation) = orientation else {
+            return jpeg;
+        };
+        // APP1 with a little-endian TIFF holding only IFD0's orientation.
+        let mut tiff = b"II*\0\x08\0\0\0".to_vec();
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&orientation.to_le_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend(tiff);
+        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        out.extend_from_slice(&u16::try_from(app1.len() + 2).unwrap().to_be_bytes());
+        out.extend(app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    /// A portrait phone photo (landscape pixels, EXIF says turn it): the thumbnail comes out
+    /// upright, and decoding it never holds anything near the full-size image.
+    #[test]
+    fn a_large_portrait_photo_is_shrunk_before_it_is_turned() {
+        let _turn = BIG.lock();
+        let bytes = jpeg_bytes(4000, 3000, Some(6));
+        let full = 4000 * 3000 * 3;
+        let (photo, peak) = crate::alloc_peak::during(|| decode_photo(&bytes, 512).unwrap());
+        assert_eq!((photo.width, photo.height), (3000, 4000), "upright size");
+        assert_eq!((photo.image.width, photo.image.height), (384, 512));
+        assert!(
+            peak < full / 4,
+            "peak {} MB while decoding a {} MB image",
+            peak >> 20,
+            full >> 20
+        );
+    }
+
+    /// A big JPEG is decoded at a quarter of its size here, the smallest reduction that still
+    /// covers a 512 px thumbnail.
+    #[test]
+    fn large_jpegs_decode_at_a_reduced_size() {
+        let _turn = BIG.lock();
+        let bytes = jpeg_bytes(4000, 3000, Some(6));
+        let image = jpeg_scaled(&bytes, 4000, 3000, 512).expect("a reduced decode");
+        assert_eq!((image.width(), image.height()), (1000, 750));
+    }
+
+    /// The pixels turn too: the top-left of the upright thumbnail is the original's bottom-left.
+    #[test]
+    fn a_shrunk_photo_is_turned_the_right_way() {
+        let mut img = image::RgbImage::from_pixel(1200, 800, image::Rgb([0, 0, 255]));
+        for y in 600..800 {
+            for x in 0..300 {
+                img.put_pixel(x, y, image::Rgb([255, 0, 0]));
+            }
+        }
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .encode_image(&img)
+            .unwrap();
+        let mut tagged = jpeg_bytes(8, 8, Some(6));
+        // Same EXIF header, this image's data.
+        let header = 4 + usize::from(u16::from_be_bytes([tagged[4], tagged[5]]));
+        tagged.truncate(header);
+        tagged.extend_from_slice(&jpeg[2..]);
+        let t = decode_thumbnail(&tagged, 120).unwrap();
+        assert_eq!((t.width, t.height), (80, 120));
+        let px = &t.rgba[..4];
+        assert!(px[0] > 200 && px[2] < 60, "top-left is red: {px:?}");
+    }
+
+    /// Big images that must be decoded at full size take turns instead of all being held at once.
+    #[test]
+    fn large_images_decode_one_at_a_time() {
+        let _turn = BIG.lock();
+        let bytes = png_bytes(3000, 2500);
+        let start = std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| {
+                    start.wait();
+                    decode_thumbnail(&bytes, 256).unwrap();
+                });
+            }
+        });
+        assert_eq!(probe::MOST.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     pub(crate) fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         let img = RgbaImage::from_fn(w, h, |x, _| Rgba([(x % 256) as u8, 10, 200, 255]));
@@ -261,5 +461,71 @@ mod tests {
         let mut bytes = png_bytes(4, 4);
         bytes.truncate(40);
         assert!(decode_thumbnail(&bytes, THUMBNAIL_SIZE).is_err());
+    }
+
+    /// Peak memory while three threads (as many as the thumbnail loader runs) make 256 px grid
+    /// thumbnails of the JPEGs in `ARKE_PHOTOS` (default `%TEMP%\arke-test-d1-photos`). Run with
+    /// `cargo nextest run -p arke-core --run-ignored only --no-capture -E 'test(thumbnail_peak_memory)'`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "benchmark: decodes a folder of photos of your own"]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a benchmark run by hand prints its numbers"
+    )]
+    fn thumbnail_peak_memory() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = std::env::var_os("ARKE_PHOTOS").map_or_else(
+            || std::env::temp_dir().join("arke-test-d1-photos"),
+            std::path::PathBuf::from,
+        );
+        let files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("jpg")))
+            .collect();
+        assert!(!files.is_empty(), "no photos in {}", dir.display());
+        let (_, private_before) = process_memory();
+        let next = AtomicUsize::new(0);
+        let started = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| {
+                    while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let bytes = std::fs::read(path).unwrap();
+                        decode_thumbnail(&bytes, 256).unwrap();
+                    }
+                });
+            }
+        });
+        let took = started.elapsed();
+        let (peak_private, _) = process_memory();
+        eprintln!(
+            "{} photos, 3 threads, 256 px: {took:?}; peak private {} MB (private {} MB before)",
+            files.len(),
+            peak_private >> 20,
+            private_before >> 20
+        );
+    }
+
+    /// Peak private bytes and private bytes of this process.
+    #[cfg(windows)]
+    fn process_memory() -> (u64, u64) {
+        use windows::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let cb = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).unwrap();
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb,
+            ..Default::default()
+        };
+        // SAFETY: a pseudo handle that needs no closing; `counters` has the size given.
+        unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, cb) }.unwrap();
+        (
+            counters.PeakPagefileUsage as u64,
+            counters.PagefileUsage as u64,
+        )
     }
 }

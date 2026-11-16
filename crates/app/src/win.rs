@@ -64,13 +64,13 @@ pub(crate) fn lower_io_priority() {
 }
 
 /// Whether heavy background work (rebuilding the search index) is OK now: memory isn't low and
-/// battery saver is off. Cheap system query; called from a background thread.
+/// Windows isn't saving energy (`win_power.rs`). Cheap system query; called from a background
+/// thread.
 pub(crate) fn background_work_ok() -> bool {
     use windows::Win32::System::Memory::{
         CreateMemoryResourceNotification, LowMemoryResourceNotification,
         QueryMemoryResourceNotification,
     };
-    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
     // Created once and kept; the system picks the threshold.
     static LOW_MEMORY: std::sync::OnceLock<Option<isize>> = std::sync::OnceLock::new();
     let handle = *LOW_MEMORY.get_or_init(|| {
@@ -92,13 +92,7 @@ pub(crate) fn background_work_ok() -> bool {
             return false;
         }
     }
-    let mut power = SYSTEM_POWER_STATUS::default();
-    // SAFETY: power is a correctly sized out param.
-    if unsafe { GetSystemPowerStatus(&raw mut power) }.is_ok() && power.SystemStatusFlag == 1 {
-        // Battery saver is on.
-        return false;
-    }
-    true
+    !crate::win_power::saving_energy()
 }
 
 /// Why [`run_elevated`] did not get an exit code.

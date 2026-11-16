@@ -15,14 +15,16 @@
 //! invoking, or when the menu closes without a choice.
 
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, HBITMAP};
 use windows::Win32::System::Ole::{OleFlushClipboard, OleInitialize, OleUninitialize};
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, GCS_VERBW,
@@ -33,9 +35,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     GetMenuItemCount, GetMenuItemInfoW, HMENU, MENUITEMINFOW, MFS_CHECKED, MFS_DEFAULT,
     MFS_DISABLED, MFT_BITMAP, MFT_SEPARATOR, MIIM_BITMAP, MIIM_CHECKMARKS, MIIM_FTYPE, MIIM_ID,
-    MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
-    SW_SHOWNORMAL, TranslateMessage, WINDOW_EX_STYLE, WM_DRAWITEM, WM_INITMENUPOPUP,
-    WM_MEASUREITEM, WM_MENUCHAR, WNDCLASSW, WS_POPUP,
+    MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassW, SW_SHOWNORMAL, TranslateMessage,
+    WINDOW_EX_STYLE, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WNDCLASSW,
+    WS_POPUP,
 };
 use windows::core::{Interface, PCSTR, PCWSTR, PSTR, PWSTR, w};
 
@@ -89,30 +92,51 @@ thread_local! {
     static CURRENT: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
-fn menu_thread() -> Option<&'static flume::Sender<Request>> {
-    static SENDER: OnceLock<Option<flume::Sender<Request>>> = OnceLock::new();
-    SENDER
+/// The menu thread's request queue, and the event that wakes it for each request.
+struct MenuThread {
+    tx: flume::Sender<Request>,
+    /// Auto-reset event, set after every request. The thread sleeps on it and on its message
+    /// queue together, so it wakes only when there is something to do.
+    wake: isize,
+}
+
+impl MenuThread {
+    fn send(&self, request: Request) -> Result<(), ShellError> {
+        self.tx
+            .send(request)
+            .map_err(|_hung_up| ShellError::MenuThreadGone)?;
+        // SAFETY: the event was created with the thread and is never closed.
+        let _ = unsafe { SetEvent(HANDLE(self.wake as *mut c_void)) };
+        Ok(())
+    }
+}
+
+fn menu_thread() -> Option<&'static MenuThread> {
+    static THREAD: OnceLock<Option<MenuThread>> = OnceLock::new();
+    THREAD
         .get_or_init(|| {
+            // SAFETY: an unnamed auto-reset event, kept for the life of the process.
+            let wake = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }.ok()?;
+            let wake = wake.0 as isize;
             let (tx, rx) = flume::unbounded::<Request>();
             std::thread::Builder::new()
                 .name("shell-menu".into())
-                .spawn(move || run(&rx))
-                .ok()
-                .map(|_| tx)
+                .spawn(move || run(&rx, wake))
+                .ok()?;
+            Some(MenuThread { tx, wake })
         })
         .as_ref()
 }
 
 /// Reads the context menu for `paths`. Blocks on the STA thread, so call from a background thread.
 pub(crate) fn query(paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
-    let tx = menu_thread().ok_or(ShellError::MenuThreadStart)?;
+    let thread = menu_thread().ok_or(ShellError::MenuThreadStart)?;
     let (done, result) = flume::bounded(1);
-    tx.send(Request::Query {
+    thread.send(Request::Query {
         paths: paths.to_vec(),
         background,
         done,
-    })
-    .map_err(|_hung_up| ShellError::MenuThreadGone)?;
+    })?;
     result
         .recv()
         .map_err(|_hung_up| ShellError::MenuThreadNoReply)?
@@ -125,16 +149,15 @@ pub(crate) fn invoke(
     client_point: (i32, i32),
     owner: Option<isize>,
 ) -> Result<(), ShellError> {
-    let tx = menu_thread().ok_or(ShellError::MenuThreadStart)?;
+    let thread = menu_thread().ok_or(ShellError::MenuThreadStart)?;
     let (done, result) = flume::bounded(1);
-    tx.send(Request::Invoke {
+    thread.send(Request::Invoke {
         session,
         id,
         client_point,
         owner,
         done,
-    })
-    .map_err(|_hung_up| ShellError::MenuThreadGone)?;
+    })?;
     result
         .recv()
         .map_err(|_hung_up| ShellError::MenuThreadNoReply)?
@@ -142,12 +165,12 @@ pub(crate) fn invoke(
 
 /// Releases a menu without waiting.
 pub(crate) fn release(session: u64) {
-    if let Some(tx) = menu_thread() {
-        let _ = tx.send(Request::Release(session));
+    if let Some(thread) = menu_thread() {
+        let _ = thread.send(Request::Release(session));
     }
 }
 
-fn run(rx: &flume::Receiver<Request>) {
+fn run(rx: &flume::Receiver<Request>, wake: isize) {
     // OleInitialize rather than CoInitialize: Copy/Cut commands use the OLE clipboard.
     // SAFETY: per-thread init, paired with OleUninitialize via OleGuard.
     if unsafe { OleInitialize(None) }.is_err() {
@@ -157,47 +180,70 @@ fn run(rx: &flume::Receiver<Request>) {
     let Some(window) = create_owner_window() else {
         return;
     };
+    let wake = HANDLE(wake as *mut c_void);
     loop {
+        #[cfg(test)]
+        WAKES.fetch_add(1, Ordering::Relaxed);
         pump_messages();
-        match rx.recv_timeout(Duration::from_millis(30)) {
-            Ok(Request::Query {
-                paths,
-                background,
-                done,
-            }) => {
-                CURRENT.with(|c| c.borrow_mut().take());
-                let _ = done.send(build(&paths, background, window));
+        loop {
+            match rx.try_recv() {
+                Ok(request) => handle(request, window),
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => return,
             }
-            Ok(Request::Invoke {
-                session,
-                id,
-                client_point,
-                owner,
-                done,
-            }) => {
-                let current = CURRENT.with(|c| c.borrow_mut().take());
-                let result = match current {
-                    Some(s) if s.id == session => invoke_in(&s, id, client_point, owner),
-                    _ => Err(ShellError::MenuExpired),
-                };
-                let _ = done.send(result);
-            }
-            Ok(Request::FlushClipboard(done)) => {
-                // SAFETY: plain OLE call; it errors harmlessly if this thread set no clipboard data.
-                let _ = unsafe { OleFlushClipboard() };
-                let _ = done.send(());
-            }
-            Ok(Request::Release(session)) => CURRENT.with(|c| {
-                let mut c = c.borrow_mut();
-                if c.as_ref().is_some_and(|s| s.id == session) {
-                    *c = None;
-                }
-            }),
-            Err(flume::RecvTimeoutError::Timeout) => {}
-            Err(flume::RecvTimeoutError::Disconnected) => return,
+            pump_messages();
         }
+        // Sleep until a request is sent or a message arrives (extensions may go on through
+        // messages after a command), with no timeout. A request sent after the queue was found
+        // empty has already set the event, so the wait returns at once.
+        // SAFETY: `wake` is a valid event handle for the life of the process.
+        let _ = unsafe {
+            MsgWaitForMultipleObjectsEx(Some(&[wake]), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
     }
 }
+
+fn handle(request: Request, window: HWND) {
+    match request {
+        Request::Query {
+            paths,
+            background,
+            done,
+        } => {
+            CURRENT.with(|c| c.borrow_mut().take());
+            let _ = done.send(build(&paths, background, window));
+        }
+        Request::Invoke {
+            session,
+            id,
+            client_point,
+            owner,
+            done,
+        } => {
+            let current = CURRENT.with(|c| c.borrow_mut().take());
+            let result = match current {
+                Some(s) if s.id == session => invoke_in(&s, id, client_point, owner),
+                _ => Err(ShellError::MenuExpired),
+            };
+            let _ = done.send(result);
+        }
+        Request::FlushClipboard(done) => {
+            // SAFETY: plain OLE call; it errors harmlessly if this thread set no clipboard data.
+            let _ = unsafe { OleFlushClipboard() };
+            let _ = done.send(());
+        }
+        Request::Release(session) => CURRENT.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.as_ref().is_some_and(|s| s.id == session) {
+                *c = None;
+            }
+        }),
+    }
+}
+
+/// Turns of the menu thread's loop (tests check it sleeps while nothing is asked).
+#[cfg(test)]
+static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 struct OleGuard;
 
@@ -210,9 +256,9 @@ impl Drop for OleGuard {
 
 /// Call before the process exits so clipboard data set by extensions survives it.
 pub(crate) fn flush_clipboard() {
-    if let Some(tx) = menu_thread() {
+    if let Some(thread) = menu_thread() {
         let (done, wait) = flume::bounded(1);
-        if tx.send(Request::FlushClipboard(done)).is_ok() {
+        if thread.send(Request::FlushClipboard(done)).is_ok() {
             let _ = wait.recv_timeout(Duration::from_secs(5));
         }
     }
@@ -703,5 +749,23 @@ mod tests {
             "access key markers must be removed: {labels:?}"
         );
         release(menu.session);
+    }
+
+    /// With nothing asked, the menu thread waits without waking (it used to poll every 30 ms),
+    /// and a request still gets an answer right away.
+    #[test]
+    fn the_menu_thread_sleeps_until_asked() {
+        flush_clipboard();
+        let before = WAKES.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(600));
+        let idle = WAKES.load(Ordering::Relaxed) - before;
+        assert!(idle <= 2, "woke {idle} times in 600 ms with nothing to do");
+        let asked = std::time::Instant::now();
+        flush_clipboard();
+        assert!(
+            asked.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            asked.elapsed()
+        );
     }
 }

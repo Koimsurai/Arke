@@ -19,7 +19,7 @@ use rust_i18n::t;
 use crate::explorer::MenuCommand;
 use crate::explorer::{
     DeleteFiles, Explorer, ExplorerEvent, FocusFilter, FocusPathBar, FocusSearch, OpenInNewTab,
-    Services,
+    Services, StartClock,
 };
 use crate::media::MediaKind;
 use crate::shell::{
@@ -6759,43 +6759,148 @@ fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
     assert!(offset < px(0.), "scrolled down to the last row: {offset:?}");
 }
 
-/// Only the pane created with the process start time logs a cold start. Any other pane (a window
-/// opened later, or a restored tab first drawn hours later) would log hours as a cold start.
+/// Only the window created with the process start time is a cold start, and only once. Any other
+/// (a window opened later) would log hours as a cold start.
 #[gpui::test]
-fn only_the_process_start_pane_is_a_cold_start(cx: &mut TestAppContext) {
-    use gpui::AppContext as _;
+fn only_the_process_start_window_is_a_cold_start(cx: &mut TestAppContext) {
+    use crate::explorer::claim_cold_start;
     let fs = FakeFs::new();
     fs.insert_many(r"C:\home", 3);
     let process_start = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
     crate::explorer::mark_process_start(process_start);
     let (later, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\home");
     wait_until(cx, &later, "load C:\\home", loaded(r"C:\home"));
-    assert!(!later.update(cx, |v, _| v.metrics.cold_start));
-
-    let pane = |cx: &mut VisualTestContext| {
-        let services = Services {
-            fs: Arc::<FakeFs>::clone(&fs),
-            shell: Arc::new(FakeShell::default()),
-            remotes: crate::remote_shell::test_remotes(),
-        };
-        cx.update(|window, cx| {
-            cx.new(|cx| {
-                Explorer::new(
-                    services,
-                    PathBuf::from(r"C:\home"),
-                    None,
-                    process_start,
-                    window,
-                    cx,
-                )
-            })
-        })
+    assert_eq!(
+        later.update(cx, |v, _| v.metrics.clock),
+        StartClock::Untimed
+    );
+    assert!(!claim_cold_start(Instant::now()), "another time");
+    assert!(claim_cold_start(process_start));
+    assert!(!claim_cold_start(process_start), "once only");
+}
+/// A window started at `started_at` that restores `session`; `received`: opened on a request that
+/// arrived then.
+fn cold_window(
+    cx: &mut TestAppContext,
+    fs: Arc<FakeFs>,
+    session: crate::settings::Session,
+    started_at: Instant,
+    received: Option<Instant>,
+) -> (Entity<Workspace>, &mut VisualTestContext) {
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::text_input::bind_keys(cx);
+        crate::explorer::bind_keys(cx);
+        crate::workspace::bind_keys(cx);
+    });
+    // Set once per process: a test that set it earlier keeps its time.
+    crate::explorer::mark_process_start(started_at);
+    let services = Services {
+        fs,
+        shell: Arc::new(FakeShell::default()),
+        remotes: crate::remote_shell::test_remotes(),
     };
-    let first = pane(cx);
-    assert!(first.update(cx, |v, _| v.metrics.cold_start));
-    // Once only, even for another pane given the same time.
-    let second = pane(cx);
-    assert!(!second.update(cx, |v, _| v.metrics.cold_start));
+    let start = session.tabs[0].panes[0].clone();
+    cx.add_window_view(move |window, cx| {
+        let mut workspace = Workspace::new(
+            services,
+            start,
+            false,
+            Some(session),
+            None,
+            started_at,
+            window,
+            cx,
+        );
+        if let Some(received) = received {
+            workspace.time_from_request(received);
+        }
+        workspace
+    })
+}
+
+fn saved_tab(path: &str, home: bool) -> crate::settings::SessionTab {
+    crate::settings::SessionTab {
+        panes: vec![PathBuf::from(path)],
+        active_pane: 0,
+        ratio: 0.5,
+        pinned: false,
+        synced: false,
+        home,
+    }
+}
+
+/// A restored session whose active tab isn't the first: the cold start is timed on the tab that
+/// is shown. The first tab may only be drawn hours later, when it is clicked.
+#[gpui::test]
+fn the_cold_start_is_timed_on_the_tab_shown(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 3);
+    fs.insert_many(r"C:\b", 4);
+    let session = crate::settings::Session {
+        tabs: vec![saved_tab(r"C:\a", false), saved_tab(r"C:\b", false)],
+        active: 1,
+    };
+    let process_start = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+    let (ws, cx) = cold_window(cx, fs, session, process_start, None);
+    cx.run_until_parked();
+    let tabs: Vec<_> = ws.update(cx, |ws, _| ws.tab_views().cloned().collect());
+    let clock =
+        |tab: &Entity<Explorer>, cx: &mut VisualTestContext| tab.update(cx, |v, _| v.metrics.clock);
+    assert_eq!(
+        clock(&tabs[0], cx),
+        StartClock::Untimed,
+        "the hidden first tab"
+    );
+    assert_eq!(
+        clock(&tabs[1], cx),
+        StartClock::Cold(process_start),
+        "the tab on screen"
+    );
+}
+
+/// Started on Home: no folder is on screen, so no folder's first frame is a cold start.
+#[gpui::test]
+fn a_folder_under_home_is_not_a_cold_start(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 3);
+    let session = crate::settings::Session {
+        tabs: vec![saved_tab(r"C:\a", true)],
+        active: 0,
+    };
+    let process_start = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+    let (ws, cx) = cold_window(cx, fs, session, process_start, None);
+    cx.run_until_parked();
+    let pane = ws.update(cx, |ws, _| ws.tab_views().next().cloned().unwrap());
+    assert_eq!(pane.update(cx, |v, _| v.metrics.clock), StartClock::Untimed);
+}
+
+/// A window the resident Arke opens on request, hours after it started: not a cold start, and
+/// its first frame is timed from when the request arrived.
+#[gpui::test]
+fn a_window_opened_on_request_is_timed_from_the_request(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 3);
+    let session = crate::settings::Session {
+        tabs: vec![saved_tab(r"C:\a", false)],
+        active: 0,
+    };
+    let hours_ago = Instant::now().checked_sub(Duration::from_hours(2)).unwrap();
+    crate::explorer::mark_process_start(hours_ago);
+    // The client that asked was launched a moment ago.
+    let launched = Instant::now()
+        .checked_sub(Duration::from_millis(50))
+        .unwrap();
+    let received = Instant::now();
+    let (ws, cx) = cold_window(cx, fs, session, launched, Some(received));
+    cx.run_until_parked();
+    let pane = ws.update(cx, |ws, _| ws.tab_views().next().cloned().unwrap());
+    let (clock, first) = pane.update(cx, |v, _| (v.metrics.clock, v.metrics.clock_first_frame));
+    assert_eq!(clock, StartClock::Request(received));
+    let first = first.expect("first frame timed");
+    assert!(first < Duration::from_secs(60), "{first:?}");
 }
 
 /// Folder `C:\r` with `report.docx` and `a.txt`, in a window wide enough for the Details columns.

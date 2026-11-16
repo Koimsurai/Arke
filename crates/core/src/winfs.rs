@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn filetimes_match_std() {
+    fn file_times_match_std() {
         let dir = std::env::temp_dir();
         let listed = std::fs::metadata(&dir).unwrap().modified().unwrap();
         let since = listed.duration_since(SystemTime::UNIX_EPOCH).unwrap();

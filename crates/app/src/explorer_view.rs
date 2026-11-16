@@ -67,7 +67,7 @@ const NOTICE_UNDO_TTL: Duration = Duration::from_secs(10);
 const RENAME_BALLOON_W: Pixels = px(440.);
 /// Above this many selected items the total size isn't computed (avoids a long walk on every
 /// render)
-const SIZE_SUM_MAX: usize = 5_000;
+pub(super) const SIZE_SUM_MAX: usize = 5_000;
 /// Below this pane width the filter box collapses to a magnifier, leaving room for the path
 const NARROW_TOP_BAR: Pixels = px(760.);
 /// Below this pane width context bar buttons show icons only
@@ -985,6 +985,7 @@ impl Explorer {
         thumbnails: bool,
         cx: &mut Context<Self>,
     ) -> Vec<Option<Arc<RenderImage>>> {
+        self.folder_sizes_shown(entries, range.clone(), cx);
         let Some(dir) = self.current_path().map(Path::to_path_buf) else {
             return Vec::new();
         };

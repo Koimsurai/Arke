@@ -27,10 +27,18 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-# Loads Windows' own libarchive (archiveint.dll) for RAR and compressed tars; see archive/libarchive.rs
+# Loads Windows' own libarchive (archiveint.dll) for RAR and compressed tars; see archive/libarchive.rs.
+# Folder watching and the folder size walk call the file system directly; see winfs.rs
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
-features = ["Win32_System_LibraryLoader", "Win32_System_SystemInformation"]
+features = [
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+]
 
 [dev-dependencies]
 # Tests build their own 7z fixtures (with CJK names) instead of shipping binaries

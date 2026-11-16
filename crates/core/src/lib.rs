@@ -1,9 +1,11 @@
 //! arke-core: platform-independent directory model, sorting, filtering, search,
 //! thumbnail decoding and the background directory service.
-//! No UI framework and no direct Windows API calls (only std and notify), with one exception:
-//! `archive` loads Windows' own libarchive (archiveint.dll) or runs its tar.exe for RAR and
-//! compressed tars, so RAR support comes from the copy Windows ships instead of a decoder linked
-//! into Arke.
+//! No UI framework and no direct Windows API calls (only std and notify), with two exceptions:
+//! - `archive` loads Windows' own libarchive (archiveint.dll) or runs its tar.exe for RAR and
+//!   compressed tars, so RAR support comes from the copy Windows ships instead of a decoder linked
+//!   into Arke.
+//! - `winfs`, behind `RealFs`: the folder watcher (`ReadDirectoryChangesW`, see there for why not
+//!   notify) and the folder size walk (`FindFirstFileExW`).
 
 // Tests may unwrap / panic.
 #![cfg_attr(
@@ -66,6 +68,8 @@ pub mod tree;
 pub mod typeahead;
 pub mod verify;
 pub mod watches;
+#[cfg(windows)]
+mod winfs;
 
 pub use entry::{Entry, EntryKind};
 pub use fs::{Fs, RealFs};

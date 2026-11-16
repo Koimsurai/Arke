@@ -1468,3 +1468,38 @@ fn the_collapsed_sidebar_opens_while_the_pointer_rests_on_it(cx: &mut TestAppCon
     cx.run_until_parked();
     assert!(!peek(cx));
 }
+
+/// A tab in the background keeps following its folder (its watcher sleeps until a change instead
+/// of polling): switching back shows what changed meanwhile, without a relist.
+#[gpui::test]
+fn background_tab_is_current_when_switched_back(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 2);
+    fs.insert_many(r"C:\b", 1);
+    let (ws, cx) = setup_workspace(cx, Arc::clone(&fs), r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    assert_eq!(active(&ws, cx), 1);
+    let a = Path::new(r"C:\a");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs.watcher_count(a) == 0 {
+        assert!(Instant::now() < deadline, "watcher did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let reads = fs.read_dir_calls();
+    fs.add_file(a, "while-away.txt", 1);
+    fs.remove(a, "file_000000.txt");
+    fs.emit_changed(a, &["while-away.txt", "file_000000.txt"]);
+    wait_until(cx, &first, "background tab updated", |v| {
+        names(v) == ["file_000001.txt", "while-away.txt"]
+    });
+    cx.simulate_keystrokes("ctrl-1");
+    cx.run_until_parked();
+    assert_eq!(active(&ws, cx), 0);
+    assert_eq!(
+        first.update(cx, |v, _| names(v)),
+        ["file_000001.txt", "while-away.txt"]
+    );
+    assert_eq!(fs.read_dir_calls(), reads, "no relist needed");
+}

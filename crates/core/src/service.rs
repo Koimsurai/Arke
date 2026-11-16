@@ -13,6 +13,10 @@
 //! - SMB watching sometimes misses events, but we don't poll (it keeps NAS disks awake and
 //!   generates traffic). [`DirService::recheck`] (Arke regains focus) relists once, diffs
 //!   against the last listing and sends only the differences.
+//!
+//! The watch and recheck threads sleep until something happens: a change, a recheck request,
+//! or the folder being left (navigating or cancelling wakes them to quit). A tab in the
+//! background costs nothing while its folder doesn't change, and its list stays current.
 
 use parking_lot::Mutex;
 use rust_i18n::t;
@@ -21,7 +25,6 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::entry::Entry;
@@ -122,6 +125,17 @@ pub struct DirService {
     cache: Arc<Mutex<NetCache>>,
     /// Recheck trigger for the current network folder ([`DirService::recheck`]).
     recheck: Arc<Mutex<Option<flume::Sender<()>>>>,
+    /// Wakes the current folder's watch thread to quit.
+    watch_stop: Arc<Mutex<Option<flume::Sender<WatchMsg>>>>,
+    /// How often watch and recheck threads woke up (tests check they don't poll).
+    #[cfg(test)]
+    wakeups: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// What a watch thread waits for.
+enum WatchMsg {
+    Event(WatchEvent),
+    Stop,
 }
 
 /// Number of network folders remembered.
@@ -196,6 +210,9 @@ impl DirService {
             probe: None,
             cache: Arc::default(),
             recheck: Arc::default(),
+            watch_stop: Arc::default(),
+            #[cfg(test)]
+            wakeups: Arc::default(),
         }
     }
 
@@ -222,7 +239,7 @@ impl DirService {
     /// Starts listing `path`. Returns the new generation immediately and does no I/O itself.
     pub fn navigate(&self, path: PathBuf, opts: ListOptions) -> Gen {
         let generation = self.current.fetch_add(1, Ordering::AcqRel) + 1;
-        *self.recheck.lock() = None;
+        self.stop_threads();
         let job = Job {
             generation,
             fs: Arc::clone(&self.fs),
@@ -231,6 +248,9 @@ impl DirService {
             probe: self.probe.clone(),
             cache: Arc::clone(&self.cache),
             recheck: Arc::clone(&self.recheck),
+            watch_stop: Arc::clone(&self.watch_stop),
+            #[cfg(test)]
+            wakeups: Arc::clone(&self.wakeups),
             outcome: Arc::new(AtomicU8::new(OUTCOME_PENDING)),
         };
         let requested_at = Instant::now();
@@ -262,6 +282,24 @@ impl DirService {
     /// Invalidates all current background work (e.g. when closing the window).
     pub fn cancel(&self) {
         self.current.fetch_add(1, Ordering::AcqRel);
+        self.stop_threads();
+    }
+
+    /// Wakes the previous folder's watch and recheck threads so they quit (call after bumping the
+    /// generation: a thread that registers later sees it is stale and quits by itself).
+    fn stop_threads(&self) {
+        // Dropping the sender ends the recheck thread's wait.
+        drop(self.recheck.lock().take());
+        let stop = self.watch_stop.lock().take();
+        if let Some(stop) = stop {
+            let _ = stop.send(WatchMsg::Stop);
+        }
+    }
+
+    /// How often this service's watch and recheck threads have woken up so far.
+    #[cfg(test)]
+    fn wakeups(&self) -> usize {
+        self.wakeups.load(Ordering::Relaxed)
     }
 }
 
@@ -280,6 +318,9 @@ struct Job {
     probe: Option<Arc<dyn NetProbe>>,
     cache: Arc<Mutex<NetCache>>,
     recheck: Arc<Mutex<Option<flume::Sender<()>>>>,
+    watch_stop: Arc<Mutex<Option<flume::Sender<WatchMsg>>>>,
+    #[cfg(test)]
+    wakeups: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether probe or listing decided first; if the probe found the server down, the listing is
     /// not sent.
     outcome: Arc<AtomicU8>,
@@ -528,13 +569,30 @@ impl Job {
         });
     }
 
+    #[cfg(test)]
+    fn woke(&self) {
+        self.wakeups.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self, reason = "only tests count wakeups")]
+    const fn woke(&self) {}
+
     fn watch_dir(self, dir: &Path, show_hidden: bool) {
-        let (tx, rx) = mpsc::channel::<WatchEvent>();
-        let tx = Mutex::new(tx);
+        let (tx, rx) = flume::unbounded::<WatchMsg>();
+        {
+            // Checked under the lock, so a navigation either sees this sender or runs before the
+            // check.
+            let mut stop = self.watch_stop.lock();
+            if self.is_stale() {
+                return;
+            }
+            *stop = Some(tx.clone());
+        }
         let _guard = match self.fs.watch(
             dir,
             Box::new(move |event| {
-                let _ = tx.lock().send(event);
+                let _ = tx.send(WatchMsg::Event(event));
             }),
         ) {
             Ok(guard) => guard,
@@ -550,8 +608,19 @@ impl Job {
         let mut rescan = false;
 
         loop {
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(WatchEvent::Changed(paths)) => {
+            // Nothing pending: sleep until a change or the stop. Otherwise until the batch is due.
+            let msg = match first_pending {
+                None => rx.recv().map_err(|flume::RecvError::Disconnected| {
+                    flume::RecvTimeoutError::Disconnected
+                }),
+                Some(first) => {
+                    let due = (last_event + WATCH_DEBOUNCE).min(first + WATCH_MAX_LATENCY);
+                    rx.recv_deadline(due)
+                }
+            };
+            self.woke();
+            match msg {
+                Ok(WatchMsg::Event(WatchEvent::Changed(paths))) => {
                     for p in &paths {
                         if p.parent() == Some(dir)
                             && let Some(name) = p.file_name()
@@ -562,13 +631,13 @@ impl Job {
                     last_event = Instant::now();
                     first_pending.get_or_insert(last_event);
                 }
-                Ok(WatchEvent::Rescan) => {
+                Ok(WatchMsg::Event(WatchEvent::Rescan)) => {
                     rescan = true;
                     last_event = Instant::now();
                     first_pending.get_or_insert(last_event);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(flume::RecvTimeoutError::Timeout) => {}
+                Ok(WatchMsg::Stop) | Err(flume::RecvTimeoutError::Disconnected) => return,
             }
             if self.is_stale() {
                 return; // dropping _guard stops the watch
@@ -607,7 +676,14 @@ impl Job {
     ) {
         if opts.watch && entries.len() <= NET_RECHECK_MAX_ENTRIES {
             let (tx, rx) = flume::bounded(1);
-            *self.recheck.lock() = Some(tx);
+            {
+                // Under the lock: a navigation since then has already cleared the slot.
+                let mut slot = self.recheck.lock();
+                if self.is_stale() {
+                    return;
+                }
+                *slot = Some(tx);
+            }
             let job = self.clone();
             let dir = path.to_path_buf();
             let seen = Arc::clone(entries);
@@ -653,18 +729,10 @@ impl Job {
             .map(|e| (Arc::clone(&e.name), fingerprint(e)))
             .collect();
         loop {
-            // Wait for a signal; quit once the folder changes.
-            match wake.recv_timeout(Duration::from_millis(200)) {
-                Ok(()) => {}
-                Err(flume::RecvTimeoutError::Timeout) => {
-                    if self.is_stale() {
-                        return;
-                    }
-                    continue;
-                }
-                Err(flume::RecvTimeoutError::Disconnected) => return,
-            }
-            if self.is_stale() {
+            // Wait for a signal; leaving the folder drops the sender, which ends the wait.
+            let signal = wake.recv();
+            self.woke();
+            if signal.is_err() || self.is_stale() {
                 return;
             }
             let Ok(iter) = self.fs.read_dir(dir) else {
@@ -1072,6 +1140,52 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(fs.watcher_count(&dir), 0);
+    }
+
+    /// A watched folder that doesn't change costs nothing: the watch thread sleeps until an event
+    /// or until the folder is left, instead of checking every 100 ms (each background tab used to
+    /// add these wakeups).
+    #[test]
+    fn idle_watch_does_not_poll_and_quits_when_left() {
+        let fs = FakeFs::new();
+        let dir = PathBuf::from(r"C:\idle");
+        fs.insert_many(&dir, 3);
+        let (svc, events) = service(Arc::clone(&fs) as Arc<dyn Fs>);
+        svc.navigate(dir.clone(), opts(true));
+        assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
+            e,
+            IoEvent::Listing { complete: true, .. }
+        )));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fs.watcher_count(&dir) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let before = svc.wakeups();
+        std::thread::sleep(Duration::from_millis(1000));
+        assert!(
+            svc.wakeups() - before <= 1,
+            "woke {} times in a second with nothing to do",
+            svc.wakeups() - before
+        );
+
+        // Still reports changes right away.
+        fs.add_file(&dir, "new.txt", 1);
+        fs.emit_changed(&dir, &["new.txt"]);
+        assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
+            e,
+            IoEvent::Delta { delta, .. } if delta.upserts.iter().any(|u| &*u.name == "new.txt")
+        )));
+
+        // Leaving the folder wakes the thread to quit (well before any polling interval).
+        let left = Instant::now();
+        svc.navigate(PathBuf::from(r"C:\elsewhere"), opts(false));
+        while fs.watcher_count(&dir) > 0 {
+            assert!(
+                left.elapsed() < Duration::from_secs(2),
+                "watch kept running after leaving"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// A panic in background work fails only that listing; it must not crash the app or leave

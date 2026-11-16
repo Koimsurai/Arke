@@ -851,6 +851,8 @@ pub(crate) struct Explorer {
     bench: Option<Bench>,
     loading_task: Option<Task<()>>,
     sort_task: Option<Task<()>>,
+    /// Watcher changes too many for the UI thread in a large folder, merged in the background
+    delta_merge: Option<DeltaMerge>,
     _event_loop: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -864,6 +866,14 @@ pub(crate) fn short_path(path: &Path) -> String {
     }
     let tail: PathBuf = parts[parts.len() - 2..].iter().collect();
     format!("…{}{}", std::path::MAIN_SEPARATOR, tail.display())
+}
+
+/// Watcher changes being merged in the background ([`Explorer::merge_in_background`]).
+struct DeltaMerge {
+    generation: Gen,
+    /// Changes that arrived since, applied after the merge.
+    backlog: Vec<arke_core::Delta>,
+    _task: Task<()>,
 }
 
 pub(crate) fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
@@ -1093,6 +1103,7 @@ impl Explorer {
             bench,
             loading_task: None,
             sort_task: None,
+            delta_merge: None,
             _event_loop: event_loop,
             _subscriptions: subscriptions,
         };
@@ -1694,12 +1705,16 @@ impl Explorer {
                 self.list_failed(path, error, kind, cx);
             }
             IoEvent::Delta { generation, delta } if generation == current => {
+                self.folder_contents_changed(cx);
                 self.apply_folder_delta(generation, delta, cx);
             }
             IoEvent::IsFile { generation, path } if generation == current => {
                 self.arrived_at_file(path, cx);
             }
-            IoEvent::NeedsRescan { generation } if generation == current => self.reload(cx),
+            IoEvent::NeedsRescan { generation } if generation == current => {
+                self.folder_contents_changed(cx);
+                self.reload(cx);
+            }
             // Stale results are dropped.
             _ => {}
         }
@@ -1712,11 +1727,24 @@ impl Explorer {
         delta: arke_core::Delta,
         cx: &mut Context<Self>,
     ) {
+        // A merge is running: this one follows it, in order.
+        if let Some(merge) = self
+            .delta_merge
+            .as_mut()
+            .filter(|m| m.generation == generation)
+        {
+            merge.backlog.push(delta);
+            return;
+        }
         // With folders expanded, rows above the screen may come and go: keep the view.
         let anchor = self.scroll_anchor(None);
         let Some(model) = self.model.as_mut().filter(|m| m.generation == generation) else {
             return;
         };
+        if model.delta_too_big(&delta) {
+            self.merge_in_background(generation, delta, cx);
+            return;
+        }
         let removed = delta.removed.clone();
         if model.apply_delta(delta) == DeltaOutcome::NeedsRescan {
             self.reload(cx);
@@ -1725,6 +1753,65 @@ impl Explorer {
         self.selection.remove_names(&removed);
         self.after_content_change(cx);
         self.restore_scroll_anchor(anchor);
+    }
+
+    /// A large folder got more changes than the UI thread applies in a frame: merge them into a
+    /// copy of the list on the background executor (one pass, O(n + k log k)) and swap it in,
+    /// instead of listing the whole folder again. Changes arriving meanwhile wait their turn.
+    fn merge_in_background(
+        &mut self,
+        generation: Gen,
+        delta: arke_core::Delta,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(model) = self.model.as_ref().filter(|m| m.generation == generation) else {
+            return;
+        };
+        let entries = Arc::clone(&model.entries);
+        let (spec, version) = (model.sorted_by, model.version);
+        let removed = delta.removed.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let merged = cx
+                .background_executor()
+                .spawn(async move { arke_core::model::merged(&entries, &delta, spec) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_merge(generation, version, merged, &removed, cx);
+            });
+        });
+        self.delta_merge = Some(DeltaMerge {
+            generation,
+            backlog: Vec::new(),
+            _task: task,
+        });
+    }
+
+    fn finish_merge(
+        &mut self,
+        generation: Gen,
+        version: u64,
+        merged: Vec<Entry>,
+        removed: &[Arc<str>],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(merge) = self.delta_merge.take_if(|m| m.generation == generation) else {
+            return;
+        };
+        let anchor = self.scroll_anchor(None);
+        let Some(model) = self.model.as_mut().filter(|m| m.generation == generation) else {
+            return;
+        };
+        // The list changed meanwhile (a re-sort finished): list it again, as before.
+        if !model.replace_merged(version, merged) {
+            self.reload(cx);
+            return;
+        }
+        self.selection.remove_names(removed);
+        self.after_content_change(cx);
+        self.restore_scroll_anchor(anchor);
+        for delta in merge.backlog {
+            self.apply_folder_delta(generation, delta, cx);
+        }
     }
 
     /// The folder asked for can't be listed: stay put and say why (or show the error page).

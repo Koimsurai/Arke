@@ -1,5 +1,6 @@
 //! UI-side directory state ([`DirModel`]) and incremental updates ([`Delta`]).
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -99,13 +100,20 @@ impl DirModel {
         DeltaOutcome::Applied
     }
 
+    /// Whether [`Self::apply_delta`] would turn `delta` down as too much work for the UI thread
+    /// (a large folder). [`merged`] can apply it on a background thread instead.
+    pub fn delta_too_big(&self, delta: &Delta) -> bool {
+        self.complete
+            && delta.len().saturating_mul(self.entries.len().max(1)) > MAX_INLINE_DELTA_COST
+    }
+
     /// Applies `delta` in sort order, or queues it while the listing is incomplete.
     pub fn apply_delta(&mut self, delta: Delta) -> DeltaOutcome {
         if !self.complete {
             self.pending_deltas.push(delta);
             return DeltaOutcome::Queued;
         }
-        if delta.len().saturating_mul(self.entries.len().max(1)) > MAX_INLINE_DELTA_COST {
+        if self.delta_too_big(&delta) {
             return DeltaOutcome::NeedsRescan;
         }
         let spec = self.sorted_by;
@@ -128,6 +136,17 @@ impl DirModel {
         DeltaOutcome::Applied
     }
 
+    /// Swaps in [`merged`] entries computed from this model at `version`. Returns false (and
+    /// changes nothing) if the entries changed since; the caller relists then.
+    pub fn replace_merged(&mut self, version: u64, entries: Vec<Entry>) -> bool {
+        if !self.complete || self.version != version {
+            return false;
+        }
+        self.entries = Arc::new(entries);
+        self.version += 1;
+        true
+    }
+
     /// Swaps in the result of a background re-sort (same contents, new order).
     pub fn replace_sorted(&mut self, entries: Arc<Vec<Entry>>, sorted_by: SortSpec) {
         self.entries = entries;
@@ -139,6 +158,35 @@ impl DirModel {
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.entries.iter().position(|e| &*e.name == name)
     }
+}
+
+/// `entries` (sorted by `spec`) with `delta` applied, in one pass: O(n + k log k) for k changes
+/// where [`DirModel::apply_delta`] costs O(n·k). Same result as applying it there. Runs on a
+/// background thread for large folders.
+pub fn merged(entries: &[Entry], delta: &Delta, spec: SortSpec) -> Vec<Entry> {
+    // The last upsert of a name wins, as when applying them one after another.
+    let mut upserts: HashMap<&str, &Entry> = HashMap::with_capacity(delta.upserts.len());
+    for entry in &delta.upserts {
+        upserts.insert(&entry.name, entry);
+    }
+    let gone: HashSet<&str> = delta
+        .removed
+        .iter()
+        .map(|n| &**n)
+        .chain(upserts.keys().copied())
+        .collect();
+    let mut added: Vec<&Entry> = upserts.into_values().collect();
+    added.sort_unstable_by(|a, b| spec.compare(a, b));
+    let mut out = Vec::with_capacity(entries.len() + added.len());
+    let mut added = added.into_iter().peekable();
+    for entry in entries.iter().filter(|e| !gone.contains(&*e.name)) {
+        while let Some(new) = added.next_if(|new| spec.compare(new, entry).is_lt()) {
+            out.push(new.clone());
+        }
+        out.push(entry.clone());
+    }
+    out.extend(added.cloned());
+    out
 }
 
 #[cfg(test)]
@@ -170,5 +218,61 @@ mod tests {
             removed: vec![],
         });
         assert_eq!(m.entries.len(), 3);
+    }
+
+    /// The one-pass merge gives the same list as applying changes one by one.
+    #[test]
+    fn merge_matches_applying_in_place() {
+        let spec = SortSpec::default();
+        let mut base: Vec<Entry> = (0..200).map(|i| file(&format!("f{i:03}"))).collect();
+        base.push(Entry::new("dir", EntryKind::Dir, 0, None, 0));
+        spec.sort(&mut base);
+        let delta = Delta {
+            upserts: vec![
+                file("f050"),
+                file("new-a"),
+                Entry::new("new-dir", EntryKind::Dir, 0, None, 0),
+                file("f199"),
+                file("new-a"),
+                file("A-first"),
+                file("zzz"),
+            ],
+            removed: vec![
+                "f000".into(),
+                "f100".into(),
+                "missing".into(),
+                "f199".into(),
+            ],
+        };
+        let mut model = DirModel::new("x".into(), 1, spec);
+        model.set_snapshot(Arc::new(base.clone()), spec, true);
+        assert_eq!(model.apply_delta(delta.clone()), DeltaOutcome::Applied);
+        let names = |v: &[Entry]| v.iter().map(|e| e.name.to_string()).collect::<Vec<_>>();
+        let merged = merged(&base, &delta, spec);
+        assert_eq!(names(&merged), names(&model.entries));
+        assert_eq!(merged.len(), 201 - 3 + 5);
+
+        // Swapping it in only works on the version it was computed from.
+        let version = model.version;
+        assert!(model.replace_merged(version, merged.clone()));
+        assert!(!model.replace_merged(version, merged));
+    }
+
+    #[test]
+    fn large_folders_hand_big_deltas_to_the_background() {
+        let spec = SortSpec::default();
+        let entries: Vec<Entry> = (0..100_000).map(|i| file(&format!("f{i:06}"))).collect();
+        let mut model = DirModel::new("x".into(), 1, spec);
+        model.set_snapshot(Arc::new(entries), spec, true);
+        let small = Delta {
+            upserts: vec![file("a")],
+            removed: vec![],
+        };
+        let big = Delta {
+            upserts: (0..50).map(|i| file(&format!("n{i}"))).collect(),
+            removed: vec![],
+        };
+        assert!(!model.delta_too_big(&small));
+        assert!(model.delta_too_big(&big));
     }
 }

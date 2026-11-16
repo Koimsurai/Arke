@@ -953,6 +953,89 @@ fn watcher_changes_update_list_incrementally(cx: &mut TestAppContext) {
     );
 }
 
+/// A watcher that lost changes (its buffer overflowed while thousands of files arrived) makes the
+/// folder list again, and the new listing is watched too.
+#[gpui::test]
+fn lost_watch_changes_relist_the_folder(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let dir_path = Path::new(r"C:\x");
+    fs.insert_many(dir_path, 3);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\x");
+    wait_until(cx, &view, "load", loaded(r"C:\x"));
+    let watching = |fs: &FakeFs| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while fs.watcher_count(dir_path) == 0 {
+            assert!(Instant::now() < deadline, "watcher did not start");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    watching(&fs);
+    for i in 0..5000 {
+        fs.add_file(dir_path, &format!("extracted-{i:04}.txt"), 1);
+    }
+    fs.emit(dir_path, &arke_core::fs::WatchEvent::Rescan);
+    wait_until(cx, &view, "relisted", |v| names(v).len() == 5003);
+    watching(&fs);
+    fs.add_file(dir_path, "later.txt", 1);
+    fs.emit_changed(dir_path, &["later.txt"]);
+    wait_until(cx, &view, "still watched", |v| {
+        names(v).iter().any(|n| n == "later.txt")
+    });
+}
+
+/// Many changes in a large folder are merged into the list in the background instead of listing
+/// the whole folder again.
+#[gpui::test]
+fn many_changes_in_a_large_folder_merge_without_relisting(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let big = Path::new(r"C:\big");
+    fs.insert_many(big, 100_000);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\big");
+    wait_until(cx, &view, "load", loaded(r"C:\big"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs.watcher_count(big) == 0 {
+        assert!(Instant::now() < deadline, "watcher did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let reads_before = fs.read_dir_calls();
+    let added: Vec<String> = (0..60).map(|i| format!("a-new-{i:02}.txt")).collect();
+    for name in &added {
+        fs.add_file(big, name, 1);
+    }
+    let gone = ["file_000000.txt", "file_050000.txt"];
+    for name in gone {
+        fs.remove(big, name);
+    }
+    let changed: Vec<&str> = added
+        .iter()
+        .map(String::as_str)
+        .chain(gone.iter().copied())
+        .collect();
+    fs.emit_changed(big, &changed);
+    wait_until(cx, &view, "changes merged", |v| {
+        v.model.as_ref().is_some_and(|m| {
+            m.entries.len() == 100_000 + 60 - 2
+                && &*m.entries[0].name == "a-new-00.txt"
+                && m.index_of("file_050000.txt").is_none()
+        })
+    });
+    assert_eq!(
+        fs.read_dir_calls(),
+        reads_before,
+        "62 changes in 100,000 items should not relist the folder"
+    );
+    // In order: the merge keeps the list sorted.
+    view.update(cx, |v, _| {
+        let m = v.model.as_ref().unwrap();
+        let spec = m.sorted_by;
+        assert!(
+            m.entries
+                .windows(2)
+                .all(|w| spec.compare(&w[0], &w[1]).is_lt())
+        );
+    });
+}
+
 #[gpui::test]
 fn failed_navigation_keeps_current_directory(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
@@ -3251,6 +3334,125 @@ fn folder_sizes_are_computed_in_the_background(cx: &mut TestAppContext) {
     // Selected total size includes folders.
     cx.simulate_keystrokes("ctrl-a");
     assert_eq!(view.update(cx, |v, _| v.selected_size()), Some(1031));
+}
+
+/// Opening a folder measures the subfolders on screen, not all of them: the rest follow when
+/// scrolled to, or all at once when sorting by size needs them.
+#[gpui::test]
+fn only_folders_on_screen_are_measured_until_needed(cx: &mut TestAppContext) {
+    use crate::explorer::FolderSize;
+    let fs = FakeFs::new();
+    let root = Path::new(r"C:\dirs");
+    let subs: Vec<String> = (0..300).map(|i| format!("d{i:03}")).collect();
+    fs.insert_dir(root, subs.iter().map(|n| dir(n)).collect());
+    for name in &subs {
+        fs.insert_dir(root.join(name), vec![file("x", 10)]);
+    }
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\dirs");
+    wait_until(cx, &view, "load", loaded(r"C:\dirs"));
+    let known = |name: &'static str| {
+        move |v: &Explorer| {
+            v.folder_size(name)
+                == FolderSize::Known {
+                    bytes: 10,
+                    fresh: true,
+                }
+        }
+    };
+    wait_until(cx, &view, "first row measured", known("d000"));
+    wait_until(cx, &view, "on-screen rows done", |v| {
+        !v.folder_sizes_computing()
+    });
+    let reads = fs.read_dir_calls();
+    view.update(cx, |v, _| {
+        assert_eq!(
+            v.folder_size("d299"),
+            FolderSize::Computing,
+            "off screen: not yet"
+        );
+        assert!(reads < 1 + 300, "walked {reads} folders for one screen");
+    });
+
+    // Scrolled to the end: those get measured.
+    cx.simulate_keystrokes("end");
+    wait_until(cx, &view, "last row measured", known("d299"));
+
+    // Sorting by size needs them all.
+    let spec = SortSpec::by(SortColumn::Size, false, false);
+    view.update(cx, |v, cx| v.set_sort(spec, cx));
+    wait_until(cx, &view, "all measured", |v| {
+        !v.folder_sizes_computing()
+            && subs
+                .iter()
+                .all(|n| matches!(v.folder_size(n), FolderSize::Known { fresh: true, .. }))
+    });
+}
+
+/// Going back to a folder, or into a subfolder that was measured on the way, shows sizes right
+/// away instead of walking the same tree again. A change seen inside a folder makes the folders
+/// above it compute again.
+#[gpui::test]
+fn recent_folder_sizes_are_reused_instead_of_walking_again(cx: &mut TestAppContext) {
+    use crate::explorer::FolderSize;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\z", vec![dir("big"), file("f.txt", 7)]);
+    fs.insert_dir(r"C:\z\big", vec![dir("deep"), file("a", 1000)]);
+    fs.insert_dir(r"C:\z\big\deep", vec![dir("deeper"), file("b", 24)]);
+    fs.insert_dir(r"C:\z\big\deep\deeper", vec![file("c", 1)]);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\z");
+    wait_until(cx, &view, "load", loaded(r"C:\z"));
+    let known = |name: &'static str, bytes: u64| {
+        move |v: &Explorer| v.folder_size(name) == FolderSize::Known { bytes, fresh: true }
+    };
+    wait_until(cx, &view, "folder sizes", known("big", 1025));
+
+    // Into the subfolder: its own subfolder was measured on the way.
+    let reads = fs.read_dir_calls();
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\z\big"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "big", loaded(r"C:\z\big"));
+    wait_until(cx, &view, "deep known", known("deep", 25));
+    assert_eq!(fs.read_dir_calls() - reads, 1, "only the listing, no walk");
+
+    // Back up: the size from a moment ago is used as it is.
+    let reads = fs.read_dir_calls();
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\z"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "back in z", loaded(r"C:\z"));
+    wait_until(cx, &view, "big reused", known("big", 1025));
+    assert_eq!(fs.read_dir_calls() - reads, 1, "only the listing, no walk");
+
+    // Something changes inside big while it is shown: going back up computes it again.
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\z\big"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "big again", loaded(r"C:\z\big"));
+    let big = Path::new(r"C:\z\big");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs.watcher_count(big) == 0 {
+        assert!(Instant::now() < deadline, "watcher did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fs.add_file(big, "more", 5000);
+    fs.emit_changed(big, &["more"]);
+    wait_until(cx, &view, "new file listed", |v| {
+        names(v).contains(&"more".to_owned())
+    });
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\z"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "z after the change", loaded(r"C:\z"));
+    wait_until(cx, &view, "big recomputed", known("big", 6025));
+
+    // F5 walks again even when the sizes are recent.
+    let reads = fs.read_dir_calls();
+    cx.simulate_keystrokes("f5");
+    wait_until(cx, &view, "refreshed", |v| {
+        !v.folder_sizes_computing() && known("big", 6025)(v)
+    });
+    assert!(fs.read_dir_calls() - reads > 1, "F5 walks the subfolders");
 }
 
 #[allow(

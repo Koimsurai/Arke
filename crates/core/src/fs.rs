@@ -7,11 +7,13 @@
 
 use rust_i18n::t;
 use std::cell::Cell;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryKind};
 
 /// Directory listing stream; each item is one entry or a per-entry error.
 pub type DirIter = Box<dyn Iterator<Item = io::Result<Entry>> + Send>;
@@ -32,6 +34,26 @@ pub enum WatchEvent {
     Changed(Vec<PathBuf>),
     /// Events were lost (buffer overflow etc.); relist the directory.
     Rescan,
+}
+
+/// One entry seen by a folder size walk ([`Fs::scan_sizes`]).
+#[derive(Debug)]
+pub enum SizeItem {
+    /// A file and its size.
+    File(u64),
+    /// A subfolder, to walk next, with its modified time as listed here.
+    Dir {
+        /// Folder name.
+        name: OsString,
+        /// Last modified, as [`Entry::modified`] has it.
+        modified: Option<SystemTime>,
+    },
+    /// A link or junction: not followed, so nothing is counted twice and there are no cycles.
+    Link,
+    /// An entry that could not be read; the total is an undercount.
+    Unreadable,
+    /// Nothing to count (`.` and `..`).
+    Skip,
 }
 
 /// File system operations used by the directory service, search and previews.
@@ -59,6 +81,24 @@ pub trait Fs: Send + Sync + 'static {
             io::ErrorKind::Unsupported,
             format!("read_link({})", path.display()),
         ))
+    }
+    /// Lists `dir` for a folder size walk: calls `each` once per entry. Same entries as
+    /// [`Fs::read_dir`]; the real file system skips building an [`Entry`] for each file.
+    fn scan_sizes(&self, dir: &Path, each: &mut dyn FnMut(SizeItem)) -> io::Result<()> {
+        for entry in self.read_dir(dir)? {
+            each(match entry {
+                Ok(e) => match e.kind {
+                    EntryKind::File => SizeItem::File(e.size),
+                    EntryKind::Dir => SizeItem::Dir {
+                        name: OsString::from(&*e.name),
+                        modified: e.modified,
+                    },
+                    EntryKind::Link { .. } => SizeItem::Link,
+                },
+                Err(_) => SizeItem::Unreadable,
+            });
+        }
+        Ok(())
     }
     /// Watches a whole tree (recursive, used by the global search index). The default only
     /// watches one level, like [`Fs::watch`].
@@ -153,6 +193,12 @@ impl Fs for RealFs {
         watch_with(path, notify::RecursiveMode::NonRecursive, on_event)
     }
 
+    #[cfg(windows)]
+    fn scan_sizes(&self, dir: &Path, each: &mut dyn FnMut(SizeItem)) -> io::Result<()> {
+        debug_assert_not_ui_thread("scan_sizes", dir);
+        crate::winfs::scan_sizes(dir, each)
+    }
+
     fn watch_tree(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>> {
         debug_assert_not_ui_thread("watch_tree", path);
         watch_with(path, notify::RecursiveMode::Recursive, on_event)
@@ -209,12 +255,26 @@ impl crate::watches::Armed for DirWatch {
 }
 
 #[cfg(windows)]
+impl crate::watches::Armed for crate::winfs::DirWatcher {
+    fn close(self: Box<Self>) {
+        (*self).close();
+    }
+}
+
+/// Folders shown in a tab use Arke's own watcher ([`crate::winfs::DirWatcher`]: no polling, and
+/// a full change buffer asks for a relist). Whole trees for the search index stay on notify.
+#[cfg(windows)]
 fn arm_watcher(
     path: &Path,
     mode: notify::RecursiveMode,
     on_event: Arc<WatchCallback>,
 ) -> io::Result<Box<dyn crate::watches::Armed>> {
     use notify::Watcher;
+    if mode == notify::RecursiveMode::NonRecursive {
+        return Ok(Box::new(crate::winfs::DirWatcher::start(
+            path, false, on_event,
+        )?));
+    }
     let (closed_tx, closed) = std::sync::mpsc::channel();
     #[allow(
         clippy::disallowed_types,
@@ -254,4 +314,90 @@ fn arm_watcher(
     .map_err(io::Error::other)?;
     watcher.watch(path, mode).map_err(io::Error::other)?;
     Ok(Box::new(DirWatch(watcher)))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+    use std::collections::HashSet;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// Thousands of new items at once (an extracted archive) while the consumer is busy overflow
+    /// the change buffer. That must ask for a relist, and watching must go on afterwards.
+    /// Folders rather than files: they make the same change records, and an antivirus doesn't
+    /// scan them, so creating thousands takes seconds instead of minutes.
+    #[test]
+    fn overflowing_watch_asks_for_a_rescan_and_keeps_watching() {
+        const FILES: usize = 3000;
+        let dir = std::env::temp_dir().join(format!("arke-watch-overflow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen: Arc<Mutex<HashSet<String>>> = Arc::default();
+        let rescans = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(Instant::now()));
+        let (seen2, rescans2, last2) = (Arc::clone(&seen), Arc::clone(&rescans), Arc::clone(&last));
+        // The consumer is busy (as the UI or an antivirus scan can be) until everything exists.
+        let created = Arc::new(AtomicBool::new(false));
+        let busy = Arc::clone(&created);
+        let watch = RealFs
+            .watch(
+                &dir,
+                Box::new(move |event| {
+                    while !busy.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    match event {
+                        WatchEvent::Changed(paths) => seen2.lock().extend(
+                            paths
+                                .iter()
+                                .filter_map(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().into_owned()),
+                        ),
+                        WatchEvent::Rescan => {
+                            rescans2.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    *last2.lock() = Instant::now();
+                }),
+            )
+            .unwrap();
+        std::fs::write(dir.join("first.txt"), b"x").unwrap();
+        for i in 0..FILES {
+            std::fs::create_dir(dir.join(format!("extracted-{i:05}"))).unwrap();
+        }
+        created.store(true, Ordering::Relaxed);
+        *last.lock() = Instant::now();
+        // Until no event came for a while.
+        let start = Instant::now();
+        while last.lock().elapsed() < Duration::from_millis(800)
+            && start.elapsed() < Duration::from_secs(20)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let got = seen
+            .lock()
+            .iter()
+            .filter(|n| n.starts_with("extracted-"))
+            .count();
+        let rescanned = rescans.load(Ordering::Relaxed) > 0;
+        assert!(
+            rescanned || got == FILES,
+            "changes were lost without asking for a rescan: saw {got} of {FILES}"
+        );
+
+        // Still watching.
+        std::fs::write(dir.join("after.txt"), b"y").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !seen.lock().contains("after.txt") {
+            assert!(
+                Instant::now() < deadline,
+                "the watch stopped after the overflow"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(watch);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

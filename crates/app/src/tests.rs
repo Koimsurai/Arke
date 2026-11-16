@@ -5847,6 +5847,73 @@ fn search_settings_need_search_this_pc(cx: &mut TestAppContext) {
     assert!(skip_build(cx), "works once whole-PC search is on");
 }
 
+/// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the
+/// page, until the text reaches its end; then the page takes over.
+#[gpui::test]
+fn the_wheel_over_the_report_scrolls_the_report_first(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollEvent, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    // Short enough that the page itself scrolls.
+    cx.simulate_resize(gpui::size(px(1200.), px(600.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+        ws.expand_settings_card_for_test("report", cx);
+    });
+    cx.run_until_parked();
+    let report: Vec<String> = (0..200).map(|i| format!("- line {i}")).collect();
+    cx.update(|_, cx| Workspace::set_report_text_for_test(report.join("\n"), cx));
+    cx.run_until_parked();
+    let offsets = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, _| ws.settings_scroll_for_test())
+            .expect("settings should be open")
+    };
+    let preview = |cx: &mut VisualTestContext| {
+        cx.debug_bounds("report-preview")
+            .expect("the report text should be drawn")
+    };
+    let wheel = |cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>, dy: f32| {
+        cx.simulate_event(ScrollEvent {
+            position: at,
+            delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+            ..ScrollEvent::default()
+        });
+        cx.run_until_parked();
+    };
+    assert_eq!(offsets(cx), (px(0.), px(0.)));
+
+    // Above the report (still below the window's edge), the wheel scrolls the page, which brings
+    // the report into view.
+    let above = point(preview(cx).origin.x, px(300.));
+    wheel(cx, above, -400.);
+    let (page, text) = offsets(cx);
+    assert!(page < px(0.), "the page scrolls: {page:?}");
+    assert_eq!(text, px(0.));
+
+    // Over the report, the report scrolls and the page stays.
+    let over = preview(cx).center();
+    wheel(cx, over, -60.);
+    let (still, text) = offsets(cx);
+    assert!(text < px(0.), "the report text scrolls: {text:?}");
+    assert_eq!(still, page, "the page stays put");
+    // Back up too.
+    wheel(cx, over, 30.);
+    assert_eq!(offsets(cx), (page, text + px(30.)));
+    let text = text + px(30.);
+
+    // At the end of the text, the page scrolls instead.
+    for _ in 0..100 {
+        let over = preview(cx).center();
+        wheel(cx, over, -60.);
+    }
+    let (after, end) = offsets(cx);
+    assert!(end < text, "{end:?}");
+    assert!(after < page, "then the page scrolls: {after:?}");
+}
+
 /// Browse buttons: the file dialog runs off the UI thread with a filter for the card, and the
 /// chosen file is applied; Cancel changes nothing.
 #[gpui::test]

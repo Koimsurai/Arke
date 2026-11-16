@@ -12,6 +12,7 @@
 
 use gpui::{App, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use super::Workspace;
@@ -393,7 +394,12 @@ impl Workspace {
     clippy::too_many_lines,
     reason = "The card reads top to bottom: what is sent, the options, the exact text, the actions"
 )]
-pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyElement {
+pub(super) fn report_card(
+    open: bool,
+    scroll: &gpui::ScrollHandle,
+    scrollbar: &crate::scrollbar::ScrollbarDrag,
+    cx: &mut Context<Workspace>,
+) -> gpui::AnyElement {
     let repo = build_info::RELEASES_REPO;
     let note = cx.try_global::<ReportNote>().cloned().unwrap_or_default().0;
     let mut actions = div().flex().flex_wrap().gap(theme::S_8);
@@ -493,11 +499,13 @@ pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyE
                 .child(t!("report.what").to_string()),
         )
         .child(options)
-        .child(
+        .child(crate::scrollbar::nested(
             div()
                 .id("report-preview")
+                .debug_selector(|| "report-preview".to_owned())
                 .max_h(px(280.))
                 .overflow_y_scroll()
+                .track_scroll(scroll)
                 .px(theme::S_12)
                 .py(theme::S_8)
                 .rounded(theme::R_8)
@@ -506,7 +514,9 @@ pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyE
                 .text_size(theme::FS_12)
                 .text_color(theme::text_muted())
                 .child(SharedString::from(preview)),
-        )
+            scroll,
+            Rc::clone(scrollbar),
+        ))
         .child(actions)
         .children(note.map(|note| {
             let (icon, color, text) = match note {
@@ -537,6 +547,20 @@ pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyE
         body,
         cx,
     )
+}
+
+#[cfg(test)]
+impl Workspace {
+    /// Shows `text` as the prepared report, so a test needn't wait for the log.
+    pub(crate) fn set_report_text_for_test(text: String, cx: &mut App) {
+        let mut d = draft(cx);
+        // Newer than any preparation still running.
+        d.generation += 1;
+        d.text = Some(text);
+        d.loading = false;
+        cx.set_global(d);
+        cx.refresh_windows();
+    }
 }
 
 /// A check box with its label, like the "Remember" box in the network dialog.

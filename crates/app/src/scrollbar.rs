@@ -13,8 +13,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    Along as _, Axis, Bounds, DispatchPhase, Hsla, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, Styled, canvas, point, px,
+    Along as _, Axis, Bounds, DispatchPhase, Div, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels,
+    ScrollEvent, ScrollHandle, Stateful, Styled, canvas, div, point, px,
 };
 
 use crate::theme;
@@ -128,6 +129,47 @@ pub(crate) fn hscrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> impl Into
         .right(TRACK_W)
         .bottom_0()
         .h(TRACK_W)
+}
+
+/// A scroll area inside a scrolling page (the report text in Settings), with its scrollbar.
+///
+/// GPUI hands a wheel event to every scroll area under the pointer, so the page would move along
+/// with the inner area. Here the wheel stops at the inner area while it still moves, and reaches the
+/// page only once the inner area is at its end, like a browser. `inner` must track `handle`.
+pub(crate) fn nested(inner: Stateful<Div>, handle: &ScrollHandle, drag: ScrollbarDrag) -> Div {
+    // The inner offset before this event, recorded in the capture phase, which runs before any
+    // scroll area applies the event.
+    let before = Rc::new(Cell::new(px(0.)));
+    let clamped = |h: &ScrollHandle| h.offset().y.clamp(-h.max_offset().y, px(0.));
+    let (h, b) = (handle.clone(), Rc::clone(&before));
+    let record = canvas(
+        |_, _, _| {},
+        move |_, (), window, _| {
+            let (h, b) = (h.clone(), Rc::clone(&b));
+            window.on_mouse_event(move |_: &ScrollEvent, phase, _, _| {
+                if phase == DispatchPhase::Capture {
+                    b.set(clamped(&h));
+                }
+            });
+        },
+    )
+    // No hitbox, so it doesn't take the pointer from the text.
+    .absolute()
+    .size_full();
+    let h = handle.clone();
+    // Runs after the area has applied the event: a div adds this listener before its own scroll
+    // handler, and GPUI runs bubble listeners last-added first.
+    let inner = inner.on_scroll(move |e: &ScrollEvent, _, cx| {
+        // Sideways swipes stay with the window (back and forward).
+        if e.delta.pixel_delta(px(1.)).y != px(0.) && clamped(&h) != before.get() {
+            cx.stop_propagation();
+        }
+    });
+    div()
+        .relative()
+        .child(inner)
+        .child(record)
+        .child(scrollbar(handle.clone(), drag))
 }
 
 /// The thumb as drawn `width` thick, its hit area across the track, and the rail behind it, for a

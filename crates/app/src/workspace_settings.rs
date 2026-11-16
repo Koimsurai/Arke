@@ -72,6 +72,9 @@ pub(super) struct SettingsPage {
     pub(super) owner: super::pages::Owner,
     scroll: ScrollHandle,
     scrollbar_drag: ScrollbarDrag,
+    /// The report text box in About › Report a problem, which scrolls inside the page.
+    pub(super) report_scroll: ScrollHandle,
+    pub(super) report_scrollbar: ScrollbarDrag,
     /// Accent hex input (`#RRGGBB`).
     accent_input: Entity<TextInput>,
     _accent_input: Subscription,
@@ -304,6 +307,8 @@ impl Workspace {
             owner,
             scroll: ScrollHandle::new(),
             scrollbar_drag: ScrollbarDrag::default(),
+            report_scroll: ScrollHandle::new(),
+            report_scrollbar: ScrollbarDrag::default(),
             accent_input,
             _accent_input: accent_sub,
             image_input,
@@ -494,6 +499,27 @@ impl Workspace {
             page.category = ix;
         }
         cx.notify();
+    }
+
+    /// Opens a card that expands, by its id.
+    #[cfg(test)]
+    pub(crate) fn expand_settings_card_for_test(
+        &mut self,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(page) = &mut self.settings_panel {
+            page.expanded.insert(id);
+        }
+        cx.notify();
+    }
+
+    /// Vertical scroll offsets of the settings page and of the report text box.
+    #[cfg(test)]
+    pub(crate) fn settings_scroll_for_test(&self) -> Option<(gpui::Pixels, gpui::Pixels)> {
+        self.settings_panel
+            .as_ref()
+            .map(|p| (p.scroll.offset().y, p.report_scroll.offset().y))
     }
 
     /// Presses Browse on the background image card (`image`) or the Open-with card.
@@ -1419,7 +1445,12 @@ impl Workspace {
         }
         let search = search_page(s, page, ui, cx);
         let update = super::update_page::update_card(s, page.expanded.contains("update"), ui, cx);
-        let report = super::report_page::report_card(page.expanded.contains("report"), cx);
+        let report = super::report_page::report_card(
+            page.expanded.contains("report"),
+            &page.report_scroll,
+            &page.report_scrollbar,
+            cx,
+        );
         let backup_open = page.expanded.contains("backup");
         let backup =
             super::backup::backup_body(page.backup.as_ref(), &page.import_input, window, cx);

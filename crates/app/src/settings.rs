@@ -427,6 +427,8 @@ pub(crate) struct Settings {
     pub(crate) dark_shade: DarkShade,
     /// The sidebar is collapsed to a column of icons (Ctrl+B).
     pub(crate) sidebar_collapsed: bool,
+    /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
+    pub(crate) sidebar_peek: bool,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -581,6 +583,7 @@ impl Default for Settings {
             material: Material::default(),
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
+            sidebar_peek: true,
             font: String::new(),
             background_image: None,
             background_opacity: 20,

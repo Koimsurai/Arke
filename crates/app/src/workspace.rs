@@ -336,6 +336,13 @@ pub(crate) struct Workspace {
     dragging_pin: bool,
     /// The shelf's items are shown in the sidebar.
     shelf_open: bool,
+    /// The collapsed sidebar is open over the content (pointer resting on it, or the Shelf
+    /// clicked in it).
+    rail_peek: bool,
+    /// Bumped by every hover change, so a pending open or close that is no longer wanted drops.
+    rail_hover: u64,
+    /// A close is pending (the pointer left the open sidebar).
+    peek_closing: bool,
     /// Repaint when the shelf changes (any window may change it).
     _shelf: Subscription,
     last_viewport_width: gpui::Pixels,
@@ -627,6 +634,9 @@ impl Workspace {
             tab_drag: tabdrag::TabDrag::default(),
             dragging_pin: false,
             shelf_open: false,
+            rail_peek: false,
+            rail_hover: 0,
+            peek_closing: false,
             _shelf: shelf,
             last_viewport_width: px(1200.),
             shared_preview: None,
@@ -2044,9 +2054,11 @@ impl Render for Workspace {
                     .w(theme::sidebar_width())
                     .flex_none()
                     .h_full()
+                    .relative()
                     .flex()
                     .flex_col()
                     .when(theme::sidebar_collapsed(), |d| d.child(self.render_rail(cx)))
+                    .children(self.render_peek(cx))
                     .when(!theme::sidebar_collapsed(), |d| {
                         d.when(!horizontal, |d| d.child(self.render_brand_row(cx)))
                             .child(self.render_home_button(cx))
@@ -2082,6 +2094,9 @@ impl Render for Workspace {
             .when(self.resizing, gpui::Styled::cursor_col_resize)
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
+                this.peek_pointer_moved(e, cx);
+            }))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_active))

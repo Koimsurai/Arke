@@ -896,6 +896,12 @@ pub(crate) fn frame() -> Rgba {
     )
 }
 
+/// The frame's color without Mica's transparency, for what is drawn over the content (the
+/// collapsed sidebar opened on hover), which must hide what is under it.
+pub(crate) fn frame_solid() -> Rgba {
+    mix(ground(), signal(), p().frame_tint)
+}
+
 /// Paper (list, preview): a translucent layer over the material under Mica (like WinUI's Layer), solid surface otherwise.
 pub(crate) fn paper() -> Rgba {
     if !mica() {

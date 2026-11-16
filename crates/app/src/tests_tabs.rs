@@ -1301,3 +1301,112 @@ fn ctrl_b_collapses_the_sidebar(cx: &mut TestAppContext) {
     assert_eq!(crate::theme::sidebar_width(), crate::theme::SIDEBAR_W);
     assert!(cx.debug_bounds("sidebar-rail").is_none());
 }
+
+fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut crate::settings::Settings) + 'static) {
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| s.update(f, cx));
+    });
+    cx.run_until_parked();
+}
+
+/// #122: collapsed, the column also has the pinned folders, the Recycle Bin, the Shelf and the
+/// drives (as their letters).
+#[gpui::test]
+fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    fs.insert_many(r"C:\work", 1);
+    let shell = Arc::new(FakeShell::default());
+    shell.extra_places.lock().push(crate::shell::Place {
+        label: "Local Disk (C:)".into(),
+        path: p(r"C:\"),
+        kind: crate::shell::PlaceKind::Drive {
+            remote: false,
+            space: None,
+        },
+    });
+    let (ws, cx) = setup_workspace_with(cx, fs, shell, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    change(cx, |st| {
+        st.pinned = vec![p(r"C:\work")];
+        st.recycle_pinned = true;
+        st.sidebar_collapsed = true;
+    });
+    // debug_bounds takes static names.
+    let wanted: Vec<&'static str> = [
+        "rail work".to_owned(),
+        format!("rail {}", t!("recycle.title")),
+        format!("rail {}", t!("shelf.title")),
+        "rail Local Disk (C:)".to_owned(),
+    ]
+    .into_iter()
+    .map(|s| &*Box::leak(s.into_boxed_str()))
+    .collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while wanted.iter().any(|s| cx.debug_bounds(s).is_none()) {
+        assert!(Instant::now() < deadline, "missing in the rail");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The pinned folder opens here.
+    let at = cx.debug_bounds("rail work").unwrap().center();
+    cx.simulate_click(at, gpui::Modifiers::none());
+    wait_until(cx, &view, "work", loaded(r"C:\work"));
+}
+
+/// #122: resting the pointer on the collapsed column opens the full sidebar over the content; it
+/// closes once the pointer moves past it, and a pass straight across opens nothing. Right click
+/// turns it off.
+#[gpui::test]
+fn the_collapsed_sidebar_opens_while_the_pointer_rests_on_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    change(cx, |st| st.sidebar_collapsed = true);
+    let peek = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.peek_for_test());
+    let rail = cx.debug_bounds("sidebar-rail").unwrap().center();
+    let content = gpui::point(crate::theme::SIDEBAR_W + gpui::px(200.), rail.y);
+    let none = gpui::Modifiers::none();
+
+    // Crossing the column without resting opens nothing.
+    cx.simulate_mouse_move(rail, None, none);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.simulate_mouse_move(content, None, none);
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(!peek(cx));
+
+    // Resting opens it over the content.
+    cx.simulate_mouse_move(rail, None, none);
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(peek(cx));
+    assert!(cx.debug_bounds("sidebar-peek").is_some());
+    assert!(settings(cx).sidebar_collapsed, "only shown, not expanded");
+
+    // Moving within it keeps it; leaving closes it.
+    cx.simulate_mouse_move(
+        gpui::point(crate::theme::SIDEBAR_W - gpui::px(20.), rail.y),
+        None,
+        none,
+    );
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(peek(cx));
+    cx.simulate_mouse_move(content, None, none);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    assert!(!peek(cx));
+    assert!(cx.debug_bounds("sidebar-peek").is_none());
+
+    // Off: resting does nothing.
+    change(cx, |st| st.sidebar_peek = false);
+    cx.simulate_mouse_move(rail, None, none);
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(!peek(cx));
+}

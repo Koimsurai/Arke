@@ -30,6 +30,14 @@ sidebar.collapse:
   en: Collapse sidebar
   zh-TW: 收合側邊欄
   zh-CN: 收起侧边栏
+sidebar.peek_on:
+  en: Open the sidebar when the pointer rests on it
+  zh-TW: 滑鼠停在側邊欄上時展開
+  zh-CN: 鼠标停在侧边栏上时展开
+sidebar.peek_off:
+  en: Don't open the sidebar when the pointer rests on it
+  zh-TW: 滑鼠停在側邊欄上時不要展開
+  zh-CN: 鼠标停在侧边栏上时不要展开
 sidebar.expand:
   en: Expand sidebar
   zh-TW: 展開側邊欄

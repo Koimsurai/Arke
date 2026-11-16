@@ -100,7 +100,7 @@ impl Workspace {
     }
 
     /// Shows or hides the items; opening rechecks which ones still exist.
-    fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.shelf_open = !self.shelf_open;
         if self.shelf_open {
             let fs = Arc::clone(&self.services.fs);
@@ -283,7 +283,11 @@ impl Workspace {
     }
 
     /// Files dropped on the Shelf row: add them and say so on the active tab.
-    fn add_to_shelf_from_drop(&mut self, items: Vec<(PathBuf, bool)>, cx: &mut Context<Self>) {
+    pub(super) fn add_to_shelf_from_drop(
+        &mut self,
+        items: Vec<(PathBuf, bool)>,
+        cx: &mut Context<Self>,
+    ) {
         let unknown = items.iter().any(|(_, is_dir)| !is_dir);
         self.active_view()
             .update(cx, |e, cx| e.add_dropped_to_shelf(items, cx));

@@ -78,6 +78,8 @@ pub(super) enum SidebarAction {
     OpenSettings,
     OpenRecycleInNewTab,
     SetRecyclePinned(bool),
+    /// The collapsed sidebar opens over the content on hover (#122).
+    SetSidebarPeek(bool),
     /// Copy or move the shelf's items into the active tab's folder.
     ShelfToHere {
         is_move: bool,
@@ -150,7 +152,7 @@ fn has_subfolder(fs: &dyn arke_core::Fs, dir: &Path) -> bool {
 }
 
 /// Display name: the folder name, or the full path for a drive root (C:\).
-fn display_name(path: &Path) -> String {
+pub(super) fn display_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -1338,6 +1340,7 @@ impl Workspace {
             | SidebarAction::ShelfReveal(_) => self.run_shelf_action(&action, window, cx),
             SidebarAction::OpenRecycleInNewTab => self.open_recycle(true, window, cx),
             SidebarAction::SetRecyclePinned(pinned) => Self::set_recycle_pinned(pinned, cx),
+            SidebarAction::SetSidebarPeek(on) => Self::set_sidebar_peek(on, cx),
             SidebarAction::OpenInNewTab(path) => {
                 let at = self.active + 1;
                 self.open_tab(path, at, true, window, cx);

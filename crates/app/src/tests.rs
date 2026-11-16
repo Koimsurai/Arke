@@ -6968,7 +6968,8 @@ fn click_to_rename_in_icons_and_column_views(cx: &mut TestAppContext) {
         cx.run_until_parked();
         let a = name_at(cx, "name:a.txt");
         // `a` may still be selected from the last view: select the other item first.
-        cx.simulate_click(name_at(cx, "name:report.docx"), Modifiers::none());
+        let other = name_at(cx, "name:report.docx");
+        cx.simulate_click(other, Modifiers::none());
         cx.simulate_click(a, Modifiers::none());
         past_double_click_time(cx);
         assert_eq!(renaming(&view, cx), None, "{what}: the click that selects");

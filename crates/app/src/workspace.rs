@@ -638,6 +638,15 @@ impl Workspace {
         if let Some(session) = restore {
             this.restore_session(&session, window, cx);
         }
+        // Settings may already be read (a resident Arke), or finish reading before the observer
+        // above was in place: then no notification comes, and the window would stay on the user
+        // folder whatever Startup says (#116). Check once now; the observer covers a later read.
+        if this.start_default {
+            cx.defer_in(window, |this, window, cx| {
+                let store = SettingsStore::global(cx);
+                this.start_from_settings(&store, window, cx);
+            });
+        }
         // The first switch to another tab is a step back to this one.
         this.note_active(cx);
         this

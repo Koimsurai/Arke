@@ -1217,3 +1217,61 @@ fn closing_a_page_tab_returns_to_the_tab_it_came_from(cx: &mut TestAppContext) {
     assert_eq!(ws.update(cx, |ws, cx| ws.tab_titles_for_test(cx)), ["b"]);
     assert_eq!(active(&ws, cx), 0, "settings was tab {settings_tab}");
 }
+
+/// #116: a window opened with no path after the settings were already read (a resident Arke, or
+/// the read finishing before the window listens for it) still goes where Startup says, without
+/// waiting for some later settings change to notice.
+#[gpui::test]
+fn a_new_window_follows_startup_when_settings_are_already_read(cx: &mut TestAppContext) {
+    use crate::settings::{SettingsStore, StartLocation};
+    let fs = FakeFs::new();
+    for dir in [r"C:\Users\me", r"C:\last"] {
+        fs.insert_many(dir, 1);
+    }
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::text_input::bind_keys(cx);
+        crate::explorer::bind_keys(cx);
+        crate::workspace::bind_keys(cx);
+    });
+    let home = t!("home.title").into_owned();
+    for (start, expect_page, expect_folder) in [
+        (StartLocation::HomePage, Some(home), r"C:\Users\me"),
+        (StartLocation::LastFolder, None, r"C:\last"),
+    ] {
+        cx.update(|cx| {
+            SettingsStore::global(cx).update(cx, |s, cx| {
+                s.settings.start_location = start;
+                s.last_session_folder = Some(p(r"C:\last"));
+                s.mark_loaded(cx);
+            });
+        });
+        let services = Services {
+            fs: Arc::clone(&fs) as Arc<dyn arke_core::fs::Fs>,
+            shell: Arc::new(FakeShell::default()),
+            remotes: crate::remote_shell::test_remotes(),
+        };
+        let (ws, vcx) = cx.add_window_view(move |window, cx| {
+            Workspace::new(
+                services,
+                p(r"C:\Users\me"),
+                true,
+                None,
+                None,
+                Instant::now(),
+                window,
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        let view = ws.update(vcx, |ws, _| ws.active_view().clone());
+        wait_until(vcx, &view, expect_folder, loaded(expect_folder));
+        assert_eq!(
+            ws.update(vcx, |ws, _| ws.shown_page_for_test()),
+            expect_page,
+            "{start:?}"
+        );
+    }
+}

@@ -388,7 +388,7 @@ fn archive_preview(
     listing: Result<ArchiveListing, arke_core::archive::ArchiveError>,
 ) -> PreviewData {
     match listing {
-        Ok(listing) => PreviewData::Archive(listing),
+        Ok(listing) => PreviewData::Archive(listing.into_tree_order()),
         Err(e) => PreviewData::Unreadable(e.to_string()),
     }
 }

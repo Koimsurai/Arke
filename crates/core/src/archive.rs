@@ -736,7 +736,7 @@ pub struct ArchiveItem {
 /// Archive contents listing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArchiveListing {
-    /// First `max` items in archive order.
+    /// First `max` items in archive order ([`Self::into_tree_order`] sorts them for display).
     pub items: Vec<ArchiveItem>,
     /// Files counted (all of them only if `complete`).
     pub files: usize,
@@ -767,6 +767,69 @@ impl ArchiveListing {
     const fn is_full(&self, max: usize) -> bool {
         self.files + self.dirs >= max
     }
+
+    /// Puts the kept items in tree order, like File Explorer's folder tree: each folder right
+    /// before its contents, folders before files at every level, names in natural order. Archives
+    /// store entries in whatever order they were added (often a folder's files before the folder
+    /// itself, or no folder records at all), so folders that only appear in paths are added too.
+    #[must_use]
+    pub fn into_tree_order(mut self) -> Self {
+        let mut known: std::collections::HashSet<String> = self
+            .items
+            .iter()
+            .filter(|i| i.is_dir)
+            .map(|i| i.path.clone())
+            .collect();
+        let mut implied = Vec::new();
+        for item in &self.items {
+            let mut end = 0;
+            while let Some(slash) = item.path[end..].find('/') {
+                end += slash;
+                let parent = &item.path[..end];
+                if !parent.is_empty() && known.insert(parent.to_owned()) {
+                    implied.push(ArchiveItem {
+                        path: parent.to_owned(),
+                        size: 0,
+                        is_dir: true,
+                    });
+                }
+                end += 1;
+            }
+        }
+        self.dirs += implied.len();
+        self.items.extend(implied);
+        let mut keyed: Vec<(Vec<String>, ArchiveItem)> = self
+            .items
+            .into_iter()
+            .map(|item| {
+                let parts = item.path.split('/').map(str::to_lowercase).collect();
+                (parts, item)
+            })
+            .collect();
+        keyed.sort_by(|(a, x), (b, y)| tree_cmp(a, x, b, y));
+        self.items = keyed.into_iter().map(|(_, item)| item).collect();
+        self
+    }
+}
+
+/// Tree order of two archive items, given their lowercased path components.
+fn tree_cmp(a: &[String], x: &ArchiveItem, b: &[String], y: &ArchiveItem) -> std::cmp::Ordering {
+    let x_raw: Vec<&str> = x.path.split('/').collect();
+    let y_raw: Vec<&str> = y.path.split('/').collect();
+    for (k, (pa, pb)) in a.iter().zip(b).enumerate() {
+        // A component is a folder when more follow it, or when it ends a folder's own path.
+        let a_dir = k + 1 < a.len() || x.is_dir;
+        let b_dir = k + 1 < b.len() || y.is_dir;
+        let order = b_dir
+            .cmp(&a_dir)
+            .then_with(|| crate::sort::natural_cmp(pa, pb))
+            .then_with(|| x_raw[k].cmp(y_raw[k]));
+        if order.is_ne() {
+            return order;
+        }
+    }
+    // One path contains the other: the folder comes before what's in it.
+    a.len().cmp(&b.len())
 }
 
 /// A raw entry name for display: UTF-8 or the legacy code page, `/`-separated, no trailing `/`.
@@ -1280,6 +1343,86 @@ mod tests {
         let summary = compress(&[src], &dest2, &opts).unwrap();
         assert!(summary.cancelled);
         assert!(!dest2.exists() && !sb.0.join("cancelled.zip.partial").exists());
+    }
+
+    fn tree_paths(items: &[(&str, bool)]) -> Vec<String> {
+        let listing = ArchiveListing {
+            items: items
+                .iter()
+                .map(|&(path, is_dir)| ArchiveItem {
+                    path: path.into(),
+                    size: u64::from(!is_dir),
+                    is_dir,
+                })
+                .collect(),
+            dirs: items.iter().filter(|i| i.1).count(),
+            files: items.iter().filter(|i| !i.1).count(),
+            ..ArchiveListing::default()
+        };
+        let ordered = listing.into_tree_order();
+        assert_eq!(ordered.dirs + ordered.files, ordered.items.len());
+        ordered
+            .items
+            .into_iter()
+            .map(|i| {
+                if i.is_dir {
+                    format!("{}/", i.path)
+                } else {
+                    i.path
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn archive_items_are_listed_in_tree_order() {
+        // Archive order: contents before their folders, and '-' (0x2D) sorting before '/'.
+        let ordered = tree_paths(&[
+            ("a/c/d.txt", false),
+            ("a-b.txt", false),
+            ("a/b.txt", false),
+            ("a/c", true),
+            ("a", true),
+            ("Z.txt", false),
+            ("file10.txt", false),
+            ("file2.txt", false),
+        ]);
+        assert_eq!(
+            ordered,
+            [
+                "a/",
+                "a/c/",
+                "a/c/d.txt",
+                "a/b.txt",
+                "a-b.txt",
+                "file2.txt",
+                "file10.txt",
+                "Z.txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn folders_only_named_in_paths_are_listed() {
+        // No folder records at all, as zips made by some tools are.
+        let ordered = tree_paths(&[
+            ("a/c/d.txt", false),
+            ("a-b.txt", false),
+            ("a/b.txt", false),
+            ("b/x.txt", false),
+        ]);
+        assert_eq!(
+            ordered,
+            [
+                "a/",
+                "a/c/",
+                "a/c/d.txt",
+                "a/b.txt",
+                "b/",
+                "b/x.txt",
+                "a-b.txt"
+            ]
+        );
     }
 
     #[test]

@@ -158,10 +158,10 @@ fn a_search_hit_reads_its_creation_time(cx: &mut TestAppContext) {
     assert!(labels(&rows).contains(&t!("col.created").as_ref()));
 }
 
-/// Quick Look lists the same details beside the stage; on a card too small for the list, the
-/// line under the name stands in for it.
+/// Quick Look keeps the whole card for the preview: no details list beside the stage; the title
+/// bar's line under the name carries type, size and modified.
 #[gpui::test]
-fn quick_look_lists_the_details_beside_the_stage(cx: &mut TestAppContext) {
+fn quick_look_keeps_the_whole_card_for_the_preview(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![long_file()]);
     let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\p");
@@ -171,25 +171,6 @@ fn quick_look_lists_the_details_beside_the_stage(cx: &mut TestAppContext) {
     assert!(view.update(cx, |v, _| v.quick_look));
     wait_until(cx, &view, "previewed", previewed);
     cx.run_until_parked();
-    let list = bounds(cx, "ql-info");
-    let rows = view.update(cx, |v, _| v.preview_info_for_test()).len();
-    assert_eq!(rows, 5, "type, size, created, modified, location");
-    for id in [
-        "pane-info-value-0",
-        "pane-info-value-1",
-        "pane-info-value-2",
-        "pane-info-value-3",
-        "pane-info-value-4",
-    ] {
-        let value = bounds(cx, id);
-        assert!(list.contains(&value.center()), "{id} in the list");
-    }
-
-    cx.simulate_resize(gpui::size(px(800.), px(600.)));
-    cx.run_until_parked();
-    assert!(view.update(cx, |v, _| v.quick_look));
-    assert!(
-        cx.debug_bounds("ql-info").is_none(),
-        "no list on a small card"
-    );
+    assert!(cx.debug_bounds("ql-info").is_none(), "no details list");
+    assert!(cx.debug_bounds("pane-info-value-0").is_none());
 }

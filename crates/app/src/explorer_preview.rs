@@ -1874,7 +1874,6 @@ impl Explorer {
         let preview = self.preview.as_ref()?;
         let viewport = window.viewport_size();
         let size = look_card(viewport);
-        let info = look_info_w(size.width) > px(0.);
         let card = div()
             .id("quick-look")
             .a11y_lazy(gpui::Role::Dialog, || preview.entry.name.to_string())
@@ -1890,8 +1889,8 @@ impl Explorer {
             .text_size(theme::FS_14)
             .text_color(theme::text())
             .on_click(|_, _, cx| cx.stop_propagation())
-            .child(self.quick_look_header(preview, info, cx))
-            .child(self.quick_look_middle(preview, info, window, cx))
+            .child(self.quick_look_header(preview, cx))
+            .child(self.quick_look_middle(preview, window, cx))
             .child(self.quick_look_footer(preview, size.width, cx));
         if let Some(id) = leaving {
             // Dismissed: veil and card fade out together. The veil lets clicks through to the list
@@ -1946,44 +1945,22 @@ impl Explorer {
         )
     }
 
-    /// Between Quick Look's bars: the stage, and the Info list right of it when `info`.
+    /// Between Quick Look's bars: the stage, all of the card's width (the preview is what Quick
+    /// Look is for; the details stay one line in the title bar).
     fn quick_look_middle(
         &self,
         preview: &Preview,
-        info: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
             .flex_1()
             .min_h_0()
-            .flex()
+            .relative()
             .border_y_1()
             .border_color(theme::line())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .relative()
-                    .bg(look_backdrop(preview))
-                    .child(self.quick_look_body(preview, window, cx)),
-            )
-            .when(info, |d| {
-                d.child(
-                    div()
-                        .id("ql-info")
-                        .debug_selector(|| "ql-info".into())
-                        .w(LOOK_INFO_W)
-                        .flex_none()
-                        .h_full()
-                        .overflow_y_scroll()
-                        .border_l_1()
-                        .border_color(theme::line())
-                        .p(theme::S_16)
-                        .child(self.pane_info(preview, true, cx)),
-                )
-            })
+            .bg(look_backdrop(preview))
+            .child(self.quick_look_body(preview, window, cx))
     }
 
     /// Floating page control over a multi-page PDF: previous, "Page 2 of 14", next.
@@ -2092,15 +2069,11 @@ impl Explorer {
         )
     }
 
-    /// Quick Look title bar: kind icon, name, then Open, Open with, Show in folder (search
-    /// results) and Close. With the Info list beside the stage (`info`) the name may take two
-    /// lines; on a card too small for the list, a details line under the name stands in for it.
-    fn quick_look_header(
-        &self,
-        preview: &Preview,
-        info: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// Quick Look title bar: kind icon, name over a details line (type, size, modified...), then
+    /// Open, Open with, Show in folder (search results) and Close. A name too long for the bar
+    /// shows whole on hover.
+    fn quick_look_header(&self, preview: &Preview, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = SharedString::from(arke_core::tree::leaf(&preview.entry.name).to_owned());
         let is_dir = preview.entry.is_dir_like();
         div()
             .h(theme::H_BAR)
@@ -2119,27 +2092,19 @@ impl Explorer {
                     .flex_col()
                     .child(
                         div()
+                            .id("ql-name")
+                            .truncate()
                             .font_weight(theme::FW_STRONG)
-                            .map(|d| {
-                                if info {
-                                    d.line_clamp(2).text_ellipsis()
-                                } else {
-                                    d.truncate()
-                                }
-                            })
-                            .child(SharedString::from(
-                                arke_core::tree::leaf(&preview.entry.name).to_owned(),
-                            )),
+                            .tooltip(super::tooltip(name.clone()))
+                            .child(name),
                     )
-                    .when(!info, |d| {
-                        d.child(
-                            div()
-                                .truncate()
-                                .text_size(theme::FS_12)
-                                .text_color(theme::text_subtle_raised())
-                                .child(self.look_meta(preview)),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(theme::FS_12)
+                            .text_color(theme::text_subtle_raised())
+                            .child(self.look_meta(preview)),
+                    ),
             )
             .child(
                 div()
@@ -2375,31 +2340,14 @@ pub(crate) fn look_card(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     )
 }
 
-/// Quick Look's stage (between the title and bottom bars and their hairlines, left of the Info
-/// list) for a window.
+/// Quick Look's stage (between the title and bottom bars and their hairlines) for a window.
 fn look_stage(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let card = look_card(viewport);
     gpui::size(
-        (card.width - look_info_w(card.width)).max(px(1.)),
+        card.width,
         (card.height - theme::H_BAR - theme::H_CTX - px(2.)).max(px(1.)),
     )
 }
-
-/// Width of the Info list right of Quick Look's stage on a card `card_w` wide: none on a card
-/// too small to give it room without crowding the preview.
-fn look_info_w(card_w: Pixels) -> Pixels {
-    if card_w >= LOOK_INFO_MIN_CARD {
-        LOOK_INFO_W
-    } else {
-        px(0.)
-    }
-}
-
-/// Quick Look's Info list: room for the label column and a value of a few words per line.
-const LOOK_INFO_W: Pixels = px(300.);
-
-/// Narrowest card that gets the Info list (the stage keeps at least 560 px).
-const LOOK_INFO_MIN_CARD: Pixels = px(860.);
 
 /// Width of the label column in the preview pane's Info list (the icon and the longest label).
 const DETAIL_LABEL_W: Pixels = px(96.);
@@ -2429,6 +2377,8 @@ fn detail_icon(key: &str) -> Option<crate::assets::Icon> {
         ("preview.exposure", Icon::Sun),
         ("preview.encoding", Icon::Font),
         ("preview.pages", Icon::PageLine),
+        ("preview.sheets", Icon::FtSheet),
+        ("preview.slides", Icon::FtSlides),
     ];
     icons
         .into_iter()
@@ -3335,10 +3285,8 @@ mod zoom_tests {
             stage.height,
             theme::QL_MAX_H - theme::H_BAR - theme::H_CTX - px(2.)
         );
-        // The Info list takes its share beside the stage, except on a small card.
-        assert_eq!(stage.width, theme::QL_MAX_W - LOOK_INFO_W);
-        let compact = gpui::size(px(800.), px(600.));
-        assert_eq!(look_stage(compact).width, look_card(compact).width);
+        // The stage takes the card's whole width.
+        assert_eq!(stage.width, theme::QL_MAX_W);
         // A window too small for a card still gets a positive size.
         let tiny = look_stage(gpui::size(px(10.), px(10.)));
         assert!(tiny.width > px(0.) && tiny.height > px(0.));

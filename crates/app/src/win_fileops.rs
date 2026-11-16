@@ -1068,8 +1068,8 @@ pub(crate) fn hdrop_bytes(paths: &[PathBuf]) -> Vec<u8> {
 
 /// Drags files out to other apps (browser uploads, mail attachments, Explorer, desktop).
 ///
-/// The data object carries only CF_HDROP, the same format Explorer drags, so this never
-/// touches the file system or network. The drop target picks copy, move or link.
+/// The data object carries CF_HDROP, plus Shell IDList Array for files on local drives (see
+/// [`drag_data_object`]). The drop target picks copy, move or link.
 ///
 /// Call on the UI thread (GPUI has called OleInitialize) while the left button is down.
 /// Runs Windows' modal drag loop until drop or cancel; the window keeps repainting.
@@ -1079,45 +1079,16 @@ pub(crate) fn drag_out(
     paths: &[PathBuf],
     image: Option<&crate::shell::DragImage>,
 ) -> Result<Option<DragOutcome>, ShellError> {
-    use std::mem::ManuallyDrop;
-    use windows::Win32::System::Com::{
-        DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
-    };
     use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
-    use windows::Win32::UI::Shell::{SHCreateDataObject, SHDoDragDrop};
+    use windows::Win32::UI::Shell::SHDoDragDrop;
 
     if paths.is_empty() {
         return Ok(None);
     }
-    let mut mem = Global::new(&hdrop_bytes(paths))?;
-    // SAFETY: an empty shell data object (no items, no extensions loaded) takes ownership of
-    // the HGLOBAL once SetData succeeds (fRelease = true). SHDoDragDrop runs on the UI thread,
-    // which is OLE-initialized.
+    // SAFETY: SHDoDragDrop runs on the UI thread, which is OLE-initialized.
     unsafe {
-        let data: IDataObject = SHCreateDataObject(None, None, None::<&IDataObject>)?;
-        let format = FORMATETC {
-            cfFormat: CF_HDROP.0,
-            ptd: std::ptr::null_mut(),
-            dwAspect: DVASPECT_CONTENT.0,
-            lindex: -1,
-            tymed: TYMED_HGLOBAL.0.cast_unsigned(),
-        };
-        let Some(handle) = mem.handle() else {
-            return Err(ShellError::GlobalMemory);
-        };
-        let medium = STGMEDIUM {
-            tymed: TYMED_HGLOBAL.0.cast_unsigned(),
-            u: STGMEDIUM_0 {
-                hGlobal: HGLOBAL(handle.0),
-            },
-            pUnkForRelease: ManuallyDrop::new(None),
-        };
-        data.SetData(
-            std::ptr::from_ref(&format),
-            std::ptr::from_ref(&medium),
-            true,
-        )?;
-        mem.release();
+        let data = drag_data_object(paths)?;
+        add_hdrop(&data, paths)?;
         if let Some(image) = image {
             crate::win_dragimage::attach(&data, image);
         }
@@ -1144,6 +1115,104 @@ pub(crate) fn drag_out(
             None
         })
     }
+}
+
+/// Puts the paths on `data` as CF_HDROP, the format most drop targets read.
+fn add_hdrop(
+    data: &windows::Win32::System::Com::IDataObject,
+    paths: &[PathBuf],
+) -> Result<(), ShellError> {
+    use std::mem::ManuallyDrop;
+    use windows::Win32::System::Com::{
+        DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+    };
+    let mut mem = Global::new(&hdrop_bytes(paths))?;
+    let format = FORMATETC {
+        cfFormat: CF_HDROP.0,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0.cast_unsigned(),
+    };
+    let Some(handle) = mem.handle() else {
+        return Err(ShellError::GlobalMemory);
+    };
+    let medium = STGMEDIUM {
+        tymed: TYMED_HGLOBAL.0.cast_unsigned(),
+        u: STGMEDIUM_0 {
+            hGlobal: HGLOBAL(handle.0),
+        },
+        pUnkForRelease: ManuallyDrop::new(None),
+    };
+    // SAFETY: the data object takes ownership of the HGLOBAL once SetData succeeds
+    // (fRelease = true); format and medium are valid for the call.
+    unsafe {
+        data.SetData(
+            std::ptr::from_ref(&format),
+            std::ptr::from_ref(&medium),
+            true,
+        )
+    }?;
+    mem.release();
+    Ok(())
+}
+
+/// The data object for a drag, before CF_HDROP is added. For files on local drives it also
+/// carries Shell IDList Array, as Explorer's drags do: some targets take only that, such as
+/// shortcuts on launcher toolbars (#109). `SHCreateDataObject` builds the shell's own object from
+/// the PIDLs without binding any handler, so no third-party code loads. Network paths keep the
+/// plain object: parsing them could wait on the network, and this runs on the UI thread.
+fn drag_data_object(
+    paths: &[PathBuf],
+) -> windows::core::Result<windows::Win32::System::Com::IDataObject> {
+    use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{SHCreateDataObject, SHParseDisplayName};
+    struct Pidls(Vec<*mut ITEMIDLIST>);
+    impl Drop for Pidls {
+        fn drop(&mut self) {
+            for pidl in &self.0 {
+                // SAFETY: allocated by SHParseDisplayName with CoTaskMemAlloc; freed once each.
+                unsafe { CoTaskMemFree(Some(pidl.cast_const().cast())) };
+            }
+        }
+    }
+    let plain = || {
+        // SAFETY: an empty shell data object, no items, nothing loaded.
+        unsafe { SHCreateDataObject::<_, IDataObject>(None, None, None::<&IDataObject>) }
+    };
+    if paths
+        .iter()
+        .any(|p| crate::global_search::is_network_path(p))
+    {
+        return plain();
+    }
+    let mut pidls = Pidls(Vec::with_capacity(paths.len()));
+    for path in paths {
+        let name = wide(path.as_os_str());
+        let mut pidl = std::ptr::null_mut();
+        // SAFETY: name is NUL-terminated; pidl is an out variable owned by Pidls on success.
+        if unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut pidl, 0, None) }
+            .is_err()
+        {
+            return plain();
+        }
+        pidls.0.push(pidl);
+    }
+    let list: Vec<*const ITEMIDLIST> = pidls.0.iter().map(|p| p.cast_const()).collect();
+    // The desktop (an empty PIDL) as the folder, so full PIDLs are its children and items from
+    // different folders (search results) go in one object.
+    let desktop = [0u16; 1];
+    // SAFETY: an empty ITEMIDLIST is just its zero terminator; the PIDLs stay alive (Pidls) for
+    // the call, and the data object keeps its own copy.
+    unsafe {
+        SHCreateDataObject::<_, IDataObject>(
+            Some(desktop.as_ptr().cast::<ITEMIDLIST>()),
+            Some(&list),
+            None::<&IDataObject>,
+        )
+    }
+    .or_else(|_| plain())
 }
 
 /// What the drop target did with dragged-out files.
@@ -2281,6 +2350,143 @@ mod shell_clipboard_tests {
             );
             let _ = GlobalUnlock(effect.u.hGlobal);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+    use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+
+    fn format(cf: u16) -> FORMATETC {
+        FORMATETC {
+            cfFormat: cf,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0.cast_unsigned(),
+        }
+    }
+
+    /// Drops `data` on `target` through the shell's own drop target for it, the way a launcher
+    /// toolbar or Explorer does when files land on a shortcut.
+    fn drop_on(target: &Path, data: &windows::Win32::System::Com::IDataObject) {
+        use windows::Win32::Foundation::{HWND, POINTL};
+        use windows::Win32::System::Ole::{DROPEFFECT, IDropTarget};
+        use windows::Win32::System::SystemServices::MK_LBUTTON;
+        use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+        use windows::Win32::UI::Shell::{
+            ILFindLastID, IShellFolder, SHBindToParent, SHParseDisplayName,
+        };
+        let name = wide(target.as_os_str());
+        let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        // SAFETY: name is NUL-terminated; the PIDL is freed at the end; the child points into it.
+        unsafe {
+            SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut pidl, 0, None).unwrap();
+            let folder: IShellFolder = SHBindToParent(pidl, None).unwrap();
+            let child = [ILFindLastID(pidl).cast_const()];
+            let drop: IDropTarget = folder.GetUIObjectOf(HWND::default(), &child, None).unwrap();
+            let keys = windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS(MK_LBUTTON.0);
+            let mut effect = DROPEFFECT(7);
+            drop.DragEnter(data, keys, POINTL::default(), &raw mut effect)
+                .unwrap();
+            let mut effect = DROPEFFECT(7);
+            drop.Drop(data, keys, POINTL::default(), &raw mut effect)
+                .unwrap();
+            windows::Win32::System::Com::CoTaskMemFree(Some(pidl.cast_const().cast()));
+        }
+    }
+
+    /// #109 for real: files dropped on a shortcut reach the program it starts. A shortcut to a
+    /// script that writes its arguments stands in for Notepad on a launcher toolbar.
+    #[test]
+    #[ignore = "starts cmd.exe through the shell; run by hand"]
+    fn files_dropped_on_a_shortcut_reach_its_program() {
+        let dir = crate::win::long_temp_dir().join(format!("arke-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("dropped.txt");
+        std::fs::write(&file, "x").unwrap();
+        let script = dir.join("args.cmd");
+        std::fs::write(&script, "@echo %*> \"%~dp0args.txt\"\r\n").unwrap();
+        let _com = Com::init().unwrap();
+        let shortcut = dir.join("args.lnk");
+        // SAFETY: a ShellLink object saved through IPersistFile; strings are NUL-terminated.
+        unsafe {
+            use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, IPersistFile};
+            use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+            use windows::core::Interface as _;
+            let link: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+            let target = wide(script.as_os_str());
+            link.SetPath(PCWSTR(target.as_ptr())).unwrap();
+            let save = wide(shortcut.as_os_str());
+            link.cast::<IPersistFile>()
+                .unwrap()
+                .Save(PCWSTR(save.as_ptr()), true)
+                .unwrap();
+        }
+        let wait = |what: &str| {
+            let out = dir.join("args.txt");
+            for _ in 0..50 {
+                if let Ok(text) = std::fs::read_to_string(&out) {
+                    let _ = std::fs::remove_file(&out);
+                    return text;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            panic!("{what}: the script never ran");
+        };
+
+        let data = drag_data_object(std::slice::from_ref(&file)).unwrap();
+        add_hdrop(&data, std::slice::from_ref(&file)).unwrap();
+        drop_on(&shortcut, &data);
+        let got = wait("Arke's drag");
+        assert!(got.contains("dropped.txt"), "{got:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Items in the object's Shell IDList Array (a CIDA: item count, then offsets); `None` when
+    /// it can't be read.
+    fn id_count(object: &windows::Win32::System::Com::IDataObject, ids: u16) -> Option<u32> {
+        // SAFETY: the HGLOBAL is only read while locked, then released.
+        unsafe {
+            let mut medium = object.GetData(&format(ids)).ok()?;
+            let count = GlobalLock(medium.u.hGlobal).cast::<u32>().read_unaligned();
+            let _ = GlobalUnlock(medium.u.hGlobal);
+            windows::Win32::System::Ole::ReleaseStgMedium(&raw mut medium);
+            Some(count)
+        }
+    }
+
+    /// #109: dragged local files carry their Shell IDList Array, like Explorer's drags. The empty
+    /// shell object used before offered that format too, with no items in it, so targets that
+    /// take only it (launcher toolbar shortcuts) got nothing. Network paths aren't parsed (it
+    /// could wait on the network) and keep the plain object.
+    #[test]
+    fn drags_of_local_files_carry_shell_ids() {
+        let dir = crate::win::long_temp_dir().join(format!("arke-drag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        let b = dir.join("b 報告.txt");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let _com = Com::init().unwrap();
+        // SAFETY: registers (or looks up) a format name.
+        let ids = unsafe { RegisterClipboardFormatW(w!("Shell IDList Array")) } as u16;
+        assert_eq!(id_count(&drag_data_object(&[a, b]).unwrap(), ids), Some(2));
+        let network = drag_data_object(&[PathBuf::from(r"\\no-such-server\share\a.txt")]);
+        let network = network.unwrap();
+        // Offered, but there is nothing in it: what every drag used to give.
+        // SAFETY: format is valid for the call.
+        assert!(unsafe { network.QueryGetData(&format(ids)) }.is_ok());
+        assert_eq!(
+            id_count(&network, ids).unwrap_or(0),
+            0,
+            "network paths stay plain"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

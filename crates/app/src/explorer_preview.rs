@@ -617,6 +617,17 @@ impl Explorer {
                 return;
             }
             spawn_thread("preview", move || {
+                // Search hits come without a creation time; a local stat is cheap, a server
+                // round trip isn't worth it for one row.
+                if target.created.is_none()
+                    && !arke_core::remote::is_remote(&path)
+                    && let Some(created) = fs.stat(&path).ok().and_then(|e| e.created)
+                {
+                    let _ = tx.send(AppEvent::PreviewCreated {
+                        generation,
+                        created,
+                    });
+                }
                 let data = load(
                     fs.as_ref(),
                     shell.as_ref(),
@@ -727,6 +738,29 @@ impl Explorer {
                 PreviewData::Unreadable(reason) => PreviewBody::Unreadable(reason.into()),
                 PreviewData::Nothing => PreviewBody::Nothing,
             };
+            cx.notify();
+        }
+    }
+
+    /// Tests: the Info list's rows (label, value) for the item on screen.
+    #[cfg(test)]
+    pub(crate) fn preview_info_for_test(&self) -> Vec<(String, String)> {
+        self.preview
+            .as_ref()
+            .map_or_default(|p| self.preview_details(p))
+    }
+
+    pub(super) fn handle_preview_created(
+        &mut self,
+        generation: u64,
+        created: std::time::SystemTime,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.preview_gen {
+            return;
+        }
+        if let Some(preview) = self.preview.as_mut() {
+            preview.entry.created = Some(created);
             cx.notify();
         }
     }
@@ -955,42 +989,49 @@ impl Explorer {
 
     // ───────────────────────── Rendering ─────────────────────────
 
-    /// Under the preview, like File Explorer's details pane: the kind's icon, the name and
-    /// type · size on the left, the item's actions as icon buttons on the right.
+    /// Under the preview, like File Explorer's details pane: the kind's icon and the name on the
+    /// left, the item's actions as icon buttons on the right. The row wraps: when the name and the
+    /// actions don't fit side by side (a narrow pane, a long name), the actions move to a line of
+    /// their own and the name gets the whole width, wrapping instead of being cut.
     fn pane_title(preview: &Preview, cx: &mut Context<Self>) -> AnyElement {
-        let mut subtitle = type_label(&preview.entry);
-        if !preview.entry.is_dir_like() {
-            subtitle = format!("{subtitle} · {}", format_size(preview.entry.size));
-        }
         div()
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(theme::S_12)
-            .child(kind_icon(file_kind(&preview.entry), theme::ICON_LG))
+            .gap_x(theme::S_12)
+            .gap_y(theme::S_6)
             .child(
+                // Grows from the name's own width (not `flex_1`'s zero basis), so a name too wide
+                // to sit next to the actions pushes them to the next line.
                 div()
-                    .flex_1()
+                    .flex_grow_1()
+                    .flex_shrink_1()
                     .min_w_0()
                     .flex()
-                    .flex_col()
+                    .items_start()
+                    .gap(theme::S_12)
                     .child(
                         div()
-                            .truncate()
+                            .flex_none()
+                            .child(kind_icon(file_kind(&preview.entry), theme::ICON_LG)),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "pane-name".into())
+                            .min_w_0()
                             .font_weight(theme::FW_STRONG)
                             .text_size(theme::FS_15)
                             .child(SharedString::from(
                                 arke_core::tree::leaf(&preview.entry.name).to_owned(),
                             )),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(theme::FS_12)
-                            .text_color(theme::text_subtle())
-                            .child(subtitle),
                     ),
             )
-            .child(Self::pane_actions(preview, cx))
+            .child(
+                div()
+                    .debug_selector(|| "pane-actions".into())
+                    .ml_auto()
+                    .child(Self::pane_actions(preview, cx)),
+            )
             .into_any_element()
     }
 
@@ -1065,18 +1106,23 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// The rest of the details as a titled list: label on the left, value on the right, grouped by
-    /// spacing rather than lines.
-    fn pane_info(&self, preview: &Preview, cx: &mut Context<Self>) -> AnyElement {
-        let shown = [t!("col.type").into_owned(), t!("col.size").into_owned()];
+    /// The details as a titled list: label on the left, value on the right, grouped by spacing
+    /// rather than lines. Values wrap instead of being cut, so a narrow pane still shows all of
+    /// them. `raised`: drawn on Quick Look's card, which needs the stronger subtle text.
+    fn pane_info(&self, preview: &Preview, raised: bool, cx: &mut Context<Self>) -> AnyElement {
         let location = t!("col.location").into_owned();
+        let dates = [
+            (t!("col.created").into_owned(), preview.entry.created),
+            (t!("col.modified").into_owned(), preview.entry.modified),
+        ];
+        let subtle = if raised {
+            theme::text_subtle_raised()
+        } else {
+            theme::text_subtle()
+        };
         // In search results the item's folder isn't the one on screen: its location goes there.
         let reveal = self.search_mode;
-        let rows: Vec<(String, String)> = self
-            .preview_details(preview)
-            .into_iter()
-            .filter(|(key, _)| !shown.contains(key))
-            .collect();
+        let rows = self.preview_details(preview);
         div()
             .flex()
             .flex_col()
@@ -1085,21 +1131,34 @@ impl Explorer {
             .child(
                 div()
                     .pb(theme::S_2)
-                    .text_color(theme::text_subtle())
+                    .text_color(subtle)
                     .child(t!("preview.info").into_owned()),
             )
-            .children(rows.into_iter().map(|(key, value)| {
+            .children(rows.into_iter().enumerate().map(|(ix, (key, value))| {
                 let icon = detail_icon(&key);
                 let link = reveal && key == location;
-                // A path wraps at its separators instead of being cut, so all of it shows; other
-                // values keep one line.
-                let value = div().min_w_0().text_color(theme::text_muted()).map(|d| {
-                    if key == location {
-                        d.child(wrappable_path(&value))
-                    } else {
-                        d.truncate().child(value)
-                    }
-                });
+                let date = dates
+                    .iter()
+                    .find(|(label, _)| *label == key)
+                    .and_then(|(_, time)| *time);
+                let value = div()
+                    .debug_selector(move || format!("pane-info-value-{ix}"))
+                    .min_w_0()
+                    .text_color(theme::text_muted())
+                    .map(|d| match date.map(|t| self.date_parts(t)) {
+                        // A path wraps at its separators, so all of it shows.
+                        None if key == location => d.child(wrappable_path(&value)),
+                        None => d.child(value),
+                        Some((short, None)) => d.child(short),
+                        // "Today 06:06" first, the full date and time dimmed after it (on the next
+                        // line when there's no room).
+                        Some((short, Some(full))) => d
+                            .flex()
+                            .flex_wrap()
+                            .gap_x(theme::S_6)
+                            .child(short)
+                            .child(div().text_color(subtle).child(full)),
+                    });
                 // A label column of fixed width with the value right after it, so the eye doesn't
                 // cross the pane to pair them.
                 div()
@@ -1113,13 +1172,13 @@ impl Explorer {
                             .flex()
                             .items_center()
                             .gap(theme::S_6)
-                            .text_color(theme::text_subtle())
+                            .text_color(subtle)
                             .children(icon.map(|icon| {
                                 gpui::svg()
                                     .path(icon.path())
                                     .size(px(14.))
                                     .flex_none()
-                                    .text_color(theme::text_subtle())
+                                    .text_color(subtle)
                             }))
                             .child(key),
                     )
@@ -1147,6 +1206,23 @@ impl Explorer {
                     }))
             }))
             .into_any_element()
+    }
+
+    /// A date as the Info list shows it: the list's short form ("Today 06:06") and, when that
+    /// leaves something out, the full date and time to dim after it. Only the full form with the
+    /// "full dates" setting on.
+    fn date_parts(&self, time: std::time::SystemTime) -> (String, Option<String>) {
+        let shell = &self.services.shell;
+        let full = shell.format_time(time);
+        if crate::prefs::full_dates() {
+            return (full, None);
+        }
+        let short = shell.format_time_short(time);
+        if short == full {
+            (full, None)
+        } else {
+            (short, Some(full))
+        }
     }
 
     fn preview_details(&self, preview: &Preview) -> Vec<(String, String)> {
@@ -1188,11 +1264,12 @@ impl Explorer {
                 },
             ));
         }
+        if let Some(t) = preview.entry.created {
+            rows.push((t!("col.created").to_string(), shell.format_time(t)));
+        }
         if let Some(t) = preview.entry.modified {
             rows.push((t!("col.modified").to_string(), shell.format_time(t)));
         }
-        // After the date, so Quick Look's title row (the first three details) reads type, size,
-        // date for PDFs too.
         if let PreviewBody::Pdf(view) = &preview.body {
             rows.push((
                 t!("preview.pages").to_string(),
@@ -1710,14 +1787,18 @@ impl Explorer {
                 .child(
                     div()
                         .flex()
-                        .items_center()
+                        .items_start()
                         .gap(theme::S_8)
-                        .child(kind_icon(FileKind::Folder, px(20.)))
                         .child(
+                            div()
+                                .flex_none()
+                                .child(kind_icon(FileKind::Folder, px(20.))),
+                        )
+                        .child(
+                            // Wraps like a file's name, so a narrow pane shows all of it.
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
                                 .font_weight(theme::FW_STRONG)
                                 .text_size(theme::FS_15)
                                 .child(SharedString::from(
@@ -1773,7 +1854,7 @@ impl Explorer {
             }
         }))
         .child(Self::pane_title(preview, cx))
-        .child(self.pane_info(preview, cx))
+        .child(self.pane_info(preview, false, cx))
         .into_any_element()
     }
 
@@ -1793,6 +1874,7 @@ impl Explorer {
         let preview = self.preview.as_ref()?;
         let viewport = window.viewport_size();
         let size = look_card(viewport);
+        let info = look_info_w(size.width) > px(0.);
         let card = div()
             .id("quick-look")
             .a11y_lazy(gpui::Role::Dialog, || preview.entry.name.to_string())
@@ -1808,17 +1890,8 @@ impl Explorer {
             .text_size(theme::FS_14)
             .text_color(theme::text())
             .on_click(|_, _, cx| cx.stop_propagation())
-            .child(self.quick_look_header(preview, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .border_y_1()
-                    .border_color(theme::line())
-                    .bg(look_backdrop(preview))
-                    .child(self.quick_look_body(preview, window, cx)),
-            )
+            .child(self.quick_look_header(preview, info, cx))
+            .child(self.quick_look_middle(preview, info, window, cx))
             .child(self.quick_look_footer(preview, size.width, cx));
         if let Some(id) = leaving {
             // Dismissed: veil and card fade out together. The veil lets clicks through to the list
@@ -1871,6 +1944,46 @@ impl Explorer {
             .with_priority(2)
             .into_any_element(),
         )
+    }
+
+    /// Between Quick Look's bars: the stage, and the Info list right of it when `info`.
+    fn quick_look_middle(
+        &self,
+        preview: &Preview,
+        info: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .border_y_1()
+            .border_color(theme::line())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .relative()
+                    .bg(look_backdrop(preview))
+                    .child(self.quick_look_body(preview, window, cx)),
+            )
+            .when(info, |d| {
+                d.child(
+                    div()
+                        .id("ql-info")
+                        .debug_selector(|| "ql-info".into())
+                        .w(LOOK_INFO_W)
+                        .flex_none()
+                        .h_full()
+                        .overflow_y_scroll()
+                        .border_l_1()
+                        .border_color(theme::line())
+                        .p(theme::S_16)
+                        .child(self.pane_info(preview, true, cx)),
+                )
+            })
     }
 
     /// Floating page control over a multi-page PDF: previous, "Page 2 of 14", next.
@@ -1979,9 +2092,15 @@ impl Explorer {
         )
     }
 
-    /// Quick Look title bar: kind icon, name over a details line, then Open, Open with, Show in
-    /// folder (search results) and Close.
-    fn quick_look_header(&self, preview: &Preview, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Quick Look title bar: kind icon, name, then Open, Open with, Show in folder (search
+    /// results) and Close. With the Info list beside the stage (`info`) the name may take two
+    /// lines; on a card too small for the list, a details line under the name stands in for it.
+    fn quick_look_header(
+        &self,
+        preview: &Preview,
+        info: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let is_dir = preview.entry.is_dir_like();
         div()
             .h(theme::H_BAR)
@@ -1998,16 +2117,29 @@ impl Explorer {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().truncate().font_weight(theme::FW_STRONG).child(
-                        SharedString::from(arke_core::tree::leaf(&preview.entry.name).to_owned()),
-                    ))
                     .child(
                         div()
-                            .truncate()
-                            .text_size(theme::FS_12)
-                            .text_color(theme::text_subtle_raised())
-                            .child(self.look_meta(preview)),
-                    ),
+                            .font_weight(theme::FW_STRONG)
+                            .map(|d| {
+                                if info {
+                                    d.line_clamp(2).text_ellipsis()
+                                } else {
+                                    d.truncate()
+                                }
+                            })
+                            .child(SharedString::from(
+                                arke_core::tree::leaf(&preview.entry.name).to_owned(),
+                            )),
+                    )
+                    .when(!info, |d| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_size(theme::FS_12)
+                                .text_color(theme::text_subtle_raised())
+                                .child(self.look_meta(preview)),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -2243,14 +2375,31 @@ pub(crate) fn look_card(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     )
 }
 
-/// Quick Look's stage (between the title and bottom bars and their hairlines) for a window.
+/// Quick Look's stage (between the title and bottom bars and their hairlines, left of the Info
+/// list) for a window.
 fn look_stage(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let card = look_card(viewport);
     gpui::size(
-        card.width,
+        (card.width - look_info_w(card.width)).max(px(1.)),
         (card.height - theme::H_BAR - theme::H_CTX - px(2.)).max(px(1.)),
     )
 }
+
+/// Width of the Info list right of Quick Look's stage on a card `card_w` wide: none on a card
+/// too small to give it room without crowding the preview.
+fn look_info_w(card_w: Pixels) -> Pixels {
+    if card_w >= LOOK_INFO_MIN_CARD {
+        LOOK_INFO_W
+    } else {
+        px(0.)
+    }
+}
+
+/// Quick Look's Info list: room for the label column and a value of a few words per line.
+const LOOK_INFO_W: Pixels = px(300.);
+
+/// Narrowest card that gets the Info list (the stage keeps at least 560 px).
+const LOOK_INFO_MIN_CARD: Pixels = px(860.);
 
 /// Width of the label column in the preview pane's Info list (the icon and the longest label).
 const DETAIL_LABEL_W: Pixels = px(96.);
@@ -2266,15 +2415,19 @@ fn wrappable_path(path: &str) -> String {
 /// label.
 fn detail_icon(key: &str) -> Option<crate::assets::Icon> {
     use crate::assets::Icon;
+    // One icon per row, so no two rows of one item look alike.
     let icons = [
+        ("col.type", Icon::FileExt),
+        ("col.size", Icon::Drive),
+        ("col.created", Icon::Calendar),
         ("col.modified", Icon::Clock),
         ("col.location", Icon::Folder),
         ("preview.dimensions", Icon::Dimensions),
-        ("preview.taken", Icon::Calendar),
+        ("preview.taken", Icon::Image),
         ("preview.camera", Icon::Camera),
         ("preview.lens", Icon::Lens),
         ("preview.exposure", Icon::Sun),
-        ("preview.encoding", Icon::FileExt),
+        ("preview.encoding", Icon::Font),
         ("preview.pages", Icon::PageLine),
     ];
     icons
@@ -3182,6 +3335,10 @@ mod zoom_tests {
             stage.height,
             theme::QL_MAX_H - theme::H_BAR - theme::H_CTX - px(2.)
         );
+        // The Info list takes its share beside the stage, except on a small card.
+        assert_eq!(stage.width, theme::QL_MAX_W - LOOK_INFO_W);
+        let compact = gpui::size(px(800.), px(600.));
+        assert_eq!(look_stage(compact).width, look_card(compact).width);
         // A window too small for a card still gets a positive size.
         let tiny = look_stage(gpui::size(px(10.), px(10.)));
         assert!(tiny.width > px(0.) && tiny.height > px(0.));

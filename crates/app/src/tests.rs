@@ -34,6 +34,8 @@ mod folder_views;
 mod live_recycle;
 #[path = "tests_motion.rs"]
 mod motion;
+#[path = "tests_preview_info.rs"]
+mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
 #[path = "tests_remote.rs"]

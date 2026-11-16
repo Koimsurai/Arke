@@ -324,6 +324,11 @@ pub(crate) enum AppEvent {
         generation: u64,
         data: preview::PreviewData,
     },
+    /// Creation time of the previewed item, read when its entry came without one (search hits).
+    PreviewCreated {
+        generation: u64,
+        created: std::time::SystemTime,
+    },
     /// High-resolution image for Quick Look's actual-size mode.
     ZoomImage {
         generation: u64,
@@ -1559,6 +1564,10 @@ impl Explorer {
                 self.handle_extract_done(result, folder, cx);
             }
             AppEvent::Preview { generation, data } => self.handle_preview(generation, data, cx),
+            AppEvent::PreviewCreated {
+                generation,
+                created,
+            } => self.handle_preview_created(generation, created, cx),
             AppEvent::ZoomImage { generation, image } => {
                 self.handle_zoom_image(generation, image, cx);
             }

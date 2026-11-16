@@ -3476,7 +3476,8 @@ fn search_page(
     out
 }
 
-/// A section that only matters while `on`: otherwise dimmed, and a cover takes the clicks.
+/// A section that only matters while `on`: otherwise dimmed, and a cover takes the clicks. The
+/// wheel still goes through, so the page scrolls with the pointer over it.
 fn needs(on: bool, section: AnyElement) -> AnyElement {
     if on {
         return section;
@@ -3490,7 +3491,7 @@ fn needs(on: bool, section: AnyElement) -> AnyElement {
                 .top_0()
                 .left_0()
                 .size_full()
-                .occlude()
+                .block_mouse_except_scroll()
                 .cursor_default(),
         )
         .into_any_element()
@@ -3751,6 +3752,20 @@ fn journal_choice(current_mb: u64) -> u64 {
         .unwrap_or(current_mb)
 }
 
+/// Sizes a journal now at `current` (an offered size, see [`journal_choice`]) can be set to.
+/// Windows only ever grows an existing journal: asked for a smaller size it keeps the one it has
+/// and reports success (#150). Shrinking would mean deleting the journal, which makes every
+/// program that reads it, Arke included, rescan the disk.
+fn journal_options(current: u64) -> Vec<u64> {
+    let mut sizes: Vec<u64> = JOURNAL_CHOICES
+        .iter()
+        .copied()
+        .filter(|&choice| choice > current)
+        .collect();
+    sizes.insert(0, current);
+    sizes
+}
+
 /// Advanced: the change journal's max size per local disk (queried from the disk), which can be
 /// raised (UAC prompt). A larger journal lets Arke catch up after being closed longer without a
 /// full reindex, at the cost of disk space. Collapsed by default.
@@ -3781,13 +3796,10 @@ fn journal_card(
             let id = drive_id(&JOURNAL_IDS, root)?;
             let current = journal_choice(mb(*max));
             let busy = state.busy.as_ref() == Some(root);
-            let mut options: Vec<(u64, Cow<'static, str>)> = JOURNAL_CHOICES
-                .iter()
-                .map(|&choice| (choice, Cow::Owned(journal_label(choice))))
+            let options: Vec<(u64, Cow<'static, str>)> = journal_options(current)
+                .into_iter()
+                .map(|size| (size, Cow::Owned(journal_label(size))))
                 .collect();
-            if !JOURNAL_CHOICES.contains(&current) {
-                options.insert(0, (current, Cow::Owned(journal_label(current))));
-            }
             let control = if busy {
                 row_desc(t!("settings.journal_busy"))
             } else {
@@ -3871,4 +3883,20 @@ fn journal_card(
         body,
         cx,
     )
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::{journal_choice, journal_options};
+
+    /// Windows won't shrink a journal, so smaller sizes aren't offered (#150).
+    #[test]
+    fn journal_sizes_offered_only_grow() {
+        assert_eq!(journal_options(32), [32, 128, 512, 1024]);
+        assert_eq!(journal_options(journal_choice(130)), [128, 512, 1024]);
+        assert_eq!(journal_options(1024), [1024]);
+        // A size set elsewhere (fsutil) stays first, with only larger choices after it.
+        assert_eq!(journal_options(journal_choice(300)), [300, 512, 1024]);
+        assert_eq!(journal_options(journal_choice(4096)), [4096]);
+    }
 }

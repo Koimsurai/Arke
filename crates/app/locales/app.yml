@@ -2251,9 +2251,9 @@ settings.advanced:
   zh-TW: 進階
   zh-CN: 高级
 settings.journal_desc:
-  en: "Arke uses it to catch up on changes made while it was closed. If it's too small, the index is rebuilt instead. Changing the size needs administrator approval."
-  zh-TW: "Arke 關閉期間的變更從這裡補上；太小時會改為重建索引。調整大小需要系統管理員同意。"
-  zh-CN: "Arke 关闭期间的更改从这里补上；太小时会改为重建索引。调整大小需要管理员批准。"
+  en: "Arke uses it to catch up on changes made while it was closed. If it's too small, the index is rebuilt instead. Changing the size needs administrator approval, and Windows can only make it larger."
+  zh-TW: "Arke 關閉期間的變更從這裡補上；太小時會改為重建索引。調整大小需要系統管理員同意，而且 Windows 只能調大、不能調小。"
+  zh-CN: "Arke 关闭期间的更改从这里补上；太小时会改为重建索引。调整大小需要管理员批准，而且 Windows 只能调大、不能调小。"
 settings.journal_now:
   en: "Up to %{max} MB · %{used} MB used"
   zh-TW: "上限 %{max} MB · 已用 %{used} MB"

@@ -6156,6 +6156,45 @@ fn search_settings_need_search_this_pc(cx: &mut TestAppContext) {
     assert!(skip_build(cx), "works once whole-PC search is on");
 }
 
+/// Settings › Search with whole-PC search off: the dimmed sections ignore clicks, but the wheel
+/// over them still scrolls the page.
+#[gpui::test]
+fn the_wheel_over_dimmed_settings_scrolls_the_page(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollEvent, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(px(1200.), px(500.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.search"), cx);
+    });
+    cx.run_until_parked();
+    assert!(!settings(cx).global_search, "off by default");
+    let page = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, _| ws.settings_scroll_for_test())
+            .expect("settings should be open")
+            .0
+    };
+    assert_eq!(page(cx), px(0.));
+    let over = cx
+        .debug_bounds("search-skip-build")
+        .expect("the skip build folders switch should be drawn")
+        .center();
+    cx.simulate_event(ScrollEvent {
+        position: over,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+        ..ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    assert!(
+        page(cx) < px(0.),
+        "the page should scroll, got {:?}",
+        page(cx)
+    );
+}
+
 /// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the
 /// page, until the text reaches its end; then the page takes over.
 #[gpui::test]

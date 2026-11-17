@@ -115,6 +115,17 @@ impl FakeFs {
         }
     }
 
+    /// Removes the folder `path` with everything in it; no watch event.
+    pub fn remove_dir(&self, path: &Path) {
+        let mut state = self.state.lock();
+        if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+            && let Some(list) = state.dirs.get_mut(parent)
+        {
+            list.retain(|e| *e.name != *name.to_string_lossy());
+        }
+        state.dirs.retain(|dir, _| !dir.starts_with(path));
+    }
+
     /// Sets file content for `read`. `hang` works on file paths too.
     pub fn set_content(&self, path: impl Into<PathBuf>, bytes: Vec<u8>) {
         self.state.lock().contents.insert(path.into(), bytes);

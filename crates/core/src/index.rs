@@ -789,6 +789,105 @@ impl Index {
         (depth == rel.len() && node.flags & (FLAG_PRUNED | FLAG_LINK) == 0).then_some(cur)
     }
 
+    /// What the index holds directly inside each folder of `dirs`: (name, is a folder) per entry,
+    /// for the folders the index has with their contents (others are left out). One pass over the
+    /// index for all of them, so a batch of changed folders costs one pass.
+    ///
+    /// Relies on parents being added before their children, which both build paths do.
+    pub fn children_of(
+        &self,
+        dirs: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Vec<(PathBuf, Vec<(String, bool)>)> {
+        #[derive(Default)]
+        struct Step {
+            next: HashMap<String, usize>,
+            /// Index into `dirs` when this step is one of them.
+            target: Option<usize>,
+        }
+        // The folders as paths of lowercase names under their root's step.
+        let mut steps: Vec<Step> = Vec::new();
+        let mut root_steps: Vec<(String, usize)> = Vec::new();
+        for (target, dir) in dirs.iter().enumerate() {
+            let Some((root, rel)) = self
+                .roots
+                .iter()
+                .find_map(|r| rel_components(dir, r).map(|rel| (r, rel)))
+            else {
+                continue;
+            };
+            let root_name = root.to_string_lossy().into_owned();
+            let mut cur = if let Some(&(_, step)) = root_steps.iter().find(|(n, _)| *n == root_name)
+            {
+                step
+            } else {
+                steps.push(Step::default());
+                root_steps.push((root_name, steps.len() - 1));
+                steps.len() - 1
+            };
+            for part in rel {
+                let key = part.to_lowercase();
+                cur = if let Some(&next) = steps[cur].next.get(&key) {
+                    next
+                } else {
+                    steps.push(Step::default());
+                    let next = steps.len() - 1;
+                    steps[cur].next.insert(key, next);
+                    next
+                };
+            }
+            steps[cur].target = Some(target);
+        }
+        if steps.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<Option<Vec<(String, bool)>>> = vec![None; dirs.len()];
+        // Nodes on the way to a folder: a bit per node id for the cheap "no" (almost every node),
+        // their steps in id order for the rest.
+        let mut on_bits = vec![0u64; self.nodes.len().div_ceil(64)];
+        let mut on: Vec<(u32, usize)> = Vec::new();
+        for (i, node) in self.nodes.iter().enumerate() {
+            if i % (64 * 1024) == 0 && cancel.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
+            let name = self.name(node);
+            let step = if node.parent == NO_PARENT {
+                root_steps.iter().find(|(n, _)| n == name).map(|&(_, s)| s)
+            } else {
+                let p = node.parent as usize;
+                if on_bits.get(p / 64).is_none_or(|w| w & (1 << (p % 64)) == 0) {
+                    continue;
+                }
+                let Ok(at) = on.binary_search_by_key(&node.parent, |&(id, _)| id) else {
+                    continue;
+                };
+                let parent_step = on[at].1;
+                if let Some(target) = steps[parent_step].target
+                    && let Some(list) = found[target].as_mut()
+                {
+                    list.push((name.to_owned(), node.flags & FLAG_DIR != 0));
+                }
+                steps[parent_step].next.get(&name.to_lowercase()).copied()
+            };
+            let Some(step) = step else {
+                continue;
+            };
+            if let Some(target) = steps[step].target
+                && node.flags & FLAG_DIR != 0
+                && node.flags & (FLAG_PRUNED | FLAG_LINK) == 0
+            {
+                found[target] = Some(Vec::new());
+            }
+            on_bits[i / 64] |= 1 << (i % 64);
+            on.push((u32::try_from(i).unwrap_or(u32::MAX), step));
+        }
+        dirs.iter()
+            .cloned()
+            .zip(found)
+            .filter_map(|(dir, children)| children.map(|c| (dir, c)))
+            .collect()
+    }
+
     /// Sizes of the subfolders of `dir`, summed from the index with `overlay` applied (see the
     /// module docs). Folders inside that the index has no contents for come back in
     /// [`IndexedDirSize::unindexed`]: walk those and add them for the same total as a full walk.
@@ -1931,6 +2030,16 @@ impl Overlay {
             self.added.remove(&path);
             self.removed.insert(path, self.seq);
         }
+    }
+
+    /// Paths recorded as added directly inside `dir`.
+    #[must_use]
+    pub fn added_in(&self, dir: &Path) -> Vec<PathBuf> {
+        self.added
+            .keys()
+            .filter(|p| p.parent() == Some(dir))
+            .cloned()
+            .collect()
     }
 
     /// Drops records before `seq` (the new index includes them).
@@ -3562,6 +3671,98 @@ mod tests {
             times[times.len() / 2],
             small.len()
         );
+    }
+
+    /// The contents of several folders in one pass: names in any letter case find the folder,
+    /// nested folders and the root work, and folders the index lacks (or holds only as a file or
+    /// a link) are left out.
+    #[test]
+    fn children_of_finds_each_folder_once() {
+        let mut index = Index {
+            roots: vec![PathBuf::from(r"C:\")],
+            ..Index::default()
+        };
+        let root = index.push(NO_PARENT, r"C:\", FLAG_DIR, 0, 0).unwrap();
+        let users = index.push(root, "Users", FLAG_DIR, 0, 0).unwrap();
+        let build = index.push(users, "build", FLAG_DIR, 0, 0).unwrap();
+        index.push(build, "a.txt", 0, 1, 0).unwrap();
+        let sub = index.push(build, "Sub", FLAG_DIR, 0, 0).unwrap();
+        index.push(sub, "b.txt", 0, 1, 0).unwrap();
+        index.push(users, "notes.txt", 0, 1, 0).unwrap();
+        index
+            .push(users, "link", FLAG_DIR | FLAG_LINK, 0, 0)
+            .unwrap();
+        let dirs = [
+            PathBuf::from(r"C:\users\BUILD"),
+            PathBuf::from(r"C:\Users\build\sub"),
+            PathBuf::from(r"C:\"),
+            PathBuf::from(r"C:\Users\missing"),
+            PathBuf::from(r"C:\Users\notes.txt"),
+            PathBuf::from(r"C:\Users\link"),
+            PathBuf::from(r"D:\elsewhere"),
+        ];
+        let got = index.children_of(&dirs, &AtomicBool::new(false));
+        let names = |d: &str| -> Option<Vec<(String, bool)>> {
+            got.iter()
+                .find(|(p, _)| p == Path::new(d))
+                .map(|(_, c)| c.clone())
+        };
+        assert_eq!(
+            names(r"C:\users\BUILD"),
+            Some(vec![("a.txt".to_owned(), false), ("Sub".to_owned(), true)])
+        );
+        assert_eq!(
+            names(r"C:\Users\build\sub"),
+            Some(vec![("b.txt".to_owned(), false)])
+        );
+        assert_eq!(names(r"C:\"), Some(vec![("Users".to_owned(), true)]));
+        assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    /// Comparing the folders of one batch of changes with a 4M-item index: one pass for all of them
+    /// (`cargo test --release -p arke-core -- --ignored --nocapture children_of_speed`).
+    #[test]
+    #[ignore = "benchmark; run manually"]
+    #[allow(
+        clippy::print_stdout,
+        reason = "a benchmark run by hand prints its timings"
+    )]
+    fn children_of_speed() {
+        let mut index = Index {
+            roots: vec![PathBuf::from(r"C:\")],
+            ..Index::default()
+        };
+        let root = index.push(NO_PARENT, r"C:\", FLAG_DIR, 0, 0).unwrap();
+        let mut dirs = Vec::new();
+        for d in 0..4000u32 {
+            dirs.push(
+                index
+                    .push(root, &format!("dir{d:04}"), FLAG_DIR, 0, 0)
+                    .unwrap(),
+            );
+        }
+        for i in 0..4_000_000u32 {
+            index.push(
+                dirs[(i % 4000) as usize],
+                &format!("file_{i:07}.txt"),
+                0,
+                1,
+                0,
+            );
+        }
+        for count in [1usize, 100, 2000] {
+            let wanted: Vec<PathBuf> = (0..count)
+                .map(|d| PathBuf::from(format!(r"C:\dir{:04}", d * 2 % 4000)))
+                .collect();
+            let t = std::time::Instant::now();
+            let got = index.children_of(&wanted, &AtomicBool::new(false));
+            println!(
+                "children_of {count} folders in {} items: {:?} ({} children)",
+                index.len(),
+                t.elapsed(),
+                got.iter().map(|(_, c)| c.len()).sum::<usize>()
+            );
+        }
     }
 
     /// Folding 100k changes into a 4M-item index, what replaces a full rebuild when the overlay

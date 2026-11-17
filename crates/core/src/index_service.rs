@@ -25,6 +25,7 @@
 //! Dropping the service stops it: walks end early and watches are removed.
 
 use parking_lot::{Mutex, RwLock};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1113,6 +1114,12 @@ impl Shared {
                 }
                 same
             });
+            // Folders that changed: the old contents of a folder replaced at the same path aren't
+            // reported (their records name a parent that's gone), so these are compared with the
+            // index once the batch is in.
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            // What the folders walked just now hold (lowercase names), so they aren't listed again.
+            let mut listed: HashMap<PathBuf, HashSet<String>> = HashMap::new();
             for (path, moved_in) in paths {
                 if self.stopped.load(Ordering::Relaxed) {
                     return;
@@ -1130,10 +1137,14 @@ impl Shared {
                 self.overlay
                     .lock()
                     .record(path.clone(), Some(Seen::of(&entry)));
-                if walk && !self.record_tree(&path) {
+                if descends_into(&entry) {
+                    dirs.push(path.clone());
+                }
+                if walk && !self.record_tree(&path, &mut dirs, &mut listed) {
                     self.request_build(Rebuild::LargeMoveIn(MOVED_IN_MAX));
                 }
             }
+            self.forget_what_is_gone(&dirs, &listed);
             let recorded = self.overlay.lock().len();
             if recorded > OVERLAY_MAX {
                 self.request_build(Rebuild::OverlayFull(recorded));
@@ -1142,15 +1153,23 @@ impl Shared {
     }
 
     /// Moved-in (or renamed) folder: record its contents in the overlay too (the index has the old
-    /// paths). Returns `false` if there are too many (left to a rebuild).
-    fn record_tree(&self, dir: &Path) -> bool {
+    /// paths), add the folders inside to `dirs` and what each folder holds to `listed`. Returns
+    /// `false` if there are too many (left to a rebuild).
+    fn record_tree(
+        &self,
+        dir: &Path,
+        dirs: &mut Vec<PathBuf>,
+        listed: &mut HashMap<PathBuf, HashSet<String>>,
+    ) -> bool {
         let mut stack = vec![dir.to_path_buf()];
         let mut count = 0usize;
         while let Some(dir) = stack.pop() {
             let Ok(iter) = self.fs.read_dir(&dir) else {
                 continue;
             };
+            let names = listed.entry(dir.clone()).or_default();
             for entry in iter.filter_map(Result::ok) {
+                names.insert(entry.name.to_lowercase());
                 if self.stopped.load(Ordering::Relaxed) {
                     return true;
                 }
@@ -1161,11 +1180,63 @@ impl Shared {
                 let path = dir.join(&*entry.name);
                 if descends_into(&entry) {
                     stack.push(path.clone());
+                    dirs.push(path.clone());
                 }
                 self.overlay.lock().record(path, Some(Seen::of(&entry)));
             }
         }
         true
+    }
+
+    /// For folders that changed: whatever the index or the overlay still has inside one of them
+    /// that's no longer there is recorded as removed. A folder deleted and made again (or replaced
+    /// by one moved in) is reported only as the folder itself, so this is where its old contents
+    /// go. Folders that can't be listed are left as they are.
+    fn forget_what_is_gone(&self, dirs: &[PathBuf], listed: &HashMap<PathBuf, HashSet<String>>) {
+        if dirs.is_empty() {
+            return;
+        }
+        let Some(index) = self.index.read().clone() else {
+            return;
+        };
+        let indexed = index.children_of(dirs, &self.stopped);
+        let mut known: HashMap<&Path, Vec<String>> = HashMap::new();
+        for (dir, children) in &indexed {
+            known
+                .entry(dir.as_path())
+                .or_default()
+                .extend(children.iter().map(|(name, _)| name.clone()));
+        }
+        for dir in dirs {
+            let added = self.overlay.lock().added_in(dir);
+            known.entry(dir.as_path()).or_default().extend(
+                added
+                    .iter()
+                    .filter_map(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned()),
+            );
+        }
+        for (dir, names) in known {
+            if names.is_empty() || self.stopped.load(Ordering::Relaxed) {
+                continue;
+            }
+            let here: HashSet<String> = if let Some(here) = listed.get(dir) {
+                here.clone()
+            } else {
+                let Ok(iter) = self.fs.read_dir(dir) else {
+                    continue;
+                };
+                iter.filter_map(Result::ok)
+                    .map(|e| e.name.to_lowercase())
+                    .collect()
+            };
+            let mut overlay = self.overlay.lock();
+            for name in names {
+                if !here.contains(&name.to_lowercase()) {
+                    overlay.record(dir.join(name), None);
+                }
+            }
+        }
     }
 
     /// Rebuilds in the background (no-op if already building).
@@ -1864,6 +1935,94 @@ mod tests {
         fs.add_file(me, "live-report.txt", 1);
         journal.push(me.join("live-report.txt"), false);
         wait("live change", || found(&svc, "live-report").len() == 1);
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder replaced by a new one at the same path (`rm -rf build && mkdir build`, or an
+    /// updater moving a new `app` in place of the old one): the journal reports the folder itself,
+    /// but not the old contents, whose records name a parent that no longer exists. None of the
+    /// old contents may come back, after catching up or live.
+    #[test]
+    fn a_folder_replaced_at_the_same_path_leaves_nothing_behind() {
+        let (dir, cache) = temp_cache("replaced");
+        let me = Path::new(r"C:\Users\me");
+        let build = me.join("build");
+        let app = me.join("app");
+        let file = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            &build,
+            vec![
+                file("old-report.txt"),
+                Entry::new("sub", EntryKind::Dir, 0, None, 0),
+            ],
+        );
+        fs.insert_dir(build.join("sub"), vec![file("old-nested-report.txt")]);
+        fs.insert_dir(&app, vec![file("old-app-report.txt")]);
+        let journal = FakeJournal::new(5);
+        {
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
+            wait("first build", || ready(&svc));
+            wait("journal caught up", || svc.status().live);
+            assert_eq!(found(&svc, "report").len(), 3);
+        }
+        // While Arke is closed: `build` is deleted and made again, `app` is swapped for a new
+        // folder moved in under the same name.
+        fs.remove_dir(&build);
+        journal.push(&build, false);
+        fs.insert_dir(&build, vec![file("new-report.txt")]);
+        journal.push(&build, false);
+        journal.push(build.join("new-report.txt"), false);
+        fs.remove_dir(&app);
+        fs.insert_dir(&app, vec![file("new-app-report.txt")]);
+        journal.push(&app, true);
+
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
+        wait("offline changes replayed", || {
+            let f = found(&svc, "report");
+            f.iter().any(|p| p.ends_with("new-report.txt"))
+                && f.iter().any(|p| p.ends_with("new-app-report.txt"))
+        });
+        // Give any leftover a chance to show (the drain runs after a short settle).
+        std::thread::sleep(Duration::from_millis(400));
+        let mut f = found(&svc, "report");
+        f.sort();
+        assert_eq!(
+            f,
+            [
+                app.join("new-app-report.txt").display().to_string(),
+                build.join("new-report.txt").display().to_string(),
+            ],
+            "the old contents are gone after catching up"
+        );
+
+        // While running: replaced once more.
+        fs.remove_dir(&build);
+        journal.push(&build, false);
+        fs.insert_dir(&build, vec![file("third-report.txt")]);
+        journal.push(&build, false);
+        journal.push(build.join("third-report.txt"), false);
+        wait("live replacement", || {
+            found(&svc, "report")
+                .iter()
+                .any(|p| p.ends_with("third-report.txt"))
+        });
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            !found(&svc, "report")
+                .iter()
+                .any(|p| p.ends_with(r"build\new-report.txt")),
+            "the previous contents are gone live too"
+        );
         drop(svc);
         let _ = std::fs::remove_dir_all(&dir);
     }

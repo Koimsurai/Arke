@@ -2234,38 +2234,10 @@ settings.search_network_desc:
   en: "Only updated after you open a location, so idle NAS drives aren't woken up"
   zh-TW: "開啟過的位置才會在背景更新，不會喚醒閒置的 NAS"
   zh-CN: "打开过的位置才会在后台更新，不会唤醒闲置的 NAS"
-settings.journal_title:
-  en: "Change journal (NTFS)"
-  zh-TW: "NTFS 變更日誌"
-  zh-CN: "NTFS 更改日志"
-settings.journal_short:
-  en: "How far back Arke can catch up on changes made while it was closed"
-  zh-TW: "決定 Arke 關閉多久之後仍能補上期間的變更"
-  zh-CN: "决定 Arke 关闭多久之后仍能补上期间的更改"
 settings.search_index:
   en: Index
   zh-TW: 索引
   zh-CN: 索引
-settings.advanced:
-  en: Advanced
-  zh-TW: 進階
-  zh-CN: 高级
-settings.journal_desc:
-  en: "Arke uses it to catch up on changes made while it was closed. If it's too small, the index is rebuilt instead. Changing the size needs administrator approval, and Windows can only make it larger."
-  zh-TW: "Arke 關閉期間的變更從這裡補上；太小時會改為重建索引。調整大小需要系統管理員同意，而且 Windows 只能調大、不能調小。"
-  zh-CN: "Arke 关闭期间的更改从这里补上；太小时会改为重建索引。调整大小需要管理员批准，而且 Windows 只能调大、不能调小。"
-settings.journal_now:
-  en: "Up to %{max} MB · %{used} MB used"
-  zh-TW: "上限 %{max} MB · 已用 %{used} MB"
-  zh-CN: "上限 %{max} MB · 已用 %{used} MB"
-settings.journal_busy:
-  en: "Waiting for administrator approval…"
-  zh-TW: "等待系統管理員同意…"
-  zh-CN: "正在等待管理员批准…"
-settings.journal_failed:
-  en: "Couldn't change the size: %{error}"
-  zh-TW: "無法調整大小：%{error}"
-  zh-CN: "无法调整大小：%{error}"
 settings.search_network_auto:
   en: "Add network drives and recently opened shares automatically"
   zh-TW: "自動加入網路磁碟機與最近開啟的共用資料夾"

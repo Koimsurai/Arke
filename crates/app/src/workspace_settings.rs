@@ -1439,7 +1439,7 @@ impl Workspace {
         if crate::update::installed_by_setup() {
             startup.remove(0);
         }
-        let search = search_page(s, page, ui, cx);
+        let search = search_page(s, cx);
         let update = super::update_page::update_card(s, page.expanded.contains("update"), ui, cx);
         let report = super::report_page::report_card(
             page.expanded.contains("report"),
@@ -3404,14 +3404,8 @@ fn service_control(cx: &App) -> AnyElement {
 const LARGE_NETWORK_INDEX: usize = 1_000_000;
 
 /// Settings › Search. The whole-PC switch comes first; everything else only matters while it is
-/// on, so it is dimmed and can't be clicked otherwise. The change journal is an advanced detail,
-/// collapsed by default.
-fn search_page(
-    s: &Settings,
-    page: &SettingsPage,
-    ui: &Ui,
-    cx: &mut Context<Workspace>,
-) -> Vec<AnyElement> {
+/// on, so it is dimmed and can't be clicked otherwise.
+fn search_page(s: &Settings, cx: &mut Context<Workspace>) -> Vec<AnyElement> {
     let on = s.global_search;
     let main = group(
         None,
@@ -3447,29 +3441,19 @@ fn search_page(
         Some(t!("settings.search_ranking")),
         vec![search_history_card(s, cx)],
     );
-    let drives = crate::win::fixed_drive_roots();
     let scope = group_with(
         Some(t!("settings.search_scope")),
         Some(t!("settings.search_scope_desc")),
-        search_scope_rows(s, drives.clone()),
+        search_scope_rows(s, crate::win::fixed_drive_roots()),
     );
     let network = group_with(
         Some(t!("settings.search_network")),
         Some(t!("settings.search_network_desc")),
         network_search_rows(s, cx),
     );
-    let advanced = group(
-        Some(t!("settings.advanced")),
-        vec![journal_card(
-            drives,
-            page.expanded.contains("search-advanced"),
-            ui,
-            cx,
-        )],
-    );
     let mut out = vec![main];
     out.extend(
-        [index, ranking, scope, network, advanced]
+        [index, ranking, scope, network]
             .into_iter()
             .map(|section| needs(on, section)),
     );
@@ -3628,8 +3612,6 @@ macro_rules! drive_ids {
 
 /// Search scope switches, one per drive letter.
 const DRIVE_SWITCH_IDS: [&str; 26] = drive_ids!("search-drive-");
-/// Change journal size dropdowns, one per drive letter.
-const JOURNAL_IDS: [&str; 26] = drive_ids!("journal-size-");
 
 /// The `'static` id for `root`'s drive letter from `ids`.
 fn drive_id(ids: &[&'static str; 26], root: &std::path::Path) -> Option<&'static str> {
@@ -3730,173 +3712,4 @@ fn network_row(
         )
         .child(div().flex_none().child(button))
         .into_any_element()
-}
-
-/// Change journal sizes offered in Settings, in MB. The first is the Windows default.
-const JOURNAL_CHOICES: [u64; 4] = [32, 128, 512, 1024];
-
-fn journal_label(mb: u64) -> String {
-    if mb >= 1024 && mb.is_multiple_of(1024) {
-        format!("{} GB", mb / 1024)
-    } else {
-        format!("{mb} MB")
-    }
-}
-
-/// The offered size `current_mb` counts as (within an eighth, since Windows rounds), or itself.
-fn journal_choice(current_mb: u64) -> u64 {
-    JOURNAL_CHOICES
-        .iter()
-        .copied()
-        .find(|&choice| current_mb.abs_diff(choice) <= choice / 8)
-        .unwrap_or(current_mb)
-}
-
-/// Sizes a journal now at `current` (an offered size, see [`journal_choice`]) can be set to.
-/// Windows only ever grows an existing journal: asked for a smaller size it keeps the one it has
-/// and reports success (#150). Shrinking would mean deleting the journal, which makes every
-/// program that reads it, Arke included, rescan the disk.
-fn journal_options(current: u64) -> Vec<u64> {
-    let mut sizes: Vec<u64> = JOURNAL_CHOICES
-        .iter()
-        .copied()
-        .filter(|&choice| choice > current)
-        .collect();
-    sizes.insert(0, current);
-    sizes
-}
-
-/// Advanced: the change journal's max size per local disk (queried from the disk), which can be
-/// raised (UAC prompt). A larger journal lets Arke catch up after being closed longer without a
-/// full reindex, at the cost of disk space. Collapsed by default.
-#[allow(
-    clippy::too_many_lines,
-    reason = "One card: a row per disk with its size dropdown, kept together for easier comparison"
-)]
-fn journal_card(
-    roots: Vec<PathBuf>,
-    open: bool,
-    ui: &Ui,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let state = cx
-        .try_global::<crate::global_search::JournalSizes>()
-        .cloned()
-        .unwrap_or_default();
-    // Loaded even while collapsed: the header shows the current sizes.
-    if !state.loaded {
-        let roots = roots.clone();
-        cx.defer(move |cx| crate::global_search::refresh_journal_sizes(roots, cx));
-    }
-    let mb = |bytes: u64| bytes >> 20;
-    let rows: Vec<AnyElement> = state
-        .drives
-        .iter()
-        .filter_map(|(root, max, used)| {
-            let id = drive_id(&JOURNAL_IDS, root)?;
-            let current = journal_choice(mb(*max));
-            let busy = state.busy.as_ref() == Some(root);
-            let options: Vec<(u64, Cow<'static, str>)> = journal_options(current)
-                .into_iter()
-                .map(|size| (size, Cow::Owned(journal_label(size))))
-                .collect();
-            let control = if busy {
-                row_desc(t!("settings.journal_busy"))
-            } else {
-                let (root, roots) = (root.clone(), roots.clone());
-                choice_with(
-                    id,
-                    &options,
-                    current,
-                    move |size, cx| {
-                        if size != current {
-                            crate::global_search::set_journal_size(
-                                root.clone(),
-                                size,
-                                roots.clone(),
-                                cx,
-                            );
-                        }
-                    },
-                    None,
-                    ui,
-                )
-            };
-            Some(
-                div()
-                    .min_h(px(48.))
-                    .flex()
-                    .items_center()
-                    .gap(theme::S_16)
-                    .child(row_icon(Icon::Drive, theme::text_muted()))
-                    .child(row_text(
-                        SharedString::from(root.display().to_string()),
-                        Some(row_desc(t!(
-                            "settings.journal_now",
-                            max = mb(*max),
-                            used = mb(*used)
-                        ))),
-                    ))
-                    .child(div().flex_none().child(control))
-                    .into_any_element(),
-            )
-        })
-        .collect();
-    let summary = state
-        .drives
-        .iter()
-        .map(|(root, max, _)| {
-            format!(
-                "{} {}",
-                root.display().to_string().trim_end_matches('\\'),
-                journal_label(journal_choice(mb(*max)))
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let error = state.error.map(|e| {
-        div()
-            .text_size(theme::FS_12)
-            .text_color(theme::danger())
-            .child(t!("settings.journal_failed", error = e).into_owned())
-    });
-    let body = div()
-        .flex()
-        .flex_col()
-        .gap(theme::S_8)
-        .child(
-            div()
-                .text_size(theme::FS_12)
-                .text_color(theme::text_subtle())
-                .child(t!("settings.journal_desc").to_string()),
-        )
-        .children(rows)
-        .children(error)
-        .into_any_element();
-    expander(
-        "search-advanced",
-        Icon::Settings,
-        t!("settings.journal_title"),
-        t!("settings.journal_short"),
-        text_summary(summary),
-        open,
-        body,
-        cx,
-    )
-}
-
-#[cfg(test)]
-mod journal_tests {
-    use super::{journal_choice, journal_options};
-
-    /// Windows won't shrink a journal, so smaller sizes aren't offered (#150).
-    #[test]
-    fn journal_sizes_offered_only_grow() {
-        assert_eq!(journal_options(32), [32, 128, 512, 1024]);
-        assert_eq!(journal_options(journal_choice(130)), [128, 512, 1024]);
-        assert_eq!(journal_options(1024), [1024]);
-        // A size set elsewhere (fsutil) stays first, with only larger choices after it.
-        assert_eq!(journal_options(journal_choice(300)), [300, 512, 1024]);
-        assert_eq!(journal_options(journal_choice(4096)), [4096]);
-    }
 }

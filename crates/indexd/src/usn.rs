@@ -607,33 +607,6 @@ pub fn journal_size(root: &Path) -> Option<(u64, u64)> {
     Some((data.MaximumSize, used))
 }
 
-/// Sets the journal's max size (`FSCTL_CREATE_USN_JOURNAL`: on an existing journal this only
-/// resizes it, records are kept). Needs admin; run by `arke.exe --indexd journal-size` after UAC.
-pub(crate) fn set_journal_size(root: &Path, max: u64) -> windows::core::Result<()> {
-    use windows::Win32::Foundation::GENERIC_WRITE;
-    use windows::Win32::System::Ioctl::{CREATE_USN_JOURNAL_DATA, FSCTL_CREATE_USN_JOURNAL};
-    let volume = Volume::open_with(root, GENERIC_READ.0 | GENERIC_WRITE.0)?;
-    let input = CREATE_USN_JOURNAL_DATA {
-        MaximumSize: max,
-        // The system default delta is 1/4 of the max; 1/8 keeps a little more history.
-        AllocationDelta: max / 8,
-    };
-    let mut returned = 0u32;
-    // SAFETY: input is a valid CREATE_USN_JOURNAL_DATA; no output; sync call.
-    unsafe {
-        DeviceIoControl(
-            volume.handle,
-            FSCTL_CREATE_USN_JOURNAL,
-            Some((&raw const input).cast()),
-            size_of::<CREATE_USN_JOURNAL_DATA>() as u32,
-            None,
-            0,
-            Some(&raw mut returned),
-            None,
-        )
-    }
-}
-
 /// Whether the volume's reported record version range (`None`: older system, meaning v2)
 /// includes v2 or v3.
 fn readable(versions: Option<(u16, u16)>) -> bool {

@@ -2,10 +2,10 @@
 default: patch
 ---
 
-Settings › Search › Change journal only offers sizes larger than the current one: Windows can grow a journal but not shrink it, so choosing a smaller size did nothing. (#150)
+Settings › Search no longer has the change journal size: Windows can make a drive's journal larger but never smaller again, and Arke doesn't need a larger one. If you made one larger, docs/change-journal.md explains how to go back. (#150)
 
 <!-- zh-TW -->
-設定 › 搜尋 › NTFS 變更日誌只列出比目前更大的大小：Windows 只能把日誌調大、不能調小，所以以前選較小的大小不會有任何作用。(#150)
+設定 › 搜尋不再提供調整 NTFS 變更日誌大小：Windows 只能把日誌調大、調不回來，而 Arke 也不需要比較大的日誌。如果你調大過，docs/change-journal.md 說明怎麼恢復。(#150)
 
 <!-- zh-CN -->
-设置 › 搜索 › NTFS 更改日志只列出比当前更大的大小：Windows 只能把日志调大、不能调小，所以以前选较小的大小不会有任何作用。(#150)
+设置 › 搜索不再提供调整 NTFS 更改日志大小：Windows 只能把日志调大、调不回来，而 Arke 也不需要更大的日志。如果你调大过，docs/change-journal.md 说明怎么恢复。(#150)

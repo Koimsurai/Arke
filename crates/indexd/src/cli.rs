@@ -7,7 +7,6 @@
 //! arke-indexd uninstall              remove (admin)
 //! arke-indexd run --allow <SID>...   started by the service control manager, not by hand
 //! arke-indexd console --allow <SID> [--pipe <name>]   run in the foreground (development)
-//! arke-indexd journal-size C:\ <MB>  set the change journal max size (admin; keeps records)
 //! arke-indexd probe C:\ [seconds]    show journal state and print new changes (development, admin)
 //! arke-indexd mft C:\                read the MFT, print entry count and timing (read-only; admin)
 //! ```
@@ -117,24 +116,6 @@ pub fn run(args: Vec<String>, prefix: Option<&'static str>) -> ExitCode {
         }
         "probe" => probe(&args),
         "mft" => mft_probe(&args),
-        "journal-size" => {
-            let (Some(root), Some(mb)) =
-                (args.get(1), args.get(2).and_then(|m| m.parse::<u64>().ok()))
-            else {
-                return fail("usage: journal-size <drive> <MB>");
-            };
-            // 16 MB to 8 GB: smaller is useless, larger wastes disk.
-            if !(16..=8192).contains(&mb) {
-                return fail("journal size must be 16-8192 MB");
-            }
-            match usn::set_journal_size(Path::new(root), mb * 1024 * 1024) {
-                Ok(()) => {
-                    log::info!("{root} change journal max size set to {mb} MB");
-                    ExitCode::SUCCESS
-                }
-                Err(err) => fail(&format!("journal-size {root}: {}", err.message())),
-            }
-        }
         other => fail(&format!("unknown command: {other}")),
     }
 }

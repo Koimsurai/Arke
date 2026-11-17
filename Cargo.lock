@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "arke-app"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "arke-core",
  "arke-indexd",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "arke-core"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "flume",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "arke-indexd"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "arke-core",
  "env_logger",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "arke-remote"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "arke-core",
  "base64",
@@ -2428,14 +2428,14 @@ dependencies = [
 
 [[package]]
 name = "genfiles"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "genicon"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "ico",
  "resvg 0.49.0",
@@ -8436,7 +8436,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "serde_json",

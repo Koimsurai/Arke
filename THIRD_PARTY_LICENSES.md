@@ -7,7 +7,7 @@ design references and other third-party material are in `THIRD_PARTY_NOTICES.md`
 
 ## Overview
 
-- Apache License 2.0: 340
+- Apache License 2.0: 341
 - MIT License: 74
 - Unicode License v3: 25
 - ISC License: 22
@@ -4857,6 +4857,7 @@ Used by:
 - indexmap 2.14.2 (https://github.com/indexmap-rs/indexmap)
 - itertools 0.11.0 (https://github.com/rust-itertools/itertools)
 - itertools 0.14.0 (https://github.com/rust-itertools/itertools)
+- jpeg-decoder 0.3.2 (https://github.com/image-rs/jpeg-decoder)
 - lock_api 0.4.14 (https://github.com/Amanieu/parking_lot)
 - lock_api 0.5.0 (https://github.com/Amanieu/parking_lot)
 - log 0.4.35 (https://github.com/rust-lang/log)
@@ -10896,6 +10897,39 @@ SOFTWARE.
 
 Used by:
 
+- quick-xml 0.42.0 (https://github.com/tafia/quick-xml)
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2016 Johann Tuffe
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+````
+
+## MIT License
+
+Used by:
+
 - color_quant 1.1.0 (https://github.com/image-rs/color_quant.git)
 
 ````text
@@ -11078,39 +11112,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-````
-
-## MIT License
-
-Used by:
-
-- quick-xml 0.41.0 (https://github.com/tafia/quick-xml)
-
-````text
-The MIT License (MIT)
-
-Copyright (c) 2016 Johann Tuffe
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
 ````
 
 ## Mozilla Public License 2.0

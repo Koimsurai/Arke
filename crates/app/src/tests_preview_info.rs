@@ -93,6 +93,55 @@ fn narrow_preview_pane_shows_every_detail_in_full(cx: &mut TestAppContext) {
     assert!(kind.right() <= name.right() + px(1.), "inside the pane");
 }
 
+/// A short window: the preview gives up height so the name and every detail below it stay inside
+/// the window (they were pushed off its bottom edge).
+#[gpui::test]
+fn a_short_window_keeps_the_details_on_screen(cx: &mut TestAppContext) {
+    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+    let entry = Entry::new(
+        "meeting-notes-20260930.docx",
+        EntryKind::File,
+        49_152,
+        Some(at),
+        0,
+    )
+    .with_created(Some(at));
+    let dir = r"C:\shares\team\progress\weekly\2026\applied-ai-project";
+    let fs = FakeFs::new();
+    fs.insert_dir(dir, vec![entry]);
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), dir);
+    wait_until(cx, &view, "load", loaded(dir));
+    let height = px(560.);
+    cx.simulate_resize(gpui::size(px(1400.), height));
+    crate::prefs::set_preview_width(Some(px(360.)));
+    view.update(cx, |v, cx| {
+        v.preview_pane = true;
+        cx.notify();
+    });
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "previewed", previewed);
+    cx.run_until_parked();
+    let rows = view.update(cx, |v, _| v.preview_info_for_test());
+    let last = rows.len() - 1;
+    let id: &'static str = Box::leak(format!("pane-info-value-{last}").into_boxed_str());
+    let location = bounds(cx, id);
+    assert!(
+        location.bottom() <= height,
+        "the last detail ends inside the window: {location:?}"
+    );
+    let name = bounds(cx, "pane-name");
+    assert!(name.top() >= px(0.) && name.bottom() <= height, "{name:?}");
+
+    // With room again, the preview takes its full height back.
+    cx.simulate_resize(gpui::size(px(1400.), px(1000.)));
+    cx.run_until_parked();
+    let tall = bounds(cx, "pane-name");
+    assert!(
+        tall.top() > name.top(),
+        "the preview grew: {tall:?} / {name:?}"
+    );
+}
+
 /// With room for a wide pane, the name and the actions share one line again.
 #[gpui::test]
 fn wide_preview_pane_keeps_the_name_beside_the_actions(cx: &mut TestAppContext) {

@@ -1037,12 +1037,18 @@ impl Explorer {
                 div()
                     .w(fit.size.width)
                     .h(fit.size.height)
+                    // A side preview short of `area` (short window): the page shrinks with it.
+                    .max_h_full()
                     .flex_none()
                     .rounded(theme::R_4)
                     .overflow_hidden()
                     .when(raised, |d| d.shadow(theme::elev_float()))
                     .when(!raised, |d| d.border_1().border_color(theme::line()))
-                    .child(img(Arc::clone(&render.image)).size_full()),
+                    .child(
+                        img(Arc::clone(&render.image))
+                            .size_full()
+                            .object_fit(ObjectFit::Contain),
+                    ),
             )
             .into_any_element()
     }
@@ -1945,36 +1951,53 @@ impl Explorer {
         } else {
             self.image_frame_h(frame_w)
         };
-        pane.child(div().h(frame_h).flex_none().child({
-            if let PreviewBody::Pdf(view) = &preview.body {
-                if view.render.pages > 1 {
-                    self.pane_pdf_pages(view, gpui::size(frame_w, frame_h), cx)
-                } else {
-                    Self::pdf_page_view(&view.render, gpui::size(frame_w, frame_h), false)
-                }
-            } else if let PreviewBody::Slides(view) = &preview.body
-                && view.deck.slides.len() > 1
-            {
-                Self::with_preview_scrollbar(
-                    office::slides_list(view, frame_w, &self.preview_scroll),
-                    &self.preview_scroll,
-                    &self.preview_scrollbar,
-                )
-            } else {
-                let body = Self::preview_body(preview, &self.preview_scroll);
-                if Self::scrolls(&preview.body) {
-                    Self::with_preview_scrollbar(
-                        body,
-                        &self.preview_scroll,
-                        &self.preview_scrollbar,
-                    )
-                } else {
-                    body
-                }
-            }
-        }))
-        .child(Self::pane_title(preview, cx))
-        .child(self.pane_info(preview, false, cx))
+        // The frame takes up to `frame_h` and gives height back in a short window, so the name and
+        // details below it stay on screen.
+        pane.child(
+            div()
+                .flex_1()
+                .min_h(PANE_FRAME_MIN_H)
+                .max_h(frame_h)
+                .overflow_hidden()
+                .child({
+                    if let PreviewBody::Pdf(view) = &preview.body {
+                        if view.render.pages > 1 {
+                            self.pane_pdf_pages(view, gpui::size(frame_w, frame_h), cx)
+                        } else {
+                            Self::pdf_page_view(&view.render, gpui::size(frame_w, frame_h), false)
+                        }
+                    } else if let PreviewBody::Slides(view) = &preview.body
+                        && view.deck.slides.len() > 1
+                    {
+                        Self::with_preview_scrollbar(
+                            office::slides_list(view, frame_w, &self.preview_scroll),
+                            &self.preview_scroll,
+                            &self.preview_scrollbar,
+                        )
+                    } else {
+                        let body = Self::preview_body(preview, &self.preview_scroll);
+                        if Self::scrolls(&preview.body) {
+                            Self::with_preview_scrollbar(
+                                body,
+                                &self.preview_scroll,
+                                &self.preview_scrollbar,
+                            )
+                        } else {
+                            body
+                        }
+                    }
+                }),
+        )
+        .child(div().flex_none().child(Self::pane_title(preview, cx)))
+        .child(
+            // Only in a window too short for even the smallest frame: the details scroll.
+            div()
+                .id("pane-info-scroll")
+                .flex_shrink(1.)
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(self.pane_info(preview, false, cx)),
+        )
         .into_any_element()
     }
 
@@ -2847,6 +2870,9 @@ const PANE_IMAGE_RATIO: f32 = 268. / 200.;
 pub(crate) struct DraggedPreviewEdge(pub(super) gpui::EntityId);
 /// Pane frame for PDFs: height to width, a little squatter than A4 so details still fit
 const PDF_FRAME_RATIO: f32 = 1.3;
+/// The least height the side preview's frame keeps when the window is short (it gives up the rest
+/// so the name and details stay on screen).
+const PANE_FRAME_MIN_H: Pixels = px(96.);
 /// Long side of the high-res image for "actual size" (4096² × 4 ≈ 64 MB)
 const ZOOM_SIDE: u32 = 4096;
 /// Zoom change per wheel notch

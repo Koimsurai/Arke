@@ -183,6 +183,10 @@ pub(super) const fn known_icon(kf: KnownFolder) -> Icon {
     }
 }
 
+/// How much more readily the tab list shrinks than the places above it when the sidebar runs out
+/// of room (flex shrink factors): it gives way to its minimum before the places shrink.
+pub(super) const TABS_GIVE_WAY: f32 = 1000.;
+
 /// `items` in `list`, scrolling on its own inside `frame` (which sets its size). A row cut off by the
 /// bottom edge is dimmed, the more of it is hidden the more, so it reads as going on below rather
 /// than broken. (A gradient over it can't match the Mica background.)
@@ -682,9 +686,10 @@ impl Workspace {
 
         let tab_count = tabs.len();
         // Places (pins, This PC, Network) and the vertical tab list each scroll on their own. When
-        // the window is short, both shrink (each by its share of the height) instead of the tabs
-        // falling below the fold, where nothing showed they were there. With room to spare,
-        // nothing changes: the places take their height and the tabs follow right under them.
+        // they don't both fit, the tab list gives way first, down to three tabs, so opening many
+        // tabs doesn't squeeze the places; only then do the places shrink too. The tabs never
+        // fall below the fold, where nothing showed they were there. With room to spare, nothing
+        // changes: the places take their height and the tabs follow right under them.
         let horizontal = Self::horizontal_tabs(cx);
         let mut items = pins;
         items.extend(self.render_shelf(cx));
@@ -697,6 +702,7 @@ impl Workspace {
             items,
             &self.sidebar_ui.places_scroll,
             div()
+                .debug_selector(|| "sidebar-places-frame".to_owned())
                 // With tabs on top there is nothing below, so the places fill the sidebar.
                 .when(horizontal, gpui::Styled::flex_1)
                 .when(!horizontal, gpui::Styled::flex_initial)
@@ -746,7 +752,9 @@ impl Workspace {
                         &self.sidebar_ui.tabs_scroll,
                         // Keeps up to three tabs in view however short the window gets.
                         div()
+                            .debug_selector(|| "sidebar-tabs-frame".to_owned())
                             .flex_initial()
+                            .flex_shrink(TABS_GIVE_WAY)
                             .min_h(Self::tab_list_min_height(tab_count)),
                     ))
                     // Dropping in the empty space below the last tab moves it to the end.
@@ -758,6 +766,12 @@ impl Workspace {
                             .on_drop(cx.listener(Self::drop_tab_at_end)),
                     )
             })
+    }
+
+    /// How far the sidebar's places scroll past what is shown (tests).
+    #[cfg(test)]
+    pub(crate) fn places_overflow_for_test(&self) -> Pixels {
+        self.sidebar_ui.places_scroll.max_offset().y
     }
 
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.

@@ -1559,3 +1559,79 @@ fn background_tab_is_current_when_switched_back(cx: &mut TestAppContext) {
     );
     assert_eq!(fs.read_dir_calls(), reads, "no relist needed");
 }
+
+/// A sidebar with eight drives and `tabs` tabs, in a window `height` tall.
+fn sidebar_with_tabs(
+    cx: &mut TestAppContext,
+    tabs: usize,
+    height: f32,
+) -> (Entity<Workspace>, &mut VisualTestContext) {
+    let fs = FakeFs::new();
+    let paths: Vec<String> = (0..tabs).map(|i| format!(r"C:\t{i}")).collect();
+    for path in &paths {
+        fs.insert_many(path, 1);
+    }
+    let shell = Arc::new(FakeShell::default());
+    shell
+        .extra_places
+        .lock()
+        .extend((b'D'..=b'K').map(|letter| crate::shell::Place {
+            label: format!("Disk ({}:)", letter as char),
+            path: PathBuf::from(format!(r"{}:\", letter as char)),
+            kind: crate::shell::PlaceKind::Drive {
+                remote: false,
+                space: None,
+            },
+        }));
+    let (ws, cx) = setup_workspace_with(cx, fs, shell, &paths[0]);
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(&paths[0]));
+    let rest: Vec<&str> = paths[1..].iter().map(String::as_str).collect();
+    open_tabs(&ws, cx, &rest);
+    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(height)));
+    for _ in 0..3 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    (ws, cx)
+}
+
+/// Shown in the vertical tab list: tab `ix` is drawn and its bottom inside the list.
+fn tab_shown(cx: &mut VisualTestContext, ix: usize) -> bool {
+    let id: &'static str = Box::leak(format!("tab-{ix}").into_boxed_str());
+    let list = cx.debug_bounds("sidebar-tabs-frame").unwrap();
+    cx.debug_bounds(id)
+        .is_some_and(|b| b.top() >= list.top() && b.bottom() <= list.bottom() + gpui::px(1.))
+}
+
+/// Many tabs don't squeeze the places (This PC, drives) above them: the tab list gives way
+/// first and scrolls.
+#[gpui::test]
+fn many_tabs_leave_the_places_alone(cx: &mut TestAppContext) {
+    let (ws, cx) = sidebar_with_tabs(cx, 20, 1000.);
+    // Less than a pixel: rounding, not squeezed.
+    assert!(ws.update(cx, |ws, _| ws.places_overflow_for_test()) < gpui::px(1.));
+    assert!(tab_shown(cx, 0) && tab_shown(cx, 2), "the first tabs show");
+    assert!(!tab_shown(cx, 19), "the rest scroll");
+}
+
+/// A short window: the tabs give way down to three, then the places shrink too and scroll.
+#[gpui::test]
+fn a_short_window_keeps_three_tabs_then_shrinks_the_places(cx: &mut TestAppContext) {
+    let (ws, cx) = sidebar_with_tabs(cx, 20, 520.);
+    assert!(ws.update(cx, |ws, _| ws.places_overflow_for_test()) > gpui::px(0.));
+    for ix in 0..3 {
+        assert!(tab_shown(cx, ix), "tab {ix} shows");
+    }
+}
+
+/// Few tabs: nothing scrolls and nothing is cut.
+#[gpui::test]
+fn few_tabs_and_room_to_spare_scroll_nothing(cx: &mut TestAppContext) {
+    let (ws, cx) = sidebar_with_tabs(cx, 3, 1000.);
+    // Less than a pixel: rounding, not squeezed.
+    assert!(ws.update(cx, |ws, _| ws.places_overflow_for_test()) < gpui::px(1.));
+    for ix in 0..3 {
+        assert!(tab_shown(cx, ix), "tab {ix} shows");
+    }
+}

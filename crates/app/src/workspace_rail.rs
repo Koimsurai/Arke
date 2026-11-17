@@ -322,7 +322,11 @@ impl Workspace {
                     .gap(theme::S_2),
                 tabs,
                 scroll,
-                div().w_full().flex_initial().min_h(buttons_h(keep)),
+                div()
+                    .w_full()
+                    .flex_initial()
+                    .flex_shrink(super::sidebar::TABS_GIVE_WAY)
+                    .min_h(buttons_h(keep)),
             )
             .into_any_element(),
             rail_button(

@@ -15,18 +15,22 @@ use std::time::{Duration, Instant};
 
 use crate::proto::SERVICE_NAME;
 use crate::sec::{SecurityDescriptor, is_plain_sid};
-use windows::Win32::Foundation::{ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE, HANDLE,
+};
 use windows::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Services::{
     ChangeServiceConfig2W, ChangeServiceConfigW, CloseServiceHandle, ControlService,
     CreateServiceW, DeleteService, ENUM_SERVICE_TYPE, OpenSCManagerW, OpenServiceW,
-    QUERY_SERVICE_CONFIGW, QueryServiceConfigW, QueryServiceStatus, SC_HANDLE, SC_MANAGER_CONNECT,
-    SC_MANAGER_CREATE_SERVICE, SERVICE_ALL_ACCESS, SERVICE_CONFIG_DESCRIPTION,
-    SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO, SERVICE_CONTROL_STOP, SERVICE_DEMAND_START,
-    SERVICE_DESCRIPTIONW, SERVICE_ERROR_NORMAL, SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_STATUS,
-    SERVICE_STOPPED, SERVICE_WIN32_OWN_PROCESS, SetServiceObjectSecurity,
+    QUERY_SERVICE_CONFIGW, QueryServiceConfigW, QueryServiceStatus, QueryServiceStatusEx,
+    SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_CREATE_SERVICE, SC_STATUS_PROCESS_INFO,
+    SERVICE_ALL_ACCESS, SERVICE_CONFIG_DESCRIPTION, SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO,
+    SERVICE_CONTROL_STOP, SERVICE_DEMAND_START, SERVICE_DESCRIPTIONW, SERVICE_ERROR_NORMAL,
+    SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_STATUS, SERVICE_STATUS_PROCESS, SERVICE_STOPPED,
+    SERVICE_WIN32_OWN_PROCESS, SetServiceObjectSecurity,
 };
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
 use windows::core::{PCWSTR, PWSTR};
 
@@ -206,8 +210,54 @@ fn open(manager: &Handle) -> Result<Option<Handle>, InstallError> {
     }
 }
 
-/// Stops the service and waits until it has actually stopped.
+/// How long stopping the service may take, including its process exiting.
+const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A process handle, closed when dropped.
+struct Process(HANDLE);
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // SAFETY: self.0 is a process handle owned by this struct and not yet closed.
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// The running service's process, to wait for it to exit.
+fn service_process(service: &Handle) -> Option<Process> {
+    let mut info = [0u8; size_of::<SERVICE_STATUS_PROCESS>()];
+    let mut needed = 0u32;
+    // SAFETY: info is a writable buffer of the size passed; needed is a valid out pointer.
+    unsafe {
+        QueryServiceStatusEx(
+            service.0,
+            SC_STATUS_PROCESS_INFO,
+            Some(&mut info),
+            &raw mut needed,
+        )
+    }
+    .ok()?;
+    // SAFETY: the call filled info with a SERVICE_STATUS_PROCESS (read unaligned from bytes).
+    let pid = unsafe {
+        info.as_ptr()
+            .cast::<SERVICE_STATUS_PROCESS>()
+            .read_unaligned()
+    }
+    .dwProcessId;
+    if pid == 0 {
+        return None;
+    }
+    // SAFETY: plain Win32 call; the handle is owned by the returned Process.
+    unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
+        .ok()
+        .map(Process)
+}
+
+/// Stops the service and waits until its process has exited. The service reports stopped before
+/// that, while its process still has the program file open, so replacing the file right after
+/// fails (in use).
 fn stop(service: &Handle) -> Result<(), InstallError> {
+    let process = service_process(service);
     let mut status = SERVICE_STATUS::default();
     // SAFETY: service is a valid handle; status is a valid out pointer.
     match unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &raw mut status) } {
@@ -216,16 +266,39 @@ fn stop(service: &Handle) -> Result<(), InstallError> {
         Err(source) => return Err(InstallError::Stop { source }),
     }
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(15) {
+    while started.elapsed() < STOP_TIMEOUT {
         // SAFETY: as above.
         unsafe { QueryServiceStatus(service.0, &raw mut status) }
             .map_err(|source| InstallError::QueryStatus { source })?;
         if status.dwCurrentState == SERVICE_STOPPED {
+            if let Some(process) = process {
+                let left = STOP_TIMEOUT.saturating_sub(started.elapsed());
+                let ms = u32::try_from(left.as_millis()).unwrap_or(u32::MAX);
+                // SAFETY: the handle has synchronize access and is open.
+                let _ = unsafe { WaitForSingleObject(process.0, ms) };
+            }
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
     }
     Err(InstallError::StopTimeout)
+}
+
+/// Runs `op` until it succeeds, retrying for up to 5 seconds while the file is still in use (a
+/// process that has just exited, or a virus scanner looking at the file).
+fn retry_in_use(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    let started = Instant::now();
+    loop {
+        match op() {
+            Err(e)
+                if e.kind() != std::io::ErrorKind::NotFound
+                    && started.elapsed() < Duration::from_secs(5) =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// Users already allowed, read from the registered command line.
@@ -321,9 +394,11 @@ pub(crate) fn install(user: &str) -> Result<(), InstallError> {
         .zip(target.canonicalize().ok())
         .is_some_and(|(a, b)| a == b);
     if !same {
-        std::fs::copy(&me, &target).map_err(|source| InstallError::Copy {
-            path: target.clone(),
-            source,
+        retry_in_use(|| std::fs::copy(&me, &target).map(|_| ())).map_err(|source| {
+            InstallError::Copy {
+                path: target.clone(),
+                source,
+            }
         })?;
     }
 
@@ -434,23 +509,14 @@ pub(crate) fn uninstall() -> Result<(), InstallError> {
             .and_then(|p| p.canonicalize().ok());
         let running_from_target = me.is_some_and(|me| target.canonicalize().ok() == Some(me));
         if target.exists() && !running_from_target {
-            // The process may still be exiting and holding the file: retry for up to 5 seconds.
-            let mut tries = 0;
-            loop {
-                match std::fs::remove_file(&target) {
-                    Ok(()) => break,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-                    Err(_) if tries < 50 => {
-                        tries += 1;
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    Err(source) => {
-                        return Err(InstallError::RemoveBinary {
-                            path: target,
-                            source,
-                        });
-                    }
+            match retry_in_use(|| std::fs::remove_file(&target)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(InstallError::RemoveBinary {
+                        path: target,
+                        source: e,
+                    });
                 }
+                _ => {}
             }
         }
         // Remove the folder only if empty (the user may have put things there).
@@ -465,6 +531,39 @@ pub(crate) fn uninstall() -> Result<(), InstallError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The update copies over the service's program right after it stops; the file may stay in
+    /// use for a moment.
+    #[test]
+    fn a_file_in_use_for_a_moment_is_still_replaced() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("arke-install-in-use-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("arke-indexd.exe");
+        let source = dir.join("new.exe");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::write(&source, b"new").unwrap();
+        // Open with no sharing, as a running program's image is.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&target)
+            .unwrap();
+        assert!(std::fs::copy(&source, &target).is_err(), "in use");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(held);
+        });
+        retry_in_use(|| std::fs::copy(&source, &target).map(|_| ())).unwrap();
+        release.join().unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        // A missing file is not waited for.
+        let started = Instant::now();
+        let gone = retry_in_use(|| std::fs::remove_file(dir.join("missing.exe")));
+        assert_eq!(gone.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     const ME: &str = "S-1-5-21-1-2-3-1001";
     const YOU: &str = "S-1-5-21-1-2-3-1002";

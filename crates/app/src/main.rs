@@ -13,6 +13,7 @@
 //!   arke --uninstall [--keep-settings] [--quiet] [--dry-run]
 //!                               remove Arke from this PC (see `uninstall.rs`)
 //!   arke --shell-host           (internal) hidden context menu process, see `shell_host.rs`
+//!   arke --thumb-host           (internal) hidden video thumbnail process, see `thumb_host.rs`
 //!   arke --pick-file            (internal) one file dialog for Settings, see `win_picker.rs`
 //!
 //! By default the first Arke stays in the background after its last window closes, so later
@@ -74,6 +75,7 @@ mod spring;
 mod teracopy;
 mod text_input;
 mod theme;
+mod thumb_host;
 mod tray;
 mod uninstall;
 mod update;
@@ -305,7 +307,7 @@ fn main() -> std::process::ExitCode {
     reason = "Startup order (args, handoff to the resident process, window, settings-driven pieces) reads best top to bottom in one place"
 )]
 fn app_main(mut args: Args) {
-    if run_shell_host() {
+    if run_shell_host() || run_thumb_host() {
         return;
     }
     // Launched by the old version (auto-update): wait for it to exit before taking over residency.
@@ -1080,6 +1082,19 @@ fn restored_bounds(place: settings::WindowPlace, cx: &App) -> Option<WindowBound
     } else {
         WindowBounds::Windowed(bounds)
     })
+}
+
+/// `arke.exe --thumb-host`: the video thumbnail process (see `thumb_host.rs`). No window, no
+/// residency or settings.
+fn run_thumb_host() -> bool {
+    if std::env::args_os()
+        .nth(1)
+        .is_none_or(|a| a != thumb_host::HOST_ARG)
+    {
+        return false;
+    }
+    thumb_host::run();
+    true
 }
 
 /// `arke.exe --shell-host`: the menu process. No window, no residency or settings; only serves menu

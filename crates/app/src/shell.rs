@@ -838,6 +838,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// System icon (only requested for `.exe`, `.lnk`, `.ico`). Background thread (COM, may read the file).
     fn file_icon(&self, path: &Path, size: u32) -> Option<arke_core::thumbs::Thumbnail>;
 
+    /// Windows' thumbnail of a video (a frame), fitted within `max_side`, made in a separate
+    /// process. Background thread; may take seconds. `None` if there is none.
+    fn video_thumbnail(&self, path: &Path, max_side: u32) -> Option<arke_core::thumbs::Thumbnail> {
+        let _ = (path, max_side);
+        None
+    }
+
     /// "More options": reads the Windows context menu entries (including third-party shell extensions) for Arke to draw.
     /// With `background`, `paths` is one folder and the menu is its empty-space menu (New, Open in Terminal, ...).
     /// Shell extensions are loaded in a separate process (`shell_host.rs`), never in Arke itself. Background thread.

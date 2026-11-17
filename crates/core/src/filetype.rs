@@ -98,6 +98,15 @@ pub fn wants_system_icon(entry: &Entry) -> bool {
 /// decode, so they get the type icon.
 pub const MAX_THUMBNAIL_SOURCE: u64 = 64 * 1024 * 1024;
 
+/// Videos get Windows' thumbnail (a frame), asked for in a separate process. Not cloud
+/// placeholders: making one reads the file, which would download it.
+pub fn can_video_thumbnail(entry: &Entry) -> bool {
+    entry.kind == EntryKind::File
+        && !entry.is_cloud_placeholder()
+        && entry.size > 0
+        && kind_for_extension(entry.extension()) == FileKind::Video
+}
+
 /// Formats we can decode in Rust for thumbnails (`.ico` uses the system icon).
 pub fn can_thumbnail(entry: &Entry) -> bool {
     entry.kind == EntryKind::File
@@ -131,6 +140,24 @@ mod tests {
         // Once downloaded (no recall attribute) it is handled normally.
         let local = Entry::new("a.jpg", EntryKind::File, 1000, None, 0);
         assert!(can_thumbnail(&local));
+    }
+
+    /// Videos with content get a frame; not other files, empty ones or cloud placeholders (the
+    /// frame would download the video).
+    #[test]
+    fn videos_get_a_frame_unless_online_only() {
+        assert!(can_video_thumbnail(&file("Trip.MP4", 1000)));
+        assert!(can_video_thumbnail(&file("clip.mkv", 1000)));
+        assert!(!can_video_thumbnail(&file("clip.mkv", 0)));
+        assert!(!can_video_thumbnail(&file("song.mp3", 1000)));
+        assert!(
+            !can_thumbnail(&file("clip.mp4", 1000)),
+            "not decoded in Rust"
+        );
+        let online_only = Entry::new("clip.mp4", EntryKind::File, 1000, None, 0x40_0000);
+        assert!(!can_video_thumbnail(&online_only));
+        let dir = Entry::new("clips.mp4", EntryKind::Dir, 0, None, 0);
+        assert!(!can_video_thumbnail(&dir));
     }
 
     #[test]

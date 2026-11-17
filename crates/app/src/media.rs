@@ -18,7 +18,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use arke_core::Entry;
-use arke_core::filetype::{MAX_THUMBNAIL_SOURCE, can_thumbnail, wants_system_icon};
+use arke_core::filetype::{
+    MAX_THUMBNAIL_SOURCE, can_thumbnail, can_video_thumbnail, wants_system_icon,
+};
 use arke_core::loader::Loader;
 use arke_core::thumb_cache::{ThumbCache, ThumbKey};
 use arke_core::thumbs::{SOURCE_SIZES, THUMBNAIL_SIZE, Thumbnail, decode_thumbnail};
@@ -58,6 +60,15 @@ pub(crate) fn thumb_cache() -> &'static ThumbCache {
 pub(crate) enum MediaKind {
     Thumbnail,
     SystemIcon,
+    /// A video's thumbnail: a frame, from Windows, made in a separate process (`thumb_host.rs`).
+    Video,
+}
+
+impl MediaKind {
+    /// A picture of the content (shown like a photo), not an icon.
+    pub(crate) const fn is_picture(self) -> bool {
+        matches!(self, Self::Thumbnail | Self::Video)
+    }
 }
 
 /// File path plus mtime and size: an edited file gets a new key and never a stale thumbnail.
@@ -89,6 +100,8 @@ impl MediaKey {
     pub(crate) fn at(path: PathBuf, entry: &Entry, thumbnail_px: Option<u32>) -> Option<Self> {
         let (kind, px) = if wants_system_icon(entry) {
             (MediaKind::SystemIcon, 0)
+        } else if can_video_thumbnail(entry) {
+            (MediaKind::Video, thumbnail_px?)
         } else {
             (
                 MediaKind::Thumbnail,
@@ -132,6 +145,7 @@ pub(crate) struct MediaStore {
     bytes: usize,
     thumbs: Loader<MediaKey>,
     icons: Loader<MediaKey>,
+    videos: Loader<MediaKey>,
     last_wanted: Vec<MediaKey>,
     /// Wanted by the main list (in priority order)
     main_wanted: Vec<MediaKey>,
@@ -198,6 +212,29 @@ impl MediaStore {
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), icon));
             })
         };
+        let videos = {
+            let shell = Arc::clone(&services.shell);
+            let tx = tx.clone();
+            // Videos Windows had no thumbnail for: not asked again this run (each try can take
+            // seconds, and a broken file stays broken). A changed file has a new key.
+            let failed: Arc<parking_lot::Mutex<HashSet<ThumbKey>>> = Arc::default();
+            // One at a time: the host makes them one by one anyway.
+            Loader::new("video-thumbnail", 1, move |key: &MediaKey| {
+                let thumb_key = key.thumb_key();
+                let thumb = if failed.lock().contains(&thumb_key) {
+                    None
+                } else {
+                    let made = thumb_cache().load(&thumb_key, || {
+                        shell.video_thumbnail(&key.path, key.px.max(1))
+                    });
+                    if made.is_none() {
+                        failed.lock().insert(thumb_key);
+                    }
+                    made
+                };
+                let _ = tx.send(MediaEvent::Loaded(key.clone(), thumb));
+            })
+        };
         thumb_cache().count_in_background();
         let task = cx.spawn(async move |this, cx| {
             while let Ok(event) = rx.recv_async().await {
@@ -213,6 +250,7 @@ impl MediaStore {
             bytes: 0,
             thumbs,
             icons,
+            videos,
             last_wanted: Vec::new(),
             main_wanted: Vec::new(),
             side_wanted: Vec::new(),
@@ -231,6 +269,7 @@ impl MediaStore {
                 match key.kind {
                     MediaKind::Thumbnail => self.thumbs.acknowledge(&key),
                     MediaKind::SystemIcon => self.icons.acknowledge(&key),
+                    MediaKind::Video => self.videos.acknowledge(&key),
                 }
                 self.insert(key, thumb);
                 self.evict(cx);
@@ -341,7 +380,7 @@ impl MediaStore {
         if let Some(found) = self.cache.get(key) {
             return found.clone();
         }
-        if key.kind != MediaKind::Thumbnail {
+        if !key.kind.is_picture() {
             return None;
         }
         let mut others: Vec<u32> = SOURCE_SIZES.into_iter().filter(|&s| s != key.px).collect();
@@ -408,7 +447,7 @@ impl MediaStore {
             if start.elapsed() > SYNC_DECODE {
                 break;
             }
-            if key.kind != MediaKind::Thumbnail || self.cache.contains_key(key) {
+            if !key.kind.is_picture() || self.cache.contains_key(key) {
                 continue;
             }
             if let Some(thumb) = thumb_cache()
@@ -448,7 +487,7 @@ impl MediaStore {
         if keys == self.last_wanted {
             return;
         }
-        let (mut thumbs, mut icons) = (Vec::new(), Vec::new());
+        let (mut thumbs, mut icons, mut videos) = (Vec::new(), Vec::new(), Vec::new());
         for key in &keys {
             if self.cache.contains_key(key) {
                 continue;
@@ -456,10 +495,12 @@ impl MediaStore {
             match key.kind {
                 MediaKind::Thumbnail => thumbs.push(key.clone()),
                 MediaKind::SystemIcon => icons.push(key.clone()),
+                MediaKind::Video => videos.push(key.clone()),
             }
         }
         self.thumbs.set_wanted(thumbs);
         self.icons.set_wanted(icons);
+        self.videos.set_wanted(videos);
         // Move used entries to the recent end so visible thumbnails aren't evicted.
         for key in &keys {
             if self.cache.get(key).is_some_and(Option::is_some)

@@ -68,6 +68,8 @@ struct FakeShell {
     /// Simulates an operation's effect on the file system (e.g. a new folder appears in FakeFs).
     on_op: Mutex<Option<OpHook>>,
     icons: Mutex<Vec<PathBuf>>,
+    /// Videos asked for a thumbnail; ones named `broken*` have none.
+    video_thumbs: Mutex<Vec<PathBuf>>,
     system_menus: Mutex<Vec<Vec<PathBuf>>>,
     shell_invoked: Mutex<Vec<(u64, u32)>>,
     shell_released: Mutex<Vec<u64>>,
@@ -694,6 +696,22 @@ impl Shell for FakeShell {
             width: size,
             height: size,
             rgba: vec![255; (size * size * 4) as usize],
+        })
+    }
+
+    fn video_thumbnail(&self, path: &Path, max_side: u32) -> Option<arke_core::thumbs::Thumbnail> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "video_thumbnail called on the UI thread"
+        );
+        self.video_thumbs.lock().push(path.to_path_buf());
+        let broken = path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("broken"));
+        (!broken).then(|| arke_core::thumbs::Thumbnail {
+            width: max_side,
+            height: max_side * 9 / 16,
+            rgba: vec![128; (max_side * (max_side * 9 / 16) * 4) as usize],
         })
     }
 }
@@ -3831,6 +3849,68 @@ fn grid_view_loads_thumbnails_and_icons_without_blocking(cx: &mut TestAppContext
         crate::explorer::ViewMode::Details
     );
     fs.release_all();
+}
+
+/// Grid view: videos get a frame from the shell (asked off the UI thread), shown like a photo. A
+/// video without one keeps its type icon and isn't asked again when it scrolls back into view.
+#[gpui::test]
+fn grid_view_shows_video_frames(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\clips",
+        vec![
+            file("broken.mp4", 100),
+            file("holiday.mkv", 100),
+            file("notes.txt", 100),
+            file("trip.mp4", 100),
+        ],
+    );
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\clips");
+    wait_until(cx, &view, "load", loaded(r"C:\clips"));
+
+    cx.simulate_keystrokes("ctrl-shift-2");
+    let expected = vec![
+        (PathBuf::from(r"C:\clips\holiday.mkv"), MediaKind::Video),
+        (PathBuf::from(r"C:\clips\trip.mp4"), MediaKind::Video),
+    ];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while loaded_media(&view, cx) != expected
+        || !shell
+            .video_thumbs
+            .lock()
+            .contains(&PathBuf::from(r"C:\clips\broken.mp4"))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "video frames not loaded: {:?}",
+            loaded_media(&view, cx)
+        );
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut asked = shell.video_thumbs.lock().clone();
+    asked.sort();
+    assert_eq!(
+        asked,
+        [
+            PathBuf::from(r"C:\clips\broken.mp4"),
+            PathBuf::from(r"C:\clips\holiday.mkv"),
+            PathBuf::from(r"C:\clips\trip.mp4"),
+        ],
+        "only videos, each once"
+    );
+    // Back to details and to the grid again: nothing is asked for twice.
+    cx.simulate_keystrokes("ctrl-shift-6");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-shift-2");
+    for _ in 0..20 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(shell.video_thumbs.lock().len(), 3, "no video asked twice");
 }
 
 /// A thumbnail whose decoded image was freed comes back in the next frame from its compressed

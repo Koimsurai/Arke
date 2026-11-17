@@ -929,9 +929,14 @@ impl Shell for WinShell {
         crate::win_icons::file_icon(path, size)
     }
 
-    fn video_thumbnail(&self, path: &Path, max_side: u32) -> Option<arke_core::thumbs::Thumbnail> {
+    fn video_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         crate::thumb_host::video_thumbnail(path, max_side)
+            .map_err(|e| ShellError::Host(e.to_string()))
     }
 
     fn shell_menu(

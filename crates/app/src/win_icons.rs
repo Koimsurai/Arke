@@ -56,6 +56,13 @@ pub(crate) fn file_icon(path: &Path, size: u32) -> Option<Thumbnail> {
 /// Windows' thumbnail of a file (for videos: a frame), fitted within `size`. `None` if Windows
 /// has none (no thumbnail provider or codec for it). Loads thumbnail providers, which Windows runs
 /// in its own surrogate process; Arke calls this only in its thumbnail host (`thumb_host.rs`).
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "only the host process calls it; tests use a stand-in host"
+    )
+)]
 pub(crate) fn video_thumbnail(path: &Path, size: u32) -> Option<Thumbnail> {
     let _com = Com::init().ok()?;
     let w = wide(path.as_os_str());

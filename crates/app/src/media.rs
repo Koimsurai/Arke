@@ -129,6 +129,9 @@ impl MediaKey {
 
 enum MediaEvent {
     Loaded(MediaKey, Option<Thumbnail>),
+    /// The thumbnail host couldn't be asked: nothing is kept, so the item is asked again the next
+    /// time it's wanted (by then the host may start).
+    Unavailable(MediaKey),
     LocalDisk(PathBuf, bool),
 }
 
@@ -216,7 +219,8 @@ impl MediaStore {
             let shell = Arc::clone(&services.shell);
             let tx = tx.clone();
             // Videos Windows had no thumbnail for: not asked again this run (each try can take
-            // seconds, and a broken file stays broken). A changed file has a new key.
+            // seconds, and a broken file stays broken). A changed file has a new key. Not when the
+            // host couldn't be asked at all: that's not the file's doing.
             let failed: Arc<parking_lot::Mutex<HashSet<ThumbKey>>> = Arc::default();
             // One at a time: the host makes them one by one anyway.
             Loader::new("video-thumbnail", 1, move |key: &MediaKey| {
@@ -224,9 +228,19 @@ impl MediaStore {
                 let thumb = if failed.lock().contains(&thumb_key) {
                     None
                 } else {
+                    let mut unavailable = false;
                     let made = thumb_cache().load(&thumb_key, || {
-                        shell.video_thumbnail(&key.path, key.px.max(1))
+                        shell
+                            .video_thumbnail(&key.path, key.px.max(1))
+                            .unwrap_or_else(|_| {
+                                unavailable = true;
+                                None
+                            })
                     });
+                    if unavailable {
+                        let _ = tx.send(MediaEvent::Unavailable(key.clone()));
+                        return;
+                    }
                     if made.is_none() {
                         failed.lock().insert(thumb_key);
                     }
@@ -273,6 +287,11 @@ impl MediaStore {
                 }
                 self.insert(key, thumb);
                 self.evict(cx);
+            }
+            MediaEvent::Unavailable(key) => {
+                self.videos.acknowledge(&key);
+                // Asked again with the next change of what's wanted.
+                self.last_wanted.clear();
             }
             MediaEvent::LocalDisk(root, local) => {
                 self.local_pending.remove(&root);

@@ -839,10 +839,15 @@ pub(crate) trait Shell: Send + Sync + 'static {
     fn file_icon(&self, path: &Path, size: u32) -> Option<arke_core::thumbs::Thumbnail>;
 
     /// Windows' thumbnail of a video (a frame), fitted within `max_side`, made in a separate
-    /// process. Background thread; may take seconds. `None` if there is none.
-    fn video_thumbnail(&self, path: &Path, max_side: u32) -> Option<arke_core::thumbs::Thumbnail> {
+    /// process. Background thread; may take seconds. `Ok(None)`: the file has none. `Err`: none
+    /// could be asked for (the process can't start), which says nothing about the file.
+    fn video_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
         let _ = (path, max_side);
-        None
+        Ok(None)
     }
 
     /// "More options": reads the Windows context menu entries (including third-party shell extensions) for Arke to draw.

@@ -699,20 +699,29 @@ impl Shell for FakeShell {
         })
     }
 
-    fn video_thumbnail(&self, path: &Path, max_side: u32) -> Option<arke_core::thumbs::Thumbnail> {
+    fn video_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
         assert!(
             !arke_core::fs::is_ui_thread(),
             "video_thumbnail called on the UI thread"
         );
         self.video_thumbs.lock().push(path.to_path_buf());
-        let broken = path
+        let name = path
             .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with("broken"));
-        (!broken).then(|| arke_core::thumbs::Thumbnail {
-            width: max_side,
-            height: max_side * 9 / 16,
-            rgba: vec![128; (max_side * (max_side * 9 / 16) * 4) as usize],
-        })
+            .map_or_default(|n| n.to_string_lossy().into_owned());
+        if name.starts_with("unavailable") {
+            return Err(ShellError::Host("can't start".into()));
+        }
+        Ok(
+            (!name.starts_with("broken")).then(|| arke_core::thumbs::Thumbnail {
+                width: max_side,
+                height: max_side * 9 / 16,
+                rgba: vec![128; (max_side * (max_side * 9 / 16) * 4) as usize],
+            }),
+        )
     }
 }
 
@@ -3863,6 +3872,7 @@ fn grid_view_shows_video_frames(cx: &mut TestAppContext) {
             file("holiday.mkv", 100),
             file("notes.txt", 100),
             file("trip.mp4", 100),
+            file("unavailable.mp4", 100),
         ],
     );
     let shell = Arc::new(FakeShell::default());
@@ -3890,16 +3900,29 @@ fn grid_view_shows_video_frames(cx: &mut TestAppContext) {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !shell
+        .video_thumbs
+        .lock()
+        .contains(&PathBuf::from(r"C:\clips\unavailable.mp4"))
+    {
+        assert!(Instant::now() < deadline, "unavailable.mp4 never asked");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let mut asked = shell.video_thumbs.lock().clone();
     asked.sort();
+    asked.dedup();
     assert_eq!(
         asked,
         [
             PathBuf::from(r"C:\clips\broken.mp4"),
             PathBuf::from(r"C:\clips\holiday.mkv"),
             PathBuf::from(r"C:\clips\trip.mp4"),
+            PathBuf::from(r"C:\clips\unavailable.mp4"),
         ],
-        "only videos, each once"
+        "only videos"
     );
     // Back to details and to the grid again: nothing is asked for twice.
     cx.simulate_keystrokes("ctrl-shift-6");
@@ -3910,7 +3933,18 @@ fn grid_view_shows_video_frames(cx: &mut TestAppContext) {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(shell.video_thumbs.lock().len(), 3, "no video asked twice");
+    let asked = shell.video_thumbs.lock().clone();
+    let times = |name: &str| asked.iter().filter(|p| p.ends_with(name)).count();
+    assert_eq!(
+        times("broken.mp4"),
+        1,
+        "a video without a thumbnail isn't asked twice"
+    );
+    assert_eq!(times("trip.mp4"), 1, "a loaded one comes from the cache");
+    assert!(
+        times("unavailable.mp4") >= 2,
+        "asked again when the host couldn't be reached: {asked:?}"
+    );
 }
 
 /// A thumbnail whose decoded image was freed comes back in the next frame from its compressed

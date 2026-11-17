@@ -93,6 +93,7 @@ mod win_icons;
 mod win_inuse;
 mod win_jumplist;
 mod win_menu;
+mod win_menu_parts;
 mod win_net;
 mod win_openinfolder;
 mod win_pdf;

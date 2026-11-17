@@ -546,6 +546,9 @@ pub(crate) struct Settings {
     pub(crate) menu_hidden: Vec<String>,
     /// Windows commands pinned to the main menu from "More options" (`explorer_menu::pin_key` keys, in pin order).
     pub(crate) menu_pinned: Vec<String>,
+    /// Which extension (COM class) each pinned command comes from, learned from the menus seen;
+    /// empty when none has it. Lets a pinned command show before the whole Windows menu is read.
+    pub(crate) menu_pin_owners: std::collections::BTreeMap<String, String>,
     /// Auto update: channel (`None` follows this build's channel), whether to check automatically,
     /// and the last check time (Unix seconds).
     pub(crate) update_channel_choice: Option<crate::build_info::Channel>,
@@ -649,6 +652,7 @@ impl Default for Settings {
             tray_icon: true,
             menu_hidden: Vec::new(),
             menu_pinned: Vec::new(),
+            menu_pin_owners: std::collections::BTreeMap::new(),
             update_channel_choice: None,
             update_auto: true,
             update_checked: None,

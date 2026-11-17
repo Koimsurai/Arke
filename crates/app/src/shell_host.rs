@@ -16,6 +16,10 @@
 //! - A host that only read menus exits as soon as Arke closes it (Arke quitting, the installer
 //!   replacing the exe): nothing of the user's is running in it.
 //!
+//! - Single extensions (`win_menu_parts.rs`) are found and read as soon as they are asked for,
+//!   each on a thread of its own, and answer as each one is ready, even while a whole menu is
+//!   still being read.
+//!
 //! Transport is one JSON message per line over stdin/stdout. Arke reads and writes on
 //! dedicated threads; the UI thread never waits on the host.
 
@@ -38,6 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 
 use crate::shell::{ShellError, ShellMenu};
+use crate::win_menu_parts::MenuHandler;
 
 /// Starts arke.exe as a menu host only: no window, no tray, no settings.
 pub(crate) const HOST_ARG: &str = "--shell-host";
@@ -69,12 +74,33 @@ enum HostRequest {
     Release {
         session: u64,
     },
+    /// The extensions that apply (answered at once, beside a whole menu being read).
+    Handlers {
+        id: u64,
+        paths: Vec<PathBuf>,
+        background: bool,
+    },
+    /// One extension's menu (answered when ready, beside a whole menu being read).
+    QueryHandler {
+        id: u64,
+        paths: Vec<PathBuf>,
+        background: bool,
+        handler: MenuHandler,
+        /// Arke's menu asking; older menus' extension menus are released.
+        group: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Reply {
     Menu(ShellMenu),
     Invoked,
+    Handlers(Vec<MenuHandler>),
+    /// One extension's menu, and how long it took to load and read.
+    Part {
+        menu: ShellMenu,
+        ms: u64,
+    },
 }
 
 /// One reply on the wire. Errors cross the process boundary as their display text and come
@@ -99,24 +125,15 @@ pub(crate) fn run() {
 
 /// Serves requests until input ends, then returns: right away if no command ran here,
 /// else once this process has had no visible window for `linger`.
-fn serve<R, W>(input: R, mut output: W, warm: bool, linger: Duration)
+fn serve<R, W>(input: R, output: W, warm: bool, linger: Duration)
 where
     R: BufRead + Send + 'static,
-    W: Write,
+    W: Write + Send + 'static,
 {
+    let (out_tx, writer) = start_writer(output);
+    let send_reply = reply_sender(out_tx.clone());
     let (tx, rx) = flume::unbounded::<HostRequest>();
-    let _ = std::thread::Builder::new()
-        .name("shell-host-in".into())
-        .spawn(move || {
-            for line in input.lines() {
-                let Ok(line) = line else { break };
-                if let Ok(request) = serde_json::from_str(&line)
-                    && tx.send(request).is_err()
-                {
-                    break;
-                }
-            }
-        });
+    start_reader(input, tx, send_reply.clone());
     if warm {
         warm_up();
     }
@@ -163,15 +180,15 @@ where
                     crate::win_menu::release(session);
                     continue;
                 }
+                HostRequest::Handlers { .. } | HostRequest::QueryHandler { .. } => continue,
             };
-            let Ok(mut line) = serde_json::to_string(&reply) else {
-                continue;
-            };
-            line.push('\n');
-            let _ = output
-                .write_all(line.as_bytes())
-                .and_then(|()| output.flush());
+            send_reply(&reply);
         }
+    }
+    // Write what is queued, then stop the writer (extension threads still running are dropped).
+    let _ = out_tx.send(None);
+    if let Some(writer) = writer {
+        let _ = writer.join();
     }
     if !invoked {
         return;
@@ -189,6 +206,108 @@ where
     // After a command like Copy the clipboard data lives in this process; hand it to
     // the system before exiting.
     crate::win_menu::flush_clipboard();
+}
+
+/// The thread that owns the output: replies come from the request loop and from extension
+/// threads. Sending `None` ends it once everything sent before is written.
+fn start_writer<W: Write + Send + 'static>(
+    output: W,
+) -> (
+    flume::Sender<Option<String>>,
+    Option<std::thread::JoinHandle<()>>,
+) {
+    let (out_tx, out_rx) = flume::unbounded::<Option<String>>();
+    let writer = std::thread::Builder::new()
+        .name("shell-host-out".into())
+        .spawn(move || {
+            let mut output = output;
+            while let Ok(Some(line)) = out_rx.recv() {
+                let _ = output
+                    .write_all(line.as_bytes())
+                    .and_then(|()| output.flush());
+            }
+        })
+        .ok();
+    (out_tx, writer)
+}
+
+fn reply_sender(
+    out_tx: flume::Sender<Option<String>>,
+) -> impl Fn(&HostReply) + Clone + Send + 'static {
+    move |reply: &HostReply| {
+        if let Ok(mut line) = serde_json::to_string(reply) {
+            line.push('\n');
+            let _ = out_tx.send(Some(line));
+        }
+    }
+}
+
+/// Reads requests. Extension requests are answered on their own threads, so they don't wait
+/// behind a whole menu being read; the rest go to the request loop.
+fn start_reader<R: BufRead + Send + 'static>(
+    input: R,
+    tx: flume::Sender<HostRequest>,
+    send_reply: impl Fn(&HostReply) + Clone + Send + 'static,
+) {
+    let _ = std::thread::Builder::new()
+        .name("shell-host-in".into())
+        .spawn(move || {
+            for line in input.lines() {
+                let Ok(line) = line else { break };
+                let Ok(request) = serde_json::from_str::<HostRequest>(&line) else {
+                    continue;
+                };
+                match request {
+                    HostRequest::Handlers { .. } | HostRequest::QueryHandler { .. } => {
+                        serve_extension(request, send_reply.clone());
+                    }
+                    other => {
+                        if tx.send(other).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+}
+
+/// Answers a request about single extensions on a thread of its own.
+fn serve_extension(request: HostRequest, send_reply: impl Fn(&HostReply) + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("shell-host-part".into())
+        .spawn(move || {
+            let reply = match request {
+                HostRequest::Handlers {
+                    id,
+                    paths,
+                    background,
+                } => HostReply {
+                    id,
+                    result: Ok(Reply::Handlers(crate::win_menu_parts::handlers(
+                        &paths, background,
+                    ))),
+                },
+                HostRequest::QueryHandler {
+                    id,
+                    paths,
+                    background,
+                    handler,
+                    group,
+                } => {
+                    let started = std::time::Instant::now();
+                    let menu = crate::win_menu::query_handler(&paths, background, &handler, group);
+                    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    HostReply {
+                        id,
+                        result: menu
+                            .map(|menu| Reply::Part { menu, ms })
+                            .map_err(|e| e.to_string()),
+                    }
+                }
+                _ => return,
+            };
+            send_reply(&reply);
+        });
 }
 
 /// Reads the menu for arke.exe once so extensions load and "Send to" builds its list.
@@ -442,9 +561,66 @@ fn query_host(paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellErr
             }
             Err(ShellError::HostTimeout)
         }
-        Ok(Ok(Reply::Invoked)) | Err(flume::RecvTimeoutError::Disconnected) => {
-            Err(ShellError::HostGone)
+        Ok(Ok(_)) | Err(flume::RecvTimeoutError::Disconnected) => Err(ShellError::HostGone),
+    }
+}
+
+/// The context menu extensions that apply to `paths` (or the folder's empty space). Call from a
+/// background thread.
+pub(crate) fn menu_handlers(
+    paths: &[PathBuf],
+    background: bool,
+) -> Result<Vec<MenuHandler>, ShellError> {
+    if !isolated() {
+        return Ok(crate::win_menu_parts::handlers(paths, background));
+    }
+    let wait = with_host(|h| {
+        submit(h, |id| HostRequest::Handlers {
+            id,
+            paths: paths.to_vec(),
+            background,
+        })
+    })?;
+    match wait.recv_timeout(QUERY_TIMEOUT) {
+        Ok(Ok(Reply::Handlers(found))) => Ok(found),
+        Ok(Err(e)) => Err(e),
+        Err(flume::RecvTimeoutError::Timeout) => Err(ShellError::HostTimeout),
+        Ok(Ok(_)) | Err(flume::RecvTimeoutError::Disconnected) => Err(ShellError::HostGone),
+    }
+}
+
+/// One extension's menu, read in the host on a thread of its own, and how long that took.
+/// `group` is Arke's menu asking. A hung extension isn't killed here: the whole menu read beside
+/// it hangs on it too, and that one restarts the host. Call from a background thread.
+pub(crate) fn query_handler(
+    paths: &[PathBuf],
+    background: bool,
+    handler: &MenuHandler,
+    group: u64,
+) -> Result<(ShellMenu, Duration), ShellError> {
+    if !isolated() {
+        let started = std::time::Instant::now();
+        let menu = crate::win_menu::query_handler(paths, background, handler, group)?;
+        return Ok((menu, started.elapsed()));
+    }
+    let (generation, wait) = with_host(|h| {
+        let wait = submit(h, |id| HostRequest::QueryHandler {
+            id,
+            paths: paths.to_vec(),
+            background,
+            handler: handler.clone(),
+            group,
+        })?;
+        Ok((h.generation, wait))
+    })?;
+    match wait.recv_timeout(QUERY_TIMEOUT) {
+        Ok(Ok(Reply::Part { mut menu, ms })) => {
+            menu.session = (generation << 32) | (menu.session & 0xFFFF_FFFF);
+            Ok((menu, Duration::from_millis(ms)))
         }
+        Ok(Err(e)) => Err(e),
+        Err(flume::RecvTimeoutError::Timeout) => Err(ShellError::HostTimeout),
+        Ok(Ok(_)) | Err(flume::RecvTimeoutError::Disconnected) => Err(ShellError::HostGone),
     }
 }
 
@@ -524,6 +700,26 @@ mod tests {
             .sum()
     }
 
+    /// What the host wrote, shared with the writer thread.
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<Vec<u8>>>);
+
+    impl Shared {
+        fn take(&self) -> Vec<u8> {
+            std::mem::take(&mut *self.0.lock())
+        }
+    }
+
+    impl Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     /// Host side reads a real menu and only serves the last queued query.
     #[test]
     fn host_serves_real_menus() {
@@ -541,14 +737,14 @@ mod tests {
             .unwrap();
             input.push('\n');
         }
-        let mut output = Vec::new();
+        let output = Shared::default();
         serve(
             std::io::Cursor::new(input.into_bytes()),
-            &mut output,
+            output.clone(),
             false,
             Duration::ZERO,
         );
-        let replies: Vec<HostReply> = String::from_utf8(output)
+        let replies: Vec<HostReply> = String::from_utf8(output.take())
             .unwrap()
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
@@ -586,15 +782,15 @@ mod tests {
         let input = serde_json::to_string(&HostRequest::Release { session: 1 }).unwrap()
             + "
 ";
-        let mut output = Vec::new();
+        let output = Shared::default();
         serve(
             std::io::Cursor::new(input.into_bytes()),
-            &mut output,
+            output.clone(),
             false,
             Duration::from_secs(30),
         );
         assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(output.is_empty());
+        assert!(output.take().is_empty());
     }
 
     #[test]

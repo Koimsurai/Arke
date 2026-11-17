@@ -36,6 +36,8 @@ mod idle;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
+#[path = "tests_menu_parts.rs"]
+mod menu_parts;
 #[path = "tests_motion.rs"]
 mod motion;
 #[path = "tests_preview_info.rs"]
@@ -77,6 +79,17 @@ struct FakeShell {
     background_menus: Mutex<Vec<Vec<PathBuf>>>,
     /// Each menu read gets a new session, starting at 7.
     shell_sessions: std::sync::atomic::AtomicU64,
+    /// While set, reading the whole Windows menu waits for a message on it (a slow menu).
+    menu_gate: Mutex<Option<flume::Receiver<()>>>,
+    /// Context menu extensions and their menus, read on their own (sessions from 100).
+    extensions: Mutex<
+        Vec<(
+            crate::win_menu_parts::MenuHandler,
+            Vec<crate::shell::ShellMenuEntry>,
+        )>,
+    >,
+    /// Names of the extensions read on their own.
+    extensions_read: Mutex<Vec<String>>,
     clipboard_text: Mutex<Option<String>>,
     revealed: Mutex<Vec<(PathBuf, bool)>>,
     /// Undos that ran.
@@ -466,6 +479,10 @@ impl Shell for FakeShell {
             !arke_core::fs::is_ui_thread(),
             "shell menu read on the UI thread"
         );
+        let gate = self.menu_gate.lock().clone();
+        if let Some(gate) = gate {
+            let _ = gate.recv_timeout(Duration::from_secs(20));
+        }
         if background {
             self.background_menus.lock().push(paths.to_vec());
         } else {
@@ -522,6 +539,43 @@ impl Shell for FakeShell {
 
     fn release_shell_menu(&self, session: u64) {
         self.shell_released.lock().push(session);
+    }
+
+    fn shell_menu_handlers(
+        &self,
+        _paths: &[PathBuf],
+        _background: bool,
+    ) -> Result<Vec<crate::win_menu_parts::MenuHandler>, ShellError> {
+        assert!(!arke_core::fs::is_ui_thread());
+        Ok(self
+            .extensions
+            .lock()
+            .iter()
+            .map(|(h, _)| h.clone())
+            .collect())
+    }
+
+    fn shell_menu_handler(
+        &self,
+        _paths: &[PathBuf],
+        _background: bool,
+        handler: &crate::win_menu_parts::MenuHandler,
+        _group: u64,
+    ) -> Result<(crate::shell::ShellMenu, Duration), ShellError> {
+        assert!(!arke_core::fs::is_ui_thread());
+        let extensions = self.extensions.lock();
+        let at = extensions
+            .iter()
+            .position(|(h, _)| h == handler)
+            .ok_or(ShellError::Unsupported)?;
+        self.extensions_read.lock().push(handler.name.clone());
+        Ok((
+            crate::shell::ShellMenu {
+                session: 100 + at as u64,
+                entries: extensions[at].1.clone(),
+            },
+            Duration::from_millis(5),
+        ))
     }
 
     fn run_in(&self, command_line: &str, dir: &Path) -> Result<(), ShellError> {

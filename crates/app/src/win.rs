@@ -967,6 +967,26 @@ impl Shell for WinShell {
         crate::shell_host::release(session);
     }
 
+    fn shell_menu_handlers(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+    ) -> Result<Vec<crate::win_menu_parts::MenuHandler>, ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::shell_host::menu_handlers(paths, background)
+    }
+
+    fn shell_menu_handler(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+        handler: &crate::win_menu_parts::MenuHandler,
+        group: u64,
+    ) -> Result<(crate::shell::ShellMenu, std::time::Duration), ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::shell_host::query_handler(paths, background, handler, group)
+    }
+
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         win_fileops::set_clipboard_text(text)
@@ -1849,7 +1869,7 @@ fn pinned_cloud_folders() -> Vec<crate::cloud_places::Pinned> {
 }
 
 /// Names of a registry key's subkeys (empty if it can't be opened). Read only.
-fn reg_subkeys(root: windows::Win32::System::Registry::HKEY, key: &str) -> Vec<String> {
+pub(crate) fn reg_subkeys(root: windows::Win32::System::Registry::HKEY, key: &str) -> Vec<String> {
     use windows::Win32::System::Registry::{
         HKEY, KEY_READ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW,
     };

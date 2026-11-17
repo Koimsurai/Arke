@@ -373,11 +373,8 @@ pub(crate) enum AppEvent {
         version: u64,
         scan: crate::shell::CloudScan,
     },
-    /// "Show more options" menu is ready.
-    ShellMenu {
-        request: u64,
-        result: Result<crate::shell::ShellMenu, crate::shell::ShellError>,
-    },
+    /// The Windows context menu ("Show more options" and pinned commands).
+    ShellMenu(menu::ShellMenuEvent),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -1671,7 +1668,7 @@ impl Explorer {
             AppEvent::LinkTargets { generation, found } => {
                 self.handle_link_targets(generation, found, cx);
             }
-            AppEvent::ShellMenu { request, result } => self.handle_shell_menu(request, result, cx),
+            AppEvent::ShellMenu(event) => self.handle_shell_menu_event(event, cx),
             AppEvent::Tree { node, rel, event } => self.handle_tree_io(node, &rel, event, cx),
         }
     }

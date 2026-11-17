@@ -1,0 +1,387 @@
+//! "More options", one extension at a time.
+//!
+//! Windows builds the classic context menu by calling every registered extension in turn, so the
+//! menu takes as long as all of them together, and one slow extension (a version control status
+//! check, a sandbox, a cloud client) holds up everything. File Explorer and most file managers
+//! have that delay; Directory Opus queries extensions one by one instead.
+//!
+//! Arke still reads the whole Windows menu (`win_menu::query`), which stays the reference for
+//! "Show more options". Next to it, the menu host can find the extensions that apply to an item
+//! ([`handlers`]) and load any of them on its own thread (`win_menu::query_handler`), all at the
+//! same time. Items the user pinned to the top of Arke's menu then show as soon as their own
+//! extension answers, instead of after the slowest one. How long each extension took is logged,
+//! so a slow one can be named.
+//!
+//! Which extensions apply follows the keys File Explorer reads them from: the file's class
+//! (the user's choice of app first), its extension, `SystemFileAssociations` for the extension and
+//! its kind, then `*` and `AllFilesystemObjects`; `Directory`, `Folder` and `AllFilesystemObjects`
+//! for a folder; `Drive` and `Folder` for a drive; `Directory\Background` for empty space.
+//! Extensions an administrator blocked (`Shell Extensions\Blocked`) are left out.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// A context menu extension that applies to an item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MenuHandler {
+    /// Key under `HKEY_CLASSES_ROOT` it is registered under; handed to the extension, which
+    /// may read its settings there.
+    pub(crate) key: String,
+    /// Its COM class, `{...}`.
+    pub(crate) clsid: String,
+    /// Registered name, for logs.
+    pub(crate) name: String,
+}
+
+/// What an item is, as far as choosing extensions goes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    /// Empty space in a folder.
+    Background,
+    Drive,
+    Folder,
+    File {
+        /// `.txt`, lowercased; `None` without an extension.
+        ext: Option<String>,
+        /// Its classes: the user's choice of app first, then the registered default.
+        classes: Vec<String>,
+        /// `PerceivedType` of the extension (`image`, `text`...).
+        perceived: Option<String>,
+    },
+}
+
+/// Keys under `HKEY_CLASSES_ROOT` whose `shellex\ContextMenuHandlers` apply, in File Explorer's
+/// order.
+pub(crate) fn class_keys(target: &Target) -> Vec<String> {
+    let fixed = |keys: &[&str]| keys.iter().map(ToString::to_string).collect();
+    match target {
+        Target::Background => fixed(&[r"Directory\Background"]),
+        Target::Drive => fixed(&["Drive", "Folder"]),
+        Target::Folder => fixed(&["Directory", "Folder", "AllFilesystemObjects"]),
+        Target::File {
+            ext,
+            classes,
+            perceived,
+        } => {
+            let mut keys: Vec<String> = Vec::new();
+            let mut add = |key: String| {
+                if !key.is_empty() && !keys.iter().any(|k| k.eq_ignore_ascii_case(&key)) {
+                    keys.push(key);
+                }
+            };
+            for class in classes {
+                add(class.clone());
+            }
+            if let Some(ext) = ext {
+                add(ext.clone());
+                add(format!(r"SystemFileAssociations\{ext}"));
+            }
+            if let Some(kind) = perceived {
+                add(format!(r"SystemFileAssociations\{kind}"));
+            }
+            add("*".into());
+            add("AllFilesystemObjects".into());
+            keys
+        }
+    }
+}
+
+/// A `{...}` class id.
+fn is_clsid(s: &str) -> bool {
+    s.len() == 38 && s.starts_with('{') && s.ends_with('}')
+}
+
+/// The extensions that apply to `paths` (Arke's selection is in one folder; the first item
+/// decides, as in File Explorer), or to the folder's empty space. Reads the registry only.
+pub(crate) fn handlers(paths: &[PathBuf], background: bool) -> Vec<MenuHandler> {
+    let Some(first) = paths.first() else {
+        return Vec::new();
+    };
+    let target = if background {
+        Target::Background
+    } else {
+        target_of(first)
+    };
+    let mut out: Vec<MenuHandler> = Vec::new();
+    for key in class_keys(&target) {
+        let list = format!(r"{key}\shellex\ContextMenuHandlers");
+        for entry in reg::subkeys(&list) {
+            let clsid = if is_clsid(&entry) {
+                entry.clone()
+            } else {
+                match reg::default_value(&format!(r"{list}\{entry}")) {
+                    Some(value) if is_clsid(value.trim()) => value.trim().to_string(),
+                    _ => continue,
+                }
+            };
+            if out.iter().any(|h| h.clsid.eq_ignore_ascii_case(&clsid)) || reg::blocked(&clsid) {
+                continue;
+            }
+            let name = if is_clsid(&entry) {
+                reg::default_value(&format!(r"CLSID\{clsid}")).unwrap_or_else(|| clsid.clone())
+            } else {
+                entry.trim().to_string()
+            };
+            out.push(MenuHandler {
+                key: key.clone(),
+                clsid,
+                name,
+            });
+        }
+    }
+    out
+}
+
+fn target_of(path: &Path) -> Target {
+    if path.parent().is_none() {
+        return Target::Drive;
+    }
+    if path.is_dir() {
+        return Target::Folder;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e.to_lowercase()));
+    let mut classes = Vec::new();
+    let mut perceived = None;
+    if let Some(ext) = &ext {
+        classes.extend(reg::user_choice(ext));
+        classes.extend(reg::default_value(ext));
+        perceived = reg::value(ext, "PerceivedType");
+    }
+    Target::File {
+        ext,
+        classes,
+        perceived,
+    }
+}
+
+mod reg {
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_ANY, RegGetValueW,
+    };
+    use windows::core::PCWSTR;
+
+    use crate::win_fileops::wide;
+
+    pub(super) fn subkeys(key: &str) -> Vec<String> {
+        crate::win::reg_subkeys(HKEY_CLASSES_ROOT, key)
+    }
+
+    pub(super) fn default_value(key: &str) -> Option<String> {
+        value(key, "")
+    }
+
+    pub(super) fn value(key: &str, name: &str) -> Option<String> {
+        crate::win::read_reg_string(HKEY_CLASSES_ROOT, key, name)
+    }
+
+    /// The app the user chose for `ext` ("Open with" › "Always").
+    pub(super) fn user_choice(ext: &str) -> Option<String> {
+        crate::win::read_reg_string(
+            HKEY_CURRENT_USER,
+            &format!(
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{ext}\UserChoice"
+            ),
+            "ProgId",
+        )
+    }
+
+    /// Whether an administrator blocked the extension (the value's presence is what counts).
+    pub(super) fn blocked(clsid: &str) -> bool {
+        const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked";
+        [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER]
+            .into_iter()
+            .any(|root| exists(root, KEY, clsid))
+    }
+
+    fn exists(root: HKEY, key: &str, name: &str) -> bool {
+        let (key, name) = (
+            wide(std::ffi::OsStr::new(key)),
+            wide(std::ffi::OsStr::new(name)),
+        );
+        // SAFETY: both names are NUL-terminated; only the value's presence is asked.
+        unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                RRF_RT_ANY,
+                None,
+                None,
+                None,
+            )
+        }
+        .is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_reads_its_classes_then_the_shared_keys() {
+        let keys = class_keys(&Target::File {
+            ext: Some(".txt".into()),
+            classes: vec!["txtfile".into(), "TXTFILE".into()],
+            perceived: Some("text".into()),
+        });
+        assert_eq!(
+            keys,
+            [
+                "txtfile",
+                ".txt",
+                r"SystemFileAssociations\.txt",
+                r"SystemFileAssociations\text",
+                "*",
+                "AllFilesystemObjects"
+            ]
+        );
+        let bare = class_keys(&Target::File {
+            ext: None,
+            classes: Vec::new(),
+            perceived: None,
+        });
+        assert_eq!(bare, ["*", "AllFilesystemObjects"]);
+        assert_eq!(
+            class_keys(&Target::Folder),
+            ["Directory", "Folder", "AllFilesystemObjects"]
+        );
+        assert_eq!(class_keys(&Target::Background), [r"Directory\Background"]);
+    }
+
+    /// On this machine: the extensions for a text file include the ones registered for every
+    /// file, each class once.
+    #[test]
+    fn real_handlers_for_a_file() {
+        let file = std::env::temp_dir().join(format!("arke-menu-parts-{}.txt", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let found = handlers(std::slice::from_ref(&file), false);
+        let _ = std::fs::remove_file(&file);
+        let star = crate::win::reg_subkeys(
+            windows::Win32::System::Registry::HKEY_CLASSES_ROOT,
+            r"*\shellex\ContextMenuHandlers",
+        );
+        if !star.is_empty() {
+            assert!(!found.is_empty(), "{star:?}");
+        }
+        for (i, h) in found.iter().enumerate() {
+            assert!(is_clsid(&h.clsid), "{h:?}");
+            assert!(
+                !found[..i]
+                    .iter()
+                    .any(|o| o.clsid.eq_ignore_ascii_case(&h.clsid)),
+                "{h:?} twice"
+            );
+        }
+    }
+}
+
+/// By hand: `cargo test -p arke-app menu_extension_timing -- --ignored --nocapture`. Loads the
+/// extensions into the test process. Prints the whole menu's time next to each extension's alone
+/// and all of them at once.
+#[cfg(test)]
+#[allow(clippy::print_stdout, reason = "a report printed for a run by hand")]
+mod timing {
+    use std::time::Instant;
+
+    use super::*;
+
+    fn time(paths: &[PathBuf], background: bool, label: &str) {
+        let started = Instant::now();
+        let whole = crate::win_menu::query(paths, background);
+        let whole_ms = started.elapsed().as_millis();
+        if let Ok(menu) = &whole {
+            crate::win_menu::release(menu.session);
+        }
+        let only = std::env::var("ARKE_TIMING_ONLY").ok();
+        let found: Vec<MenuHandler> = handlers(paths, background)
+            .into_iter()
+            .filter(|h| only.as_deref().is_none_or(|o| h.name.contains(o)))
+            .collect();
+        println!(
+            "{label}: whole menu {whole_ms} ms ({}), {} extensions",
+            if whole.is_ok() { "ok" } else { "failed" },
+            found.len()
+        );
+        let all = Instant::now();
+        let threads: Vec<_> = found
+            .into_iter()
+            .enumerate()
+            .map(|(group, h)| {
+                let paths = paths.to_vec();
+                std::thread::spawn(move || {
+                    let started = Instant::now();
+                    let menu = crate::win_menu::query_handler(
+                        &paths,
+                        background,
+                        &h,
+                        1_000 + group as u64,
+                    );
+                    let ms = started.elapsed().as_millis();
+                    let items = menu.as_ref().map_or(0, |m| m.entries.len());
+                    if let Ok(m) = &menu
+                        && std::env::var_os("ARKE_TIMING_ONLY").is_some()
+                    {
+                        println!(
+                            "{:#?}",
+                            m.entries.iter().map(label_tree).collect::<Vec<_>>()
+                        );
+                    }
+                    if let Ok(m) = &menu {
+                        crate::win_menu::release(m.session);
+                    }
+                    (h, ms, items, menu.err().map(|e| e.to_string()))
+                })
+            })
+            .collect();
+        for t in threads {
+            let (h, ms, items, err) = t.join().unwrap();
+            println!(
+                "  {ms:>5} ms  {items:>2} items  {} {} [{}]{}",
+                h.name,
+                h.clsid,
+                h.key,
+                err.map_or_else(String::new, |e| format!("  ERROR {e}"))
+            );
+        }
+        println!("  all at once: {} ms", all.elapsed().as_millis());
+    }
+
+    fn label_tree(e: &crate::shell::ShellMenuEntry) -> String {
+        match e {
+            crate::shell::ShellMenuEntry::Item { label, .. } => label.clone(),
+            crate::shell::ShellMenuEntry::Submenu {
+                label, children, ..
+            } => format!(
+                "{label} › [{}]",
+                children
+                    .iter()
+                    .map(label_tree)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            crate::shell::ShellMenuEntry::Separator => "—".into(),
+        }
+    }
+
+    #[test]
+    #[ignore = "loads this machine's shell extensions; run by hand"]
+    fn menu_extension_timing() {
+        let dir = std::env::temp_dir().join("arke-menu-timing");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.txt", "b.zip", "c.png", "d.pdf"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        for name in ["a.txt", "b.zip", "c.png", "d.pdf"] {
+            time(&[dir.join(name)], false, name);
+        }
+        time(std::slice::from_ref(&dir), false, "folder");
+        time(std::slice::from_ref(&dir), true, "background");
+        // Second round: warm.
+        time(&[dir.join("a.txt")], false, "a.txt again");
+    }
+}

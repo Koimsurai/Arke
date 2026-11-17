@@ -689,6 +689,29 @@ impl Shell for RemoteShell {
     fn release_shell_menu(&self, session: u64) {
         self.inner.release_shell_menu(session);
     }
+    fn shell_menu_handlers(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+    ) -> Result<Vec<crate::win_menu_parts::MenuHandler>, ShellError> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.shell_menu_handlers(paths, background)
+    }
+    fn shell_menu_handler(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+        handler: &crate::win_menu_parts::MenuHandler,
+        group: u64,
+    ) -> Result<(ShellMenu, std::time::Duration), ShellError> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner
+            .shell_menu_handler(paths, background, handler, group)
+    }
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {
         self.inner.set_clipboard_text(text)
     }

@@ -871,6 +871,27 @@ pub(crate) trait Shell: Send + Sync + 'static {
     ) -> Result<(), ShellError>;
     /// Releases the menu object when the menu closes without a choice. Fire and forget; UI thread safe.
     fn release_shell_menu(&self, session: u64);
+    /// Context menu extensions that apply to `paths`, or the folder's empty space
+    /// (`win_menu_parts.rs`). Background thread.
+    fn shell_menu_handlers(
+        &self,
+        _paths: &[PathBuf],
+        _background: bool,
+    ) -> Result<Vec<crate::win_menu_parts::MenuHandler>, ShellError> {
+        Ok(Vec::new())
+    }
+    /// One extension's menu, read on its own beside the whole menu, and how long that took.
+    /// `group` is the Arke menu asking: older menus' extension menus are released. Invoked and
+    /// released like [`Shell::shell_menu`]'s. Background thread.
+    fn shell_menu_handler(
+        &self,
+        _paths: &[PathBuf],
+        _background: bool,
+        _handler: &crate::win_menu_parts::MenuHandler,
+        _group: u64,
+    ) -> Result<(ShellMenu, std::time::Duration), ShellError> {
+        Err(ShellError::Unsupported)
+    }
     /// Puts text on the clipboard ("Copy path"). Background thread.
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError>;
     /// Opens in Windows Explorer, selecting the item when `select` is set. Background thread.

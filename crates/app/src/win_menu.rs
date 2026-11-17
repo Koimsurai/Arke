@@ -13,6 +13,11 @@
 //!
 //! Only one menu (`Session`) is kept at a time; it is released on the next query, after
 //! invoking, or when the menu closes without a choice.
+//!
+//! A single extension's menu ([`query_handler`], see `win_menu_parts.rs`) gets a thread of its
+//! own, with the same loop, so several load at once. It keeps that thread until it is released
+//! (the thread then ends) or invoked (the thread stays, for extensions that go on through
+//! messages, until the process exits).
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -21,15 +26,21 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, HBITMAP};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, CLSIDFromString, CoCreateInstance, IDataObject,
+};
 use windows::Win32::System::Ole::{OleFlushClipboard, OleInitialize, OleUninitialize};
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CLASSES_ROOT, KEY_READ, RegCloseKey, RegOpenKeyExW,
+};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, GCS_VERBW,
-    IContextMenu, IContextMenu2, IContextMenu3, ILFindLastID, ILFree, IShellFolder, SHBindToParent,
-    SHGetDesktopFolder, SHParseDisplayName,
+    IContextMenu, IContextMenu2, IContextMenu3, ILClone, ILFindLastID, ILFree, ILRemoveLastID,
+    IShellExtInit, IShellFolder, SHBindToParent, SHGetDesktopFolder, SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -44,6 +55,7 @@ use windows::core::{Interface, PCSTR, PCWSTR, PSTR, PWSTR, w};
 
 use crate::shell::{ShellError, ShellMenu, ShellMenuEntry, tidy_separators};
 use crate::win_fileops::wide;
+use crate::win_menu_parts::MenuHandler;
 
 const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 /// Submenu depth and total item limits; some extensions add very long lists.
@@ -56,6 +68,13 @@ enum Request {
     Query {
         paths: Vec<PathBuf>,
         background: bool,
+        done: flume::Sender<Result<ShellMenu, ShellError>>,
+    },
+    /// One extension's menu (on a thread of its own).
+    QueryHandler {
+        paths: Vec<PathBuf>,
+        background: bool,
+        handler: MenuHandler,
         done: flume::Sender<Result<ShellMenu, ShellError>>,
     },
     Invoke {
@@ -111,21 +130,107 @@ impl MenuThread {
     }
 }
 
+impl MenuThread {
+    /// Starts a menu thread. A `part` thread holds one extension's menu and ends once that is
+    /// released; it closes its event then, so nothing may be sent to it after the release.
+    fn spawn(name: &str, part: bool) -> Option<Self> {
+        // SAFETY: an unnamed auto-reset event; the whole-menu thread keeps it for the life of
+        // the process, a part thread closes it when it ends.
+        let wake = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }.ok()?;
+        let wake = wake.0 as isize;
+        let (tx, rx) = flume::unbounded::<Request>();
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                run(&rx, wake, part);
+                if part {
+                    // SAFETY: created above; the sender side was dropped before the release
+                    // that ended the loop, so nothing sets it any more.
+                    let _ = unsafe { CloseHandle(HANDLE(wake as *mut c_void)) };
+                }
+            })
+            .ok()?;
+        Some(Self { tx, wake })
+    }
+}
+
 fn menu_thread() -> Option<&'static MenuThread> {
     static THREAD: OnceLock<Option<MenuThread>> = OnceLock::new();
     THREAD
-        .get_or_init(|| {
-            // SAFETY: an unnamed auto-reset event, kept for the life of the process.
-            let wake = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }.ok()?;
-            let wake = wake.0 as isize;
-            let (tx, rx) = flume::unbounded::<Request>();
-            std::thread::Builder::new()
-                .name("shell-menu".into())
-                .spawn(move || run(&rx, wake))
-                .ok()?;
-            Some(MenuThread { tx, wake })
-        })
+        .get_or_init(|| MenuThread::spawn("shell-menu", false))
         .as_ref()
+}
+
+/// A single extension's menu, waiting on its own thread.
+struct Part {
+    session: u64,
+    /// Arke's menu it belongs to; a newer one releases it.
+    group: u64,
+    thread: MenuThread,
+}
+
+static PARTS: parking_lot::Mutex<Vec<Part>> = parking_lot::Mutex::new(Vec::new());
+/// Newest menu that asked for single extensions.
+static LATEST_GROUP: AtomicU64 = AtomicU64::new(0);
+
+/// Reads one extension's menu for `paths` on a thread of its own, so several load at once.
+/// `group` is Arke's menu asking; the parts of older menus are released. Blocks, so call from a
+/// background thread.
+pub(crate) fn query_handler(
+    paths: &[PathBuf],
+    background: bool,
+    handler: &MenuHandler,
+    group: u64,
+) -> Result<ShellMenu, ShellError> {
+    LATEST_GROUP.fetch_max(group, Ordering::Relaxed);
+    release_parts_before(group);
+    let thread = MenuThread::spawn("shell-menu-part", true).ok_or(ShellError::MenuThreadStart)?;
+    let (done, result) = flume::bounded(1);
+    thread.send(Request::QueryHandler {
+        paths: paths.to_vec(),
+        background,
+        handler: handler.clone(),
+        done,
+    })?;
+    let menu = result
+        .recv()
+        .map_err(|_hung_up| ShellError::MenuThreadNoReply)?;
+    match menu {
+        Ok(menu) if LATEST_GROUP.load(Ordering::Relaxed) <= group => {
+            PARTS.lock().push(Part {
+                session: menu.session,
+                group,
+                thread,
+            });
+            Ok(menu)
+        }
+        other => {
+            // Failed, or Arke has moved on to another menu meanwhile: end the thread.
+            let _ = thread.send(Request::Release(0));
+            other.and(Err(ShellError::MenuExpired))
+        }
+    }
+}
+
+fn release_parts_before(group: u64) {
+    let old: Vec<Part> = {
+        let mut parts = PARTS.lock();
+        let (old, keep) = std::mem::take(&mut *parts)
+            .into_iter()
+            .partition(|p| p.group < group);
+        *parts = keep;
+        old
+    };
+    for part in old {
+        let _ = part.thread.send(Request::Release(part.session));
+    }
+}
+
+/// The thread holding single-extension menu `session`, taken out of the list.
+fn take_part(session: u64) -> Option<Part> {
+    let mut parts = PARTS.lock();
+    let at = parts.iter().position(|p| p.session == session)?;
+    Some(parts.remove(at))
 }
 
 /// Reads the context menu for `paths`. Blocks on the STA thread, so call from a background thread.
@@ -149,7 +254,11 @@ pub(crate) fn invoke(
     client_point: (i32, i32),
     owner: Option<isize>,
 ) -> Result<(), ShellError> {
-    let thread = menu_thread().ok_or(ShellError::MenuThreadStart)?;
+    let part = take_part(session);
+    let thread = match &part {
+        Some(part) => &part.thread,
+        None => menu_thread().ok_or(ShellError::MenuThreadStart)?,
+    };
     let (done, result) = flume::bounded(1);
     thread.send(Request::Invoke {
         session,
@@ -165,12 +274,14 @@ pub(crate) fn invoke(
 
 /// Releases a menu without waiting.
 pub(crate) fn release(session: u64) {
-    if let Some(thread) = menu_thread() {
+    if let Some(part) = take_part(session) {
+        let _ = part.thread.send(Request::Release(session));
+    } else if let Some(thread) = menu_thread() {
         let _ = thread.send(Request::Release(session));
     }
 }
 
-fn run(rx: &flume::Receiver<Request>, wake: isize) {
+fn run(rx: &flume::Receiver<Request>, wake: isize, part: bool) {
     // OleInitialize rather than CoInitialize: Copy/Cut commands use the OLE clipboard.
     // SAFETY: per-thread init, paired with OleUninitialize via OleGuard.
     if unsafe { OleInitialize(None) }.is_err() {
@@ -187,7 +298,14 @@ fn run(rx: &flume::Receiver<Request>, wake: isize) {
         pump_messages();
         loop {
             match rx.try_recv() {
-                Ok(request) => handle(request, window),
+                Ok(request) => {
+                    let released = matches!(request, Request::Release(_));
+                    handle(request, window);
+                    // A single extension's menu was released: its thread is done.
+                    if part && released {
+                        return;
+                    }
+                }
                 Err(flume::TryRecvError::Empty) => break,
                 Err(flume::TryRecvError::Disconnected) => return,
             }
@@ -212,6 +330,15 @@ fn handle(request: Request, window: HWND) {
         } => {
             CURRENT.with(|c| c.borrow_mut().take());
             let _ = done.send(build(&paths, background, window));
+        }
+        Request::QueryHandler {
+            paths,
+            background,
+            handler,
+            done,
+        } => {
+            CURRENT.with(|c| c.borrow_mut().take());
+            let _ = done.send(build_handler(&paths, background, &handler, window));
         }
         Request::Invoke {
             session,
@@ -355,11 +482,10 @@ impl Drop for Pidls {
     }
 }
 
-fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu, ShellError> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    if paths.is_empty() {
-        return Ok(ShellMenu::default());
-    }
+/// Session ids, shared by whole menus and single extensions' menus.
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+fn parse_pidls(paths: &[PathBuf]) -> Result<Pidls, ShellError> {
     let mut pidls = Pidls(Vec::new());
     for path in paths {
         let w = wide(path.as_os_str());
@@ -373,6 +499,14 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
         )?;
         pidls.0.push(pidl);
     }
+    Ok(pidls)
+}
+
+fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu, ShellError> {
+    if paths.is_empty() {
+        return Ok(ShellMenu::default());
+    }
+    let pidls = parse_pidls(paths)?;
     // Owner is this thread's hidden window, so messages extensions send while building the
     // menu (e.g. "Send to" finishing its list) are handled here. Arke's window becomes the
     // owner only when invoking, as the dialog parent.
@@ -399,10 +533,15 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
         // SAFETY: the PIDLs in children are valid for the call.
         unsafe { folder.GetUIObjectOf(owner, &children, None) }?
     };
+    fill(menu, owner, pidls)
+}
+
+/// Reads `menu` into a [`Session`] that becomes this thread's current menu.
+fn fill(menu: IContextMenu, owner: HWND, pidls: Pidls) -> Result<ShellMenu, ShellError> {
     // SAFETY: creates an empty popup menu; Session calls DestroyMenu.
     let hmenu = unsafe { CreatePopupMenu() }?;
     let session = Session {
-        id: NEXT.fetch_add(1, Ordering::Relaxed),
+        id: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         menu,
         hmenu,
         owner,
@@ -425,6 +564,78 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
     };
     CURRENT.with(|c| *c.borrow_mut() = Some(session));
     Ok(result)
+}
+
+/// One extension's menu: created and initialized the way File Explorer does it for its own
+/// menu (the folder, the selected items as a data object, the key it is registered under), then
+/// read like a whole menu.
+fn build_handler(
+    paths: &[PathBuf],
+    background: bool,
+    handler: &MenuHandler,
+    window: HWND,
+) -> Result<ShellMenu, ShellError> {
+    if paths.is_empty() {
+        return Ok(ShellMenu::default());
+    }
+    let mut pidls = parse_pidls(paths)?;
+    let owner = window;
+    // The folder: the path itself for its background, otherwise the items' parent.
+    // SAFETY: pidls.0[0] is a valid absolute PIDL; the clone is owned by Pidls.
+    let folder_pidl = unsafe { ILClone(pidls.0[0]) };
+    if folder_pidl.is_null() {
+        return Err(ShellError::MenuThreadNoReply);
+    }
+    pidls.0.push(folder_pidl);
+    let data: Option<IDataObject> = if background {
+        None
+    } else {
+        // SAFETY: folder_pidl is our own copy; drop the last ID to get the parent.
+        let _ = unsafe { ILRemoveLastID(Some(folder_pidl)) };
+        // SAFETY: pidls.0[0] is a valid absolute PIDL.
+        let folder: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }?;
+        let children: Vec<*const ITEMIDLIST> = pidls.0[..paths.len()]
+            .iter()
+            // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
+            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
+            .collect();
+        // SAFETY: the PIDLs in children are valid for the call.
+        Some(unsafe { folder.GetUIObjectOf(owner, &children, None) }?)
+    };
+    let clsid_text = wide(std::ffi::OsStr::new(&handler.clsid));
+    // SAFETY: NUL-terminated.
+    let clsid = unsafe { CLSIDFromString(PCWSTR(clsid_text.as_ptr())) }?;
+    // SAFETY: plain COM creation on this STA thread.
+    let init: IShellExtInit =
+        unsafe { CoCreateInstance(&raw const clsid, None, CLSCTX_INPROC_SERVER) }?;
+    let key_name = wide(std::ffi::OsStr::new(&handler.key));
+    let mut key = HKEY::default();
+    // SAFETY: key_name is NUL-terminated; the key is closed below.
+    let opened = unsafe {
+        RegOpenKeyExW(
+            HKEY_CLASSES_ROOT,
+            PCWSTR(key_name.as_ptr()),
+            None,
+            KEY_READ,
+            &raw mut key,
+        )
+    }
+    .is_ok();
+    // SAFETY: folder_pidl and data are valid for the call; the key only while it is open.
+    let initialized = unsafe {
+        init.Initialize(
+            Some(folder_pidl.cast_const()),
+            data.as_ref(),
+            opened.then_some(key),
+        )
+    };
+    if opened {
+        // SAFETY: opened above; extensions that keep the key duplicate it.
+        let _ = unsafe { RegCloseKey(key) };
+    }
+    initialized?;
+    let menu: IContextMenu = init.cast()?;
+    fill(menu, owner, pidls)
 }
 
 /// Reads one menu level. Submenus get `WM_INITMENUPOPUP` first, since "Send to",

@@ -262,7 +262,9 @@ fn a_wide_parent_column_gives_way_in_a_smaller_window(cx: &mut TestAppContext) {
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
     let list = view.update(cx, |v, _| v.list_bounds_for_test());
-    let name = cx.debug_bounds("name:x.txt").expect("the current column's row is drawn");
+    let name = cx
+        .debug_bounds("name:x.txt")
+        .expect("the current column's row is drawn");
     assert!(
         name.left() < list.right() - px(40.),
         "room left for the current column: {name:?} in {list:?}"

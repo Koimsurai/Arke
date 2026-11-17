@@ -3373,10 +3373,15 @@ pub(super) fn text_button(
 /// "Live updates" button: installs or removes the background service (UAC prompt); shows text only while waiting.
 /// Same action as the lightning button in the search scope bar, placed here so it is easier to find.
 fn service_control(cx: &App) -> AnyElement {
-    let (installed, busy) = crate::global_search::GlobalSearch::global(cx).map_or_default(|g| {
-        let g = g.read(cx);
-        (g.service_installed == Some(true), g.service_busy)
-    });
+    let (installed, outdated, busy) = crate::global_search::GlobalSearch::global(cx)
+        .map_or_default(|g| {
+            let g = g.read(cx);
+            (
+                g.service_installed == Some(true),
+                g.service_outdated.is_some(),
+                g.service_busy,
+            )
+        });
     if busy {
         return div()
             .text_size(theme::FS_12)
@@ -3384,7 +3389,7 @@ fn service_control(cx: &App) -> AnyElement {
             .child(t!("search.service_busy").to_string())
             .into_any_element();
     }
-    text_button(
+    let toggle = text_button(
         "search-service",
         if installed {
             t!("settings.service_remove")
@@ -3397,7 +3402,42 @@ fn service_control(cx: &App) -> AnyElement {
                 cx.refresh_windows();
             }
         },
-    )
+    );
+    if !(installed && outdated) {
+        return toggle;
+    }
+    // Installing again copies this Arke's program over the service's and keeps its settings.
+    let update = text_button(
+        "search-service-update",
+        t!("settings.service_update"),
+        |_: &ClickEvent, _, cx: &mut App| {
+            if let Some(global) = crate::global_search::GlobalSearch::global(cx) {
+                global.update(cx, |g, cx| g.set_service(true, cx));
+                cx.refresh_windows();
+            }
+        },
+    );
+    div()
+        .flex()
+        .gap(theme::S_8)
+        .child(update)
+        .child(toggle)
+        .into_any_element()
+}
+
+/// The service row's description: what it does, or that it's from another version of Arke.
+fn service_desc(cx: &App) -> Cow<'static, str> {
+    let outdated = crate::global_search::GlobalSearch::global(cx).and_then(|g| {
+        let g = g.read(cx);
+        (g.service_installed == Some(true))
+            .then(|| g.service_outdated.clone())
+            .flatten()
+    });
+    if outdated.is_some() {
+        t!("settings.service_outdated")
+    } else {
+        t!("settings.service_desc")
+    }
 }
 
 /// Above this many indexed items, suggest adding only frequently used subfolders.
@@ -3432,7 +3472,7 @@ fn search_page(s: &Settings, cx: &mut Context<Workspace>) -> Vec<AnyElement> {
             card(
                 Icon::Bolt,
                 t!("settings.service"),
-                Some(t!("settings.service_desc")),
+                Some(service_desc(cx)),
                 service_control(cx),
             ),
         ],

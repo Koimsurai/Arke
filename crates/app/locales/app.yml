@@ -2206,6 +2206,14 @@ settings.service_desc:
   en: Catches up on changes made while Arke is closed and builds the index faster. Needs administrator approval.
   zh-TW: Arke 關閉期間的變更也能補上，建索引也更快。需要系統管理員同意。
   zh-CN: Arke 关闭期间的更改也能补上，建立索引也更快。需要管理员批准。
+settings.service_outdated:
+  en: "Installed with another version of Arke, so it misses this version's improvements. Update it to match; needs administrator approval."
+  zh-TW: "是用另一個版本的 Arke 安裝的，沒有這個版本的改進。請更新成相同版本；需要系統管理員同意。"
+  zh-CN: "是用另一个版本的 Arke 安装的，没有这个版本的改进。请更新成相同版本；需要管理员批准。"
+settings.service_update:
+  en: Update
+  zh-TW: 更新
+  zh-CN: 更新
 settings.service_install:
   en: Install
   zh-TW: 安裝

@@ -78,6 +78,76 @@ pub fn installed() -> bool {
     open_service(SERVICE_QUERY_STATUS).is_some()
 }
 
+/// Version of the installed service's program (`ProductVersion` of the copy in Program Files);
+/// `None` if it can't be read (missing file, no version). The copy is made at install and isn't
+/// replaced when Arke updates, so Arke compares this with its own version.
+pub fn installed_version() -> Option<String> {
+    product_version(&crate::install::install_path()?)
+}
+
+/// `ProductVersion` from a program's version resource, in the first language it declares (system
+/// programs are often localized), else US English.
+pub fn product_version(path: &Path) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+    let name: Vec<u16> = path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: name is NUL-terminated; the buffer is as large as the system asked for, and the
+    // value VerQueryValueW points to lives inside it, read before it's dropped.
+    unsafe {
+        let size = GetFileVersionInfoSizeW(PCWSTR(name.as_ptr()), None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(PCWSTR(name.as_ptr()), None, size, data.as_mut_ptr().cast()).ok()?;
+        // A value as UTF-16 units (copied, the buffer has no alignment guarantee); `len` counts
+        // characters for strings and bytes for the translation table, so both read `len` units at
+        // most and stop at the buffer's end.
+        let query = |key: &str| -> Option<Vec<u16>> {
+            let key: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut value: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut len = 0u32;
+            let found = VerQueryValueW(
+                data.as_ptr().cast(),
+                PCWSTR(key.as_ptr()),
+                &raw mut value,
+                &raw mut len,
+            )
+            .as_bool();
+            if !found || value.is_null() || len == 0 {
+                return None;
+            }
+            let start = value.cast_const().cast::<u8>();
+            let base = data.as_ptr();
+            let available = data
+                .len()
+                .saturating_sub(start.offset_from(base).max(0).cast_unsigned());
+            let units = (len as usize).min(available / 2);
+            Some(
+                (0..units)
+                    .map(|i| start.add(i * 2).cast::<u16>().read_unaligned())
+                    .collect(),
+            )
+        };
+        // Pairs of (language, code page), each a u16.
+        let block = query(r"\VarFileInfo\Translation")
+            .filter(|pair| pair.len() >= 2)
+            .map_or_else(
+                || "040904B0".to_owned(),
+                |pair| format!("{:04X}{:04X}", pair[0], pair[1]),
+            );
+        let chars = query(&format!(r"\StringFileInfo\{block}\ProductVersion"))?;
+        let text = String::from_utf16_lossy(&chars);
+        Some(text.trim_end_matches('\0').to_owned()).filter(|t| !t.is_empty())
+    }
+}
+
 /// The service's PID, if it's running.
 fn service_pid(service: &Service) -> Option<u32> {
     let mut status = SERVICE_STATUS_PROCESS::default();
@@ -394,5 +464,24 @@ impl Drop for FollowGuard {
         self.0.stopped.store(true, Ordering::Relaxed);
         // SAFETY: pipe is a valid handle kept alive by the Arc; cancels all pending I/O on it.
         let _ = unsafe { CancelIoEx(self.0.pipe.0, None) };
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::product_version;
+    use std::path::Path;
+
+    /// Windows' own programs carry a version: it reads back. A missing file has none.
+    #[test]
+    fn reads_a_programs_version() {
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let notepad = Path::new(&system).join(r"System32\notepad.exe");
+        let version = product_version(&notepad).expect("notepad.exe has a version");
+        assert!(
+            version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+            "{version}"
+        );
+        assert_eq!(product_version(Path::new(r"C:\no\such\arke.exe")), None);
     }
 }

@@ -103,6 +103,9 @@ pub(crate) struct GlobalSearch {
     pub(crate) status: IndexStatus,
     /// Whether the background service is installed (`None`: not asked yet)
     pub(crate) service_installed: Option<bool>,
+    /// The installed service's version when it isn't this Arke's (its program was copied at
+    /// install and stays as it was when Arke updates): Settings offers to update it.
+    pub(crate) service_outdated: Option<String>,
     /// Install or remove in progress (waiting for UAC consent)
     pub(crate) service_busy: bool,
     _settings: Subscription,
@@ -152,6 +155,7 @@ impl GlobalSearch {
                 service: None,
                 status: IndexStatus::default(),
                 service_installed: None,
+                service_outdated: None,
                 service_busy: false,
                 _settings: sub,
                 worker: None,
@@ -235,10 +239,14 @@ impl GlobalSearch {
         let excluded = self.excluded.clone();
         let cache = self.cache.clone();
         let (changed_tx, changed_rx) = flume::unbounded::<()>();
-        let (service_tx, service_rx) = flume::bounded::<(Arc<IndexService>, bool)>(1);
+        let (service_tx, service_rx) =
+            flume::bounded::<(Arc<IndexService>, bool, Option<String>)>(1);
         crate::explorer::spawn_thread("index-roots", move || {
             // The background service only applies to real drives, not the fake ones in tests.
             let installed = matches!(roots, Roots::LocalDrives) && arke_indexd::client::installed();
+            let outdated = installed
+                .then(|| service_outdated(arke_indexd::client::installed_version()))
+                .flatten();
             let roots = match roots {
                 Roots::Fixed(roots) => roots,
                 Roots::LocalDrives => local_drives(shell.as_ref()),
@@ -259,15 +267,16 @@ impl GlobalSearch {
                 let _ = changed_tx.send(());
             });
             // Receiver already gone (turned off again): the service drops here and stops.
-            let _ = service_tx.send((Arc::new(service), installed));
+            let _ = service_tx.send((Arc::new(service), installed, outdated));
         });
         self.worker = Some(cx.spawn(async move |this, cx| {
-            let Ok((service, installed)) = service_rx.recv_async().await else {
+            let Ok((service, installed, outdated)) = service_rx.recv_async().await else {
                 return;
             };
             let stored = this.update(cx, |this, cx| {
                 this.service = Some(service);
                 this.service_installed = Some(installed);
+                this.service_outdated = outdated;
                 this.refresh_status(cx);
             });
             if stored.is_err() {
@@ -596,6 +605,27 @@ impl GlobalSearch {
     }
 }
 
+/// The installed service's version if it isn't this Arke's (`installed`: what its program says;
+/// `None` when that can't be read, e.g. the file is gone, which an update repairs too).
+fn service_outdated(installed: Option<String>) -> Option<String> {
+    match installed {
+        Some(v) if v == crate::build_info::VERSION => None,
+        Some(v) => {
+            log::info!(
+                "search service is version {v}, Arke is {}: Settings › Search offers to update it",
+                crate::build_info::VERSION
+            );
+            Some(v)
+        }
+        None => {
+            log::info!(
+                "search service program has no readable version; Settings offers to update it"
+            );
+            Some(String::from("?"))
+        }
+    }
+}
+
 /// Sets the flag when dropped (a search task dropped before its result arrived).
 struct CancelOnDrop(Arc<AtomicBool>);
 
@@ -915,6 +945,20 @@ pub(crate) fn toggle_network(path: PathBuf, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The service is outdated when its program reports another version, or none at all.
+    #[test]
+    fn a_service_from_another_version_is_outdated() {
+        assert_eq!(
+            service_outdated(Some(crate::build_info::VERSION.to_owned())),
+            None
+        );
+        assert_eq!(
+            service_outdated(Some("0.0.1-test".to_owned())),
+            Some("0.0.1-test".to_owned())
+        );
+        assert_eq!(service_outdated(None), Some("?".to_owned()));
+    }
     use std::path::Path;
 
     #[test]

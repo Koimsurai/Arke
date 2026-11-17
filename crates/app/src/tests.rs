@@ -6195,6 +6195,50 @@ fn the_wheel_over_dimmed_settings_scrolls_the_page(cx: &mut TestAppContext) {
     );
 }
 
+/// Settings › Search: a service installed by another version of Arke offers Update next to
+/// Remove, and says why; an up-to-date one shows only Remove.
+#[gpui::test]
+fn an_outdated_search_service_offers_an_update(cx: &mut TestAppContext) {
+    use crate::settings::SettingsStore;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\o");
+    cx.update(|_, cx| {
+        crate::global_search::GlobalSearch::init(
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
+            crate::global_search::Roots::Fixed(vec![PathBuf::from(r"C:\")]),
+            None,
+            cx,
+        );
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.global_search = true, cx));
+    });
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.search"), cx);
+    });
+    let set = |cx: &mut VisualTestContext, outdated: Option<&str>| {
+        cx.update(|_, cx| {
+            let global = crate::global_search::GlobalSearch::global(cx).expect("global search");
+            global.update(cx, |g, cx| {
+                g.service_installed = Some(true);
+                g.service_outdated = outdated.map(str::to_owned);
+                cx.notify();
+            });
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+    };
+    set(cx, None);
+    assert!(cx.debug_bounds("search-service").is_some(), "Remove");
+    assert!(cx.debug_bounds("search-service-update").is_none());
+    set(cx, Some("0.5.2"));
+    assert!(cx.debug_bounds("search-service-update").is_some(), "Update");
+    assert!(cx.debug_bounds("search-service").is_some(), "Remove stays");
+}
+
 /// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the
 /// page, until the text reaches its end; then the page takes over.
 #[gpui::test]

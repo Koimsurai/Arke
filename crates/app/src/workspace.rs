@@ -343,6 +343,7 @@ pub(crate) struct Workspace {
     rail_hover: u64,
     /// A close is pending (the pointer left the open sidebar).
     peek_closing: bool,
+    sidebar_ui: rail::SidebarUi,
     /// Repaint when the shelf changes (any window may change it).
     _shelf: Subscription,
     last_viewport_width: gpui::Pixels,
@@ -639,6 +640,7 @@ impl Workspace {
             rail_peek: false,
             rail_hover: 0,
             peek_closing: false,
+            sidebar_ui: rail::SidebarUi::default(),
             _shelf: shelf,
             last_viewport_width: px(1200.),
             shared_preview: None,
@@ -2068,29 +2070,60 @@ impl Render for Workspace {
         self.save_session_if_changed(cx);
         self.refresh_compare(cx);
         let horizontal = Self::horizontal_tabs(cx);
+        // Left column: title row (window drag area) and sidebar, or the column of icons it
+        // collapses to.
+        let left = div()
+            .id("sidebar-column")
+            .debug_selector(|| "sidebar-column".to_owned())
+            .w(theme::sidebar_width())
+            .flex_none()
+            .h_full()
+            .relative()
+            .flex()
+            .flex_col();
+        let left = if let Some((collapsing, serial)) = self.sidebar_ui.motion {
+            // Sliding: the full sidebar, clipped while the width moves (its rows' icons line up
+            // with the column of icons, so collapsing ends where the column takes over).
+            let (from, to) = if collapsing {
+                (theme::SIDEBAR_W, theme::RAIL_W)
+            } else {
+                (theme::RAIL_W, theme::SIDEBAR_W)
+            };
+            let full = div()
+                .w(theme::SIDEBAR_W)
+                .flex_none()
+                .h_full()
+                .flex()
+                .flex_col()
+                .when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+                .child(self.render_home_button(cx))
+                .child(self.render_sidebar(cx))
+                .child(self.render_settings_button(cx));
+            gpui::AnimationExt::with_animation(
+                left.overflow_hidden().child(full),
+                gpui::ElementId::NamedInteger("sidebar-slide".into(), serial),
+                crate::motion::enter(),
+                move |el, t| el.w(from + (to - from) * t),
+            )
+            .into_any_element()
+        } else {
+            left.when(theme::sidebar_collapsed(), |d| {
+                d.child(self.render_rail(cx))
+            })
+            .children(self.render_peek(cx))
+            .when(!theme::sidebar_collapsed(), |d| {
+                d.when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+                    .child(self.render_home_button(cx))
+                    .child(self.render_sidebar(cx))
+                    .child(self.render_settings_button(cx))
+            })
+            .into_any_element()
+        };
         let body = div()
             .flex()
             .flex_1()
             .min_h_0()
-            .child(
-                // Left column: title row (window drag area) and sidebar, or the column of icons
-                // it collapses to.
-                div()
-                    .w(theme::sidebar_width())
-                    .flex_none()
-                    .h_full()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .when(theme::sidebar_collapsed(), |d| d.child(self.render_rail(cx)))
-                    .children(self.render_peek(cx))
-                    .when(!theme::sidebar_collapsed(), |d| {
-                        d.when(!horizontal, |d| d.child(self.render_brand_row(cx)))
-                            .child(self.render_home_button(cx))
-                            .child(self.render_sidebar(cx))
-                            .child(self.render_settings_button(cx))
-                    }),
-            )
+            .child(left)
             // Settings and Recycle Bin pages replace the panes; the sidebar stays.
             .child(match self.render_settings_page(window, cx) {
                 Some(page) => page,

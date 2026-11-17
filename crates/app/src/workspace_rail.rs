@@ -18,6 +18,20 @@ use rust_i18n::t;
 
 use super::sidebar::{SidebarAction, display_name};
 use super::{OpenPalette, ToggleSidebar, Workspace};
+
+/// Sidebar state that isn't a setting.
+#[derive(Default)]
+pub(super) struct SidebarUi {
+    /// Ctrl+B: the width sliding (collapsing?, serial); see `Workspace::slide_sidebar`.
+    pub(super) motion: Option<(bool, u64)>,
+    motion_task: Option<gpui::Task<()>>,
+    /// The lists that scroll on their own: places (pins, This PC, Network) and tabs, in the full
+    /// sidebar and in the column of icons.
+    pub(super) places_scroll: gpui::ScrollHandle,
+    pub(super) tabs_scroll: gpui::ScrollHandle,
+    rail_places_scroll: gpui::ScrollHandle,
+    rail_tabs_scroll: gpui::ScrollHandle,
+}
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, kind_icon};
@@ -28,6 +42,11 @@ use arke_core::filetype::FileKind;
 
 /// Side of a rail button.
 const BUTTON: f32 = 36.;
+
+/// Height of `n` buttons stacked with their gaps.
+fn buttons_h(n: f32) -> gpui::Pixels {
+    px(BUTTON) * n + theme::S_2 * (n - 1.).max(0.)
+}
 /// How long the pointer rests on the column before the full sidebar opens over the content (short
 /// enough to feel immediate, long enough that crossing the column to the window edge doesn't).
 const PEEK_OPEN: Duration = Duration::from_millis(300);
@@ -96,10 +115,6 @@ fn drive_letter(root: &Path) -> String {
 
 impl Workspace {
     /// Ctrl+B or the sidebar button: the setting is kept, so the next window starts the same way.
-    #[allow(
-        clippy::unused_self,
-        reason = "GPUI action listeners need the &mut self signature"
-    )]
     pub(super) fn toggle_sidebar(
         &mut self,
         _: &ToggleSidebar,
@@ -107,9 +122,32 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.rail_peek = false;
+        let collapsing = !theme::sidebar_collapsed();
         SettingsStore::global(cx).update(cx, |s, cx| {
-            s.update(|st| st.sidebar_collapsed = !st.sidebar_collapsed, cx);
+            s.update(|st| st.sidebar_collapsed = collapsing, cx);
         });
+        self.slide_sidebar(collapsing, cx);
+    }
+
+    /// The sidebar's width slides between full and the column of icons for `motion::BASE`
+    /// (instant with Windows animations off).
+    fn slide_sidebar(&mut self, collapsing: bool, cx: &mut Context<Self>) {
+        if !crate::motion::enabled() {
+            self.sidebar_ui.motion = None;
+            return;
+        }
+        let serial = self.sidebar_ui.motion.map_or(0, |(_, n)| n) + 1;
+        self.sidebar_ui.motion = Some((collapsing, serial));
+        self.sidebar_ui.motion_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(crate::motion::BASE).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.sidebar_ui.motion.is_some_and(|(_, n)| n == serial) {
+                    this.sidebar_ui.motion = None;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
     }
 
     /// The button that collapses or expands the sidebar.
@@ -219,19 +257,24 @@ impl Workspace {
             )
             // Places and tabs each scroll on their own when the window is short, like the full
             // sidebar.
-            .child(
+            .child(super::sidebar::scrolling(
                 div()
                     .id("rail-places")
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(theme::S_2)
-                    .flex_initial()
-                    .min_h(px(BUTTON * 2.))
-                    .overflow_y_scroll()
-                    .children(places),
-            )
-            .when(!horizontal, |d| d.children(Self::rail_tab_list(tabs, cx)))
+                    .gap(theme::S_2),
+                places,
+                &self.sidebar_ui.rail_places_scroll,
+                div().w_full().flex_initial().min_h(buttons_h(2.)),
+            ))
+            .when(!horizontal, |d| {
+                d.children(Self::rail_tab_list(
+                    tabs,
+                    &self.sidebar_ui.rail_tabs_scroll,
+                    cx,
+                ))
+            })
             .child(div().flex_1().min_h(theme::S_8))
             .child(Self::rail_settings(settings_open, cx))
     }
@@ -256,24 +299,29 @@ impl Workspace {
     }
 
     /// The vertical tabs (scrolling on their own) and the New tab button.
-    fn rail_tab_list(tabs: Vec<AnyElement>, cx: &mut Context<Self>) -> [AnyElement; 3] {
+    fn rail_tab_list(
+        tabs: Vec<AnyElement>,
+        scroll: &gpui::ScrollHandle,
+        cx: &mut Context<Self>,
+    ) -> [AnyElement; 3] {
         // Up to two tabs stay in view however short the window gets; one tab keeps only its own
         // height, leaving the rest to the places above.
         let keep = tabs.len().clamp(1, 2) as f32;
         [
             divider(),
-            div()
-                .id("rail-tabs")
-                .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(theme::S_2)
-                .flex_initial()
-                .min_h(px(BUTTON * keep))
-                .overflow_y_scroll()
-                .children(tabs)
-                .into_any_element(),
+            super::sidebar::scrolling(
+                div()
+                    .id("rail-tabs")
+                    .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(theme::S_2),
+                tabs,
+                scroll,
+                div().w_full().flex_initial().min_h(buttons_h(keep)),
+            )
+            .into_any_element(),
             rail_button(
                 "rail-new-tab",
                 icon(Icon::Plus, false),

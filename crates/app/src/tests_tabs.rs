@@ -1360,6 +1360,51 @@ fn ctrl_b_collapses_the_sidebar(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("sidebar-rail").is_none());
 }
 
+/// Ctrl+B slides the sidebar's width instead of switching at once: the full sidebar stays
+/// (clipped) while it narrows, and the column of icons takes over when the slide ends.
+#[gpui::test]
+fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
+    crate::motion::force_for_test(true);
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+
+    cx.simulate_keystrokes("ctrl-b");
+    cx.run_until_parked();
+    assert!(settings(cx).sidebar_collapsed);
+    let sliding = cx.debug_bounds("sidebar-column").unwrap();
+    assert!(
+        sliding.size.width > crate::theme::RAIL_W,
+        "still wider than the column of icons: {sliding:?}"
+    );
+    assert!(cx.debug_bounds("sidebar-rail").is_none());
+    cx.executor()
+        .advance_clock(crate::motion::BASE + Duration::from_millis(60));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("sidebar-rail").is_some(), "slide over");
+    assert_eq!(
+        cx.debug_bounds("sidebar-column").unwrap().size.width,
+        crate::theme::RAIL_W
+    );
+
+    cx.simulate_keystrokes("ctrl-b");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("sidebar-rail").is_none(),
+        "full sidebar while it widens"
+    );
+    cx.executor()
+        .advance_clock(crate::motion::BASE + Duration::from_millis(60));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("sidebar-column").unwrap().size.width,
+        crate::theme::SIDEBAR_W
+    );
+    crate::motion::force_for_test(false);
+}
+
 fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut crate::settings::Settings) + 'static) {
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx).update(cx, |s, cx| s.update(f, cx));

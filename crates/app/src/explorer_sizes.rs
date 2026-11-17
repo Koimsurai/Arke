@@ -14,8 +14,8 @@
 //! - A walk also records the totals of the folders up to [`SEED_DEPTH`] levels below each
 //!   subfolder, so opening one of those finds its subfolders already computed (same amount of
 //!   walking).
-//! - A change seen in a folder (a tab's watcher) drops the cached sizes of that folder and every
-//!   folder above it, so going up recomputes them. Changes deeper down that no tab watches show
+//! - A change seen in a folder (a tab's watcher) marks the cached sizes of that folder and every
+//!   folder above it out of date, so going up recomputes them (showing the old values meanwhile). Changes deeper down that no tab watches show
 //!   after [`REUSE_FOR`] or F5.
 //! - New subfolders, or ones whose mtime changed (direct children added or removed), are recomputed
 //!   without F5. This only runs when the listing version changes, not on every render.
@@ -54,11 +54,13 @@ struct Known {
     /// The folder's modified time when computed, as its parent lists it.
     modified: Option<SystemTime>,
     at: Instant,
+    /// Something inside changed since: walk again, but show this meanwhile.
+    outdated: bool,
 }
 
 impl Known {
     fn reusable(&self, modified: Option<SystemTime>) -> bool {
-        self.modified == modified && self.at.elapsed() < REUSE_FOR
+        !self.outdated && self.modified == modified && self.at.elapsed() < REUSE_FOR
     }
 }
 
@@ -107,15 +109,20 @@ impl SharedSizes {
                 bytes,
                 modified,
                 at: Instant::now(),
+                outdated: false,
             },
         );
     }
 
     /// Something in `dir` changed: its size and those of the folders above it are out of date.
-    fn forget_with_ancestors(&self, dir: &Path) {
+    /// They stay as the last known values (shown, and sorted by) until walked again, so a folder
+    /// keeps its place in a list sorted by size instead of dropping to zero meanwhile (#161).
+    fn outdate_with_ancestors(&self, dir: &Path) {
         let mut known = self.known.lock();
         for path in dir.ancestors() {
-            known.remove(path);
+            if let Some(k) = known.get_mut(path) {
+                k.outdated = true;
+            }
         }
     }
 
@@ -535,7 +542,7 @@ impl Explorer {
     /// are out of date.
     pub(super) fn folder_contents_changed(&self, cx: &mut App) {
         if let Some(path) = self.model.as_ref().map(|m| m.path.as_path()) {
-            shared(cx).forget_with_ancestors(path);
+            shared(cx).outdate_with_ancestors(path);
         }
     }
 
@@ -600,12 +607,14 @@ mod tests {
     }
 
     #[test]
-    fn changes_drop_the_folder_and_its_ancestors() {
+    fn changes_outdate_the_folder_and_its_ancestors() {
         let shared = SharedSizes::default();
         for p in [r"C:\u", r"C:\u\a", r"C:\u\a\b", r"C:\u\c"] {
             shared.put(PathBuf::from(p), 1, None);
         }
-        shared.forget_with_ancestors(Path::new(r"C:\u\a\b"));
+        shared.outdate_with_ancestors(Path::new(r"C:\u\a\b"));
+        // Walked again, but the last value is still there to show.
+        assert_eq!(shared.get(Path::new(r"C:\u\a")).map(|k| k.bytes), Some(1));
         let left: Vec<bool> = [r"C:\u", r"C:\u\a", r"C:\u\a\b", r"C:\u\c"]
             .iter()
             .map(|p| shared.reusable(Path::new(p), None).is_some())

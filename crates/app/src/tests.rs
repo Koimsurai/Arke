@@ -3530,6 +3530,72 @@ fn recent_folder_sizes_are_reused_instead_of_walking_again(cx: &mut TestAppConte
     assert!(fs.read_dir_calls() - reads > 1, "F5 walks the subfolders");
 }
 
+/// #161: something changed in a folder while you were in it. Going back up to its parent sorted by
+/// size keeps the folder selected and on screen while its size is computed again.
+#[gpui::test]
+fn going_up_in_a_size_sorted_folder_keeps_the_folder_on_screen(cx: &mut TestAppContext) {
+    use crate::explorer::FolderSize;
+    let fs = FakeFs::new();
+    let root = r"C:\s";
+    let inside = Path::new(r"C:\s\f40");
+    // Size order is the reverse of name order.
+    let names_in: Vec<String> = (0..80).map(|i| format!("f{i:02}")).collect();
+    fs.insert_dir(root, names_in.iter().map(|n| dir(n)).collect());
+    for (i, n) in names_in.iter().enumerate() {
+        let path = format!(r"{root}\{n}");
+        fs.insert_dir(&path, vec![file("x", (i as u64 + 1) * 1000)]);
+        fs.set_delay(path, Duration::from_millis(15));
+    }
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), root);
+    let height = gpui::px(500.);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), height));
+    wait_until(cx, &view, "load", loaded(root));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    let sized = |v: &Explorer| {
+        names(v).first().map(String::as_str) == Some("f79")
+            && (0..80).all(|i| {
+                matches!(
+                    v.folder_size(&format!("f{i:02}")),
+                    FolderSize::Known { fresh: true, .. }
+                )
+            })
+    };
+    wait_until(cx, &view, "sizes known", sized);
+
+    view.update(cx, |v, cx| {
+        v.navigate(inside.to_path_buf(), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "inside", loaded(r"C:\s\f40"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs.watcher_count(inside) == 0 {
+        assert!(Instant::now() < deadline, "watcher did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fs.add_file(inside, "y", 1);
+    fs.emit_changed(inside, &["y"]);
+    wait_until(cx, &view, "change seen", |v| names(v).len() == 2);
+
+    cx.simulate_keystrokes("alt-up");
+    wait_until(cx, &view, "back up", loaded(root));
+    // While it is computed again, the folder keeps its last size and its place.
+    cx.run_until_parked();
+    let place = |v: &Explorer| names(v).iter().position(|n| n == "f40");
+    assert_eq!(view.update(cx, |v, _| place(v)), Some(39));
+    wait_until(cx, &view, "sizes again", sized);
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| selected_name(v)).as_deref(),
+        Some("f40")
+    );
+    let at = cx.debug_bounds("name:f40");
+    assert!(
+        at.is_some_and(|b| b.top() >= gpui::px(0.) && b.bottom() <= height),
+        "the folder we came from is on screen: {at:?}"
+    );
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "One scenario end to end: sizes arrive in the background while the sort is applied"

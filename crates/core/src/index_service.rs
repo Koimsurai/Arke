@@ -52,8 +52,35 @@ const MOVED_IN_MAX: usize = 50_000;
 #[cfg(test)]
 const MOVED_IN_MAX: usize = 10;
 /// After lost watch events, minimum time since the last rebuild before rebuilding again (busy
-/// system drives overflow often, and a rebuild takes tens of seconds).
+/// system drives overflow often, and a rebuild takes tens of seconds). Sooner than that, the
+/// rebuild is scheduled for when it's up.
+#[cfg(not(test))]
 const RESCAN_MIN_GAP: Duration = Duration::from_hours(1);
+// Above the index's build time resolution (whole seconds), so "soon after" is really soon.
+#[cfg(test)]
+const RESCAN_MIN_GAP: Duration = Duration::from_secs(2);
+/// After a journal gap, how long to wait before rebuilding: when the journal was deleted, the
+/// system drive gets a new one within seconds, and with it the rebuild can read the MFT instead
+/// of walking every folder.
+#[cfg(not(test))]
+const GAP_FIRST_DELAY: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const GAP_FIRST_DELAY: Duration = Duration::from_millis(10);
+/// Gaps coming back within this long count as repeats (something keeps deleting the journal, such
+/// as a cleaner): each repeat doubles the wait before the next rebuild, from [`GAP_BACKOFF`] up
+/// to [`GAP_BACKOFF_MAX`].
+#[cfg(not(test))]
+const GAP_REPEAT_WINDOW: Duration = Duration::from_hours(1);
+#[cfg(test)]
+const GAP_REPEAT_WINDOW: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
+const GAP_BACKOFF: Duration = Duration::from_mins(2);
+#[cfg(test)]
+const GAP_BACKOFF: Duration = Duration::from_millis(300);
+#[cfg(not(test))]
+const GAP_BACKOFF_MAX: Duration = Duration::from_mins(30);
+#[cfg(test)]
+const GAP_BACKOFF_MAX: Duration = Duration::from_millis(1200);
 /// How often to check whether the index is stale while running.
 const REFRESH_CHECK: Duration = Duration::from_mins(10);
 /// How often to consider saving a checkpoint with a journal (latest position + changes since the
@@ -86,6 +113,17 @@ const PROGRESS_TICK: Duration = Duration::from_millis(400);
 const SETTLE: Duration = Duration::from_millis(300);
 #[cfg(test)]
 const SETTLE: Duration = Duration::from_millis(10);
+
+/// Wait before rebuilding after a journal gap that came back `repeats` times lately.
+fn gap_wait(repeats: usize) -> Duration {
+    if repeats == 0 {
+        return GAP_FIRST_DELAY;
+    }
+    let doublings = u32::try_from(repeats - 1).unwrap_or(u32::MAX).min(16);
+    GAP_BACKOFF
+        .saturating_mul(1 << doublings)
+        .min(GAP_BACKOFF_MAX)
+}
 
 /// Hook run at the start of each background thread.
 pub type ThreadInit = Arc<dyn Fn() + Send + Sync>;
@@ -225,12 +263,19 @@ struct Shared {
     no_index: Mutex<Rebuild>,
     /// Reason of a rebuild waiting for resources ([`IndexOptions::can_build`]).
     deferred_reason: Mutex<Option<Rebuild>>,
+    /// A rebuild asked for while one was running, or held back on purpose (journal gaps coming
+    /// back, lost watch events soon after a rebuild): started by the periodic check once due.
+    scheduled: Mutex<Option<(Rebuild, Instant)>>,
+    /// When rebuilds for journal gaps started lately (to space repeats out).
+    gap_rebuilds: Mutex<Vec<Instant>>,
     /// Reason of the last rebuild started.
     last_rebuild: Mutex<Option<Rebuild>>,
     /// Folding the overlay into the index ([`Shared::merge`]): not a walk, no progress to show.
     merging: AtomicBool,
     /// Merges done so far.
     merges: std::sync::atomic::AtomicU64,
+    /// Rebuilds (walks or MFT listings) started so far.
+    rebuilds: std::sync::atomic::AtomicU64,
     /// Cache of which folders are Rust projects (their `target` is build output).
     cargo_targets: Mutex<std::collections::HashMap<PathBuf, bool>>,
     /// Changed paths waiting for stat (`true`: moved-in folder, list its contents too).
@@ -311,9 +356,12 @@ impl IndexService {
             checkpoint_bytes: std::sync::atomic::AtomicU64::new(0),
             no_index: Mutex::new(Rebuild::NoIndex),
             deferred_reason: Mutex::new(None),
+            scheduled: Mutex::new(None),
+            gap_rebuilds: Mutex::new(Vec::new()),
             last_rebuild: Mutex::new(None),
             merging: AtomicBool::new(false),
             merges: std::sync::atomic::AtomicU64::new(0),
+            rebuilds: std::sync::atomic::AtomicU64::new(0),
             cargo_targets: Mutex::new(std::collections::HashMap::new()),
             pending: Mutex::new(Vec::new()),
             draining: AtomicBool::new(false),
@@ -382,6 +430,7 @@ impl IndexService {
                         let reason = shared.deferred_reason.lock().unwrap_or(Rebuild::Stale);
                         shared.request_build(reason);
                     }
+                    shared.start_scheduled();
                     if since_check >= REFRESH_CHECK {
                         since_check = Duration::ZERO;
                         // No periodic rebuild needed if every root is journaled.
@@ -563,6 +612,11 @@ impl IndexService {
     /// Times the recorded changes were folded into the index instead of a rebuild.
     pub fn merges(&self) -> u64 {
         self.shared.merges.load(Ordering::Relaxed)
+    }
+
+    /// Rebuilds (walks or MFT listings, not merges) started so far.
+    pub fn rebuilds(&self) -> u64 {
+        self.shared.rebuilds.load(Ordering::Relaxed)
     }
 
     /// Why the last rebuild started; `None` if none ran (the saved index was used as is).
@@ -862,7 +916,7 @@ impl Shared {
                         .get(root)
                         .map_or_default(|r| r.display().to_string())
                 );
-                self.request_build(Rebuild::JournalGap);
+                self.journal_gap();
             }
         }
     }
@@ -1024,11 +1078,17 @@ impl Shared {
         }
         match event {
             WatchEvent::Changed(paths) => self.enqueue(paths.into_iter().map(|p| (p, false))),
-            WatchEvent::Rescan => {
-                if self.age().is_none_or(|age| age >= RESCAN_MIN_GAP) {
-                    self.request_build(Rebuild::WatchOverflow);
+            WatchEvent::Rescan => match self.age() {
+                Some(age) if age < RESCAN_MIN_GAP => {
+                    let wait = RESCAN_MIN_GAP.saturating_sub(age);
+                    log::info!(
+                        "global search: folder watch lost events, rebuilding in {} s",
+                        wait.as_secs()
+                    );
+                    self.schedule(Rebuild::WatchOverflow, Instant::now() + wait);
                 }
-            }
+                _ => self.request_build(Rebuild::WatchOverflow),
+            },
         }
     }
 
@@ -1239,13 +1299,60 @@ impl Shared {
         }
     }
 
-    /// Rebuilds in the background (no-op if already building).
+    /// The journal can't be followed any more: rebuild, after a short wait, and spaced further
+    /// apart while gaps keep coming back. Until then the current index keeps serving searches.
+    fn journal_gap(self: &Arc<Self>) {
+        let now = Instant::now();
+        let repeats = {
+            let mut recent = self.gap_rebuilds.lock();
+            recent.retain(|t| now.duration_since(*t) < GAP_REPEAT_WINDOW);
+            recent.push(now);
+            recent.len() - 1
+        };
+        let wait = gap_wait(repeats);
+        if repeats > 0 {
+            log::info!(
+                "global search: journal gap again ({repeats} in the last hour), rebuilding in {} s",
+                wait.as_secs()
+            );
+        }
+        self.schedule(Rebuild::JournalGap, now + wait);
+    }
+
+    /// Starts `reason` at `at` at the earliest (from the periodic check). Of two scheduled
+    /// rebuilds the earlier one stays: one rebuild covers both.
+    fn schedule(&self, reason: Rebuild, at: Instant) {
+        let mut scheduled = self.scheduled.lock();
+        if scheduled.is_none_or(|(_, when)| at < when) {
+            *scheduled = Some((reason, at));
+        }
+    }
+
+    /// Starts the scheduled rebuild if it's due and none is running.
+    fn start_scheduled(self: &Arc<Self>) {
+        if self.building.load(Ordering::Acquire) {
+            return;
+        }
+        let now = Instant::now();
+        let due = self
+            .scheduled
+            .lock()
+            .take_if(|(_, at)| *at <= now)
+            .map(|(reason, _)| reason);
+        if let Some(reason) = due {
+            self.request_build(reason);
+        }
+    }
+
+    /// Rebuilds in the background. While one runs, this one is scheduled to follow it instead (a
+    /// journal gap during a merge, say, still gets its rebuild).
     fn request_build(self: &Arc<Self>, reason: Rebuild) {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
         if self.building.swap(true, Ordering::AcqRel) {
-            log::debug!("global search: already rebuilding ({reason})");
+            log::debug!("global search: already rebuilding, {reason} follows");
+            self.schedule(reason, Instant::now());
             return;
         }
         let weak = Arc::downgrade(self);
@@ -1278,6 +1385,7 @@ impl Shared {
             return;
         }
         *self.last_rebuild.lock() = Some(reason);
+        self.rebuilds.fetch_add(1, Ordering::Relaxed);
         log::info!(
             "global search: rebuilding {}: {reason}",
             crate::index::roots_label(&self.opts.roots)
@@ -2156,6 +2264,58 @@ mod tests {
         wait("journal refollowed", || journal.follow_calls() > calls);
         drop(svc);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rebuild asked for while one runs isn't dropped: it follows the running one (a journal gap
+    /// during a merge used to leave the drive with no change source until restart).
+    #[test]
+    fn a_rebuild_asked_for_during_one_follows_it() {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\a",
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
+        wait("first build", || ready(&svc));
+        let before = svc.rebuilds();
+        fs.set_delay(r"C:\a", Duration::from_millis(200));
+        svc.rebuild();
+        wait("rebuilding", || svc.status().scanning.is_some());
+        svc.rebuild();
+        wait("both rebuilds ran", || svc.rebuilds() == before + 2);
+        wait("done", || ready(&svc));
+    }
+
+    /// Lost watch events soon after a rebuild schedule one for later instead of being ignored
+    /// (until the next daily refresh, changes they hid stayed missing).
+    #[test]
+    fn lost_watch_events_soon_after_a_rebuild_are_caught_up_later() {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\a",
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let mut o = opts(None);
+        o.refresh_after = Duration::from_hours(24);
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, o, || {});
+        wait("first build", || ready(&svc));
+        // A change the watcher missed, then its overflow, right after the build.
+        fs.add_file(Path::new(r"C:\a"), "missed-report.txt", 1);
+        fs.emit(Path::new(r"C:\"), &WatchEvent::Rescan);
+        wait("caught up once the gap is up", || {
+            found(&svc, "missed-report").len() == 1
+        });
+        assert_eq!(svc.last_rebuild(), Some(Rebuild::WatchOverflow));
+    }
+
+    /// Journal gaps that keep coming back wait longer each time, up to a limit.
+    #[test]
+    fn repeated_journal_gaps_wait_longer() {
+        assert_eq!(gap_wait(0), GAP_FIRST_DELAY);
+        assert_eq!(gap_wait(1), GAP_BACKOFF);
+        assert_eq!(gap_wait(2), GAP_BACKOFF * 2);
+        assert_eq!(gap_wait(3), GAP_BACKOFF * 4);
+        assert_eq!(gap_wait(50), GAP_BACKOFF_MAX);
     }
 
     /// A cancelled query returns nothing instead of partial results.

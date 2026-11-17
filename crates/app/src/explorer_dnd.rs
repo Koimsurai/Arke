@@ -33,9 +33,13 @@ use gpui::{
 use rust_i18n::t;
 
 use super::{Explorer, kind_icon, spawn_thread};
+
+#[path = "explorer_dnd_hold.rs"]
+mod hold;
 use crate::media::MediaKey;
 use crate::shell::{DragImage, DragImageRequest};
 use crate::theme::{self, UiFont as _};
+pub(crate) use hold::hold_temp_drop;
 
 /// Longest edge when decoding the drag image ourselves.
 const DRAG_THUMBNAIL: u32 = 96;
@@ -678,13 +682,15 @@ pub(crate) fn drop_external_into(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let paths: Vec<PathBuf> = paths.paths().to_vec();
+    // Files a source extracted to the temp folder for this drop are gone once it returns.
+    let (paths, held) = hold_temp_drop(paths.paths().to_vec());
     if window.modifiers().alt {
         let at = window.mouse_position();
         target.update(cx, |e, cx| e.open_drop_menu(paths, dest, at, window, cx));
         return;
     }
-    let is_move = drop_is_move(window.modifiers(), &paths, &dest);
+    // Held files are Arke's own copies: moved from where they are held.
+    let is_move = held || drop_is_move(window.modifiers(), &paths, &dest);
     target.update(cx, |e, cx| e.transfer_paths(paths, dest, is_move, cx));
 }
 

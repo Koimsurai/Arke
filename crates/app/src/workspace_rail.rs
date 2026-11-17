@@ -488,7 +488,8 @@ impl Workspace {
             this.add_to_shelf_from_drop(items, cx);
         }))
         .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-            let items = paths.paths().iter().map(|p| (p.clone(), false)).collect();
+            let (paths, _) = crate::explorer::hold_temp_drop(paths.paths().to_vec());
+            let items = paths.into_iter().map(|p| (p, false)).collect();
             this.add_to_shelf_from_drop(items, cx);
         }))
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

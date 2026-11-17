@@ -35,3 +35,8 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
     recovery doesn't wait for the next frame.
 
   Worth offering upstream (Zed has the same loop).
+- `src/window.rs` `WindowsDragDropHandler::Drop`: the dropped files are asked for again when the
+  drop happens, not only when the drag enters. 7-Zip and NanaZip list placeholder paths during the
+  drag and only extract to a temp folder when asked after the button is released (and delete it
+  once the drop returns), so dropping from them moved files that didn't exist (#168). When the
+  list changed, the drag is entered again with the new list before the drop.

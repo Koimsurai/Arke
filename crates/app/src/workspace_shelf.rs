@@ -233,8 +233,10 @@ impl Workspace {
                 this.add_to_shelf_from_drop(items, cx);
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                // Windows doesn't say which are folders; the recheck finds out.
-                let items = paths.paths().iter().map(|p| (p.clone(), false)).collect();
+                // Windows doesn't say which are folders; the recheck finds out. Files a source
+                // extracted to the temp folder for this drop are gone once it returns.
+                let (paths, _) = crate::explorer::hold_temp_drop(paths.paths().to_vec());
+                let items = paths.into_iter().map(|p| (p, false)).collect();
                 this.add_to_shelf_from_drop(items, cx);
             }));
         // The whole shelf drags out from its row.

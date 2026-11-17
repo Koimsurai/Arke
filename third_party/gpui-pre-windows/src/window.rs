@@ -1171,7 +1171,11 @@ impl accesskit::ActionHandler for A11yActionHandler {
 }
 
 #[implement(IDropTarget)]
-struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
+struct WindowsDragDropHandler(
+    pub Rc<WindowsWindowInner>,
+    /// The files as the source listed them when the drag entered.
+    RefCell<SmallVec<[PathBuf; 2]>>,
+);
 
 impl WindowsDragDropHandler {
     fn handle_drag_drop(&self, input: PlatformInput) {
@@ -1179,6 +1183,35 @@ impl WindowsDragDropHandler {
             func(input);
             self.0.state.callbacks.input.set(Some(func));
         }
+    }
+}
+
+/// The files a data object lists (`CF_HDROP`), or `None` if it lists none.
+unsafe fn dropped_paths(idata_obj: &IDataObject) -> Option<SmallVec<[PathBuf; 2]>> {
+    let config = FORMATETC {
+        cfFormat: CF_HDROP.0,
+        ptd: std::ptr::null_mut() as _,
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as _,
+    };
+    unsafe {
+        if idata_obj.QueryGetData(&config as _) != S_OK {
+            return None;
+        }
+        let mut idata = idata_obj.GetData(&config as _).log_err()?;
+        if idata.u.hGlobal.is_invalid() {
+            return None;
+        }
+        let hdrop = HDROP(idata.u.hGlobal.0);
+        let mut paths = SmallVec::<[PathBuf; 2]>::new();
+        with_file_names(hdrop, |file_name| {
+            if let Some(path) = PathBuf::from_str(&file_name).log_err() {
+                paths.push(path);
+            }
+        });
+        ReleaseStgMedium(&mut idata);
+        Some(paths)
     }
 }
 
@@ -1193,30 +1226,10 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     ) -> windows::core::Result<()> {
         unsafe {
             let idata_obj = pdataobj.ok()?;
-            let config = FORMATETC {
-                cfFormat: CF_HDROP.0,
-                ptd: std::ptr::null_mut() as _,
-                dwAspect: DVASPECT_CONTENT.0,
-                lindex: -1,
-                tymed: TYMED_HGLOBAL.0 as _,
-            };
             let cursor_position = POINT { x: pt.x, y: pt.y };
-            if idata_obj.QueryGetData(&config as _) == S_OK {
+            if let Some(paths) = dropped_paths(idata_obj) {
                 *pdweffect = DROPEFFECT_COPY;
-                let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
-                    return Ok(());
-                };
-                if idata.u.hGlobal.is_invalid() {
-                    return Ok(());
-                }
-                let hdrop = HDROP(idata.u.hGlobal.0);
-                let mut paths = SmallVec::<[PathBuf; 2]>::new();
-                with_file_names(hdrop, |file_name| {
-                    if let Some(path) = PathBuf::from_str(&file_name).log_err() {
-                        paths.push(path);
-                    }
-                });
-                ReleaseStgMedium(&mut idata);
+                *self.1.borrow_mut() = paths.clone();
                 let mut cursor_position = cursor_position;
                 ScreenToClient(self.0.hwnd, &mut cursor_position)
                     .ok()
@@ -1302,13 +1315,27 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 .log_err();
         }
         let scale_factor = self.0.state.scale_factor.get();
-        let input = PlatformInput::FileDrop(FileDropEvent::Submit {
-            position: logical_point(
-                cursor_position.x as f32,
-                cursor_position.y as f32,
-                scale_factor,
-            ),
-        });
+        let position = logical_point(
+            cursor_position.x as f32,
+            cursor_position.y as f32,
+            scale_factor,
+        );
+        // Ask for the files again: some sources only make them now. An archive manager (7-Zip,
+        // NanaZip) lists placeholder paths while the drag is under way, extracts to a temp folder
+        // when asked after the button is released, and deletes that folder once the drop
+        // returns. When the list changed, the drag is entered again with it, so the drop sees
+        // the real files (and can take them before this returns).
+        if let Some(paths) = unsafe { dropped_paths(idata_obj) }
+            && *self.1.borrow() != paths
+        {
+            *self.1.borrow_mut() = paths.clone();
+            self.handle_drag_drop(PlatformInput::FileDrop(FileDropEvent::Exited));
+            self.handle_drag_drop(PlatformInput::FileDrop(FileDropEvent::Entered {
+                position,
+                paths: ExternalPaths(paths),
+            }));
+        }
+        let input = PlatformInput::FileDrop(FileDropEvent::Submit { position });
         self.handle_drag_drop(input);
 
         Ok(())
@@ -1544,7 +1571,7 @@ fn get_module_handle() -> HMODULE {
 
 fn register_drag_drop(window: &Rc<WindowsWindowInner>) -> Result<()> {
     let window_handle = window.hwnd;
-    let handler = WindowsDragDropHandler(window.clone());
+    let handler = WindowsDragDropHandler(window.clone(), RefCell::default());
     // The lifetime of `IDropTarget` is handled by Windows, it won't release until
     // we call `RevokeDragDrop`.
     // So, it's safe to drop it here.

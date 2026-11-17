@@ -84,7 +84,7 @@ mod viewopts;
 
 pub(crate) use dnd::{
     DragPreview, DraggedFiles, DraggingOutside, PendingDragOut, RightDrag, ShelfDrag, accepts_drop,
-    drop_external_into, drop_into, report_drop_target,
+    drop_external_into, drop_into, hold_temp_drop, report_drop_target,
 };
 pub(crate) use icons::IconSize;
 pub(crate) use layout::{SharedPreview, shared_preview};

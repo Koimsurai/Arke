@@ -1500,6 +1500,17 @@ fn the_collapsed_sidebar_opens_while_the_pointer_rests_on_it(cx: &mut TestAppCon
     cx.executor().advance_clock(Duration::from_millis(400));
     cx.run_until_parked();
     assert!(peek(cx));
+    // Out and straight back over it: stays open.
+    cx.simulate_mouse_move(content, None, none);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.simulate_mouse_move(
+        gpui::point(crate::theme::SIDEBAR_W - gpui::px(20.), rail.y),
+        None,
+        none,
+    );
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(peek(cx), "came back before it closed");
     cx.simulate_mouse_move(content, None, none);
     cx.executor().advance_clock(Duration::from_millis(300));
     cx.run_until_parked();

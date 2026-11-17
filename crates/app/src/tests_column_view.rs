@@ -250,3 +250,22 @@ fn fitting_short_names_keeps_the_minimum(cx: &mut TestAppContext) {
         px(160.)
     );
 }
+
+/// The parent column's width is shared by every pane: one made wide in a big window doesn't
+/// squeeze the current folder's column to nothing once the window is smaller.
+#[gpui::test]
+fn a_wide_parent_column_gives_way_in_a_smaller_window(cx: &mut TestAppContext) {
+    let (view, cx) = open_columns(cx, vec![file("x.txt", 1)]);
+    crate::prefs::set_view_column_width(ViewColumn::Parent, Some(px(900.)));
+    cx.simulate_resize(gpui::size(px(1000.), px(800.)));
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let list = view.update(cx, |v, _| v.list_bounds_for_test());
+    let name = cx.debug_bounds("name:x.txt").expect("the current column's row is drawn");
+    assert!(
+        name.left() < list.right() - px(40.),
+        "room left for the current column: {name:?} in {list:?}"
+    );
+    crate::prefs::set_view_column_width(ViewColumn::Parent, None);
+}

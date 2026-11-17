@@ -223,3 +223,37 @@ fn quick_look_keeps_the_whole_card_for_the_preview(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("ql-info").is_none(), "no details list");
     assert!(cx.debug_bounds("pane-info-value-0").is_none());
 }
+
+/// A video shows a frame in the preview pane, as in the icons view, without the frame's size as
+/// its dimensions.
+#[gpui::test]
+fn a_video_previews_a_frame(cx: &mut TestAppContext) {
+    let dir = r"C:\clips";
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        dir,
+        vec![Entry::new("trip.mp4", EntryKind::File, 4096, None, 0)],
+    );
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), dir);
+    wait_until(cx, &view, "load", loaded(dir));
+    view.update(cx, |v, cx| {
+        v.preview_pane = true;
+        cx.notify();
+    });
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "previewed", previewed);
+    assert!(view.update(cx, |v, _| matches!(
+        v.preview.as_ref().map(|p| &p.body),
+        Some(PreviewBody::Image { .. })
+    )));
+    assert!(
+        shell
+            .video_thumbs
+            .lock()
+            .contains(&PathBuf::from(r"C:\clips\trip.mp4"))
+    );
+    let rows = view.update(cx, |v, _| v.preview_info_for_test());
+    let dimensions = t!("preview.dimensions").to_string();
+    assert!(rows.iter().all(|(key, _)| *key != dimensions), "{rows:?}");
+}

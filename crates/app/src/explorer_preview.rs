@@ -470,6 +470,22 @@ fn load(
             }
         }
         FileKind::Pdf => load_pdf(shell, path, 0, pdf_target),
+        // A frame, as in the icons view (made by Windows in the thumbnail host). The frame's size
+        // is not the video's, so no dimensions are shown for it.
+        FileKind::Video if arke_core::filetype::can_video_thumbnail(entry) => shell
+            .video_thumbnail(path, IMAGE_SIDE)
+            .ok()
+            .flatten()
+            .and_then(|frame| {
+                let (width, height) = (frame.width, frame.height);
+                crate::media::to_render_image(frame).map(|image| PreviewData::Image {
+                    image,
+                    width,
+                    height,
+                    info: None,
+                })
+            })
+            .unwrap_or(PreviewData::Nothing),
         FileKind::Text | FileKind::Code => {
             let Ok(bytes) = fs.read_head(path, TEXT_HEAD) else {
                 return PreviewData::Nothing;
@@ -1037,8 +1053,6 @@ impl Explorer {
                 div()
                     .w(fit.size.width)
                     .h(fit.size.height)
-                    // A side preview short of `area` (short window): the page shrinks with it.
-                    .max_h_full()
                     .flex_none()
                     .rounded(theme::R_4)
                     .overflow_hidden()
@@ -1303,6 +1317,7 @@ impl Explorer {
             info,
             ..
         } = &preview.body
+            && file_kind(&preview.entry) != FileKind::Video
         {
             rows.push((
                 t!("preview.dimensions").to_string(),
@@ -1541,9 +1556,9 @@ impl Explorer {
             .when(more > 0, |d| {
                 d.child(
                     div()
-                        .px(theme::S_8)
-                        .py(theme::S_4)
-                        .text_size(theme::FS_12)
+                        .px(theme::S_8 * scale)
+                        .py(theme::S_4 * scale)
+                        .text_size(theme::FS_12 * scale)
                         .text_color(theme::text_subtle())
                         .child(
                             t!(
@@ -1643,9 +1658,9 @@ impl Explorer {
             .when(more > 0 || !listing.complete, |d| {
                 d.child(
                     div()
-                        .px(theme::S_8)
-                        .py(theme::S_4)
-                        .text_size(theme::FS_12)
+                        .px(theme::S_8 * scale)
+                        .py(theme::S_4 * scale)
+                        .text_size(theme::FS_12 * scale)
                         .text_color(theme::text_subtle())
                         .child(if listing.complete {
                             t!(
@@ -1952,19 +1967,41 @@ impl Explorer {
             self.image_frame_h(frame_w)
         };
         // The frame takes up to `frame_h` and gives height back in a short window, so the name and
-        // details below it stay on screen.
+        // details below it stay on screen. PDF pages fit the height it got (measured at the last
+        // layout; drawn once more when that changes).
+        let shown = gpui::size(
+            frame_w,
+            self.pane_frame_h
+                .get()
+                .map_or(frame_h, |h| h.clamp(PANE_FRAME_MIN_H, frame_h)),
+        );
+        let measured = std::rc::Rc::clone(&self.pane_frame_h);
+        let measure = gpui::canvas(
+            move |bounds, _, _| measured.set(Some(bounds.size.height)),
+            move |bounds, (), window, _| {
+                if bounds.size.height.clamp(PANE_FRAME_MIN_H, frame_h) != shown.height {
+                    window.refresh();
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
         pane.child(
             div()
+                .relative()
                 .flex_1()
                 .min_h(PANE_FRAME_MIN_H)
                 .max_h(frame_h)
                 .overflow_hidden()
+                .child(measure)
                 .child({
                     if let PreviewBody::Pdf(view) = &preview.body {
                         if view.render.pages > 1 {
-                            self.pane_pdf_pages(view, gpui::size(frame_w, frame_h), cx)
+                            self.pane_pdf_pages(view, shown, cx)
                         } else {
-                            Self::pdf_page_view(&view.render, gpui::size(frame_w, frame_h), false)
+                            Self::pdf_page_view(&view.render, shown, false)
                         }
                     } else if let PreviewBody::Slides(view) = &preview.body
                         && view.deck.slides.len() > 1
@@ -1992,11 +2029,24 @@ impl Explorer {
         .child(
             // Only in a window too short for even the smallest frame: the details scroll.
             div()
-                .id("pane-info-scroll")
+                .relative()
+                .flex()
+                .flex_col()
                 .flex_shrink(1.)
                 .min_h_0()
-                .overflow_y_scroll()
-                .child(self.pane_info(preview, false, cx)),
+                .child(
+                    div()
+                        .id("pane-info-scroll")
+                        .flex_initial()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.pane_info_scroll.0)
+                        .child(self.pane_info(preview, false, cx)),
+                )
+                .child(crate::scrollbar::scrollbar(
+                    self.pane_info_scroll.0.clone(),
+                    Rc::clone(&self.pane_info_scroll.1),
+                )),
         )
         .into_any_element()
     }
@@ -2420,7 +2470,9 @@ impl Explorer {
             body => {
                 parts.push(format_size(entry.size));
                 match body {
-                    PreviewBody::Image { width, height, .. } => {
+                    PreviewBody::Image { width, height, .. }
+                        if file_kind(entry) != FileKind::Video =>
+                    {
                         parts.push(format!("{width} × {height}"));
                     }
                     PreviewBody::Pdf(view) => {
@@ -4011,12 +4063,20 @@ fn loading_skeleton(since: std::time::Instant) -> AnyElement {
                         .bg(theme::wash_strong()),
                 )
         }));
+    pulsing(bars, "preview-skeleton-pulse")
+}
+
+/// `el` pulsing gently while something loads (still with animations off).
+pub(super) fn pulsing<E>(el: E, id: impl Into<gpui::ElementId>) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
     if !crate::motion::enabled() {
-        return bars.into_any_element();
+        return el.into_any_element();
     }
     gpui::AnimationExt::with_animation(
-        bars,
-        "preview-skeleton-pulse",
+        el,
+        id,
         gpui::Animation::new(SKELETON_PULSE).repeat(),
         |d, t| {
             // Smooth 0 -> 1 -> 0 wave

@@ -841,6 +841,11 @@ pub(crate) struct Explorer {
     /// Sideways scroll the header was drawn at in this render (`None`: no header), to redraw it
     /// if the list clamps its own.
     header_x: std::cell::Cell<Option<Pixels>>,
+    /// Height the side preview's frame got at the last layout (less than asked for in a short
+    /// window), so a PDF's pages fit what is shown.
+    pane_frame_h: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
+    /// The side preview's details, which scroll (with a scrollbar) in a window too short for them.
+    pane_info_scroll: (gpui::ScrollHandle, crate::scrollbar::ScrollbarDrag),
     /// Full pane width including the preview pane. The top bar and context bar span it, so it
     /// decides which buttons collapse.
     pub(crate) bar_width: Pixels,
@@ -1104,6 +1109,8 @@ impl Explorer {
             fit: layout::Fit::default(),
             cols: None,
             header_x: std::cell::Cell::new(None),
+            pane_frame_h: std::rc::Rc::default(),
+            pane_info_scroll: Default::default(),
             bar_width: px(1000.),
             paper_width: px(1000.),
             show_loading: false,

@@ -31,6 +31,9 @@ pub(super) struct SidebarUi {
     pub(super) tabs_scroll: gpui::ScrollHandle,
     rail_places_scroll: gpui::ScrollHandle,
     rail_tabs_scroll: gpui::ScrollHandle,
+    /// The open-over-the-content sidebar just closed and fades out (serial, for the animation id).
+    peek_ghost: Option<u64>,
+    peek_ghost_task: Option<gpui::Task<()>>,
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -661,6 +664,7 @@ impl Workspace {
                 this.peek_closing = false;
                 if this.rail_hover == ticket {
                     this.rail_peek = false;
+                    this.fade_out_peek(cx);
                     cx.notify();
                 }
             });
@@ -668,38 +672,106 @@ impl Workspace {
         .detach();
     }
 
+    /// The open sidebar closed because the pointer left: draw it fading out for `motion::EXIT`.
+    fn fade_out_peek(&mut self, cx: &mut Context<Self>) {
+        if !crate::motion::enabled() {
+            return;
+        }
+        let serial = self.sidebar_ui.peek_ghost.unwrap_or(0) + 1;
+        self.sidebar_ui.peek_ghost = Some(serial);
+        self.sidebar_ui.peek_ghost_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::motion::EXIT + Duration::from_millis(20))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.sidebar_ui.peek_ghost == Some(serial) {
+                    this.sidebar_ui.peek_ghost = None;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
     /// The full sidebar over the content while the collapsed one is open (painted after the panes,
-    /// so it covers them).
+    /// so it covers them). It slides in from the column's edge and fades out when the pointer
+    /// leaves, like the other panels over the content.
     pub(super) fn render_peek(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.rail_peek || !theme::sidebar_collapsed() {
+        if !theme::sidebar_collapsed() {
             return None;
         }
-        let horizontal = Self::horizontal_tabs(cx);
+        let frame = || {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .h_full()
+                .w(theme::SIDEBAR_W)
+        };
+        if self.rail_peek {
+            let body = self.peek_body(cx);
+            return Some(
+                deferred(
+                    frame()
+                        .id("sidebar-peek")
+                        .debug_selector(|| "sidebar-peek".to_owned())
+                        .occlude()
+                        // The window's own listener doesn't see moves over this cover: coming back
+                        // here must still cancel a pending close.
+                        .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                            this.peek_pointer_moved(e, cx);
+                        }))
+                        .child(crate::motion::appear(
+                            body,
+                            "sidebar-peek-in",
+                            -crate::motion::SLIDE,
+                            0.,
+                        )),
+                )
+                .with_priority(1)
+                .into_any_element(),
+            );
+        }
+        let serial = self.sidebar_ui.peek_ghost?;
+        let body = self.peek_body(cx);
         Some(
             deferred(
-                div()
-                    .id("sidebar-peek")
-                    .debug_selector(|| "sidebar-peek".to_owned())
-                    .occlude()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .h_full()
-                    .w(theme::SIDEBAR_W)
-                    .flex()
-                    .flex_col()
-                    .bg(theme::frame_solid())
-                    .border_r_1()
-                    .border_color(theme::line())
-                    .shadow(theme::elev_float())
-                    .when(!horizontal, |d| d.child(self.render_brand_row(cx)))
-                    .child(self.render_home_button(cx))
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_settings_button(cx)),
+                frame()
+                    .child(gpui::AnimationExt::with_animation(
+                        body,
+                        ElementId::NamedInteger("sidebar-peek-out".into(), serial),
+                        crate::motion::exit(),
+                        |el, t| crate::motion::slide_out(el, t, -crate::motion::SLIDE, 0.),
+                    ))
+                    // Inert while it fades: a cover takes the pointer.
+                    .child(
+                        div()
+                            .id("sidebar-peek-cover")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .occlude(),
+                    ),
             )
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    fn peek_body(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let horizontal = Self::horizontal_tabs(cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme::frame_solid())
+            .border_r_1()
+            .border_color(theme::line())
+            .shadow(theme::elev_float())
+            .when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+            .child(self.render_home_button(cx))
+            .child(self.render_sidebar(cx))
+            .child(self.render_settings_button(cx))
     }
 
     /// Right click on the column: turn opening on hover on or off.

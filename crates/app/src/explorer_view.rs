@@ -2552,16 +2552,20 @@ pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
             .window_control_area(area)
             .when(!close, |d| d.hover(|s| s.bg(theme::wash_strong())))
             .when(close, |d| d.hover(|s| s.bg(theme::danger())))
+            .child(crate::caption::edge_hit(area, close, gap))
             .child(
                 svg()
                     .path(icon.path())
                     .size(theme::ICON)
-                    .text_color(theme::text_muted())
+                    .text_color(if close && crate::caption::close_edge_hovered() {
+                        theme::on_signal()
+                    } else {
+                        theme::text_muted()
+                    })
                     .when(close, |d| {
                         d.group_hover(id, |s| s.text_color(theme::on_signal()))
                     }),
             )
-            .child(crate::caption::edge_hit(area, close, gap))
     };
     div()
         .flex()
@@ -3102,7 +3106,7 @@ impl Explorer {
 
     /// What [`layout::fit`] needs to know about this pane.
     pub(super) fn fit_input(&self, bar: Pixels, window: Pixels) -> layout::FitInput {
-        layout::FitInput {
+        let mut input = layout::FitInput {
             bar,
             window,
             details: self.view_mode == ViewMode::Details && !self.search_mode,
@@ -3126,7 +3130,10 @@ impl Explorer {
                 };
                 on.then(|| crate::prefs::width(col))
             }),
-        }
+        };
+        // The parent column's width is shared by all panes: never more than this one leaves it.
+        input.parent_w = input.parent_w.min(layout::parent_room(&input));
+        input
     }
 
     /// Preview pane slides in from the right when it is turned on (not when a tab showing it is

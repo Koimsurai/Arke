@@ -150,7 +150,7 @@ impl Explorer {
             Vec::new()
         };
         let show_ext = self.show_extensions;
-        let width = Self::parent_column_width();
+        let width = self.parent_column_drawn();
         let start = range.start;
         range
             .filter_map(|ix| entries.get(ix).map(|e| (ix, e)))
@@ -220,7 +220,7 @@ impl Explorer {
     /// Left column of the column view.
     pub(super) fn render_parent_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let column = div()
-            .w(Self::parent_column_width())
+            .w(self.parent_column_drawn())
             .flex_none()
             .h_full()
             .flex()
@@ -266,10 +266,18 @@ impl Explorer {
         crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or(PARENT_W)
     }
 
+    /// Width the parent column is drawn at: [`Self::parent_column_width`], but no more than this
+    /// pane leaves it. The width is shared by all panes, so one set in a wide pane would otherwise
+    /// squeeze the current column to nothing in a split tab or a smaller window.
+    pub(super) fn parent_column_drawn(&self) -> Pixels {
+        self.fit_input(self.paper_width, self.screen.0.width)
+            .parent_w
+    }
+
     /// How wide `col` is drawn (the current column: what the parent left of the list at the last
     /// paint, so also while it fills the room).
     pub(super) fn view_column_shown_width(&self, col: ViewColumn) -> Pixels {
-        let parent = Self::parent_column_width();
+        let parent = self.parent_column_drawn();
         match col {
             ViewColumn::Parent => parent,
             ViewColumn::Current => (self.list_bounds.get().size.width - parent).max(px(0.)),
@@ -412,7 +420,7 @@ impl Explorer {
             .absolute()
             .top_0()
             .bottom_0()
-            .left(Self::parent_column_width() - theme::S_4)
+            .left(self.parent_column_drawn() - theme::S_4)
             .w(theme::S_8)
             // Presses stay here: the list under it would clear the selection.
             .occlude()
@@ -436,7 +444,7 @@ impl Explorer {
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, _, _| {
                     this.view_column_drag =
-                        Some((ViewColumn::Parent, e.position.x, Self::parent_column_width()));
+                        Some((ViewColumn::Parent, e.position.x, this.parent_column_drawn()));
                 }),
             )
             .on_drag(DraggedParentEdge(cx.entity_id()), |_, _, _, cx| {

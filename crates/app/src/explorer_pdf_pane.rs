@@ -317,21 +317,34 @@ impl Explorer {
                 } else {
                     list.image(page)
                 };
+                let failed = list.failed.contains(&page);
                 div()
                     .w(width)
                     .h(slot + GAP)
                     .pb(GAP)
                     .debug_selector(move || format!("pane-pdf-page-{}", page + 1))
-                    .child(match image {
-                        Some(render) => Self::pdf_page_view(render, area, false),
-                        // Until it renders: a blank sheet of the slot's shape.
-                        None => div()
+                    .child(if let Some(render) = image {
+                        Self::pdf_page_view(render, area, false)
+                    } else {
+                        // Until it renders: a blank sheet of the slot's shape, pulsing like the
+                        // other placeholders (still once it failed, so nothing keeps drawing).
+                        let sheet = div()
                             .size_full()
                             .rounded(theme::R_4)
                             .border_1()
                             .border_color(theme::line())
-                            .bg(theme::wash())
-                            .into_any_element(),
+                            .bg(theme::wash());
+                        if failed {
+                            sheet.into_any_element()
+                        } else {
+                            super::pulsing(
+                                sheet,
+                                gpui::ElementId::NamedInteger(
+                                    "pane-pdf-wait".into(),
+                                    u64::from(page),
+                                ),
+                            )
+                        }
                     })
                     .into_any_element()
             })

@@ -7,9 +7,20 @@
 //! the top edge (and for Close, out to the right edge), registered as the same window control, so
 //! the system hit test (`WM_NCHITTEST`) answers `HTCLOSE` there.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use gpui::{
-    Bounds, HitboxBehavior, IntoElement, Pixels, Size, Styled, WindowControlArea, canvas, point, px,
+    Bounds, DispatchPhase, HitboxBehavior, IntoElement, MouseMoveEvent, Pixels, Size, Styled,
+    WindowControlArea, canvas, fill, point, px,
 };
+
+/// The pointer is in Close's extra area (outside the button), so its icon turns light as on hover.
+static CLOSE_EDGE_HOVERED: AtomicBool = AtomicBool::new(false);
+
+/// Whether Close shows its hover look because the pointer is in its extra area.
+pub(crate) fn close_edge_hovered() -> bool {
+    CLOSE_EDGE_HOVERED.load(Ordering::Relaxed)
+}
 
 /// How far from an edge a button may sit and still be stretched to it: the title bar's padding.
 /// A button further in (not in the window's top-right corner) keeps its own size.
@@ -42,7 +53,10 @@ pub(crate) fn edge_hit_bounds(
     ))
 }
 
-/// Invisible child of a caption button that adds its [`edge_hit_bounds`] as `area`.
+/// Child of a caption button that adds its [`edge_hit_bounds`] as `area`. While the pointer is in
+/// that extra area (outside the button itself, where the button's own hover look doesn't apply)
+/// it paints the hover background, so a flick into the corner lights Close up as it would in
+/// Windows. Put it before the icon so the icon draws on top.
 pub(crate) fn edge_hit(area: WindowControlArea, last: bool, gap: Pixels) -> impl IntoElement {
     canvas(
         move |bounds, window, _| {
@@ -55,10 +69,37 @@ pub(crate) fn edge_hit(area: WindowControlArea, last: bool, gap: Pixels) -> impl
             )
             .map(|b| window.insert_hitbox(b, HitboxBehavior::Normal))
         },
-        move |_, hitbox, window, _| {
-            if let Some(hitbox) = hitbox {
-                window.insert_window_control_hitbox(area, hitbox);
+        move |button, hitbox, window, _| {
+            let Some(hitbox) = hitbox else {
+                if last && CLOSE_EDGE_HOVERED.swap(false, Ordering::Relaxed) {
+                    window.refresh();
+                }
+                return;
+            };
+            let edge = hitbox.clone();
+            let in_edge = move |window: &gpui::Window| {
+                edge.is_hovered(window) && !button.contains(&window.mouse_position())
+            };
+            let lit = in_edge(window);
+            // Close's icon color is chosen at render: draw once more when this changes it.
+            if last && CLOSE_EDGE_HOVERED.swap(lit, Ordering::Relaxed) != lit {
+                window.refresh();
             }
+            if lit {
+                let color = if last {
+                    crate::theme::danger()
+                } else {
+                    crate::theme::wash_strong()
+                };
+                window.paint_quad(fill(button, color).corner_radii(crate::theme::R_8));
+            }
+            window.insert_window_control_hitbox(area, hitbox);
+            // Draw again when the pointer enters or leaves the extra area.
+            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, _| {
+                if phase == DispatchPhase::Bubble && in_edge(window) != lit {
+                    window.refresh();
+                }
+            });
         },
     )
     .absolute()

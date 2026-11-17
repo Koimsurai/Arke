@@ -2082,14 +2082,17 @@ impl Render for Workspace {
             .flex()
             .flex_col();
         let left = if let Some((collapsing, serial)) = self.sidebar_ui.motion {
-            // Sliding: the full sidebar, clipped while the width moves (its rows' icons line up
-            // with the column of icons, so collapsing ends where the column takes over).
+            // Sliding: the width moves while the full sidebar (clipped) and the column of icons
+            // crossfade. Their icons sit in different places, so swapping one for the other at
+            // the end would read as a jump.
             let (from, to) = if collapsing {
                 (theme::SIDEBAR_W, theme::RAIL_W)
             } else {
                 (theme::RAIL_W, theme::SIDEBAR_W)
             };
             let full = div()
+                .id("sidebar-slide-full")
+                .debug_selector(|| "sidebar-slide-full".to_owned())
                 .w(theme::SIDEBAR_W)
                 .flex_none()
                 .h_full()
@@ -2099,8 +2102,26 @@ impl Render for Workspace {
                 .child(self.render_home_button(cx))
                 .child(self.render_sidebar(cx))
                 .child(self.render_settings_button(cx));
+            let rail = div()
+                .id("sidebar-slide-rail")
+                .absolute()
+                .top_0()
+                .left_0()
+                .h_full()
+                .w(theme::RAIL_W)
+                .child(self.render_rail(cx));
+            let fade = |el: gpui::Stateful<gpui::Div>, name: &'static str, going: bool| {
+                gpui::AnimationExt::with_animation(
+                    el,
+                    gpui::ElementId::NamedInteger(name.into(), serial),
+                    gpui::Animation::new(crate::motion::BASE),
+                    move |el, t| el.opacity(crossfade(t, going)),
+                )
+            };
             gpui::AnimationExt::with_animation(
-                left.overflow_hidden().child(full),
+                left.overflow_hidden()
+                    .child(fade(full, "sidebar-fade-full", collapsing))
+                    .child(fade(rail, "sidebar-fade-rail", !collapsing)),
                 gpui::ElementId::NamedInteger("sidebar-slide".into(), serial),
                 crate::motion::enter(),
                 move |el, t| el.w(from + (to - from) * t),
@@ -2344,6 +2365,21 @@ impl Render for Workspace {
                     }),
             )
             .children(crate::frame_probe::marker())
+    }
+}
+
+/// Opacity at progress `t` (0 to 1, linear) of a layer leaving (`going`) or arriving in the
+/// sidebar's crossfade: the leaving one is mostly gone before the arriving one is mostly there,
+/// so the two never read as one cluttered layer.
+fn crossfade(t: f32, going: bool) -> f32 {
+    let smooth = |a: f32, b: f32| {
+        let x = ((t - a) / (b - a)).clamp(0., 1.);
+        x * x * (3. - 2. * x)
+    };
+    if going {
+        1. - smooth(0., 0.6)
+    } else {
+        smooth(0.35, 1.)
     }
 }
 

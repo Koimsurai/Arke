@@ -1360,16 +1360,23 @@ fn ctrl_b_collapses_the_sidebar(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("sidebar-rail").is_none());
 }
 
-/// Ctrl+B slides the sidebar's width instead of switching at once: the full sidebar stays
-/// (clipped) while it narrows, and the column of icons takes over when the slide ends.
+/// Ctrl+B slides the sidebar's width instead of switching at once. While it slides, the full
+/// sidebar and the column of icons crossfade (their icons sit in different places, so swapping
+/// at the end would jump); afterwards only one is drawn.
 #[gpui::test]
 fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
     crate::motion::force_for_test(true);
     let fs = FakeFs::new();
-    fs.insert_many(r"C:\a", 1);
-    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    fs.insert_many(r"C:", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
-    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    wait_until(cx, &view, "load", loaded(r"C:"));
+    let both = |cx: &mut VisualTestContext| {
+        (
+            cx.debug_bounds("sidebar-slide-full").is_some(),
+            cx.debug_bounds("sidebar-rail").is_some(),
+        )
+    };
 
     cx.simulate_keystrokes("ctrl-b");
     cx.run_until_parked();
@@ -1379,11 +1386,11 @@ fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
         sliding.size.width > crate::theme::RAIL_W,
         "still wider than the column of icons: {sliding:?}"
     );
-    assert!(cx.debug_bounds("sidebar-rail").is_none());
+    assert_eq!(both(cx), (true, true), "crossfading");
     cx.executor()
         .advance_clock(crate::motion::BASE + Duration::from_millis(60));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("sidebar-rail").is_some(), "slide over");
+    assert_eq!(both(cx), (false, true), "slide over");
     assert_eq!(
         cx.debug_bounds("sidebar-column").unwrap().size.width,
         crate::theme::RAIL_W
@@ -1391,13 +1398,11 @@ fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
 
     cx.simulate_keystrokes("ctrl-b");
     cx.run_until_parked();
-    assert!(
-        cx.debug_bounds("sidebar-rail").is_none(),
-        "full sidebar while it widens"
-    );
+    assert_eq!(both(cx), (true, true), "crossfading back");
     cx.executor()
         .advance_clock(crate::motion::BASE + Duration::from_millis(60));
     cx.run_until_parked();
+    assert_eq!(both(cx), (false, false), "full sidebar only");
     assert_eq!(
         cx.debug_bounds("sidebar-column").unwrap().size.width,
         crate::theme::SIDEBAR_W

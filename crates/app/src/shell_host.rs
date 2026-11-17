@@ -15,6 +15,11 @@
 //!   exits once its windows have been closed for a while. A fresh standby replaces it.
 //! - A host that only read menus exits as soon as Arke closes it (Arke quitting, the installer
 //!   replacing the exe): nothing of the user's is running in it.
+//! - A host is replaced after [`RECYCLE_AFTER`] menus: some Windows extensions leave a thread
+//!   behind every time they are loaded (Work Folders, `WorkfoldersShell.dll`, on a PC where it
+//!   isn't set up), so a host kept for days would collect hundreds. The new one starts and warms
+//!   up in the background and takes over when the next menu opens; the old one stays a minute
+//!   for menus it still holds.
 //!
 //! - Single extensions (`win_menu_parts.rs`) are found and read as soon as they are asked for,
 //!   each on a thread of its own, and answer as each one is ready, even while a whole menu is
@@ -355,10 +360,20 @@ struct Host {
     /// Lines for the writer thread. Dropping it closes the host's stdin.
     tx: flume::Sender<String>,
     pending: Pending,
+    /// Whole menus read.
+    reads: u32,
 }
 
 /// The current standby host.
 static HOST: Mutex<Option<Host>> = Mutex::new(None);
+/// A replacement warming up, once the current host has read [`RECYCLE_AFTER`] menus.
+static NEXT: Mutex<Option<Host>> = Mutex::new(None);
+/// The host last replaced, kept [`RETIRED_LINGER`] for menus it still holds.
+static RETIRED: Mutex<Option<Host>> = Mutex::new(None);
+/// Whole menus a host reads before it is replaced.
+const RECYCLE_AFTER: u32 = 100;
+/// How long a replaced host stays for menus it still holds (one open while it was replaced).
+const RETIRED_LINGER: Duration = Duration::from_secs(60);
 /// When the host last failed to start (antivirus or group policy blocking child
 /// processes). Retries are suppressed for a while and [`ShellError::HostBlocked`] is reported.
 ///
@@ -461,7 +476,61 @@ fn spawn_host() -> Result<Host, SpawnError> {
         child,
         tx,
         pending,
+        reads: 0,
     })
+}
+
+/// Menus a host reads before it is replaced; `ARKE_MENU_HOST_RECYCLE` overrides it in debug
+/// builds, for testing by hand.
+fn recycle_after() -> u32 {
+    #[cfg(debug_assertions)]
+    if let Some(n) = std::env::var("ARKE_MENU_HOST_RECYCLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return n;
+    }
+    RECYCLE_AFTER
+}
+
+/// A menu is opening: if the host has read enough menus and its replacement is ready, the
+/// replacement takes over and the old host retires.
+fn recycle_if_due() {
+    let mut slot = HOST.lock();
+    if slot.as_ref().is_none_or(|h| h.reads < recycle_after()) {
+        return;
+    }
+    let Some(next) = NEXT.lock().take() else {
+        return;
+    };
+    if let Some(old) = slot.replace(next) {
+        log::info!("menu host replaced after {} menus", old.reads);
+        retire(old);
+    }
+}
+
+/// Starts the replacement host in the background; it warms itself up.
+fn start_replacement() {
+    let _ = std::thread::Builder::new()
+        .name("shell-host-next".into())
+        .spawn(|| match spawn_host() {
+            Ok(host) => *NEXT.lock() = Some(host),
+            Err(e) => log::warn!("replacement menu host failed to start: {e}"),
+        });
+}
+
+/// Keeps `host` a while for the menus it still holds, then closes it (dropping it closes its
+/// stdin; a host that only read menus exits then).
+fn retire(host: Host) {
+    let generation = host.generation;
+    // A host retired before this one is done with.
+    *RETIRED.lock() = Some(host);
+    let _ = std::thread::Builder::new()
+        .name("shell-host-retire".into())
+        .spawn(move || {
+            std::thread::sleep(RETIRED_LINGER);
+            drop(RETIRED.lock().take_if(|h| h.generation == generation));
+        });
 }
 
 /// Runs `f` on the current host, starting one if none is alive.
@@ -472,6 +541,9 @@ fn with_host<T>(f: impl FnOnce(&mut Host) -> Result<T, ShellError>) -> Result<T,
         .is_some_and(|h| !matches!(h.child.try_wait(), Ok(None)))
     {
         *slot = None;
+    }
+    if slot.is_none() {
+        *slot = NEXT.lock().take();
     }
     if slot.is_none() {
         // Check-then-set on SPAWN_FAILED is safe without holding its lock: `HOST` is held.
@@ -539,12 +611,17 @@ pub(crate) fn query(paths: &[PathBuf], background: bool) -> Result<ShellMenu, Sh
 }
 
 fn query_host(paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
+    recycle_if_due();
     let (generation, wait) = with_host(|h| {
         let wait = submit(h, |id| HostRequest::Query {
             id,
             paths: paths.to_vec(),
             background,
         })?;
+        h.reads += 1;
+        if h.reads == recycle_after() {
+            start_replacement();
+        }
         Ok((h.generation, wait))
     })?;
     match wait.recv_timeout(QUERY_TIMEOUT) {
@@ -639,6 +716,7 @@ pub(crate) fn invoke(
     let host = HOST
         .lock()
         .take_if(|h| h.generation == generation)
+        .or_else(|| RETIRED.lock().take_if(|h| h.generation == generation))
         .ok_or(ShellError::MenuExpired)?;
     // Arke owns the foreground; let the host bring any dialog the command opens to the front.
     // SAFETY: plain Win32 call taking the host's PID.
@@ -675,12 +753,15 @@ pub(crate) fn release(session: u64) {
     let _ = std::thread::Builder::new()
         .name("shell-host-release".into())
         .spawn(move || {
-            let slot = HOST.lock();
-            if let Some(host) = slot.as_ref().filter(|h| h.generation == generation)
-                && let Ok(mut line) = serde_json::to_string(&request)
-            {
-                line.push('\n');
-                let _ = host.tx.send(line);
+            let Ok(mut line) = serde_json::to_string(&request) else {
+                return;
+            };
+            line.push('\n');
+            for slot in [&HOST, &RETIRED] {
+                if let Some(host) = slot.lock().as_ref().filter(|h| h.generation == generation) {
+                    let _ = host.tx.send(line);
+                    return;
+                }
             }
         });
 }

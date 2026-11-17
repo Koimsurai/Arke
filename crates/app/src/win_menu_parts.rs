@@ -385,3 +385,159 @@ mod timing {
         time(&[dir.join("a.txt")], false, "a.txt again");
     }
 }
+
+/// By hand: `cargo test -p arke-app menu_thread_leftovers -- --ignored --nocapture`. Reads menus
+/// many times in this process and reports the threads left behind, by the module they started in.
+#[cfg(test)]
+#[allow(clippy::print_stdout, reason = "a report printed for a run by hand")]
+mod leftovers {
+    use std::collections::{BTreeMap, HashSet};
+    use std::ffi::c_void;
+
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        GetModuleFileNameW, GetModuleHandleExW,
+    };
+    use windows::Win32::System::Threading::{OpenThread, THREAD_QUERY_INFORMATION};
+
+    use super::*;
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtQueryInformationThread(
+            thread: HANDLE,
+            class: u32,
+            info: *mut c_void,
+            len: u32,
+            returned: *mut u32,
+        ) -> i32;
+    }
+
+    fn threads() -> HashSet<u32> {
+        let me = std::process::id();
+        let mut out = HashSet::new();
+        // SAFETY: snapshot of all threads; closed below.
+        let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }) else {
+            return out;
+        };
+        let mut entry = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: entry.dwSize is set.
+        let mut ok = unsafe { Thread32First(snap, &raw mut entry) }.is_ok();
+        while ok {
+            if entry.th32OwnerProcessID == me {
+                out.insert(entry.th32ThreadID);
+            }
+            // SAFETY: as above.
+            ok = unsafe { Thread32Next(snap, &raw mut entry) }.is_ok();
+        }
+        // SAFETY: opened above.
+        let _ = unsafe { CloseHandle(snap) };
+        out
+    }
+
+    /// The module a thread started in (its Win32 start address).
+    fn start_module(id: u32) -> String {
+        // SAFETY: plain calls; the handle is closed below.
+        let Ok(thread) = (unsafe { OpenThread(THREAD_QUERY_INFORMATION, false, id) }) else {
+            return "?".into();
+        };
+        let mut start: usize = 0;
+        // SAFETY: class 9 (ThreadQuerySetWin32StartAddress) writes one pointer.
+        let status = unsafe {
+            NtQueryInformationThread(
+                thread,
+                9,
+                (&raw mut start).cast(),
+                size_of::<usize>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        // SAFETY: opened above.
+        let _ = unsafe { CloseHandle(thread) };
+        if status != 0 {
+            return "?".into();
+        }
+        let mut module = HMODULE::default();
+        // SAFETY: looks up the module containing the address without changing its refcount.
+        let found = unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                windows::core::PCWSTR(start as *const u16),
+                &raw mut module,
+            )
+        };
+        if found.is_err() {
+            return format!("{start:#x}");
+        }
+        let mut buf = [0u16; 260];
+        // SAFETY: buf is writable.
+        let len = unsafe { GetModuleFileNameW(Some(module), &mut buf) } as usize;
+        let path = String::from_utf16_lossy(&buf[..len]);
+        let base = path.rsplit('\\').next().unwrap_or(&path).to_string();
+        format!("{base}+{:#x}", start - module.0 as usize)
+    }
+
+    fn report(label: &str, before: &HashSet<u32>) -> HashSet<u32> {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let now = threads();
+        let mut by: BTreeMap<String, usize> = BTreeMap::new();
+        for id in now.difference(before) {
+            *by.entry(start_module(*id)).or_default() += 1;
+        }
+        println!(
+            "{label}: {} -> {} threads, new: {by:?}",
+            before.len(),
+            now.len()
+        );
+        now
+    }
+
+    #[test]
+    #[ignore = "loads this machine's shell extensions; run by hand"]
+    fn menu_thread_leftovers() {
+        const ROUNDS: usize = 10;
+        let dir = std::env::temp_dir().join("arke-menu-leftovers");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        // Warm up once so one-time threads don't count.
+        for (paths, background) in [(vec![file.clone()], false), (vec![dir.clone()], true)] {
+            if let Ok(m) = crate::win_menu::query(&paths, background) {
+                crate::win_menu::release(m.session);
+            }
+        }
+        let mut seen = report("warm-up", &threads());
+        for (label, paths, background) in [
+            ("file menu", vec![file], false),
+            ("background menu", vec![dir], true),
+        ] {
+            for _ in 0..ROUNDS {
+                if let Ok(m) = crate::win_menu::query(&paths, background) {
+                    crate::win_menu::release(m.session);
+                }
+            }
+            seen = report(&format!("{label} x{ROUNDS}"), &seen);
+            for handler in handlers(&paths, background) {
+                for round in 0..ROUNDS {
+                    if let Ok(m) = crate::win_menu::query_handler(
+                        &paths,
+                        background,
+                        &handler,
+                        10_000 + round as u64,
+                    ) {
+                        crate::win_menu::release(m.session);
+                    }
+                }
+                seen = report(&format!("  {} alone x{ROUNDS}", handler.name), &seen);
+            }
+        }
+    }
+}

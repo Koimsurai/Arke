@@ -120,6 +120,11 @@ gpui = { workspace = true, features = ["test-support"] }
 arke-core = { workspace = true, features = ["test-support"] }
 arke-remote = { workspace = true, features = ["test-support"] }
 
+# Tests that list a process's threads (the menu host's leftover threads)
+[target.'cfg(windows)'.dev-dependencies.windows]
+workspace = true
+features = ["Win32_System_Diagnostics_ToolHelp"]
+
 [lints]
 workspace = true
 

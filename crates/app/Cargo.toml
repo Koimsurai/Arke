@@ -34,6 +34,7 @@ thiserror.workspace = true
 # these failing to build (#57).
 [target.'cfg(windows)'.dependencies]
 arke-indexd.workspace = true
+gpui_windows.workspace = true
 windows-core.workspace = true
 
 [target.'cfg(windows)'.dependencies.windows]

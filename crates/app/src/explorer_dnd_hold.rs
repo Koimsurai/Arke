@@ -13,6 +13,8 @@
 //! the file is copied instead. Files elsewhere are left as they are.
 //!
 //! Folders emptied by finished transfers are removed on the next such drop.
+//!
+//! Virtual files (#206, `win_virtual_drop.rs`) are written to such a folder too, then moved.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,7 +29,30 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// they are now).
 pub(crate) fn hold_temp_drop(paths: Vec<PathBuf>) -> (Vec<PathBuf>, bool) {
     let temp = std::env::temp_dir();
-    hold_in(paths, &temp, &temp.join("Arke drops"))
+    hold_in(paths, &temp, &drops_root(&temp))
+}
+
+/// `%TEMP%\Arke drops`.
+fn drops_root(temp: &Path) -> PathBuf {
+    temp.join("Arke drops")
+}
+
+/// A new, empty folder of Arke's own in the temp folder to hold a drop in. Clears the ones
+/// finished transfers emptied.
+pub(crate) fn new_drop_folder() -> std::io::Result<PathBuf> {
+    let root = drops_root(&std::env::temp_dir());
+    prune(&root);
+    let dir = next_folder(&root);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn next_folder(root: &Path) -> PathBuf {
+    root.join(format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 fn hold_in(paths: Vec<PathBuf>, temp: &Path, root: &Path) -> (Vec<PathBuf>, bool) {
@@ -36,11 +61,7 @@ fn hold_in(paths: Vec<PathBuf>, temp: &Path, root: &Path) -> (Vec<PathBuf>, bool
         return (paths, false);
     }
     prune(root);
-    let dir = root.join(format!(
-        "{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir = next_folder(root);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::warn!("can't hold dropped temp files in {}: {e}", dir.display());
         return (paths, false);

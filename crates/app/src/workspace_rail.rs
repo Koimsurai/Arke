@@ -492,6 +492,10 @@ impl Workspace {
             this.add_to_shelf_from_drop(items, cx);
         }))
         .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+            // Virtual files aren't anywhere the shelf could point to.
+            if crate::win_virtual_drop::is_virtual(paths.paths()) {
+                return;
+            }
             let (paths, _) = crate::explorer::hold_temp_drop(paths.paths().to_vec());
             let items = paths.into_iter().map(|p| (p, false)).collect();
             this.add_to_shelf_from_drop(items, cx);

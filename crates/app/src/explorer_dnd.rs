@@ -39,7 +39,7 @@ mod hold;
 use crate::media::MediaKey;
 use crate::shell::{DragImage, DragImageRequest};
 use crate::theme::{self, UiFont as _};
-pub(crate) use hold::hold_temp_drop;
+pub(crate) use hold::{hold_temp_drop, new_drop_folder};
 
 /// Longest edge when decoding the drag image ourselves.
 const DRAG_THUMBNAIL: u32 = 96;
@@ -682,6 +682,10 @@ pub(crate) fn drop_external_into(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if crate::win_virtual_drop::is_virtual(paths.paths()) {
+        drop_virtual_into(dest, target, cx);
+        return;
+    }
     // Files a source extracted to the temp folder for this drop are gone once it returns.
     let (paths, held) = hold_temp_drop(paths.paths().to_vec());
     if window.modifiers().alt {
@@ -692,6 +696,21 @@ pub(crate) fn drop_external_into(
     // Held files are Arke's own copies: moved from where they are held.
     let is_move = held || drop_is_move(window.modifiers(), &paths, &dest);
     target.update(cx, |e, cx| e.transfer_paths(paths, dest, is_move, cx));
+}
+
+/// Virtual files (#206): read from the source now, while the drop is handled, then copied in
+/// the background. Always a copy; Alt's menu offers nothing else for them.
+fn drop_virtual_into(dest: PathBuf, target: &gpui::Entity<Explorer>, cx: &mut App) {
+    let Some(data) = crate::win_virtual_drop::dropped_data() else {
+        return;
+    };
+    match crate::win_virtual_drop::VirtualDrop::take(&data) {
+        Ok(drop) => target.update(cx, |e, cx| e.drop_virtual_files(drop, dest, cx)),
+        Err(error) => target.update(cx, |e, cx| {
+            e.error = Some(error.to_string());
+            cx.notify();
+        }),
+    }
 }
 
 impl Explorer {

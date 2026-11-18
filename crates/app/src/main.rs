@@ -104,6 +104,7 @@ mod win_recycle;
 mod win_registry;
 mod win_takeover;
 mod win_viewsite;
+mod win_virtual_drop;
 mod workspace;
 
 #[cfg(test)]

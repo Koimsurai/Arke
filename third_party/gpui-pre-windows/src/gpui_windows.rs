@@ -17,6 +17,7 @@ mod platform;
 mod system_notifications;
 mod system_settings;
 mod util;
+mod virtual_drop;
 mod vsync;
 mod window;
 mod wrapper;
@@ -41,5 +42,7 @@ pub(crate) use window::*;
 pub(crate) use wrapper::*;
 
 pub use platform::WindowsPlatform;
+// Arke: drops of virtual files (see `virtual_drop.rs`).
+pub use virtual_drop::{VIRTUAL_DROP_ROOT, drop_paths, is_virtual_drop, take_dropped_data_object};
 
 pub(crate) use windows::Win32::Foundation::HWND;

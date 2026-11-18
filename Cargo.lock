@@ -303,6 +303,7 @@ dependencies = [
  "flume",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-pre-windows",
  "image",
  "log",
  "parking_lot 0.13.0",

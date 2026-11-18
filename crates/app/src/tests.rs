@@ -54,6 +54,8 @@ mod tabs;
 mod tests_columns;
 #[path = "tests_views.rs"]
 mod views;
+#[path = "tests_virtual_drop.rs"]
+mod virtual_drop;
 #[path = "tests_whats_new.rs"]
 mod whats_new;
 

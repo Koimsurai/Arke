@@ -437,6 +437,62 @@ impl JobEnv {
     }
 }
 
+/// Writes a drop of virtual files into `stage`, then moves what was written into `dest`.
+/// Background thread with COM.
+fn move_virtual_drop(
+    drop: crate::win_virtual_drop::VirtualDrop,
+    stage: &Path,
+    dest: PathBuf,
+    env: &JobEnv,
+    progress: &Arc<OpProgress>,
+    follow: &mut OpFollowUp,
+) -> Result<OpOutcome, ShellError> {
+    use std::sync::atomic::Ordering;
+    let extracted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop.extract(stage, progress)
+    }))
+    .map_err(|_panic| job_crashed())?;
+    if extracted.cancelled {
+        return Ok(OpOutcome::Cancelled);
+    }
+    if extracted.top.is_empty() {
+        return extracted.failed.map_or(Ok(OpOutcome::Done), Err);
+    }
+    follow.arrive = Some((
+        dest.clone(),
+        extracted
+            .top
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| Arc::from(n.to_string_lossy().as_ref()))
+            .collect(),
+    ));
+    // The move reports its own progress.
+    progress.work_done.store(0, Ordering::Relaxed);
+    progress.work_total.store(0, Ordering::Relaxed);
+    let op = FileOp::Move {
+        sources: extracted.top,
+        dest,
+    };
+    let (result, undo, handed_off) = env.run(&op, progress);
+    follow.handed_off = handed_off;
+    // Undone like a copy: what arrived is removed (to the Recycle Bin), not put back in the
+    // temp folder.
+    follow.undo = undo.map(|undo| match undo {
+        Undo::PutBack(items) => Undo::Remove(
+            items
+                .into_iter()
+                .map(|item| PathBuf::from(item.now))
+                .collect(),
+        ),
+        removed @ Undo::Remove(_) => removed,
+    });
+    match (result, extracted.failed) {
+        (Ok(OpOutcome::Done), Some(failed)) => Err(failed),
+        (result, _) => result,
+    }
+}
+
 /// The error a job reports when its thread panicked (logged by the panic hook).
 fn job_crashed() -> ShellError {
     std::io::Error::other(t!("ops.crashed").into_owned()).into()
@@ -881,6 +937,48 @@ impl Explorer {
                     arrive,
                     ..OpFollowUp::default()
                 }),
+            });
+        });
+        cx.notify();
+    }
+
+    /// Virtual files dropped into `dest` (see `win_virtual_drop.rs`): written to a folder of
+    /// Arke's own on a background thread, then moved into `dest` like any drop, so conflicts
+    /// ask the same question. Listed in the progress center as a copy, and undone like one.
+    pub(crate) fn drop_virtual_files(
+        &mut self,
+        drop: crate::win_virtual_drop::VirtualDrop,
+        dest: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let env = self.job_env(true, cx);
+        let tx = self.events_tx.clone();
+        self.ops_running += 1;
+        let (job, progress) = self.track_op("op.copy", drop.subject(), true, cx);
+        spawn_thread("virtual drop", move || {
+            let _com = crate::win_virtual_drop::ComThread::init();
+            let mut follow = OpFollowUp {
+                job,
+                touched: Some(dest.clone()),
+                ..OpFollowUp::default()
+            };
+            let result = match super::new_drop_folder() {
+                Err(e) => Err(e.into()),
+                Ok(stage) => {
+                    let result =
+                        move_virtual_drop(drop, &stage, dest, &env, &progress, &mut follow);
+                    // What the move left (skipped in a conflict, or cancelled) goes too, unless
+                    // TeraCopy still has to move it.
+                    if !follow.handed_off {
+                        let _ = std::fs::remove_dir_all(&stage);
+                    }
+                    result
+                }
+            };
+            let _ = tx.send(AppEvent::OpFinished {
+                verb: "op.copy",
+                result,
+                follow: Box::new(follow),
             });
         });
         cx.notify();

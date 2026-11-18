@@ -2708,6 +2708,14 @@ confirm.no_bin_others_other:
   en: "The other %{count} items go to the Recycle Bin."
   zh-TW: "另外 %{count} 個項目會移到資源回收筒。"
   zh-CN: "另外 %{count} 个项目将移到回收站。"
+ops.virtual_none:
+  en: "The program the files came from didn't hand them over"
+  zh-TW: "拖曳來源的程式沒有交出檔案"
+  zh-CN: "拖动来源的程序没有交出文件"
+ops.virtual_failed:
+  en: "Couldn't get “%{name}” from the program it came from: %{error}"
+  zh-TW: "無法從來源程式取得「%{name}」：%{error}"
+  zh-CN: "无法从来源程序获取“%{name}”：%{error}"
 ops.crashed:
   en: "Something went wrong inside Arke; nothing more was done"
   zh-TW: "Arke 內部發生錯誤，已停止這項作業"

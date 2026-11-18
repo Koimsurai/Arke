@@ -30,6 +30,8 @@ arke-remote = { path = "crates/remote" }
 # Equivalent git source: `git = "https://github.com/zed-industries/zed", rev = "f816e1f"`.
 gpui = { package = "gpui-pre", version = "=0.3.11" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11" }
+# Its Windows platform (patched, see `[patch.crates-io]`): Arke takes dropped virtual files from it
+gpui_windows = { package = "gpui-pre-windows", version = "=0.3.11" }
 
 windows = "0.62"
 # `#[implement]` expands to ::windows_core; keep in step with `windows`

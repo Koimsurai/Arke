@@ -40,6 +40,14 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   drag and only extract to a temp folder when asked after the button is released (and delete it
   once the drop returns), so dropping from them moved files that didn't exist (#168). When the
   list changed, the drag is entered again with the new list before the drop.
+- `src/virtual_drop.rs` (new) and `src/window.rs` `dropped_paths`, `DragEnter` and `Drop`: drops of
+  virtual files, which a source describes with `FileGroupDescriptorW` (or the ANSI
+  `FileGroupDescriptor`) and hands over through `FileContents` instead of listing files on disk
+  (Outlook attachments, browser images, zip folders, phones). Upstream accepts only `CF_HDROP`, so
+  these were refused (#206). Such a drop lists one marker path (`VIRTUAL_DROP_ROOT`), and while it
+  is dispatched the app takes the data object with `take_dropped_data_object` to read the files
+  (Arke's `win_virtual_drop.rs`). `CF_HDROP` still wins when a source offers both. A drag offering
+  neither logs its formats, so a report says what the source offered.
 - `src/events.rs` `WM_MOUSEACTIVATE` (`mouse_activate_answer`, `handle_mouse_activate_msg`,
   `handle_mouse_down_msg`, `handle_mouse_up_msg`) and `src/window.rs` `activate_on_release`: a left
   press in the client area of an inactive window answers `MA_NOACTIVATE`, and the window is

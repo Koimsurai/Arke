@@ -1192,8 +1192,18 @@ impl WindowsDragDropHandler {
     }
 }
 
+/// The files a data object lists (`CF_HDROP`); else, when it describes virtual files, the marker
+/// path of those (see `virtual_drop.rs`); else `None`.
+pub(crate) unsafe fn dropped_paths(idata_obj: &IDataObject) -> Option<SmallVec<[PathBuf; 2]>> {
+    unsafe { listed_paths(idata_obj) }.or_else(|| {
+        crate::virtual_drop::offers_virtual_files(idata_obj).then(|| {
+            SmallVec::from_elem(PathBuf::from(crate::virtual_drop::VIRTUAL_DROP_ROOT), 1)
+        })
+    })
+}
+
 /// The files a data object lists (`CF_HDROP`), or `None` if it lists none.
-unsafe fn dropped_paths(idata_obj: &IDataObject) -> Option<SmallVec<[PathBuf; 2]>> {
+unsafe fn listed_paths(idata_obj: &IDataObject) -> Option<SmallVec<[PathBuf; 2]>> {
     let config = FORMATETC {
         cfFormat: CF_HDROP.0,
         ptd: std::ptr::null_mut() as _,
@@ -1252,6 +1262,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 self.handle_drag_drop(input);
             } else {
                 *pdweffect = DROPEFFECT_NONE;
+                crate::virtual_drop::log_formats(idata_obj);
             }
             self.0
                 .drop_target_helper
@@ -1342,7 +1353,12 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
             }));
         }
         let input = PlatformInput::FileDrop(FileDropEvent::Submit { position });
-        self.handle_drag_drop(input);
+        if crate::virtual_drop::is_virtual_drop(&self.1.borrow()) {
+            // Virtual files: the drop handler takes the data object to read them from.
+            crate::virtual_drop::offered_while(idata_obj, || self.handle_drag_drop(input));
+        } else {
+            self.handle_drag_drop(input);
+        }
 
         Ok(())
     }

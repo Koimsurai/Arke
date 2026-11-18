@@ -990,6 +990,15 @@ impl Shell for WinShell {
         crate::shell_host::release(session);
     }
 
+    fn fill_shell_submenu(
+        &self,
+        session: u64,
+        index: u32,
+    ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::shell_host::fill_submenu(session, index)
+    }
+
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],

@@ -338,6 +338,10 @@ pub(crate) enum ShellMenuEntry {
         #[serde(with = "icon_wire")]
         icon: Option<arke_core::thumbs::Thumbnail>,
         children: Vec<Self>,
+        /// Set when it was still empty: its extension may fill it only when it is opened, and
+        /// [`Shell::fill_shell_submenu`] reads it by this number then.
+        #[serde(default)]
+        lazy: Option<u32>,
     },
     Separator,
 }
@@ -880,6 +884,16 @@ pub(crate) trait Shell: Send + Sync + 'static {
     ) -> Result<(), ShellError>;
     /// Releases the menu object when the menu closes without a choice. Fire and forget; UI thread safe.
     fn release_shell_menu(&self, session: u64);
+    /// Fills and reads a submenu of menu `session` that was empty when the menu was read
+    /// ([`ShellMenuEntry::Submenu`]'s `lazy`), as it is opened. Its items are invoked through
+    /// `session` like the rest. Background thread.
+    fn fill_shell_submenu(
+        &self,
+        _session: u64,
+        _index: u32,
+    ) -> Result<Vec<ShellMenuEntry>, ShellError> {
+        Err(ShellError::Unsupported)
+    }
     /// Context menu extensions that apply to `paths`, or the folder's empty space
     /// (`win_menu_parts.rs`). Background thread.
     fn shell_menu_handlers(

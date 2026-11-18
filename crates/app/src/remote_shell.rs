@@ -693,6 +693,13 @@ impl Shell for RemoteShell {
     fn release_shell_menu(&self, session: u64) {
         self.inner.release_shell_menu(session);
     }
+    fn fill_shell_submenu(
+        &self,
+        session: u64,
+        index: u32,
+    ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
+        self.inner.fill_shell_submenu(session, index)
+    }
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],

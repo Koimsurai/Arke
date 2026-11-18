@@ -33,6 +33,8 @@ mod column_view;
 mod folder_views;
 #[path = "tests_idle.rs"]
 mod idle;
+#[path = "tests_lazy_submenus.rs"]
+mod lazy_submenus;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
@@ -94,6 +96,13 @@ struct FakeShell {
     >,
     /// Names of the extensions read on their own.
     extensions_read: Mutex<Vec<String>>,
+    /// Submenus added to the end of the whole Windows menu empty, filled only when opened
+    /// (lazy index is the position here): label and what filling it gives.
+    lazy_submenus: Mutex<Vec<(String, Vec<crate::shell::ShellMenuEntry>)>>,
+    /// Lazy submenus filled (session, index).
+    submenus_filled: Mutex<Vec<(u64, u32)>>,
+    /// While set, filling a lazy submenu waits for a message on it.
+    fill_gate: Mutex<Option<flume::Receiver<()>>>,
     clipboard_text: Mutex<Option<String>>,
     revealed: Mutex<Vec<(PathBuf, bool)>>,
     /// Undos that ran.
@@ -505,28 +514,63 @@ impl Shell for FakeShell {
             icon: None,
         };
         let item = |id, label: &str| verb_item(id, label, None);
+        // "Open" and "Copy" duplicate Arke's own items (matched by verb), so they're dropped
+        // along with the extra separator.
+        let mut entries = vec![
+            verb_item(4, "Open", Some("open")),
+            E::Separator,
+            item(1, "Compress with 7-Zip"),
+            E::Separator,
+            E::Submenu {
+                label: "Send to".into(),
+                enabled: true,
+                icon: None,
+                children: vec![item(2, "Desktop"), item(3, "Mail recipient")],
+                lazy: None,
+            },
+            E::Separator,
+            verb_item(5, "Copy", Some("Copy")),
+        ];
+        entries.extend(
+            self.lazy_submenus
+                .lock()
+                .iter()
+                .enumerate()
+                .map(|(ix, (label, _))| E::Submenu {
+                    label: label.clone(),
+                    enabled: true,
+                    icon: None,
+                    children: Vec::new(),
+                    lazy: u32::try_from(ix).ok(),
+                }),
+        );
         Ok(crate::shell::ShellMenu {
             session: 7 + self
                 .shell_sessions
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            // "Open" and "Copy" duplicate Arke's own items (matched by verb), so they're dropped
-            // along with
-            // the extra separator.
-            entries: vec![
-                verb_item(4, "Open", Some("open")),
-                E::Separator,
-                item(1, "Compress with 7-Zip"),
-                E::Separator,
-                E::Submenu {
-                    label: "Send to".into(),
-                    enabled: true,
-                    icon: None,
-                    children: vec![item(2, "Desktop"), item(3, "Mail recipient")],
-                },
-                E::Separator,
-                verb_item(5, "Copy", Some("Copy")),
-            ],
+            entries,
         })
+    }
+
+    fn fill_shell_submenu(
+        &self,
+        session: u64,
+        index: u32,
+    ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "submenu filled on the UI thread"
+        );
+        let gate = self.fill_gate.lock().clone();
+        if let Some(gate) = gate {
+            let _ = gate.recv_timeout(Duration::from_secs(20));
+        }
+        self.submenus_filled.lock().push((session, index));
+        self.lazy_submenus
+            .lock()
+            .get(index as usize)
+            .map(|(_, children)| children.clone())
+            .ok_or(ShellError::MenuExpired)
     }
 
     fn invoke_shell_menu(

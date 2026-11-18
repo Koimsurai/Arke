@@ -24,6 +24,8 @@
 //! - Single extensions (`win_menu_parts.rs`) are found and read as soon as they are asked for,
 //!   each on a thread of its own, and answer as each one is ready, even while a whole menu is
 //!   still being read.
+//! - A submenu filled only when opened (`win_menu::fill_submenu`) is filled in the host that read
+//!   its menu, answered the same way.
 //!
 //! Transport is one JSON message per line over stdin/stdout. Arke reads and writes on
 //! dedicated threads; the UI thread never waits on the host.
@@ -46,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 
-use crate::shell::{ShellError, ShellMenu};
+use crate::shell::{ShellError, ShellMenu, ShellMenuEntry};
 use crate::win_menu_parts::MenuHandler;
 
 /// Starts arke.exe as a menu host only: no window, no tray, no settings.
@@ -94,6 +96,13 @@ enum HostRequest {
         /// Arke's menu asking; older menus' extension menus are released.
         group: u64,
     },
+    /// A submenu its extension fills only when opened (answered when ready, beside a whole menu
+    /// being read).
+    FillSubmenu {
+        id: u64,
+        session: u64,
+        index: u32,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -106,6 +115,8 @@ enum Reply {
         menu: ShellMenu,
         ms: u64,
     },
+    /// A submenu filled as it is opened.
+    Submenu(Vec<ShellMenuEntry>),
 }
 
 /// One reply on the wire. Errors cross the process boundary as their display text and come
@@ -185,7 +196,9 @@ where
                     crate::win_menu::release(session);
                     continue;
                 }
-                HostRequest::Handlers { .. } | HostRequest::QueryHandler { .. } => continue,
+                HostRequest::Handlers { .. }
+                | HostRequest::QueryHandler { .. }
+                | HostRequest::FillSubmenu { .. } => continue,
             };
             send_reply(&reply);
         }
@@ -263,7 +276,9 @@ fn start_reader<R: BufRead + Send + 'static>(
                     continue;
                 };
                 match request {
-                    HostRequest::Handlers { .. } | HostRequest::QueryHandler { .. } => {
+                    HostRequest::Handlers { .. }
+                    | HostRequest::QueryHandler { .. }
+                    | HostRequest::FillSubmenu { .. } => {
                         serve_extension(request, send_reply.clone());
                     }
                     other => {
@@ -309,6 +324,12 @@ fn serve_extension(request: HostRequest, send_reply: impl Fn(&HostReply) + Send 
                             .map_err(|e| e.to_string()),
                     }
                 }
+                HostRequest::FillSubmenu { id, session, index } => HostReply {
+                    id,
+                    result: crate::win_menu::fill_submenu(session, index)
+                        .map(Reply::Submenu)
+                        .map_err(|e| e.to_string()),
+                },
                 _ => return,
             };
             send_reply(&reply);
@@ -701,6 +722,35 @@ pub(crate) fn query_handler(
     }
 }
 
+/// Fills a submenu of menu `session` as it is opened, in the host that read the menu. Call from a
+/// background thread.
+pub(crate) fn fill_submenu(session: u64, index: u32) -> Result<Vec<ShellMenuEntry>, ShellError> {
+    let generation = session >> 32;
+    if generation == IN_PROCESS {
+        return crate::win_menu::fill_submenu(session, index);
+    }
+    let make = |id| HostRequest::FillSubmenu {
+        id,
+        session: session & 0xFFFF_FFFF,
+        index,
+    };
+    let wait = [&HOST, &RETIRED]
+        .into_iter()
+        .find_map(|slot| {
+            slot.lock()
+                .as_ref()
+                .filter(|h| h.generation == generation)
+                .map(|host| submit(host, make))
+        })
+        .ok_or(ShellError::MenuExpired)??;
+    match wait.recv_timeout(QUERY_TIMEOUT) {
+        Ok(Ok(Reply::Submenu(entries))) => Ok(entries),
+        Ok(Err(e)) => Err(e),
+        Err(flume::RecvTimeoutError::Timeout) => Err(ShellError::HostTimeout),
+        Ok(Ok(_)) | Err(flume::RecvTimeoutError::Disconnected) => Err(ShellError::HostGone),
+    }
+}
+
 /// Invokes a menu item in the host that read it. That host then retires and a new
 /// standby starts. Call from a background thread.
 pub(crate) fn invoke(
@@ -769,7 +819,6 @@ pub(crate) fn release(session: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::ShellMenuEntry;
 
     fn count(entries: &[ShellMenuEntry]) -> usize {
         entries
@@ -853,6 +902,59 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A submenu to fill is answered by the host for the menu it read, here one with no such
+    /// submenu: the answer comes back as an error instead of a hang.
+    #[test]
+    fn host_answers_submenu_fills() {
+        let notepad = PathBuf::from(r"C:\Windows\notepad.exe");
+        if !notepad.exists() {
+            return;
+        }
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let output = Shared::default();
+        let out = output.clone();
+        let host = std::thread::spawn(move || {
+            serve(BufReader::new(reader), out, false, Duration::ZERO);
+        });
+        let mut replies: Vec<HostReply> = Vec::new();
+        let mut send_and_wait = |request: &HostRequest, id: u64| -> HostReply {
+            writeln!(writer, "{}", serde_json::to_string(request).unwrap()).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let text = String::from_utf8(output.take()).unwrap();
+                replies.extend(text.lines().map(|l| serde_json::from_str(l).unwrap()));
+                if let Some(at) = replies.iter().position(|r| r.id == id) {
+                    return replies.remove(at);
+                }
+                assert!(std::time::Instant::now() < deadline, "no reply to {id}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let menu = send_and_wait(
+            &HostRequest::Query {
+                id: 1,
+                paths: vec![notepad],
+                background: false,
+            },
+            1,
+        );
+        let Ok(Reply::Menu(menu)) = menu.result else {
+            panic!("{:?}", menu.result);
+        };
+        let filled = send_and_wait(
+            &HostRequest::FillSubmenu {
+                id: 2,
+                session: menu.session,
+                index: 999,
+            },
+            2,
+        );
+        assert!(filled.result.is_err(), "{:?}", filled.result);
+        drop(send_and_wait);
+        drop(writer);
+        host.join().unwrap();
     }
 
     /// A host that only read menus doesn't linger once Arke closes it, so quitting Arke (or the

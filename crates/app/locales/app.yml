@@ -2610,6 +2610,10 @@ menu.no_more_options:
   en: No other options
   zh-TW: 沒有其他選項
   zh-CN: 没有其他选项
+menu.submenu_empty:
+  en: (Empty)
+  zh-TW: （空的）
+  zh-CN: （空）
 
 # ─── Notices and errors
 ops.list_separator:

@@ -291,6 +291,9 @@ mod timing {
     use super::*;
 
     fn time(paths: &[PathBuf], background: bool, label: &str) {
+        // One group per menu, as Arke asks: a newer group releases the older ones' menus, so a
+        // group per extension would expire all but the last.
+        static GROUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000);
         let started = Instant::now();
         let whole = crate::win_menu::query(paths, background);
         let whole_ms = started.elapsed().as_millis();
@@ -307,20 +310,15 @@ mod timing {
             if whole.is_ok() { "ok" } else { "failed" },
             found.len()
         );
+        let group = GROUP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let all = Instant::now();
         let threads: Vec<_> = found
             .into_iter()
-            .enumerate()
-            .map(|(group, h)| {
+            .map(|h| {
                 let paths = paths.to_vec();
                 std::thread::spawn(move || {
                     let started = Instant::now();
-                    let menu = crate::win_menu::query_handler(
-                        &paths,
-                        background,
-                        &h,
-                        1_000 + group as u64,
-                    );
+                    let menu = crate::win_menu::query_handler(&paths, background, &h, group);
                     let ms = started.elapsed().as_millis();
                     let items = menu.as_ref().map_or(0, |m| m.entries.len());
                     if let Ok(m) = &menu
@@ -330,6 +328,23 @@ mod timing {
                             "{:#?}",
                             m.entries.iter().map(label_tree).collect::<Vec<_>>()
                         );
+                        // Submenus filled when opened, as if opened now (nothing is run).
+                        for (label, index) in m.entries.iter().filter_map(|e| match e {
+                            crate::shell::ShellMenuEntry::Submenu {
+                                label,
+                                lazy: Some(index),
+                                ..
+                            } => Some((label, *index)),
+                            _ => None,
+                        }) {
+                            let opened = Instant::now();
+                            let filled = crate::win_menu::fill_submenu(m.session, index);
+                            println!(
+                                "  {label} opened in {} ms: {:?}",
+                                opened.elapsed().as_millis(),
+                                filled.map(|c| c.iter().map(label_tree).collect::<Vec<_>>())
+                            );
+                        }
                     }
                     if let Ok(m) = &menu {
                         crate::win_menu::release(m.session);
@@ -355,9 +370,17 @@ mod timing {
         match e {
             crate::shell::ShellMenuEntry::Item { label, .. } => label.clone(),
             crate::shell::ShellMenuEntry::Submenu {
-                label, children, ..
+                label,
+                children,
+                lazy,
+                ..
             } => format!(
-                "{label} › [{}]",
+                "{label} ›{} [{}]",
+                if lazy.is_some() {
+                    " (filled when opened)"
+                } else {
+                    ""
+                },
                 children
                     .iter()
                     .map(label_tree)

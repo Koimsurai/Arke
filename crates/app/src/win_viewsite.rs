@@ -10,13 +10,17 @@
 //! [`site`] builds a stand-in view of the file's folder in Arke's sort order, handed to
 //! `ShellExecuteEx` with `SEE_MASK_FLAG_HINST_IS_SITE`. What the activation reads is real; the
 //! rest answers like a view whose only item, selected and focused, is the opened file.
+//!
+//! A folder's empty-space menu gets a site too ([`background_site`]): a view standing for the
+//! folder. Windows' Sharing extension asks it for the selection when "Give access to" is filled,
+//! and leaves the submenu empty without an answer.
 
 use std::ffi::c_void;
 use std::path::Path;
 
 use arke_core::{SortColumn, SortSpec};
 use windows::Win32::Foundation::{
-    E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER, POINT, PROPERTYKEY, S_FALSE,
+    E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER, POINT, PROPERTYKEY, S_FALSE,
 };
 use windows::Win32::Storage::EnhancedStorage::{
     PKEY_DateCreated, PKEY_DateModified, PKEY_FileAttributes, PKEY_ItemNameDisplay,
@@ -33,7 +37,7 @@ use windows::Win32::UI::Shell::{
     IFolderView2, IFolderView2_Impl, ILClone, ILFindLastID, ILIsEqual, IPersistIDList,
     IPersistIDList_Impl, IShellItem, IShellItemArray, SHCreateItemFromIDList,
     SHCreateShellItemArrayFromShellItem, SHParseDisplayName, SORT_ASCENDING, SORT_DESCENDING,
-    SORTCOLUMN, SVSI_FOCUSED, SVSI_SELECT,
+    SORTCOLUMN, SVGIO_BACKGROUND, SVGIO_SELECTION, SVGIO_TYPE_MASK, SVSI_FOCUSED, SVSI_SELECT,
 };
 use windows::core::{BOOL, GUID, Interface, PCSTR, PCWSTR, implement};
 
@@ -118,6 +122,21 @@ pub(crate) fn site(file: &Path, spec: &SortSpec) -> Option<IServiceProvider> {
         columns,
     }
     .into();
+    Some(
+        com::Site {
+            view: (*view).clone(),
+        }
+        .into(),
+    )
+}
+
+/// The site for `folder`'s empty-space context menu: answers `SID_SFolderView` with a view that
+/// stands for the folder (File Explorer's view is that menu's site).
+pub(crate) fn background_site(folder: &Path) -> Option<IServiceProvider> {
+    let view: IFolderView = com::BackgroundView {
+        folder: Pidl::parse(folder).ok()?,
+    }
+    .into();
     Some(com::Site { view }.into())
 }
 
@@ -140,7 +159,7 @@ mod com {
     /// What a caller of `ShellExecuteEx` is asked for: only the folder view.
     #[implement(IServiceProvider)]
     pub(super) struct Site {
-        pub(super) view: IFolderView2,
+        pub(super) view: IFolderView,
     }
 
     impl IServiceProvider_Impl for Site_Impl {
@@ -161,6 +180,112 @@ mod com {
             }
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             unsafe { self.view.query(riid, ppv) }.ok()
+        }
+    }
+
+    /// A view of `folder` for its empty-space menu, standing for the folder itself.
+    #[implement(IFolderView)]
+    pub(super) struct BackgroundView {
+        pub(super) folder: Pidl,
+    }
+
+    impl BackgroundView_Impl {
+        /// The folder as `riid`: the item itself, or what it binds to as an item of its parent
+        /// (`ui`: `IDataObject`, ...) or as a folder (`IShellFolder`).
+        fn folder_as(&self, riid: *const GUID, ppv: *mut *mut c_void, ui: bool) -> Res<()> {
+            if riid.is_null() || ppv.is_null() {
+                return Err(E_POINTER.into());
+            }
+            // SAFETY: ppv is a valid out pointer supplied by the caller.
+            unsafe { *ppv = std::ptr::null_mut() };
+            // SAFETY: the list is valid for the object's lifetime.
+            let folder: IShellItem = unsafe { SHCreateItemFromIDList(self.folder.0) }?;
+            // SAFETY: riid and ppv are valid.
+            if unsafe { folder.query(riid, ppv) }.is_ok() {
+                return Ok(());
+            }
+            // SAFETY: riid is non-null.
+            if unsafe { *riid } == IShellItemArray::IID {
+                // SAFETY: plain shell call on a valid item.
+                let array: IShellItemArray =
+                    unsafe { SHCreateShellItemArrayFromShellItem(&folder) }?;
+                // SAFETY: riid and ppv are valid.
+                return unsafe { array.query(riid, ppv) }.ok();
+            }
+            let bind = if ui { &BHID_SFUIObject } else { &BHID_SFObject };
+            // SAFETY: as above; BindToHandler fills ppv on success.
+            unsafe {
+                (Interface::vtable(&folder).BindToHandler)(
+                    folder.as_raw(),
+                    std::ptr::null_mut(),
+                    bind,
+                    riid,
+                    ppv,
+                )
+            }
+            .ok()
+        }
+    }
+
+    impl IFolderView_Impl for BackgroundView_Impl {
+        fn GetCurrentViewMode(&self) -> Res<u32> {
+            Ok(FVM_DETAILS.0 as u32)
+        }
+        fn SetCurrentViewMode(&self, _: u32) -> Res<()> {
+            Ok(())
+        }
+        fn GetFolder(&self, riid: *const GUID, ppv: *mut *mut c_void) -> Res<()> {
+            self.folder_as(riid, ppv, false)
+        }
+        fn Item(&self, _: i32) -> Res<*mut ITEMIDLIST> {
+            Err(E_INVALIDARG.into())
+        }
+        fn ItemCount(&self, _: &_SVGIO) -> Res<i32> {
+            Ok(0)
+        }
+        /// What the empty-space menu is for, the background or the "selection", is the folder
+        /// itself: Sharing asks for the selection and fills "Give access to" for the folder, the
+        /// same items as on the folder's own menu. The folder's items aren't listed.
+        fn Items(&self, flags: &_SVGIO, riid: *const GUID, ppv: *mut *mut c_void) -> Res<()> {
+            let kind = flags.0 & SVGIO_TYPE_MASK.0;
+            if kind == SVGIO_BACKGROUND.0 || kind == SVGIO_SELECTION.0 {
+                return self.folder_as(riid, ppv, true);
+            }
+            if !ppv.is_null() {
+                // SAFETY: ppv is a valid out pointer supplied by the caller.
+                unsafe { *ppv = std::ptr::null_mut() };
+            }
+            Err(E_FAIL.into())
+        }
+        fn GetSelectionMarkedItem(&self) -> Res<i32> {
+            Err(E_FAIL.into())
+        }
+        fn GetFocusedItem(&self) -> Res<i32> {
+            Err(E_FAIL.into())
+        }
+        fn GetItemPosition(&self, _: *const ITEMIDLIST) -> Res<POINT> {
+            Err(E_NOTIMPL.into())
+        }
+        fn GetSpacing(&self, _: *mut POINT) -> Res<()> {
+            Err(E_NOTIMPL.into())
+        }
+        fn GetDefaultSpacing(&self) -> Res<POINT> {
+            Err(E_NOTIMPL.into())
+        }
+        fn GetAutoArrange(&self) -> Res<()> {
+            Err(S_FALSE.into())
+        }
+        fn SelectItem(&self, _: i32, _: u32) -> Res<()> {
+            Ok(())
+        }
+        fn SelectAndPositionItems(
+            &self,
+            _: u32,
+            _: *const *const ITEMIDLIST,
+            _: *const POINT,
+            _: u32,
+        ) -> Res<()> {
+            Ok(())
         }
     }
 

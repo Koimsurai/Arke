@@ -11,6 +11,10 @@
 //! continue via messages after `InvokeCommand` returns (e.g. Send to > Compressed folder) and
 //! break if the thread exits.
 //!
+//! A submenu still empty once asked to fill itself is sent empty with a number ([`Lazy`]) and
+//! filled when the user opens it ([`fill_submenu`]), the way File Explorer's menu asks for it on
+//! opening; the read doesn't wait for it.
+//!
 //! Only one menu (`Session`) is kept at a time; it is released on the next query, after
 //! invoking, or when the menu closes without a choice.
 //!
@@ -31,7 +35,9 @@ use windows::Win32::Graphics::Gdi::{ClientToScreen, HBITMAP};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CLSIDFromString, CoCreateInstance, IDataObject,
 };
-use windows::Win32::System::Ole::{OleFlushClipboard, OleInitialize, OleUninitialize};
+use windows::Win32::System::Ole::{
+    IObjectWithSite, OleFlushClipboard, OleInitialize, OleUninitialize,
+};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, KEY_READ, RegCloseKey, RegOpenKeyExW,
 };
@@ -44,7 +50,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetMenuItemCount, GetMenuItemInfoW, HMENU, MENUITEMINFOW, MFS_CHECKED, MFS_DEFAULT,
+    GetMenuItemCount, GetMenuItemInfoW, HMENU, IsMenu, MENUITEMINFOW, MFS_CHECKED, MFS_DEFAULT,
     MFS_DISABLED, MFT_BITMAP, MFT_SEPARATOR, MIIM_BITMAP, MIIM_CHECKMARKS, MIIM_FTYPE, MIIM_ID,
     MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
     PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassW, SW_SHOWNORMAL, TranslateMessage,
@@ -86,8 +92,25 @@ enum Request {
         done: flume::Sender<Result<(), ShellError>>,
     },
     Release(u64),
+    /// A submenu that was empty when the menu was read ([`Lazy`]): fill it now and read it.
+    FillSubmenu {
+        session: u64,
+        index: u32,
+        done: flume::Sender<Result<Vec<ShellMenuEntry>, ShellError>>,
+    },
     /// Process is exiting: hand clipboard data set by extensions (e.g. Copy) to the system.
     FlushClipboard(flume::Sender<()>),
+}
+
+/// A submenu still empty when the menu was read. An extension may fill its submenu only when it
+/// is really opened, so it is kept and asked again when the user opens it in Arke
+/// ([`fill_submenu`]), the way File Explorer's menu asks for it on opening.
+#[derive(Clone, Copy)]
+struct Lazy {
+    hmenu: HMENU,
+    /// Position in its parent, for `WM_INITMENUPOPUP`.
+    pos: u32,
+    depth: usize,
 }
 
 /// A menu waiting for a choice. Frees the HMENU and PIDLs on drop.
@@ -102,6 +125,8 @@ struct Session {
     /// registered only for folder backgrounds (`Directory\Background\shell`, e.g. Everything's
     /// "Search Everything...") fails without it, as if nothing could open the folder (#184).
     directory: Vec<u16>,
+    /// Submenus to fill when opened, by the index sent with the menu.
+    lazy: Vec<Lazy>,
 }
 
 impl Drop for Session {
@@ -277,6 +302,37 @@ pub(crate) fn invoke(
         .map_err(|_hung_up| ShellError::MenuThreadNoReply)?
 }
 
+/// Fills and reads submenu `index` of menu `session`, one that was empty when the menu was read
+/// (`ShellMenuEntry::Submenu::lazy`). Its items run like the rest of the menu's. Blocks on the
+/// thread holding the menu, so call from a background thread.
+pub(crate) fn fill_submenu(session: u64, index: u32) -> Result<Vec<ShellMenuEntry>, ShellError> {
+    let (done, result) = flume::bounded(1);
+    let request = Request::FillSubmenu {
+        session,
+        index,
+        done,
+    };
+    let unsent = {
+        let parts = PARTS.lock();
+        // Sent while the list is locked: a part's thread ends once released, which takes it out
+        // of the list first.
+        if let Some(part) = parts.iter().find(|p| p.session == session) {
+            part.thread.send(request)?;
+            None
+        } else {
+            Some(request)
+        }
+    };
+    if let Some(request) = unsent {
+        menu_thread()
+            .ok_or(ShellError::MenuThreadStart)?
+            .send(request)?;
+    }
+    result
+        .recv()
+        .map_err(|_hung_up| ShellError::MenuThreadNoReply)?
+}
+
 /// Releases a menu without waiting.
 pub(crate) fn release(session: u64) {
     if let Some(part) = take_part(session) {
@@ -358,6 +414,13 @@ fn handle(request: Request, window: HWND) {
                 _ => Err(ShellError::MenuExpired),
             };
             let _ = done.send(result);
+        }
+        Request::FillSubmenu {
+            session,
+            index,
+            done,
+        } => {
+            let _ = done.send(fill_lazy(session, index));
         }
         Request::FlushClipboard(done) => {
             // SAFETY: plain OLE call; it errors harmlessly if this thread set no clipboard data.
@@ -524,7 +587,9 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
             SHGetDesktopFolder().and_then(|desktop| desktop.BindToObject(pidls.0[0], None))
         }?;
         // SAFETY: owner is this thread's window.
-        unsafe { folder.CreateViewObject(owner) }?
+        let menu: IContextMenu = unsafe { folder.CreateViewObject(owner) }?;
+        set_background_site(&menu, &paths[0]);
+        menu
     } else {
         // Arke's selection is always within one folder, so bind to the first item's parent.
         // SAFETY: pidls.0[0] is a valid absolute PIDL.
@@ -564,13 +629,14 @@ fn fill(
 ) -> Result<ShellMenu, ShellError> {
     // SAFETY: creates an empty popup menu; Session calls DestroyMenu.
     let hmenu = unsafe { CreatePopupMenu() }?;
-    let session = Session {
+    let mut session = Session {
         id: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         menu,
         hmenu,
         owner,
         _pidls: pidls,
         directory,
+        lazy: Vec::new(),
     };
     // SAFETY: hmenu is valid; command IDs range over 1..=0x7FFF.
     let hr = unsafe {
@@ -581,8 +647,9 @@ fn fill(
     if hr.is_err() {
         return Err(windows::core::Error::from(hr).into());
     }
-    let mut budget = MAX_ITEMS;
-    let entries = read_menu(&session.menu, hmenu, 0, &mut budget);
+    let mut reader = Reader::new(&session.menu, 0);
+    let entries = reader.read_menu(hmenu, 0);
+    session.lazy = reader.lazy;
     let result = ShellMenu {
         session: session.id,
         entries,
@@ -660,105 +727,165 @@ fn build_handler(
     }
     initialized?;
     let menu: IContextMenu = init.cast()?;
+    if background {
+        set_background_site(&menu, &paths[0]);
+    }
     fill(menu, owner, pidls, menu_directory(paths, background))
 }
 
-/// Reads one menu level. Submenus get `WM_INITMENUPOPUP` first, since "Send to",
-/// "Open with" and others fill their content only then.
-fn read_menu(
-    menu: &IContextMenu,
-    hmenu: HMENU,
-    depth: usize,
-    budget: &mut usize,
-) -> Vec<ShellMenuEntry> {
-    // SAFETY: hmenu is a valid menu.
-    let count = unsafe { GetMenuItemCount(Some(hmenu)) };
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for pos in 0..u32::try_from(count).unwrap_or(0) {
-        if *budget == 0 {
-            break;
-        }
-        let Some(entry) = read_item(menu, hmenu, pos, depth, budget) else {
-            continue;
-        };
-        // Extensions that refill a submenu can add the same command twice; keep one.
-        if let ShellMenuEntry::Item { id, .. } = &entry
-            && !seen.insert(*id)
-        {
-            continue;
-        }
-        *budget -= 1;
-        out.push(entry);
+/// File Explorer's view is the site of its empty-space menu, and some extensions ask it what the
+/// menu is for: Windows' Sharing fills "Give access to" from it and leaves it empty without one.
+/// Gives the menu a stand-in view of `folder` (`win_viewsite.rs`).
+fn set_background_site(menu: &IContextMenu, folder: &Path) {
+    let Some(site) = crate::win_viewsite::background_site(folder) else {
+        return;
+    };
+    if let Ok(with_site) = menu.cast::<IObjectWithSite>() {
+        // SAFETY: plain COM call on this STA thread; the menu keeps its own reference.
+        let _ = unsafe { with_site.SetSite(&site) };
     }
-    tidy_separators(out)
 }
 
-fn read_item(
-    menu: &IContextMenu,
-    hmenu: HMENU,
-    pos: u32,
-    depth: usize,
-    budget: &mut usize,
-) -> Option<ShellMenuEntry> {
-    let mut info = MENUITEMINFOW {
-        cbSize: size_of::<MENUITEMINFOW>() as u32,
-        fMask: MIIM_FTYPE
-            | MIIM_STATE
-            | MIIM_ID
-            | MIIM_SUBMENU
-            | MIIM_STRING
-            | MIIM_BITMAP
-            | MIIM_CHECKMARKS,
-        ..Default::default()
-    };
-    // First call only asks for the string length.
-    // SAFETY: info.cbSize is set; with a null dwTypeData only cch is returned.
-    unsafe { GetMenuItemInfoW(hmenu, pos, true, &raw mut info) }.ok()?;
-    if info.fType.0 & MFT_SEPARATOR.0 != 0 {
-        return Some(ShellMenuEntry::Separator);
+/// Submenu `index` of the current menu `session`, filled now: the extension gets
+/// `WM_INITMENUPOPUP` as when File Explorer opens it, then it is read like the rest of the menu.
+/// Submenus inside it that are still empty become lazy in turn.
+fn fill_lazy(session: u64, index: u32) -> Result<Vec<ShellMenuEntry>, ShellError> {
+    let found = CURRENT.with(|c| {
+        let c = c.borrow();
+        let s = c.as_ref().filter(|s| s.id == session)?;
+        let lazy = *s.lazy.get(index as usize)?;
+        Some((s.menu.clone(), lazy, s.lazy.len()))
+    });
+    let (menu, lazy, known) = found.ok_or(ShellError::MenuExpired)?;
+    // SAFETY: plain check; the menu belongs to the session, which is still current.
+    if !unsafe { IsMenu(lazy.hmenu) }.as_bool() {
+        return Err(ShellError::MenuExpired);
     }
-    if info.fType.0 & MFT_BITMAP.0 != 0 {
-        return None;
+    // The current menu is not borrowed meanwhile: messages the extension sends while filling
+    // reach it through the window procedure.
+    init_submenu(&menu, lazy.hmenu, lazy.pos, true);
+    let mut reader = Reader::new(&menu, known);
+    let entries = reader.read_menu(lazy.hmenu, lazy.depth);
+    CURRENT.with(|c| {
+        if let Some(s) = c.borrow_mut().as_mut().filter(|s| s.id == session) {
+            s.lazy.extend(reader.lazy);
+        }
+    });
+    Ok(entries)
+}
+
+/// Reads a menu into entries, keeping submenus that are still empty for later ([`Lazy`]).
+struct Reader<'a> {
+    menu: &'a IContextMenu,
+    budget: usize,
+    /// Empty submenus found, numbered from `first_lazy`.
+    lazy: Vec<Lazy>,
+    first_lazy: usize,
+}
+
+impl<'a> Reader<'a> {
+    const fn new(menu: &'a IContextMenu, first_lazy: usize) -> Self {
+        Self {
+            menu,
+            budget: MAX_ITEMS,
+            lazy: Vec::new(),
+            first_lazy,
+        }
     }
-    let mut text = vec![0u16; info.cch as usize + 1];
-    info.dwTypeData = PWSTR(text.as_mut_ptr());
-    info.cch += 1;
-    // SAFETY: text has room for cch u16s including the NUL.
-    unsafe { GetMenuItemInfoW(hmenu, pos, true, &raw mut info) }.ok()?;
-    let len = text.iter().position(|&c| c == 0).unwrap_or(text.len());
-    let label = clean_label(&String::from_utf16_lossy(&text[..len]));
-    // Owner-draw items without text can't be read; skip them.
-    if label.is_empty() {
-        return None;
+
+    /// Reads one menu level. Submenus get `WM_INITMENUPOPUP` first, since "Send to",
+    /// "Open with" and others fill their content only then.
+    fn read_menu(&mut self, hmenu: HMENU, depth: usize) -> Vec<ShellMenuEntry> {
+        // SAFETY: hmenu is a valid menu.
+        let count = unsafe { GetMenuItemCount(Some(hmenu)) };
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for pos in 0..u32::try_from(count).unwrap_or(0) {
+            if self.budget == 0 {
+                break;
+            }
+            let Some(entry) = self.read_item(hmenu, pos, depth) else {
+                continue;
+            };
+            // Extensions that refill a submenu can add the same command twice; keep one.
+            if let ShellMenuEntry::Item { id, .. } = &entry
+                && !seen.insert(*id)
+            {
+                continue;
+            }
+            self.budget -= 1;
+            out.push(entry);
+        }
+        tidy_separators(out)
     }
-    let enabled = info.fState.0 & MFS_DISABLED.0 == 0;
-    let icon = item_icon(info.hbmpItem).or_else(|| item_icon(info.hbmpUnchecked));
-    if !info.hSubMenu.is_invalid() {
-        if depth + 1 >= MAX_DEPTH {
+
+    fn read_item(&mut self, hmenu: HMENU, pos: u32, depth: usize) -> Option<ShellMenuEntry> {
+        let menu = self.menu;
+        let mut info = MENUITEMINFOW {
+            cbSize: size_of::<MENUITEMINFOW>() as u32,
+            fMask: MIIM_FTYPE
+                | MIIM_STATE
+                | MIIM_ID
+                | MIIM_SUBMENU
+                | MIIM_STRING
+                | MIIM_BITMAP
+                | MIIM_CHECKMARKS,
+            ..Default::default()
+        };
+        // First call only asks for the string length.
+        // SAFETY: info.cbSize is set; with a null dwTypeData only cch is returned.
+        unsafe { GetMenuItemInfoW(hmenu, pos, true, &raw mut info) }.ok()?;
+        if info.fType.0 & MFT_SEPARATOR.0 != 0 {
+            return Some(ShellMenuEntry::Separator);
+        }
+        if info.fType.0 & MFT_BITMAP.0 != 0 {
             return None;
         }
-        init_submenu(menu, info.hSubMenu, pos);
-        let children = read_menu(menu, info.hSubMenu, depth + 1, budget);
-        if children.is_empty() {
+        let mut text = vec![0u16; info.cch as usize + 1];
+        info.dwTypeData = PWSTR(text.as_mut_ptr());
+        info.cch += 1;
+        // SAFETY: text has room for cch u16s including the NUL.
+        unsafe { GetMenuItemInfoW(hmenu, pos, true, &raw mut info) }.ok()?;
+        let len = text.iter().position(|&c| c == 0).unwrap_or(text.len());
+        let label = clean_label(&String::from_utf16_lossy(&text[..len]));
+        // Owner-draw items without text can't be read; skip them.
+        if label.is_empty() {
             return None;
         }
-        return Some(ShellMenuEntry::Submenu {
+        let enabled = info.fState.0 & MFS_DISABLED.0 == 0;
+        let icon = item_icon(info.hbmpItem).or_else(|| item_icon(info.hbmpUnchecked));
+        if !info.hSubMenu.is_invalid() {
+            if depth + 1 >= MAX_DEPTH {
+                return None;
+            }
+            init_submenu(menu, info.hSubMenu, pos, false);
+            let children = self.read_menu(info.hSubMenu, depth + 1);
+            let lazy = children.is_empty().then(|| {
+                self.lazy.push(Lazy {
+                    hmenu: info.hSubMenu,
+                    pos,
+                    depth: depth + 1,
+                });
+                u32::try_from(self.first_lazy + self.lazy.len() - 1).unwrap_or(u32::MAX)
+            });
+            return Some(ShellMenuEntry::Submenu {
+                label,
+                enabled,
+                icon,
+                children,
+                lazy,
+            });
+        }
+        Some(ShellMenuEntry::Item {
+            id: info.wID,
+            verb: item_verb(menu, info.wID),
             label,
             enabled,
+            checked: info.fState.0 & MFS_CHECKED.0 != 0,
+            default: info.fState.0 & MFS_DEFAULT.0 != 0,
             icon,
-            children,
-        });
+        })
     }
-    Some(ShellMenuEntry::Item {
-        id: info.wID,
-        verb: item_verb(menu, info.wID),
-        label,
-        enabled,
-        checked: info.fState.0 & MFS_CHECKED.0 != 0,
-        default: info.fState.0 & MFS_DEFAULT.0 != 0,
-        icon,
-    })
 }
 
 /// Canonical verb ("open", "copy", "delete", ...) used to spot items that duplicate Arke's
@@ -787,13 +914,22 @@ fn item_verb(menu: &IContextMenu, id: u32) -> Option<String> {
 /// of lParam its position in the parent). "Send to" fills in the background and shows a
 /// blank placeholder until ready, so pump messages and ask again. The first fill takes
 /// about 0.7 s, later ones are near instant; the wait is capped at about 1.5 s.
-fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32) {
+///
+/// While the whole menu is read (`opening` false), a submenu its extension left with no items at
+/// all (not even a placeholder) isn't waited for: it is kept and asked again when the user opens
+/// it ([`fill_lazy`], `opening` true). Windows' Sharing did that to "Give access to" on a
+/// folder's empty space, which held that menu up for the whole 1.5 s.
+fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
     let lparam = LPARAM(isize::try_from(pos).unwrap_or_default());
     let init = || {
         let _ = forward_menu_msg(menu, WM_INITMENUPOPUP, WPARAM(submenu.0 as usize), lparam);
     };
     init();
     if has_text(submenu) {
+        return;
+    }
+    // SAFETY: submenu is a valid menu.
+    if !opening && unsafe { GetMenuItemCount(Some(submenu)) } <= 0 {
         return;
     }
     // Slow submenus like "Send to" fill gradually; done once the item count is stable for a
@@ -944,6 +1080,81 @@ mod tests {
         let (id, label) = find(&menu.entries, &part).expect("the command is in the menu");
         let result = invoke(menu.session, id, (0, 0), None);
         assert!(result.is_ok(), "{label}: {result:?}");
+    }
+
+    /// On this machine: Windows' Sharing submenu ("Give access to") lists its items on a folder
+    /// and on the folder's empty space, as in File Explorer (on empty space it used to be dropped,
+    /// after holding the menu up for 1.5 s). Submenus still empty when read are filled as if
+    /// opened. Prints both menus; runs nothing. By hand:
+    /// `cargo nextest run -p arke-app --run-ignored only --no-capture give_access_to_lists_its_items`.
+    #[test]
+    #[ignore = "loads this machine's shell extensions; run by hand"]
+    #[allow(clippy::print_stdout, reason = "a report printed for a run by hand")]
+    fn give_access_to_lists_its_items() {
+        /// The entries as text, submenus with their items (filled now when filled on opening).
+        fn tree(session: u64, entries: &[ShellMenuEntry]) -> Vec<String> {
+            entries
+                .iter()
+                .map(|e| match e {
+                    ShellMenuEntry::Item { label, .. } => label.clone(),
+                    ShellMenuEntry::Submenu {
+                        label,
+                        children,
+                        lazy,
+                        ..
+                    } => {
+                        let (children, how) = match lazy {
+                            Some(index) => (
+                                fill_submenu(session, *index).unwrap_or_default(),
+                                " (filled on opening)",
+                            ),
+                            None => (children.clone(), ""),
+                        };
+                        format!("{label} ›{how} {:?}", tree(session, &children))
+                    }
+                    ShellMenuEntry::Separator => "-".into(),
+                })
+                .collect()
+        }
+        let dir = std::env::temp_dir().join("arke-give-access-to");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The submenu's name, from the Sharing extension's own menu for the folder.
+        let sharing = crate::win_menu_parts::handlers(std::slice::from_ref(&dir), false)
+            .into_iter()
+            .find(|h| {
+                h.clsid
+                    .eq_ignore_ascii_case("{f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}")
+            });
+        let Some(sharing) = sharing else {
+            println!("Sharing isn't registered here");
+            return;
+        };
+        let own = query_handler(std::slice::from_ref(&dir), false, &sharing, 1).unwrap();
+        let name = own
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                ShellMenuEntry::Submenu { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .expect("Sharing's submenu");
+        release(own.session);
+        for (what, background) in [("folder", false), ("background", true)] {
+            let started = std::time::Instant::now();
+            let menu = query(std::slice::from_ref(&dir), background).unwrap();
+            let read = started.elapsed().as_millis();
+            let lines = tree(menu.session, &menu.entries);
+            println!("{what}: read in {read} ms");
+            for line in &lines {
+                println!("  {line}");
+            }
+            let give = lines
+                .iter()
+                .find(|l| l.starts_with(&format!("{name} ›")))
+                .unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(!give.ends_with("[]"), "{what}: {give}");
+            release(menu.session);
+        }
     }
 
     #[test]

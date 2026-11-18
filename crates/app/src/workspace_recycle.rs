@@ -116,6 +116,11 @@ impl Workspace {
         self.open_recycle(false, window, cx);
     }
 
+    #[cfg(test)]
+    pub(crate) fn close_recycle_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_recycle(window, cx);
+    }
+
     /// Pinned-list row for the Recycle Bin. Click opens it here (Ctrl or middle click: new tab).
     pub(super) fn render_recycle_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let open = self.recycle_open();

@@ -2313,6 +2313,7 @@ fn open_recycle_page<'a>(
     shell: &Arc<FakeShell>,
     names: &[&str],
 ) -> (
+    Entity<Workspace>,
     Entity<crate::recycle_bin::RecycleBin>,
     &'a mut VisualTestContext,
 ) {
@@ -2340,22 +2341,22 @@ fn open_recycle_page<'a>(
         .update(cx, |ws, _| ws.recycle_for_test())
         .expect("page should be open");
     let want: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
-    wait_page(cx, &page, "items not listed", |p| {
+    wait_page(cx, &page, "items not listed", |p, _| {
         p.items_for_test() == want
     });
-    (page, cx)
+    (ws, page, cx)
 }
 
 fn wait_page(
     cx: &mut VisualTestContext,
     page: &Entity<crate::recycle_bin::RecycleBin>,
     what: &str,
-    pred: impl Fn(&crate::recycle_bin::RecycleBin) -> bool,
+    pred: impl Fn(&crate::recycle_bin::RecycleBin, &App) -> bool,
 ) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         cx.run_until_parked();
-        if page.update(cx, |p, _| pred(p)) {
+        if page.update(cx, |p, cx| pred(p, cx)) {
             return;
         }
         assert!(Instant::now() < deadline, "timed out waiting for: {what}");
@@ -2396,16 +2397,16 @@ fn purge_job(cx: &mut VisualTestContext) -> Option<(crate::op_center::JobState, 
 #[gpui::test]
 fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext) {
     use crate::op_center::JobState;
-    use crate::recycle_bin::Job;
+    use crate::recycle_bin::{Job, RecycleBin};
     let shell = Arc::new(FakeShell::default());
     let (gate_tx, gate) = flume::unbounded();
     *shell.purge_gate.lock() = Some(gate);
-    let (page, cx) = open_recycle_page(cx, &shell, &["a.txt", "b.txt", "c.txt"]);
+    let (_, page, cx) = open_recycle_page(cx, &shell, &["a.txt", "b.txt", "c.txt"]);
 
     assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)));
     page.update(cx, |p, cx| p.answer_for_test(true, cx));
     cx.run_until_parked();
-    assert!(page.update(cx, |p, _| p.purging_for_test()));
+    assert!(page.update(cx, |_, cx| RecycleBin::purging_for_test(cx)));
     assert_eq!(
         purge_job(cx).map(|(state, ..)| state),
         Some(JobState::Running)
@@ -2427,8 +2428,8 @@ fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext)
     for _ in 0..3 {
         gate_tx.send(()).unwrap();
     }
-    wait_page(cx, &page, "stopped", |p| {
-        !p.purging_for_test() && p.items_for_test() == ["b.txt", "c.txt"]
+    wait_page(cx, &page, "stopped", |p, cx| {
+        !RecycleBin::purging_for_test(cx) && p.items_for_test() == ["b.txt", "c.txt"]
     });
     assert_eq!(*shell.purged.lock(), ["a.txt"]);
     assert_eq!(
@@ -2436,7 +2437,7 @@ fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext)
         Some(JobState::Cancelled)
     );
     let cancelled = t!("ops.cancelled", op = t!("op.delete_permanently")).into_owned();
-    assert_eq!(page.update(cx, |p, _| p.status_for_test()), cancelled);
+    assert_eq!(page.update(cx, |p, cx| p.status_for_test(cx)), cancelled);
     assert!(page.update(cx, |p, _| p.failure_for_test()).is_none());
     assert!(
         cx.debug_bounds("toast-ops-action-0").is_none(),
@@ -2450,7 +2451,7 @@ fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext)
 #[gpui::test]
 fn deleting_from_the_bin_reports_items_that_failed(cx: &mut TestAppContext) {
     use crate::op_center::JobState;
-    use crate::recycle_bin::Job;
+    use crate::recycle_bin::{Job, RecycleBin};
     let shell = Arc::new(FakeShell::default());
     shell.fail_delete.lock().push((
         PathBuf::from(r"C:\o\held.docx"),
@@ -2460,15 +2461,15 @@ fn deleting_from_the_bin_reports_items_that_failed(cx: &mut TestAppContext) {
             pid: 4242,
         }],
     ));
-    let (page, cx) = open_recycle_page(cx, &shell, &["a.txt", "held.docx", "c.txt"]);
+    let (_, page, cx) = open_recycle_page(cx, &shell, &["a.txt", "held.docx", "c.txt"]);
 
     page.update(cx, |p, _| {
         p.select_for_test(&["a.txt", "held.docx", "c.txt"]);
     });
     assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, false, cx)));
     page.update(cx, |p, cx| p.answer_for_test(true, cx));
-    wait_page(cx, &page, "deleted the rest", |p| {
-        !p.purging_for_test() && p.items_for_test() == ["held.docx"]
+    wait_page(cx, &page, "deleted the rest", |p, cx| {
+        !RecycleBin::purging_for_test(cx) && p.items_for_test() == ["held.docx"]
     });
     assert_eq!(*shell.purged.lock(), ["a.txt", "c.txt"]);
     let failure = page
@@ -2487,6 +2488,52 @@ fn deleting_from_the_bin_reports_items_that_failed(cx: &mut TestAppContext) {
     click_drawn(cx, "recycle-error-action-0");
     assert!(page.update(cx, |p, _| p.failure_for_test()).is_none());
     assert!(cx.debug_bounds("recycle-error-action-0").is_none());
+}
+
+/// Closing and reopening the page while the bin empties doesn't forget that it is emptying: the
+/// new page shows it running and can't start emptying the same items again, and it shows what is
+/// left once it ends.
+#[gpui::test]
+fn reopening_the_bin_while_it_empties_keeps_it_busy(cx: &mut TestAppContext) {
+    use crate::recycle_bin::{Job, RecycleBin};
+    let shell = Arc::new(FakeShell::default());
+    let (gate_tx, gate) = flume::unbounded();
+    *shell.purge_gate.lock() = Some(gate);
+    let (ws, page, cx) = open_recycle_page(cx, &shell, &["a.txt", "b.txt"]);
+    assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)));
+    page.update(cx, |p, cx| p.answer_for_test(true, cx));
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.close_recycle_for_test(window, cx));
+    });
+    cx.run_until_parked();
+    drop(page);
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    let page = ws
+        .update(cx, |ws, _| ws.recycle_for_test())
+        .expect("page should be open again");
+    wait_page(cx, &page, "listed again", |p, _| {
+        p.items_for_test() == ["a.txt", "b.txt"]
+    });
+    assert!(page.update(cx, |_, cx| RecycleBin::purging_for_test(cx)));
+    assert!(
+        !page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)),
+        "Empty is not offered while emptying"
+    );
+    let purging = t!("recycle.purging").into_owned();
+    assert_eq!(page.update(cx, |p, cx| p.status_for_test(cx)), purging);
+    assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
+
+    for _ in 0..2 {
+        gate_tx.send(()).unwrap();
+    }
+    wait_page(cx, &page, "emptied", |p, cx| {
+        !RecycleBin::purging_for_test(cx) && p.items_for_test().is_empty()
+    });
+    assert_eq!(*shell.purged.lock(), ["a.txt", "b.txt"], "each item once");
 }
 
 /// Waits for the background drag image.

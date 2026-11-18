@@ -45,6 +45,15 @@ pub(crate) enum ShellError {
         /// The items that failed, in order.
         failed: Vec<ItemFailure>,
     },
+    /// Cancelled partway, after items had already failed or while one was half deleted: says so,
+    /// instead of a plain "cancelled" that would hide them.
+    #[error("{}", stopped(.partial.as_deref(), .failed))]
+    Stopped {
+        /// The item being deleted when it stopped, if part of it was already gone.
+        partial: Option<String>,
+        /// Items that failed before it stopped, in order.
+        failed: Vec<ItemFailure>,
+    },
     /// Some items' cloud pin state could not be changed; one "name: reason" line each.
     #[error("{}", cloud_failures(.failed))]
     CloudPin {
@@ -240,6 +249,18 @@ pub(crate) fn items_failed(failed: &[ItemFailure]) -> String {
         text.push_str(&hint);
     }
     text
+}
+
+/// "Stopped before the end. “x” was only partly deleted; … 1 item failed: …".
+fn stopped(partial: Option<&str>, failed: &[ItemFailure]) -> String {
+    let mut parts = vec![t!("fail.stopped").into_owned()];
+    if let Some(name) = partial {
+        parts.push(t!("fail.partly_deleted", name = name).into_owned());
+    }
+    if !failed.is_empty() {
+        parts.push(items_failed(failed));
+    }
+    parts.join(&t!("fail.sentence_gap"))
 }
 
 /// "Copies don't match: a.txt (different content), ..." with at most five names.

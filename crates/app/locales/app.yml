@@ -2664,6 +2664,18 @@ fail.offline:
   en: "Can't reach the network location of “%{name}”"
   zh-TW: "無法連線到「%{name}」所在的網路位置"
   zh-CN: "无法连接到“%{name}”所在的网络位置"
+fail.drive_gone:
+  en: "Its drive is no longer connected"
+  zh-TW: "所在的磁碟機已經不在了"
+  zh-CN: "所在的驱动器已经不在了"
+fail.stopped:
+  en: "Stopped before the end"
+  zh-TW: "已在完成前停止"
+  zh-CN: "已在完成前停止"
+fail.partly_deleted:
+  en: "“%{name}” was only partly deleted; what's left of it is still in the Recycle Bin"
+  zh-TW: "「%{name}」只刪了一部分，剩下的仍在資源回收筒中"
+  zh-CN: "“%{name}”只删除了一部分，剩下的仍在回收站中"
 fail.many_one:
   en: "%{count} item failed: %{list}"
   zh-TW: "%{count} 個項目未完成：%{list}"

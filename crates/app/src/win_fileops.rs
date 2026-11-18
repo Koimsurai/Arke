@@ -479,12 +479,25 @@ fn failures(failed: Vec<(Option<PathBuf>, String, HRESULT)>) -> Vec<ItemFailure>
 /// Items looked up at most for programs holding them, so a big failed batch reports quickly.
 const EXPLAIN_MAX: usize = 3;
 
+#[cfg(test)]
+thread_local! {
+    /// Times [`explain`] ran on this thread.
+    static EXPLAINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn explain_calls() -> usize {
+    EXPLAINED.with(std::cell::Cell::get)
+}
+
 /// Adds which programs hold the first few items that failed because they were in use, so the
 /// report can say "in use by Word (PID 1234)". An "access denied" item that turns out to be held
 /// by a program (a running .exe, a file mapped into memory) is reported as in use: closing that
 /// program is what fixes it. Background thread.
 pub(crate) fn explain(failed: &mut [ItemFailure]) {
     use arke_core::failure::FailReason;
+    #[cfg(test)]
+    EXPLAINED.with(|calls| calls.set(calls.get() + 1));
     for failure in failed
         .iter_mut()
         .filter(|f| matches!(f.reason, FailReason::InUse | FailReason::AccessDenied))

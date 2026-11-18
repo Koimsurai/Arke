@@ -1650,7 +1650,9 @@ fn few_tabs_and_room_to_spare_scroll_nothing(cx: &mut TestAppContext) {
 fn a_very_long_folder_name_stays_inside_the_path_bar(cx: &mut TestAppContext) {
     let long = format!(
         r"C:\top1\{}",
-        "[LAFBD-41][2015] ラフォーレ ガール Vol.41 天使と悪魔 a very long folder name ".repeat(4)
+        // Wide characters too (written escaped: no UI text in source).
+        "[ABC-41][2015] Vol.41 \u{5929}\u{4f7f}\u{3068}\u{60aa}\u{9b54} a very long folder name "
+            .repeat(4)
     );
     let fs = FakeFs::new();
     fs.insert_many(&long, 1);

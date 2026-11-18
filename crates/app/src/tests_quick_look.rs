@@ -209,7 +209,8 @@ fn quicklook_on(cx: &mut VisualTestContext, on: bool) {
 #[gpui::test]
 fn space_hands_the_item_to_quicklook_when_asked(cx: &mut TestAppContext) {
     let exe = PathBuf::from(r"C:\Users\u\AppData\Local\Programs\QuickLook\QuickLook.exe");
-    crate::quicklook::pretend_found(exe.clone());
+    crate::quicklook::pretend_installed(exe.clone());
+    let exe = Some(exe);
     let shell = Arc::new(FakeShell::default());
     let (view, cx) = setup(cx, long_text_folder(), Arc::clone(&shell), r"C:\q");
     wait_until(cx, &view, "load", loaded(r"C:\q"));
@@ -245,4 +246,37 @@ fn space_hands_the_item_to_quicklook_when_asked(cx: &mut TestAppContext) {
         [(exe.clone(), item.clone()), (exe, item)]
     );
     assert!(!view.update(cx, |v, _| v.quick_look));
+}
+
+/// A QuickLook that isn't where Arke looks for the exe (portable, Microsoft Store) still gets
+/// Space while it's running; with no QuickLook at all, Space stays Arke's even with the setting on.
+#[gpui::test]
+fn space_goes_to_a_running_quicklook_without_its_exe(cx: &mut TestAppContext) {
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, long_text_folder(), Arc::clone(&shell), r"C:\q");
+    wait_until(cx, &view, "load", loaded(r"C:\q"));
+    quicklook_on(cx, true);
+
+    cx.simulate_keystrokes("down space");
+    assert!(
+        view.update(cx, |v, _| v.quick_look),
+        "no QuickLook: Arke's Quick Look"
+    );
+    cx.simulate_keystrokes("space");
+    assert!(!view.update(cx, |v, _| v.quick_look));
+    cx.run_until_parked();
+    assert!(shell.quicklook_runs.lock().is_empty());
+
+    crate::quicklook::pretend_running();
+    cx.simulate_keystrokes("space");
+    assert!(!view.update(cx, |v, _| v.quick_look), "running: not Arke's");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while shell.quicklook_runs.lock().is_empty() && Instant::now() < deadline {
+        cx.run_until_parked();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        *shell.quicklook_runs.lock(),
+        [(None, PathBuf::from(r"C:\q\a.txt"))]
+    );
 }

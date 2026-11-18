@@ -1412,6 +1412,10 @@ settings.space_quicklook_tip:
   en: "Space opens QuickLook (found at %{path}) instead of Arke's quick look"
   zh-TW: "空白鍵改用 QuickLook（位於 %{path}）預覽，而不是 Arke 的快速預覽"
   zh-CN: "空格键改用 QuickLook（位于 %{path}）预览，而不是 Arke 的快速预览"
+settings.space_quicklook_tip_running:
+  en: "Space opens the running QuickLook instead of Arke's quick look"
+  zh-TW: "空白鍵改用執行中的 QuickLook 預覽，而不是 Arke 的快速預覽"
+  zh-CN: "空格键改用正在运行的 QuickLook 预览，而不是 Arke 的快速预览"
 settings.startup:
   en: Startup
   zh-TW: 啟動
@@ -1752,6 +1756,10 @@ error.quicklook_failed:
   en: "Couldn't start QuickLook: %{error}"
   zh-TW: "無法啟動 QuickLook：%{error}"
   zh-CN: "无法启动 QuickLook：%{error}"
+error.quicklook_not_running:
+  en: "QuickLook isn't running"
+  zh-TW: "QuickLook 未在執行"
+  zh-CN: "QuickLook 未在运行"
 settings.folder_sizes:
   en: "Calculate folder sizes"
   zh-TW: "計算資料夾大小"

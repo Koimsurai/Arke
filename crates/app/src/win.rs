@@ -1146,17 +1146,8 @@ impl Shell for WinShell {
         shell_execute(program, &args, dir)
     }
 
-    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
-        debug_assert!(
-            !arke_core::fs::is_ui_thread(),
-            "run_quicklook must not run on the UI thread"
-        );
-        // A plain argument: Rust quotes it the way .NET reads it back.
-        std::process::Command::new(exe)
-            .arg(item)
-            .spawn()
-            .map(|_| ())
-            .map_err(ShellError::from)
+    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
+        crate::quicklook::toggle(item, exe).map_err(ShellError::from)
     }
 
     fn disk_spaces(&self, roots: &[PathBuf]) -> Vec<(PathBuf, (u64, u64))> {

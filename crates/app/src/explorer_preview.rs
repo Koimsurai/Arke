@@ -806,29 +806,28 @@ impl Explorer {
         }
     }
 
-    /// Space: the user's own QuickLook app when that setting is on and it's installed (it toggles
-    /// its preview itself, so Space again closes it), otherwise Arke's Quick Look.
+    /// Space: the user's own QuickLook app when that setting is on and it's running or installed
+    /// (it toggles its preview itself, so Space again closes it), otherwise Arke's Quick Look.
     pub(super) fn space_preview(&mut self, cx: &mut Context<Self>) {
-        let exe = crate::settings::SettingsStore::global(cx)
+        let on = crate::settings::SettingsStore::global(cx)
             .read(cx)
             .settings
             .space_quicklook
-            .then(crate::quicklook::found)
-            .flatten();
+            && crate::quicklook::available();
         // Servers (SFTP, WebDAV) are Arke's own; QuickLook can't read them.
-        let item = exe
-            .filter(|_| !self.quick_look)
-            .and_then(|_| self.item_target(true))
+        let item = (on && !self.quick_look)
+            .then(|| self.item_target(true))
+            .flatten()
             .filter(|(path, _)| !arke_core::remote::is_remote(path));
-        let (Some(exe), Some((item, _))) = (exe, item) else {
+        let Some((item, _)) = item else {
             self.toggle_quick_look(cx);
             return;
         };
-        let exe = exe.to_path_buf();
+        let exe = crate::quicklook::exe();
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("quicklook", move || {
-            if let Err(e) = shell.run_quicklook(&exe, &item) {
+            if let Err(e) = shell.run_quicklook(exe.as_deref(), &item) {
                 log::warn!("QuickLook did not start: {e}");
                 let _ = tx.send(AppEvent::Notice(Err(t!(
                     "error.quicklook_failed",

@@ -144,8 +144,8 @@ struct FakeShell {
     fail_delete: Mutex<Vec<(PathBuf, FailReason, Vec<crate::shell::Holder>)>>,
     /// Paths whose drive has no Recycle Bin.
     no_bin: Mutex<Vec<PathBuf>>,
-    /// QuickLook runs (exe, item).
-    quicklook_runs: Mutex<Vec<(PathBuf, PathBuf)>>,
+    /// QuickLook hand-offs (exe if found, item).
+    quicklook_runs: Mutex<Vec<(Option<PathBuf>, PathBuf)>>,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
 }
@@ -668,14 +668,14 @@ impl Shell for FakeShell {
         String::from_utf8_lossy(bytes).into_owned()
     }
 
-    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
+    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
         assert!(
             !arke_core::fs::is_ui_thread(),
             "run_quicklook called on the UI thread"
         );
         self.quicklook_runs
             .lock()
-            .push((exe.to_path_buf(), item.to_path_buf()));
+            .push((exe.map(Path::to_path_buf), item.to_path_buf()));
         Ok(())
     }
 

@@ -247,6 +247,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // QuickLook may have been started (or quit) since the last check.
+        Self::recheck_quicklook(cx);
         // Already open: switch to that tab.
         let existing = self.settings_panel.as_ref().map(|p| p.owner.clone());
         if self.go_to_page(existing.as_ref(), window, cx) {
@@ -1538,6 +1540,23 @@ impl Workspace {
         ]
     }
 
+    /// Checks again whether QuickLook is running or installed, in the background, and redraws if
+    /// that changes what Settings offers. Cheap (see `quicklook.rs`), so it runs on every window
+    /// activation.
+    pub(super) fn recheck_quicklook(cx: &mut Context<Self>) {
+        // A thread of its own: the search may set up COM to read shortcuts.
+        let (tx, rx) = flume::bounded(1);
+        crate::explorer::spawn_thread("quicklook-recheck", move || {
+            let _ = tx.send(crate::quicklook::recheck());
+        });
+        cx.spawn(async move |this, cx| {
+            if rx.recv_async().await.unwrap_or(false) {
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+    }
+
     /// "Open folder": selects the settings file in Windows Explorer, on a background thread.
     /// Deletes the thumbnail cache in the background, then redraws (the button goes away).
     fn clear_thumbnail_cache(cx: &mut Context<Self>) {
@@ -1590,18 +1609,20 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
         .into_any_element()
 }
 
-/// The preview pane switch, and when QuickLook (QL-Win) is installed, a chip beside it that
-/// hands Space to QuickLook (kept in this row rather than a row of its own).
+/// The preview pane switch, and when QuickLook (QL-Win) is running or installed, a chip beside it
+/// that hands Space to QuickLook (kept in this row rather than a row of its own).
 fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
     let toggle = switch("preview", s.preview_pane, |st| {
         st.preview_pane = !st.preview_pane;
     });
-    let Some(exe) = crate::quicklook::found() else {
+    if !crate::quicklook::available() {
         return toggle;
-    };
+    }
     let on = s.space_quicklook;
-    let tip =
-        SharedString::from(t!("settings.space_quicklook_tip", path = exe.display()).into_owned());
+    let tip = SharedString::from(match crate::quicklook::exe() {
+        Some(exe) => t!("settings.space_quicklook_tip", path = exe.display()).into_owned(),
+        None => t!("settings.space_quicklook_tip_running").into_owned(),
+    });
     let chip = div()
         .id("space-quicklook")
         .a11y_toggle(tip.clone(), on)

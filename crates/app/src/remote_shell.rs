@@ -774,7 +774,7 @@ impl Shell for RemoteShell {
         }
         self.inner.run_in(command_line, dir)
     }
-    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
+    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
         if remote(item).is_some() {
             return Err(ShellError::NotOnRemote);
         }

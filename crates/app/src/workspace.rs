@@ -579,6 +579,8 @@ impl Workspace {
             this.home_refresh(cx);
             // Another program may have added or deleted files.
             this.refresh_disk_space(cx);
+            // QuickLook may have been started or quit while Arke was in the background.
+            Self::recheck_quicklook(cx);
             // Shelf items may have been moved or deleted outside Arke.
             let fs = Arc::clone(&this.services.fs);
             crate::shelf::ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));

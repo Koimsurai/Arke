@@ -965,9 +965,9 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (command_line, dir);
         Err(ShellError::Unsupported)
     }
-    /// Runs QuickLook (`exe`, see `quicklook.rs`) with `item`, which toggles its preview of it.
-    /// Returns once it has started. Background thread.
-    fn run_quicklook(&self, exe: &Path, item: &Path) -> Result<(), ShellError> {
+    /// Toggles QuickLook's preview of `item` (see `quicklook.rs`): over its pipe when it's running,
+    /// otherwise by starting `exe` (if found) with it. Returns once handed off. Background thread.
+    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
         let _ = (exe, item);
         Err(ShellError::Unsupported)
     }

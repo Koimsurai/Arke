@@ -1,5 +1,4 @@
-//! The two places where [`crate::fs::RealFs`] calls Win32 directly instead of going through std
-//! and notify:
+//! Where [`crate::fs::RealFs`] calls Win32 directly instead of going through std and notify:
 //!
 //! - [`DirWatcher`]: one `ReadDirectoryChangesW` per watched folder, on its own thread, waiting
 //!   with no timeout. notify 8.2 wakes every 100 ms per watch, and when the change buffer
@@ -8,6 +7,9 @@
 //!   list. Here an overflow is reported as [`WatchEvent::Rescan`] and watching goes on.
 //! - [`scan_sizes`]: one directory read for the folder size walk, with `FindFirstFileExW` (basic
 //!   info, large fetch) and no allocation per file.
+//! - [`read_dir`]: folder listings, the same entries as std's but fetched in large batches (one
+//!   round trip to a file server per few hundred entries instead of a few dozen).
+//! - [`is_network`]: whether a path is on a file server, from the drive type Windows records.
 
 use std::ffi::OsString;
 use std::io;
@@ -27,7 +29,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY,
     FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
-    FindNextFileW, OPEN_EXISTING, ReadDirectoryChangesW, WIN32_FIND_DATAW,
+    FindNextFileW, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW, WIN32_FIND_DATAW,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
@@ -293,6 +295,151 @@ impl Drop for Find {
     }
 }
 
+/// Longest `dir\*` pattern (in UTF-16 units) passed to `FindFirstFileExW` as is; longer ones
+/// need the `\\?\` form, which std builds (see [`read_dir`]).
+const FIND_PATTERN_MAX: usize = 247;
+
+/// Lists `dir` with `FindFirstFileExW` asking for large fetches, the same entries as
+/// `std::fs::read_dir` (which asks for small ones). On a network share each fetch is a round
+/// trip to the server, so a folder of a few hundred files comes back in one instead of a dozen.
+/// `None` for paths too long for a plain pattern: std lists those.
+pub(crate) fn read_dir(dir: &Path) -> Option<io::Result<crate::fs::DirIter>> {
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    let pattern = wide(&dir.join("*"));
+    if pattern.len() > FIND_PATTERN_MAX + 1 {
+        return None;
+    }
+    let mut data = WIN32_FIND_DATAW::default();
+    // SAFETY: `pattern` is NUL-terminated; `data` is a WIN32_FIND_DATAW as FindExInfoBasic wants.
+    let find = unsafe {
+        FindFirstFileExW(
+            PCWSTR(pattern.as_ptr()),
+            FindExInfoBasic,
+            (&raw mut data).cast(),
+            FindExSearchNameMatch,
+            None,
+            FIND_FIRST_EX_LARGE_FETCH,
+        )
+    };
+    Some(match find {
+        Ok(find) => Ok(Box::new(FindEntries {
+            find: Some(Find(find)),
+            first: Some(data),
+        })),
+        // Nothing matched, as for the root of an empty drive (which has no `.`): std lists that
+        // as empty too.
+        Err(err) if err.code() == ERROR_FILE_NOT_FOUND.to_hresult() => {
+            Ok(Box::new(std::iter::empty()))
+        }
+        Err(err) => Err(err.into()),
+    })
+}
+
+/// Whether `path` is on a file server: `\\server\share\…` or a mapped drive. Reads the drive
+/// type Windows records, no network access.
+pub(crate) fn is_network(path: &Path) -> bool {
+    /// `GetDriveTypeW`: a network drive.
+    const DRIVE_REMOTE: u32 = 4;
+    let text = path.to_string_lossy();
+    if text.starts_with(r"\\?\UNC\") {
+        return true;
+    }
+    if text.starts_with(r"\\") {
+        return !text.starts_with(r"\\?\") && !text.starts_with(r"\\.\");
+    }
+    let mut chars = text.chars();
+    let (Some(letter), Some(':')) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    if !letter.is_ascii_alphabetic() {
+        return false;
+    }
+    let root = wide(Path::new(&format!("{letter}:\\")));
+    // SAFETY: `root` is a NUL-terminated `X:\`; only reads the recorded drive type.
+    (unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) }) == DRIVE_REMOTE
+}
+
+/// Entries of one `FindFirstFileExW` listing, read as they're asked for.
+struct FindEntries {
+    /// `None` once the listing has ended (or failed).
+    find: Option<Find>,
+    /// What `FindFirstFileExW` returned, not handed out yet.
+    first: Option<WIN32_FIND_DATAW>,
+}
+
+// SAFETY: a find handle may be used from any thread, one at a time (the iterator is not Sync).
+unsafe impl Send for FindEntries {}
+
+impl Iterator for FindEntries {
+    type Item = io::Result<crate::entry::Entry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let find = self.find.as_ref()?;
+            let data = if let Some(first) = self.first.take() {
+                first
+            } else {
+                let mut data = WIN32_FIND_DATAW::default();
+                // SAFETY: valid find handle and output buffer.
+                if let Err(err) = unsafe { FindNextFileW(find.0, &raw mut data) } {
+                    self.find = None;
+                    return (err.code() != ERROR_NO_MORE_FILES.to_hresult())
+                        .then(|| Err(err.into()));
+                }
+                data
+            };
+            if let Some(entry) = entry_of(&data) {
+                return Some(Ok(entry));
+            }
+        }
+    }
+}
+
+/// The entry `std::fs::DirEntry` would give for this find record; `None` for `.` and `..`.
+fn entry_of(data: &WIN32_FIND_DATAW) -> Option<crate::entry::Entry> {
+    use crate::entry::{Entry, EntryKind};
+    let len = data
+        .cFileName
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(data.cFileName.len());
+    let name = &data.cFileName[..len];
+    if name == [u16::from(b'.')] || name == [u16::from(b'.'), u16::from(b'.')] {
+        return None;
+    }
+    let attributes = data.dwFileAttributes;
+    let is_dir = attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+    // dwReserved0 holds the reparse tag when the entry is a reparse point; std counts name
+    // surrogates (symlinks, junctions) as links.
+    let kind = if attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        && data.dwReserved0 & NAME_SURROGATE != 0
+    {
+        EntryKind::Link { is_dir }
+    } else if is_dir {
+        EntryKind::Dir
+    } else {
+        EntryKind::File
+    };
+    let size = if kind == EntryKind::File {
+        (u64::from(data.nFileSizeHigh) << 32) | u64::from(data.nFileSizeLow)
+    } else {
+        0
+    };
+    let time =
+        |t: windows::Win32::Foundation::FILETIME| filetime(t.dwLowDateTime, t.dwHighDateTime);
+    let name = OsString::from_wide(name);
+    Some(
+        Entry::new(
+            name.to_string_lossy(),
+            kind,
+            size,
+            time(data.ftLastWriteTime),
+            attributes,
+        )
+        .with_created(time(data.ftCreationTime)),
+    )
+}
+
 /// Lists `dir` for a folder size walk (see [`crate::fs::Fs::scan_sizes`]).
 pub(crate) fn scan_sizes(dir: &Path, each: &mut dyn FnMut(SizeItem)) -> io::Result<()> {
     let pattern = wide(&dir.join("*"));
@@ -374,6 +521,71 @@ mod tests {
         );
         // A truncated record ends the list instead of reading past the buffer.
         assert_eq!(changed_paths(&raw[..30], Path::new(r"C:\w")).len(), 1);
+    }
+
+    /// The large-fetch listing gives exactly what std's listing does: names, kinds (a junction is
+    /// a link to a folder), sizes, times and attributes; an empty folder is empty and a missing one
+    /// is an error.
+    #[test]
+    fn listing_matches_std() {
+        let dir = std::env::temp_dir().join(format!("arke-winfs-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir(dir.join("empty")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("\u{5831}\u{544a}.md"), vec![0u8; 70_000]).unwrap();
+        let linked = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(dir.join("link"))
+            .arg(dir.join("sub"))
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(linked, "failed to create junction");
+
+        let key = |e: &crate::entry::Entry| {
+            (
+                e.name.to_string(),
+                e.kind,
+                e.size,
+                e.modified,
+                e.created,
+                e.attributes,
+            )
+        };
+        let mut ours: Vec<_> = read_dir(&dir)
+            .unwrap()
+            .unwrap()
+            .map(|e| key(&e.unwrap()))
+            .collect();
+        let mut std_list: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| key(&crate::entry::Entry::from_dir_entry(&e.unwrap()).unwrap()))
+            .collect();
+        ours.sort();
+        std_list.sort();
+        assert_eq!(ours.len(), 5);
+        assert_eq!(ours, std_list);
+        assert!(
+            ours.iter()
+                .any(|e| e.0 == "link" && e.1 == crate::entry::EntryKind::Link { is_dir: true })
+        );
+        assert_eq!(read_dir(&dir.join("empty")).unwrap().unwrap().count(), 0);
+        assert!(read_dir(&dir.join("missing")).unwrap().is_err());
+        let _ = std::fs::remove_dir(dir.join("link"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn network_paths_are_told_by_the_path_or_the_drive_type() {
+        assert!(is_network(Path::new(r"\\nas\share\docs")));
+        assert!(is_network(Path::new(r"\\?\UNC\nas\share")));
+        assert!(!is_network(Path::new(r"\\?\C:\Windows")));
+        assert!(!is_network(Path::new(r"\\.\pipe\x")));
+        assert!(!is_network(Path::new("relative")));
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
+        assert!(!is_network(&Path::new(&system).join("Windows")));
     }
 
     #[test]

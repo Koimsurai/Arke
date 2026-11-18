@@ -14,7 +14,8 @@
 //!   (`Settings::search_network`) and gets its own index and cache file, so a slow or offline share
 //!   never holds up local drives. Unreachable shares use the last cache (no rebuild, results stay)
 //!   and are probed again when Arke regains focus. Full rewalks happen at most daily; otherwise the
-//!   watcher keeps them current.
+//!   watcher keeps them current. A share reached both through a mapped drive and as
+//!   `\\server\share` is indexed once.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,6 +73,10 @@ pub(crate) enum Roots {
 /// Most items one network location's index holds. A share can be far larger than anyone searches
 /// (a NAS with years of files), and walking all of it keeps the NAS and Arke busy for hours.
 const NET_MAX_ITEMS: usize = 2_000_000;
+/// Folders of one network location listed at once while indexing it. Listing a folder on a share
+/// is a round trip that the server answers from its disks: one at a time, a share of 1.4 million
+/// items took eight minutes; eight at once (with large fetches) take a little over three.
+const NET_THREADS: usize = 8;
 
 /// Index of one network location.
 pub(crate) struct NetIndex {
@@ -189,12 +194,18 @@ impl GlobalSearch {
             settings.search_excluded.clone(),
         );
         let want_net = if want {
-            let drives = if matches!(self.roots, Roots::LocalDrives) {
+            let real = matches!(self.roots, Roots::LocalDrives);
+            let drives = if real {
                 crate::win::network_drive_roots()
             } else {
                 Vec::new()
             };
-            settings.searched_network(&drives)
+            // Where a mapped drive points comes from Windows' own record, no network access.
+            one_walk_per_share(settings.searched_network(&drives), |root| {
+                use arke_core::net::NetProbe as _;
+                real.then(|| crate::win_net::WinNetProbe.unc(root))
+                    .flatten()
+            })
         } else {
             Vec::new()
         };
@@ -348,8 +359,9 @@ impl GlobalSearch {
             let options = IndexOptions {
                 roots: vec![root],
                 cache,
-                // One connection over the network, walking slowly so the NAS isn't swamped.
-                threads: 1,
+                // Each listing waits on the server: several at once, but few enough that the NAS
+                // still answers everyone else.
+                threads: NET_THREADS,
                 thread_init: Arc::new(crate::win::lower_io_priority),
                 // The watcher keeps it current; full walk only weekly.
                 refresh_after: std::time::Duration::from_hours(24 * 7),
@@ -707,6 +719,50 @@ fn fnv(path: &std::path::Path) -> u64 {
         })
 }
 
+/// Network locations to index, each part of a share once: a mapped drive and the same
+/// `\\server\share` (both added automatically when the share was opened both ways), or a folder
+/// inside another location, would walk the same files twice and list them twice. The first of two
+/// equal ones stays. `unc` gives where a mapped drive points.
+fn one_walk_per_share(
+    roots: Vec<PathBuf>,
+    unc: impl Fn(&std::path::Path) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let keys: Vec<String> = roots
+        .iter()
+        .map(|root| {
+            unc(root)
+                .unwrap_or_else(|| root.clone())
+                .to_string_lossy()
+                .trim_end_matches(['\\', '/'])
+                .to_lowercase()
+        })
+        .collect();
+    let covered = |i: usize| {
+        keys.iter().enumerate().any(|(j, other)| {
+            j != i
+                && ((other == &keys[i] && j < i)
+                    || keys[i]
+                        .strip_prefix(other.as_str())
+                        .is_some_and(|rest| rest.starts_with('\\')))
+        })
+    };
+    roots
+        .into_iter()
+        .enumerate()
+        .filter(|&(i, ref root)| {
+            let keep = !covered(i);
+            if !keep {
+                log::info!(
+                    "global search: {} is already indexed through another location",
+                    root.display()
+                );
+            }
+            keep
+        })
+        .map(|(_, root)| root)
+        .collect()
+}
+
 /// Same path, ignoring case and trailing `\`
 pub(crate) fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     let key = |p: &std::path::Path| {
@@ -960,6 +1016,35 @@ mod tests {
         assert_eq!(service_outdated(None), Some("?".to_owned()));
     }
     use std::path::Path;
+
+    /// A share opened both through its mapped drive and as `\\server\share` (both added
+    /// automatically) is walked once; so is a folder inside another location.
+    #[test]
+    fn each_share_is_indexed_once() {
+        let p = PathBuf::from;
+        let unc = |root: &Path| {
+            root.to_string_lossy()
+                .starts_with("X:")
+                .then(|| p(r"\\10.0.0.1\dad"))
+        };
+        let roots = vec![
+            p(r"X:\"),
+            p(r"\\10.0.0.1\DAD"),
+            p(r"\\10.0.0.1\dad\Projects"),
+            p(r"\\nas\other"),
+            p(r"\\nas\other\"),
+            p(r"\\nas\other2"),
+        ];
+        assert_eq!(
+            one_walk_per_share(roots, unc),
+            [p(r"X:\"), p(r"\\nas\other"), p(r"\\nas\other2")]
+        );
+        // A folder listed before its share still goes: the share covers it.
+        assert_eq!(
+            one_walk_per_share(vec![p(r"\\nas\s\sub"), p(r"\\nas\s")], |_| None),
+            [p(r"\\nas\s")]
+        );
+    }
 
     #[test]
     fn local_folders_can_be_excluded_only_where_they_were_excluded() {

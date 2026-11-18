@@ -1632,6 +1632,35 @@ fn filter_chips_and_content_search(cx: &mut TestAppContext) {
     assert_eq!(lines, ["old invoice 7", "pay the Invoice"]);
 }
 
+/// In a network folder the content search reads several files at once: one slow file doesn't hold
+/// up the others, and matches still show in the folder's order.
+#[gpui::test]
+fn network_content_search_reads_files_at_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+    fs.insert_dir(
+        r"\\nas\share",
+        names.iter().map(|n| file(n, 1)).collect::<Vec<_>>(),
+    );
+    for name in names {
+        fs.set_content(format!(r"\\nas\share\{name}"), b"the invoice\n".to_vec());
+    }
+    fs.hang(r"\\nas\share\a.txt");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"\\nas\share");
+    wait_until(cx, &view, "load", loaded(r"\\nas\share"));
+    cx.dispatch_action(FocusFilter);
+    cx.simulate_input("invoice");
+    cx.update(|window, cx| view.update(cx, |v, cx| v.toggle_contents(window, cx)));
+    wait_until_ticking(cx, &view, "the others are read past the slow one", |v| {
+        view_names(v) == ["b.txt", "c.txt", "d.txt"]
+    });
+    assert!(view.update(cx, |v, _| v.content_searching()));
+    fs.release_all();
+    wait_until_ticking(cx, &view, "the slow one lands in its place", |v| {
+        view_names(v) == names && !v.content_searching()
+    });
+}
+
 /// Content search reads the text inside Word documents and PDFs, in this folder and subfolders.
 #[gpui::test]
 fn content_search_finds_text_inside_documents(cx: &mut TestAppContext) {

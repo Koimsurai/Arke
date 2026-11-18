@@ -5,7 +5,8 @@
 //!   compressed tars, so RAR support comes from the copy Windows ships instead of a decoder linked
 //!   into Arke.
 //! - `winfs`, behind `RealFs`: the folder watcher (`ReadDirectoryChangesW`, see there for why not
-//!   notify) and the folder size walk (`FindFirstFileExW`).
+//!   notify), folder listings and the folder size walk (`FindFirstFileExW` with large fetches), and
+//!   telling network drives apart (`GetDriveTypeW`).
 
 // Tests may unwrap / panic.
 #![cfg_attr(

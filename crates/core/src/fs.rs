@@ -121,6 +121,20 @@ pub fn is_ui_thread() -> bool {
     IS_UI_THREAD.with(Cell::get)
 }
 
+/// Whether `path` is on a file server (`\\server\share\…` or a mapped drive), where every listing
+/// waits on the server: walks there list several folders at once. No network access.
+pub fn is_network_path(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        crate::winfs::is_network(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Panics (debug builds) on file system calls from the UI thread.
 #[track_caller]
 pub(crate) fn debug_assert_not_ui_thread(op: &str, path: &Path) {
@@ -138,6 +152,11 @@ pub struct RealFs;
 impl Fs for RealFs {
     fn read_dir(&self, path: &Path) -> io::Result<DirIter> {
         debug_assert_not_ui_thread("read_dir", path);
+        // Large fetches: far fewer round trips to a file server (see `winfs::read_dir`).
+        #[cfg(windows)]
+        if let Some(listed) = crate::winfs::read_dir(path) {
+            return listed;
+        }
         // On Windows std::fs::read_dir uses FindFirstFileExW and DirEntry::metadata() reuses
         // the find data, so there is no extra syscall.
         let rd = std::fs::read_dir(path)?;

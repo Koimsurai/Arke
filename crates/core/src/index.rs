@@ -48,8 +48,8 @@ const FLAG_LINK: u8 = 4;
 const FLAG_PRUNED: u8 = 8;
 /// Folders never entered: the system recycle bin, restore data and Windows Update staging, and on
 /// NAS shares their snapshots (each a full copy of the share), recycle bins and thumbnail caches
-/// (Synology, QNAP, NetApp and others).
-const SKIP_DIRS: [&str; 12] = [
+/// (Synology, QNAP, NetApp, ZFS, snapper and others).
+const SKIP_DIRS: [&str; 14] = [
     "$recycle.bin",
     "system volume information",
     "$windows.~bt",
@@ -61,8 +61,46 @@ const SKIP_DIRS: [&str; 12] = [
     "@recently-snapshot",
     ".@__thumb",
     ".snapshot",
+    ".snapshots",
     "~snapshot",
+    ".zfs",
 ];
+
+/// Whether a folder (lowercase name) is never entered: one of [`SKIP_DIRS`], or a single
+/// snapshot of a share by its time stamp (`GMT+08-2026.10.13-08.00.02` on Synology,
+/// `@GMT-2026.10.13-00.00.00` from Samba and Windows previous versions). Those also show up
+/// outside a snapshot folder, through a link on the server or a share of the snapshot folder,
+/// and each is a whole copy of the share.
+pub fn is_skipped_dir(name_lower: &str) -> bool {
+    SKIP_DIRS.contains(&name_lower) || is_snapshot_name(name_lower)
+}
+
+/// `[@]gmt[±hh[:mm]]-yyyy.mm.dd-hh.mm.ss` (lowercase).
+fn is_snapshot_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('@').unwrap_or(name).strip_prefix("gmt") else {
+        return false;
+    };
+    // `yyyy.mm.dd-hh.mm.ss`: digits with dots, one dash in the middle.
+    let stamp = |s: &str| {
+        s.len() == 19
+            && s.bytes().enumerate().all(|(i, b)| match i {
+                4 | 7 | 13 | 16 => b == b'.',
+                10 => b == b'-',
+                _ => b.is_ascii_digit(),
+            })
+    };
+    if rest.strip_prefix('-').is_some_and(stamp) {
+        return true;
+    }
+    // With a zone offset: `+08`, `-0530`, `+05:30`.
+    let Some(zone) = rest.strip_prefix(['+', '-']) else {
+        return false;
+    };
+    let digits = zone
+        .find(|c: char| !c.is_ascii_digit() && c != ':')
+        .unwrap_or(zone.len());
+    digits > 0 && zone[digits..].strip_prefix('-').is_some_and(stamp)
+}
 /// Build output and package cache folders (not entered with "skip build folders", but the folder
 /// itself stays findable): often hundreds of thousands of churning files nobody searches for.
 const BUILD_DIRS: [&str; 12] = [
@@ -1156,7 +1194,7 @@ impl Index {
                 let mut flags = seen_flags(seen, 0);
                 let lower = t.name.to_lowercase();
                 if seen.is_dir
-                    && (SKIP_DIRS.contains(&lower.as_str())
+                    && (is_skipped_dir(&lower)
                         || (rules.skip_build_dirs && is_named_build_dir(&lower))
                         || rules.excludes(&t.path))
                 {
@@ -2568,7 +2606,7 @@ pub fn roots_label(roots: &[PathBuf]) -> String {
 /// hidden+system folders or the recycle bin.
 pub fn descends_into(entry: &Entry) -> bool {
     entry.kind == EntryKind::Dir
-        && !SKIP_DIRS.contains(&entry.sort_key.as_ref())
+        && !is_skipped_dir(&entry.sort_key)
         && !entry.is_cloud_placeholder()
         && (!entry.is_hidden() || !entry.is_system())
 }
@@ -2579,7 +2617,7 @@ pub fn is_indexable(roots: &[PathBuf], path: &Path) -> bool {
     roots.iter().any(|r| path.starts_with(r))
         && !path.components().any(|c| {
             let c = c.as_os_str().to_string_lossy().to_lowercase();
-            SKIP_DIRS.contains(&c.as_str())
+            is_skipped_dir(&c)
         })
 }
 
@@ -2800,6 +2838,57 @@ mod tests {
                 r"\\nas\share\docs\plan.xlsx",
             ]
         );
+    }
+
+    /// A single snapshot can show up outside the snapshot folder (a link on the server, which a
+    /// share shows as a plain folder, or Windows previous versions), and ZFS and snapper keep
+    /// theirs in folders of their own: none of them are entered. Folders that only look a bit like
+    /// one still are.
+    #[test]
+    fn snapshots_are_skipped_wherever_they_appear() {
+        let fs = FakeFs::new();
+        let snapshots = [
+            "GMT+08-2026.10.13-08.00.02",
+            "@GMT-2026.10.13-00.00.00",
+            "gmt+05:30-2026.10.13-08.00.02",
+            ".zfs",
+            ".snapshots",
+            "#Snapshot",
+        ];
+        let lookalikes = ["GMT+0", "GMT-2026", "gmt+08-2026.10.13", "snapshot"];
+        fs.insert_dir(
+            r"\\nas\share",
+            snapshots
+                .iter()
+                .chain(&lookalikes)
+                .map(|name| dir(name))
+                .collect(),
+        );
+        for name in snapshots.iter().chain(&lookalikes) {
+            fs.insert_dir(format!(r"\\nas\share\{name}"), vec![file("plan.xlsx")]);
+        }
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"\\nas\share")],
+            4,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        let walked: Vec<String> = all_paths(&index)
+            .into_iter()
+            .filter_map(|p| p.strip_suffix(r"\plan.xlsx").map(str::to_owned))
+            .collect();
+        let mut expected: Vec<String> = lookalikes
+            .iter()
+            .map(|name| format!(r"\\nas\share\{name}"))
+            .collect();
+        expected.sort();
+        assert_eq!(walked, expected);
+        for name in snapshots {
+            assert!(is_skipped_dir(&name.to_lowercase()), "{name}");
+        }
     }
 
     /// With a limit, the walk stops entering folders once the index is that big, so a huge share

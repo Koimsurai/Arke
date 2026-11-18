@@ -38,6 +38,9 @@ use crate::theme;
 
 /// Minimum time between list updates while matches stream in.
 const STREAM_EVERY: Duration = Duration::from_millis(80);
+/// Files of a network folder read at once by a content search: each waits on a round trip to
+/// the server, not on a disk here.
+const NET_READERS: usize = 8;
 
 /// The dropdown filters, in panel order.
 pub(crate) const FACETS: [Facet; 3] = [Facet::Type, Facet::Size, Facet::Date];
@@ -58,7 +61,8 @@ impl Drop for ContentFilter {
 }
 
 enum Found {
-    Match(Entry),
+    /// A matching file and its place among the files read.
+    Match(usize, Entry),
     Progress,
     Done,
 }
@@ -835,24 +839,13 @@ impl Explorer {
                 .collect();
             total.store(candidates.len(), Ordering::Relaxed);
             let _ = tx.send(Found::Progress);
-            let mut last = Instant::now();
-            for entry in candidates {
-                if cancel.load(Ordering::Relaxed) {
-                    return;
-                }
-                let hit = matcher.find_in(&*fs, &dir.join(&*entry.name), &cancel);
-                read.fetch_add(1, Ordering::Relaxed);
-                if hit.is_some() {
-                    let _ = tx.send(Found::Match(entry));
-                } else if last.elapsed() >= STREAM_EVERY {
-                    let _ = tx.send(Found::Progress);
-                    last = Instant::now();
-                }
+            read_candidates(&*fs, &matcher, &dir, &candidates, &cancel, &read, &tx);
+            if !cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(Found::Done);
             }
-            let _ = tx.send(Found::Done);
         });
         self.filter_task = Some(cx.spawn(async move |this, cx| {
-            let mut found: Vec<Entry> = Vec::new();
+            let mut found: Vec<(usize, Entry)> = Vec::new();
             loop {
                 let mut done = rx
                     .recv_async()
@@ -862,7 +855,7 @@ impl Explorer {
                 while !done && let Ok(msg) = rx.try_recv() {
                     done = take(msg, &mut found);
                 }
-                let entries = Arc::new(found.clone());
+                let entries = Arc::new(found.iter().map(|(_, e)| e.clone()).collect());
                 let current = this
                     .update(cx, |this, cx| {
                         if this.filter_inflight.as_ref() != Some(&key) {
@@ -890,11 +883,57 @@ impl Explorer {
     }
 }
 
-/// Adds a match; true once the reader is done.
-fn take(msg: Found, found: &mut Vec<Entry>) -> bool {
+/// Reads `candidates` (files in `dir`) for `matcher`, sending matches and progress to `tx`. On a
+/// file server each file waits on a round trip: several are read at once. Matches carry their
+/// place in the folder, so the list keeps the folder's order.
+fn read_candidates(
+    fs: &dyn arke_core::Fs,
+    matcher: &ContentMatcher,
+    dir: &std::path::Path,
+    candidates: &[Entry],
+    cancel: &AtomicBool,
+    read: &AtomicUsize,
+    tx: &flume::Sender<Found>,
+) {
+    let readers = if arke_core::fs::is_network_path(dir) {
+        NET_READERS
+    } else {
+        1
+    };
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..readers.min(candidates.len()) {
+            let next = &next;
+            scope.spawn(move || {
+                let mut last = Instant::now();
+                loop {
+                    let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(entry) = candidates.get(at) else {
+                        return;
+                    };
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let hit = matcher.find_in(fs, &dir.join(&*entry.name), cancel);
+                    read.fetch_add(1, Ordering::Relaxed);
+                    if hit.is_some() {
+                        let _ = tx.send(Found::Match(at, entry.clone()));
+                    } else if last.elapsed() >= STREAM_EVERY {
+                        let _ = tx.send(Found::Progress);
+                        last = Instant::now();
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Adds a match in its place in the folder; true once the readers are done.
+fn take(msg: Found, found: &mut Vec<(usize, Entry)>) -> bool {
     match msg {
-        Found::Match(entry) => {
-            found.push(entry);
+        Found::Match(at, entry) => {
+            let place = found.partition_point(|(i, _)| *i < at);
+            found.insert(place, (at, entry));
             false
         }
         Found::Progress => false,

@@ -1,7 +1,9 @@
 //! Fuzzy search in subfolders.
 //!
 //! - Walker thread: breadth-first `Fs::read_dir` from the root, feeding items to nucleo as
-//!   it goes. Does not enter symlinks or junctions (cycles); skips hidden items by default.
+//!   it goes. Does not enter symlinks or junctions (cycles), nor a NAS's snapshots and recycle
+//!   bin ([`crate::index::is_skipped_dir`]); skips hidden items by default. On a file server
+//!   several folders are listed (and files read) at once, since each waits on a round trip.
 //! - Coordinator thread: owns `nucleo::Nucleo`, takes queries, calls `tick` and sends the top
 //!   [`MAX_HITS`] as a snapshot to the UI. `tick` may briefly wait on workers when the query
 //!   changes, so it never runs on the UI thread.
@@ -11,7 +13,7 @@
 //!   pass the filters are read by a few worker threads ([`crate::content`]) and only matches are
 //!   added, each with its first matching line.
 
-use std::collections::VecDeque;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -35,6 +37,9 @@ pub const MAX_ITEMS: u64 = 2_000_000;
 const SEND_INTERVAL: Duration = Duration::from_millis(60);
 /// Threads reading files for a content search (disk bound; more mostly adds seeking).
 const CONTENT_THREADS: usize = 4;
+/// Folders listed, and files read for a content search, at once on a file server: each waits on
+/// a round trip, not on a disk here. Enough to hide the latency without crowding the server.
+const NET_THREADS: usize = 8;
 
 /// One fuzzy search match.
 #[derive(Debug)]
@@ -471,8 +476,15 @@ fn walk_tree(
     if spec.query.content_needle().is_some() && crate::remote::is_remote(&spec.root) {
         return;
     }
+    // On a file server each listing and each file waits on a round trip: ask for several at once.
+    let network = crate::fs::is_network_path(&spec.root);
+    let (list_threads, read_threads) = if network {
+        (NET_THREADS, NET_THREADS)
+    } else {
+        (1, CONTENT_THREADS)
+    };
     let Some(matcher) = spec.query.content_needle().and_then(ContentMatcher::new) else {
-        walk_items(fs, spec, cancel, progress, &mut |hit| {
+        walk_items(fs, spec, list_threads, cancel, progress, &mut |hit| {
             push_hit(injector, hit);
         });
         return;
@@ -490,7 +502,7 @@ fn walk_tree(
     let mut buf = Vec::new();
     std::thread::scope(|scope| {
         let (tx, rx) = flume::bounded::<SearchHit>(1024);
-        for _ in 0..CONTENT_THREADS {
+        for _ in 0..read_threads {
             let (rx, matcher) = (rx.clone(), &matcher);
             scope.spawn(move || {
                 while let Ok(mut hit) = rx.recv() {
@@ -508,7 +520,7 @@ fn walk_tree(
             });
         }
         drop(rx);
-        walk_items(fs, spec, cancel, progress, &mut |hit| {
+        walk_items(fs, spec, list_threads, cancel, progress, &mut |hit| {
             if !crate::content::worth_reading(&hit.entry) {
                 return;
             }
@@ -526,53 +538,89 @@ fn walk_tree(
     });
 }
 
+/// Walks breadth first: `threads` list folders (one keeps the order folders were found in),
+/// this thread takes their contents in turn and calls `found`.
 fn walk_items(
     fs: &dyn Fs,
     spec: &WalkSpec,
+    threads: usize,
     cancel: &AtomicBool,
     progress: &Progress,
     found: &mut dyn FnMut(SearchHit),
 ) {
-    let mut queue: VecDeque<PathBuf> = VecDeque::from([PathBuf::new()]);
     let filtered = spec.query.has_filters() || spec.query.content.is_some();
-    while let Some(rel_dir) = queue.pop_front() {
-        if cancel.load(Ordering::Relaxed) {
-            return;
+    // Set when this walk ends early (cap reached, cancelled): queued folders aren't listed.
+    let stop = AtomicBool::new(false);
+    let (work_tx, work_rx) = flume::unbounded::<PathBuf>();
+    let (done_tx, done_rx) = flume::unbounded::<(PathBuf, Option<Vec<io::Result<Entry>>>)>();
+    std::thread::scope(|scope| {
+        for _ in 0..threads.max(1) {
+            let (work_rx, done_tx, stop) = (work_rx.clone(), done_tx.clone(), &stop);
+            scope.spawn(move || {
+                while let Ok(rel_dir) = work_rx.recv() {
+                    let listed = if stop.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
+                        Some(Vec::new())
+                    } else {
+                        fs.read_dir(&spec.root.join(&rel_dir))
+                            .ok()
+                            .map(Iterator::collect)
+                    };
+                    if done_tx.send((rel_dir, listed)).is_err() {
+                        return;
+                    }
+                }
+            });
         }
-        let Ok(iter) = fs.read_dir(&spec.root.join(&rel_dir)) else {
-            progress.errors.fetch_add(1, Ordering::Relaxed);
-            continue;
-        };
-        for item in iter {
+        drop(done_tx);
+        let mut pending = 1usize;
+        let _ = work_tx.send(PathBuf::new());
+        'walk: while pending > 0 {
+            let Ok((rel_dir, listed)) = done_rx.recv() else {
+                break;
+            };
+            pending -= 1;
             if cancel.load(Ordering::Relaxed) {
-                return;
+                break;
             }
-            let Ok(entry) = item else {
+            let Some(listed) = listed else {
                 progress.errors.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
-            if !spec.show_hidden && entry.is_hidden() {
-                continue;
-            }
-            let rel_path = rel_dir.join(&*entry.name);
-            // Only enter real folders; links and junctions can form cycles.
-            if entry.kind == EntryKind::Dir {
-                queue.push_back(rel_path.clone());
-            }
-            if !filtered || entry_accepted(&spec.query, &entry) {
-                let rel: Arc<str> = Arc::from(rel_path.to_string_lossy().as_ref());
-                found(SearchHit {
-                    rel,
-                    entry,
-                    snippet: None,
-                });
-            }
-            if progress.scanned.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_ITEMS {
-                progress.truncated.store(true, Ordering::Relaxed);
-                return;
+            for item in listed {
+                if cancel.load(Ordering::Relaxed) {
+                    break 'walk;
+                }
+                let Ok(entry) = item else {
+                    progress.errors.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                if !spec.show_hidden && entry.is_hidden() {
+                    continue;
+                }
+                let rel_path = rel_dir.join(&*entry.name);
+                // Only enter real folders (links and junctions can form cycles), and not a NAS's
+                // snapshots or recycle bin: each snapshot is a whole copy of the share.
+                if entry.kind == EntryKind::Dir && !crate::index::is_skipped_dir(&entry.sort_key) {
+                    pending += 1;
+                    let _ = work_tx.send(rel_path.clone());
+                }
+                if !filtered || entry_accepted(&spec.query, &entry) {
+                    let rel: Arc<str> = Arc::from(rel_path.to_string_lossy().as_ref());
+                    found(SearchHit {
+                        rel,
+                        entry,
+                        snippet: None,
+                    });
+                }
+                if progress.scanned.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_ITEMS {
+                    progress.truncated.store(true, Ordering::Relaxed);
+                    break 'walk;
+                }
             }
         }
-    }
+        stop.store(true, Ordering::Relaxed);
+        drop(work_tx);
+    });
 }
 
 #[cfg(test)]
@@ -671,6 +719,71 @@ mod tests {
         let r = settle(&rx, g);
         assert_eq!(rels(&r), ["target.txt"]);
         fs.release_all();
+    }
+
+    /// A NAS keeps a whole copy of the share for every snapshot: searching the share finds the
+    /// snapshot folder itself, but walks and reads nothing inside one.
+    #[test]
+    fn snapshots_on_a_share_are_not_walked() {
+        let fs = FakeFs::new();
+        let snapshot = "GMT+08-2026.10.13-08.00.02";
+        fs.insert_dir(
+            r"\\nas\dad",
+            vec![
+                dir("#snapshot"),
+                dir("docs"),
+                dir("@GMT-2026.10.13-00.00.00"),
+            ],
+        );
+        fs.insert_dir(r"\\nas\dad\#snapshot", vec![dir(snapshot)]);
+        for folder in [
+            format!(r"\\nas\dad\#snapshot\{snapshot}"),
+            r"\\nas\dad\@GMT-2026.10.13-00.00.00".to_owned(),
+            r"\\nas\dad\docs".to_owned(),
+        ] {
+            fs.insert_dir(&folder, vec![file("plan.txt")]);
+            fs.set_content(format!(r"{folder}\plan.txt"), b"budget".to_vec());
+        }
+        let (sink, rx) = collect();
+        let svc = SearchService::new(Arc::clone(&fs) as Arc<dyn Fs>, sink);
+        let g = svc.start(PathBuf::from(r"\\nas\dad"), false, "plan", Clock::default());
+        assert_eq!(rels(&settle(&rx, g)), [r"docs\plan.txt"]);
+        let g = svc.set_query("#snapshot", Clock::default());
+        assert_eq!(rels(&settle(&rx, g)), ["#snapshot"]);
+        let g = svc.start(
+            PathBuf::from(r"\\nas\dad"),
+            false,
+            "content:budget",
+            Clock::default(),
+        );
+        let r = settle(&rx, g);
+        assert_eq!((rels(&r), r.read), (vec![r"docs\plan.txt".to_owned()], 1));
+    }
+
+    /// On a file server several folders are listed at once: a slow one doesn't hold up the rest.
+    #[test]
+    fn network_folders_are_listed_several_at_once() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"\\nas\s", vec![dir("slow"), dir("a"), dir("b")]);
+        fs.insert_dir(r"\\nas\s\slow", vec![file("late.txt")]);
+        fs.insert_dir(r"\\nas\s\a", vec![file("one.txt")]);
+        fs.insert_dir(r"\\nas\s\b", vec![file("two.txt")]);
+        fs.hang(r"\\nas\s\slow");
+        let (sink, rx) = collect();
+        let svc = SearchService::new(Arc::clone(&fs) as Arc<dyn Fs>, sink);
+        let g = svc.start(PathBuf::from(r"\\nas\s"), false, "txt", Clock::default());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fs.read_dir_calls() < 4 {
+            assert!(
+                Instant::now() < deadline,
+                "the other folders wait for the slow one"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        fs.release_all();
+        let mut found = rels(&settle(&rx, g));
+        found.sort();
+        assert_eq!(found, [r"a\one.txt", r"b\two.txt", r"slow\late.txt"]);
     }
 
     #[test]

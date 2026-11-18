@@ -783,6 +783,25 @@ impl Explorer {
         }
     }
 
+    /// Tests: show `entry` as loading since `since`, and drop any load in flight.
+    #[cfg(test)]
+    pub(crate) fn show_loading_for_test(
+        &mut self,
+        path: PathBuf,
+        entry: Entry,
+        since: std::time::Instant,
+        cx: &mut Context<Self>,
+    ) {
+        self.preview_gen += 1;
+        self.preview_task = None;
+        self.preview = Some(Preview {
+            path,
+            entry,
+            body: PreviewBody::Loading(since),
+        });
+        cx.notify();
+    }
+
     /// Tests: the Info list's rows (label, value) for the item on screen.
     #[cfg(test)]
     pub(crate) fn preview_info_for_test(&self) -> Vec<(String, String)> {
@@ -1425,6 +1444,9 @@ impl Explorer {
             PreviewBody::Document(doc) => office::document_body(doc, false, scroll),
             PreviewBody::Workbook(view) => office::sheet_grid(view, false, scroll),
             PreviewBody::Slides(view) => office::slides_pane(view),
+            PreviewBody::Loading(since) if media_loading(&preview.entry) => {
+                media_placeholder(*since)
+            }
             PreviewBody::Loading(since) => loading_skeleton(*since),
             PreviewBody::Cloud => div()
                 .size_full()
@@ -2732,7 +2754,7 @@ fn look_backdrop(preview: &Preview) -> gpui::Rgba {
         | PreviewBody::Slides(_)
         | PreviewBody::Markdown(_)
         | PreviewBody::Document(_) => theme::stage(),
-        PreviewBody::Loading(_) if on_stage(&preview.entry) => theme::stage(),
+        PreviewBody::Loading(_) if media_loading(&preview.entry) => theme::stage(),
         PreviewBody::Text { .. } => theme::surface(),
         _ => theme::overlay(),
     }
@@ -2743,6 +2765,12 @@ fn on_stage(entry: &Entry) -> bool {
     matches!(file_kind(entry), FileKind::Image | FileKind::Pdf)
         || arke_core::office::office_kind(&entry.name)
             == Some(arke_core::office::OfficeKind::Presentation)
+}
+
+/// Media that waits behind a picture-shaped placeholder: what lands on the stage as a picture
+/// (images, PDF pages, slides) and a video, which lands as its frame.
+fn media_loading(entry: &Entry) -> bool {
+    on_stage(entry) || file_kind(entry) == FileKind::Video
 }
 
 /// A pill floating at the bottom of Quick Look's stage (page control, zoom). It occludes, so
@@ -3462,10 +3490,14 @@ impl Explorer {
                     .into_any_element();
             }
             PreviewBody::Slides(view) => return self.slides_look(view, cx),
-            // Images, PDFs and slides wait on the bare stage: bars would flash where a picture
-            // lands.
-            PreviewBody::Loading(_) if on_stage(&preview.entry) => {
-                return div().size_full().into_any_element();
+            // Pictures, video frames, PDFs and slides wait on the stage with the same pulsing
+            // frame as the side pane: bars would flash where the picture lands.
+            PreviewBody::Loading(since) if media_loading(&preview.entry) => {
+                return div()
+                    .size_full()
+                    .p(theme::S_8)
+                    .child(media_placeholder(*since))
+                    .into_any_element();
             }
             PreviewBody::Loading(_) | PreviewBody::Folder { .. } | PreviewBody::Archive(_) => {
                 let body = match &preview.body {
@@ -4063,6 +4095,23 @@ fn loading_skeleton(since: std::time::Instant) -> AnyElement {
                 )
         }));
     pulsing(bars, "preview-skeleton-pulse")
+}
+
+/// Loading a picture or a video frame: draw nothing for the first moment, then a blank pulsing
+/// frame that fills the media area, so the picture replaces it in place. No text.
+fn media_placeholder(since: std::time::Instant) -> AnyElement {
+    if since.elapsed() < LOADING_GRACE {
+        return div().size_full().into_any_element();
+    }
+    let frame = div()
+        .id("media-placeholder")
+        .debug_selector(|| "media-placeholder".into())
+        .size_full()
+        .rounded(theme::R_8)
+        .border_1()
+        .border_color(theme::line())
+        .bg(theme::wash());
+    pulsing(frame, "media-placeholder-pulse")
 }
 
 /// `el` pulsing gently while something loads (still with animations off).

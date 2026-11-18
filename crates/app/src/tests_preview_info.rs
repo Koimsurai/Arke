@@ -257,3 +257,66 @@ fn a_video_previews_a_frame(cx: &mut TestAppContext) {
     let dimensions = t!("preview.dimensions").to_string();
     assert!(rows.iter().all(|(key, _)| *key != dimensions), "{rows:?}");
 }
+
+/// Put a video into the loading state (past the grace period) and keep the real load from
+/// replacing it.
+fn video_loading(view: &Entity<Explorer>, cx: &mut VisualTestContext) {
+    view.update(cx, |v, cx| {
+        let since = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .expect("an instant in the past");
+        v.show_loading_for_test(
+            PathBuf::from(r"C:\clips\trip.mp4"),
+            Entry::new("trip.mp4", EntryKind::File, 4096, None, 0),
+            since,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+}
+
+fn video_folder(cx: &mut TestAppContext) -> (Entity<Explorer>, &mut VisualTestContext) {
+    let dir = r"C:\clips";
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        dir,
+        vec![Entry::new("trip.mp4", EntryKind::File, 4096, None, 0)],
+    );
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), dir);
+    wait_until(cx, &view, "load", loaded(dir));
+    cx.simulate_resize(gpui::size(px(1400.), px(900.)));
+    (view, cx)
+}
+
+/// While a video's frame loads, the side pane shows the picture-style placeholder filling the
+/// media frame, not the text-line skeleton.
+#[gpui::test]
+fn a_loading_video_shows_the_picture_placeholder_in_the_pane(cx: &mut TestAppContext) {
+    let (view, cx) = video_folder(cx);
+    view.update(cx, |v, cx| {
+        v.preview_pane = true;
+        cx.notify();
+    });
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "previewed", previewed);
+    video_loading(&view, cx);
+    assert!(cx.debug_bounds("media-placeholder").is_some());
+    assert!(cx.debug_bounds("preview-skeleton").is_none());
+}
+
+/// The same in Quick Look.
+#[gpui::test]
+fn a_loading_video_shows_the_picture_placeholder_in_quick_look(cx: &mut TestAppContext) {
+    let (view, cx) = video_folder(cx);
+    cx.simulate_keystrokes("down space");
+    assert!(view.update(cx, |v, _| v.quick_look));
+    wait_until(cx, &view, "previewed", previewed);
+    video_loading(&view, cx);
+    let stage = cx.debug_bounds("ql-stage").expect("Quick Look is drawn");
+    let frame = cx
+        .debug_bounds("media-placeholder")
+        .expect("the placeholder is drawn");
+    assert!(cx.debug_bounds("preview-skeleton").is_none());
+    assert!(frame.size.width > stage.size.width * 0.8, "fills the stage");
+    assert!(frame.size.height > stage.size.height * 0.8);
+}

@@ -89,7 +89,7 @@ pub(crate) fn indexed_tree(
     dir: &std::path::Path,
     show_hidden: bool,
     cancel: &AtomicBool,
-) -> Option<Vec<arke_core::index::IndexedItem>> {
+) -> Option<arke_core::index::IndexedTree> {
     let services = NET_SERVICES.read().clone();
     services
         .iter()
@@ -362,11 +362,11 @@ impl GlobalSearch {
         let real = matches!(self.roots, Roots::LocalDrives);
         let awake = self.net.iter().any(|n| n.root == root && n.awake);
         let skip_build_dirs = self.skip_build_dirs;
-        let cache = self
+        let cache_dir = self
             .cache
             .as_ref()
             .and_then(|c| c.parent())
-            .map(|dir| dir.join(format!("index-net-{:016x}.bin", fnv(&root))));
+            .map(std::path::Path::to_path_buf);
         let (changed_tx, changed_rx) = flume::unbounded::<()>();
         let (service_tx, service_rx) = flume::bounded::<(Arc<IndexService>, bool)>(1);
         let key = root.clone();
@@ -381,6 +381,14 @@ impl GlobalSearch {
                     (true, false) => "unreachable, using last cache",
                 }
             );
+            // A drive letter mapped to another share gets another cache.
+            let target = real
+                .then(|| {
+                    use arke_core::net::NetProbe as _;
+                    crate::win_net::WinNetProbe.unc(&root)
+                })
+                .flatten();
+            let cache = cache_dir.map(|dir| dir.join(net_cache_name(&root, target.as_deref())));
             let options = IndexOptions {
                 roots: vec![root],
                 cache,
@@ -741,6 +749,21 @@ fn reachable(root: &std::path::Path) -> bool {
     !matches!(probe.reach(&server), Reach::Down | Reach::NoSuchHost)
 }
 
+/// Cache file name of a network location's index. A mapped drive's name also covers the share it
+/// points to (`target`), so remapping the letter to another share starts a new index instead of
+/// using the old share's; a `\\server\share` location keeps the name it always had.
+fn net_cache_name(root: &std::path::Path, target: Option<&std::path::Path>) -> String {
+    let hash = match target.filter(|t| !same_path(t, root)) {
+        Some(target) => fnv(&PathBuf::from(format!(
+            "{}|{}",
+            root.display(),
+            target.display()
+        ))),
+        None => fnv(root),
+    };
+    format!("index-net-{hash:016x}.bin")
+}
+
 /// Hash for network cache file names (FNV-1a, case-insensitive, stable across versions).
 fn fnv(path: &std::path::Path) -> u64 {
     path.to_string_lossy()
@@ -1048,6 +1071,22 @@ mod tests {
         assert_eq!(service_outdated(None), Some("?".to_owned()));
     }
     use std::path::Path;
+
+    /// A drive letter mapped to another share gets another cache (its old index is another
+    /// share's); a `\\server\share` location keeps the name it always had.
+    #[test]
+    fn a_remapped_drive_letter_gets_its_own_cache() {
+        let p = PathBuf::from;
+        let x = p(r"X:\");
+        let first = net_cache_name(&x, Some(&p(r"\\10.0.0.1\dad")));
+        assert_ne!(first, net_cache_name(&x, Some(&p(r"\\10.0.0.2\other"))));
+        assert_eq!(first, net_cache_name(&x, Some(&p(r"\\10.0.0.1\DAD"))));
+        let share = p(r"\\nas\share");
+        assert_eq!(
+            net_cache_name(&share, Some(&share)),
+            format!("index-net-{:016x}.bin", fnv(&share))
+        );
+    }
 
     /// A share opened both through its mapped drive and as `\\server\share` (both added
     /// automatically) is walked once; so is a folder inside another location.

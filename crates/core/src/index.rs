@@ -359,6 +359,8 @@ pub struct BuildProgress {
     /// Folders a refresh took over from the old index without listing them (see
     /// [`Index::refresh`]).
     pub reused: AtomicUsize,
+    /// Roots that couldn't be listed (see [`Index::roots_failed`]).
+    pub failed_roots: AtomicUsize,
     /// Set by the caller when there's no index to search yet: the walk then puts a copy of what
     /// it has so far in `partial` every few seconds.
     pub want_partial: AtomicBool,
@@ -373,6 +375,17 @@ pub struct IndexedItem {
     pub rel: String,
     /// The item as a listing gives it; of the attributes only Hidden is known.
     pub entry: Entry,
+}
+
+/// What [`Index::items_under`] has below a folder.
+#[derive(Clone, Debug, Default)]
+pub struct IndexedTree {
+    /// Every item the index has there.
+    pub items: Vec<IndexedItem>,
+    /// Folders there whose contents the index doesn't have (build folders with "skip build
+    /// folders", exclusions, hidden system folders), relative like the items: a search walks
+    /// these itself. Snapshots and recycle bins aren't among them.
+    pub unindexed: Vec<String>,
 }
 
 impl IndexedItem {
@@ -392,6 +405,36 @@ impl IndexedItem {
     }
 }
 
+/// One folder's listing during a walk.
+enum Listing {
+    Complete(Vec<Entry>),
+    /// The listing ended with an error partway (the connection dropped): what came before.
+    Incomplete(Vec<Entry>),
+    /// The folder couldn't be listed at all.
+    Failed,
+}
+
+impl Listing {
+    fn of(listed: io::Result<crate::fs::DirIter>) -> Self {
+        let Ok(iter) = listed else {
+            return Self::Failed;
+        };
+        let mut entries = Vec::new();
+        let mut complete = true;
+        for item in iter {
+            match item {
+                Ok(entry) => entries.push(entry),
+                Err(_) => complete = false,
+            }
+        }
+        if complete {
+            Self::Complete(entries)
+        } else {
+            Self::Incomplete(entries)
+        }
+    }
+}
+
 /// The previous index during [`Index::refresh`]: which of its folders each new folder is, and
 /// what they held.
 struct Reuse<'a> {
@@ -403,12 +446,23 @@ struct Reuse<'a> {
     /// New folder id -> the same folder in `old`.
     old_of: HashMap<u32, u32>,
     /// Folder times (Unix seconds) from this on aren't trusted: the folder may have changed in
-    /// the same second `old` listed it.
+    /// the same second `old` listed it, by the server's clock, which may be off from this one
+    /// (see [`CLOCK_MARGIN`]).
     trusted_before: u32,
+    /// Folders (lowercase full paths) listed again whatever their time says: changes were seen
+    /// in them since `old` was built.
+    relist: HashSet<String>,
 }
 
+/// How far a file server's clock may be off from this one: folders changed this close to the
+/// last walk are listed again.
+const CLOCK_MARGIN: u64 = 60 * 60;
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: such a folder (a DFS link, a mount point) may show another
+/// folder's contents without its own time ever changing.
+const ATTR_REPARSE_POINT: u32 = 0x400;
+
 impl<'a> Reuse<'a> {
-    fn new(old: &'a Index) -> Self {
+    fn new(old: &'a Index, relist: &[PathBuf]) -> Self {
         let n = old.nodes.len();
         let mut offsets = vec![0u32; n + 1];
         for node in old.nodes.iter() {
@@ -432,7 +486,9 @@ impl<'a> Reuse<'a> {
             offsets,
             kids,
             old_of: HashMap::new(),
-            trusted_before: u32::try_from(old.built_at.saturating_sub(1)).unwrap_or(u32::MAX),
+            trusted_before: u32::try_from(old.built_at.saturating_sub(CLOCK_MARGIN))
+                .unwrap_or(u32::MAX),
+            relist: relist.iter().map(|p| path_key(p)).collect(),
         }
     }
 
@@ -474,7 +530,7 @@ impl<'a> Reuse<'a> {
     /// a plain folder there too, its time unchanged (and from before `old` was walked), with no
     /// subfolders that were walked into, and not empty (a folder that couldn't be listed looks
     /// empty, so empty ones are always listed again).
-    fn unchanged_leaf(&self, was: u32, entry: &Entry) -> bool {
+    fn unchanged_leaf(&self, was: u32, entry: &Entry, path: &Path) -> bool {
         let old = self.old;
         let i = was as usize;
         let mtime = entry
@@ -483,12 +539,43 @@ impl<'a> Reuse<'a> {
         let walked = |n: &Node| n.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR;
         let kids = self.children(was);
         entry.kind == EntryKind::Dir
+            && entry.attributes & ATTR_REPARSE_POINT == 0
             && walked(&old.nodes[i])
             && mtime != 0
             && mtime < self.trusted_before
             && old.mtimes[i] == mtime
             && !kids.is_empty()
             && !kids.iter().any(|&c| walked(&old.nodes[c as usize]))
+            && (self.relist.is_empty() || !self.relist.contains(&path_key(path)))
+    }
+
+    /// The old copy of new folder `id`, if there is one.
+    fn old_of(&self, id: u32) -> Option<u32> {
+        self.old_of.get(&id).copied()
+    }
+
+    /// Copies everything below old folder `was` (any depth) under new folder `id`, for a folder
+    /// that couldn't be listed this time; returns how many.
+    fn copy_subtree(&self, was: u32, id: u32, index: &mut Index) -> usize {
+        let old = self.old;
+        let mut queue = std::collections::VecDeque::from([(was, id)]);
+        let mut copied = 0;
+        while let Some((was, id)) = queue.pop_front() {
+            for &c in self.children(was) {
+                let node = old.nodes[c as usize];
+                let i = c as usize;
+                let Some(new) =
+                    index.push(id, old.name(&node), node.flags, old.sizes[i], old.mtimes[i])
+                else {
+                    continue;
+                };
+                copied += 1;
+                if node.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
+                    queue.push_back((c, new));
+                }
+            }
+        }
+        copied
     }
 
     /// Copies old folder `was`'s contents under new folder `id`; returns how many.
@@ -740,6 +827,12 @@ impl Index {
         )
     }
 
+    /// Whether the walk behind `progress` couldn't list one of its roots (an offline share):
+    /// what it built is empty there and must not replace a good index.
+    pub fn roots_failed(progress: &BuildProgress) -> bool {
+        progress.failed_roots.load(Ordering::Relaxed) > 0
+    }
+
     /// Walks `old`'s roots again, but takes a folder's contents from `old` instead of listing it
     /// when they can't have changed: a folder without subfolders whose modified time is the same
     /// as when `old` listed it (adding, removing or renaming an item inside a folder changes its
@@ -747,7 +840,8 @@ impl Index {
     /// inside a folder doesn't change the folder's own time, so only the bottom level can be
     /// trusted. Taken over as they were, in folders not listed again: sizes and times of files
     /// changed in place, and changed attributes. Folders reused are counted in
-    /// [`BuildProgress::reused`].
+    /// [`BuildProgress::reused`]. Folders in `relist` (changes were seen there) are listed again
+    /// whatever their time; a folder that can't be listed keeps what `old` had below it.
     #[allow(
         clippy::too_many_arguments,
         reason = "the build's inputs plus the old index"
@@ -755,6 +849,7 @@ impl Index {
     pub fn refresh(
         fs: &dyn Fs,
         old: &Self,
+        relist: &[PathBuf],
         threads: usize,
         cancel: &AtomicBool,
         progress: &BuildProgress,
@@ -770,7 +865,7 @@ impl Index {
             thread_init,
             rules,
             &|_, _| Err(io::ErrorKind::Unsupported.into()),
-            Some(old),
+            Some((old, relist)),
         )
     }
 
@@ -788,9 +883,9 @@ impl Index {
         thread_init: &(dyn Fn() + Sync),
         rules: &BuildRules,
         list: Lister,
-        old: Option<&Self>,
+        old: Option<(&Self, &[PathBuf])>,
     ) -> Self {
-        let mut reuse = old.map(Reuse::new);
+        let mut reuse = old.map(|(old, relist)| Reuse::new(old, relist));
         let mut index = Self {
             roots: roots.to_vec(),
             built_at: unix_secs(SystemTime::now()),
@@ -804,7 +899,7 @@ impl Index {
         );
         // Work: folders to list (node id, path). Results: their contents.
         let (work_tx, work_rx) = flume::unbounded::<(u32, PathBuf)>();
-        let (done_tx, done_rx) = flume::unbounded::<(u32, Vec<Entry>)>();
+        let (done_tx, done_rx) = flume::unbounded::<(u32, Listing)>();
         let mut pending = 0usize;
         for root in roots {
             let name = root.to_string_lossy();
@@ -833,7 +928,7 @@ impl Index {
         }
         // Set once the index reaches `rules.max_items`: queued folders are no longer listed.
         let full = AtomicBool::new(false);
-        let mut published: Option<std::time::Instant> = None;
+        let mut published: Option<(std::time::Instant, usize)> = None;
         std::thread::scope(|scope| {
             for _ in 0..threads.max(1) {
                 let work_rx = work_rx.clone();
@@ -842,14 +937,13 @@ impl Index {
                 scope.spawn(move || {
                     thread_init();
                     while let Ok((id, path)) = work_rx.recv() {
-                        let entries: Vec<Entry> =
+                        let listed =
                             if cancel.load(Ordering::Relaxed) || full.load(Ordering::Relaxed) {
-                                Vec::new()
+                                Listing::Complete(Vec::new())
                             } else {
-                                fs.read_dir(&path)
-                                    .map_or_default(|iter| iter.filter_map(Result::ok).collect())
+                                Listing::of(fs.read_dir(&path))
                             };
-                        if done_tx.send((id, entries)).is_err() {
+                        if done_tx.send((id, listed)).is_err() {
                             return;
                         }
                     }
@@ -859,10 +953,31 @@ impl Index {
             // Collector: this thread owns the index, assigns ids to subfolders and sends them back
             // to be listed.
             while pending > 0 {
-                let Ok((parent, entries)) = done_rx.recv() else {
+                let Ok((parent, listed)) = done_rx.recv() else {
                     break;
                 };
                 pending -= 1;
+                let entries = match listed {
+                    Listing::Complete(entries) => entries,
+                    Listing::Incomplete(entries) => {
+                        // Not all of it: never trust this folder's time to skip it next time.
+                        index.mtimes.owned()[parent as usize] = 0;
+                        entries
+                    }
+                    Listing::Failed => {
+                        if index.nodes[parent as usize].parent == NO_PARENT {
+                            progress.failed_roots.fetch_add(1, Ordering::Relaxed);
+                        } else if let Some(reuse) = reuse.as_ref()
+                            && let Some(was) = reuse.old_of(parent)
+                        {
+                            // Unreadable now (the share dropped, access changed): keep what the
+                            // last walk found there rather than nothing.
+                            let kept = reuse.copy_subtree(was, parent, &mut index);
+                            progress.scanned.fetch_add(kept, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                };
                 if full.load(Ordering::Relaxed) {
                     // Past the limit: only drain what was already queued.
                     continue;
@@ -889,7 +1004,7 @@ impl Index {
                     if let (Some(reuse), Some(before)) = (reuse.as_ref(), before.as_ref())
                         && let Some(&was) = before.get(&*entry.name)
                     {
-                        if reuse.unchanged_leaf(was, entry) {
+                        if reuse.unchanged_leaf(was, entry, &parent_path.join(&*entry.name)) {
                             unchanged.push((id, was));
                             return true;
                         }
@@ -920,23 +1035,33 @@ impl Index {
 
     /// While a first build runs (`progress.want_partial`), hands a copy of what's walked so far to
     /// `progress.partial` now and then, so searches find something before the walk ends. Spaced
-    /// out by how long a copy takes, so copying never costs the walk more than a few percent.
-    fn publish_partial(&self, progress: &BuildProgress, last: &mut Option<std::time::Instant>) {
+    /// out by how long a copy takes, so copying never costs the walk more than a few percent, and
+    /// by size: a new copy only once the walk has a quarter more than the last one, so the copies
+    /// add up to a few times the final index at most. The previous copy is let go first.
+    fn publish_partial(
+        &self,
+        progress: &BuildProgress,
+        last: &mut Option<(std::time::Instant, usize)>,
+    ) {
         const EVERY: Duration = if cfg!(test) {
             Duration::from_millis(10)
         } else {
             Duration::from_secs(2)
         };
         if !progress.want_partial.load(Ordering::Relaxed)
-            || last.is_some_and(|last| last.elapsed() < EVERY)
+            || last.is_some_and(|(at, len)| at.elapsed() < EVERY || self.len() < len + len / 4)
         {
             return;
         }
         let started = std::time::Instant::now();
+        progress.partial.lock().take();
         let copy = Arc::new(self.snapshot());
         *progress.partial.lock() = Some(copy);
         // The next copy waits at least 20 times as long as this one took.
-        *last = Some(std::time::Instant::now() + started.elapsed() * 20);
+        *last = Some((
+            std::time::Instant::now() + started.elapsed() * 20,
+            self.len(),
+        ));
     }
 
     /// An owned copy of the walk so far (see [`Self::publish_partial`]).
@@ -959,15 +1084,24 @@ impl Index {
     /// Everything the index has below `dir`, at any depth, with `overlay`'s changes applied: each
     /// item's path relative to `dir` and an entry like a listing gives (attributes: only Hidden).
     /// Without `show_hidden`, hidden items and everything inside hidden folders are left out, as
-    /// a walk leaves them. `None` when the index doesn't have `dir`'s contents (not under a root,
-    /// a folder it doesn't enter) or when cancelled.
+    /// a walk leaves them. Folders below that the index doesn't enter are listed in
+    /// [`IndexedTree::unindexed`]. `None` when the index doesn't have `dir`'s contents (not under
+    /// a root, a folder it doesn't enter, gone since the build) or when cancelled.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over the index, then the changes it lacks"
+    )]
     pub fn items_under(
         &self,
         dir: &Path,
         overlay: &Overlay,
         show_hidden: bool,
         cancel: &AtomicBool,
-    ) -> Option<Vec<IndexedItem>> {
+    ) -> Option<IndexedTree> {
+        // The folder itself (or one above it) is gone since the build.
+        if overlay.is_removed(dir) {
+            return None;
+        }
         let top = self.resolve(dir, cancel)?;
         let key = |rel: &str| rel.to_lowercase();
         // Changes since the build below `dir`, by relative path (lowercase).
@@ -984,9 +1118,13 @@ impl Index {
                 removed.insert(key(&rel.join("\\")));
             }
         }
+        // Hidden folders left out (lowercase relative paths), so changes recorded inside them
+        // are left out too.
+        let mut hidden_folders: HashSet<String> = HashSet::new();
+        let track_hidden = !show_hidden && !added.is_empty();
         // Folders inside `dir` that are walked into, with their relative path.
         let mut folders: HashMap<u32, String> = HashMap::from([(top, String::new())]);
-        let mut out = Vec::new();
+        let mut tree = IndexedTree::default();
         for (i, node) in self.nodes.iter().enumerate().skip(top as usize + 1) {
             if i % (64 * 1024) == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
@@ -1009,48 +1147,70 @@ impl Index {
             if removed.contains(&lower) {
                 continue;
             }
-            let hidden = node.flags & FLAG_HIDDEN != 0;
+            let indexed_dir = node.flags & FLAG_DIR != 0;
+            let mut kind = if node.flags & FLAG_LINK != 0 {
+                EntryKind::Link {
+                    is_dir: indexed_dir,
+                }
+            } else if indexed_dir {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            };
             let changed = if added.is_empty() {
                 None
             } else {
                 added.remove(&lower)
             };
             let (size, mtime, hidden) = match changed {
-                Some((_, seen)) => (
-                    seen.size,
-                    u32::try_from(seen.modified).unwrap_or(u32::MAX),
-                    seen.hidden,
-                ),
-                None => (self.sizes[i], self.mtimes[i], hidden),
+                Some((_, seen)) => {
+                    // A file replaced by a folder of the same name, or the other way round.
+                    if seen.is_dir != indexed_dir {
+                        kind = if seen.is_dir {
+                            EntryKind::Dir
+                        } else {
+                            EntryKind::File
+                        };
+                    }
+                    (
+                        seen.size,
+                        u32::try_from(seen.modified).unwrap_or(u32::MAX),
+                        seen.hidden,
+                    )
+                }
+                None => (self.sizes[i], self.mtimes[i], node.flags & FLAG_HIDDEN != 0),
             };
             if hidden && !show_hidden {
+                if track_hidden && kind != EntryKind::File {
+                    hidden_folders.insert(key(&rel));
+                }
                 continue;
             }
             let id = u32::try_from(i).ok()?;
-            if node.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
-                folders.insert(id, rel.clone());
-            }
-            let kind = if node.flags & FLAG_LINK != 0 {
-                EntryKind::Link {
-                    is_dir: node.flags & FLAG_DIR != 0,
+            if kind == EntryKind::Dir {
+                if node.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
+                    folders.insert(id, rel.clone());
+                } else if node.flags & FLAG_PRUNED != 0 && !is_skipped_dir(&name.to_lowercase()) {
+                    // Not entered by the index (build folders, exclusions, hidden system
+                    // folders), but a walk would find what's inside.
+                    tree.unindexed.push(rel.clone());
                 }
-            } else if node.flags & FLAG_DIR != 0 {
-                EntryKind::Dir
-            } else {
-                EntryKind::File
-            };
-            out.push(IndexedItem::new(rel, name, kind, size, mtime, hidden));
+            }
+            tree.items
+                .push(IndexedItem::new(rel, name, kind, size, mtime, hidden));
         }
         // Recorded since the build and not in the index: new items.
         let mut fresh: Vec<(String, Seen)> = added.into_values().collect();
         fresh.sort_by(|a, b| a.0.cmp(&b.0));
         for (rel, seen) in fresh {
-            if (seen.hidden && !show_hidden)
-                || Path::new(&rel)
-                    .ancestors()
-                    .skip(1)
-                    .any(|a| removed.contains(&key(&a.to_string_lossy())))
-            {
+            let gone_or_hidden = Path::new(&rel).ancestors().skip(1).any(|a| {
+                let a = key(&a.to_string_lossy());
+                removed.contains(&a) || hidden_folders.contains(&a)
+            });
+            if (seen.hidden && !show_hidden) || gone_or_hidden {
+                if seen.is_dir && seen.hidden && track_hidden {
+                    hidden_folders.insert(key(&rel));
+                }
                 continue;
             }
             let name = Path::new(&rel)
@@ -1062,7 +1222,7 @@ impl Index {
                 EntryKind::File
             };
             let mtime = u32::try_from(seen.modified).unwrap_or(u32::MAX);
-            out.push(IndexedItem::new(
+            tree.items.push(IndexedItem::new(
                 rel,
                 &name,
                 kind,
@@ -1071,7 +1231,7 @@ impl Index {
                 seen.hidden,
             ));
         }
-        Some(out)
+        Some(tree)
     }
 
     /// Sets aside memory for `items` items with `name_bytes` of names (a little over, so a
@@ -2523,6 +2683,23 @@ impl Overlay {
         }
     }
 
+    /// Folders changes were recorded in, and recorded folders themselves: an incremental rewalk
+    /// lists these again whatever their times say (the times came from separate looks at the
+    /// server and may not match a listing's).
+    pub fn folders_touched(&self) -> Vec<PathBuf> {
+        let mut out: HashSet<&Path> = HashSet::new();
+        for (path, (seen, _)) in &self.added {
+            out.extend(path.parent());
+            if seen.is_dir {
+                out.insert(path);
+            }
+        }
+        for path in self.removed.keys() {
+            out.extend(path.parent());
+        }
+        out.into_iter().map(Path::to_path_buf).collect()
+    }
+
     /// Paths recorded as added directly inside `dir`.
     #[must_use]
     pub fn added_in(&self, dir: &Path) -> Vec<PathBuf> {
@@ -3236,12 +3413,36 @@ mod tests {
     struct Listings {
         fs: Arc<FakeFs>,
         listed: parking_lot::Mutex<Vec<String>>,
+        /// Folders that can't be listed.
+        failing: Vec<String>,
+        /// Folders whose listing breaks off with an error after what it has.
+        broken: Vec<String>,
+    }
+
+    impl Listings {
+        fn new(fs: Arc<FakeFs>) -> Self {
+            Self {
+                fs,
+                listed: parking_lot::Mutex::new(Vec::new()),
+                failing: Vec::new(),
+                broken: Vec::new(),
+            }
+        }
     }
 
     impl Fs for Listings {
         fn read_dir(&self, path: &Path) -> io::Result<crate::fs::DirIter> {
-            self.listed.lock().push(path.display().to_string());
-            self.fs.read_dir(path)
+            let shown = path.display().to_string();
+            self.listed.lock().push(shown.clone());
+            if self.failing.contains(&shown) {
+                return Err(io::ErrorKind::NotConnected.into());
+            }
+            let iter = self.fs.read_dir(path)?;
+            if self.broken.contains(&shown) {
+                let cut = std::iter::once(Err(io::Error::from(io::ErrorKind::ConnectionReset)));
+                return Ok(Box::new(iter.chain(cut)));
+            }
+            Ok(iter)
         }
         fn stat(&self, path: &Path) -> io::Result<Entry> {
             self.fs.stat(path)
@@ -3272,77 +3473,88 @@ mod tests {
         )
     }
 
+    /// The share used by the refresh tests. `later`: a file added to `changed` and to
+    /// `parent\deep` (their times move; `parent`'s own time doesn't), and a file in `same` grown
+    /// in place, which no folder time shows.
+    fn refresh_share(later: bool) -> Arc<FakeFs> {
+        let share = REFRESH_SHARE;
+        let fs = FakeFs::new();
+        let moved = if later { 2_000 } else { 1_000 };
+        fs.insert_dir(
+            share,
+            vec![
+                dir_at("same", 1_000),
+                dir_at("changed", moved),
+                dir_at("parent", 1_000),
+                dir_at("empty", 1_000),
+            ],
+        );
+        fs.insert_dir(format!(r"{share}\parent"), vec![dir_at("deep", moved)]);
+        let mut a = file("a.txt");
+        a.size = if later { 99 } else { 1 };
+        fs.insert_dir(format!(r"{share}\same"), vec![a]);
+        let added = |name: &str| later.then(|| file(name));
+        fs.insert_dir(
+            format!(r"{share}\changed"),
+            [Some(file("b.txt")), added("b2.txt")]
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+        fs.insert_dir(
+            format!(r"{share}\parent\deep"),
+            [Some(file("d.txt")), added("d2.txt")]
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+        fs.insert_dir(format!(r"{share}\empty"), vec![]);
+        fs
+    }
+
+    const REFRESH_SHARE: &str = r"\\nas\s";
+
+    /// Builds (or with `old`, refreshes) through `fs`: the index, the folders listed (sorted)
+    /// and the progress.
+    fn walk_recorded(
+        fs: &Listings,
+        old: Option<(&Index, &[PathBuf])>,
+    ) -> (Index, Vec<String>, BuildProgress) {
+        let progress = BuildProgress::default();
+        let cancel = AtomicBool::new(false);
+        let rules = BuildRules::default();
+        let index = match old {
+            Some((old, relist)) => {
+                Index::refresh(fs, old, relist, 2, &cancel, &progress, &|| {}, &rules)
+            }
+            None => Index::build(
+                fs,
+                &[PathBuf::from(REFRESH_SHARE)],
+                2,
+                &cancel,
+                &progress,
+                &|| {},
+                false,
+            ),
+        };
+        let mut listed = std::mem::take(&mut *fs.listed.lock());
+        listed.sort();
+        (index, listed, progress)
+    }
+
+    fn at(rel: &str) -> String {
+        format!(r"{REFRESH_SHARE}{rel}")
+    }
+
     /// A rewalk lists again only what may have changed: every folder with subfolders, folders
     /// whose time changed, and empty ones (a folder that couldn't be listed looks empty). A
     /// bottom-level folder with the same time keeps what the last walk found.
     #[test]
     fn refresh_lists_only_folders_that_may_have_changed() {
-        let share = r"\\nas\s";
-        // `later`: a file added to `changed` and to `parent\deep` (their times move; `parent`'s
-        // own time doesn't), and a file in `same` grown in place, which no folder time shows.
-        let layout = |later: bool| {
-            let fs = FakeFs::new();
-            let moved = if later { 2_000 } else { 1_000 };
-            fs.insert_dir(
-                share,
-                vec![
-                    dir_at("same", 1_000),
-                    dir_at("changed", moved),
-                    dir_at("parent", 1_000),
-                    dir_at("empty", 1_000),
-                ],
-            );
-            fs.insert_dir(format!(r"{share}\parent"), vec![dir_at("deep", moved)]);
-            let mut a = file("a.txt");
-            a.size = if later { 99 } else { 1 };
-            fs.insert_dir(format!(r"{share}\same"), vec![a]);
-            let added = |name: &str| later.then(|| file(name));
-            fs.insert_dir(
-                format!(r"{share}\changed"),
-                [Some(file("b.txt")), added("b2.txt")]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            );
-            fs.insert_dir(
-                format!(r"{share}\parent\deep"),
-                [Some(file("d.txt")), added("d2.txt")]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            );
-            fs.insert_dir(format!(r"{share}\empty"), vec![]);
-            fs
-        };
-        let build = |fs: Arc<FakeFs>, old: Option<&Index>| {
-            let recorder = Listings {
-                fs,
-                listed: parking_lot::Mutex::new(Vec::new()),
-            };
-            let progress = BuildProgress::default();
-            let cancel = AtomicBool::new(false);
-            let rules = BuildRules::default();
-            let index = match old {
-                Some(old) => Index::refresh(&recorder, old, 2, &cancel, &progress, &|| {}, &rules),
-                None => Index::build(
-                    &recorder,
-                    &[PathBuf::from(share)],
-                    2,
-                    &cancel,
-                    &progress,
-                    &|| {},
-                    false,
-                ),
-            };
-            let mut listed = recorder.listed.into_inner();
-            listed.sort();
-            (index, listed, progress.reused.load(Ordering::Relaxed))
-        };
-        let (old, listed, _) = build(layout(false), None);
+        let (old, listed, _) = walk_recorded(&Listings::new(refresh_share(false)), None);
         assert_eq!(listed.len(), 6);
-
-        let (new, listed, reused) = build(layout(true), Some(&old));
-        let at = |rel: &str| format!(r"{share}{rel}");
+        let (new, listed, progress) =
+            walk_recorded(&Listings::new(refresh_share(true)), Some((&old, &[])));
         assert_eq!(
             listed,
             [
@@ -3353,13 +3565,111 @@ mod tests {
                 at(r"\parent\deep"),
             ]
         );
-        assert_eq!(reused, 1);
-        let (fresh, _, _) = build(layout(true), None);
+        assert_eq!(progress.reused.load(Ordering::Relaxed), 1);
+        let (fresh, _, _) = walk_recorded(&Listings::new(refresh_share(true)), None);
         assert_eq!(all_paths(&new), all_paths(&fresh));
         let size_of =
             |index: &Index, name: &str| find(index, name, 1, true).first().map(|hit| hit.size);
         assert_eq!(size_of(&new, "a.txt"), Some(1), "taken over as it was");
         assert_eq!(size_of(&fresh, "a.txt"), Some(99));
+    }
+
+    /// A folder whose listing broke off partway isn't trusted to be skipped next time; neither
+    /// are folders changes were seen in, folders that are reparse points (DFS links, which may
+    /// never change their time) or folders changed close to the last walk (the server's clock
+    /// may be off).
+    #[test]
+    fn refresh_lists_again_what_it_cannot_trust() {
+        let mut first = Listings::new(refresh_share(false));
+        first.broken = vec![at(r"\same")];
+        let (old, _, _) = walk_recorded(&first, None);
+        let (_, listed, _) = walk_recorded(&Listings::new(refresh_share(false)), Some((&old, &[])));
+        assert!(
+            listed.contains(&at(r"\same")),
+            "listing broke off last time"
+        );
+
+        let (old, _, _) = walk_recorded(&Listings::new(refresh_share(false)), None);
+        let touched = [PathBuf::from(at(r"\same"))];
+        let (_, listed, _) =
+            walk_recorded(&Listings::new(refresh_share(false)), Some((&old, &touched)));
+        assert!(listed.contains(&at(r"\same")), "changes were seen there");
+
+        let one_folder = |attributes: u32| {
+            let fs = FakeFs::new();
+            let same = Entry {
+                attributes,
+                ..dir_at("same", 1_000)
+            };
+            fs.insert_dir(REFRESH_SHARE, vec![same]);
+            fs.insert_dir(at(r"\same"), vec![file("a.txt")]);
+            fs
+        };
+        let (old, _, _) = walk_recorded(&Listings::new(one_folder(0)), None);
+        let (_, listed, _) = walk_recorded(&Listings::new(one_folder(0)), Some((&old, &[])));
+        assert!(
+            !listed.contains(&at(r"\same")),
+            "a plain folder is taken over"
+        );
+        let (_, listed, _) = walk_recorded(&Listings::new(one_folder(0x400)), Some((&old, &[])));
+        assert!(listed.contains(&at(r"\same")), "a reparse point");
+
+        let recent = UNIX_EPOCH.elapsed().unwrap().as_secs() - 60;
+        let near = FakeFs::new();
+        near.insert_dir(REFRESH_SHARE, vec![dir_at("same", recent)]);
+        near.insert_dir(at(r"\same"), vec![file("a.txt")]);
+        let (old, _, _) = walk_recorded(&Listings::new(Arc::clone(&near)), None);
+        let (_, listed, _) = walk_recorded(&Listings::new(near), Some((&old, &[])));
+        assert!(
+            listed.contains(&at(r"\same")),
+            "changed just before the walk"
+        );
+    }
+
+    /// A folder that can't be listed during a refresh keeps what the last walk found below it;
+    /// a root that can't be listed (the share is offline) is reported, so the caller keeps the
+    /// index it has.
+    #[test]
+    fn refresh_keeps_what_it_cannot_list() {
+        let (old, _, _) = walk_recorded(&Listings::new(refresh_share(false)), None);
+        let mut offline = Listings::new(refresh_share(true));
+        offline.failing = vec![at(r"\parent")];
+        let (new, _, progress) = walk_recorded(&offline, Some((&old, &[])));
+        assert!(!Index::roots_failed(&progress));
+        assert!(all_paths(&new).contains(&at(r"\parent\deep\d.txt")));
+
+        let mut down = Listings::new(refresh_share(true));
+        down.failing = vec![at("")];
+        let (_, _, progress) = walk_recorded(&down, Some((&old, &[])));
+        assert!(Index::roots_failed(&progress));
+    }
+
+    /// While a first build runs, a copy of it is published only once it has grown by a quarter,
+    /// so copies don't pile up.
+    #[test]
+    fn partial_copies_wait_for_the_walk_to_grow() {
+        let progress = BuildProgress::default();
+        progress.want_partial.store(true, Ordering::Relaxed);
+        let mut index = Index::default();
+        let root = index.push(NO_PARENT, r"C:\", FLAG_DIR, 0, 0).unwrap();
+        for i in 0..100 {
+            index.push(root, &format!("f{i}"), 0, 1, 0);
+        }
+        let mut last = None;
+        index.publish_partial(&progress, &mut last);
+        assert_eq!(progress.partial.lock().as_ref().map(|p| p.len()), Some(101));
+        for i in 0..10 {
+            index.push(root, &format!("g{i}"), 0, 1, 0);
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        index.publish_partial(&progress, &mut last);
+        assert_eq!(progress.partial.lock().as_ref().map(|p| p.len()), Some(101));
+        for i in 0..20 {
+            index.push(root, &format!("h{i}"), 0, 1, 0);
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        index.publish_partial(&progress, &mut last);
+        assert_eq!(progress.partial.lock().as_ref().map(|p| p.len()), Some(131));
     }
 
     /// The items below a folder come with the changes seen since the build, and without hidden
@@ -3402,6 +3712,7 @@ mod tests {
             let mut items: Vec<(String, u64)> = index
                 .items_under(Path::new(r"\\nas\s\docs"), &overlay, show_hidden, &cancel)
                 .unwrap()
+                .items
                 .into_iter()
                 .map(|item| (item.rel, item.entry.size))
                 .collect();
@@ -3424,6 +3735,78 @@ mod tests {
         assert!(
             index
                 .items_under(Path::new(r"\\nas\elsewhere"), &overlay, true, &cancel)
+                .is_none()
+        );
+    }
+
+    /// Changes go where they belong: an item inside a hidden folder stays hidden with it, a file
+    /// replaced by a folder is a folder, and a folder gone since the build has nothing to list.
+    /// Folders the index doesn't enter (build folders here) are handed back to be walked;
+    /// snapshots aren't.
+    #[test]
+    fn items_under_follow_changes_and_name_what_is_not_indexed() {
+        let fs = FakeFs::new();
+        let hidden = Entry {
+            attributes: 0x2,
+            ..dir(".cache")
+        };
+        fs.insert_dir(
+            r"\\nas\s",
+            vec![
+                dir("docs"),
+                hidden,
+                file("swap"),
+                dir("node_modules"),
+                dir("#snapshot"),
+            ],
+        );
+        fs.insert_dir(r"\\nas\s\docs", vec![file("a.txt")]);
+        fs.insert_dir(r"\\nas\s\.cache", vec![]);
+        fs.insert_dir(r"\\nas\s\node_modules", vec![file("lib.js")]);
+        fs.insert_dir(r"\\nas\s\#snapshot", vec![file("old.txt")]);
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"\\nas\s")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            true,
+        );
+        let seen = |is_dir: bool| Seen {
+            is_dir,
+            hidden: false,
+            size: 0,
+            modified: 0,
+        };
+        let mut overlay = Overlay::default();
+        overlay.record(PathBuf::from(r"\\nas\s\.cache\new.bin"), Some(seen(false)));
+        overlay.record(PathBuf::from(r"\\nas\s\swap"), Some(seen(true)));
+        let cancel = AtomicBool::new(false);
+        let tree = index
+            .items_under(Path::new(r"\\nas\s"), &overlay, false, &cancel)
+            .unwrap();
+        let mut names: Vec<(String, EntryKind)> = tree
+            .items
+            .iter()
+            .map(|i| (i.rel.clone(), i.entry.kind))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ("#snapshot".to_owned(), EntryKind::Dir),
+                ("docs".to_owned(), EntryKind::Dir),
+                (r"docs\a.txt".to_owned(), EntryKind::File),
+                ("node_modules".to_owned(), EntryKind::Dir),
+                ("swap".to_owned(), EntryKind::Dir),
+            ]
+        );
+        assert_eq!(tree.unindexed, ["node_modules"]);
+        overlay.record(PathBuf::from(r"\\nas\s\docs"), None);
+        assert!(
+            index
+                .items_under(Path::new(r"\\nas\s\docs"), &overlay, false, &cancel)
                 .is_none()
         );
     }

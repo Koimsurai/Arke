@@ -304,9 +304,19 @@ const FIND_PATTERN_MAX: usize = 247;
 /// trip to the server, so a folder of a few hundred files comes back in one instead of a dozen.
 /// `None` for paths too long for a plain pattern: std lists those.
 pub(crate) fn read_dir(dir: &Path) -> Option<io::Result<crate::fs::DirIter>> {
-    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    // std refuses a path with a NUL in it; passed on, Windows would read it only up to the NUL.
+    if dir.as_os_str().encode_wide().any(|c| c == 0) {
+        return Some(Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains a NUL character",
+        )));
+    }
     let pattern = wide(&dir.join("*"));
     if pattern.len() > FIND_PATTERN_MAX + 1 {
+        return None;
+    }
+    let volume = volume_of(dir);
+    if no_large_fetch().lock().contains(&volume) {
         return None;
     }
     let mut data = WIN32_FIND_DATAW::default();
@@ -321,18 +331,82 @@ pub(crate) fn read_dir(dir: &Path) -> Option<io::Result<crate::fs::DirIter>> {
             FIND_FIRST_EX_LARGE_FETCH,
         )
     };
-    Some(match find {
-        Ok(find) => Ok(Box::new(FindEntries {
+    match find {
+        Ok(find) => Some(Ok(Box::new(FindEntries {
             find: Some(Find(find)),
             first: Some(data),
-        })),
-        // Nothing matched, as for the root of an empty drive (which has no `.`): std lists that
-        // as empty too.
-        Err(err) if err.code() == ERROR_FILE_NOT_FOUND.to_hresult() => {
-            Ok(Box::new(std::iter::empty()))
-        }
-        Err(err) => Err(err.into()),
-    })
+        }))),
+        Err(err) => match find_failure(win32_code(&err)) {
+            // Nothing matched, as for the root of an empty drive (which has no `.`): std lists
+            // that as empty too.
+            FindFailure::Empty => Some(Ok(Box::new(std::iter::empty()))),
+            FindFailure::Error => Some(Err(err.into())),
+            FindFailure::Unsupported => {
+                log::info!(
+                    "{volume} doesn't take large directory fetches ({err}), listing it like std"
+                );
+                no_large_fetch().lock().insert(volume);
+                None
+            }
+            FindFailure::Other => None,
+        },
+    }
+}
+
+/// What a failed `FindFirstFileExW` means for [`read_dir`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FindFailure {
+    /// Nothing matched: an empty listing.
+    Empty,
+    /// The folder can't be listed (missing, access denied, the network is down): std would fail
+    /// the same way, and trying again only waits on the network twice.
+    Error,
+    /// The file system or redirector rejects the large-fetch or basic-info flags: list it (and
+    /// the rest of that volume) the way std does.
+    Unsupported,
+    /// Anything else: let std try.
+    Other,
+}
+
+fn find_failure(code: u32) -> FindFailure {
+    /// `ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`, `ERROR_INVALID_PARAMETER`,
+    /// `ERROR_INVALID_LEVEL`.
+    const UNSUPPORTED: [u32; 4] = [1, 50, 87, 124];
+    /// Path not found, access denied, a file not a folder, and network failures: bad network
+    /// path, unexpected network error, name deleted, bad network name, semaphore timeout,
+    /// network unreachable, host unreachable, no network provider, logon failure.
+    const ERRORS: [u32; 13] = [3, 5, 267, 53, 59, 64, 67, 121, 1231, 1232, 1203, 1326, 1222];
+    match code {
+        2 => FindFailure::Empty,
+        c if ERRORS.contains(&c) => FindFailure::Error,
+        c if UNSUPPORTED.contains(&c) => FindFailure::Unsupported,
+        _ => FindFailure::Other,
+    }
+}
+
+/// The Win32 error code inside an HRESULT from windows-rs (`0x8007xxxx`).
+const fn win32_code(err: &windows::core::Error) -> u32 {
+    let hr = err.code().0.cast_unsigned();
+    if hr & 0xFFFF_0000 == 0x8007_0000 {
+        hr & 0xFFFF
+    } else {
+        hr
+    }
+}
+
+/// Volumes (`x:` or `\\server\share`, lowercase) whose listings go through std: they rejected
+/// a large fetch.
+fn no_large_fetch() -> &'static parking_lot::Mutex<std::collections::HashSet<String>> {
+    static VOLUMES: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    VOLUMES.get_or_init(Default::default)
+}
+
+/// The volume part of a path (`x:` or `\\server\share`), lowercase.
+fn volume_of(path: &Path) -> String {
+    path.components()
+        .next()
+        .map_or_default(|c| c.as_os_str().to_string_lossy().to_lowercase())
 }
 
 /// Whether `path` is on a file server: `\\server\share\…` or a mapped drive. Reads the drive
@@ -575,6 +649,43 @@ mod tests {
         assert!(read_dir(&dir.join("missing")).unwrap().is_err());
         let _ = std::fs::remove_dir(dir.join("link"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A path with a NUL in it is refused, as std refuses it, instead of listing what comes
+    /// before the NUL.
+    #[test]
+    fn a_path_with_a_nul_is_refused() {
+        let dir = std::env::temp_dir();
+        let mut bad = dir.into_os_string();
+        bad.push("\0x");
+        let err = read_dir(Path::new(&bad)).unwrap().err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// Errors that std would hit too are returned; a redirector rejecting the large-fetch flags
+    /// sends that volume's listings through std from then on.
+    #[test]
+    fn unsupported_large_fetches_fall_back_to_std() {
+        assert_eq!(find_failure(2), FindFailure::Empty);
+        for code in [3, 5, 53, 67, 1231] {
+            assert_eq!(find_failure(code), FindFailure::Error, "{code}");
+        }
+        for code in [1, 50, 87, 124] {
+            assert_eq!(find_failure(code), FindFailure::Unsupported, "{code}");
+        }
+        assert_eq!(find_failure(1117), FindFailure::Other);
+        let err = windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(87));
+        assert_eq!(win32_code(&err), 87);
+
+        let dir = std::env::temp_dir();
+        assert!(read_dir(&dir).is_some());
+        let volume = volume_of(&dir);
+        no_large_fetch().lock().insert(volume.clone());
+        assert!(read_dir(&dir).is_none(), "listed like std");
+        assert!(crate::fs::Fs::read_dir(&crate::fs::RealFs, &dir).is_ok());
+        no_large_fetch().lock().remove(&volume);
+        assert_eq!(volume_of(Path::new(r"\\NAS\Share\docs")), r"\\nas\share");
+        assert_eq!(volume_of(Path::new(r"X:\docs")), "x:");
     }
 
     #[test]

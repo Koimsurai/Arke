@@ -101,14 +101,16 @@ pub(super) fn list_blocking(
     probe: Option<&dyn arke_core::net::NetProbe>,
     dir: &Path,
 ) -> std::io::Result<Vec<Entry>> {
-    match probe.zip(arke_core::net::share_server(dir)) {
-        Some((probe, server)) => probe
+    if let Some((probe, server)) = probe.zip(arke_core::net::share_server(dir)) {
+        return probe
             .shares(server)
-            .map(|shares| arke_core::net::share_entries(&shares)),
-        None => fs
-            .read_dir(dir)
-            .map(|iter| iter.filter_map(Result::ok).collect()),
+            .map(|shares| arke_core::net::share_entries(&shares));
     }
+    if let Some(Err(err)) = probe.and_then(|probe| probe.reconnect(dir)) {
+        return Err(err);
+    }
+    fs.read_dir(dir)
+        .map(|iter| iter.filter_map(Result::ok).collect())
 }
 
 /// Split input into the folder to list and the name prefix. `C:\Users\Pu` -> (`C:\Users\`, `Pu`).

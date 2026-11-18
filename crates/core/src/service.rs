@@ -479,6 +479,11 @@ impl Job {
             .as_deref()
             .is_some_and(|unc| self.start_network(&path, unc, opts, requested_at));
         let start = Instant::now();
+        if network && let Some(Err(err)) = self.probe.as_ref().and_then(|p| p.reconnect(&path)) {
+            let (error, kind) = crate::net::describe(&err, network);
+            self.fail(path, error, kind);
+            return;
+        }
         let Some((iter, shares)) = self.open_listing(&path, network) else {
             return;
         };
@@ -898,11 +903,16 @@ mod tests {
     }
 
     /// Test probe: paths starting with `\\` are network locations; the test decides reachability.
-    /// The shares answer is the share list or a Windows error code.
+    /// The shares answer is the share list or a Windows error code; so is the answer to
+    /// reconnecting a mapped drive (`None`: nothing to reconnect), kept with the paths asked.
     struct FakeProbe(
         Mutex<crate::net::Reach>,
         Mutex<Result<Vec<crate::net::Share>, i32>>,
+        Mutex<Reconnects>,
     );
+
+    /// The answer to reconnecting a mapped drive, and the paths it was asked for.
+    type Reconnects = (Option<Result<(), i32>>, Vec<PathBuf>);
 
     impl NetProbe for FakeProbe {
         fn unc(&self, path: &Path) -> Option<PathBuf> {
@@ -919,19 +929,57 @@ mod tests {
                 .clone()
                 .map_err(std::io::Error::from_raw_os_error)
         }
+        fn reconnect(&self, path: &Path) -> Option<std::io::Result<()>> {
+            let mut reconnect = self.2.lock();
+            reconnect.1.push(path.to_path_buf());
+            reconnect
+                .0
+                .map(|answer| answer.map_err(std::io::Error::from_raw_os_error))
+        }
     }
 
     fn network_service(
         fs: Arc<dyn Fs>,
         reach: crate::net::Reach,
     ) -> (DirService, Events, Arc<FakeProbe>) {
-        let probe = Arc::new(FakeProbe(Mutex::new(reach), Mutex::new(Ok(Vec::new()))));
+        let probe = Arc::new(FakeProbe(
+            Mutex::new(reach),
+            Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
+        ));
         let (svc, events) = service(fs);
         (
             svc.with_probe(Arc::clone(&probe) as Arc<dyn NetProbe>),
             events,
             probe,
         )
+    }
+
+    /// A mapped drive Windows remembers but hasn't connected (after a restart) is reconnected
+    /// before listing; if that needs a sign-in, the "Sign in" button.
+    #[test]
+    fn an_unconnected_mapped_drive_is_reconnected_first() {
+        let fs = FakeFs::new();
+        let share = PathBuf::from(r"\\nas\team\reports");
+        fs.insert_many(&share, 3);
+        let (svc, events, probe) =
+            network_service(Arc::clone(&fs) as Arc<dyn Fs>, crate::net::Reach::Up);
+        probe.2.lock().0 = Some(Ok(()));
+        let generation = svc.navigate(share.clone(), opts(false));
+        assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
+            e,
+            IoEvent::Listing { generation: g, complete: true, entries, .. }
+                if *g == generation && entries.len() == 3
+        )));
+        assert_eq!(probe.2.lock().1, std::slice::from_ref(&share));
+
+        probe.2.lock().0 = Some(Err(1326));
+        let generation = svc.navigate(share, opts(false));
+        assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
+            e,
+            IoEvent::ListFailed { generation: g, kind: FailKind::NeedsLogin, .. }
+                if *g == generation
+        )));
     }
 
     /// Unreachable server: don't wait for the hung listing (OS timeout is tens of seconds);

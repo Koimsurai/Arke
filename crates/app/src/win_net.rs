@@ -80,6 +80,10 @@ impl NetProbe for WinNetProbe {
         mapped_drive(path)
     }
 
+    fn reconnect(&self, path: &Path) -> Option<std::io::Result<()>> {
+        unavailable_drive(path).map(reconnect_drive)
+    }
+
     fn reach(&self, server: &str) -> Reach {
         arke_core::net::tcp_reach(server, RESOLVE_BUDGET, CONNECT_TIMEOUT)
     }
@@ -159,18 +163,39 @@ fn server_shares(server: &str) -> std::io::Result<Vec<Share>> {
 }
 
 /// Mapped drive path (`Z:\a`) -> `\\server\share\a`. Reads Windows' mapping only; no network access.
+/// A drive Windows remembers but hasn't connected yet counts too (see [`unavailable_drive`]).
 fn mapped_drive(path: &Path) -> Option<PathBuf> {
+    let (letter, rest) = drive_letter(path)?;
+    let (mut unc, _) = drive_target(letter)?;
+    if !rest.is_empty() {
+        unc.push(rest);
+    }
+    Some(unc)
+}
+
+/// `Z:\a\b` -> (`Z`, `a\b`).
+fn drive_letter(path: &Path) -> Option<(char, &str)> {
     let s = path.to_str()?;
-    let bytes = s.as_bytes();
-    if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
-        return None;
-    }
-    let root = wide(std::ffi::OsStr::new(&format!("{}:\\", &s[..1])));
+    let letter = s.chars().next().filter(char::is_ascii_alphabetic)?;
+    let rest = s.get(1..)?.strip_prefix(':')?;
+    Some((letter, rest.trim_start_matches('\\')))
+}
+
+/// Where mapped drive `letter` points, and whether Windows has it connected. A remembered drive
+/// that isn't connected (no drive yet, `ERROR_CONNECTION_UNAVAIL`) counts; local drives don't.
+/// No network access.
+fn drive_target(letter: char) -> Option<(PathBuf, bool)> {
+    /// No such drive: an unconnected remembered drive has no root yet.
+    const DRIVE_NO_ROOT_DIR: u32 = 1;
+    const ERROR_CONNECTION_UNAVAIL: u32 = 1201;
+    let root = wide(std::ffi::OsStr::new(&format!("{letter}:\\")));
     // SAFETY: root is NUL-terminated and outlives the call; only queries the drive type.
-    if unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } != DRIVE_REMOTE {
-        return None;
-    }
-    let local = wide(std::ffi::OsStr::new(&s[..2]));
+    let connected = match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
+        DRIVE_REMOTE => true,
+        DRIVE_NO_ROOT_DIR => false,
+        _ => return None,
+    };
+    let local = wide(std::ffi::OsStr::new(&format!("{letter}:")));
     let mut buf = vec![0u16; 1024];
     let mut len = buf.len() as u32;
     // SAFETY: local is NUL-terminated; buf holds at least len u16s; len is a valid pointer.
@@ -181,16 +206,49 @@ fn mapped_drive(path: &Path) -> Option<PathBuf> {
             &raw mut len,
         )
     };
-    if result != WIN32_ERROR(0) {
+    let expected = if connected {
+        0
+    } else {
+        ERROR_CONNECTION_UNAVAIL
+    };
+    if result != WIN32_ERROR(expected) {
         return None;
     }
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    let mut unc = PathBuf::from(OsString::from_wide(&buf[..end]));
-    let rest = s[2..].trim_start_matches('\\');
-    if !rest.is_empty() {
-        unc.push(rest);
+    Some((PathBuf::from(OsString::from_wide(&buf[..end])), connected))
+}
+
+/// The drive letter of `path` if it's on a mapped drive Windows remembers but hasn't connected:
+/// after a restart, a mapped drive stays "unavailable" until something reconnects it (File
+/// Explorer does when it's opened). No network access.
+fn unavailable_drive(path: &Path) -> Option<char> {
+    let (letter, _) = drive_letter(path)?;
+    let (_, connected) = drive_target(letter)?;
+    (!connected).then_some(letter)
+}
+
+/// Reconnects a remembered mapped drive the way File Explorer does, with the credentials Windows
+/// has for it. No prompt: a sign-in failure comes back as an error, and Arke's own sign-in
+/// applies. Touches the network; call from a background thread.
+fn reconnect_drive(letter: char) -> std::io::Result<()> {
+    // winnetwk.h; not in the windows crate.
+    windows_core::link!("mpr.dll" "system" fn WNetRestoreSingleConnectionW(
+        hwnd: HWND, device: PCWSTR, use_ui: windows::core::BOOL) -> u32);
+    debug_assert!(!arke_core::fs::is_ui_thread());
+    let device = wide(std::ffi::OsStr::new(&format!("{letter}:")));
+    // SAFETY: device is NUL-terminated and outlives the call; no owner window, no UI.
+    let result = unsafe {
+        WNetRestoreSingleConnectionW(HWND::default(), PCWSTR(device.as_ptr()), false.into())
+    };
+    if result == 0 {
+        log::info!("reconnected mapped drive {letter}:");
+        Ok(())
+    } else {
+        log::info!("reconnecting mapped drive {letter}: failed: error {result}");
+        Err(std::io::Error::from_raw_os_error(
+            i32::try_from(result).unwrap_or(i32::MAX),
+        ))
     }
-    Some(unc)
 }
 
 /// Connects to a share, optionally mapped to a drive letter. Without credentials the current

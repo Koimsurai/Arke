@@ -37,6 +37,12 @@ pub trait NetProbe: Send + Sync + 'static {
     fn unc(&self, path: &Path) -> Option<PathBuf>;
     /// Whether the server is reachable (touches the network, up to a few seconds).
     fn reach(&self, server: &str) -> Reach;
+    /// Connects the mapped drive `path` is on if Windows remembers it but hasn't connected it
+    /// (after a restart a mapped drive stays unavailable until it's first opened; File Explorer
+    /// reconnects it then). `None` when there's nothing to reconnect. Touches the network.
+    fn reconnect(&self, _path: &Path) -> Option<io::Result<()>> {
+        None
+    }
     /// The shares `server` offers, as it reports them (`\\server` is listed with
     /// [`share_entries`]). Touches the network; call from a background thread.
     fn shares(&self, server: &str) -> io::Result<Vec<Share>> {

@@ -742,6 +742,16 @@ impl ContextMenu {
             self.scroll(level).offset().y,
         )
     }
+
+    /// Test helper: where submenu row `ix` of `level` was drawn.
+    #[cfg(test)]
+    pub(crate) fn submenu_row_for_test(&self, level: usize, ix: usize) -> Option<Bounds<Pixels>> {
+        self.geometry
+            .borrow()
+            .rows
+            .get(&(level * LEVEL_STRIDE + ix))
+            .copied()
+    }
 }
 
 pub(crate) struct ExtractJob {
@@ -1342,11 +1352,6 @@ impl Explorer {
 
     /// Hovering row `ix` at `level`: after a short delay, open its submenu (or close another one).
     fn hover_row(&mut self, level: usize, ix: usize, submenu: bool, cx: &mut Context<Self>) {
-        // A submenu filled only when opened is asked for while the delay runs, so it usually
-        // opens ready.
-        if submenu {
-            self.fill_lazy_submenu(level, ix);
-        }
         let Some(menu) = self.context_menu.as_mut() else {
             return;
         };
@@ -1369,6 +1374,12 @@ impl Explorer {
                     menu.highlighted = None;
                     menu.keyboard = false;
                     this.ensure_shell_menu();
+                    // A submenu filled only when opened is asked for now, as it opens, not for
+                    // every row the pointer passes over on its way: each fill holds up the
+                    // Windows menu for a while.
+                    if submenu {
+                        this.fill_lazy_submenu(level, ix);
+                    }
                     cx.notify();
                 }
             });
@@ -2033,6 +2044,7 @@ impl Explorer {
         if let Some(menu) = self.context_menu.as_ref() {
             self.learn_pin_owners(menu, request, cx);
         }
+        self.fill_lazy_for_pins(cx);
     }
 
     /// Runs the item with `verb` (e.g. "properties", "openas") from the classic Windows menu. The

@@ -2,9 +2,15 @@
 //!
 //! The Windows menu is read up front, and each submenu is asked to fill itself then. An extension
 //! may fill its submenu only when it is really opened, the way File Explorer's menu asks for it,
-//! so it reads as empty; such a submenu used to be dropped. Now it comes with a number (`ShellMenuEntry::Submenu::lazy`) and shows "Loading…" until the menu host fills and
-//! reads it. That is asked as soon as the pointer rests on the row, so it is usually ready by
-//! the time the submenu opens. Its items run in the same Windows menu as the rest.
+//! so it reads as empty; such a submenu used to be dropped. Now it comes with a number
+//! (`ShellMenuEntry::Submenu::lazy`) and shows "Loading…" until the menu host fills and reads it.
+//! That is asked as the submenu opens (after the hover delay, or at once by click or keyboard),
+//! not for every row the pointer passes over: fills queue up in the Windows menu, ahead of a
+//! command the user then picks. Its items run in the same Windows menu as the rest.
+//!
+//! A pinned command may live in such a submenu. The menu then fills that submenu (and one filled
+//! inside it, down to the command) as soon as it is read, so the pinned row shows up top as
+//! usual.
 //!
 //! Filling one only changes that submenu's own rows; the rows above it, and pinned commands at
 //! the top, stay where they are.
@@ -14,8 +20,11 @@ use std::sync::Arc;
 use gpui::Context;
 use rust_i18n::t;
 
-use super::{ContextMenu, MenuEntry, ShellMenuEvent, error_line, placeholder};
+use super::{
+    ContextMenu, MenuEntry, ShellMenuEvent, error_line, find_pinned, pin_key, placeholder,
+};
 use crate::explorer::{AppEvent, Explorer, spawn_thread};
+use crate::settings::SettingsStore;
 use crate::shell::{ShellError, ShellMenuEntry};
 
 /// A Windows submenu still to be filled.
@@ -60,6 +69,88 @@ impl ContextMenu {
         }
         Some(entries)
     }
+
+    /// Pinned commands not in the menu yet (`pinned` in pin order).
+    fn missing_pins(&self, pinned: &[String]) -> Vec<String> {
+        let Some(MenuEntry::Submenu { children, .. }) =
+            self.shell_slot.and_then(|ix| self.entries.get(ix))
+        else {
+            return Vec::new();
+        };
+        pinned
+            .iter()
+            .filter(|key| {
+                find_pinned(children, key).is_none()
+                    && !self
+                        .parts
+                        .iter()
+                        .any(|(_, entries)| find_pinned(entries, key).is_some())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Submenus still to fill that a pinned command in `wanted` would be in, marked as asked: the
+    /// Windows menu each belongs to and its number there.
+    fn take_lazy_for_pins(&mut self, wanted: &[String]) -> Vec<(u64, u32)> {
+        let mut found: Vec<&mut LazySubmenu> = Vec::new();
+        let whole = self.shell_session;
+        if let Some(MenuEntry::Submenu { children, .. }) =
+            self.shell_slot.and_then(|ix| self.entries.get_mut(ix))
+        {
+            lazy_under(children, &mut Vec::new(), wanted, &mut found);
+        }
+        let mut asks: Vec<(u64, u32)> = found
+            .into_iter()
+            .filter_map(|lazy| {
+                let session = lazy.session.or(whole)?;
+                lazy.asked = true;
+                Some((session, lazy.index))
+            })
+            .collect();
+        for (_, entries) in &mut self.parts {
+            let mut found = Vec::new();
+            lazy_under(entries, &mut Vec::new(), wanted, &mut found);
+            asks.extend(found.into_iter().filter_map(|lazy| {
+                let session = lazy.session?;
+                lazy.asked = true;
+                Some((session, lazy.index))
+            }));
+        }
+        asks
+    }
+}
+
+/// The unfilled submenus below `entries` (labels `path` down to them) whose rows would hold a
+/// command in `wanted`, going into filled ones.
+fn lazy_under<'a>(
+    entries: &'a mut [MenuEntry],
+    path: &mut Vec<String>,
+    wanted: &[String],
+    out: &mut Vec<&'a mut LazySubmenu>,
+) {
+    for entry in entries {
+        let MenuEntry::Submenu {
+            label,
+            children,
+            lazy,
+            shell: true,
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        path.push(label.to_string());
+        let names: Vec<&str> = path.iter().map(String::as_str).collect();
+        let below = format!("{} › ", pin_key(&names));
+        if wanted.iter().any(|key| key.starts_with(&below)) {
+            match lazy {
+                Some(lazy) if !lazy.asked => out.push(lazy),
+                _ => lazy_under(children, path, wanted, out),
+            }
+        }
+        path.pop();
+    }
 }
 
 /// Where the submenu waiting for `session`/`index` is below `entries`: row indexes down to it.
@@ -77,14 +168,51 @@ fn find(entries: &[MenuEntry], whole: Option<u64>, session: u64, index: u32) -> 
     })
 }
 
+/// Puts `result` in as the rows of the submenu at `path` below `entries`.
+fn put_filled(
+    entries: &mut [MenuEntry],
+    path: &[usize],
+    result: Result<Vec<ShellMenuEntry>, ShellError>,
+) {
+    // Down to it, collecting the submenu names for pin keys (below "Show more options").
+    let mut entries = entries;
+    let mut names: Vec<String> = Vec::new();
+    for (depth, &ix) in path.iter().enumerate() {
+        let Some(MenuEntry::Submenu {
+            label,
+            children,
+            lazy,
+            ..
+        }) = entries.get_mut(ix)
+        else {
+            return;
+        };
+        names.push(label.to_string());
+        if depth + 1 == path.len() {
+            let own = lazy.and_then(|l| l.session);
+            let parent: Vec<&str> = names.iter().map(String::as_str).collect();
+            *children = match result {
+                Ok(rows) if rows.is_empty() => vec![placeholder(t!("menu.submenu_empty"))],
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|e| MenuEntry::from_shell_in(e, &parent, own))
+                    .collect(),
+                Err(e) => vec![error_line(t!("menu.load_failed", error = e))],
+            };
+            return;
+        }
+        entries = children;
+    }
+}
+
 impl Explorer {
-    /// Row `ix` at `level` is a submenu about to open: if Windows fills it only when opened, ask
-    /// the menu host to, once.
+    /// Row `ix` at `level` is a submenu opening: if Windows fills it only when opened, ask the
+    /// menu host to, once.
     pub(super) fn fill_lazy_submenu(&mut self, level: usize, ix: usize) {
         let Some(menu) = self.context_menu.as_mut() else {
             return;
         };
-        let (serial, whole) = (menu.serial, menu.shell_session);
+        let (whole, serial) = (menu.shell_session, menu.serial);
         let Some(MenuEntry::Submenu {
             lazy: Some(lazy), ..
         }) = menu
@@ -98,6 +226,31 @@ impl Explorer {
         };
         lazy.asked = true;
         let index = lazy.index;
+        self.ask_fill(serial, session, index);
+    }
+
+    /// The menu or one of its parts was read, or a submenu filled: fill the submenus pinned
+    /// commands are still hidden in, without waiting for them to be opened.
+    pub(super) fn fill_lazy_for_pins(&mut self, cx: &mut Context<Self>) {
+        let pinned = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .menu_pinned
+            .clone();
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
+        let wanted = menu.missing_pins(&pinned);
+        if wanted.is_empty() {
+            return;
+        }
+        let serial = menu.serial;
+        for (session, index) in menu.take_lazy_for_pins(&wanted) {
+            self.ask_fill(serial, session, index);
+        }
+    }
+
+    fn ask_fill(&self, serial: u64, session: u64, index: u32) {
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("shell-submenu", move || {
@@ -111,7 +264,8 @@ impl Explorer {
         });
     }
 
-    /// A submenu was filled: its rows replace "Loading…" if the menu is still open.
+    /// A submenu was filled: its rows replace "Loading…" if the menu is still open, and pinned
+    /// commands in it go up top.
     pub(super) fn handle_submenu_filled(&mut self, filled: Filled, cx: &mut Context<Self>) {
         let Some(menu) = self
             .context_menu
@@ -123,54 +277,43 @@ impl Explorer {
         let Some(slot) = menu.shell_slot else {
             return;
         };
-        let Some(MenuEntry::Submenu { children: top, .. }) = menu.entries.get_mut(slot) else {
-            return;
+        let whole = menu.shell_session;
+        let in_whole = match menu.entries.get(slot) {
+            Some(MenuEntry::Submenu { children, .. }) => {
+                find(children, whole, filled.session, filled.index)
+            }
+            _ => None,
         };
-        let Some(path) = find(top, menu.shell_session, filled.session, filled.index) else {
-            return;
-        };
-        // Down to it, collecting the submenu names for pin keys (below "Show more options").
-        let mut entries = top;
-        let mut names: Vec<String> = Vec::new();
-        let mut target = None;
-        for (depth, &ix) in path.iter().enumerate() {
-            let Some(MenuEntry::Submenu {
-                label,
-                children,
-                lazy,
-                ..
-            }) = entries.get_mut(ix)
-            else {
+        if let Some(path) = in_whole {
+            if let Some(MenuEntry::Submenu { children, .. }) = menu.entries.get_mut(slot) {
+                put_filled(children, &path, filled.result);
+            }
+            // Keyboard already went in while it held only "Loading…": select its first item.
+            let mut open_path = vec![slot];
+            open_path.extend(&path);
+            if menu.keyboard && menu.highlighted.is_none() && menu.open == open_path {
+                menu.highlighted = menu
+                    .level(menu.open.len())
+                    .iter()
+                    .position(MenuEntry::selectable);
+            }
+        } else {
+            // One of the extensions read on their own for a pinned command.
+            let Some((entries, path)) = menu.parts.iter_mut().find_map(|(_, entries)| {
+                let path = find(entries, None, filled.session, filled.index)?;
+                Some((entries, path))
+            }) else {
                 return;
             };
-            names.push(label.to_string());
-            if depth + 1 == path.len() {
-                target = Some((children, lazy.and_then(|l| l.session)));
-                break;
-            }
-            entries = children;
+            put_filled(entries, &path, filled.result);
         }
-        let Some((children, own)) = target else {
-            return;
-        };
-        let parent: Vec<&str> = names.iter().map(String::as_str).collect();
-        *children = match filled.result {
-            Ok(rows) if rows.is_empty() => vec![placeholder(t!("menu.submenu_empty"))],
-            Ok(rows) => rows
-                .into_iter()
-                .map(|e| MenuEntry::from_shell_in(e, &parent, own))
-                .collect(),
-            Err(e) => vec![error_line(t!("menu.load_failed", error = e))],
-        };
-        // Keyboard already went in while it held only "Loading…": select its first item.
-        let mut open_path = vec![slot];
-        open_path.extend(&path);
-        if menu.keyboard && menu.highlighted.is_none() && menu.open == open_path {
-            menu.highlighted = menu
-                .level(menu.open.len())
-                .iter()
-                .position(MenuEntry::selectable);
-        }
+        let pinned = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .menu_pinned
+            .clone();
+        menu.sync_pinned(&pinned);
+        self.fill_lazy_for_pins(cx);
         cx.notify();
     }
 }

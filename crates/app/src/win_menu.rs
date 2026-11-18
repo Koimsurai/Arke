@@ -69,6 +69,9 @@ const MAX_DEPTH: usize = 4;
 const MAX_ITEMS: usize = 400;
 /// Retries, 30 ms apart, while a submenu is still being filled.
 const INIT_TRIES: u32 = 50;
+/// Retries for a submenu filled as it opens that still has no items at all, not even a
+/// placeholder: about 300 ms, since a command picked meanwhile waits behind it.
+const EMPTY_TRIES: u32 = 10;
 
 enum Request {
     Query {
@@ -131,6 +134,12 @@ struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // The stand-in view given to an empty-space menu (`set_background_site`) goes first, as
+        // File Explorer takes its site back before letting go of a menu.
+        if let Ok(with_site) = self.menu.cast::<IObjectWithSite>() {
+            // SAFETY: plain COM call on the thread that made the menu.
+            let _ = unsafe { with_site.SetSite(None) };
+        }
         // SAFETY: hmenu was created by CreatePopupMenu and not yet destroyed.
         let _ = unsafe { DestroyMenu(self.hmenu) };
     }
@@ -139,6 +148,75 @@ impl Drop for Session {
 thread_local! {
     /// Current menu; menu messages (WM_INITMENUPOPUP etc.) are forwarded to it.
     static CURRENT: RefCell<Option<Session>> = const { RefCell::new(None) };
+    /// This menu thread's requests: its queue, and the ones taken off it but not handled yet.
+    static INBOX: RefCell<Inbox> = RefCell::new(Inbox::default());
+}
+
+/// Requests waiting on a menu thread. Fills of submenus (`FillSubmenu`) go last: the pointer may
+/// open several in a row, each taking a while, and the command the user then picks (or closing
+/// the menu) shouldn't wait behind them.
+#[derive(Default)]
+struct Inbox {
+    rx: Option<flume::Receiver<Request>>,
+    waiting: std::collections::VecDeque<Request>,
+}
+
+/// What the menu thread does next.
+enum Next {
+    Handle(Request),
+    /// Nothing to do: wait for a request or a message.
+    Idle,
+    /// The queue was dropped: the thread is done.
+    Gone,
+}
+
+impl Inbox {
+    /// Takes everything sent so far; whether the senders are gone.
+    fn collect(&mut self) -> bool {
+        let Some(rx) = self.rx.as_ref() else {
+            return true;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(request) => self.waiting.push_back(request),
+                Err(flume::TryRecvError::Empty) => return false,
+                Err(flume::TryRecvError::Disconnected) => return true,
+            }
+        }
+    }
+
+    fn next(&mut self) -> Next {
+        let gone = self.collect();
+        match take_next(&mut self.waiting) {
+            Some(request) => Next::Handle(request),
+            None if gone => Next::Gone,
+            None => Next::Idle,
+        }
+    }
+
+    /// Whether a request other than a fill is waiting (a fill under way then stops waiting for
+    /// its extension).
+    fn urgent(&mut self) -> bool {
+        self.collect();
+        self.waiting.iter().any(|r| !r.is_fill())
+    }
+}
+
+/// The request to handle next: the oldest one that isn't a fill, else the oldest fill.
+fn take_next(waiting: &mut std::collections::VecDeque<Request>) -> Option<Request> {
+    let at = waiting.iter().position(|r| !r.is_fill()).unwrap_or(0);
+    waiting.remove(at)
+}
+
+impl Request {
+    const fn is_fill(&self) -> bool {
+        matches!(self, Self::FillSubmenu { .. })
+    }
+}
+
+/// Whether this menu thread has a request waiting that a fill should give way to.
+fn urgent_waiting() -> bool {
+    INBOX.with(|inbox| inbox.try_borrow_mut().is_ok_and(|mut inbox| inbox.urgent()))
 }
 
 /// The menu thread's request queue, and the event that wakes it for each request.
@@ -353,13 +431,16 @@ fn run(rx: &flume::Receiver<Request>, wake: isize, part: bool) {
         return;
     };
     let wake = HANDLE(wake as *mut c_void);
+    INBOX.with(|inbox| inbox.borrow_mut().rx = Some(rx.clone()));
     loop {
         #[cfg(test)]
         WAKES.fetch_add(1, Ordering::Relaxed);
         pump_messages();
         loop {
-            match rx.try_recv() {
-                Ok(request) => {
+            // Not borrowed while handling: a fill looks at the inbox while it waits.
+            let next = INBOX.with(|inbox| inbox.borrow_mut().next());
+            match next {
+                Next::Handle(request) => {
                     let released = matches!(request, Request::Release(_));
                     handle(request, window);
                     // A single extension's menu was released: its thread is done.
@@ -367,8 +448,8 @@ fn run(rx: &flume::Receiver<Request>, wake: isize, part: bool) {
                         return;
                     }
                 }
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => return,
+                Next::Idle => break,
+                Next::Gone => return,
             }
             pump_messages();
         }
@@ -860,6 +941,12 @@ impl<'a> Reader<'a> {
             }
             init_submenu(menu, info.hSubMenu, pos, false);
             let children = self.read_menu(info.hSubMenu, depth + 1);
+            // Items there that can't be read (owner-drawn, bitmaps, submenus past the depth
+            // limit) leave nothing to show, now or later: dropped. Only a submenu with no items
+            // at all is one its extension fills on opening.
+            if children.is_empty() && !keeps_for_opening(item_count(info.hSubMenu)) {
+                return None;
+            }
             let lazy = children.is_empty().then(|| {
                 self.lazy.push(Lazy {
                     hmenu: info.hSubMenu,
@@ -928,23 +1015,30 @@ fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
     if has_text(submenu) {
         return;
     }
-    // SAFETY: submenu is a valid menu.
-    if !opening && unsafe { GetMenuItemCount(Some(submenu)) } <= 0 {
+    if !opening && item_count(submenu) <= 0 {
         return;
     }
     // Slow submenus like "Send to" fill gradually; done once the item count is stable for a
     // few rounds. Only these get the message again (they refill fully each time).
     let mut last = -1;
     let mut stable = 0;
-    for _ in 0..INIT_TRIES {
+    for round in 0..INIT_TRIES {
+        // A command picked (or the menu closed) meanwhile goes first; this fill ends with what
+        // is there.
+        if opening && urgent_waiting() {
+            return;
+        }
         pump_messages();
         std::thread::sleep(Duration::from_millis(30));
         init();
         if !has_text(submenu) {
+            // Opened and still without a single item: not much longer.
+            if opening && round + 1 >= EMPTY_TRIES && item_count(submenu) <= 0 {
+                return;
+            }
             continue;
         }
-        // SAFETY: submenu is a valid menu.
-        let count = unsafe { GetMenuItemCount(Some(submenu)) };
+        let count = item_count(submenu);
         if count == last {
             stable += 1;
             if stable >= 3 {
@@ -955,6 +1049,19 @@ fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
             stable = 0;
         }
     }
+}
+
+/// Items in `hmenu`, of any kind (-1 if it isn't a menu).
+fn item_count(hmenu: HMENU) -> i32 {
+    // SAFETY: plain query; an invalid handle answers -1.
+    unsafe { GetMenuItemCount(Some(hmenu)) }
+}
+
+/// Whether a submenu holding `count` items, none of them readable, is one its extension fills
+/// only when it opens: it has no items at all (`GetMenuItemCount` 0). One with items Arke can't
+/// read (owner-drawn, bitmaps, deeper than it goes) stays that way.
+const fn keeps_for_opening(count: i32) -> bool {
+    count == 0
 }
 
 /// Whether the menu has any item with text, or a submenu.
@@ -1221,6 +1328,150 @@ mod tests {
             "access key markers must be removed: {labels:?}"
         );
         release(menu.session);
+    }
+
+    #[allow(
+        clippy::inline_always,
+        clippy::ref_as_ptr,
+        reason = "code generated by windows' implement macro"
+    )]
+    mod stub {
+        use windows::Win32::UI::Shell::{CMINVOKECOMMANDINFO, IContextMenu, IContextMenu_Impl};
+        use windows::Win32::UI::WindowsAndMessaging::HMENU;
+        use windows::core::{HRESULT, PSTR};
+
+        /// A context menu that adds nothing, standing for an extension around hand-built menus.
+        #[windows::core::implement(IContextMenu)]
+        pub(super) struct Stub;
+
+        impl IContextMenu_Impl for Stub_Impl {
+            fn QueryContextMenu(&self, _: HMENU, _: u32, _: u32, _: u32, _: u32) -> HRESULT {
+                HRESULT(0)
+            }
+            fn InvokeCommand(&self, _: *const CMINVOKECOMMANDINFO) -> windows::core::Result<()> {
+                Ok(())
+            }
+            fn GetCommandString(
+                &self,
+                _: usize,
+                _: u32,
+                _: *const u32,
+                _: PSTR,
+                _: u32,
+            ) -> windows::core::Result<()> {
+                Err(windows::Win32::Foundation::E_NOTIMPL.into())
+            }
+        }
+    }
+    use stub::Stub;
+
+    fn popup() -> HMENU {
+        // SAFETY: an empty menu, destroyed with its parent (or leaked by the test).
+        unsafe { CreatePopupMenu() }.unwrap()
+    }
+
+    fn add_submenu(parent: HMENU, label: PCWSTR) -> HMENU {
+        use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, MF_POPUP};
+        let sub = popup();
+        // SAFETY: both menus are valid; the parent takes the submenu.
+        unsafe { AppendMenuW(parent, MF_POPUP, sub.0 as usize, label) }.unwrap();
+        sub
+    }
+
+    fn add_owner_drawn(menu: HMENU) {
+        use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, MF_OWNERDRAW};
+        // SAFETY: valid menu; an owner-drawn item has no text, only its item data (none here).
+        unsafe { AppendMenuW(menu, MF_OWNERDRAW, 9, PCWSTR::null()) }.unwrap();
+    }
+
+    /// Only a submenu with no items at all is kept to fill on opening. One whose items can't be
+    /// read (owner-drawn, or only submenus past the depth limit) is dropped as before, instead of
+    /// showing "Loading…" and then "(empty)".
+    #[test]
+    fn only_submenus_with_no_items_wait_for_opening() {
+        let menu: IContextMenu = Stub.into();
+        let top = popup();
+        add_submenu(top, w!("Empty"));
+        add_owner_drawn(add_submenu(top, w!("Owner drawn")));
+        // Four levels down: past MAX_DEPTH, so the innermost can't be read.
+        let mut deep = add_submenu(top, w!("Deep"));
+        for _ in 0..MAX_DEPTH {
+            deep = add_submenu(deep, w!("Deeper"));
+        }
+        let mut reader = Reader::new(&menu, 0);
+        let entries = reader.read_menu(top, 0);
+        let shape: Vec<(String, Option<u32>)> = entries
+            .iter()
+            .filter_map(|e| match e {
+                ShellMenuEntry::Submenu { label, lazy, .. } => Some((label.clone(), *lazy)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shape, [("Empty".to_owned(), Some(0))]);
+        assert_eq!(reader.lazy.len(), 1);
+        // SAFETY: made above; destroys its submenus too.
+        let _ = unsafe { DestroyMenu(top) };
+    }
+
+    /// A submenu filled as it opens that stays without a single item isn't waited for long.
+    #[test]
+    fn an_opened_submenu_with_no_items_is_given_up_soon() {
+        let menu: IContextMenu = Stub.into();
+        let top = popup();
+        let sub = add_submenu(top, w!("Empty"));
+        let started = std::time::Instant::now();
+        init_submenu(&menu, sub, 0, true);
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(800), "{took:?}");
+        // SAFETY: made above.
+        let _ = unsafe { DestroyMenu(top) };
+    }
+
+    /// A command picked (or the menu closed) while a submenu is being filled goes first: the
+    /// fill stops waiting for its extension, and the next request taken is the command, ahead of
+    /// fills asked before it.
+    #[test]
+    fn commands_go_ahead_of_submenu_fills() {
+        let (tx, rx) = flume::unbounded();
+        INBOX.with(|inbox| inbox.borrow_mut().rx = Some(rx));
+        let fill = |index| {
+            let (done, _) = flume::bounded(1);
+            Request::FillSubmenu {
+                session: 1,
+                index,
+                done,
+            }
+        };
+        tx.send(fill(0)).unwrap();
+        tx.send(fill(1)).unwrap();
+        assert!(!urgent_waiting(), "only fills");
+        tx.send(Request::Release(1)).unwrap();
+        tx.send(fill(2)).unwrap();
+        assert!(urgent_waiting());
+
+        // A fill under way (its extension keeps a placeholder, so it would wait 1.5 s) ends now.
+        let menu: IContextMenu = Stub.into();
+        let top = popup();
+        let sub = add_submenu(top, w!("Slow"));
+        add_owner_drawn(sub);
+        let started = std::time::Instant::now();
+        init_submenu(&menu, sub, 0, true);
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(300), "{took:?}");
+        // SAFETY: made above.
+        let _ = unsafe { DestroyMenu(top) };
+
+        let order: Vec<String> =
+            std::iter::from_fn(|| match INBOX.with(|i| i.borrow_mut().next()) {
+                Next::Handle(Request::Release(s)) => Some(format!("release {s}")),
+                Next::Handle(Request::FillSubmenu { index, .. }) => Some(format!("fill {index}")),
+                Next::Handle(_) => Some("other".to_owned()),
+                Next::Idle | Next::Gone => None,
+            })
+            .collect();
+        assert_eq!(order, ["release 1", "fill 0", "fill 1", "fill 2"]);
+        drop(tx);
+        assert!(matches!(INBOX.with(|i| i.borrow_mut().next()), Next::Gone));
     }
 
     /// With nothing asked, the menu thread waits without waking (it used to poll every 30 ms),

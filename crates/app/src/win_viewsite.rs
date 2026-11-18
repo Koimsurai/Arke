@@ -240,12 +240,15 @@ mod com {
         fn Item(&self, _: i32) -> Res<*mut ITEMIDLIST> {
             Err(E_INVALIDARG.into())
         }
-        fn ItemCount(&self, _: &_SVGIO) -> Res<i32> {
-            Ok(0)
+        /// The "selection" is the folder itself (see `Items`), one item; nothing else is listed.
+        fn ItemCount(&self, flags: &_SVGIO) -> Res<i32> {
+            Ok(i32::from(flags.0 & SVGIO_TYPE_MASK.0 == SVGIO_SELECTION.0))
         }
         /// What the empty-space menu is for, the background or the "selection", is the folder
-        /// itself: Sharing asks for the selection and fills "Give access to" for the folder, the
-        /// same items as on the folder's own menu. The folder's items aren't listed.
+        /// itself. Sharing asks for the selection and fills "Give access to" for the folder, the
+        /// same items as on the folder's own menu; with an empty selection it leaves it empty
+        /// (checked by hand with `give_access_to_lists_its_items`). The folder's items aren't
+        /// listed.
         fn Items(&self, flags: &_SVGIO, riid: *const GUID, ppv: *mut *mut c_void) -> Res<()> {
             let kind = flags.0 & SVGIO_TYPE_MASK.0;
             if kind == SVGIO_BACKGROUND.0 || kind == SVGIO_SELECTION.0 {
@@ -722,6 +725,60 @@ mod tests {
                     std::path::Path::new(&path).canonicalize().unwrap(),
                     file.canonicalize().unwrap()
                 );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        if com.is_ok() {
+            // SAFETY: pairs with the successful CoInitializeEx above.
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    /// The empty-space menu's view: its selection, its background and its folder are the folder,
+    /// and the selection's count agrees with its items (it used to say none were selected while
+    /// handing out the folder).
+    #[test]
+    fn background_view_stands_for_the_folder_with_a_consistent_selection() {
+        use windows::Win32::System::Com::IDataObject;
+        use windows::Win32::UI::Shell::{IShellFolder, SIGDN_FILESYSPATH, SVGIO_ALLVIEW};
+        // SAFETY: COM for this test thread; paired below.
+        let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let dir = std::env::temp_dir().join(format!("arke-bgview-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        {
+            let site = background_site(&dir).expect("site");
+            // SAFETY: valid service id.
+            let view: IFolderView = unsafe { site.QueryService(&IFolderView::IID) }.unwrap();
+            let path_of = |item: &IShellItem| {
+                // SAFETY: plain call on a valid item; the string is freed below.
+                let name = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }.unwrap();
+                // SAFETY: a valid string from the shell.
+                let path = unsafe { name.to_string() }.unwrap();
+                // SAFETY: allocated by the shell with the COM task allocator.
+                unsafe { CoTaskMemFree(Some(name.0.cast_const().cast())) };
+                std::path::PathBuf::from(path).canonicalize().unwrap()
+            };
+            let folder = dir.canonicalize().unwrap();
+            // SAFETY: plain calls on a valid view.
+            unsafe {
+                // The count and the items agree: one, the folder.
+                assert_eq!(view.ItemCount(SVGIO_SELECTION).unwrap(), 1);
+                let selection: IShellItemArray = view.Items(SVGIO_SELECTION).unwrap();
+                assert_eq!(selection.GetCount().unwrap(), 1);
+                assert_eq!(path_of(&selection.GetItemAt(0).unwrap()), folder);
+                let _: IDataObject = view.Items(SVGIO_SELECTION).unwrap();
+                // The folder's own items aren't listed.
+                assert_eq!(view.ItemCount(SVGIO_ALLVIEW).unwrap(), 0);
+                assert!(view.Items::<IShellItemArray>(SVGIO_ALLVIEW).is_err());
+                let background: IShellItem = view.Items(SVGIO_BACKGROUND).unwrap();
+                assert_eq!(path_of(&background), folder);
+                let array: IShellItemArray = view.Items(SVGIO_BACKGROUND).unwrap();
+                assert_eq!(array.GetCount().unwrap(), 1);
+                assert_eq!(path_of(&array.GetItemAt(0).unwrap()), folder);
+                let _: IDataObject = view.Items(SVGIO_BACKGROUND).unwrap();
+                let _: IShellFolder = view.GetFolder().unwrap();
+                assert!(view.Item(0).is_err());
             }
         }
         let _ = std::fs::remove_dir_all(&dir);

@@ -132,6 +132,7 @@ impl Explorer {
             .menu_pinned
             .clone();
         menu.sync_pinned(&pinned);
+        self.fill_lazy_for_pins(cx);
         cx.notify();
     }
 

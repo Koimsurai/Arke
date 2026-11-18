@@ -1256,19 +1256,28 @@ fn add_hdrop(
 /// The data object for a drag, before CF_HDROP is added. For files on local drives it also
 /// carries Shell IDList Array, as Explorer's drags do: some targets take only that, such as
 /// shortcuts on launcher toolbars (#109). `SHCreateDataObject` builds the shell's own object from
-/// the PIDLs without binding any handler, so no third-party code loads. Network paths keep the
-/// plain object: parsing them could wait on the network, and this runs on the UI thread.
+/// the PIDLs without binding any handler for the items (Explorer's `GetUIObjectOf` can load a
+/// file type's data handler), so no third-party code loads. Network paths keep the plain object:
+/// parsing them could wait on the network, and this runs on the UI thread.
+///
+/// Items of one folder are given as that folder plus one-level child IDs, so the object has the
+/// shape of the one Explorer's folder hands out for the same files: a target may expect every ID
+/// to be a direct child of the folder in the array, as it always is in Explorer's drags.
+/// Items from different folders (search results) use the desktop as the folder and full IDs.
 fn drag_data_object(
     paths: &[PathBuf],
 ) -> windows::core::Result<windows::Win32::System::Com::IDataObject> {
     use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
-    use windows::Win32::UI::Shell::{SHCreateDataObject, SHParseDisplayName};
+    use windows::Win32::UI::Shell::{
+        ILFindLastID, IPersistFolder2, SHBindToParent, SHCreateDataObject, SHParseDisplayName,
+    };
     struct Pidls(Vec<*mut ITEMIDLIST>);
     impl Drop for Pidls {
         fn drop(&mut self) {
             for pidl in &self.0 {
-                // SAFETY: allocated by SHParseDisplayName with CoTaskMemAlloc; freed once each.
+                // SAFETY: allocated with CoTaskMemAlloc (SHParseDisplayName, GetCurFolder);
+                // freed once each.
                 unsafe { CoTaskMemFree(Some(pidl.cast_const().cast())) };
             }
         }
@@ -1283,32 +1292,67 @@ fn drag_data_object(
     {
         return plain();
     }
-    let mut pidls = Pidls(Vec::with_capacity(paths.len()));
-    for path in paths {
+    let parse = |path: &Path| {
         let name = wide(path.as_os_str());
         let mut pidl = std::ptr::null_mut();
-        // SAFETY: name is NUL-terminated; pidl is an out variable owned by Pidls on success.
-        if unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut pidl, 0, None) }
-            .is_err()
-        {
+        // SAFETY: name is NUL-terminated; pidl is an out variable, owned by the caller on success.
+        unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut pidl, 0, None) }
+            .ok()
+            .map(|()| pidl)
+    };
+    let mut pidls = Pidls(Vec::with_capacity(paths.len() + 1));
+    for path in paths {
+        let Some(pidl) = parse(path) else {
             return plain();
-        }
+        };
         pidls.0.push(pidl);
     }
-    let list: Vec<*const ITEMIDLIST> = pidls.0.iter().map(|p| p.cast_const()).collect();
-    // The desktop (an empty PIDL) as the folder, so full PIDLs are its children and items from
-    // different folders (search results) go in one object.
-    let desktop = [0u16; 1];
-    // SAFETY: an empty ITEMIDLIST is just its zero terminator; the PIDLs stay alive (Pidls) for
-    // the call, and the data object keeps its own copy.
-    unsafe {
-        SHCreateDataObject::<_, IDataObject>(
-            Some(desktop.as_ptr().cast::<ITEMIDLIST>()),
-            Some(&list),
-            None::<&IDataObject>,
-        )
-    }
-    .or_else(|_| plain())
+    // The folder's ID as the folder itself gives it (what Explorer's drags carry), which can be
+    // shorter than the parsed path's.
+    let folder = common_parent(paths).and_then(|_| {
+        // SAFETY: the first item's PIDL is valid; the folder's copy of its own ID is
+        // CoTaskMemAlloc'ed and freed with the others (Pidls).
+        let pidl = unsafe {
+            SHBindToParent::<IPersistFolder2>(pidls.0[0].cast_const(), None)
+                .and_then(|folder| folder.GetCurFolder())
+        }
+        .ok()?;
+        pidls.0.push(pidl);
+        Some(pidl)
+    });
+    let last_id = |pidl: &*mut ITEMIDLIST| {
+        // SAFETY: pidl is a valid, zero-terminated list from SHParseDisplayName; its last ID
+        // points into it and stays valid while Pidls is alive.
+        unsafe { ILFindLastID(pidl.cast_const()) }.cast_const()
+    };
+    let (folder, list): (*const ITEMIDLIST, Vec<*const ITEMIDLIST>) = match folder {
+        Some(folder) => (
+            folder.cast_const(),
+            pidls.0[..paths.len()].iter().map(last_id).collect(),
+        ),
+        // The desktop (an empty PIDL) as the folder, so full PIDLs are its children and items
+        // from different folders go in one object.
+        None => (
+            DESKTOP_PIDL.as_ptr().cast::<ITEMIDLIST>(),
+            pidls.0.iter().map(|p| p.cast_const()).collect(),
+        ),
+    };
+    // SAFETY: the folder and item IDs stay alive (Pidls, or the static empty list) for the call,
+    // and the data object keeps its own copy.
+    unsafe { SHCreateDataObject::<_, IDataObject>(Some(folder), Some(&list), None::<&IDataObject>) }
+        .or_else(|_| plain())
+}
+
+/// An empty ITEMIDLIST (the desktop): just its zero terminator.
+static DESKTOP_PIDL: [u16; 1] = [0];
+
+/// The folder all `paths` are directly in, if there is one (a drive root has none).
+fn common_parent(paths: &[PathBuf]) -> Option<&Path> {
+    let (first, rest) = paths.split_first()?;
+    let parent = first.parent().filter(|p| !p.as_os_str().is_empty())?;
+    rest.iter()
+        .all(|p| p.parent() == Some(parent))
+        .then_some(parent)
 }
 
 /// Whether the top-level window under the cursor is another one than `home`: another program's
@@ -2675,5 +2719,185 @@ mod drag_tests {
             "network paths stay plain"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The formats an object offers, in its own order, as (format, storage media).
+    fn formats(object: &windows::Win32::System::Com::IDataObject) -> Vec<(u16, u32)> {
+        use windows::Win32::System::Com::DATADIR_GET;
+        let mut found = Vec::new();
+        // SAFETY: the enumerator fills one FORMATETC at a time into a valid buffer.
+        unsafe {
+            let list = object.EnumFormatEtc(DATADIR_GET.0.cast_unsigned()).unwrap();
+            loop {
+                let mut one = [FORMATETC::default()];
+                let mut got = 0u32;
+                if list.Next(&mut one, Some(&raw mut got)).is_err() || got == 0 {
+                    break;
+                }
+                found.push((one[0].cfFormat, one[0].tymed));
+            }
+        }
+        found
+    }
+
+    /// The bytes of one format, `None` when it can't be read.
+    fn bytes(object: &windows::Win32::System::Com::IDataObject, cf: u16) -> Option<Vec<u8>> {
+        // SAFETY: the HGLOBAL is only read while locked, within its size, then released.
+        unsafe {
+            let mut medium = object.GetData(&format(cf)).ok()?;
+            let size = windows::Win32::System::Memory::GlobalSize(medium.u.hGlobal);
+            let ptr = GlobalLock(medium.u.hGlobal).cast::<u8>();
+            let read = (!ptr.is_null()).then(|| std::slice::from_raw_parts(ptr, size).to_vec());
+            let _ = GlobalUnlock(medium.u.hGlobal);
+            windows::Win32::System::Ole::ReleaseStgMedium(&raw mut medium);
+            read
+        }
+    }
+
+    /// The data object Explorer drags for `paths` (all in one folder): the folder's own, from
+    /// `IShellFolder::GetUIObjectOf`.
+    fn explorer_object(paths: &[PathBuf]) -> windows::Win32::System::Com::IDataObject {
+        use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+        use windows::Win32::UI::Shell::{
+            ILFindLastID, IShellFolder, SHBindToParent, SHParseDisplayName,
+        };
+        let mut pidls: Vec<*mut ITEMIDLIST> = Vec::new();
+        // SAFETY: names are NUL-terminated; the PIDLs are freed at the end, after the call that
+        // reads the children pointing into them.
+        unsafe {
+            for path in paths {
+                let name = wide(path.as_os_str());
+                let mut pidl = std::ptr::null_mut();
+                SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut pidl, 0, None).unwrap();
+                pidls.push(pidl);
+            }
+            let folder: IShellFolder = SHBindToParent(pidls[0], None).unwrap();
+            let children: Vec<*const ITEMIDLIST> = pidls
+                .iter()
+                .map(|p| ILFindLastID(p.cast_const()).cast_const())
+                .collect();
+            let object = folder
+                .GetUIObjectOf(HWND::default(), &children, None)
+                .unwrap();
+            for pidl in pidls {
+                windows::Win32::System::Com::CoTaskMemFree(Some(pidl.cast_const().cast()));
+            }
+            object
+        }
+    }
+
+    /// A Shell IDList Array (CIDA) taken apart: the folder's ID list and each item's, as bytes
+    /// with their terminators.
+    fn cida(bytes: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        let list = |mut at: usize| {
+            let start = at;
+            loop {
+                let size = usize::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
+                at += size.max(2);
+                if size == 0 {
+                    return bytes[start..at].to_vec();
+                }
+            }
+        };
+        let count = word(0);
+        let items = (1..=count).map(|i| list(word(4 + 4 * i))).collect();
+        (list(word(4)), items)
+    }
+
+    /// The file system path of an ID list, empty when it has none (the desktop).
+    fn path_of(ids: &[u8]) -> String {
+        let mut path = [0u16; 260];
+        // SAFETY: ids is a whole, zero-terminated ID list (ITEMIDLIST is byte-aligned).
+        let _ = unsafe {
+            windows::Win32::UI::Shell::SHGetPathFromIDListW(
+                ids.as_ptr()
+                    .cast::<windows::Win32::UI::Shell::Common::ITEMIDLIST>(),
+                &mut path,
+            )
+        };
+        let end = path.iter().position(|&c| c == 0).unwrap_or(path.len());
+        String::from_utf16_lossy(&path[..end])
+    }
+
+    /// Chat apps (WeChat) take files dragged from Explorer but not from Arke. Arke's drag of files
+    /// from one folder is now shaped like Explorer's: the same formats in the same order, the same
+    /// bytes for the file list and the first file's name, and shell IDs given as the folder plus
+    /// one-level items, the items byte for byte. Before, they were full IDs under the desktop, a
+    /// shape Explorer never drags. The folder's own ID differs between any two binds (a field
+    /// changes each time, even between two Explorer objects), so it is compared by its path and
+    /// its length.
+    #[test]
+    fn drags_from_one_folder_match_explorers() {
+        let dir = crate::win::long_temp_dir().join(format!("arke-drag-ex-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        let b = dir.join("b 報告.txt");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let paths = [a, b];
+        let _com = Com::init().unwrap();
+        let arke = drag_data_object(&paths).unwrap();
+        add_hdrop(&arke, &paths).unwrap();
+        let explorer = explorer_object(&paths);
+        assert_eq!(formats(&arke), formats(&explorer));
+        // SAFETY: registers (or looks up) format names.
+        let (ids, name) = unsafe {
+            (
+                RegisterClipboardFormatW(w!("Shell IDList Array")) as u16,
+                RegisterClipboardFormatW(w!("FileNameW")) as u16,
+            )
+        };
+        for (cf, what) in [(CF_HDROP.0, "CF_HDROP"), (name, "FileNameW")] {
+            let theirs = bytes(&explorer, cf);
+            assert!(theirs.is_some(), "Explorer offers {what}");
+            assert_eq!(bytes(&arke, cf), theirs, "{what}");
+        }
+        let (our_folder, our_items) = cida(&bytes(&arke, ids).unwrap());
+        let (their_folder, their_items) = cida(&bytes(&explorer, ids).unwrap());
+        assert_eq!(our_items, their_items, "items");
+        assert_eq!(path_of(&our_folder), dir.to_string_lossy());
+        assert_eq!(path_of(&our_folder), path_of(&their_folder));
+        assert_eq!(our_folder.len(), their_folder.len(), "folder ID length");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Items from different folders (search results) still go in one object, all of them.
+    #[test]
+    fn drags_from_several_folders_carry_every_id() {
+        let dir = crate::win::long_temp_dir().join(format!("arke-drag-mix-{}", std::process::id()));
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let a = dir.join("a.txt");
+        let b = sub.join("b.txt");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let paths = [a, b];
+        let _com = Com::init().unwrap();
+        let object = drag_data_object(&paths).unwrap();
+        add_hdrop(&object, &paths).unwrap();
+        // SAFETY: registers (or looks up) a format name.
+        let ids = unsafe { RegisterClipboardFormatW(w!("Shell IDList Array")) } as u16;
+        assert_eq!(id_count(&object, ids), Some(2));
+        // SAFETY: the HGLOBAL is read as CF_HDROP and released.
+        unsafe {
+            let mut medium = object.GetData(&format(CF_HDROP.0)).unwrap();
+            assert_eq!(parse_hdrop(HDROP(medium.u.hGlobal.0)), paths);
+            windows::Win32::System::Ole::ReleaseStgMedium(&raw mut medium);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_common_folder_is_found_only_when_all_share_it() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(
+            common_parent(&[p(r"C:\a\x.txt"), p(r"C:\a\y")]),
+            Some(Path::new(r"C:\a"))
+        );
+        assert_eq!(common_parent(&[p(r"C:\a\x.txt"), p(r"C:\b\y")]), None);
+        assert_eq!(common_parent(&[p(r"C:\a\x.txt"), p(r"C:\a\sub\y")]), None);
+        assert_eq!(common_parent(&[p(r"C:\")]), None, "a drive has no folder");
+        assert_eq!(common_parent(&[]), None);
     }
 }

@@ -251,11 +251,132 @@ pub(crate) fn check(channel: Channel) -> Result<Option<Release>, UpdateError> {
         return Err(UpdateError::NoSource);
     }
     let current = Version::parse(build_info::VERSION).ok_or(UpdateError::BadVersion)?;
-    let json = crate::win_http::get_text(
+    match crate::win_http::get_text(
         &format!("https://api.github.com/repos/{repo}/releases?per_page=30"),
         &["Accept: application/vnd.github+json"],
-    )?;
-    Ok(pick(&json, channel, &current))
+    ) {
+        Ok(json) => return Ok(pick(&json, channel, &current)),
+        // The API allows 60 requests an hour per address without signing in, soon used up
+        // where many people share one (a school, an office, a café) (#183).
+        Err(crate::win_http::HttpError::Status(403 | 429)) => {
+            log::info!("update check: GitHub API limit reached, reading the releases feed");
+        }
+        Err(err) => return Err(err.into()),
+    }
+    let feed = crate::win_http::get_text(&format!("https://github.com/{repo}/releases.atom"), &[])?;
+    Ok(pick_from_feed(&feed, repo, channel, &current))
+}
+
+/// [`pick`] from the releases feed (`releases.atom`): a web page, not the API, so the API's
+/// limit doesn't apply. It lists the newest releases, prereleases too, without their files; the
+/// files' addresses follow from the tag and the names `cargo xtask build` gives them.
+fn pick_from_feed(feed: &str, repo: &str, channel: Channel, current: &Version) -> Option<Release> {
+    let suffix = if installed_by_setup() {
+        format!("{ARCH_SUFFIX}{SETUP_SUFFIX}")
+    } else {
+        ARCH_SUFFIX.to_owned()
+    };
+    pick_from_feed_for(feed, repo, channel, current, &suffix)
+}
+
+fn pick_from_feed_for(
+    feed: &str,
+    repo: &str,
+    channel: Channel,
+    current: &Version,
+    suffix: &str,
+) -> Option<Release> {
+    let tag_page = format!("https://github.com/{repo}/releases/tag/");
+    let mut best: Option<(Version, Release)> = None;
+    for entry in feed.split("<entry>").skip(1) {
+        let Some(at) = entry.find(&tag_page) else {
+            continue;
+        };
+        let tag = &entry[at + tag_page.len()..];
+        let tag = &tag[..tag.find('"').unwrap_or(tag.len())];
+        let Some(version) = Version::parse(tag) else {
+            continue;
+        };
+        if version.channel() > channel
+            || version <= *current
+            || best.as_ref().is_some_and(|(v, _)| *v >= version)
+        {
+            continue;
+        }
+        let number = tag.strip_prefix('v').unwrap_or(tag);
+        let exe_name = format!("arke-{number}{suffix}.exe");
+        let exe_url = format!("https://github.com/{repo}/releases/download/{tag}/{exe_name}");
+        let content = entry
+            .split_once("<content type=\"html\">")
+            .and_then(|(_, rest)| rest.split_once("</content>"))
+            .map_or("", |(content, _)| content);
+        let release = Release {
+            version: number.to_owned(),
+            sha_url: Some(format!("{exe_url}.sha256")),
+            exe_url,
+            exe_name,
+            // Not in the feed: the download tells it.
+            size: 0,
+            notes: notes_from_feed(content),
+            page: format!("{tag_page}{tag}"),
+        };
+        best = Some((version, release));
+    }
+    best.map(|(_, r)| r)
+}
+
+/// The release notes from the feed (escaped HTML GitHub made from the Markdown) back as the
+/// Markdown the notes page reads: headings and list items as text, links and other markup
+/// dropped.
+fn notes_from_feed(content: &str) -> String {
+    // Escaped twice: the HTML in the XML, and text in the HTML. `&amp;` last each time.
+    let unescape = |s: &str| {
+        s.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
+    };
+    let html = unescape(content);
+    let text = |s: &str| {
+        let mut out = String::new();
+        let mut in_tag = false;
+        for c in s.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => out.push(c),
+                _ => {}
+            }
+        }
+        unescape(out.trim())
+    };
+    let mut notes = String::new();
+    let mut rest = html.as_str();
+    while let Some(open) = rest.find('<') {
+        rest = &rest[open..];
+        let (tag, close) = if rest.starts_with("<h3") {
+            ("### ", "</h3>")
+        } else if rest.starts_with("<li") {
+            ("- ", "</li>")
+        } else {
+            rest = &rest[1..];
+            continue;
+        };
+        let end = rest.find(close).unwrap_or(rest.len());
+        let body = &rest[rest.find('>').map_or(0, |i| i + 1).min(end)..end];
+        if tag == "### " && !notes.is_empty() {
+            notes.push('\n');
+        }
+        notes.push_str(tag);
+        notes.push_str(&text(body));
+        notes.push('\n');
+        if tag == "### " {
+            notes.push('\n');
+        }
+        rest = &rest[end..];
+    }
+    notes
 }
 
 fn updates_dir() -> Option<PathBuf> {
@@ -831,6 +952,58 @@ mod tests {
         assert!(pick("not json", Channel::Stable, &current).is_none());
     }
 
+    /// With the API's hourly limit used up, the releases feed gives the same choice; the files'
+    /// addresses come from the tag, the notes from the feed's HTML (#183).
+    #[test]
+    fn picks_from_the_releases_feed_when_the_api_is_limited() {
+        let entry = |tag: &str, content: &str| {
+            format!(
+                "<entry>\n<id>tag:github.com,2008:Repository/1/{tag}</id>\n\
+                 <link rel=\"alternate\" type=\"text/html\" \
+                 href=\"https://github.com/o/r/releases/tag/{tag}\"/>\n<title>Arke {tag}</title>\n\
+                 <content type=\"html\">{content}</content>\n</entry>\n"
+            )
+        };
+        let notes = "&lt;p&gt;(2026-11-18)&lt;/p&gt;\n&lt;h3&gt;Fixes&lt;/h3&gt;\n&lt;ul&gt;\n\
+             &lt;li&gt;Updates work behind a shared address (&lt;a class=&quot;issue-link&quot; \
+             href=&quot;https://github.com/o/r/issues/183&quot;&gt;#183&lt;/a&gt;)&lt;/li&gt;\n\
+             &lt;li&gt;Tom &amp;amp; Jerry &amp;lt;3&lt;/li&gt;\n&lt;/ul&gt;";
+        let feed = format!(
+            "<?xml version=\"1.0\"?>\n<feed>\n<link href=\"https://github.com/o/r/releases\"/>\n{}{}{}{}</feed>",
+            entry("v0.6.2-rc.1", "rc"),
+            entry("v0.6.1", notes),
+            entry("v0.6.0", "old"),
+            entry("nightly-junk", "")
+        );
+        let current = v("0.6.0");
+
+        let stable = pick_from_feed_for(&feed, "o/r", Channel::Stable, &current, "").unwrap();
+        assert_eq!(stable.version, "0.6.1");
+        assert_eq!(stable.exe_name, "arke-0.6.1.exe");
+        assert_eq!(
+            stable.exe_url,
+            "https://github.com/o/r/releases/download/v0.6.1/arke-0.6.1.exe"
+        );
+        assert_eq!(
+            stable.sha_url.as_deref(),
+            Some("https://github.com/o/r/releases/download/v0.6.1/arke-0.6.1.exe.sha256")
+        );
+        assert_eq!(stable.page, "https://github.com/o/r/releases/tag/v0.6.1");
+        assert_eq!(
+            stable.notes,
+            "### Fixes\n\n- Updates work behind a shared address (#183)\n- Tom & Jerry <3\n"
+        );
+
+        let rc = pick_from_feed_for(&feed, "o/r", Channel::Rc, &current, "-arm64-setup").unwrap();
+        assert_eq!(rc.version, "0.6.2-rc.1");
+        assert_eq!(
+            rc.exe_url,
+            "https://github.com/o/r/releases/download/v0.6.2-rc.1/arke-0.6.2-rc.1-arm64-setup.exe"
+        );
+        assert!(pick_from_feed_for(&feed, "o/r", Channel::Stable, &v("0.6.1"), "").is_none());
+        assert!(pick_from_feed_for("<html>", "o/r", Channel::Stable, &current, "").is_none());
+    }
+
     #[test]
     fn changing_the_channel_rechecks_unless_a_download_holds_on() {
         let release = Release {
@@ -884,7 +1057,8 @@ mod tests {
         );
     }
 
-    /// Against the real releases: `cargo test -p arke live_channels -- --ignored`.
+    /// Against the real releases: `cargo nextest run -p arke-app --run-ignored only live_`.
+    /// The feed picks what the API picks, with the same files.
     #[test]
     #[ignore = "network"]
     fn live_channels() {
@@ -893,9 +1067,30 @@ mod tests {
             &["Accept: application/vnd.github+json"],
         )
         .unwrap();
-        let current = v("0.3.0");
-        assert!(pick(&json, Channel::Stable, &current).is_none_or(|r| !r.version.contains('-')));
-        assert!(pick(&json, Channel::Rc, &current).is_some());
+        let feed =
+            crate::win_http::get_text("https://github.com/Koimsurai/Arke/releases.atom", &[])
+                .unwrap();
+        for (current, channel) in [
+            (v("0.3.0"), Channel::Stable),
+            (v("0.3.0"), Channel::Rc),
+            (v("0.5.2"), Channel::Stable),
+        ] {
+            let api = pick_for(&json, channel, &current, "-setup").unwrap();
+            let from_feed =
+                pick_from_feed_for(&feed, "Koimsurai/Arke", channel, &current, "-setup").unwrap();
+            assert_eq!(
+                (&from_feed.version, &from_feed.exe_url, &from_feed.sha_url),
+                (&api.version, &api.exe_url, &api.sha_url),
+                "{channel:?} from {current:?}"
+            );
+            assert!(!from_feed.notes.is_empty());
+        }
+        assert!(pick(&json, Channel::Stable, &v("0.3.0")).is_none_or(|r| !r.version.contains('-')));
+        let latest =
+            pick_from_feed_for(&feed, "Koimsurai/Arke", Channel::Stable, &v("0.5.2"), "").unwrap();
+        let sha = crate::win_http::get_text(latest.sha_url.as_deref().unwrap(), &[]).unwrap();
+        assert_eq!(sha.split_whitespace().next().map(str::len), Some(64));
+        assert!(latest.notes.starts_with("### ") && latest.notes.contains("\n\n### "));
     }
 
     #[test]

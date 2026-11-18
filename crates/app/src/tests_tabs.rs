@@ -1642,3 +1642,48 @@ fn few_tabs_and_room_to_spare_scroll_nothing(cx: &mut TestAppContext) {
         assert!(tab_shown(cx, ix), "tab {ix} shows");
     }
 }
+
+/// A folder whose name alone is wider than the path bar (a narrow, not maximized window):
+/// the name truncates inside the bar instead of running over the title bar next to it, with
+/// tabs on the left or on top.
+#[gpui::test]
+fn a_very_long_folder_name_stays_inside_the_path_bar(cx: &mut TestAppContext) {
+    let long = format!(
+        r"C:\top1\{}",
+        "[LAFBD-41][2015] ラフォーレ ガール Vol.41 天使と悪魔 a very long folder name ".repeat(4)
+    );
+    let fs = FakeFs::new();
+    fs.insert_many(&long, 1);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::new(FakeShell::default()), &long);
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(&long));
+    for horizontal in [false, true] {
+        if horizontal {
+            cx.update(|_, cx| {
+                crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+                    s.update(
+                        |st| st.tab_layout = crate::settings::TabLayout::Horizontal,
+                        cx,
+                    );
+                });
+            });
+        }
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        for _ in 0..3 {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        let bar = cx.debug_bounds("path-bar").expect("path bar drawn");
+        let current = cx.debug_bounds("crumb-2").expect("current folder drawn");
+        assert!(
+            current.right() <= bar.right() + gpui::px(0.5),
+            "horizontal tabs {horizontal}: current folder ends at {:?}, past the bar at {:?}",
+            current.right(),
+            bar.right()
+        );
+        assert!(
+            bar.right() <= gpui::px(900.),
+            "horizontal tabs {horizontal}: the bar stays in the window"
+        );
+    }
+}

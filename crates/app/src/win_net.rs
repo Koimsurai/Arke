@@ -251,6 +251,67 @@ fn reconnect_drive(letter: char) -> std::io::Result<()> {
     }
 }
 
+/// Name of a mapped network drive as File Explorer shows it (without the trailing `(X:)`):
+/// the label the user set in Explorer, or `share (\\server)`.
+///
+/// Reads only Windows' stored mapping and the registry, never the network; a disconnected
+/// drive (`ERROR_CONNECTION_UNAVAIL`) still gets its name. Call from a background thread.
+/// `None` when unknown, so the caller falls back to the generic "Network Drive".
+pub(crate) fn mapped_drive_label(letter: char) -> Option<String> {
+    let (target, _) = drive_target(letter)?;
+    let unc = target.to_string_lossy().into_owned();
+    let custom = explorer_custom_label(&unc);
+    format_mapped_label(&unc, custom.as_deref())
+}
+
+/// Drive name the user set in File Explorer
+/// (`HKCU\...\Explorer\MountPoints2\##server#share\_LabelFromReg`). Read-only; `None` if unset.
+fn explorer_custom_label(unc: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    let key = format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2\{}",
+        unc.replace('\\', "#")
+    );
+    let key = wide(std::ffi::OsStr::new(&key));
+    let value = wide(std::ffi::OsStr::new("_LabelFromReg"));
+    let mut buf = vec![0u16; 256];
+    let mut bytes = (buf.len() * 2) as u32;
+    // SAFETY: key and value are NUL-terminated; buf has `bytes` writable bytes; bytes is a valid pointer. Read-only.
+    let result = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&raw mut bytes),
+        )
+    };
+    if result != WIN32_ERROR(0) {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let label = String::from_utf16_lossy(&buf[..end]);
+    let label = label.trim();
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
+/// Builds the File Explorer drive name from `\\server\share[\sub]` and the user's custom label.
+/// The custom label wins; otherwise `last-component (\\parent)`, so a share root gives
+/// `share (\\server)`. `None` if `unc` is not a UNC path.
+fn format_mapped_label(unc: &str, custom: Option<&str>) -> Option<String> {
+    if let Some(custom) = custom.map(str::trim).filter(|c| !c.is_empty()) {
+        return Some(custom.to_owned());
+    }
+    let rest = unc.strip_prefix(r"\\")?.trim_end_matches('\\');
+    let (head, name) = rest.rsplit_once('\\')?;
+    if head.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some(format!(r"{name} (\\{head})"))
+}
+
 /// Connects to a share, optionally mapped to a drive letter. Without credentials the current
 /// identity is used. No `CONNECT_UPDATE_PROFILE`, so the connection lasts only for this
 /// logon session. Call from a background thread.
@@ -412,5 +473,37 @@ mod tests {
         assert_eq!(probe.unc(Path::new(r"\\?\C:\Windows")), None);
         assert_eq!(probe.unc(Path::new(r"C:\Windows")), None);
         assert_eq!(probe.unc(Path::new("relative")), None);
+    }
+
+    #[test]
+    fn mapped_label_matches_file_explorer() {
+        assert_eq!(
+            format_mapped_label(r"\\10.16.20.142\dad", None).as_deref(),
+            Some(r"dad (\\10.16.20.142)")
+        );
+        assert_eq!(
+            format_mapped_label(r"\\nas\share\sub\", None).as_deref(),
+            Some(r"sub (\\nas\share)")
+        );
+        assert_eq!(
+            format_mapped_label(r"\\nas\share", Some("  Photos ")).as_deref(),
+            Some("Photos")
+        );
+        // blank custom label falls back to the share name
+        assert_eq!(
+            format_mapped_label(r"\\nas\share", Some(" ")).as_deref(),
+            Some(r"share (\\nas)")
+        );
+        assert_eq!(format_mapped_label(r"\\nas", None), None);
+        assert_eq!(format_mapped_label("", None), None);
+        assert_eq!(format_mapped_label(r"C:\x", None), None);
+    }
+
+    #[test]
+    fn unmapped_drive_returns_none_quickly() {
+        // Q: is almost never mapped; the call must not touch the network or hang.
+        let start = std::time::Instant::now();
+        let _ = mapped_drive_label('Q');
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 }

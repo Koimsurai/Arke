@@ -622,7 +622,12 @@ impl Shell for WinShell {
                     volume_label(&root_w).unwrap_or_else(|| t!("drive.local").into_owned()),
                     false,
                 ),
-                DRIVE_REMOTE => (t!("drive.network").into_owned(), true),
+                DRIVE_REMOTE => (
+                    // Like File Explorer: custom label or "share (\\server)"; no network access
+                    crate::win_net::mapped_drive_label(letter)
+                        .unwrap_or_else(|| t!("drive.network").into_owned()),
+                    true,
+                ),
                 DRIVE_REMOVABLE => (t!("drive.removable").into_owned(), false),
                 DRIVE_CDROM => (t!("drive.cdrom").into_owned(), false),
                 _ => (t!("drive.other").into_owned(), false),

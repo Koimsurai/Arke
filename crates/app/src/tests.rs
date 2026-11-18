@@ -70,6 +70,8 @@ struct FakeShell {
     /// Simulates an operation's effect on the file system (e.g. a new folder appears in FakeFs).
     on_op: Mutex<Option<OpHook>>,
     icons: Mutex<Vec<PathBuf>>,
+    /// Extensions asked for their registered type icon. Only `dwg` has one (a CAD program's).
+    type_icons: Mutex<Vec<String>>,
     /// Videos asked for a thumbnail; ones named `broken*` have none.
     video_thumbs: Mutex<Vec<PathBuf>>,
     system_menus: Mutex<Vec<Vec<PathBuf>>>,
@@ -750,6 +752,19 @@ impl Shell for FakeShell {
             width: size,
             height: size,
             rgba: vec![255; (size * size * 4) as usize],
+        })
+    }
+
+    fn type_icon(&self, ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "type_icon called on the UI thread"
+        );
+        self.type_icons.lock().push(ext.to_owned());
+        (ext == "dwg").then(|| arke_core::thumbs::Thumbnail {
+            width: 48,
+            height: 48,
+            rgba: vec![255; 48 * 48 * 4],
         })
     }
 
@@ -3914,6 +3929,74 @@ fn png_bytes(w: u32, h: u32) -> Vec<u8> {
 
 fn loaded_media(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Vec<(PathBuf, MediaKind)> {
     view.update(cx, |v, cx| v.media.read(cx).loaded())
+}
+
+/// Types the theme has no icon for (a CAD drawing) get Windows' icon for the type, asked once
+/// per extension and also on a network share, where file icons and thumbnails aren't loaded.
+/// Types no program registered keep the theme icon; known ones never ask.
+#[gpui::test]
+fn unknown_types_get_the_registered_icon(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let cad = vec![
+        file("floor.dwg", 100),
+        file("roof.DWG", 100),
+        file("data.qqq", 100),
+        file("notes.txt", 100),
+        file("app.exe", 100),
+    ];
+    fs.insert_dir(r"C:\cad", cad.clone());
+    fs.insert_dir(r"\\nas\share\cad", cad);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\cad");
+    wait_until(cx, &view, "load", loaded(r"C:\cad"));
+    let dwg = (PathBuf::from("*.dwg"), MediaKind::SystemIcon);
+    let exe = (PathBuf::from(r"C:\cad\app.exe"), MediaKind::SystemIcon);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while loaded_media(&view, cx) != [exe.clone(), dwg.clone()] {
+        assert!(Instant::now() < deadline, "{:?}", loaded_media(&view, cx));
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut asked = shell.type_icons.lock().clone();
+    asked.sort();
+    assert_eq!(
+        asked,
+        ["dwg", "qqq"],
+        "once per type; never for .txt or .exe"
+    );
+
+    // A network share: the type icon is already there; no file icon is loaded.
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"\\nas\share\cad"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "share", loaded(r"\\nas\share\cad"));
+    let icons = view.update(cx, |v, cx| {
+        let len = v.view().map_or(0, |e| e.len());
+        let entries: Vec<_> = (0..len)
+            .filter_map(|i| v.view().and_then(|e| e.get(i).cloned()))
+            .collect();
+        v.media_for(&entries, 0..len, false, cx)
+    });
+    let names: Vec<String> = view.update(cx, |v, _| {
+        let len = v.view().map_or(0, |e| e.len());
+        (0..len)
+            .filter_map(|i| v.view().and_then(|e| e.get(i).map(|e| e.name.to_string())))
+            .collect()
+    });
+    let with_icon: Vec<&str> = names
+        .iter()
+        .zip(&icons)
+        .filter(|(_, icon)| icon.is_some())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert_eq!(with_icon, ["floor.dwg", "roof.DWG"]);
+    assert_eq!(shell.type_icons.lock().len(), 2, "not asked again");
+    assert_eq!(
+        shell.icons.lock().as_slice(),
+        [PathBuf::from(r"C:\cad\app.exe")],
+        "no file icon on the share"
+    );
 }
 
 /// Grid view: thumbnails for local images, system icons only for .exe. One hung image doesn't

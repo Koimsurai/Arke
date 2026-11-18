@@ -159,32 +159,55 @@ fn type_icon(path: &Path, is_dir: bool) -> Option<Thumbnail> {
             },
         )
     };
-    let name = wide(&name);
     let attributes = if is_dir {
         FILE_ATTRIBUTE_DIRECTORY
     } else {
         FILE_ATTRIBUTE_NORMAL
     };
+    index_icon(icon_index(&name, attributes.0)?)
+}
+
+/// Windows' icon for files of type `ext` (no dot) as its file association gives it, or `None`
+/// when no program registered one and Windows would show its blank document: the theme's icon
+/// is better then. Like [`type_icon`], only the extension is looked at (no file read, no
+/// per-file icon handler loaded), so it's the same for every file of that type.
+pub(crate) fn registered_type_icon(ext: &str) -> Option<Thumbnail> {
+    let _com = Com::init().ok()?;
+    let index = icon_index(std::ffi::OsStr::new(&format!("file.{ext}")), 0x80)?;
+    // A type nothing registered: Windows' blank document.
+    let blank = icon_index(std::ffi::OsStr::new("file.arke-unregistered-type"), 0x80)?;
+    if index == blank {
+        return None;
+    }
+    index_icon(index)
+}
+
+/// Index in the system image list of the icon for `name` with `attributes`, from the name's
+/// extension only (`SHGFI_USEFILEATTRIBUTES`: the file isn't accessed).
+fn icon_index(name: &std::ffi::OsStr, attributes: u32) -> Option<i32> {
+    let name = wide(name);
     let mut info = SHFILEINFOW::default();
     // SAFETY: name is NUL-terminated; info is a correctly sized out struct. With
     // USEFILEATTRIBUTES the file is not accessed.
     let ok = unsafe {
         SHGetFileInfoW(
             PCWSTR(name.as_ptr()),
-            attributes,
+            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(attributes),
             Some(&raw mut info),
             size_of::<SHFILEINFOW>() as u32,
             SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES,
         )
     };
-    if ok == 0 {
-        return None;
-    }
+    (ok != 0).then_some(info.iIcon)
+}
+
+/// The system image list's icon at `index`, as large as Windows has it.
+fn index_icon(index: i32) -> Option<Thumbnail> {
     // In the jumbo (256) list, types without a large icon get a 48x48 image in the top-left
     // corner with the rest transparent; use the 48 px list for those.
-    list_icon(SHIL_JUMBO, info.iIcon)
+    list_icon(SHIL_JUMBO, index)
         .filter(|icon| !only_top_left(icon, EXTRALARGE))
-        .or_else(|| list_icon(SHIL_EXTRALARGE, info.iIcon))
+        .or_else(|| list_icon(SHIL_EXTRALARGE, index))
 }
 
 fn list_icon(list: u32, index: i32) -> Option<Thumbnail> {

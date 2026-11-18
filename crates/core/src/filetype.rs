@@ -2,7 +2,8 @@
 //! for an icon, whether a thumbnail is possible.
 //!
 //! Third-party shell extensions are never loaded. Icons come from the built-in theme
-//! (extension only); only `.exe`, `.lnk` and `.ico`, whose icon is their content, ask the system.
+//! (extension only); only `.exe`, `.lnk` and `.ico`, whose icon is their content, ask the system
+//! about the file, and types the theme doesn't know ask it about the type ([`wants_type_icon`]).
 
 use crate::entry::{Entry, EntryKind};
 
@@ -92,6 +93,17 @@ pub fn wants_system_icon(entry: &Entry) -> bool {
     entry.kind == EntryKind::File
         && !entry.is_cloud_placeholder()
         && matches!(entry.extension(), "exe" | "lnk" | "ico")
+}
+
+/// Files of a type the theme has no icon for (CAD drawings, project files, anything not in
+/// [`kind_for_extension`]) get the icon Windows has for the type, from the program registered
+/// for it, as in File Explorer. Looked up by extension only, so it reads nothing (cloud
+/// placeholders and network files included).
+pub fn wants_type_icon(entry: &Entry) -> bool {
+    entry.kind == EntryKind::File
+        && !entry.extension().is_empty()
+        && !wants_system_icon(entry)
+        && kind_for_extension(entry.extension()) == FileKind::Other
 }
 
 /// Size limit for thumbnail sources. Larger images take too long and too much memory to

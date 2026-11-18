@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use arke_core::Entry;
 use arke_core::filetype::{
-    MAX_THUMBNAIL_SOURCE, can_thumbnail, can_video_thumbnail, wants_system_icon,
+    MAX_THUMBNAIL_SOURCE, can_thumbnail, can_video_thumbnail, wants_system_icon, wants_type_icon,
 };
 use arke_core::loader::Loader;
 use arke_core::thumb_cache::{ThumbCache, ThumbKey};
@@ -30,6 +30,8 @@ use crate::explorer::Services;
 
 /// System icon pixel size (the grid shows them at 64 px, the list at 16).
 pub(crate) const SYSTEM_ICON_SIZE: u32 = 64;
+/// Path of a type icon's key: `*` can't be in a file name, so it never names a file.
+const TYPE_ICON_PREFIX: &str = "*.";
 /// Decoded pixel bytes kept beyond what is on screen and a page around it. A 192px thumbnail is
 /// about 150 KB, so roughly 100 fit; the compressed copies cover the rest.
 const CACHE_BUDGET: usize = 16 * 1024 * 1024;
@@ -98,6 +100,9 @@ impl MediaKey {
 
     /// Key for the file at `path` (whose listing entry is `entry`).
     pub(crate) fn at(path: PathBuf, entry: &Entry, thumbnail_px: Option<u32>) -> Option<Self> {
+        if let Some(key) = Self::type_icon(entry) {
+            return Some(key);
+        }
         let (kind, px) = if wants_system_icon(entry) {
             (MediaKind::SystemIcon, 0)
         } else if can_video_thumbnail(entry) {
@@ -115,6 +120,24 @@ impl MediaKey {
             kind,
             px,
         })
+    }
+
+    /// Key for the icon Windows has for `entry`'s type ([`wants_type_icon`]): one per
+    /// extension, shared by every file of that type. Reads no file, so also for folders where
+    /// thumbnails and file icons aren't loaded (network shares).
+    pub(crate) fn type_icon(entry: &Entry) -> Option<Self> {
+        wants_type_icon(entry).then(|| Self {
+            path: PathBuf::from(format!("{TYPE_ICON_PREFIX}{}", entry.extension())),
+            modified: None,
+            size: 0,
+            kind: MediaKind::SystemIcon,
+            px: 0,
+        })
+    }
+
+    /// The extension of a [`Self::type_icon`] key.
+    fn type_icon_extension(&self) -> Option<&str> {
+        self.path.to_str()?.strip_prefix(TYPE_ICON_PREFIX)
     }
 
     fn thumb_key(&self) -> ThumbKey {
@@ -211,7 +234,10 @@ impl MediaStore {
             let shell = Arc::clone(&services.shell);
             let tx = tx.clone();
             Loader::new("system-icon", 1, move |key: &MediaKey| {
-                let icon = shell.file_icon(&key.path, SYSTEM_ICON_SIZE);
+                let icon = match key.type_icon_extension() {
+                    Some(ext) => shell.type_icon(ext),
+                    None => shell.file_icon(&key.path, SYSTEM_ICON_SIZE),
+                };
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), icon));
             })
         };

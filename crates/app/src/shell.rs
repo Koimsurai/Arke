@@ -838,6 +838,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// System icon (only requested for `.exe`, `.lnk`, `.ico`). Background thread (COM, may read the file).
     fn file_icon(&self, path: &Path, size: u32) -> Option<arke_core::thumbs::Thumbnail>;
 
+    /// The icon Windows has for files of type `ext` (lowercase, no dot) from the program
+    /// registered for it; `None` when none is registered (the theme icon stays). Reads no file.
+    /// Background thread.
+    fn type_icon(&self, _ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+        None
+    }
+
     /// Windows' thumbnail of a video (a frame), fitted within `max_side`, made in a separate
     /// process. Background thread; may take seconds. `Ok(None)`: the file has none. `Err`: none
     /// could be asked for (the process can't start), which says nothing about the file.

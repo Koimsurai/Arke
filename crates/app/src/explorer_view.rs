@@ -978,7 +978,7 @@ impl Explorer {
 
     /// Thumbnails or system icons for visible items (once loaded), and hand the visible range plus
     /// a page ahead and a page back to the media cache.
-    fn media_for(
+    pub(crate) fn media_for(
         &mut self,
         entries: &[Entry],
         range: Range<usize>,
@@ -989,15 +989,17 @@ impl Explorer {
         let Some(dir) = self.current_path().map(Path::to_path_buf) else {
             return Vec::new();
         };
+        // Elsewhere (network shares) only type icons: they read no file.
         let allowed = self.media_ok(&dir, cx);
-        if !allowed {
-            return Vec::new();
-        }
         let thumb_px = (thumbnails && self.show_thumbnails).then(|| self.thumbnail_px());
         let key = |ix: usize| {
-            entries
-                .get(ix)
-                .and_then(|e| MediaKey::sized(&dir, e, thumb_px))
+            entries.get(ix).and_then(|e| {
+                if allowed {
+                    MediaKey::sized(&dir, e, thumb_px)
+                } else {
+                    MediaKey::type_icon(e)
+                }
+            })
         };
         let keys: Vec<Option<MediaKey>> = range.clone().map(key).collect();
         // A page ahead, then a page back (scrolling back finds them still decoded).

@@ -21,7 +21,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -97,6 +97,11 @@ struct Session {
     hmenu: HMENU,
     owner: HWND,
     _pidls: Pidls,
+    /// The folder the menu is for (the folder itself for its background, else the items'
+    /// folder), NUL-terminated: passed when invoking, like File Explorer does. A command
+    /// registered only for folder backgrounds (`Directory\Background\shell`, e.g. Everything's
+    /// "Search Everything...") fails without it, as if nothing could open the folder (#184).
+    directory: Vec<u16>,
 }
 
 impl Drop for Session {
@@ -533,11 +538,28 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
         // SAFETY: the PIDLs in children are valid for the call.
         unsafe { folder.GetUIObjectOf(owner, &children, None) }?
     };
-    fill(menu, owner, pidls)
+    fill(menu, owner, pidls, menu_directory(paths, background))
+}
+
+/// The folder a menu for `paths` is for: the folder itself for its background, else the items'
+/// folder. NUL-terminated, for [`Session::directory`].
+fn menu_directory(paths: &[PathBuf], background: bool) -> Vec<u16> {
+    let first = paths.first().map_or_else(|| Path::new(""), PathBuf::as_path);
+    let folder = if background {
+        first
+    } else {
+        first.parent().unwrap_or(first)
+    };
+    wide(folder.as_os_str())
 }
 
 /// Reads `menu` into a [`Session`] that becomes this thread's current menu.
-fn fill(menu: IContextMenu, owner: HWND, pidls: Pidls) -> Result<ShellMenu, ShellError> {
+fn fill(
+    menu: IContextMenu,
+    owner: HWND,
+    pidls: Pidls,
+    directory: Vec<u16>,
+) -> Result<ShellMenu, ShellError> {
     // SAFETY: creates an empty popup menu; Session calls DestroyMenu.
     let hmenu = unsafe { CreatePopupMenu() }?;
     let session = Session {
@@ -546,6 +568,7 @@ fn fill(menu: IContextMenu, owner: HWND, pidls: Pidls) -> Result<ShellMenu, Shel
         hmenu,
         owner,
         _pidls: pidls,
+        directory,
     };
     // SAFETY: hmenu is valid; command IDs range over 1..=0x7FFF.
     let hr = unsafe {
@@ -635,7 +658,7 @@ fn build_handler(
     }
     initialized?;
     let menu: IContextMenu = init.cast()?;
-    fill(menu, owner, pidls)
+    fill(menu, owner, pidls, menu_directory(paths, background))
 }
 
 /// Reads one menu level. Submenus get `WM_INITMENUPOPUP` first, since "Send to",
@@ -878,6 +901,7 @@ fn invoke_in(
         // MAKEINTRESOURCE: the low word is the command offset (IDs start at 1 in QueryContextMenu).
         lpVerb: PCSTR(verb as *const u8),
         lpVerbW: PCWSTR(verb as *const u16),
+        lpDirectoryW: PCWSTR(session.directory.as_ptr()),
         nShow: SW_SHOWNORMAL.0,
         ptInvoke: pt,
         ..Default::default()
@@ -895,6 +919,30 @@ fn invoke_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder background's command registered only for backgrounds (`Directory\Background\shell`,
+    /// like Everything's "Search Everything...") runs (#184). Needs such a command:
+    /// `ARKE_BG_VERB=<part of its label> cargo nextest run -p arke-app --run-ignored only background_only`.
+    #[test]
+    #[ignore = "needs a background-only shell command installed"]
+    fn background_only_commands_run() {
+        fn find(entries: &[ShellMenuEntry], part: &str) -> Option<(u32, String)> {
+            entries.iter().find_map(|e| match e {
+                ShellMenuEntry::Item { id, label, .. } if label.contains(part) => {
+                    Some((*id, label.clone()))
+                }
+                ShellMenuEntry::Submenu { children, .. } => find(children, part),
+                _ => None,
+            })
+        }
+        let part = std::env::var("ARKE_BG_VERB").unwrap_or_else(|_| "Everything".into());
+        let folder = std::env::temp_dir().join("arke-bg-verb-test");
+        std::fs::create_dir_all(&folder).unwrap();
+        let menu = query(std::slice::from_ref(&folder), true).unwrap();
+        let (id, label) = find(&menu.entries, &part).expect("the command is in the menu");
+        let result = invoke(menu.session, id, (0, 0), None);
+        assert!(result.is_ok(), "{label}: {result:?}");
+    }
 
     #[test]
     fn cleans_menu_labels() {

@@ -3003,7 +3003,7 @@ mod tests {
         fs.insert_dir(r"C:\", folders);
         for i in 0..40 {
             let files: Vec<_> = (0..500).map(|j| file(&format!("f{i}-{j}.txt"))).collect();
-            fs.insert_dir(&format!(r"C:\folder {i}"), files);
+            fs.insert_dir(format!(r"C:\folder {i}"), files);
         }
         let build = |progress: &BuildProgress| {
             Index::build(

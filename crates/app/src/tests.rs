@@ -101,6 +101,8 @@ struct FakeShell {
     /// Fake recycle bin, plus names that were permanently deleted.
     recycled: Mutex<Vec<crate::shell::RecycledItem>>,
     purged: Mutex<Vec<String>>,
+    /// While set, permanently deleting each Recycle Bin item waits for a message on it.
+    purge_gate: Mutex<Option<flume::Receiver<()>>>,
     /// Files handed to Windows drag and drop (dragged into other apps).
     dragged_out: Mutex<Vec<Vec<PathBuf>>>,
     /// Network connect requests sent by Arke's dialog.
@@ -419,17 +421,45 @@ impl Shell for FakeShell {
     fn recycle_purge(
         &self,
         items: &[crate::shell::RecycledItem],
-        _owner: Option<isize>,
+        progress: &crate::shell::OpProgress,
     ) -> Result<OpOutcome, ShellError> {
         assert!(
             !arke_core::fs::is_ui_thread(),
             "recycle_purge called on the UI thread"
         );
-        self.recycled.lock().retain(|kept| !items.contains(kept));
-        self.purged
-            .lock()
-            .extend(items.iter().map(|item| item.name.clone()));
-        Ok(OpOutcome::Done)
+        progress
+            .work_total
+            .store(items.len() as u64, Ordering::Relaxed);
+        let failing = self.fail_delete.lock().clone();
+        let gate = self.purge_gate.lock().clone();
+        let mut failed = Vec::new();
+        for item in items {
+            if let Some(gate) = &gate {
+                let _ = gate.recv_timeout(Duration::from_secs(20));
+            }
+            if progress.cancel.load(Ordering::Relaxed) {
+                return Ok(OpOutcome::Cancelled);
+            }
+            let shown = item.from.join(&item.name);
+            if let Some((_, reason, holders)) = failing.iter().find(|(p, _, _)| *p == shown) {
+                failed.push(crate::shell::ItemFailure {
+                    path: shown,
+                    reason: *reason,
+                    detail: String::new(),
+                    holders: holders.clone(),
+                });
+            } else {
+                self.recycled.lock().retain(|kept| kept != item);
+                self.purged.lock().push(item.name.clone());
+                progress.done.fetch_add(1, Ordering::Relaxed);
+            }
+            progress.work_done.fetch_add(1, Ordering::Relaxed);
+        }
+        if failed.is_empty() {
+            Ok(OpOutcome::Done)
+        } else {
+            Err(ShellError::Items { failed })
+        }
     }
 
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
@@ -2274,6 +2304,189 @@ fn recycle_bin_page_restores_and_purges(cx: &mut TestAppContext) {
     page.update(cx, |p, cx| p.answer_for_test(true, cx));
     wait_for(cx, "bin not emptied", &[]);
     assert_eq!(*shell.purged.lock(), ["mid.txt", "new.txt"]);
+}
+
+/// A fake bin with `names` (deleted from `C:\o`, newest first in the list), and the open
+/// Recycle Bin page once they are listed.
+fn open_recycle_page<'a>(
+    cx: &'a mut TestAppContext,
+    shell: &Arc<FakeShell>,
+    names: &[&str],
+) -> (
+    Entity<crate::recycle_bin::RecycleBin>,
+    &'a mut VisualTestContext,
+) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    *shell.recycled.lock() = names
+        .iter()
+        .enumerate()
+        .map(|(ix, name)| crate::shell::RecycledItem {
+            now: format!(r"C:\$Recycle.Bin\S-1\$R{name}"),
+            name: (*name).to_owned(),
+            from: PathBuf::from(r"C:\o"),
+            deleted: Some(std::time::UNIX_EPOCH + Duration::from_secs(1000 - ix as u64)),
+            size: 1,
+            is_dir: false,
+        })
+        .collect();
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(shell), r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    let page = ws
+        .update(cx, |ws, _| ws.recycle_for_test())
+        .expect("page should be open");
+    let want: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+    wait_page(cx, &page, "items not listed", |p| {
+        p.items_for_test() == want
+    });
+    (page, cx)
+}
+
+fn wait_page(
+    cx: &mut VisualTestContext,
+    page: &Entity<crate::recycle_bin::RecycleBin>,
+    what: &str,
+    pred: impl Fn(&crate::recycle_bin::RecycleBin) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if page.update(cx, |p, _| pred(p)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn click_drawn(cx: &mut VisualTestContext, selector: &'static str) {
+    cx.run_until_parked();
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} should be drawn"));
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// The permanent-delete job in the operation center: (state, items done, items finished of how
+/// many).
+fn purge_job(cx: &mut VisualTestContext) -> Option<(crate::op_center::JobState, u64, u64, u64)> {
+    cx.update(|_, cx| {
+        crate::op_center::OpCenter::jobs(cx)
+            .iter()
+            .rfind(|job| job.verb == "op.delete_permanently")
+            .map(|job| {
+                (
+                    job.state.clone(),
+                    job.done_items(),
+                    job.progress.work_done.load(Ordering::Relaxed),
+                    job.progress.work_total.load(Ordering::Relaxed),
+                )
+            })
+    })
+}
+
+/// Emptying the bin is Arke's own operation: after Arke's confirmation it runs in the background
+/// with a progress toast and an operation center entry, and Cancel in the toast stops it before
+/// the next item. What was already deleted is gone; the rest stays listed.
+#[gpui::test]
+fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext) {
+    use crate::op_center::JobState;
+    use crate::recycle_bin::Job;
+    let shell = Arc::new(FakeShell::default());
+    let (gate_tx, gate) = flume::unbounded();
+    *shell.purge_gate.lock() = Some(gate);
+    let (page, cx) = open_recycle_page(cx, &shell, &["a.txt", "b.txt", "c.txt"]);
+
+    assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)));
+    page.update(cx, |p, cx| p.answer_for_test(true, cx));
+    cx.run_until_parked();
+    assert!(page.update(cx, |p, _| p.purging_for_test()));
+    assert_eq!(
+        purge_job(cx).map(|(state, ..)| state),
+        Some(JobState::Running)
+    );
+    assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
+
+    // One item goes; the bar moves (1 of 3).
+    gate_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while purge_job(cx).map(|(_, _, done, total)| (done, total)) != Some((1, 3)) {
+        assert!(Instant::now() < deadline, "first item: {:?}", purge_job(cx));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*shell.purged.lock(), ["a.txt"]);
+
+    // Cancel: stops before the next item.
+    click_drawn(cx, "toast-ops-action-0");
+    for _ in 0..3 {
+        gate_tx.send(()).unwrap();
+    }
+    wait_page(cx, &page, "stopped", |p| {
+        !p.purging_for_test() && p.items_for_test() == ["b.txt", "c.txt"]
+    });
+    assert_eq!(*shell.purged.lock(), ["a.txt"]);
+    assert_eq!(
+        purge_job(cx).map(|(state, ..)| state),
+        Some(JobState::Cancelled)
+    );
+    let cancelled = t!("ops.cancelled", op = t!("op.delete_permanently")).into_owned();
+    assert_eq!(page.update(cx, |p, _| p.status_for_test()), cancelled);
+    assert!(page.update(cx, |p, _| p.failure_for_test()).is_none());
+    assert!(
+        cx.debug_bounds("toast-ops-action-0").is_none(),
+        "toast gone"
+    );
+}
+
+/// Items that can't be deleted (a file in use) don't stop the others. The error toast names them
+/// and the program holding them, the operation center records the failure, the failed item stays
+/// in the bin, and Close dismisses the toast.
+#[gpui::test]
+fn deleting_from_the_bin_reports_items_that_failed(cx: &mut TestAppContext) {
+    use crate::op_center::JobState;
+    use crate::recycle_bin::Job;
+    let shell = Arc::new(FakeShell::default());
+    shell.fail_delete.lock().push((
+        PathBuf::from(r"C:\o\held.docx"),
+        FailReason::InUse,
+        vec![crate::shell::Holder {
+            app: "Microsoft Word".into(),
+            pid: 4242,
+        }],
+    ));
+    let (page, cx) = open_recycle_page(cx, &shell, &["a.txt", "held.docx", "c.txt"]);
+
+    page.update(cx, |p, _| {
+        p.select_for_test(&["a.txt", "held.docx", "c.txt"]);
+    });
+    assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, false, cx)));
+    page.update(cx, |p, cx| p.answer_for_test(true, cx));
+    wait_page(cx, &page, "deleted the rest", |p| {
+        !p.purging_for_test() && p.items_for_test() == ["held.docx"]
+    });
+    assert_eq!(*shell.purged.lock(), ["a.txt", "c.txt"]);
+    let failure = page
+        .update(cx, |p, _| p.failure_for_test())
+        .expect("an error toast");
+    assert!(
+        failure.contains("held.docx") && failure.contains("Microsoft Word"),
+        "{failure}"
+    );
+    assert!(
+        matches!(purge_job(cx), Some((JobState::Failed(why), ..)) if why.contains("held.docx")),
+        "{:?}",
+        purge_job(cx)
+    );
+
+    click_drawn(cx, "recycle-error-action-0");
+    assert!(page.update(cx, |p, _| p.failure_for_test()).is_none());
+    assert!(cx.debug_bounds("recycle-error-action-0").is_none());
 }
 
 /// Waits for the background drag image.

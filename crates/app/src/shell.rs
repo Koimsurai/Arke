@@ -807,13 +807,15 @@ pub(crate) trait Shell: Send + Sync + 'static {
             .collect();
         self.undo(&Undo::PutBack(back), owner)
     }
-    /// Permanently deletes Recycle Bin items. Does not prompt; the caller must confirm first. Background thread.
+    /// Permanently deletes Recycle Bin items (their data and their bin records). Shows no Windows dialogs: the caller
+    /// confirms first, progress goes to `progress` and setting `progress.cancel` stops before the next item. Items that
+    /// fail are reported by name in `ShellError::Items` while the rest are still deleted. Background thread.
     fn recycle_purge(
         &self,
         items: &[RecycledItem],
-        owner: Option<isize>,
+        progress: &OpProgress,
     ) -> Result<OpOutcome, ShellError> {
-        let _ = (items, owner);
+        let _ = (items, progress);
         Err(ShellError::Unsupported)
     }
     /// Puts files on the system clipboard and returns the resulting clipboard sequence number.

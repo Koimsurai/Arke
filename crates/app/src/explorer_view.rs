@@ -1757,11 +1757,12 @@ impl Explorer {
         self.notice_timer = Some((notice, task));
     }
 
-    /// Running file operation: current item, progress bar, cancel.
-    fn op_toast(
+    /// Running file operation: current item, progress bar, cancel. Also drawn by other views
+    /// that run an operation of their own (the Recycle Bin page).
+    pub(crate) fn op_toast<V: 'static>(
         progress: &Arc<crate::shell::OpProgress>,
         verb: &'static str,
-        cx: &mut Context<Self>,
+        cx: &mut Context<V>,
     ) -> AnyElement {
         use std::sync::atomic::Ordering;
         let done = progress.done.load(Ordering::Relaxed);
@@ -2046,6 +2047,22 @@ enum Progress {
     Fraction(f32),
 }
 
+/// An error toast with Close, for views outside the file list (the Recycle Bin page).
+pub(crate) fn error_toast(
+    id: &'static str,
+    text: String,
+    on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    toast(
+        id,
+        Icon::Close,
+        text,
+        Tone::Danger,
+        Progress::None,
+        vec![(t!("toast.close"), Box::new(on_close) as Listener)],
+    )
+}
+
 /// A toast that rises in when it first shows up.
 fn toast(
     id: &'static str,
@@ -2125,6 +2142,7 @@ fn toast_body(
                         .map(|(ix, (label, on_click))| {
                             div()
                                 .id(("toast-action", ix))
+                                .debug_selector(move || format!("{id}-action-{ix}"))
                                 .a11y_button(label.to_string())
                                 .flex_none()
                                 .px(theme::S_6)

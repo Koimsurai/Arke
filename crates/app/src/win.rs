@@ -903,11 +903,10 @@ impl Shell for WinShell {
     fn recycle_purge(
         &self,
         items: &[crate::shell::RecycledItem],
-        owner: Option<isize>,
+        progress: &crate::shell::OpProgress,
     ) -> Result<OpOutcome, ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        let places: Vec<&str> = items.iter().map(|item| item.now.as_str()).collect();
-        win_fileops::purge_recycled(&places, owner)
+        win_fileops::purge_recycled(items, progress)
     }
 
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {

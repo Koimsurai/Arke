@@ -118,8 +118,10 @@ unsafe fn describe(item: &IShellItem) -> Option<RecycledItem> {
             .ok()
             .and_then(system_time);
         let size = details.GetUInt64(&SIZE).unwrap_or(0);
-        // Stat only the item itself, never walk into it.
-        let is_dir = std::fs::symlink_metadata(&now).is_ok_and(|m| m.is_dir());
+        // Stat only the item itself, never walk into it. `\\?\`, so a name with a trailing
+        // period or space is found too.
+        let is_dir = std::fs::symlink_metadata(arke_core::path::verbatim(Path::new(&now)))
+            .is_ok_and(|m| m.is_dir());
         // In the bin the display name is the full original path; keep the last component.
         let display = Path::new(&display)
             .file_name()

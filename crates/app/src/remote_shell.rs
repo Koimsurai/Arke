@@ -609,9 +609,9 @@ impl Shell for RemoteShell {
     fn recycle_purge(
         &self,
         items: &[RecycledItem],
-        owner: Option<isize>,
+        progress: &OpProgress,
     ) -> Result<OpOutcome, ShellError> {
-        self.inner.recycle_purge(items, owner)
+        self.inner.recycle_purge(items, progress)
     }
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
         if !files.paths.iter().any(|p| remote(p).is_some()) {

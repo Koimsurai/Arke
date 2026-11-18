@@ -1,5 +1,5 @@
-//! Permanent delete (Shift+Delete, already confirmed by Arke), done with a custom walk
-//! instead of the Windows copy engine.
+//! Permanent delete (Shift+Delete, and deleting from the Recycle Bin; already confirmed by
+//! Arke), done with a custom walk instead of the Windows copy engine.
 //!
 //! `IFileOperation` fails on trees full of links, such as pnpm's `node_modules` junctions:
 //! it shows "Could not find this item" for dangling links, and after Skip the parent folder
@@ -43,6 +43,79 @@ pub(crate) fn purge(paths: &[PathBuf], progress: &OpProgress) -> Result<OpOutcom
         .collect();
     crate::win_fileops::explain(&mut failed);
     Err(ShellError::Items { failed })
+}
+
+/// A Recycle Bin item to delete for good.
+pub(crate) struct BinItem {
+    /// Its `$R` data in the bin, a file or a folder.
+    pub(crate) data: PathBuf,
+    /// Where it was deleted from (original folder plus name): what messages call it.
+    pub(crate) shown: PathBuf,
+}
+
+/// Empties Recycle Bin items: each one's `$R` data (a file or a whole folder) and then the `$I`
+/// record next to it, the same walk as [`purge`] (`\\?\` paths, links removed as links,
+/// read-only cleared). An item whose `$R` is already gone just loses its `$I`, without an error.
+/// An item that can't be deleted completely keeps its `$I`, so it stays in the bin with what is
+/// left, and is reported by its original name ("report.docx is in use by Word") while the rest
+/// continues. `work_done` counts finished items out of `work_total`; `done` counts files and
+/// folders removed.
+pub(crate) fn purge_bin(items: &[BinItem], progress: &OpProgress) -> Result<OpOutcome, ShellError> {
+    progress
+        .work_total
+        .store(items.len() as u64, Ordering::Relaxed);
+    let mut failed: Vec<ItemFailure> = Vec::new();
+    for item in items {
+        let data = arke_core::path::verbatim(&item.data);
+        let mut here: Vec<(PathBuf, io::Error)> = Vec::new();
+        if remove_tree(&data, progress, &mut here) {
+            return Ok(OpOutcome::Cancelled);
+        }
+        if here.is_empty()
+            && let Some(info) = info_record(&data)
+        {
+            match fs::symlink_metadata(&info) {
+                Ok(meta) => {
+                    if let Err(e) = remove_writable(&info, &meta, |p| fs::remove_file(p)) {
+                        here.push((info, e));
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => here.push((info, e)),
+            }
+        }
+        if !here.is_empty() {
+            let mut here: Vec<ItemFailure> = here
+                .into_iter()
+                .map(|(path, e)| ItemFailure::io(arke_core::path::unverbatim(&path), &e))
+                .collect();
+            // Programs holding files are looked up by their real path, before renaming.
+            crate::win_fileops::explain(&mut here);
+            let data = arke_core::path::unverbatim(&data);
+            let shown = arke_core::path::unverbatim(&item.shown);
+            for failure in &mut here {
+                failure.path = match failure.path.strip_prefix(&data) {
+                    Ok(inside) if !inside.as_os_str().is_empty() => shown.join(inside),
+                    // The item itself or its `$I` record.
+                    _ => shown.clone(),
+                };
+            }
+            failed.extend(here);
+        }
+        progress.work_done.fetch_add(1, Ordering::Relaxed);
+    }
+    if failed.is_empty() {
+        Ok(OpOutcome::Done)
+    } else {
+        Err(ShellError::Items { failed })
+    }
+}
+
+/// The `$I...` record paired with a `$R...` item.
+fn info_record(data: &Path) -> Option<PathBuf> {
+    let name = data.file_name()?.to_str()?;
+    let rest = name.strip_prefix("$R")?;
+    Some(data.with_file_name(format!("$I{rest}")))
 }
 
 /// Deletes `path` and everything below it. Returns true if cancelled.
@@ -307,6 +380,178 @@ mod tests {
         assert!(message.contains("locked.txt"), "{message}");
         assert!(!sb.0.join(r"t\free.txt").exists());
         assert!(locked.exists());
+    }
+
+    /// A Recycle Bin-like folder in the sandbox (`$Recycle.Bin\<SID>`); never the real bin.
+    fn fake_bin(sb: &Sandbox) -> PathBuf {
+        let bin = sb.0.join(r"$Recycle.Bin\S-1-5-21-0-0-0-1001");
+        fs::create_dir_all(&bin).unwrap();
+        bin
+    }
+
+    /// Writes `$I<id>` and returns the matching item to purge, `$R<id>`, named `name` from
+    /// `C:\orig`.
+    fn record(bin: &Path, id: &str, name: &str) -> BinItem {
+        fs::write(
+            arke_core::path::verbatim(&bin.join(format!("$I{id}"))),
+            "info",
+        )
+        .unwrap();
+        BinItem {
+            data: bin.join(format!("$R{id}")),
+            shown: PathBuf::from(r"C:\orig").join(name),
+        }
+    }
+
+    fn exists(path: &Path) -> bool {
+        fs::symlink_metadata(arke_core::path::verbatim(path)).is_ok()
+    }
+
+    fn read_only(path: &Path) {
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// Emptying deletes each item's `$R` data and its `$I` record: a file, a folder tree with
+    /// read-only files and folders and names only `\\?\` paths reach (the "x." that made Windows
+    /// say "Item Not Found"), a `$R` whose own name ends in a period, and an entry whose `$R` is
+    /// already gone (just its `$I` goes, no error). Other bin items are not touched.
+    #[test]
+    fn purge_bin_empties_items_of_a_fake_bin() {
+        let v = arke_core::path::verbatim;
+        let sb = Sandbox::new("bin");
+        let bin = fake_bin(&sb);
+        let file = record(&bin, "AAAAA1.txt", "notes.txt");
+        fs::write(&file.data, "notes").unwrap();
+
+        let tree = record(&bin, "BBBBB2", "project");
+        let deep = tree.data.join(r"src\deep");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("main.rs"), "fn main() {}").unwrap();
+        for odd in ["x.", "trailing space ", "con", "nul.txt"] {
+            fs::write(v(&tree.data.join(odd)), "odd").unwrap();
+        }
+        fs::create_dir_all(v(&tree.data.join(r"dots.\inner."))).unwrap();
+        fs::write(v(&tree.data.join(r"dots.\inner.\y.")), "odd").unwrap();
+        let ro_file = tree.data.join(r"src\locked-down.txt");
+        fs::write(&ro_file, "ro").unwrap();
+        read_only(&ro_file);
+        let ro_dir = tree.data.join("frozen");
+        fs::create_dir_all(&ro_dir).unwrap();
+        fs::write(ro_dir.join("inside.txt"), "in").unwrap();
+        read_only(&ro_dir.join("inside.txt"));
+        read_only(&ro_dir);
+
+        let dotted = record(&bin, "CCCCC3.", "y.");
+        fs::write(v(&dotted.data), "y").unwrap();
+
+        // `$I` without its `$R` (deleted behind the bin's back).
+        let orphan = record(&bin, "DDDDD4.txt", "gone.txt");
+
+        let bystander = record(&bin, "EEEEE5.txt", "keep.txt");
+        fs::write(&bystander.data, "keep").unwrap();
+
+        let items = [file, tree, dotted, orphan];
+        let progress = OpProgress::default();
+        assert_eq!(
+            purge_bin(&items, &progress).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        for item in &items {
+            let info = info_record(&item.data).unwrap();
+            assert!(
+                !exists(&item.data),
+                "{} is still there",
+                item.data.display()
+            );
+            assert!(!exists(&info), "{} is still there", info.display());
+        }
+        assert_eq!(progress.work_total.load(Ordering::Relaxed), 4);
+        assert_eq!(progress.work_done.load(Ordering::Relaxed), 4);
+        assert!(progress.done.load(Ordering::Relaxed) >= 14);
+        assert_eq!(fs::read_to_string(&bystander.data).unwrap(), "keep");
+        assert!(info_record(&bystander.data).unwrap().exists());
+    }
+
+    /// A file in use is reported by its original name (inside the folder it was deleted with, or
+    /// the item itself), never as `$R...`. That item keeps its `$I`, so it stays in the bin with
+    /// what is left; the other items are still deleted.
+    #[test]
+    fn purge_bin_names_what_failed_and_keeps_going() {
+        let sb = Sandbox::new("bin-locked");
+        let bin = fake_bin(&sb);
+        let folder = record(&bin, "AAAAA1", "project");
+        fs::create_dir_all(&folder.data).unwrap();
+        fs::write(folder.data.join("free.txt"), "f").unwrap();
+        let held = folder.data.join("held.txt");
+        fs::write(&held, "h").unwrap();
+        let lone = record(&bin, "BBBBB2.docx", "report.docx");
+        fs::write(&lone.data, "r").unwrap();
+        let fine = record(&bin, "CCCCC3.txt", "fine.txt");
+        fs::write(&fine.data, "ok").unwrap();
+        // Opened without FILE_SHARE_DELETE, so they can't be deleted.
+        let open = |path: &Path| {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(path)
+                .unwrap()
+        };
+        let handles = (open(&held), open(&lone.data));
+
+        let items = [folder, lone, fine];
+        let progress = OpProgress::default();
+        let result = purge_bin(&items, &progress);
+        drop(handles);
+        let error = result.unwrap_err();
+        let ShellError::Items { failed } = &error else {
+            panic!("{error:?}");
+        };
+        let paths: Vec<&Path> = failed.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(
+            paths,
+            [
+                Path::new(r"C:\orig\project\held.txt"),
+                Path::new(r"C:\orig\report.docx")
+            ]
+        );
+        assert!(
+            failed
+                .iter()
+                .all(|f| f.reason == arke_core::failure::FailReason::InUse),
+            "{failed:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("held.txt") && message.contains("report.docx"),
+            "{message}"
+        );
+        assert!(!message.contains("$R"), "{message}");
+        // What could go went; the failed items stay listed.
+        let [folder, lone, fine] = &items;
+        assert!(!folder.data.join("free.txt").exists());
+        assert!(held.exists() && info_record(&folder.data).unwrap().exists());
+        assert!(lone.data.exists() && info_record(&lone.data).unwrap().exists());
+        assert!(!fine.data.exists() && !info_record(&fine.data).unwrap().exists());
+        assert_eq!(progress.work_done.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn purge_bin_stops_when_cancelled() {
+        let sb = Sandbox::new("bin-cancel");
+        let bin = fake_bin(&sb);
+        let item = record(&bin, "AAAAA1.txt", "a.txt");
+        fs::write(&item.data, "a").unwrap();
+        let progress = OpProgress::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        let items = [item];
+        assert_eq!(
+            purge_bin(&items, &progress).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Cancelled)
+        );
+        assert!(items[0].data.exists() && info_record(&items[0].data).unwrap().exists());
     }
 
     /// Names Windows normally strips or turns into devices (trailing period or space, `con`,

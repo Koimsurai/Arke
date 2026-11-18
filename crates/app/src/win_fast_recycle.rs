@@ -487,24 +487,7 @@ fn now_filetime() -> i64 {
 /// changed. Up to [`NOTIFY_EACH_MAX`] items are reported one by one; past that each folder they
 /// left is reported once, as changed.
 fn notify(moved: &[(PathBuf, bool)], bins: &[&Path]) {
-    use windows::Win32::UI::Shell::{
-        SHCNE_DELETE, SHCNE_ID, SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNF_FLUSHNOWAIT, SHCNF_PATHW,
-        SHChangeNotify,
-    };
-    // shellapi.h; not in the windows crate.
-    windows_core::link!("shell32.dll" "system" fn SHUpdateRecycleBinIcon());
-    let send = |event: SHCNE_ID, path: &Path| {
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        // SAFETY: a NUL-terminated path that outlives the call.
-        unsafe {
-            SHChangeNotify(
-                event,
-                SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
-                Some(wide.as_ptr().cast()),
-                None,
-            );
-        }
-    };
+    use windows::Win32::UI::Shell::{SHCNE_DELETE, SHCNE_RMDIR, SHCNE_UPDATEDIR};
     if moved.len() <= NOTIFY_EACH_MAX {
         for (from, was_dir) in moved {
             send(if *was_dir { SHCNE_RMDIR } else { SHCNE_DELETE }, from);
@@ -517,11 +500,34 @@ fn notify(moved: &[(PathBuf, bool)], bins: &[&Path]) {
             send(SHCNE_UPDATEDIR, folder);
         }
     }
+    notify_bins(bins);
+}
+
+/// Tells Explorer windows that these bin folders (`X:\$Recycle.Bin\<SID>`) changed and has the
+/// desktop's Recycle Bin icon redrawn (full or empty).
+pub(crate) fn notify_bins(bins: &[&Path]) {
+    use windows::Win32::UI::Shell::SHCNE_UPDATEDIR;
+    // shellapi.h; not in the windows crate.
+    windows_core::link!("shell32.dll" "system" fn SHUpdateRecycleBinIcon());
     for bin in bins {
         send(SHCNE_UPDATEDIR, bin);
     }
     // SAFETY: no arguments.
     unsafe { SHUpdateRecycleBinIcon() };
+}
+
+fn send(event: windows::Win32::UI::Shell::SHCNE_ID, path: &Path) {
+    use windows::Win32::UI::Shell::{SHCNF_FLUSHNOWAIT, SHCNF_PATHW, SHChangeNotify};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: a NUL-terminated path that outlives the call.
+    unsafe {
+        SHChangeNotify(
+            event,
+            SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+            Some(wide.as_ptr().cast()),
+            None,
+        );
+    }
 }
 
 /// A `$I` record.
@@ -651,9 +657,9 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn purge(items: &[crate::shell::RecycledItem]) {
-        let places: Vec<&str> = items.iter().map(|i| i.now.as_str()).collect();
         assert_eq!(
-            crate::win_fileops::purge_recycled(&places, None).map_err(|e| e.to_string()),
+            crate::win_fileops::purge_recycled(items, &crate::shell::OpProgress::default())
+                .map_err(|e| e.to_string()),
             Ok(OpOutcome::Done)
         );
     }

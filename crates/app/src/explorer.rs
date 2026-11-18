@@ -98,7 +98,7 @@ pub(crate) use ops::{
 };
 #[cfg(test)]
 pub(crate) use ops::{changes_share_list, commit_problem, typing_problem};
-pub(crate) use view::{caption_buttons, ghost_button, kind_icon, tooltip};
+pub(crate) use view::{caption_buttons, error_toast, ghost_button, kind_icon, tooltip};
 
 use crate::bench::{Bench, BenchStep};
 use crate::media::MediaStore;

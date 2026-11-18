@@ -30,7 +30,7 @@ use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, Glo
 use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::UI::Shell::{
     DROPFILES, DragQueryFileW, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NO_UI, FOF_NOCONFIRMATION,
-    FOF_RENAMEONCOLLISION, FOF_SILENT, FOFX_RECYCLEONDELETE, FileOperation, HDROP, IFileOperation,
+    FOF_RENAMEONCOLLISION, FOFX_RECYCLEONDELETE, FileOperation, HDROP, IFileOperation,
     IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
     SHCreateItemFromParsingName, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
 };
@@ -938,38 +938,35 @@ pub(crate) fn in_recycle_bin(path: &Path) -> bool {
         && parts.next().is_none()
 }
 
-/// Permanently deletes Recycle Bin items at `places`, with no confirmation or progress UI
-/// (Arke has already asked). If any place is outside the Recycle Bin, the whole batch is
-/// rejected and nothing is deleted.
+/// Permanently deletes Recycle Bin items (Arke has already asked) with Arke's own walk, not
+/// the copy engine: no Windows dialogs, progress and cancel through `progress`, per-item
+/// failures reported while the rest continues (see [`crate::win_purge::purge_bin`]). If any
+/// item is outside the Recycle Bin, the whole batch is rejected and nothing is deleted.
+/// Afterwards Explorer and the desktop's bin icon are told the bins changed.
 pub(crate) fn purge_recycled(
-    places: &[&str],
-    owner: Option<isize>,
+    items: &[crate::shell::RecycledItem],
+    progress: &crate::shell::OpProgress,
 ) -> Result<OpOutcome, ShellError> {
-    if let Some(stray) = places.iter().find(|now| !in_recycle_bin(Path::new(now))) {
+    if let Some(stray) = items
+        .iter()
+        .find(|item| !in_recycle_bin(Path::new(&item.now)))
+    {
         return Err(ShellError::Missing {
-            name: (*stray).to_owned(),
+            name: stray.now.clone(),
         });
     }
-    let _com = Com::init()?;
-    // SAFETY: COM is initialized on this thread; arguments are valid interfaces.
-    let result = unsafe {
-        let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
-        let mut queued = 0usize;
-        for now in places {
-            // Already gone (emptied by another program): skip.
-            let Ok(item) = shell_item(Path::new(now)) else {
-                continue;
-            };
-            fo.DeleteItem(&item, None)?;
-            queued += 1;
-        }
-        if queued == 0 {
-            Ok(OpOutcome::Done)
-        } else {
-            finish(&fo, FOF_NOCONFIRMATION | FOF_SILENT, owner, false)
-        }
-    };
-    forget_recycled(places.iter().copied());
+    let entries: Vec<crate::win_purge::BinItem> = items
+        .iter()
+        .map(|item| crate::win_purge::BinItem {
+            data: PathBuf::from(&item.now),
+            shown: item.from.join(&item.name),
+        })
+        .collect();
+    let result = crate::win_purge::purge_bin(&entries, progress);
+    let mut bins: Vec<&Path> = entries.iter().filter_map(|e| e.data.parent()).collect();
+    bins.sort_unstable();
+    bins.dedup();
+    crate::win_fast_recycle::notify_bins(&bins);
     result
 }
 
@@ -978,8 +975,14 @@ pub(crate) fn purge_recycled(
 fn forget_recycled<'a>(places: impl Iterator<Item = &'a str>) {
     for now in places {
         let now = Path::new(now);
+        if !in_recycle_bin(now) {
+            continue;
+        }
+        // `\\?\`: a name with a trailing period or space only exists that way, and must not
+        // look gone when it is still there.
+        let now = arke_core::path::verbatim(now);
         // Keep the metadata for items still in the bin (move or delete failed).
-        if !in_recycle_bin(now) || now.exists() {
+        if std::fs::symlink_metadata(&now).is_ok() {
             continue;
         }
         let Some(name) = now.file_name().and_then(|n| n.to_str()) else {
@@ -1825,6 +1828,7 @@ mod tests {
     use super::*;
     use arke_core::failure::FailReason;
     use std::fs;
+    use std::sync::atomic::Ordering;
 
     /// Temp folder under %TEMP% named with the PID, deleted afterwards. Real file
     /// operations in tests happen only here, never on user files.
@@ -1872,18 +1876,16 @@ mod tests {
             let Ok(items) = crate::win_recycle::list() else {
                 return;
             };
-            let mine: Vec<String> = items
+            let mine: Vec<crate::shell::RecycledItem> = items
                 .into_iter()
                 .filter(|item| {
                     item.from
                         .components()
                         .any(|c| c.as_os_str().to_string_lossy().to_lowercase() == own)
                 })
-                .map(|item| item.now)
                 .collect();
-            let mine: Vec<&str> = mine.iter().map(String::as_str).collect();
             if !mine.is_empty() {
-                let _ = purge_recycled(&mine, None);
+                let _ = purge_recycled(&mine, &crate::shell::OpProgress::default());
             }
         }
     }
@@ -2135,7 +2137,7 @@ mod tests {
     #[test]
     fn recycle_bin_lists_purges_and_restores_temp_files() {
         // Clear leftovers from earlier failed runs (only this test's temp folders).
-        let leftovers: Vec<String> = crate::win_recycle::list()
+        let leftovers: Vec<crate::shell::RecycledItem> = crate::win_recycle::list()
             .unwrap()
             .into_iter()
             .filter(|item| {
@@ -2146,13 +2148,11 @@ mod tests {
                             .starts_with("arke-fileop-test-bin-")
                     })
             })
-            .map(|item| item.now)
             .collect();
-        let leftovers: Vec<&str> = leftovers.iter().map(String::as_str).collect();
-        assert_eq!(
-            purge_recycled(&leftovers, None).map_err(|e| e.to_string()),
-            Ok(OpOutcome::Done)
-        );
+        let purge = |items: &[crate::shell::RecycledItem]| {
+            purge_recycled(items, &crate::shell::OpProgress::default()).map_err(|e| e.to_string())
+        };
+        assert_eq!(purge(&leftovers), Ok(OpOutcome::Done));
 
         let sb = Sandbox::new("bin");
         let keep = sb.file(r"gone\keep.txt", "keep me");
@@ -2196,22 +2196,32 @@ mod tests {
 
         // A place outside the bin rejects the whole batch.
         let bystander = sb.file(r"gone\bystander.txt", "stay");
-        assert!(
-            purge_recycled(&[drop_item.now.as_str(), bystander.to_str().unwrap()], None).is_err()
-        );
+        let stray = crate::shell::RecycledItem {
+            now: bystander.to_str().unwrap().to_owned(),
+            ..drop_item.clone()
+        };
+        assert!(purge(&[drop_item.clone(), stray]).is_err());
         assert!(bystander.exists());
         assert_eq!(mine().len(), 3);
 
-        // Purge one file and one folder; the other item stays.
+        // Purge one file and one folder, `$R` data and `$I` record; the other item stays.
+        let progress = crate::shell::OpProgress::default();
         assert_eq!(
-            purge_recycled(&[drop_item.now.as_str(), dir_item.now.as_str()], None)
+            purge_recycled(&[drop_item.clone(), dir_item.clone()], &progress)
                 .map_err(|e| e.to_string()),
             Ok(OpOutcome::Done)
         );
+        assert_eq!(progress.work_done.load(Ordering::Relaxed), 2);
+        assert_eq!(progress.work_total.load(Ordering::Relaxed), 2);
         let left = mine();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].name, "keep.txt");
-        assert!(!Path::new(&drop_item.now).exists() && !Path::new(&dir_item.now).exists());
+        for gone in [drop_item, dir_item] {
+            let data = Path::new(&gone.now);
+            let name = data.file_name().unwrap().to_str().unwrap();
+            let info = data.with_file_name(format!("$I{}", &name[2..]));
+            assert!(!data.exists() && !info.exists(), "{}", gone.now);
+        }
 
         // Restore: back in the original folder, no leftover bin entry.
         let back = Undo::PutBack(vec![PutBack {
@@ -2550,7 +2560,7 @@ mod tests {
 
         // Only what this benchmark recycled, now or in an earlier interrupted run: items whose
         // origin is one of its sandboxes.
-        let mine: Vec<String> = crate::win_recycle::list()
+        let mine: Vec<crate::shell::RecycledItem> = crate::win_recycle::list()
             .unwrap()
             .into_iter()
             .filter(|item| {
@@ -2561,12 +2571,10 @@ mod tests {
                             .starts_with("arke-fileop-test-bench-")
                     })
             })
-            .map(|item| item.now)
             .collect();
         eprintln!("purging {} recycled benchmark folders", mine.len());
-        let mine: Vec<&str> = mine.iter().map(String::as_str).collect();
         assert_eq!(
-            purge_recycled(&mine, None).map_err(|e| e.to_string()),
+            purge_recycled(&mine, &crate::shell::OpProgress::default()).map_err(|e| e.to_string()),
             Ok(OpOutcome::Done)
         );
         // Sandboxes of earlier interrupted runs.

@@ -113,6 +113,12 @@ pub fn type_names_version() -> u32 {
     NAMES_VERSION.load(Ordering::Relaxed)
 }
 
+/// Tells the type names the UI language changed, so [`type_names_version`] moves now and views
+/// sorted by type are ordered again at once, not when a type text is next asked for.
+pub fn language_changed() {
+    SYSTEM_NAMES.lock().follow_language();
+}
+
 /// The name for `ext` if Windows gave one; otherwise asks the lookup thread (once) and `None`.
 fn system_type_name(ext: &str) -> Option<Arc<str>> {
     let mut state = SYSTEM_NAMES.lock();
@@ -229,6 +235,25 @@ mod tests {
 
     fn file(name: &str) -> Entry {
         Entry::new(name, EntryKind::File, 1, None, 0)
+    }
+
+    /// Switching language moves the version at once (views re-sort by the new texts), not only
+    /// when a text is next asked for.
+    #[test]
+    fn language_switch_moves_the_names_version() {
+        rust_i18n::set_locale("en");
+        language_changed();
+        let before = type_names_version();
+        language_changed();
+        assert_eq!(
+            type_names_version(),
+            before,
+            "same language: nothing changes"
+        );
+        rust_i18n::set_locale("zh-TW");
+        language_changed();
+        assert_ne!(type_names_version(), before);
+        rust_i18n::set_locale("en");
     }
 
     #[test]

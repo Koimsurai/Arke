@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::entry::Entry;
 use crate::service::Gen;
-use crate::sort::SortSpec;
+use crate::sort::{SortSpec, TypeKeys};
 
 /// Current directory state held by the UI. `entries` is sorted by `sort` with hidden files
 /// filtered.
@@ -119,6 +119,8 @@ impl DirModel {
         let spec = self.sorted_by;
         self.version += 1;
         let entries = Arc::make_mut(&mut self.entries);
+        // One text per type for the whole delta (they can change meanwhile).
+        let types = TypeKeys::for_entries(&spec, entries.iter().chain(&delta.upserts));
         for name in &delta.removed {
             if let Some(ix) = entries.iter().position(|e| *e.name == **name) {
                 entries.remove(ix);
@@ -129,7 +131,7 @@ impl DirModel {
                 entries.remove(ix);
             }
             let ix = entries
-                .binary_search_by(|probe| spec.compare(probe, &entry))
+                .binary_search_by(|probe| spec.compare_with(probe, &entry, &types))
                 .unwrap_or_else(|ix| ix);
             entries.insert(ix, entry);
         }
@@ -175,12 +177,13 @@ pub fn merged(entries: &[Entry], delta: &Delta, spec: SortSpec) -> Vec<Entry> {
         .map(|n| &**n)
         .chain(upserts.keys().copied())
         .collect();
+    let types = TypeKeys::for_entries(&spec, entries.iter().chain(&delta.upserts));
     let mut added: Vec<&Entry> = upserts.into_values().collect();
-    added.sort_unstable_by(|a, b| spec.compare(a, b));
+    added.sort_unstable_by(|a, b| spec.compare_with(a, b, &types));
     let mut out = Vec::with_capacity(entries.len() + added.len());
     let mut added = added.into_iter().peekable();
     for entry in entries.iter().filter(|e| !gone.contains(&*e.name)) {
-        while let Some(new) = added.next_if(|new| spec.compare(new, entry).is_lt()) {
+        while let Some(new) = added.next_if(|new| spec.compare_with(new, entry, &types).is_lt()) {
             out.push(new.clone());
         }
         out.push(entry.clone());

@@ -86,29 +86,55 @@ pub(crate) struct MediaKey {
     px: u32,
 }
 
-/// Per extension: whether the registered icon is the file itself, so no type icon exists. Read
-/// from the registry once per extension.
+/// Per extension: whether the registered icon is the file itself (so no type icon exists), as
+/// far as the background lookup ([`start_icon_probe`]) has found out; `false` until it answers.
+#[derive(Default)]
+struct PerFileIcons {
+    known: HashMap<String, bool>,
+    asked: HashSet<String>,
+}
+
+static PER_FILE_ICONS: LazyLock<Mutex<PerFileIcons>> = LazyLock::new(Mutex::default);
+static PROBE: OnceLock<flume::Sender<String>> = OnceLock::new();
+
 fn icon_is_per_file(ext: &str) -> bool {
-    static CACHE: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Mutex::default);
-    if let Some(&known) = CACHE.lock().get(ext) {
+    let mut state = PER_FILE_ICONS.lock();
+    if let Some(&known) = state.known.get(ext) {
         return known;
     }
-    let per_file = registered_default_icon(ext)
-        .is_some_and(|icon| arke_core::filetype::default_icon_is_the_file(&icon));
-    CACHE.lock().insert(ext.to_owned(), per_file);
-    per_file
+    if let Some(probe) = PROBE.get()
+        && state.asked.insert(ext.to_owned())
+    {
+        let _ = probe.send(ext.to_owned());
+    }
+    drop(state);
+    false
 }
 
-/// The `DefaultIcon` registered for `ext` (registry, read only).
-#[cfg(not(test))]
-fn registered_default_icon(ext: &str) -> Option<String> {
-    crate::win_dragimage::registered_default_icon(ext)
-}
-
-/// Tests: `.dwf` is registered with the file itself as its icon.
-#[cfg(test)]
-fn registered_default_icon(ext: &str) -> Option<String> {
-    (ext == "dwf").then(|| "\"%1\"".to_owned())
+/// Starts the thread that reads the `DefaultIcon` registered for each extension asked about
+/// (`source`; the registry is never read on the UI thread). `changed` runs after answers
+/// arrived, so views ask for the right icons.
+pub(crate) fn start_icon_probe(
+    source: impl Fn(&str) -> Option<String> + Send + 'static,
+    changed: impl Fn() + Send + 'static,
+) {
+    let (tx, rx) = flume::unbounded::<String>();
+    if PROBE.set(tx).is_err() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("icon-probe".into())
+        .spawn(move || {
+            while let Ok(ext) = rx.recv() {
+                let per_file = source(&ext)
+                    .is_some_and(|icon| arke_core::filetype::default_icon_is_the_file(&icon));
+                PER_FILE_ICONS.lock().known.insert(ext, per_file);
+                changed();
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("icon probe thread: {e}");
+    }
 }
 
 impl MediaKey {
@@ -126,8 +152,12 @@ impl MediaKey {
 
     /// Key for the file at `path` (whose listing entry is `entry`).
     pub(crate) fn at(path: PathBuf, entry: &Entry, thumbnail_px: Option<u32>) -> Option<Self> {
-        if wants_type_icon(entry) && icon_is_per_file(entry.extension()) {
-            // The registered icon is the file's own (`%1`): ask for this file, like `.ico`.
+        if wants_type_icon(entry)
+            && !entry.is_cloud_placeholder()
+            && icon_is_per_file(entry.extension())
+        {
+            // The registered icon is the file's own (`%1`): ask for this file, like `.ico`. Not
+            // for an online-only cloud file: reading it would download it.
             return Some(Self {
                 path,
                 modified: entry.modified,
@@ -162,7 +192,9 @@ impl MediaKey {
     /// extension, shared by every file of that type. Reads no file, so also for folders where
     /// thumbnails and file icons aren't loaded (network shares).
     pub(crate) fn type_icon(entry: &Entry) -> Option<Self> {
-        (wants_type_icon(entry) && !icon_is_per_file(entry.extension())).then(|| Self {
+        (wants_type_icon(entry)
+            && (entry.is_cloud_placeholder() || !icon_is_per_file(entry.extension())))
+        .then(|| Self {
             path: PathBuf::from(format!("{TYPE_ICON_PREFIX}{}", entry.extension())),
             modified: None,
             size: 0,

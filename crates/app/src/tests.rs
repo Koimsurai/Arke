@@ -4105,15 +4105,44 @@ fn unknown_types_get_the_registered_icon(cx: &mut TestAppContext) {
 
 /// A type whose registered icon is the file itself (`DefaultIcon` `%1`) has no icon by extension
 /// (Windows gives the blank document), so each file is asked for its own, like `.ico`. Other
-/// unknown types keep one shared icon per extension.
+/// unknown types keep one shared icon per extension. The registry is read off the UI thread, so
+/// until the answer is in the type icon stays; an online-only cloud file is never read.
 #[test]
 fn per_file_icon_types_are_asked_per_file() {
     let dir = Path::new(r"C:\cad");
-    let per_file = MediaKey::sized(dir, &file("plan.dwf", 10), None).unwrap();
+    let (tx, rx) = flume::unbounded::<()>();
+    let caller = std::thread::current().id();
+    crate::media::start_icon_probe(
+        move |ext| {
+            assert_ne!(
+                std::thread::current().id(),
+                caller,
+                "read on the asking thread"
+            );
+            (ext == "dwf").then(|| "\"%1\"".to_owned())
+        },
+        move || {
+            let _ = tx.send(());
+        },
+    );
+    let key = |name: &str, attributes: u32| {
+        let entry = Entry::new(name, EntryKind::File, 10, None, attributes);
+        MediaKey::sized(dir, &entry, None).unwrap()
+    };
+    assert_eq!(
+        key("plan.dwf", 0).path,
+        PathBuf::from("*.dwf"),
+        "not known yet"
+    );
+    rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let per_file = key("plan.dwf", 0);
     assert_eq!(per_file.path, PathBuf::from(r"C:\cad\plan.dwf"));
     assert_eq!(per_file.kind, MediaKind::SystemIcon);
-    let shared = MediaKey::sized(dir, &file("plan.dwg", 10), None).unwrap();
-    assert_eq!(shared.path, PathBuf::from("*.dwg"));
+    assert_eq!(key("plan.dwg", 0).path, PathBuf::from("*.dwg"));
+    // Online-only (recall on data access): reading it would download it, so the type icon.
+    assert_eq!(key("plan.dwf", 0x40_0000).path, PathBuf::from("*.dwf"));
+    let online = Entry::new("plan.dwf", EntryKind::File, 10, None, 0x40_0000);
+    assert!(MediaKey::type_icon(&online).is_some());
     // No type icon to show where file icons aren't loaded (network shares): the theme icon stays.
     assert!(MediaKey::type_icon(&file("plan.dwf", 10)).is_none());
     assert!(MediaKey::type_icon(&file("plan.dwg", 10)).is_some());

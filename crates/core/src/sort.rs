@@ -159,13 +159,28 @@ impl SortSpec {
 
     /// Full comparison: folders first (regardless of direction; not with `mixed`), then each key in
     /// turn, then name (in the primary direction) as a tiebreaker so the order is total.
+    ///
+    /// Type texts are read afresh on every call, so for many comparisons in a row (sorting,
+    /// searching a sorted list) take [`TypeKeys::for_entries`] once and use [`Self::compare_with`].
     pub fn compare(&self, a: &Entry, b: &Entry) -> Ordering {
-        self.compare_sized(a, b, a.size, b.size)
+        self.compare_with(a, b, &TypeKeys::default())
+    }
+
+    /// [`Self::compare`] with type texts frozen in `types`.
+    pub fn compare_with(&self, a: &Entry, b: &Entry, types: &TypeKeys) -> Ordering {
+        self.compare_sized(a, b, a.size, b.size, types)
     }
 
     /// Like `compare`, but the caller supplies sizes (folder sizes are computed separately, not in
     /// `Entry`).
-    fn compare_sized(&self, a: &Entry, b: &Entry, size_a: u64, size_b: u64) -> Ordering {
+    fn compare_sized(
+        &self,
+        a: &Entry,
+        b: &Entry,
+        size_a: u64,
+        size_b: u64,
+        types: &TypeKeys,
+    ) -> Ordering {
         if !self.mixed {
             match (a.is_dir_like(), b.is_dir_like()) {
                 (true, false) => return Ordering::Less,
@@ -173,12 +188,12 @@ impl SortSpec {
                 _ => {}
             }
         }
-        let ord = column_cmp(self.column, a, b, size_a, size_b);
+        let ord = column_cmp(self.column, a, b, (size_a, size_b), types);
         if ord != Ordering::Equal {
             return if self.ascending { ord } else { ord.reverse() };
         }
         for key in self.then.iter().flatten() {
-            let ord = column_cmp(key.column, a, b, size_a, size_b);
+            let ord = column_cmp(key.column, a, b, (size_a, size_b), types);
             if ord != Ordering::Equal {
                 return if key.ascending { ord } else { ord.reverse() };
             }
@@ -191,7 +206,8 @@ impl SortSpec {
     pub fn sort(&self, entries: &mut [Entry]) {
         // Unstable sort is faster, and the comparator is a total order, so the result is
         // deterministic.
-        entries.sort_unstable_by(|a, b| self.compare(a, b));
+        let types = TypeKeys::for_entries(self, &*entries);
+        entries.sort_unstable_by(|a, b| self.compare_with(a, b, &types));
     }
 
     /// Returns a sorted copy. When sorting by size, folders use separately computed sizes
@@ -219,7 +235,8 @@ impl SortSpec {
                 (size, e)
             })
             .collect();
-        sized.sort_unstable_by(|a, b| self.compare_sized(a.1, b.1, a.0, b.0));
+        let types = TypeKeys::for_entries(self, entries);
+        sized.sort_unstable_by(|a, b| self.compare_sized(a.1, b.1, a.0, b.0, &types));
         sized.into_iter().map(|(_, e)| e.clone()).collect()
     }
 }
@@ -230,12 +247,18 @@ const fn matches_column(a: SortColumn, b: SortColumn) -> bool {
 }
 
 /// One column's order for two entries (ascending), `Equal` when they tie on it.
-fn column_cmp(column: SortColumn, a: &Entry, b: &Entry, size_a: u64, size_b: u64) -> Ordering {
+fn column_cmp(
+    column: SortColumn,
+    a: &Entry,
+    b: &Entry,
+    (size_a, size_b): (u64, u64),
+    types: &TypeKeys,
+) -> Ordering {
     match column {
         // Name is the final tiebreaker too; as a key it decides on its own.
         SortColumn::Name => name_cmp(a, b),
         SortColumn::Modified => a.modified.cmp(&b.modified),
-        SortColumn::Type => type_cmp(a, b),
+        SortColumn::Type => type_cmp(a, b, types),
         SortColumn::Extension => a.extension().cmp(b.extension()),
         SortColumn::Size => size_a.cmp(&size_b),
         SortColumn::Created => a.created.cmp(&b.created),
@@ -243,55 +266,60 @@ fn column_cmp(column: SortColumn, a: &Entry, b: &Entry, size_a: u64, size_b: u64
     }
 }
 
-/// Lowercased type text per extension, for the current locale. Looked up per comparison, so the
-/// text is built once per extension (not per file) and never asks the shell.
-struct TypeKeys {
-    locale: String,
-    /// Version of the system type names the texts were made with.
-    version: u32,
+/// Lowercased type texts, one per extension, frozen when a sort starts: the texts can change
+/// while a sort runs (Windows' type names arrive on another thread), and a comparison whose
+/// answers change midway is no total order. Never asks the shell.
+#[derive(Default)]
+pub struct TypeKeys {
     keys: HashMap<String, Arc<str>>,
 }
 
-thread_local! {
-    static TYPE_KEYS: std::cell::RefCell<TypeKeys> = std::cell::RefCell::new(TypeKeys {
-        locale: String::new(),
-        version: 0,
-        keys: HashMap::new(),
-    });
+/// What the text of `e` is keyed by: folders and folder links have their own texts (no
+/// extension can contain `<`), files go by extension.
+fn type_id(e: &Entry) -> &str {
+    match e.kind {
+        EntryKind::Dir => "<dir>",
+        EntryKind::Link { is_dir: true } => "<link>",
+        _ => e.extension(),
+    }
+}
+
+fn type_text(e: &Entry) -> Arc<str> {
+    crate::format::type_label(e).to_lowercase().into()
+}
+
+impl TypeKeys {
+    /// The texts of `entries` as they are now, when `spec` sorts by type (otherwise none are
+    /// needed). Takes one text per distinct extension.
+    pub fn for_entries<'a>(spec: &SortSpec, entries: impl IntoIterator<Item = &'a Entry>) -> Self {
+        let mut keys = HashMap::new();
+        if spec.uses(SortColumn::Type) {
+            for e in entries {
+                let id = type_id(e);
+                if !keys.contains_key(id) {
+                    keys.insert(id.to_owned(), type_text(e));
+                }
+            }
+        }
+        Self { keys }
+    }
+
+    fn key(&self, e: &Entry) -> std::borrow::Cow<'_, str> {
+        match self.keys.get(type_id(e)) {
+            Some(known) => std::borrow::Cow::Borrowed(known),
+            None => std::borrow::Cow::Owned(type_text(e).to_string()),
+        }
+    }
 }
 
 /// Type column order: the shown type text in natural order (File Explorer sorts by the type's
 /// display name too), not the extension.
-fn type_cmp(a: &Entry, b: &Entry) -> Ordering {
+fn type_cmp(a: &Entry, b: &Entry, types: &TypeKeys) -> Ordering {
     // Same kind of item with the same extension: same text, no lookup.
     if a.kind == b.kind && a.extension() == b.extension() {
         return Ordering::Equal;
     }
-    TYPE_KEYS.with_borrow_mut(|cache| {
-        let locale = rust_i18n::locale();
-        let version = crate::format::type_names_version();
-        if *locale != *cache.locale || version != cache.version {
-            cache.locale = locale.to_string();
-            cache.version = version;
-            cache.keys.clear();
-        }
-        let mut key_of = |e: &Entry| -> Arc<str> {
-            // Folders and folder links have their own texts; no extension can contain `<`.
-            let id = match e.kind {
-                EntryKind::Dir => "<dir>",
-                EntryKind::Link { is_dir: true } => "<link>",
-                _ => e.extension(),
-            };
-            if let Some(k) = cache.keys.get(id) {
-                return Arc::clone(k);
-            }
-            let k: Arc<str> = crate::format::type_label(e).to_lowercase().into();
-            cache.keys.insert(id.to_owned(), Arc::clone(&k));
-            k
-        };
-        let (ka, kb) = (key_of(a), key_of(b));
-        natural_cmp(&ka, &kb)
-    })
+    natural_cmp(&types.key(a), &types.key(b))
 }
 
 /// Natural, case-insensitive name order, then the exact name so the order is total.
@@ -621,6 +649,66 @@ mod tests {
             names(&v),
             ["dir", "noext", "d.bak", "c.dwg", "z.log", "b.md", "a.txt"]
         );
+    }
+
+    /// A sort takes the type texts once: names arriving meanwhile don't change its answers.
+    #[test]
+    fn type_texts_are_frozen_per_sort() {
+        rust_i18n::set_locale("en");
+        let f = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        let v = vec![f("b.bak"), f("a.dwg")];
+        let spec = SortSpec::by(SortColumn::Type, true, false);
+        let types = TypeKeys::for_entries(&spec, &v);
+        crate::format::set_type_name("dwg", Some("AutoCAD Drawing"));
+        assert_eq!(spec.compare_with(&v[0], &v[1], &types), Ordering::Less);
+        assert_eq!(spec.compare(&v[0], &v[1]), Ordering::Greater, "fresh texts");
+    }
+
+    /// Windows' names for unknown types arrive on their own thread while sorts run, as fast as
+    /// can be: every sort still gets a total order (a sort whose comparison changes its mind
+    /// panics or scrambles), and once the names are in, the order follows them.
+    #[test]
+    fn sorting_while_type_names_arrive_is_a_total_order() {
+        rust_i18n::set_locale("en");
+        crate::format::start_type_names(|ext| Some(format!("Kind {ext}")), || {});
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let base: Vec<Entry> = (0..100_000)
+            .map(|i| {
+                Entry::new(
+                    format!("file{i}.x{:03}", next() % 400),
+                    EntryKind::File,
+                    1,
+                    None,
+                    0,
+                )
+            })
+            .collect();
+        let spec = SortSpec::by(SortColumn::Type, true, false);
+        for _ in 0..4 {
+            let mut v = base.clone();
+            spec.sort(&mut v);
+        }
+        // Wait until every name is in, then the order must follow them.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while (0..400).any(|n| {
+            let probe = Entry::new(format!("f.x{n:03}"), EntryKind::File, 1, None, 0);
+            crate::format::type_label(&probe) != format!("Kind x{n:03}")
+        }) {
+            assert!(std::time::Instant::now() < deadline, "names never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut v = base;
+        spec.sort(&mut v);
+        let types = TypeKeys::for_entries(&spec, &v);
+        for w in v.windows(2) {
+            assert_ne!(spec.compare_with(&w[0], &w[1], &types), Ordering::Greater);
+        }
     }
 
     /// Sorting uses exactly the text shown: once Windows' name for a type arrives, the order follows

@@ -1019,8 +1019,12 @@ fn follow_language_setting(store: &gpui::Entity<settings::SettingsStore>, cx: &m
 /// repaint (and re-sort by type) when names arrive.
 fn start_type_names(cx: &mut App) {
     let (tx, rx) = flume::bounded::<()>(1);
+    let notify = tx.clone();
     arke_core::format::start_type_names(win_dragimage::registered_type_name, move || {
         let _ = tx.try_send(());
+    });
+    media::start_icon_probe(win_dragimage::registered_default_icon, move || {
+        let _ = notify.try_send(());
     });
     cx.spawn(async move |cx| {
         while rx.recv_async().await.is_ok() {
@@ -1037,6 +1041,7 @@ fn apply_language(locale: &str, cx: &mut App) {
     let mut changed = theme::set_ui_language(locale, win::system_locale());
     if *rust_i18n::locale() != *locale {
         rust_i18n::set_locale(locale);
+        arke_core::format::language_changed();
         changed = true;
     }
     if changed {

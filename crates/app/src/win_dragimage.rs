@@ -183,9 +183,38 @@ pub(crate) fn registered_type_icon(ext: &str) -> Option<Thumbnail> {
 }
 
 /// Windows' type name for files with extension `ext` (no dot), as File Explorer's Type column
-/// has it ("AutoCAD Drawing"). Only the extension is looked at (a dummy name; no file is read),
-/// so network shares stay cheap. Background thread.
+/// has it ("AutoCAD Drawing"), but only for an extension some program registered: for any other
+/// Windows makes up "EXT File" in its own display language, which would replace Arke's translated
+/// one. Only the extension is looked at (a dummy name; no file is read), so network shares stay
+/// cheap. Background thread.
 pub(crate) fn registered_type_name(ext: &str) -> Option<String> {
+    type_name_if_registered(ext, extension_is_registered, shell_type_name)
+}
+
+/// `name(ext)` when `registered(ext)`.
+fn type_name_if_registered(
+    ext: &str,
+    registered: impl Fn(&str) -> bool,
+    name: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if registered(ext) { name(ext) } else { None }
+}
+
+/// Whether a program registered files with extension `ext`: a ProgID under `HKCR\.ext`, an entry
+/// in its `OpenWithProgids`, or a choice the user made.
+fn extension_is_registered(ext: &str) -> bool {
+    registry::classes_default(&format!(".{ext}")).is_some_and(|prog_id| !prog_id.is_empty())
+        || registry::user_choice(ext).is_some()
+        || registry::classes_key_exists(&format!(r".{ext}\OpenWithProgids"))
+}
+
+/// Windows' name for the type of `ext`, from the shell.
+fn shell_type_name(ext: &str) -> Option<String> {
+    thread_local! {
+        /// COM for the thread's life: the shell may load handlers that need an apartment.
+        static COM: Option<Com> = Com::init().ok();
+    }
+    COM.with(|_| ());
     let name = wide(std::ffi::OsStr::new(&format!("x.{ext}")));
     let mut info = SHFILEINFOW::default();
     // SAFETY: name is NUL-terminated; info is a correctly sized out struct. With
@@ -211,41 +240,89 @@ pub(crate) fn registered_type_name(ext: &str) -> Option<String> {
 }
 
 /// The `DefaultIcon` registered for files of type `ext` (no dot): the default value of
-/// `HKCR\<ProgId>\DefaultIcon`, with the ProgId from `HKCR\.<ext>`. Read only.
-#[cfg(not(test))]
+/// `HKCR\<ProgId>\DefaultIcon`, with the ProgId the user chose for the extension, else the one
+/// from `HKCR\.<ext>`. Read only. Background thread.
 pub(crate) fn registered_default_icon(ext: &str) -> Option<String> {
-    let prog_id = classes_default(&format!(".{ext}"))?;
-    classes_default(&format!(r"{prog_id}\DefaultIcon"))
+    let prog_id = registry::user_choice(ext)
+        .or_else(|| registry::classes_default(&format!(".{ext}")))
+        .filter(|id| !id.is_empty())?;
+    registry::classes_default(&format!(r"{prog_id}\DefaultIcon"))
 }
 
-/// Default value (text) of `HKEY_CLASSES_ROOT\<key>`.
-#[cfg(not(test))]
-fn classes_default(key: &str) -> Option<String> {
+/// Read-only registry access for the type lookups.
+mod registry {
     use windows::Win32::System::Registry::{
-        HKEY_CLASSES_ROOT, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
+        HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+        RegCloseKey, RegGetValueW, RegOpenKeyExW,
     };
-    let key = wide(std::ffi::OsStr::new(key));
-    let mut buf = vec![0u16; 520];
-    let mut bytes = u32::try_from(buf.len() * 2).ok()?;
-    // SAFETY: key is NUL-terminated; buf has `bytes` writable bytes; RRF_NOEXPAND-less read of a
-    // string value; nothing is written to the registry.
-    let code = unsafe {
-        RegGetValueW(
-            HKEY_CLASSES_ROOT,
-            PCWSTR(key.as_ptr()),
-            PCWSTR::null(),
-            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-            None,
-            Some(buf.as_mut_ptr().cast()),
-            Some(&raw mut bytes),
-        )
-    };
-    if code.0 != 0 {
-        return None;
+    use windows::core::PCWSTR;
+
+    use crate::win_fileops::wide;
+
+    /// Text of `value` (`None`: the default value) of `key` under `root`.
+    fn string(root: HKEY, key: &str, value: Option<&str>) -> Option<String> {
+        let key = wide(std::ffi::OsStr::new(key));
+        let value = value.map(|v| wide(std::ffi::OsStr::new(v)));
+        let mut buf = vec![0u16; 520];
+        let mut bytes = u32::try_from(buf.len() * 2).ok()?;
+        // SAFETY: key and value are NUL-terminated; buf has `bytes` writable bytes; a string
+        // value is read and nothing is written to the registry.
+        let code = unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(key.as_ptr()),
+                value
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr())),
+                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&raw mut bytes),
+            )
+        };
+        if code.0 != 0 {
+            return None;
+        }
+        let len = (bytes as usize / 2).min(buf.len());
+        let text = String::from_utf16_lossy(&buf[..len]);
+        Some(text.trim_end_matches('\0').to_owned())
     }
-    let len = (bytes as usize / 2).min(buf.len());
-    let text = String::from_utf16_lossy(&buf[..len]);
-    Some(text.trim_end_matches('\0').to_owned())
+
+    /// Default value (text) of `HKEY_CLASSES_ROOT\<key>`.
+    pub(super) fn classes_default(key: &str) -> Option<String> {
+        string(HKEY_CLASSES_ROOT, key, None)
+    }
+
+    /// The ProgID the user chose to open files with extension `ext`.
+    pub(super) fn user_choice(ext: &str) -> Option<String> {
+        let key = format!(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\UserChoice"
+        );
+        string(HKEY_CURRENT_USER, &key, Some("ProgId")).filter(|id| !id.is_empty())
+    }
+
+    /// Whether `HKEY_CLASSES_ROOT\<key>` exists.
+    pub(super) fn classes_key_exists(key: &str) -> bool {
+        let key = wide(std::ffi::OsStr::new(key));
+        let mut handle = HKEY::default();
+        // SAFETY: key is NUL-terminated; handle is a valid out pointer; opened for reading only
+        // and closed right away.
+        let code = unsafe {
+            RegOpenKeyExW(
+                HKEY_CLASSES_ROOT,
+                PCWSTR(key.as_ptr()),
+                None,
+                KEY_READ,
+                &raw mut handle,
+            )
+        };
+        if code.0 != 0 {
+            return false;
+        }
+        // SAFETY: handle was just opened.
+        let _ = unsafe { RegCloseKey(handle) };
+        true
+    }
 }
 
 /// Index in the system image list of the icon for `name` with `attributes`, from the name's
@@ -516,6 +593,19 @@ fn pill(width: u32, height: u32, bgr: &[u8]) -> Thumbnail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows' made-up "EXT File" name (in its own language) is never asked for an extension
+    /// nothing registered.
+    #[test]
+    fn type_names_come_only_from_registered_extensions() {
+        let name = |ext: &str| Some(format!("Windows name of {ext}"));
+        let registered = |ext: &str| ext == "dwg";
+        assert_eq!(
+            type_name_if_registered("dwg", registered, name).as_deref(),
+            Some("Windows name of dwg")
+        );
+        assert_eq!(type_name_if_registered("bak", registered, name), None);
+    }
 
     fn solid(width: u32, height: u32, rgba: [u8; 4]) -> Thumbnail {
         Thumbnail {

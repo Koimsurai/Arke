@@ -678,7 +678,10 @@ mod tests {
             .expect("shortcut");
         std::fs::rename(&made[0], &link).expect("rename");
         let read = |l: &Path| crate::win::read_shortcut(l).map(|(target, _)| target);
-        assert_eq!(find_with(sb.env(), || None, read), Some(exe));
+        // The same file either way: a shortcut may give the temp folder's short (8.3) name.
+        let real = |p: &Path| std::fs::canonicalize(p).expect("exists");
+        let found = find_with(sb.env(), || None, read);
+        assert_eq!(found.as_deref().map(real), Some(real(&exe)));
     }
 
     #[test]

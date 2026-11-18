@@ -300,7 +300,10 @@ fn a_loading_video_shows_the_picture_placeholder_in_the_pane(cx: &mut TestAppCon
     cx.simulate_keystrokes("down");
     wait_until(cx, &view, "previewed", previewed);
     video_loading(&view, cx);
-    assert!(cx.debug_bounds("media-placeholder").is_some());
+    let frame = cx.debug_bounds("media-placeholder").expect("placeholder");
+    let icon = cx.debug_bounds("media-placeholder-icon").expect("icon");
+    assert!(frame.contains(&icon.center()), "the icon sits in the frame");
+    assert!(icon.size.width <= px(48.) && icon.size.width >= px(32.));
     assert!(cx.debug_bounds("preview-skeleton").is_none());
 }
 
@@ -317,6 +320,11 @@ fn a_loading_video_shows_the_picture_placeholder_in_quick_look(cx: &mut TestAppC
         .debug_bounds("media-placeholder")
         .expect("the placeholder is drawn");
     assert!(cx.debug_bounds("preview-skeleton").is_none());
+    let icon = cx.debug_bounds("media-placeholder-icon").expect("icon");
+    assert!(
+        (icon.center().x - frame.center().x).abs() < px(2.),
+        "centered"
+    );
     assert!(frame.size.width > stage.size.width * 0.8, "fills the stage");
     assert!(frame.size.height > stage.size.height * 0.8);
 }

@@ -1445,7 +1445,7 @@ impl Explorer {
             PreviewBody::Workbook(view) => office::sheet_grid(view, false, scroll),
             PreviewBody::Slides(view) => office::slides_pane(view),
             PreviewBody::Loading(since) if media_loading(&preview.entry) => {
-                media_placeholder(*since)
+                media_placeholder(*since, &preview.entry)
             }
             PreviewBody::Loading(since) => loading_skeleton(*since),
             PreviewBody::Cloud => div()
@@ -3496,7 +3496,7 @@ impl Explorer {
                 return div()
                     .size_full()
                     .p(theme::S_8)
-                    .child(media_placeholder(*since))
+                    .child(media_placeholder(*since, &preview.entry))
                     .into_any_element();
             }
             PreviewBody::Loading(_) | PreviewBody::Folder { .. } | PreviewBody::Archive(_) => {
@@ -4098,19 +4098,35 @@ fn loading_skeleton(since: std::time::Instant) -> AnyElement {
 }
 
 /// Loading a picture or a video frame: draw nothing for the first moment, then a blank pulsing
-/// frame that fills the media area, so the picture replaces it in place. No text.
-fn media_placeholder(since: std::time::Instant) -> AnyElement {
+/// frame that fills the media area, so the picture replaces it in place. A faint icon of the
+/// kind sits in the middle. No text.
+fn media_placeholder(since: std::time::Instant, entry: &Entry) -> AnyElement {
     if since.elapsed() < LOADING_GRACE {
         return div().size_full().into_any_element();
     }
+    let kind = match file_kind(entry) {
+        FileKind::Video => FileKind::Video,
+        FileKind::Image => FileKind::Image,
+        _ => FileKind::Pdf,
+    };
     let frame = div()
         .id("media-placeholder")
         .debug_selector(|| "media-placeholder".into())
         .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
         .rounded(theme::R_8)
         .border_1()
         .border_color(theme::line())
-        .bg(theme::wash());
+        .bg(theme::wash())
+        .child(
+            div()
+                .id("media-placeholder-icon")
+                .debug_selector(|| "media-placeholder-icon".into())
+                .opacity(0.45)
+                .child(kind_icon(kind, px(40.))),
+        );
     pulsing(frame, "media-placeholder-pulse")
 }
 

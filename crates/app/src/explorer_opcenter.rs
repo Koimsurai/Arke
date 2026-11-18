@@ -265,7 +265,7 @@ fn button(
             self::ring(start, sweep).into_any_element()
         } else {
             svg()
-                .path(Icon::Check.path())
+                .path(Icon::History.path())
                 .size(theme::ICON)
                 .text_color(theme::text_muted())
                 .into_any_element()

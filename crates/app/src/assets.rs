@@ -151,6 +151,7 @@ icons![
     Globe => "globe",
     Power => "power",
     Info => "info",
+    History => "history",
     Clock => "clock",
     Calendar => "calendar",
     Dimensions => "dimensions",

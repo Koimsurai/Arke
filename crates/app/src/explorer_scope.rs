@@ -501,7 +501,7 @@ impl Explorer {
         let query = format!("{}{text}", self.query);
         let end = query.len();
         self.filter_input.update(cx, |input, cx| {
-            input.set_text(query.clone(), cx);
+            input.replace_text(query.clone(), cx);
             input.select_range(end..end, cx);
         });
         self.query = query;
@@ -788,6 +788,17 @@ impl Explorer {
 
     /// Small chip on the right of the box: shows the scope when it isn't "this folder", even
     /// without focus. Also shown while typing with the strip collapsed; click to reopen the strip.
+    /// The scope chip's text (none in a split pane, which shows only its icon). Searching one
+    /// folder: its name says where.
+    pub(super) fn scope_chip_label(&self) -> Option<String> {
+        let scope = self.scope();
+        (!self.pane.split).then(|| {
+            self.search_in_name()
+                .filter(|_| scope == Scope::Subfolders)
+                .unwrap_or_else(|| scope.label().to_string())
+        })
+    }
+
     pub(super) fn render_scope_chip(
         &self,
         focused: bool,
@@ -831,14 +842,7 @@ impl Explorer {
                             theme::signal()
                         }),
                 )
-                // Searching one folder: its name says where.
-                .when(!self.pane.split, |d| {
-                    d.child(
-                        self.search_in_name()
-                            .filter(|_| scope == Scope::Subfolders)
-                            .unwrap_or_else(|| scope.label().to_string()),
-                    )
-                })
+                .when_some(self.scope_chip_label(), gpui::ParentElement::child)
                 // No tooltip while the strip it opens is showing: it would cover the strip.
                 .when(
                     !(focused && (self.query.is_empty() || self.scope_strip_open)),

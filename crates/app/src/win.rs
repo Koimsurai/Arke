@@ -348,6 +348,56 @@ pub(crate) fn double_click_time() -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(if ms == 0 { 500 } else { ms }))
 }
 
+/// A pair of system metrics in physical pixels at `owner`'s DPI. Arke is per-monitor DPI aware,
+/// where `GetSystemMetrics` answers for the system DPI only: on a monitor with another scale its
+/// sizes would be off by the ratio of the two.
+fn metrics_for_window(
+    owner: Option<isize>,
+    (x, y): (
+        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
+        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
+    ),
+) -> (i32, i32) {
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
+    let dpi = owner.map_or(0, |h| {
+        // SAFETY: plain query; an invalid handle answers 0.
+        unsafe { GetDpiForWindow(windows::Win32::Foundation::HWND(h as *mut _)) }
+    });
+    if dpi == 0 {
+        // SAFETY: plain metric queries.
+        return unsafe { (GetSystemMetrics(x), GetSystemMetrics(y)) };
+    }
+    metrics_at_dpi(dpi, (x, y))
+}
+
+/// A pair of system metrics in physical pixels at `dpi`.
+fn metrics_at_dpi(
+    dpi: u32,
+    (x, y): (
+        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
+        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
+    ),
+) -> (i32, i32) {
+    use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
+    // SAFETY: plain metric queries.
+    unsafe {
+        (
+            GetSystemMetricsForDpi(x, dpi),
+            GetSystemMetricsForDpi(y, dpi),
+        )
+    }
+}
+
+/// Whether a mouse message's extra info (`GetMessageExtraInfo`) marks it as made from touch or a
+/// pen: Windows tags those with the `MI_WP_SIGNATURE` in the upper 24 bits.
+const fn touch_extra_info(info: isize) -> bool {
+    const SIGNATURE: isize = 0xFF51_5700;
+    const MASK: isize = 0xFFFF_FF00;
+    // The tag is in the low 32 bits (sign-extended or not on 64-bit Windows).
+    info & MASK == SIGNATURE
+}
+
 /// Windows accent color as 0xRRGGBB. Asks DWM only (no registry); cheap enough for the UI thread.
 pub(crate) fn system_accent() -> Option<u32> {
     use windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
@@ -831,6 +881,50 @@ impl Shell for WinShell {
         owner.is_some_and(|h| {
             win_fileops::other_window_at_cursor(windows::Win32::Foundation::HWND(h as *mut _))
         })
+    }
+
+    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
+        use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
+        let (x, y) = metrics_for_window(owner, (SM_CXDRAG, SM_CYDRAG));
+        (x.max(1), y.max(1))
+    }
+
+    fn press_from_touch(&self) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::GetMessageExtraInfo;
+        // SAFETY: plain query about the message being handled on this thread.
+        touch_extra_info(unsafe { GetMessageExtraInfo() }.0)
+    }
+
+    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
+        if let Some(h) = owner {
+            begin_window_move(windows::Win32::Foundation::HWND(h as *mut _), at);
+        }
+    }
+
+    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
+        use windows::Win32::UI::WindowsAndMessaging::{SM_CXDOUBLECLK, SM_CYDOUBLECLK};
+        let (x, y) = metrics_for_window(owner, (SM_CXDOUBLECLK, SM_CYDOUBLECLK));
+        (double_click_time(), (x.max(1), y.max(1)))
+    }
+
+    fn toggle_maximize(&self, owner: Option<isize>) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, SW_MAXIMIZE, SW_RESTORE, ShowWindowAsync,
+        };
+        let Some(h) = owner else {
+            return;
+        };
+        let hwnd = HWND(h as *mut _);
+        // SAFETY: hwnd is Arke's own live window; `ShowWindowAsync` doesn't wait.
+        unsafe {
+            let show = if IsZoomed(hwnd).as_bool() {
+                SW_RESTORE
+            } else {
+                SW_MAXIMIZE
+            };
+            let _ = ShowWindowAsync(hwnd, show);
+        }
     }
 
     fn drag_image(
@@ -1457,6 +1551,37 @@ pub(crate) fn restore_window(hwnd: isize) {
     let _ = unsafe { ShowWindowAsync(HWND(hwnd as *mut _), SW_RESTORE) };
 }
 
+/// Starts a title bar drag of `hwnd` from `at` (client area, physical pixels) while the left
+/// button is held: the system moves the window and offers Snap, as for a press on the title bar.
+///
+/// The press is posted, not sent: `DefWindowProc` runs the move loop inside the call, and that
+/// loop must not run while GPUI is still dispatching the event that started it.
+fn begin_window_move(hwnd: windows::Win32::Foundation::HWND, at: (i32, i32)) {
+    use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN};
+    let mut point = POINT { x: at.0, y: at.1 };
+    // SAFETY: hwnd is Arke's own live window; plain window calls with valid pointers.
+    unsafe {
+        if !ClientToScreen(hwnd, &raw mut point).as_bool() {
+            return;
+        }
+        // GPUI captured the mouse on the press; the move loop needs it back.
+        let _ = ReleaseCapture();
+        // MAKELPARAM(x, y) of screen coordinates (16-bit signed each).
+        let packed = (point.x & 0xFFFF) as u32 | ((point.y & 0xFFFF) as u32) << 16;
+        if let Err(err) = PostMessageW(
+            Some(hwnd),
+            WM_NCLBUTTONDOWN,
+            WPARAM(HTCAPTION as usize),
+            LPARAM(isize::try_from(packed).unwrap_or_default()),
+        ) {
+            log::warn!("window move: {err}");
+        }
+    }
+}
+
 /// Starts `explorer.exe` with `target` (a path or `shell:::{CLSID}`) for something Arke can't show.
 /// Launching explorer.exe directly never goes through the folder verb, so nothing loops. Runs
 /// before any other initialization (the folder handler path of `arke.exe`).
@@ -1494,6 +1619,76 @@ pub(crate) fn bring_to_front(hwnd: isize, also: Option<u32>) {
         });
     if let Err(err) = spawned {
         log::warn!("cannot start the to-front thread: {err}");
+    }
+}
+
+/// Moves Arke's window `hwnd` so its content is at `bounds`, in the logical pixels gpui gives
+/// windows on the monitor `monitor` (whose bounds in those pixels are `screen`). Neither activates
+/// it nor changes which window is in front.
+pub(crate) fn move_window(
+    hwnd: isize,
+    monitor: u64,
+    screen: gpui::Bounds<gpui::Pixels>,
+    bounds: gpui::Bounds<gpui::Pixels>,
+) {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
+    };
+    let hwnd = HWND(hwnd as *mut _);
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or_default(),
+        ..Default::default()
+    };
+    let (mut frame, mut client) = (RECT::default(), RECT::default());
+    // SAFETY: plain Win32 calls on Arke's own window and a monitor handle gpui got from Windows
+    // (a monitor unplugged since fails harmlessly); every pointer is to a local.
+    unsafe {
+        if !GetMonitorInfoW(HMONITOR(monitor as *mut _), &raw mut info).as_bool()
+            || GetWindowRect(hwnd, &raw mut frame).is_err()
+            || GetClientRect(hwnd, &raw mut client).is_err()
+        {
+            return;
+        }
+    }
+    let logical_width = f32::from(screen.size.width);
+    if logical_width <= 0. {
+        return;
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "screen coordinates, far inside f32 and i32"
+    )]
+    let (x, y, width, height) = {
+        let scale = (info.rcMonitor.right - info.rcMonitor.left) as f32 / logical_width;
+        let device = |v: gpui::Pixels| (f32::from(v) * scale).round() as i32;
+        // The frame around the content (invisible resize borders), split in half on each side
+        // as gpui does when it places a window and reads its position back.
+        let extra_width = (frame.right - frame.left) - (client.right - client.left);
+        let extra_height = (frame.bottom - frame.top) - (client.bottom - client.top);
+        let (left, top) = (extra_width / 2, extra_height / 2);
+        (
+            device(bounds.origin.x) - left,
+            device(bounds.origin.y) - top,
+            device(bounds.size.width) + extra_width,
+            device(bounds.size.height) + extra_height,
+        )
+    };
+    // SAFETY: as above.
+    if let Err(err) = unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    } {
+        log::warn!("cannot move the window to its saved place: {err}");
     }
 }
 
@@ -2199,5 +2394,35 @@ mod floppy_tests {
         let device = dos_device('C').expect("C: is mapped");
         assert!(device.starts_with(r"\Device\"), "{device}");
         assert!(!looks_like_floppy('C', Some(&device)));
+    }
+}
+
+#[cfg(test)]
+mod pointer_metric_tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
+
+    /// Metrics are asked for at the DPI given (a sizing frame grows on a 200 % monitor), and the
+    /// drag distance answers too; without a window, the system's own answer.
+    #[test]
+    fn metrics_are_asked_at_the_window_dpi() {
+        use windows::Win32::UI::WindowsAndMessaging::SM_CXSIZEFRAME;
+        let frame = |dpi| metrics_at_dpi(dpi, (SM_CXSIZEFRAME, SM_CXSIZEFRAME)).0;
+        assert!(frame(192) > frame(96), "{} {}", frame(96), frame(192));
+        let drag = metrics_at_dpi(192, (SM_CXDRAG, SM_CYDRAG));
+        assert!(drag.0 > 0 && drag.1 > 0, "{drag:?}");
+        assert!(metrics_for_window(None, (SM_CXDRAG, SM_CYDRAG)).0 > 0);
+    }
+
+    #[test]
+    fn touch_and_pen_presses_are_told_by_their_tag() {
+        // Touch and pen presses, as 32-bit values and sign-extended.
+        for info in [0xFF51_5780_isize, 0xFF51_5700, -0x00AE_A880] {
+            assert!(touch_extra_info(info), "{info:#x}");
+        }
+        // A real mouse leaves it 0; other software may put anything else there.
+        for info in [0, 0x1234_5678, 0xFF51_0000] {
+            assert!(!touch_extra_info(info), "{info:#x}");
+        }
     }
 }

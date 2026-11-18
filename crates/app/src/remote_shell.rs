@@ -571,6 +571,21 @@ impl Shell for RemoteShell {
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         self.inner.covered_at_cursor(owner)
     }
+    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
+        self.inner.drag_threshold(owner)
+    }
+    fn press_from_touch(&self) -> bool {
+        self.inner.press_from_touch()
+    }
+    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
+        self.inner.begin_window_move(owner, at);
+    }
+    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
+        self.inner.double_click_rule(owner)
+    }
+    fn toggle_maximize(&self, owner: Option<isize>) {
+        self.inner.toggle_maximize(owner);
+    }
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,

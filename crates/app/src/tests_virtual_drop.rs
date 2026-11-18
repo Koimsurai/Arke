@@ -13,7 +13,7 @@ type Moved = (String, Vec<u8>);
 fn drop_virtual(
     cx: &mut VisualTestContext,
     view: &Entity<Explorer>,
-    data: windows::Win32::System::Com::IDataObject,
+    data: ::windows::Win32::System::Com::IDataObject,
 ) {
     inject(data);
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));

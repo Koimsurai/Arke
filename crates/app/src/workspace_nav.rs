@@ -10,6 +10,7 @@
 
 use std::time::{Duration, Instant};
 
+use arke_core::NavKind;
 use arke_core::timeline::{Step, Timeline};
 use gpui::{App, Context, EntityId, ScrollDelta, ScrollEvent, Window};
 
@@ -37,6 +38,10 @@ struct Swipe {
     last: Option<Instant>,
     done: bool,
 }
+
+/// A row of an open menu, held by a test.
+#[cfg(test)]
+pub(crate) struct MenuRow(super::sidebar::SidebarAction);
 
 /// A pause longer than this starts a new swipe.
 const SWIPE_GAP: Duration = Duration::from_millis(250);
@@ -179,7 +184,7 @@ impl Workspace {
 
     /// Back or forward from outside a pane (mouse buttons, swipes): closes Home opened over a
     /// folder, else follows the timeline or moves the active pane.
-    pub(super) fn go_in_history(
+    pub(crate) fn go_in_history(
         &mut self,
         back: bool,
         window: &mut Window,
@@ -200,6 +205,208 @@ impl Workspace {
                 e.go_forward(&GoForward, window, cx);
             }
         });
+    }
+
+    /// Right click on a back or forward button outside the panes: lists the active pane's
+    /// folders.
+    pub(super) fn history_menu_listener(
+        back: bool,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, e: &gpui::MouseDownEvent, _, cx| {
+            let view = this.active_view().clone();
+            this.open_history_menu(&view, back, e.position, cx);
+        })
+    }
+
+    /// The menu of a back or forward button: the folders of `view`'s history, nearest first.
+    /// With back and forward across tabs, when the button would first go to another tab, that
+    /// comes first, so the top row is always what the button does. Nothing opens when there is
+    /// nothing to list.
+    pub(super) fn open_history_menu(
+        &mut self,
+        view: &gpui::Entity<crate::explorer::Explorer>,
+        back: bool,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let pane = view.entity_id();
+        let mut items: Vec<_> = self.timeline_entry(pane, back, cx).into_iter().collect();
+        items.extend(
+            view.read(cx)
+                .history_menu(back)
+                .into_iter()
+                .enumerate()
+                .map(|(ix, path)| {
+                    (
+                        super::sidebar::display_name(&path).into(),
+                        super::sidebar::SidebarAction::HistoryJump {
+                            pane,
+                            back,
+                            steps: ix + 1,
+                            path,
+                        },
+                    )
+                }),
+        );
+        if items.is_empty() {
+            self.sidebar_menu = None;
+            cx.notify();
+        } else {
+            self.open_sidebar_menu(position, items, cx);
+        }
+    }
+
+    /// The step back (or forward) across tabs takes first, when it isn't one in `pane`'s own
+    /// history: a menu row for the folder it goes to.
+    fn timeline_entry(
+        &self,
+        pane: EntityId,
+        back: bool,
+        cx: &mut App,
+    ) -> Option<(gpui::SharedString, super::sidebar::SidebarAction)> {
+        if !Self::across_tabs(cx) {
+            return None;
+        }
+        let step = self.next_step(back, cx)?;
+        let (to, path) = match step {
+            Step::Nav(id) if id == pane => return None,
+            Step::Nav(id) => {
+                let (t, p) = self.pane_of(id)?;
+                let view = self.tabs[t].panes[p].view.read(cx);
+                (id, view.history_menu(back).into_iter().next()?)
+            }
+            Step::Switch { from, to } => {
+                let id = if back { from } else { to };
+                let (t, p) = self.pane_of(id)?;
+                let view = self.tabs[t].panes[p].view.read(cx);
+                (id, view.display_path()?.to_path_buf())
+            }
+        };
+        Some((
+            super::sidebar::display_name(&path).into(),
+            super::sidebar::SidebarAction::TimelineStep { back, to, path },
+        ))
+    }
+
+    /// The step back (or forward) on the timeline would take, skipping the ones it skips.
+    fn next_step(&self, back: bool, cx: &App) -> Option<Step<EntityId>> {
+        let usable = |step: &&Step<EntityId>| match **step {
+            Step::Nav(id) => self
+                .pane_of(id)
+                .is_some_and(|(t, p)| Self::pane_can(&self.tabs[t].panes[p].view, back, cx)),
+            Step::Switch { from, to } => self.pane_of(if back { from } else { to }).is_some(),
+        };
+        if back {
+            self.nav.timeline.behind().find(usable).copied()
+        } else {
+            self.nav.timeline.ahead().find(usable).copied()
+        }
+    }
+
+    /// The top row of a history menu that goes to another tab: steps back (or forward) once,
+    /// if that still goes to the pane the row named.
+    pub(super) fn timeline_step_to(
+        &mut self,
+        back: bool,
+        to: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let goes_to = match self.next_step(back, cx) {
+            Some(Step::Nav(id)) => Some(id),
+            Some(Step::Switch { from, to }) => Some(if back { from } else { to }),
+            None => None,
+        };
+        if goes_to == Some(to) {
+            self.step_timeline(back, window, cx);
+        }
+    }
+
+    /// Chose a folder in a history menu: goes there in one step. The history may have changed
+    /// since the menu opened (a folder finished loading, Back with the keyboard): the folder is
+    /// looked up again, and nothing happens if it is no longer on that side. The timeline's steps
+    /// for the folders passed over are used up once the folder opens ([`Self::history_landed`]),
+    /// so Back and Forward stay in line.
+    pub(super) fn jump_in_history(
+        &mut self,
+        pane: EntityId,
+        back: bool,
+        steps: usize,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((t, p)) = self.pane_of(pane) else {
+            return;
+        };
+        let view = self.tabs[t].panes[p].view.clone();
+        let Some(steps) = view.read(cx).history_steps_to(back, steps, path) else {
+            return;
+        };
+        if !view.update(cx, |e, cx| e.go_to_history(back, steps, cx)) {
+            return;
+        }
+        if (t, p) != (self.active, self.tabs[t].active_pane) {
+            self.replay_activate(t, p, window, cx);
+        }
+        self.sync_nav_buttons(cx);
+    }
+
+    /// A pane arrived somewhere. After a jump from a history menu, the timeline's steps for the
+    /// folders passed over are used up; a jump that never arrived (the folder is gone) leaves
+    /// the timeline as it was. Its history menu, if open, would list stale folders: it closes.
+    pub(super) fn history_landed(&mut self, pane: EntityId, kind: NavKind, cx: &mut Context<Self>) {
+        if let NavKind::Jump { back, steps } = kind {
+            self.nav.timeline.shift(pane, steps, back);
+            self.sync_nav_buttons(cx);
+        }
+        if kind != NavKind::Refresh && self.menu_lists_history_of(pane) {
+            self.sidebar_menu = None;
+            cx.notify();
+        }
+    }
+
+    /// Labels of the open back/forward menu, if one is open.
+    #[cfg(test)]
+    pub(crate) fn history_menu_labels_for_test(&self) -> Option<Vec<String>> {
+        self.sidebar_menu_labels_for_test()
+    }
+
+    /// The second line of each row of the open menu.
+    #[cfg(test)]
+    pub(crate) fn menu_details_for_test(&self) -> Option<Vec<String>> {
+        self.sidebar_menu_details_for_test()
+    }
+
+    /// Row `ix` of the open menu, to choose later (as a click that comes after other events).
+    #[cfg(test)]
+    pub(crate) fn menu_row_for_test(&self, ix: usize) -> Option<MenuRow> {
+        self.sidebar_menu_action_for_test(ix).map(MenuRow)
+    }
+
+    /// Chooses a row taken earlier with [`Self::menu_row_for_test`].
+    #[cfg(test)]
+    pub(crate) fn run_menu_row_for_test(
+        &mut self,
+        row: MenuRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_sidebar_action(row.0, window, cx);
+    }
+
+    /// Chooses row `ix` of the open menu.
+    #[cfg(test)]
+    pub(crate) fn pick_menu_row_for_test(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(action) = self.sidebar_menu_action_for_test(ix) {
+            self.run_sidebar_action(action, window, cx);
+        }
     }
 
     /// A pane's back or forward toolbar button: the timeline when it is on, else that pane.
@@ -224,12 +431,7 @@ impl Workspace {
     }
 
     fn pane_can(view: &gpui::Entity<crate::explorer::Explorer>, back: bool, cx: &App) -> bool {
-        let history = &view.read(cx).history;
-        if back {
-            history.can_go_back()
-        } else {
-            history.can_go_forward()
-        }
+        view.read(cx).can_go(back)
     }
 
     fn replay_activate(&mut self, t: usize, p: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -240,17 +442,7 @@ impl Workspace {
 
     /// Whether back or forward has a step it can take.
     fn can_step(&self, back: bool, cx: &App) -> bool {
-        let usable = |step: &Step<EntityId>| match *step {
-            Step::Nav(id) => self
-                .pane_of(id)
-                .is_some_and(|(t, p)| Self::pane_can(&self.tabs[t].panes[p].view, back, cx)),
-            Step::Switch { from, to } => self.pane_of(if back { from } else { to }).is_some(),
-        };
-        if back {
-            self.nav.timeline.behind().any(usable)
-        } else {
-            self.nav.timeline.ahead().any(usable)
-        }
+        self.next_step(back, cx).is_some()
     }
 
     /// The panes' back and forward buttons show what the timeline can do when it is on, and the

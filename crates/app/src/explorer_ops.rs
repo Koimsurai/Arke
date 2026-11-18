@@ -51,8 +51,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-z", UndoFileOp, root),
         KeyBinding::new("ctrl-y", RedoFileOp, root),
         KeyBinding::new("ctrl-shift-z", RedoFileOp, root),
-        // Ctrl+Z inside a text input must not undo a file operation (nor Ctrl+Y redo one).
-        KeyBinding::new("ctrl-z", gpui::NoAction, Some("TextInput")),
+        // Ctrl+Z inside a text input undoes the typing (`text_input.rs`), not a file operation; Ctrl+Y
+        // redoes nothing there either.
         KeyBinding::new("ctrl-y", gpui::NoAction, Some("TextInput")),
         KeyBinding::new("ctrl-shift-z", gpui::NoAction, Some("TextInput")),
     ]);
@@ -1393,6 +1393,11 @@ impl Explorer {
         } else if dir == shown {
             self.create_new(kind, None, cx);
             return;
+        } else if self.keeps_folder() {
+            // A pinned tab keeps its folder: the item is made in a tab on `dir` instead.
+            let dir = arke_core::remote::canonical(dir.to_path_buf());
+            cx.emit(super::ExplorerEvent::LockedNewItem { dir, kind });
+            return;
         } else {
             let dir = arke_core::remote::canonical(dir.to_path_buf());
             self.navigate(dir.clone(), arke_core::NavKind::New, cx);
@@ -1402,6 +1407,29 @@ impl Explorer {
                 row: None,
             });
         }
+        self.poll_pending_create(cx);
+    }
+
+    /// Makes a new item in `dir` once this pane shows it listed (a pinned tab asked a tab on
+    /// `dir` to make it, see [`super::ExplorerEvent::LockedNewItem`]).
+    pub(crate) fn create_on_arrival(
+        &mut self,
+        kind: NewItem,
+        dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .display_path()
+            .is_some_and(|here| super::same_folder(here, &dir))
+        {
+            return;
+        }
+        let dir = self.display_path().map_or(dir, Path::to_path_buf);
+        self.pending_create = Some(PendingCreate {
+            kind,
+            dir,
+            row: None,
+        });
         self.poll_pending_create(cx);
     }
 

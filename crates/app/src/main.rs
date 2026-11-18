@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   arke [path]
+//!   arke --new-window [path]    a window of its own even when Settings › "Single window" is on
 //!   arke <path> --bench startup|scroll|scroll-grid [--bench-out file]
 //!   arke --bench index [--bench-out file]   build the search index headless, report time and
 //!                                           memory (see `bench_index.rs`)
@@ -66,6 +67,7 @@ mod resident;
 mod saved_workspaces;
 mod scrollbar;
 mod search_history;
+mod session;
 mod settings;
 mod shelf;
 mod shell;
@@ -126,7 +128,7 @@ use gpui_platform::application;
 use crate::assets::Assets;
 use crate::bench::{Bench, BenchMode};
 use crate::explorer::Services;
-use crate::instance::{OpenRequest, Page, Request, SendOutcome};
+use crate::instance::{NEW_WINDOW_ARG, OpenRequest, Page, Request, SendOutcome};
 use crate::win::WinShell;
 use crate::workspace::Workspace;
 use arke_core::takeover::Target;
@@ -156,6 +158,8 @@ struct Args {
     page: Option<Page>,
     /// Undo the folder handler registration, then exit
     restore_explorer: bool,
+    /// A window of its own, not a tab in the window used last (`--new-window`)
+    new_window: bool,
 }
 
 fn parse_args() -> Args {
@@ -172,6 +176,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
         background: false,
         page: None,
         restore_explorer: false,
+        new_window: false,
     };
     while let Some(arg) = it.next() {
         match arg.to_str() {
@@ -191,12 +196,15 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             // like Arke itself, last tabs included (#73). The name stays: it is in the registry.
             Some("--home") => {}
             Some("--restore-explorer") => args.restore_explorer = true,
+            Some(NEW_WINDOW_ARG) => args.new_window = true,
             // Just updated: the old process's pid follows (already waited for at the start of
             // app_main).
             Some(update::AFTER_UPDATE_ARG) => {
                 let _ = it.next();
                 update::mark_just_updated();
             }
+            // An empty argument (`arke.exe ""`, a shortcut with an empty %1) names no folder.
+            _ if arg.is_empty() => {}
             _ => args.path = Some(path_arg(&arg)),
         }
     }
@@ -372,6 +380,7 @@ fn app_main(mut args: Args) {
                 bench_out: args.bench_out.clone(),
                 launched_unix_ms,
                 page: args.page,
+                new_window: args.new_window,
             })
         };
         match hand_off(&request) {
@@ -727,11 +736,8 @@ fn follow_win_e_hook(
     cx.spawn(async move |cx| {
         while rx.recv_async().await.is_ok() {
             // Like starting Arke: where Settings › "New windows open to" says, last tabs
-            // included (#73).
-            cx.update(|cx| {
-                let now = Instant::now();
-                open_in_front(cx, &services, None, None, now, now);
-            });
+            // included (#73); in single window mode, a tab there.
+            cx.update(|cx| open_fresh(cx, &services, Instant::now()));
         }
     })
     .detach();
@@ -799,10 +805,9 @@ fn open_taken_over(cx: &mut App, services: &Services, request: &win_takeover::Op
     )
 }
 
-/// Shows a folder, Home or the Recycle Bin (with `select` selected) and brings it to the front: a
-/// folder or the Recycle Bin as a tab in the window used last (`tab_host`), Home (Win+E, "Open
-/// Arke") and everything else in a new window. `explorer_thread` is the thread of the Explorer
-/// window being replaced, if any.
+/// Shows a folder, Home or the Recycle Bin (with `select` selected) and brings it to the front: in
+/// single window mode as a tab in the window used last (`tab_host`), otherwise in a new window.
+/// `explorer_thread` is the thread of the Explorer window being replaced, if any.
 fn open_target(
     cx: &mut App,
     services: &Services,
@@ -824,30 +829,20 @@ fn open_target_timed(
     received: Option<Instant>,
 ) -> bool {
     let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
-    if target != Target::Home
-        && let Some(host) = tab_host(cx)
+    if let Some(host) = tab_host(cx)
+        && show_in_tab(cx, host, target.clone(), select.clone(), explorer_thread)
     {
-        let shown = host.update(cx, |workspace, window, cx| {
-            workspace.open_external(target.clone(), select.clone(), window, cx);
-            bring_to_front(window, explorer_thread);
-        });
-        if shown.is_ok() {
-            cx.activate(true);
-            return true;
-        }
+        return true;
     }
-    let start = match &target {
-        Target::Folder(path) => path.clone(),
-        Target::Home | Target::RecycleBin => {
-            std::env::var_os("USERPROFILE").map_or_else(|| PathBuf::from("C:\\"), PathBuf::from)
-        }
-    };
-    let opened = open_explorer_window(cx, services, Some(start), None, Instant::now(), received);
+    // Win+E (File Explorer's Home) with no window open: Arke starting, as "New windows open to"
+    // says (the last session, say).
+    let asked =
+        (target != Target::Home || last_window(cx).is_some()).then_some(Asked { target, select });
+    let opened = open_explorer_window(cx, services, asked, None, Instant::now(), received);
     let Some(window) = opened else {
         return false;
     };
-    let shown = window.update(cx, |workspace, window, cx| {
-        workspace.show_taken_over(target, select, window, cx);
+    let shown = window.update(cx, |_, window, _| {
         bring_to_front(window, explorer_thread);
     });
     if shown.is_ok() {
@@ -856,17 +851,165 @@ fn open_target_timed(
     shown.is_ok()
 }
 
-/// The window a folder from another program opens in as a tab: the one used last, else the newest.
-/// `None` (open a window) when no window is open or the setting asks for a window each time.
+/// The window a folder from another program, Win+E or Arke started again open in as a tab: the
+/// one used last, else the newest. `None` (open a window) when no window is open or single window
+/// mode is off.
 fn tab_host(cx: &mut App) -> Option<gpui::WindowHandle<Workspace>> {
     if !settings::SettingsStore::global(cx)
         .read(cx)
         .settings
-        .open_external_in_tab
+        .single_window
     {
         return None;
     }
     last_window(cx)
+}
+
+/// Shows `target` as a tab in `host` and brings it to the front; `false` if the window is gone.
+fn show_in_tab(
+    cx: &mut App,
+    host: gpui::WindowHandle<Workspace>,
+    target: Target,
+    select: Vec<Arc<str>>,
+    explorer_thread: Option<u32>,
+) -> bool {
+    let shown = host.update(cx, |workspace, window, cx| {
+        workspace.open_external(target, select, window, cx);
+        bring_to_front(window, explorer_thread);
+    });
+    if shown.is_ok() {
+        cx.activate(true);
+    }
+    shown.is_ok()
+}
+
+/// Arke asked to open with no folder (Win+E, Arke started again): in single window mode a tab in
+/// the window used last, on what "New windows open to" says ([`fresh_tab`]); otherwise a window
+/// started like Arke itself.
+fn open_fresh(cx: &mut App, services: &Services, received: Instant) -> bool {
+    if let Some(host) = tab_host(cx) {
+        let target = {
+            let s = &settings::SettingsStore::global(cx).read(cx).settings;
+            fresh_tab(s.start_location, s.recent.first().cloned(), home_folder())
+        };
+        if show_in_tab(cx, host, target, Vec::new(), None) {
+            return true;
+        }
+    }
+    open_in_front(cx, services, None, None, received, received)
+}
+
+/// What a tab opened with no folder shows, after "New windows open to": the last tabs are open
+/// already, so that one shows Home, as a second window does (#178).
+fn fresh_tab(start: settings::StartLocation, last: Option<PathBuf>, home: PathBuf) -> Target {
+    use settings::StartLocation;
+    match start {
+        StartLocation::HomePage | StartLocation::LastSession => Target::Home,
+        StartLocation::Home => Target::Folder(home),
+        StartLocation::LastFolder => Target::Folder(last.unwrap_or(home)),
+    }
+}
+
+/// The user profile folder (string handling only).
+fn home_folder() -> PathBuf {
+    std::env::var_os("USERPROFILE").map_or_else(|| PathBuf::from("C:\\"), PathBuf::from)
+}
+
+/// A request from another `arke.exe` (or the shell through it) to open something.
+fn handle_open(cx: &mut App, services: &Services, open: OpenRequest, received: Instant) -> bool {
+    let started_at = instant_from_unix_ms(open.launched_unix_ms);
+    let bench = open.bench.map(|mode| Bench::new(mode, open.bench_out));
+    // The sender was just started by the user or the shell and passed on its foreground right
+    // (instance.rs), which `bring_to_front` makes use of.
+    if let Some(page) = open.page {
+        open_target(cx, services, page.target(), &[], None)
+    } else if bench.is_some() || open.new_window {
+        open_in_front(cx, services, open.path, bench, started_at, received)
+    } else if let Some(path) = open.path {
+        // A folder handed over by the shell or another program (#11).
+        open_target_timed(
+            cx,
+            services,
+            Target::Folder(path),
+            &[],
+            None,
+            Some(received),
+        )
+    } else {
+        open_fresh(cx, services, received)
+    }
+}
+
+/// How long after a maximized window opened behind the others Windows may still activate it: it
+/// shows such a window later (`ShowWindowAsync(SW_MAXIMIZE)`), and maximizing always activates.
+const BEHIND_SETTLE: Duration = Duration::from_millis(250);
+
+/// Opens the other windows of the last session behind `front` (the window that took the one used
+/// last, or the window something was asked for in), each where it was, a turn apart: the request
+/// that started the session, a second `arke.exe` waiting for its answer (`instance.rs`), is
+/// answered once `front` is up. Then `front` comes forward again, ahead of any of them that
+/// Windows activated on showing it.
+pub(crate) fn open_session_windows(
+    cx: &mut App,
+    services: &Services,
+    windows: Vec<settings::SessionWindow>,
+    front: gpui::AnyWindowHandle,
+) {
+    let services = services.clone();
+    cx.spawn(async move |cx| {
+        let mut behind = Vec::new();
+        // The one used last of these opens last, so after `front` it is the next in line.
+        for saved in windows.into_iter().rev() {
+            next_turn().await;
+            let opened = cx.update(|cx| {
+                let path = saved.first_folder().cloned()?;
+                let restored = saved.place.and_then(|p| restored_bounds(p, cx));
+                let start = WindowStart {
+                    path,
+                    default: false,
+                    session: Some(saved.session),
+                    bounds: restored.map(|r| r.bounds),
+                    display: restored.and_then(|r| r.display),
+                    focus: false,
+                };
+                open_workspace_window(cx, &services, start, None, Instant::now(), None)
+            });
+            behind.extend(opened.map(gpui::AnyWindowHandle::from));
+        }
+        cx.background_executor().timer(BEHIND_SETTLE).await;
+        cx.update(|cx| {
+            // Unless the user went on to another window meanwhile.
+            let last = cx
+                .try_global::<workspace::LastActiveWindow>()
+                .and_then(|l| l.0);
+            if last.is_some_and(|l| l != front && !behind.contains(&l)) {
+                return;
+            }
+            if front
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+            {
+                // First in the session even if Windows doesn't let it take the foreground.
+                session::activated(front, cx);
+            }
+        });
+    })
+    .detach();
+}
+
+/// Lets the UI thread get to other work (an answer to send, a frame to draw) before going on.
+async fn next_turn() {
+    let mut yielded = false;
+    std::future::poll_fn(|task| {
+        if yielded {
+            std::task::Poll::Ready(())
+        } else {
+            yielded = true;
+            task.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    })
+    .await;
 }
 
 /// The Arke window used last, else the newest; `None` when no window is open.
@@ -901,8 +1044,10 @@ fn bring_to_front(window: &gpui::Window, explorer_thread: Option<u32>) {
 /// collects what the caller selects (`win_openinfolder.rs`) and forwards it to the running Arke.
 fn shell_window(args: &Args) -> Option<win_openinfolder::Linger> {
     let folder = args.path.as_ref().filter(|p| p.is_absolute())?;
+    // `--new-window` is Arke's own "Open in new window": no caller selects anything.
     if args.background
         || args.quit
+        || args.new_window
         || args.page.is_some()
         || args.bench.is_some()
         || std::env::var_os("ARKE_NO_SHELL_WINDOW").is_some()
@@ -1090,22 +1235,89 @@ fn default_window_size(cx: &App) -> gpui::Size<gpui::Pixels> {
     )
 }
 
-/// Last window position, used only if at least a 240×120 patch is still on some screen (so it never
-/// opens off-screen after unplugging a monitor).
-fn restored_bounds(place: settings::WindowPlace, cx: &App) -> Option<WindowBounds> {
+/// Where a saved window opens again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Restored {
+    bounds: WindowBounds,
+    /// The screen it goes on; `None` for the main one. Windows checks the bounds against this
+    /// screen, and would put a window meant for another one at the main screen's default spot.
+    display: Option<gpui::DisplayId>,
+}
+
+/// Last window position, on the screen that shows most of it.
+fn restored_bounds(place: settings::WindowPlace, cx: &App) -> Option<Restored> {
+    let screens: Vec<_> = cx.displays().iter().map(|d| (d.id(), d.bounds())).collect();
+    let main = cx.primary_display().map(|d| d.bounds());
+    place_on_screens(place, &screens, main)
+}
+
+/// [`restored_bounds`]: the screen showing most of the window, if at least a 240×120 patch of it
+/// is still on one (so it never opens off-screen after unplugging a monitor). A maximized window
+/// whose screen is gone is maximized on the main screen (`main`) instead; a window that wasn't
+/// gets the default spot (`None`).
+fn place_on_screens(
+    place: settings::WindowPlace,
+    screens: &[(gpui::DisplayId, Bounds<gpui::Pixels>)],
+    main: Option<Bounds<gpui::Pixels>>,
+) -> Option<Restored> {
     let bounds = Bounds::new(
         gpui::point(px(place.x), px(place.y)),
         size(px(place.width.max(720.)), px(place.height.max(480.))),
     );
-    let visible = cx.displays().iter().any(|d| {
-        let overlap = d.bounds().intersect(&bounds);
-        overlap.size.width >= px(240.) && overlap.size.height >= px(120.)
-    });
-    visible.then_some(if place.maximized {
-        WindowBounds::Maximized(bounds)
-    } else {
-        WindowBounds::Windowed(bounds)
-    })
+    let shown = |screen: &Bounds<gpui::Pixels>| {
+        let overlap = screen.intersect(&bounds);
+        (overlap.size.width >= px(240.) && overlap.size.height >= px(120.))
+            .then(|| f32::from(overlap.size.width) * f32::from(overlap.size.height))
+    };
+    let screen = screens
+        .iter()
+        .filter_map(|(id, screen)| Some((*id, shown(screen)?)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _)| id);
+    match screen {
+        Some(id) => Some(Restored {
+            bounds: if place.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            },
+            display: Some(id),
+        }),
+        None if place.maximized => main.map(|main| {
+            let size = bounds.size.min(&main.size);
+            let origin = gpui::point(
+                main.origin.x + (main.size.width - size.width) / 2.,
+                main.origin.y + (main.size.height - size.height) / 2.,
+            );
+            Restored {
+                bounds: WindowBounds::Maximized(Bounds::new(origin, size)),
+                display: None,
+            }
+        }),
+        None => None,
+    }
+}
+
+/// Settings read only after the first window opened (a slow disk): it moves to where the window
+/// it takes the tabs of was.
+pub(crate) fn move_to_place(window: &mut gpui::Window, place: settings::WindowPlace, cx: &App) {
+    let Some(restored) = restored_bounds(place, cx) else {
+        return;
+    };
+    let bounds = restored.bounds.get_bounds();
+    // gpui can resize a window but not move it.
+    if let Some(hwnd) = explorer::Explorer::owner_from(window) {
+        let screen = restored
+            .display
+            .and_then(|id| cx.find_display(id))
+            .or_else(|| cx.primary_display());
+        if let Some(screen) = screen {
+            win::move_window(hwnd, u64::from(screen.id()), screen.bounds(), bounds);
+        }
+    }
+    if matches!(restored.bounds, WindowBounds::Maximized(_)) && !window.is_maximized() {
+        window.zoom_window();
+    }
 }
 
 /// `arke.exe --thumb-host`: the video thumbnail process (see `thumb_host.rs`). No window, no
@@ -1201,21 +1413,7 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
                     true
                 }
                 Request::Select { folder, items } => select_items(cx, &services, &folder, &items),
-                Request::Open(open) => {
-                    let started_at = instant_from_unix_ms(open.launched_unix_ms);
-                    let bench = open.bench.map(|mode| Bench::new(mode, open.bench_out));
-                    // The sender was just started by the user or the shell and passed on its
-                    // foreground right (instance.rs), which `bring_to_front` makes use of.
-                    if let Some(page) = open.page {
-                        open_target(cx, &services, page.target(), &[], None)
-                    } else if let (Some(path), None) = (&open.path, &bench) {
-                        // A folder handed over by the shell or another program (#11).
-                        let target = Target::Folder(path.clone());
-                        open_target_timed(cx, &services, target, &[], None, Some(received))
-                    } else {
-                        open_in_front(cx, &services, open.path, bench, started_at, received)
-                    }
-                }
+                Request::Open(open) => handle_open(cx, &services, open, received),
             });
             let _ = ack.send(handled);
         }
@@ -1328,7 +1526,8 @@ fn open_explorer(
     bench: Option<Bench>,
     started_at: Instant,
 ) -> bool {
-    open_explorer_window(cx, services, path, bench, started_at, None).is_some()
+    let asked = path.map(Asked::folder);
+    open_explorer_window(cx, services, asked, bench, started_at, None).is_some()
 }
 
 /// Opens a window (at `path`, or where the settings say) and brings it to the front. `received`:
@@ -1341,7 +1540,8 @@ fn open_in_front(
     started_at: Instant,
     received: Instant,
 ) -> bool {
-    let Some(handle) = open_explorer_window(cx, services, path, bench, started_at, Some(received))
+    let asked = path.map(Asked::folder);
+    let Some(handle) = open_explorer_window(cx, services, asked, bench, started_at, Some(received))
     else {
         return false;
     };
@@ -1350,10 +1550,30 @@ fn open_in_front(
     true
 }
 
+/// What a window is opened for: a folder (from the command line, another program or a second
+/// `arke.exe`), Home or the Recycle Bin, with the items to select in it.
+struct Asked {
+    target: Target,
+    select: Vec<Arc<str>>,
+}
+
+impl Asked {
+    const fn folder(path: PathBuf) -> Self {
+        Self {
+            target: Target::Folder(path),
+            select: Vec::new(),
+        }
+    }
+}
+
+/// Opens a window on what was `asked` for, or where "New windows open to" says. The first window
+/// with "Last tabs" brings back the last session, also when something was asked for: that opens
+/// as a tab of the window used last in single window mode, else in a window of its own in front of
+/// the session's.
 fn open_explorer_window(
     cx: &mut App,
     services: &Services,
-    path: Option<PathBuf>,
+    asked: Option<Asked>,
     bench: Option<Bench>,
     started_at: Instant,
     received: Option<Instant>,
@@ -1362,20 +1582,24 @@ fn open_explorer_window(
     // touch locations that might block. No path given: if settings say "last location/last tabs",
     // open there (switching once settings finish loading).
     let first_window = cx.windows().is_empty();
-    let (last, session, place) = {
+    let (last, mut sessions, place, single_window, loaded) = {
         let store = settings::SettingsStore::global(cx).read(cx);
         let start = update::start_location(store.settings.start_location);
-        let last = (path.is_none() && store.loaded && start == settings::StartLocation::LastFolder)
-            .then(|| store.settings.recent.first().cloned())
-            .flatten();
-        // Restore last tabs only when no other window exists, otherwise each new window would
-        // duplicate them.
-        let session = (path.is_none()
-            && store.loaded
+        let last =
+            (asked.is_none() && store.loaded && start == settings::StartLocation::LastFolder)
+                .then(|| store.settings.recent.first().cloned())
+                .flatten();
+        // Restore the last session only when no other window exists, otherwise each new window
+        // would duplicate it. Read before any window opens and saves its own tabs over it.
+        let sessions = if store.loaded
             && first_window
-            && start == settings::StartLocation::LastSession)
-            .then(|| store.settings.session.clone())
-            .filter(|s| s.tabs.first().is_some_and(|t| !t.panes.is_empty()));
+            && bench.is_none()
+            && start == settings::StartLocation::LastSession
+        {
+            store.settings.last_windows()
+        } else {
+            Vec::new()
+        };
         // Window position: the first window uses the last one; later windows are centered instead
         // of stacking.
         let place = (first_window && bench.is_none())
@@ -1384,20 +1608,104 @@ fn open_explorer_window(
         if store.loaded {
             update::start_handled();
         }
-        (last, session, place)
+        (
+            last,
+            sessions,
+            place,
+            store.settings.single_window,
+            store.loaded,
+        )
     };
-    let start_default = path.is_none() && last.is_none() && session.is_none();
-    let start_path = path
-        .or(last)
-        .or_else(|| session.as_ref().map(|s| s.tabs[0].panes[0].clone()))
-        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("C:\\"));
-    let services = services.clone();
-    let window_bounds = place
-        .and_then(|p| restored_bounds(p, cx))
-        .unwrap_or_else(|| {
-            WindowBounds::Windowed(Bounds::centered(None, default_window_size(cx), cx))
+    // In single window mode the session comes back as usual, and what was asked for opens as a tab
+    // of its front window.
+    let (asked, as_tab) = match asked {
+        Some(asked) if single_window && !sessions.is_empty() => (None, Some(asked)),
+        asked => (asked, None),
+    };
+    if let Some(asked) = asked {
+        let path = match &asked.target {
+            Target::Folder(path) => path.clone(),
+            Target::Home | Target::RecycleBin => home_folder(),
+        };
+        let restored = place.and_then(|p| restored_bounds(p, cx));
+        let start = WindowStart {
+            path,
+            default: false,
+            session: None,
+            bounds: restored.map(|r| r.bounds),
+            display: restored.and_then(|r| r.display),
+            focus: true,
+        };
+        let wait_for_session = first_window && !loaded && bench.is_none();
+        let handle = open_workspace_window(cx, services, start, bench, started_at, received)?;
+        let _ = handle.update(cx, |workspace, window, cx| {
+            workspace.show_taken_over(asked.target, asked.select, window, cx);
+            // Settings not read yet: the last session may still come back around this window.
+            if wait_for_session {
+                workspace.restore_session_when_read();
+            }
         });
+        if !sessions.is_empty() {
+            // Single window mode off: the session's windows open behind this one.
+            open_session_windows(cx, services, sessions, handle.into());
+        }
+        return Some(handle);
+    }
+    // This window takes the one used last; the others open behind it once it is up.
+    let front = (!sessions.is_empty()).then(|| sessions.remove(0));
+    let start_default = last.is_none() && front.is_none();
+    let path = last
+        .or_else(|| front.as_ref().and_then(|w| w.first_folder().cloned()))
+        .unwrap_or_else(home_folder);
+    let place = front.as_ref().and_then(|w| w.place).or(place);
+    let restored = place.and_then(|p| restored_bounds(p, cx));
+    let start = WindowStart {
+        path,
+        default: start_default,
+        session: front.map(|w| w.session),
+        bounds: restored.map(|r| r.bounds),
+        display: restored.and_then(|r| r.display),
+        focus: true,
+    };
+    let handle = open_workspace_window(cx, services, start, bench, started_at, received)?;
+    if let Some(asked) = as_tab {
+        let _ = handle.update(cx, |workspace, window, cx| {
+            workspace.open_external(asked.target, asked.select, window, cx);
+        });
+    }
+    if !sessions.is_empty() {
+        open_session_windows(cx, services, sessions, handle.into());
+    }
+    Some(handle)
+}
+
+/// What a new window starts on, and where.
+struct WindowStart {
+    path: PathBuf,
+    /// No path was given: once settings load, go where "New windows open to" says.
+    default: bool,
+    /// Tabs to restore (the first opens on `path`).
+    session: Option<settings::Session>,
+    /// `None`: centered, at the default size.
+    bounds: Option<WindowBounds>,
+    /// The screen `bounds` are on; `None`: the main one.
+    display: Option<gpui::DisplayId>,
+    /// Takes the foreground; the other windows of a restored session open behind.
+    focus: bool,
+}
+
+fn open_workspace_window(
+    cx: &mut App,
+    services: &Services,
+    start: WindowStart,
+    bench: Option<Bench>,
+    started_at: Instant,
+    received: Option<Instant>,
+) -> Option<gpui::WindowHandle<Workspace>> {
+    let services = services.clone();
+    let window_bounds = start.bounds.unwrap_or_else(|| {
+        WindowBounds::Windowed(Bounds::centered(None, default_window_size(cx), cx))
+    });
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(window_bounds),
@@ -1408,6 +1716,8 @@ fn open_explorer_window(
                 appears_transparent: true,
                 ..Default::default()
             }),
+            focus: start.focus,
+            display_id: start.display,
             window_min_size: Some(size(px(720.), px(480.))),
             // Windows 11: Mica shows through the frame (sidebar, top bar); the list is a layer on
             // top.
@@ -1422,9 +1732,9 @@ fn open_explorer_window(
             cx.new(|cx| {
                 let mut workspace = Workspace::new(
                     services,
-                    start_path,
-                    start_default,
-                    session,
+                    start.path,
+                    start.default,
+                    start.session,
                     bench,
                     started_at,
                     window,
@@ -1479,6 +1789,52 @@ mod arg_tests {
     }
 
     #[test]
+    fn new_window_is_a_flag_not_a_path() {
+        let args = parse(&["--new-window", r"C:\work"]);
+        assert!(args.new_window);
+        assert_eq!(args.path, Some(PathBuf::from(r"C:\work")));
+        assert!(!parse(&[r"C:\work"]).new_window);
+    }
+
+    #[test]
+    fn an_empty_argument_names_no_folder() {
+        assert_eq!(parse(&[""]).path, None);
+        assert_eq!(
+            parse(&["", r"C:\work"]).path,
+            Some(PathBuf::from(r"C:\work"))
+        );
+    }
+
+    /// Win+E or Arke started again with a window open: the tab goes where "New windows open to"
+    /// says, Home when that is the last tabs (they are open already).
+    #[test]
+    fn a_tab_with_no_folder_follows_the_startup_setting() {
+        use settings::StartLocation;
+        let home = || PathBuf::from(r"C:\Users\me");
+        let last = Some(PathBuf::from(r"C:\last"));
+        assert_eq!(
+            fresh_tab(StartLocation::HomePage, last.clone(), home()),
+            Target::Home
+        );
+        assert_eq!(
+            fresh_tab(StartLocation::LastSession, last.clone(), home()),
+            Target::Home
+        );
+        assert_eq!(
+            fresh_tab(StartLocation::Home, last.clone(), home()),
+            Target::Folder(home())
+        );
+        assert_eq!(
+            fresh_tab(StartLocation::LastFolder, last, home()),
+            Target::Folder(PathBuf::from(r"C:\last"))
+        );
+        assert_eq!(
+            fresh_tab(StartLocation::LastFolder, None, home()),
+            Target::Folder(home())
+        );
+    }
+
+    #[test]
     fn bench_index_runs_without_a_window_bench() {
         let args = parse(&["--bench", "index", "--bench-out", r"C:\out.txt"]);
         assert_eq!(args.bench, Some(BenchArg::Index));
@@ -1503,5 +1859,76 @@ mod arg_tests {
         assert_eq!(pick_tab_host(&[1, 2], None), Some(2));
         // No window (only the notification area icon): open one.
         assert_eq!(pick_tab_host::<u8>(&[], Some(1)), None);
+    }
+
+    fn screen(x: f32, y: f32, width: f32, height: f32) -> Bounds<gpui::Pixels> {
+        Bounds::new(gpui::point(px(x), px(y)), size(px(width), px(height)))
+    }
+
+    fn place(x: f32, y: f32, maximized: bool) -> settings::WindowPlace {
+        settings::WindowPlace {
+            x,
+            y,
+            width: 1000.,
+            height: 700.,
+            maximized,
+        }
+    }
+
+    /// A window saved on the second screen opens there: gpui is told which screen, or Windows
+    /// puts it at the main screen's default spot.
+    #[test]
+    fn a_window_comes_back_on_the_screen_it_was_on() {
+        let main = screen(0., 0., 2560., 1440.);
+        let second = screen(2560., 0., 1920., 1080.);
+        let (one, two) = (gpui::DisplayId::new(1), gpui::DisplayId::new(2));
+        let screens = [(one, main), (two, second)];
+        let on_second = place_on_screens(place(2700., 100., false), &screens, Some(main)).unwrap();
+        assert_eq!(on_second.display, Some(two));
+        assert_eq!(
+            on_second.bounds,
+            WindowBounds::Windowed(screen(2700., 100., 1000., 700.))
+        );
+        let maximized = place_on_screens(place(2700., 100., true), &screens, Some(main)).unwrap();
+        assert_eq!(maximized.display, Some(two));
+        assert!(matches!(maximized.bounds, WindowBounds::Maximized(_)));
+        // Across the edge: the screen that shows more of it.
+        let across = place_on_screens(place(2200., 100., false), &screens, Some(main)).unwrap();
+        assert_eq!(across.display, Some(two));
+        let across = place_on_screens(place(1800., 100., false), &screens, Some(main)).unwrap();
+        assert_eq!(across.display, Some(one));
+    }
+
+    /// The screen a window was on is gone: a window gets the default spot, a maximized one is
+    /// maximized on the main screen.
+    #[test]
+    fn a_window_whose_screen_is_gone_falls_back_to_the_main_one() {
+        let main = screen(0., 0., 2560., 1440.);
+        let screens = [(gpui::DisplayId::new(1), main)];
+        assert_eq!(
+            place_on_screens(place(3000., 100., false), &screens, Some(main)),
+            None
+        );
+        let maximized = place_on_screens(place(3000., 100., true), &screens, Some(main)).unwrap();
+        assert_eq!(maximized.display, None);
+        assert_eq!(
+            maximized.bounds,
+            WindowBounds::Maximized(screen(780., 370., 1000., 700.))
+        );
+        // Only a sliver left on a screen is as good as gone.
+        assert_eq!(
+            place_on_screens(place(2500., 100., false), &screens, Some(main)),
+            None
+        );
+        // Small saved sizes grow to the window's minimum.
+        let small = settings::WindowPlace {
+            width: 100.,
+            height: 100.,
+            ..place(10., 10., false)
+        };
+        assert_eq!(
+            place_on_screens(small, &screens, Some(main)).map(|r| r.bounds),
+            Some(WindowBounds::Windowed(screen(10., 10., 720., 480.)))
+        );
     }
 }

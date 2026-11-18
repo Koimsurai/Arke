@@ -82,11 +82,27 @@ pub(crate) fn hover(
     cx: &mut App,
 ) {
     let inside = e.bounds.contains(&e.event.position);
+    hover_at(key, action, target, inside, e.event.position, window, cx);
+}
+
+/// [`hover`], with the pointer at `position`, `inside` the target or not.
+pub(crate) fn hover_at(
+    key: String,
+    action: Action,
+    target: Target,
+    inside: bool,
+    position: gpui::Point<gpui::Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // A pinned tab keeps its folder, and a drag shouldn't open tabs on the way: no countdown
+    // over its targets (it used to run to the end and then do nothing).
+    if inside && target.view(cx).is_some_and(|v| v.read(cx).keeps_folder()) {
+        return;
+    }
     let state = cx.default_global::<SpringState>();
     if let Some(at) = state.cooldown {
-        let moved = (e.event.position.x - at.x)
-            .abs()
-            .max((e.event.position.y - at.y).abs());
+        let moved = (position.x - at.x).abs().max((position.y - at.y).abs());
         if moved < gpui::px(MOVE_TO_REARM) {
             return;
         }
@@ -131,6 +147,11 @@ fn fire(
     let Some(view) = target.view(cx) else {
         return;
     };
+    // A pinned tab keeps its folder, and a drag shouldn't open tabs on the way: no spring there.
+    if view.read(cx).keeps_folder() {
+        cx.global_mut::<SpringState>().pending = None;
+        return;
+    }
     let here = view
         .read(cx)
         .display_path()
@@ -148,6 +169,15 @@ fn fire(
         Action::Back => e.go_back(&crate::explorer::GoBack, window, cx),
     });
     window.refresh();
+}
+
+/// The target whose countdown is running, if any.
+#[cfg(test)]
+pub(crate) fn pending_key(cx: &App) -> Option<String> {
+    cx.try_global::<SpringState>()?
+        .pending
+        .as_ref()
+        .map(|p| p.key.clone())
 }
 
 /// A drop happened (called from `drop_into`): no need to return to the original folder when the

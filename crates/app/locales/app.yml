@@ -516,6 +516,10 @@ info.filtered:
   en: "%{shown} of %{total} items match"
   zh-TW: 符合 %{shown} 個，共 %{total} 個項目
   zh-CN: 匹配 %{shown} 个，共 %{total} 个项目
+info.query_in:
+  en: "In \"%{folder}\": \"%{query}\""
+  zh-TW: 「%{folder}」中的「%{query}」
+  zh-CN: “%{folder}”中的“%{query}”
 info.items_one:
   en: "1 item"
   zh-TW: "%{count} 個項目"
@@ -1364,6 +1368,26 @@ settings.tabs_top:
   en: Top
   zh-TW: 上方
   zh-CN: 顶部
+settings.one_tab_per_folder:
+  en: One tab per folder
+  zh-TW: 每個資料夾只開一個分頁
+  zh-CN: 每个文件夹只开一个标签页
+settings.new_tab:
+  en: Ctrl+T
+  zh-TW: Ctrl+T
+  zh-CN: Ctrl+T
+settings.new_tab_box:
+  en: Go to folder
+  zh-TW: 前往資料夾
+  zh-CN: 转到文件夹
+settings.new_tab_home:
+  en: New tab with Home
+  zh-TW: 新分頁開首頁
+  zh-CN: 新标签页打开主页
+settings.new_tab_here:
+  en: New tab here
+  zh-TW: 在目前的資料夾開新分頁
+  zh-CN: 在当前文件夹打开新标签页
 settings.list:
   en: List
   zh-TW: 清單
@@ -1632,14 +1656,14 @@ settings.takeover_desc:
   en: "Registers Arke as the folder handler for this Windows account. Turn it off to undo it"
   zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，關閉即還原"
   zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，关闭即还原"
-settings.external_tab:
-  en: "Open folders from other apps in a tab"
-  zh-TW: "從其他程式開啟的資料夾以分頁開啟"
-  zh-CN: "从其他程序打开的文件夹以标签页打开"
-settings.external_tab_desc:
-  en: "Adds a tab to the window you used last. Off: each folder gets a new window"
-  zh-TW: "加到最近使用的視窗。關閉則每個資料夾都開新視窗"
-  zh-CN: "加到最近使用的窗口。关闭则每个文件夹都开新窗口"
+settings.single_window:
+  en: "Single window"
+  zh-TW: "單一視窗"
+  zh-CN: "单一窗口"
+settings.single_window_desc:
+  en: "Folders from other apps, Win+E and starting Arke again add a tab to the window you used last. Off: each gets a new window"
+  zh-TW: "從其他程式開啟的資料夾、Win+E 和再次啟動 Arke 都加成最近使用視窗的分頁。關閉則每次都開新視窗"
+  zh-CN: "从其他程序打开的文件夹、Win+E 和再次启动 Arke 都加为最近使用窗口的标签页。关闭则每次都开新窗口"
 settings.win_e:
   en: "Win+E and the File Explorer icon open Arke too"
   zh-TW: "Win+E 和檔案總管圖示也開 Arke"
@@ -2054,6 +2078,10 @@ menu.delete:
   en: Delete
   zh-TW: 刪除
   zh-CN: 删除
+menu.select_all:
+  en: Select all
+  zh-TW: 全選
+  zh-CN: 全选
 menu.move_to_new_folder:
   en: Move to new folder
   zh-TW: 移到新資料夾
@@ -3681,6 +3709,14 @@ sidebar.unpin_tab:
   en: Unpin tab
   zh-TW: 取消釘選分頁
   zh-CN: 取消固定标签页
+sidebar.pin_tab_folder:
+  en: Pin folder to sidebar
+  zh-TW: 將資料夾釘選到側邊欄
+  zh-CN: 将文件夹固定到侧边栏
+sidebar.unpin_tab_folder:
+  en: Unpin folder from sidebar
+  zh-TW: 從側邊欄取消釘選資料夾
+  zh-CN: 从侧边栏取消固定文件夹
 sidebar.drop_to_pin_tab:
   en: Drop here to pin
   zh-TW: 放到這裡以釘選

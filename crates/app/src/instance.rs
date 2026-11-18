@@ -44,6 +44,9 @@ pub(crate) const SERVER_ACK_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Timeout for the sender's whole exchange (connect plus waiting for the ack).
 pub(crate) const CLIENT_TIMEOUT: Duration = Duration::from_millis(3000);
 
+/// `arke.exe --new-window [path]`: a window of its own even in single window mode.
+pub(crate) const NEW_WINDOW_ARG: &str = "--new-window";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OpenRequest {
     pub(crate) path: Option<PathBuf>,
@@ -53,6 +56,9 @@ pub(crate) struct OpenRequest {
     pub(crate) launched_unix_ms: u64,
     /// Open a page instead of a folder (the Recycle Bin; "home" from older versions' Win+E)
     pub(crate) page: Option<Page>,
+    /// A window of its own even in single window mode ("Open in new window", the jump list's
+    /// New window)
+    pub(crate) new_window: bool,
 }
 
 /// A page Arke shows instead of a folder.
@@ -138,6 +144,7 @@ pub(crate) fn encode(req: &Request) -> Vec<u8> {
                 Some(Page::RecycleBin) => "recycle",
             };
             push_field(&mut w, &wide(page));
+            push_field(&mut w, &wide(if open.new_window { "new" } else { "" }));
         }
     }
     w.iter().flat_map(|u| u.to_le_bytes()).collect()
@@ -170,12 +177,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Request> {
                 Some("recycle") => Some(Page::RecycleBin),
                 _ => None,
             };
+            // Absent from older Arkes too.
+            let new_window = fields.next().and_then(as_string).as_deref() == Some("new");
             Some(Request::Open(OpenRequest {
                 path,
                 bench,
                 bench_out,
                 launched_unix_ms,
                 page,
+                new_window,
             }))
         }
         "select" => {
@@ -545,6 +555,7 @@ mod tests {
             bench_out: None,
             launched_unix_ms: ms,
             page: None,
+            new_window: false,
         })
     }
 
@@ -645,6 +656,7 @@ mod tests {
                 bench_out: Some(PathBuf::from(r"C:\Temp\out.txt")),
                 launched_unix_ms: 1_762_000_000_123,
                 page: Some(Page::RecycleBin),
+                new_window: false,
             }),
             Request::Open(OpenRequest {
                 path: None,
@@ -652,11 +664,37 @@ mod tests {
                 bench_out: None,
                 launched_unix_ms: 0,
                 page: None,
+                new_window: false,
+            }),
+            Request::Open(OpenRequest {
+                path: Some(PathBuf::from(r"C:\work")),
+                bench: None,
+                bench_out: None,
+                launched_unix_ms: 5,
+                page: None,
+                new_window: true,
             }),
         ];
         for req in reqs {
             assert_eq!(decode(&encode(&req)), Some(req));
         }
+    }
+
+    /// A request from an Arke before "Open in new window" was marked is no new window request.
+    #[test]
+    fn older_open_requests_ask_for_no_new_window() {
+        // Path, no benchmark, no output file, launch time 5, no page.
+        let fields = ["open", r"C:\work", "", "", "5", ""];
+        let old: Vec<u8> = fields
+            .iter()
+            .flat_map(|f| wide(f).into_iter().chain([0]))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let Some(Request::Open(open)) = decode(&old) else {
+            panic!("an older request still decodes");
+        };
+        assert_eq!(open.path, Some(PathBuf::from(r"C:\work")));
+        assert!(!open.new_window);
     }
 
     #[test]
@@ -686,6 +724,7 @@ mod tests {
             bench_out: None,
             launched_unix_ms: 1,
             page: None,
+            new_window: false,
         });
         assert_eq!(decode(&encode(&req)), Some(req));
     }

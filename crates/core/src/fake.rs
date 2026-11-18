@@ -22,6 +22,7 @@ struct State {
     dirs: HashMap<PathBuf, Vec<Entry>>,
     delays: HashMap<PathBuf, Duration>,
     hung: HashSet<PathBuf>,
+    crashing: HashSet<PathBuf>,
     contents: HashMap<PathBuf, Vec<u8>>,
     links: HashMap<PathBuf, PathBuf>,
     watchers: Vec<(PathBuf, Weak<WatchCallback>)>,
@@ -141,6 +142,11 @@ impl FakeFs {
         self.state.lock().hung.insert(path.into());
     }
 
+    /// Makes reads of `path` panic, as a bug on a worker thread would.
+    pub fn crash(&self, path: impl Into<PathBuf>) {
+        self.state.lock().crashing.insert(path.into());
+    }
+
     /// Unblocks reads hung on `path` by [`Self::hang`].
     pub fn release(&self, path: &Path) {
         self.state.lock().hung.remove(path);
@@ -200,7 +206,10 @@ impl FakeFs {
             while state.hung.contains(path) {
                 self.released.wait(&mut state);
             }
-            state.delays.get(path).copied()
+            let crash = state.crashing.contains(path);
+            drop(state);
+            assert!(!crash, "fake read of {} panicked", path.display());
+            self.state.lock().delays.get(path).copied()
         };
         if let Some(delay) = delay {
             std::thread::sleep(delay);

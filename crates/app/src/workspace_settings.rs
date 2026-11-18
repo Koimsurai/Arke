@@ -29,8 +29,8 @@ use crate::assets::Icon;
 use crate::explorer::ViewMode;
 use crate::scrollbar::ScrollbarDrag;
 use crate::settings::{
-    Accent, DarkShade, Density, FolderOrder, Language, Material, NavScope, Settings, SettingsStore,
-    SortBy, StartLocation, TabLayout, ThemeMode, Tint,
+    Accent, DarkShade, Density, FolderOrder, Language, Material, NavScope, NewTabAction, Settings,
+    SettingsStore, SortBy, StartLocation, TabLayout, ThemeMode, Tint,
 };
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme;
@@ -1058,21 +1058,7 @@ impl Workspace {
                     ui,
                 ),
             ),
-            card(
-                Icon::TabsSide,
-                t!("settings.tabs"),
-                None,
-                choice(
-                    "tabs",
-                    &[
-                        (TabLayout::Vertical, t!("settings.tabs_side")),
-                        (TabLayout::Horizontal, t!("settings.tabs_top")),
-                    ],
-                    s.tab_layout,
-                    |st, v| st.tab_layout = v,
-                    ui,
-                ),
-            ),
+            tabs_card(s, ui),
             card(
                 Icon::Globe,
                 t!("settings.language"),
@@ -1430,10 +1416,10 @@ impl Workspace {
             ),
             card(
                 Icon::TabOpen,
-                t!("settings.external_tab"),
-                Some(t!("settings.external_tab_desc")),
-                switch("external-tab", s.open_external_in_tab, |st| {
-                    st.open_external_in_tab = !st.open_external_in_tab;
+                t!("settings.single_window"),
+                Some(t!("settings.single_window_desc")),
+                switch("single-window", s.single_window, |st| {
+                    st.single_window = !st.single_window;
                 }),
             ),
         ];
@@ -1606,6 +1592,66 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
             cx.listener(|_, _: &ClickEvent, _, cx| Workspace::clear_thumbnail_cache(cx)),
         ))
         .child(toggle)
+        .into_any_element()
+}
+
+/// Tabs: where they go, then two lines under it for one tab per folder and what Ctrl+T does
+/// (#90), all in one card.
+fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
+    // Lined up with the card's title, without an icon of their own.
+    let a11y = crate::a11y::active();
+    let sub_row = |title: Cow<'static, str>, control: AnyElement| {
+        let title = SharedString::from(title.into_owned());
+        div()
+            .pl(theme::S_16 + ICON_COL + theme::S_16)
+            .pr(theme::S_16)
+            .pb(theme::S_12)
+            .flex()
+            .items_center()
+            .gap(theme::S_16)
+            .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+            .child(row_text(title, None))
+            .child(div().flex_none().child(control))
+            .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
+    };
+    div()
+        .flex()
+        .flex_col()
+        .child(card(
+            Icon::TabsSide,
+            t!("settings.tabs"),
+            None,
+            choice(
+                "tabs",
+                &[
+                    (TabLayout::Vertical, t!("settings.tabs_side")),
+                    (TabLayout::Horizontal, t!("settings.tabs_top")),
+                ],
+                s.tab_layout,
+                |st, v| st.tab_layout = v,
+                ui,
+            ),
+        ))
+        .child(sub_row(
+            t!("settings.one_tab_per_folder"),
+            switch("one-tab-per-folder", s.one_tab_per_folder, |st| {
+                st.one_tab_per_folder = !st.one_tab_per_folder;
+            }),
+        ))
+        .child(sub_row(
+            t!("settings.new_tab"),
+            choice(
+                "new-tab",
+                &[
+                    (NewTabAction::GoToFolder, t!("settings.new_tab_box")),
+                    (NewTabAction::Home, t!("settings.new_tab_home")),
+                    (NewTabAction::CurrentFolder, t!("settings.new_tab_here")),
+                ],
+                s.new_tab,
+                |st, v| st.new_tab = v,
+                ui,
+            ),
+        ))
         .into_any_element()
 }
 

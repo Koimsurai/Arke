@@ -49,6 +49,21 @@ pub(super) enum SidebarAction {
     MoveToList(PathBuf),
     /// Move a pinned list entry up to the tiles.
     MoveToTiles(PathBuf),
+    /// A folder picked in the back or forward button's menu: `steps` down that pane's history,
+    /// where `path` was when the menu opened.
+    HistoryJump {
+        pane: gpui::EntityId,
+        back: bool,
+        steps: usize,
+        path: PathBuf,
+    },
+    /// The top row of a back or forward menu when the button goes to another tab first: one
+    /// step across tabs, to pane `to` (showing `path`).
+    TimelineStep {
+        back: bool,
+        to: gpui::EntityId,
+        path: PathBuf,
+    },
     CloseTab(usize),
     DuplicateTab(usize),
     CloseOtherTabs(usize),
@@ -141,6 +156,9 @@ fn start_pin_drag(
 pub(super) struct SidebarMenu {
     position: Point<Pixels>,
     items: Vec<(SharedString, SidebarAction)>,
+    /// The tabs when it opened: rows name tabs by index, so a tab opened or closed meanwhile
+    /// would make them act on the wrong one; the menu closes instead.
+    tabs: Vec<u64>,
 }
 
 /// Whether `dir` has at least one non-hidden subfolder. Stops at the first one.
@@ -157,6 +175,16 @@ pub(super) fn display_name(path: &Path) -> String {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// The second, dimmer text of a menu row: the folder a history entry is in.
+fn menu_detail(action: &SidebarAction) -> Option<SharedString> {
+    match action {
+        SidebarAction::HistoryJump { path, .. } | SidebarAction::TimelineStep { path, .. } => {
+            arke_core::path::parent(path).map(|p| p.display().to_string().into())
+        }
+        _ => None,
+    }
 }
 
 /// Icon for known folders and drives, shared by the sidebar and Ctrl+T.
@@ -1349,15 +1377,73 @@ impl Workspace {
 
     // --- Context menu ---
 
+    #[cfg(test)]
+    pub(super) fn sidebar_menu_labels_for_test(&self) -> Option<Vec<String>> {
+        let menu = self.sidebar_menu.as_ref()?;
+        Some(menu.items.iter().map(|(l, _)| l.to_string()).collect())
+    }
+
+    #[cfg(test)]
+    pub(super) fn sidebar_menu_action_for_test(&self, ix: usize) -> Option<SidebarAction> {
+        self.sidebar_menu
+            .as_ref()
+            .filter(|m| m.tabs == self.tab_ids())?
+            .items
+            .get(ix)
+            .map(|(_, a)| a.clone())
+    }
+
+    /// The second line of each row of the open menu ("" for none).
+    #[cfg(test)]
+    pub(super) fn sidebar_menu_details_for_test(&self) -> Option<Vec<String>> {
+        let menu = self.sidebar_menu.as_ref()?;
+        Some(
+            menu.items
+                .iter()
+                .map(|(_, a)| menu_detail(a).map_or_default(|d| d.to_string()))
+                .collect(),
+        )
+    }
+
     pub(super) fn open_sidebar_menu(
         &mut self,
         position: Point<Pixels>,
         items: Vec<(SharedString, SidebarAction)>,
         cx: &mut Context<Self>,
     ) {
-        self.sidebar_menu = Some(SidebarMenu { position, items });
+        let tabs = self.tab_ids();
+        self.sidebar_menu = Some(SidebarMenu {
+            position,
+            items,
+            tabs,
+        });
         cx.stop_propagation();
         cx.notify();
+    }
+
+    fn tab_ids(&self) -> Vec<u64> {
+        self.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// Closes the open menu if tabs were opened or closed since it opened (before paint, and
+    /// before running a row).
+    pub(super) fn drop_stale_menu(&mut self) {
+        if self
+            .sidebar_menu
+            .as_ref()
+            .is_some_and(|m| m.tabs != self.tab_ids())
+        {
+            self.sidebar_menu = None;
+        }
+    }
+
+    /// The open menu is a back or forward menu with `pane`'s folders.
+    pub(super) fn menu_lists_history_of(&self, pane: gpui::EntityId) -> bool {
+        self.sidebar_menu.as_ref().is_some_and(|m| {
+            m.items
+                .iter()
+                .any(|(_, a)| matches!(a, SidebarAction::HistoryJump { pane: p, .. } if *p == pane))
+        })
     }
 
     /// Removes a saved remote location, and its saved password unless another saved location
@@ -1382,7 +1468,8 @@ impl Workspace {
         }
     }
 
-    fn run_sidebar_action(
+    #[allow(clippy::too_many_lines, reason = "One arm per sidebar action")]
+    pub(super) fn run_sidebar_action(
         &mut self,
         action: SidebarAction,
         window: &mut Window,
@@ -1399,7 +1486,7 @@ impl Workspace {
             SidebarAction::SetSidebarPeek(on) => Self::set_sidebar_peek(on, cx),
             SidebarAction::OpenInNewTab(path) => {
                 let at = self.active + 1;
-                self.open_tab(path, at, true, window, cx);
+                self.open_folder_tab(path, at, true, window, cx);
             }
             SidebarAction::TogglePin(path) => {
                 let places = self.active_view().read(cx).places.clone();
@@ -1431,6 +1518,17 @@ impl Workspace {
                         cx,
                     );
                 });
+            }
+            SidebarAction::HistoryJump {
+                pane,
+                back,
+                steps,
+                path,
+            } => {
+                self.jump_in_history(pane, back, steps, &path, window, cx);
+            }
+            SidebarAction::TimelineStep { back, to, .. } => {
+                self.timeline_step_to(back, to, window, cx);
             }
             SidebarAction::CloseTab(ix) => self.close_tab(ix, window, cx),
             SidebarAction::DuplicateTab(ix) => self.duplicate_tab(ix, window, cx),
@@ -1506,7 +1604,10 @@ impl Workspace {
                 .is_some_and(|p| on_drive(p, drive));
             if on_drive {
                 let home = home.clone();
-                view.update(cx, |v, cx| v.navigate(home, arke_core::NavKind::New, cx));
+                // Pinned tabs too: nothing may keep the drive busy.
+                view.update(cx, |v, cx| {
+                    v.navigate_unlocked(home, arke_core::NavKind::New, cx);
+                });
             }
         }
     }
@@ -1628,6 +1729,12 @@ impl Workspace {
             .enumerate()
             .map(|(ix, (label, action))| {
                 let action = action.clone();
+                let folder = matches!(
+                    action,
+                    SidebarAction::HistoryJump { .. } | SidebarAction::TimelineStep { .. }
+                );
+                // Where a history folder is, so two folders of the same name tell apart.
+                let detail = menu_detail(&action);
                 div()
                     .id(("sidebar-menu-item", ix))
                     .h(theme::H_CTL_SM + theme::S_4)
@@ -1635,12 +1742,31 @@ impl Workspace {
                     .px(theme::S_8)
                     .flex()
                     .items_center()
+                    .gap(theme::S_8)
+                    .when(folder, |d| {
+                        d.child(kind_icon(FileKind::Folder, theme::ICON))
+                    })
                     .rounded(theme::R_8)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::wash()))
-                    .child(label.clone())
+                    .child(div().flex_none().child(label.clone()))
+                    .when_some(detail, |d, detail| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .max_w(px(320.))
+                                .truncate()
+                                .text_size(theme::FS_12)
+                                .text_color(theme::text_muted())
+                                .child(detail),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.run_sidebar_action(action.clone(), window, cx);
+                        this.drop_stale_menu();
+                        if this.sidebar_menu.is_some() {
+                            this.run_sidebar_action(action.clone(), window, cx);
+                        }
+                        cx.notify();
                     }))
                     .into_any_element()
             })
@@ -1716,9 +1842,31 @@ impl Workspace {
 
     // --- Tabs ---
 
-    fn tab_menu(&self, ix: usize) -> Vec<(SharedString, SidebarAction)> {
+    pub(super) fn tab_menu(&self, ix: usize, cx: &App) -> Vec<(SharedString, SidebarAction)> {
         let pinned = self.tabs.get(ix).is_some_and(|t| t.pinned);
         let split = self.tabs.get(ix).is_some_and(Tab::is_split);
+        // The tab's folder can go on the sidebar's pinned list (the same pin as a folder's own menu).
+        let folder = self
+            .tabs
+            .get(ix)
+            .map(Tab::view)
+            .filter(|view| self.page_title(view.entity_id()).is_none())
+            .and_then(|view| view.read(cx).display_path().map(Path::to_path_buf))
+            .map(|path| {
+                let places = &self.active_view().read(cx).places;
+                let on_sidebar = SettingsStore::try_global(cx)
+                    .is_some_and(|s| s.read(cx).settings.is_pinned(&path, places));
+                (
+                    if on_sidebar {
+                        t!("sidebar.unpin_tab_folder")
+                    } else {
+                        t!("sidebar.pin_tab_folder")
+                    }
+                    .to_string()
+                    .into(),
+                    SidebarAction::TogglePin(path),
+                )
+            });
         let mut items = vec![
             (
                 if pinned {
@@ -1734,18 +1882,19 @@ impl Workspace {
                 t!("sidebar.duplicate_tab").to_string().into(),
                 SidebarAction::DuplicateTab(ix),
             ),
-            (
-                // Ctrl+W closes the tab only when it isn't split (else the active side).
-                if split {
-                    t!("sidebar.close_tab")
-                } else {
-                    t!("sidebar.close_tab_key")
-                }
-                .to_string()
-                .into(),
-                SidebarAction::CloseTab(ix),
-            ),
         ];
+        items.extend(folder);
+        items.push((
+            // Ctrl+W closes the tab only when it isn't split (else the active side).
+            if split {
+                t!("sidebar.close_tab")
+            } else {
+                t!("sidebar.close_tab_key")
+            }
+            .to_string()
+            .into(),
+            SidebarAction::CloseTab(ix),
+        ));
         // Pinned tabs are spared by both, so offer them only when they would close something.
         let others = self
             .tabs
@@ -1912,6 +2061,20 @@ impl Workspace {
             .relative()
             // The active tab shares the paper surface with the list.
             .when(active, |d| d.child(here_layer()).text_color(theme::text()))
+            // Asked for again in the background (middle click): fades out from the accent color.
+            .when_some(self.tab_flash(ix), |d, serial| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme::R_8)
+                        .with_animation(
+                            ("tab-flash", serial as usize),
+                            gpui::Animation::new(crate::motion::FLASH),
+                            |el, t| el.bg(theme::blend(theme::signal_wash(), theme::clear(), t)),
+                        ),
+                )
+            })
             .when(!active, |d| {
                 d.text_color(theme::text_muted())
                     .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
@@ -1942,7 +2105,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    let items = this.tab_menu(ix);
+                    let items = this.tab_menu(ix, cx);
                     this.open_sidebar_menu(e.position, items, cx);
                 }),
             );
@@ -2052,6 +2215,48 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.navigate_active(path, window, cx);
+    }
+
+    /// A sidebar folder's "Open in new tab" (also Ctrl+click on it).
+    pub(crate) fn sidebar_open_in_new_tab_for_test(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_sidebar_action(SidebarAction::OpenInNewTab(path), window, cx);
+    }
+
+    /// Labels of tab `ix`'s context menu.
+    /// Opens tab `ix`'s context menu, as a right click on the tab does.
+    pub(crate) fn open_tab_menu_for_test(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let items = self.tab_menu(ix, cx);
+        self.open_sidebar_menu(gpui::point(px(100.), px(100.)), items, cx);
+    }
+
+    pub(crate) fn tab_menu_labels_for_test(&self, ix: usize, cx: &App) -> Vec<String> {
+        self.tab_menu(ix, cx)
+            .into_iter()
+            .map(|(label, _)| label.to_string())
+            .collect()
+    }
+
+    /// Picks the entry labeled `label` in tab `ix`'s context menu.
+    pub(crate) fn run_tab_menu_for_test(
+        &mut self,
+        ix: usize,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, action)) = self
+            .tab_menu(ix, cx)
+            .into_iter()
+            .find(|(l, _)| l.as_ref() == label)
+        else {
+            panic!("no {label:?} in the tab menu");
+        };
+        self.run_sidebar_action(action, window, cx);
     }
 
     pub(crate) fn tree_is_leaf_for_test(&self, path: &Path) -> bool {

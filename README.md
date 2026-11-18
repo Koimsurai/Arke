@@ -66,6 +66,10 @@ If Arke is useful to you, a ⭐ on GitHub helps other people find it.
 - Each folder remembers its view and sort.
 - Tabs you can pin or save as workspaces. Split a tab into two panes with one shared preview,
   synchronized browsing and folder compare.
+- One window by default (since 0.7): folders from other apps, Win+E and starting Arke again add a
+  tab to the window you used last. Turn off "Single window" in settings for a window each.
+- With "New windows open to: Last tabs", the windows open when you quit Arke (or Windows shuts
+  down) come back with their tabs. A window you close while others stay open isn't kept.
 - Spring-loaded folders, a shelf for collecting files from different folders, and a Home page
   with recent files, drives and network locations.
 - Swipe with two fingers on a touchpad to go back and forward, like in a browser.

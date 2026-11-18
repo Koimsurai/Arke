@@ -73,6 +73,8 @@ pub(crate) mod scope;
 mod shelf_ops;
 #[path = "explorer_sizes.rs"]
 mod sizes;
+#[path = "explorer_topbar.rs"]
+mod top_bar;
 #[path = "explorer_tree.rs"]
 mod tree;
 #[cfg(test)]
@@ -396,6 +398,18 @@ pub(crate) enum ExplorerEvent {
         path: PathBuf,
         activate: bool,
     },
+    /// A pinned tab was asked to go to another folder: it stays, and `path` opens in a new tab
+    /// with `select` selected there.
+    LockedNav {
+        path: PathBuf,
+        select: Vec<Arc<str>>,
+    },
+    /// "New folder in…" / "New file in…" on a subfolder of a pinned tab: `dir` opens in a new
+    /// tab (or the one already on it), and the item is made there.
+    LockedNewItem {
+        dir: PathBuf,
+        kind: ops::NewItem,
+    },
     /// Split or unsplit the current tab.
     ToggleSplit,
     /// This pane was clicked (becomes the active side in dual pane).
@@ -412,12 +426,19 @@ pub(crate) enum ExplorerEvent {
     NetLogin(PathBuf),
     /// Moved to another folder (recorded in Recent).
     /// Arrived at a folder; `stepped` when the history recorded a step back to where it was.
+    /// `kind` is how it got there (a history menu jump moves the timeline only once it lands).
     Navigated {
         path: PathBuf,
         stepped: bool,
+        kind: NavKind,
     },
     /// The back (`true`) or forward toolbar button: the workspace decides what it moves.
     HistoryButton(bool),
+    /// Right click on the back (`true`) or forward button: the workspace lists the folders.
+    HistoryMenu {
+        back: bool,
+        position: gpui::Point<gpui::Pixels>,
+    },
     /// Back left a folder that was opened from Home: the workspace shows Home again.
     BackToHome {
         start: bool,
@@ -578,8 +599,6 @@ type FilterKey = (Gen, u64, SortSpec, String);
 /// When only folder sizes changed and the list is this small, resort inline (about 10k comparisons,
 /// well under 1 ms).
 const INLINE_SORT_MAX: usize = 1_000;
-/// Minimum interval between resorts by size while folder sizes are still being computed.
-const SIZE_RESORT_EVERY: Duration = Duration::from_millis(300);
 
 /// Returns a sorted copy. When sorting by size, `dir_sizes` supplies folder sizes.
 fn sort_entries(
@@ -621,6 +640,10 @@ pub(crate) struct Explorer {
     /// Back and forward button states set by the workspace when they follow the timeline
     /// across tabs (`workspace_nav.rs`); `None`: this pane's own history.
     pub(crate) global_nav: Option<(bool, bool)>,
+    /// The pane is in a pinned tab, which keeps its folder: going anywhere else opens a new tab
+    /// instead ([`ExplorerEvent::LockedNav`]), and its own back and forward are off. Set by the
+    /// workspace.
+    pub(crate) locked: bool,
     pub(crate) sort: SortSpec,
     /// Last seen default sort and view. Tabs still on the old defaults follow when settings change.
     seen_defaults: (SortSpec, ViewMode),
@@ -661,10 +684,6 @@ pub(crate) struct Explorer {
     /// Folder size version the current order was sorted with (dir, content version, size version).
     /// `None` if sizes weren't used.
     size_order: Option<(Gen, u64, u64)>,
-    /// Just resorted by folder size; wait before the next resort so the list doesn't jump on every
-    /// finished folder.
-    size_resort_cooling: bool,
-    size_resort_task: Option<Task<()>>,
     show_hidden: bool,
     /// Hidden-rules version the list was built with.
     hidden_rules: u32,
@@ -689,8 +708,10 @@ pub(crate) struct Explorer {
     /// Autocomplete while typing a path.
     suggest: path_bar::Suggest,
     path_bounds: path_bar::PathBounds,
-    /// Width of the title bar slot the path bar sits in (it sizes to its content inside it).
+    /// Width of the title bar slot the path bar fills.
     path_slot: path_bar::SlotWidth,
+    /// The title row's search box width and the press-to-drag on the path bar.
+    top_row: top_bar::TopRow,
     filter_input: Entity<TextInput>,
     /// Filter box text, excluding uncommitted IME composition.
     pub(crate) query: String,
@@ -880,7 +901,6 @@ pub(crate) struct Explorer {
     /// Changes on every navigation; auto-retry only reopens if the user hasn't gone elsewhere.
     retry_token: u64,
     last_timing: Option<ListTiming>,
-    window_title: String,
     started_at: Instant,
     pub(crate) metrics: Metrics,
     bench: Option<Bench>,
@@ -916,6 +936,13 @@ pub(crate) fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
         log::error!("failed to spawn thread {name}: {err}");
     }
 }
+
+/// Most folders the back and forward buttons' menu lists.
+pub(crate) const HISTORY_MENU_MAX: usize = 15;
+
+/// How long a pinned tab waits to learn whether a path typed in it is a file before opening it
+/// in a new tab anyway.
+const LOCKED_PROBE_WAIT: Duration = Duration::from_millis(500);
 
 impl Explorer {
     #[allow(
@@ -984,6 +1011,7 @@ impl Explorer {
             history: History::default(),
             from_home: None,
             global_nav: None,
+            locked: false,
             sort: defaults.0,
             seen_defaults: defaults,
             // A benchmark measures a fixed view, never one saved by the user
@@ -1009,8 +1037,6 @@ impl Explorer {
             sort_inflight: None,
             type_order: None,
             size_order: None,
-            size_resort_cooling: false,
-            size_resort_task: None,
             show_hidden: settings.read(cx).settings.show_hidden,
             hidden_rules: arke_core::entry::hidden_rules_version(),
             hidden_count: 0,
@@ -1028,6 +1054,7 @@ impl Explorer {
             suggest: path_bar::Suggest::default(),
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
+            top_row: top_bar::TopRow::default(),
             filter_input,
             query: String::new(),
             filtered: None,
@@ -1132,7 +1159,6 @@ impl Explorer {
             showing_cached: false,
             retry_token: 0,
             last_timing: None,
-            window_title: String::new(),
             started_at,
             metrics: Metrics::default(),
             bench,
@@ -1258,6 +1284,105 @@ impl Explorer {
         // Remote URLs in one spelling (`Path::join` adds backslashes), so history and the
         // sidebar compare them right.
         let path = arke_core::remote::canonical(path);
+        // A pinned tab keeps its folder (QTTabBar's locked tabs): somewhere else opens beside it.
+        if kind != NavKind::Refresh && self.locked_elsewhere(&path) {
+            cx.emit(ExplorerEvent::LockedNav { path, select });
+            return;
+        }
+        self.go_to(path, kind, select, cx);
+    }
+
+    /// The pane keeps its folder and `path` is another one.
+    fn locked_elsewhere(&self, path: &Path) -> bool {
+        self.keeps_folder()
+            && self
+                .display_path()
+                .is_some_and(|here| !same_folder(here, path))
+    }
+
+    /// The pane is pinned and has a folder to keep. One whose folder can't be shown (renamed,
+    /// deleted, a drive or server gone: the error page) can be pointed somewhere else in place.
+    pub(crate) const fn keeps_folder(&self) -> bool {
+        self.locked && !(self.failed.is_some() || (self.model.is_none() && self.pending.is_none()))
+    }
+
+    /// A path typed in a pinned tab's path bar opens beside it. A file isn't a folder to open a
+    /// tab on: it opens, and its folder shows it selected, in this tab when that is the pinned
+    /// folder. Whether it is a file is asked off the UI thread; a slow answer (a sleeping server)
+    /// leaves it to the new tab, which handles files itself.
+    fn locked_nav(&mut self, path: PathBuf, select: Vec<Arc<str>>, cx: &mut Context<Self>) {
+        let path = arke_core::remote::canonical(path);
+        if arke_core::remote::is_remote(&path) || path.file_name().is_none() {
+            cx.emit(ExplorerEvent::LockedNav { path, select });
+            return;
+        }
+        let fs = Arc::clone(&self.services.fs);
+        let probe = path.clone();
+        let (tx, rx) = flume::bounded(1);
+        spawn_thread("locked-nav-probe", move || {
+            let (stat_tx, stat_rx) = flume::bounded(1);
+            spawn_thread("locked-nav-stat", move || {
+                let _ = stat_tx.send(fs.stat(&probe).is_ok_and(|e| !e.is_dir_like()));
+            });
+            let _ = tx.send(stat_rx.recv_timeout(LOCKED_PROBE_WAIT).unwrap_or(false));
+        });
+        cx.spawn(async move |this, cx| {
+            let is_file = rx.recv_async().await.unwrap_or(false);
+            let _ = this.update(cx, |this, cx| {
+                this.finish_locked_nav(path, select, is_file, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_locked_nav(
+        &mut self,
+        path: PathBuf,
+        select: Vec<Arc<str>>,
+        is_file: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let file = is_file
+            .then(|| Some((arke_core::path::parent(&path)?, path.file_name()?)))
+            .flatten();
+        let Some((parent, name)) = file else {
+            cx.emit(ExplorerEvent::LockedNav { path, select });
+            return;
+        };
+        let name: Arc<str> = name.to_string_lossy().into();
+        self.open_file(path.clone(), cx);
+        if self
+            .display_path()
+            .is_some_and(|here| same_folder(here, &parent))
+        {
+            self.select_in_folder(&parent, vec![name], cx);
+        } else {
+            cx.emit(ExplorerEvent::LockedNav {
+                path: parent,
+                select: vec![name],
+            });
+        }
+    }
+
+    /// [`Self::navigate`] even in a pinned tab: for moves the tab can't refuse, such as leaving a
+    /// drive that is being ejected.
+    pub(crate) fn navigate_unlocked(
+        &mut self,
+        path: PathBuf,
+        kind: NavKind,
+        cx: &mut Context<Self>,
+    ) {
+        let path = arke_core::remote::canonical(path);
+        self.go_to(path, kind, Vec::new(), cx);
+    }
+
+    fn go_to(
+        &mut self,
+        path: PathBuf,
+        kind: NavKind,
+        select: Vec<Arc<str>>,
+        cx: &mut Context<Self>,
+    ) {
         // A network location was opened, so the NAS is awake and global search can refresh its
         // index.
         crate::global_search::GlobalSearch::wake(&path, cx);
@@ -1458,14 +1583,24 @@ impl Explorer {
 
     /// State for the sidebar nav buttons: (can go back, can go forward, can refresh).
     pub(crate) const fn nav_state(&self) -> (bool, bool, bool) {
-        (
-            self.history.can_go_back(),
-            self.history.can_go_forward(),
-            self.model.is_some(),
-        )
+        (self.can_go(true), self.can_go(false), self.model.is_some())
+    }
+
+    /// Whether this pane's own history can go back (or forward). Never in a pinned tab: its
+    /// folder stays, and back from a tab opened out of it returns to it across tabs.
+    pub(crate) const fn can_go(&self, back: bool) -> bool {
+        !self.locked
+            && if back {
+                self.history.can_go_back()
+            } else {
+                self.history.can_go_forward()
+            }
     }
 
     pub(crate) fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
+        if self.locked {
+            return;
+        }
         if let Some(target) = self.history.back_target() {
             let home = self
                 .from_home
@@ -1488,9 +1623,91 @@ impl Explorer {
     }
 
     pub(crate) fn go_forward(&mut self, _: &GoForward, _: &mut Window, cx: &mut Context<Self>) {
+        if self.locked {
+            return;
+        }
         if let Some(target) = self.history.forward_target() {
             self.navigate(target.to_path_buf(), NavKind::Forward, cx);
         }
+    }
+
+    /// Folders the back (or forward) button's menu lists, the nearest first. None in a pinned
+    /// tab, whose buttons are off too.
+    pub(crate) fn history_menu(&self, back: bool) -> Vec<PathBuf> {
+        if self.locked {
+            return Vec::new();
+        }
+        let entries: Vec<&Path> = if back {
+            self.history.back_entries().collect()
+        } else {
+            self.history.forward_entries().collect()
+        };
+        // Home was where the tab started: Back stops on Home, so the folders under it can't be
+        // reached by going back (the menu doesn't offer them either).
+        let reachable = match self.from_home {
+            Some((at, true)) if back && at <= self.history.depth() => self.history.depth() + 1 - at,
+            _ => usize::MAX,
+        };
+        entries
+            .into_iter()
+            .take(HISTORY_MENU_MAX.min(reachable))
+            .map(Path::to_path_buf)
+            .collect()
+    }
+
+    /// How far down the back (or forward) history `path` is now: `steps` if it is still there,
+    /// else the nearest place it moved to (the history changed while a menu listing it was
+    /// open), or `None` if it is no longer on that side.
+    pub(crate) fn history_steps_to(&self, back: bool, steps: usize, path: &Path) -> Option<usize> {
+        let at = |steps| {
+            if back {
+                self.history.back_at(steps)
+            } else {
+                self.history.forward_at(steps)
+            }
+        };
+        if at(steps) == Some(path) {
+            return Some(steps);
+        }
+        let mut entries: Box<dyn Iterator<Item = &Path>> = if back {
+            Box::new(self.history.back_entries())
+        } else {
+            Box::new(self.history.forward_entries())
+        };
+        entries.position(|p| p == path).map(|ix| ix + 1)
+    }
+
+    /// Opens the `steps`-th folder of the back (or forward) history (1 is what the button
+    /// opens), leaving the ones passed over on the other side. Returns whether it started going
+    /// there. Going back past a folder opened from Home shows Home over the folder before it,
+    /// as pressing Back that many times does.
+    pub(crate) fn go_to_history(
+        &mut self,
+        back: bool,
+        steps: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.locked || steps == 0 {
+            return false;
+        }
+        let target = if back {
+            self.history.back_at(steps)
+        } else {
+            self.history.forward_at(steps)
+        };
+        let Some(target) = target.map(Path::to_path_buf) else {
+            return false;
+        };
+        let depth = self.history.depth();
+        let home = self
+            .from_home
+            .filter(|&(at, _)| back && at <= depth && depth - steps + 1 == at)
+            .map(|(_, start)| start);
+        self.navigate(target, NavKind::Jump { back, steps }, cx);
+        if let Some(start) = home {
+            cx.emit(ExplorerEvent::BackToHome { start });
+        }
+        true
     }
 
     pub(crate) fn go_up(&mut self, _: &GoUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -1698,11 +1915,13 @@ impl Explorer {
             } if generation == current => {
                 if let Some(pending) = self.pending.take_if(|p| p.generation == generation) {
                     let folder_view = pending.folder_view;
+                    let kind = pending.kind;
                     let stepped = self.commit_navigation(pending, &path, sorted_by);
                     self.folder_view_on_commit(folder_view, cx);
                     cx.emit(ExplorerEvent::Navigated {
                         path: path.clone(),
                         stepped,
+                        kind,
                     });
                 }
                 let Some(model) = self.model.as_mut().filter(|m| m.generation == generation) else {
@@ -2065,13 +2284,20 @@ impl Explorer {
         {
             return;
         }
+        // The order was sorted by folder sizes, but for an older listing.
+        let listing_changed = self
+            .size_order
+            .is_some_and(|o| (o.0, o.1) != (model.generation, model.version));
         if only_sizes
-            && have.is_some()
-            && want.is_some()
-            && self.size_resort_cooling
+            && self.sort.uses(SortColumn::Size)
+            && !listing_changed
             && self.folder_sizes.computing()
         {
-            // More folders finished; resort together once the cooldown timer fires.
+            // Folder sizes are still coming in: the rows keep their places (sizes fill in where
+            // they are) and the list reorders once, when the last one is known. Reordering as
+            // each arrived made the rows jump around under the pointer. Not when the listing
+            // changed meanwhile (a fresh listing knows no folder sizes, so its folders come in
+            // name order): that sorts once now with the sizes known so far.
             return;
         }
         let spec = self.sort;
@@ -2125,16 +2351,6 @@ impl Explorer {
         model.replace_sorted(Arc::new(sorted), spec);
         self.type_order = type_rev;
         self.size_order = sizes_rev.map(|rev| (model.generation, model.version, rev));
-        if sizes_rev.is_some() && self.folder_sizes.computing() {
-            self.size_resort_cooling = true;
-            self.size_resort_task = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SIZE_RESORT_EVERY).await;
-                let _ = this.update(cx, |this, cx| {
-                    this.size_resort_cooling = false;
-                    this.ensure_sorted(cx);
-                });
-            }));
-        }
         self.ensure_filtered(cx);
         self.resolve_cursor();
         cx.notify();
@@ -2786,11 +3002,6 @@ impl Explorer {
         }
     }
 
-    /// Too narrow for the Date modified column.
-    pub(crate) fn narrow(&self) -> bool {
-        self.pane_width < px(560.)
-    }
-
     fn page_rows(&self, window: &Window) -> usize {
         let height: Pixels = window.viewport_size().height - Self::list_chrome();
         ((height / self.row_height()).floor() as usize).max(1)
@@ -3254,7 +3465,12 @@ impl Explorer {
             .display_path()
             .map_or_else(|| PathBuf::from("C:\\"), Path::to_path_buf);
         if let Some(target) = arke_core::path::resolve_input(&base, &expanded) {
-            self.navigate(target, NavKind::New, cx);
+            // Typed in a pinned tab: it may be a file, which shouldn't get a tab of its own.
+            if self.locked_elsewhere(&target) {
+                self.locked_nav(target, Vec::new(), cx);
+            } else {
+                self.navigate(target, NavKind::New, cx);
+            }
         }
     }
 
@@ -3327,15 +3543,6 @@ impl Explorer {
     }
 
     fn on_frame(&mut self, window: &mut Window, cx: &App) {
-        let title = match self.display_path() {
-            Some(_) => format!("{} - Arke", self.tab_title()),
-            None => "Arke".into(),
-        };
-        if title != self.window_title {
-            window.set_window_title(&title);
-            self.window_title = title;
-        }
-
         let since_start = self.started_at.elapsed();
         let ms = |d: Duration| d.as_secs_f64() * 1e3;
         if self.metrics.first_frame.is_none() {
@@ -3450,6 +3657,17 @@ impl Drop for Explorer {
     fn drop(&mut self) {
         self.dir_service.cancel();
         self.search.stop();
+    }
+}
+
+/// Whether two paths are the same folder: local ones ignoring case and separators, remote URLs
+/// exactly (a server may tell `Docs` from `docs`).
+pub(crate) fn same_folder(a: &Path, b: &Path) -> bool {
+    if arke_core::remote::is_remote(a) || arke_core::remote::is_remote(b) {
+        arke_core::remote::canonical(a.to_path_buf())
+            == arke_core::remote::canonical(b.to_path_buf())
+    } else {
+        arke_core::takeover::same_path(a, b)
     }
 }
 

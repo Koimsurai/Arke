@@ -587,7 +587,8 @@ impl Workspace {
                 )
                 .on_click(move |_, window, cx| {
                     view.update(cx, |e, cx| e.go_back(&GoBack, window, cx));
-                }),
+                })
+                .on_mouse_down(MouseButton::Right, Self::history_menu_listener(true, cx)),
             )
             .child(
                 button(
@@ -598,7 +599,8 @@ impl Workspace {
                 )
                 .on_click(move |_, window, cx| {
                     forward_view.update(cx, |e, cx| e.go_forward(&GoForward, window, cx));
-                }),
+                })
+                .on_mouse_down(MouseButton::Right, Self::history_menu_listener(false, cx)),
             )
     }
 

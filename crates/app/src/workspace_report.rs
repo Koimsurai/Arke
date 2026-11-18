@@ -145,8 +145,8 @@ fn settings_summary(s: &Settings) -> String {
 fn shell_integration(s: &Settings, with_registry: bool) -> String {
     use std::fmt::Write as _;
     let mut out = format!(
-        "- open folders in Arke {}, Win+E too {}, in a tab {}\n",
-        s.open_folders_in_arke, s.win_e_opens_arke, s.open_external_in_tab
+        "- open folders in Arke {}, Win+E too {}, single window {}\n",
+        s.open_folders_in_arke, s.win_e_opens_arke, s.single_window
     );
     if with_registry && let Ok(exe) = std::env::current_exe() {
         for line in arke_core::folder_handler::describe(&crate::win_registry::UserRegistry, &exe) {

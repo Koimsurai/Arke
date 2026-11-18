@@ -14,19 +14,24 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
-    fill, point, prelude::*, px, relative, size,
+    AnimationExt as _, AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
+    UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill, point,
+    prelude::*, px, relative, size, svg,
 };
+use rust_i18n::t;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::theme;
+use crate::a11y::A11yExt as _;
+use crate::assets::Icon;
+use crate::theme::{self, UiFont as _};
 
 actions!(
     text_input,
     [
+        Undo,
         Backspace,
         Delete,
         Left,
@@ -41,6 +46,9 @@ actions!(
         Copy,
         Confirm,
         Cancel,
+        OpenMenu,
+        MenuUp,
+        MenuDown,
     ]
 );
 
@@ -59,10 +67,17 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-v", Paste, ctx),
         KeyBinding::new("ctrl-c", Copy, ctx),
         KeyBinding::new("ctrl-x", Cut, ctx),
+        KeyBinding::new("ctrl-z", Undo, ctx),
         KeyBinding::new("home", Home, ctx),
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Confirm, ctx),
         KeyBinding::new("escape", Cancel, ctx),
+        // The edit menu from the keyboard, as in a Windows edit box.
+        KeyBinding::new("shift-f10", OpenMenu, ctx),
+        KeyBinding::new("menu", OpenMenu, ctx),
+        // Move in the open edit menu; without one they pass on (a list or popup below the box).
+        KeyBinding::new("up", MenuUp, ctx),
+        KeyBinding::new("down", MenuDown, ctx),
     ]);
 }
 
@@ -88,6 +103,57 @@ pub(crate) struct TextInput {
     is_selecting: bool,
     /// Password field: drawn as dots, copy and cut disabled
     masked: bool,
+    /// Earlier states (content and selection), newest last, for Undo.
+    undo: Vec<(SharedString, Range<usize>)>,
+    /// What the newest Undo step is made of and where the caret sits after it, so the next
+    /// character typed (or erased) there joins the same step.
+    step: Option<(Step, usize)>,
+    /// The edit under way is Backspace or Delete at the caret (set just before it).
+    erasing: Option<Step>,
+    /// Edit menu, while open.
+    menu: Option<EditMenu>,
+    /// Closes the edit menu when the window goes to the background.
+    activation: Option<gpui::Subscription>,
+}
+
+/// Steps kept for Undo.
+const UNDO_LIMIT: usize = 100;
+
+/// A run of edits that undo together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Typing,
+    Backspace,
+    Delete,
+}
+
+/// The edit menu opened by right-click, Shift+F10 or the menu key.
+struct EditMenu {
+    position: Point<Pixels>,
+    /// The clipboard held text when the menu opened.
+    can_paste: bool,
+    /// Row chosen with the arrow keys (an index into [`MENU_ROWS`]); Enter runs it.
+    highlighted: Option<usize>,
+}
+
+/// The edit menu's rows, in Windows order.
+const MENU_ROWS: [EditCommand; 6] = [
+    EditCommand::Undo,
+    EditCommand::Cut,
+    EditCommand::Copy,
+    EditCommand::Paste,
+    EditCommand::Delete,
+    EditCommand::SelectAll,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditCommand {
+    Undo,
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+    SelectAll,
 }
 
 /// Glyph drawn for each character in a password field
@@ -109,6 +175,11 @@ impl TextInput {
             scroll_x: Pixels::ZERO,
             is_selecting: false,
             masked: false,
+            undo: Vec::new(),
+            step: None,
+            erasing: None,
+            menu: None,
+            activation: None,
         }
     }
 
@@ -148,6 +219,11 @@ impl TextInput {
         &self.content
     }
 
+    /// Whether the right-click edit menu is open.
+    pub(crate) const fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
     /// Text without the uncommitted IME composition. Live filtering uses this so phonetic symbols
     /// aren't matched.
     pub(crate) fn committed_text(&self) -> String {
@@ -162,6 +238,31 @@ impl TextInput {
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
+        // Setting the text from outside starts over: Undo only covers what was typed since.
+        self.undo.clear();
+        self.step = None;
+        self.menu = None;
+        cx.notify();
+    }
+
+    /// Replaces the whole text on the user's behalf (Tab completing a typed path, a search filter
+    /// written into the box): one Undo step takes it back to what was there. Like `set_text`, it
+    /// fires no `Changed` and puts the caret at the end.
+    pub(crate) fn replace_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let text = text.into();
+        if text == self.content && self.marked_range.is_none() {
+            self.selected_range = text.len()..text.len();
+            self.selection_reversed = false;
+            cx.notify();
+            return;
+        }
+        self.push_undo();
+        self.content = text;
+        self.selected_range = self.content.len()..self.content.len();
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.step = None;
+        self.menu = None;
         cx.notify();
     }
 
@@ -235,6 +336,7 @@ impl TextInput {
                 return;
             }
             self.select_to(prev, window, cx);
+            self.erasing = Some(Step::Backspace);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -246,24 +348,245 @@ impl TextInput {
                 return;
             }
             self.select_to(next, window, cx);
+            self.erasing = Some(Step::Delete);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "GPUI action listeners need the &mut self signature"
-    )]
-    fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
+    /// Enter: runs the row chosen in the edit menu (or only closes the menu), otherwise confirms.
+    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.menu.as_ref() {
+            match menu.highlighted.map(|ix| MENU_ROWS[ix]) {
+                Some(command) if self.can(command) => self.run_edit(command, window, cx),
+                _ => self.close_menu(cx),
+            }
+            return;
+        }
         cx.emit(InputEvent::Confirm);
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "GPUI action listeners need the &mut self signature"
-    )]
+    /// Shift+F10 or the menu key: the edit menu under the caret, its first usable row chosen.
+    fn open_menu_from_keyboard(&mut self, _: &OpenMenu, _: &mut Window, cx: &mut Context<Self>) {
+        let position = match (self.last_bounds, self.last_layout.as_ref()) {
+            (Some(bounds), Some(line)) => point(
+                bounds.left() + line.x_for_index(self.display_offset(self.cursor_offset()))
+                    - self.scroll_x,
+                bounds.bottom(),
+            ),
+            (Some(bounds), None) => bounds.bottom_left(),
+            _ => point(px(0.), px(0.)),
+        };
+        self.show_menu(position, cx);
+        self.move_in_menu(true, cx);
+    }
+
+    fn menu_up(&mut self, _: &MenuUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_none() {
+            cx.propagate();
+            return;
+        }
+        self.move_in_menu(false, cx);
+    }
+
+    fn menu_down(&mut self, _: &MenuDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_none() {
+            cx.propagate();
+            return;
+        }
+        self.move_in_menu(true, cx);
+    }
+
+    /// Chooses the next (or previous) usable row of the open menu, wrapping around.
+    fn move_in_menu(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let usable: Vec<usize> = (0..MENU_ROWS.len())
+            .filter(|&ix| self.can(MENU_ROWS[ix]))
+            .collect();
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        let next = match (menu.highlighted, forward) {
+            (None, true) => usable.first().copied(),
+            (None, false) => usable.last().copied(),
+            (Some(at), true) => usable
+                .iter()
+                .copied()
+                .find(|&ix| ix > at)
+                .or_else(|| usable.first().copied()),
+            (Some(at), false) => usable
+                .iter()
+                .rev()
+                .copied()
+                .find(|&ix| ix < at)
+                .or_else(|| usable.last().copied()),
+        };
+        menu.highlighted = next;
+        cx.notify();
+    }
+
+    /// Esc closes the edit menu first; only without one does it cancel the edit.
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         cx.emit(InputEvent::Cancel);
+    }
+
+    /// Records the current state before an edit, unless the edit continues the last step (typing
+    /// at the caret, Backspace or Delete again at the caret, an IME composition in progress).
+    /// `erasing` is the edit when it is Backspace or Delete at the caret.
+    fn remember(&mut self, range: &Range<usize>, new_text: &str, erasing: Option<Step>) {
+        let continues = self.marked_range.is_some()
+            || match (erasing, self.step) {
+                (None, Some((Step::Typing, at))) => {
+                    range.is_empty() && !new_text.is_empty() && at == range.start
+                }
+                (Some(Step::Backspace), Some((Step::Backspace, at))) => at == range.end,
+                (Some(Step::Delete), Some((Step::Delete, at))) => at == range.start,
+                _ => false,
+            };
+        if !continues {
+            self.push_undo();
+        }
+    }
+
+    fn push_undo(&mut self) {
+        if self.undo.len() >= UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.undo
+            .push((self.content.clone(), self.selected_range.clone()));
+    }
+
+    /// An edit left the text as the newest Undo step has it (an IME composition given up, a paste
+    /// of the same text): that step would undo nothing, so it goes.
+    fn drop_empty_step(&mut self) {
+        if self.marked_range.is_none()
+            && self
+                .undo
+                .last()
+                .is_some_and(|(content, _)| *content == self.content)
+        {
+            self.undo.pop();
+        }
+    }
+
+    fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        // Mid-composition the IME owns the text being composed; undoing under it would leave the
+        // composition pointing at text that is gone.
+        if self.marked_range.is_some() {
+            return;
+        }
+        let Some((content, selected)) = self.undo.pop() else {
+            return;
+        };
+        self.content = content;
+        self.selected_range = selected;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.step = None;
+        self.menu = None;
+        window.notify_text_input_changed(&self.focus_handle);
+        window.notify_text_selection_changed(&self.focus_handle);
+        cx.emit(InputEvent::Changed);
+        cx.notify();
+    }
+
+    /// Whether `position` is over the selected text.
+    fn over_selection(&self, position: Point<Pixels>) -> bool {
+        if self.selected_range.is_empty() {
+            return false;
+        }
+        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
+        else {
+            return false;
+        };
+        if position.y < bounds.top() || position.y > bounds.bottom() {
+            return false;
+        }
+        let x = position.x - bounds.left() + self.scroll_x;
+        let from = line.x_for_index(self.display_offset(self.selected_range.start));
+        let to = line.x_for_index(self.display_offset(self.selected_range.end));
+        x >= from && x <= to
+    }
+
+    /// Right-click: keeps the selection when it lands on it, otherwise puts the caret there (like
+    /// a Windows edit box), then opens the edit menu.
+    fn on_right_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The row or bar around the box has its own right-click menu.
+        cx.stop_propagation();
+        window.focus(&self.focus_handle, cx);
+        self.is_selecting = false;
+        if !self.over_selection(event.position) {
+            self.move_to(self.index_for_mouse_position(event.position), window, cx);
+        }
+        self.show_menu(event.position, cx);
+    }
+
+    /// Opens the edit menu at `position` (window coordinates), focusing the box. For a box drawn
+    /// as plain text until it is used (the search box holding a query), which places the caret
+    /// itself first.
+    pub(crate) fn open_menu_at(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.focus_handle, cx);
+        self.show_menu(position, cx);
+    }
+
+    fn show_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let can_paste = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| !text.is_empty());
+        self.menu = Some(EditMenu {
+            position,
+            can_paste,
+            highlighted: None,
+        });
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Whether `command` applies now (the menu's rows are greyed out otherwise).
+    fn can(&self, command: EditCommand) -> bool {
+        let selected = !self.selected_range.is_empty();
+        match command {
+            EditCommand::Undo => !self.undo.is_empty(),
+            // Passwords stay off the clipboard.
+            EditCommand::Cut | EditCommand::Copy => selected && !self.masked,
+            EditCommand::Paste => self.menu.as_ref().is_some_and(|menu| menu.can_paste),
+            EditCommand::Delete => selected,
+            EditCommand::SelectAll => !self.content.is_empty(),
+        }
+    }
+
+    fn run_edit(&mut self, command: EditCommand, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        match command {
+            EditCommand::Undo => self.undo(&Undo, window, cx),
+            EditCommand::Cut => self.cut(&Cut, window, cx),
+            EditCommand::Copy => self.copy(&Copy, window, cx),
+            EditCommand::Paste => self.paste(&Paste, window, cx),
+            EditCommand::Delete => {
+                if !self.selected_range.is_empty() {
+                    self.replace_text_in_range(None, "", window, cx);
+                }
+            }
+            EditCommand::SelectAll => self.select_all(&SelectAll, window, cx),
+        }
     }
 
     fn on_mouse_down(
@@ -297,7 +620,11 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            // A paste is a step of its own: it doesn't join the word typed before it, and what is
+            // typed after it doesn't join the paste.
+            self.step = None;
             self.replace_text_in_range(None, &text.replace(['\r', '\n'], " "), window, cx);
+            self.step = None;
         }
     }
 
@@ -321,6 +648,7 @@ impl TextInput {
     fn move_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
         self.selection_reversed = false;
+        self.step = None;
         window.notify_text_selection_changed(&self.focus_handle);
         cx.notify();
     }
@@ -492,12 +820,23 @@ impl EntityInputHandler for TextInput {
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.selected_range.clone());
 
+        let erasing = self.erasing.take();
+        self.remember(&range, new_text, erasing);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.selection_reversed = false;
+        // Typing over a selection starts a step too, and what follows at the caret joins it; so
+        // does a run of Backspace or Delete.
+        self.step = if new_text.is_empty() {
+            erasing.map(|kind| (kind, range.start))
+        } else {
+            Some((Step::Typing, self.selected_range.end))
+        };
+        self.menu = None;
         self.marked_range.take();
+        self.drop_empty_step();
         window.notify_text_input_changed(&self.focus_handle);
         cx.emit(InputEvent::Changed);
         cx.notify();
@@ -517,11 +856,17 @@ impl EntityInputHandler for TextInput {
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.selected_range.clone());
 
+        self.remember(&range, new_text, None);
+        self.erasing = None;
+        self.step = None;
+        self.menu = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
         if new_text.is_empty() {
             self.marked_range = None;
+            // The composition was given up.
+            self.drop_empty_step();
         } else {
             self.marked_range = Some(range.start..range.start + new_text.len());
         }
@@ -859,8 +1204,225 @@ impl TextInput {
     }
 }
 
+#[cfg(test)]
+impl TextInput {
+    /// Each row of the open edit menu and whether it can be used; `None` while closed.
+    pub(crate) fn menu_rows(&self) -> Option<Vec<(EditCommand, bool)>> {
+        self.menu.as_ref()?;
+        Some(
+            MENU_ROWS
+                .into_iter()
+                .map(|command| (command, self.can(command)))
+                .collect(),
+        )
+    }
+
+    /// The row of the open edit menu chosen with the keyboard.
+    pub(crate) fn menu_choice(&self) -> Option<EditCommand> {
+        self.menu.as_ref()?.highlighted.map(|ix| MENU_ROWS[ix])
+    }
+
+    /// How many steps Undo can take back.
+    pub(crate) const fn undo_steps(&self) -> usize {
+        self.undo.len()
+    }
+
+    pub(crate) fn selection(&self) -> Range<usize> {
+        self.selected_range.clone()
+    }
+
+    /// Window position of the left edge of the character at byte `offset`, as drawn last, in the
+    /// middle of the line.
+    pub(crate) fn point_at(&self, offset: usize) -> Option<Point<Pixels>> {
+        let (bounds, line) = (self.last_bounds?, self.last_layout.as_ref()?);
+        Some(point(
+            bounds.left() + line.x_for_index(self.display_offset(offset)) - self.scroll_x,
+            bounds.center().y,
+        ))
+    }
+}
+
+/// Draw order of the edit menu's scrim (the menu is one above): over every other floating panel
+/// (a search box's own panel, a dialog the box sits in, context menus and their submenus), which
+/// would otherwise cover it where they overlap.
+const MENU_PRIORITY: usize = 10;
+
+impl TextInput {
+    /// The edit menu over the page: Windows order (undo, cut, copy, paste, delete, select all),
+    /// rows that don't apply greyed out. It never takes focus, so the box (and a rename or address
+    /// edit that ends when focus leaves) stays as it is; the row chosen with the keyboard is
+    /// reported to screen readers as focused instead.
+    fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.menu.as_ref()?;
+        let panel = self.menu_panel(cx);
+        let viewport = window.viewport_size();
+        // A click anywhere else only closes the menu.
+        let scrim = deferred(
+            anchored().position(point(px(0.), px(0.))).child(
+                div()
+                    .id("text-input-menu-scrim")
+                    .w(viewport.width)
+                    .h(viewport.height)
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.close_menu(cx);
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.close_menu(cx);
+                        }),
+                    ),
+            ),
+        )
+        .with_priority(MENU_PRIORITY);
+        let menu = deferred(
+            anchored()
+                .position(menu.position)
+                .snap_to_window_with_margin(theme::S_8)
+                .child(panel.with_animation(
+                    "text-input-menu-appear",
+                    crate::motion::menu_enter(),
+                    crate::motion::fade_in,
+                )),
+        )
+        .with_priority(MENU_PRIORITY + 1);
+        Some(div().child(scrim).child(menu).into_any_element())
+    }
+
+    /// The rows of the edit menu.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of rows and the one way each is drawn; split up they'd scatter"
+    )]
+    fn menu_panel(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let rows = [
+            (
+                EditCommand::Undo,
+                t!("menu.undo"),
+                "Ctrl+Z",
+                Some(Icon::Undo),
+            ),
+            (EditCommand::Cut, t!("menu.cut"), "Ctrl+X", Some(Icon::Cut)),
+            (
+                EditCommand::Copy,
+                t!("menu.copy"),
+                "Ctrl+C",
+                Some(Icon::Copy),
+            ),
+            (
+                EditCommand::Paste,
+                t!("menu.paste"),
+                "Ctrl+V",
+                Some(Icon::Paste),
+            ),
+            (
+                EditCommand::Delete,
+                t!("menu.delete"),
+                "Del",
+                Some(Icon::Trash),
+            ),
+            (
+                EditCommand::SelectAll,
+                t!("menu.select_all"),
+                "Ctrl+A",
+                None,
+            ),
+        ];
+        let mut panel = div()
+            .id("text-input-menu")
+            .role(gpui::Role::Menu)
+            .occlude()
+            .min_w(px(220.))
+            .py(theme::S_4)
+            .rounded(theme::R_12)
+            .bg(theme::overlay())
+            .shadow(theme::elev_float())
+            .ui_font()
+            .text_size(theme::FS_14)
+            .text_color(theme::text());
+        let chosen = self.menu.as_ref().and_then(|menu| menu.highlighted);
+        for (ix, (command, label, shortcut, glyph)) in rows.into_iter().enumerate() {
+            let enabled = self.can(command);
+            let highlighted = chosen == Some(ix);
+            let label: SharedString = label.into_owned().into();
+            if ix == 1 || ix == 5 {
+                panel = panel.child(
+                    div()
+                        .h(px(1.))
+                        .my(theme::S_4)
+                        .mx(theme::S_8)
+                        .bg(theme::line()),
+                );
+            }
+            let color = if enabled {
+                theme::text_muted()
+            } else {
+                theme::text_disabled()
+            };
+            panel = panel.child(
+                div()
+                    .id(("text-input-menu-item", ix))
+                    .debug_selector(move || format!("text-input-menu-{command:?}"))
+                    .a11y_menu_item(label.clone(), enabled, false, highlighted)
+                    .aria_keyshortcuts(shortcut)
+                    .h(theme::H_CTL_SM + theme::S_4)
+                    .mx(theme::S_4)
+                    .px(theme::S_8)
+                    .flex()
+                    .items_center()
+                    .gap(theme::S_8)
+                    .rounded(theme::R_8)
+                    .when(!enabled, |d| d.text_color(theme::text_disabled()))
+                    .when(enabled, |d| {
+                        d.cursor_pointer()
+                            .when(highlighted, |d| d.bg(theme::wash_strong()))
+                            .hover(|s| s.bg(theme::wash()))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.run_edit(command, window, cx);
+                            }))
+                    })
+                    .child(div().size(theme::ICON).flex_none().children(
+                        glyph.map(|glyph| {
+                            svg().path(glyph.path()).size(theme::ICON).text_color(color)
+                        }),
+                    ))
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(
+                        div()
+                            .flex_none()
+                            .pl(theme::S_16)
+                            .text_size(theme::FS_12)
+                            .text_color(theme::text_subtle())
+                            .child(shortcut),
+                    ),
+            );
+        }
+        panel
+    }
+}
+
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Focus moved elsewhere (Tab, another window): the menu goes with it.
+        if self.menu.is_some() && !self.focus_handle.is_focused(window) {
+            self.menu = None;
+        }
+        // So does going to another window (Alt+Tab, a click on another app): Windows' own menus
+        // close then too.
+        if self.activation.is_none() {
+            self.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.close_menu(cx);
+                }
+            }));
+        }
+        let menu = self.render_menu(window, cx);
         let a11y = crate::a11y::active().then(|| self.a11y_text());
         div()
             .id("text-input")
@@ -890,13 +1452,19 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::open_menu_from_keyboard))
+            .on_action(cx.listener(Self::menu_up))
+            .on_action(cx.listener(Self::menu_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(TextElement { input: cx.entity() })
+            .children(menu)
     }
 }
 

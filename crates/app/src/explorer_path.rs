@@ -1,8 +1,9 @@
 //! Path bar: breadcrumbs, the › and "…" folder menus, and autocomplete while typing a path.
 //!
-//! - The bar is as wide as its segments (with a minimum, so a short path is still easy to hit); the
-//!   rest of the title bar drags the window and double click maximizes it.
-//! - A segment navigates; the blank end of the bar starts editing (also Ctrl+L, Alt+D).
+//! - The bar fills the title row up to the search box (see `explorer_topbar.rs`); the gaps around
+//!   it drag the window.
+//! - A segment navigates; a click on the blank end of the bar starts editing (also Ctrl+L, Alt+D),
+//!   a press there dragged past the system drag distance moves the window.
 //! - A › between segments lists the folders in the level to its left (current one highlighted) for
 //!   jumping to siblings; the trailing › lists subfolders. The collapsed "…" lists the hidden
 //!   levels.
@@ -349,8 +350,9 @@ impl Explorer {
         if !text.ends_with('\\') {
             text.push('\\');
         }
+        // Completes what was typed: Ctrl+Z takes it back to that.
         self.path_input
-            .update(cx, |input, cx| input.set_text(text, cx));
+            .update(cx, |input, cx| input.replace_text(text, cx));
         self.refresh_suggestions(cx);
     }
 
@@ -421,6 +423,7 @@ impl Explorer {
     )]
     fn shown_crumbs(
         &self,
+        compact: bool,
         window: &Window,
     ) -> (
         Vec<(usize, Option<(String, PathBuf)>)>,
@@ -431,7 +434,7 @@ impl Explorer {
             .display_path()
             .map_or_default(arke_core::path::breadcrumbs);
         let total = crumbs.len();
-        let Some(hide) = self.crumbs_to_hide(&crumbs, window) else {
+        let Some(hide) = self.crumbs_to_hide(&crumbs, compact, window) else {
             let shown = crumbs
                 .into_iter()
                 .enumerate()
@@ -453,32 +456,26 @@ impl Explorer {
     }
 
     /// Levels to collapse so the breadcrumbs fit the path bar as laid out on the last frame
-    /// (`None`: everything fits, or the bar hasn't been measured yet).
+    /// (`None`: everything fits, or the bar hasn't been measured yet). `compact`: the bar is
+    /// shrunk for the search box, so only the current folder shows.
     fn crumbs_to_hide(
         &self,
         crumbs: &[(String, PathBuf)],
+        compact: bool,
         window: &Window,
     ) -> Option<std::ops::Range<usize>> {
         let slot = self.path_slot.get();
         if slot <= px(0.) {
             return None;
         }
-        // The drag area kept after the bar, the bar's margin and padding, the trailing › and the
-        // blank area for clicking to edit.
-        let avail = slot - self.path_drag_min() - theme::S_4 * 3. - theme::S_20 - PATH_BLANK_MIN;
+        // Shrunk for the search box: just "… › current folder".
+        if compact && crumbs.len() > 1 {
+            return Some(0..crumbs.len() - 1);
+        }
+        // The bar's padding, the trailing › and the blank area for clicking to edit.
+        let avail = slot - theme::S_4 * 2. - theme::S_20 - PATH_BLANK_MIN;
         let text_w = |text: &str, size: Pixels, weight: gpui::FontWeight| {
-            let run = gpui::TextRun {
-                len: text.len(),
-                font: theme::ui_font_at(weight),
-                color: gpui::Hsla::default(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            window
-                .text_system()
-                .shape_line(SharedString::from(text.to_owned()), size, &[run], None)
-                .width
+            super::top_bar::text_width(text, size, weight, window)
         };
         let pad = theme::S_6 * 2.;
         let last = crumbs.len().saturating_sub(1);
@@ -500,22 +497,11 @@ impl Explorer {
         super::layout::collapse_crumbs(&widths, avail, more)
     }
 
-    /// Narrowest window drag area kept after the path bar (the sidebar top bar drags too).
-    pub(super) fn path_drag_min(&self) -> Pixels {
-        if self.pane.split {
-            theme::S_8
-        } else {
-            theme::S_32 * 2.
-        }
-    }
-
-    /// The path bar's slot in the title bar. The bar is as wide as its breadcrumbs (at least
-    /// [`theme::PATH_MIN_W`]; segments collapse once they would crowd out the drag area) and the
-    /// rest of the slot is `drag`, which moves the window. While typing a path the bar fills the
-    /// slot.
+    /// The path bar's slot in the title row: the bar fills it. `compact`: the search box is
+    /// widened over it, so it shows only the current folder.
     pub(super) fn render_path_slot(
         &mut self,
-        drag: gpui::Stateful<gpui::Div>,
+        compact: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -532,13 +518,6 @@ impl Explorer {
         )
         .absolute()
         .size_full();
-        let drag_min = self.path_drag_min();
-        // While typing, the bar takes the space and the drag area keeps only its minimum.
-        let drag = if self.editing_path {
-            drag.flex_none().w(drag_min)
-        } else {
-            drag.flex_1().min_w(drag_min)
-        };
         div()
             .relative()
             .flex_1()
@@ -547,15 +526,19 @@ impl Explorer {
             .flex()
             .items_center()
             .child(capture)
-            .child(self.render_path_bar(window, cx))
-            .child(drag.h_full())
+            .child(self.render_path_bar(compact, window, cx))
+            .children(self.path_press_tracker(cx))
             .into_any_element()
     }
 
-    fn render_path_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_path_bar(
+        &mut self,
+        compact: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let bounds = Rc::clone(&self.path_bounds);
-        // Menus and autocomplete line up with the bar; its width follows the path, so draw once
-        // more when it changes.
+        // Menus and autocomplete line up with the bar: draw once more when it moves or resizes.
         let capture = canvas(
             move |b, window, _| {
                 if bounds.replace(b) != b {
@@ -571,11 +554,11 @@ impl Explorer {
             .debug_selector(|| "path-bar".to_owned())
             .a11y(gpui::Role::Toolbar, t!("a11y.address"))
             .relative()
+            .flex_1()
             .min_w_0()
             .h(theme::H_CTL)
             .flex()
             .items_center()
-            .ml(theme::S_4)
             .px(theme::S_4)
             .rounded(theme::R_8)
             .child(capture);
@@ -585,7 +568,17 @@ impl Explorer {
                 .on_action(cx.listener(Self::path_up))
                 .on_action(cx.listener(Self::path_down))
                 .on_action(cx.listener(Self::path_accept))
-                .flex_1()
+                // A press anywhere else ends editing, as clicking the list does, even on parts that
+                // don't take focus (header rows, the sidebar, the title row). Not while the input's
+                // own edit menu is open: that press is for the menu.
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    if this.editing_path && !this.path_input.read(cx).menu_open() {
+                        this.stop_edit_path(window, cx);
+                    }
+                }))
+                // The second click of a double click on the blank part: maximize, like the
+                // title bar.
+                .capture_any_mouse_down(cx.listener(Self::path_edit_pressed))
                 .px(theme::S_8)
                 .bg(theme::paper())
                 .border_1()
@@ -593,11 +586,11 @@ impl Explorer {
                 .child(div().flex_1().min_w_0().child(self.path_input.clone()))
                 .into_any_element();
         }
-        let crumbs = self.crumb_elements(window, cx);
+        let crumbs = self.crumb_elements(compact, window, cx);
         let current_dir = self.display_path().map(Path::to_path_buf);
-        // Trailing ›: subfolders of the current folder
+        // Trailing ›: subfolders of the current folder (left out while the bar is shrunk).
         let tail_open = self.path_popup.as_ref().is_some_and(|p| p.tail);
-        let tail = current_dir.map(|dir| {
+        let tail = current_dir.filter(|_| !compact).map(|dir| {
             chevron_button("crumb-tail", tail_open).on_click(cx.listener(
                 move |this, e: &ClickEvent, window, cx| {
                     cx.stop_propagation();
@@ -605,15 +598,17 @@ impl Explorer {
                 },
             ))
         });
-        // Sized to the breadcrumbs, but never so narrow that a short path is hard to hit.
-        let min_w = theme::PATH_MIN_W
-            .min(self.path_slot.get() - self.path_drag_min() - theme::S_4)
-            .max(px(0.));
-        bar.min_w(min_w)
-            .cursor_text()
+        // The bar fills the row, so its highlight covers all of it.
+        bar.cursor_text()
             .hover(|s| s.bg(theme::wash()))
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.start_edit_path(window, cx);
+            .capture_any_mouse_down(cx.listener(|this, e: &MouseDownEvent, _, _| {
+                this.path_bar_pressed(e);
+            }))
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                if this.path_click_edits() {
+                    this.start_edit_path(window, cx);
+                    this.path_edit_clicked(e.position());
+                }
             }))
             // Right click: copy address, copy path, edit address, clear history
             .on_mouse_down(
@@ -625,14 +620,23 @@ impl Explorer {
             )
             .child(div().flex().items_center().min_w_0().children(crumbs))
             .children(tail)
-            // Tooltip only on empty space, so it doesn't cover the menus from segments and ›.
+            // The blank end: a click edits the path, a press dragged past the system drag distance
+            // moves the window. Tooltip only here, so it doesn't cover the menus from segments
+            // and ›.
             .child(
                 div()
                     .id("path-blank")
+                    .debug_selector(|| "path-blank".to_owned())
                     .a11y_button(t!("path.edit_tip"))
                     .flex_1()
-                    .min_w(PATH_BLANK_MIN)
+                    .min_w(if compact { theme::S_8 } else { PATH_BLANK_MIN })
                     .h_full()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                            this.path_blank_pressed(e, cx);
+                        }),
+                    )
                     .tooltip(|_, cx| {
                         cx.new(|_| crate::workspace::Tooltip(t!("path.edit_tip").into_owned().into()))
                             .into()
@@ -642,8 +646,13 @@ impl Explorer {
     }
 
     /// Path segments, each preceded by ›.
-    fn crumb_elements(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let (shown, total, hidden) = self.shown_crumbs(window);
+    fn crumb_elements(
+        &self,
+        compact: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let (shown, total, hidden) = self.shown_crumbs(compact, window);
         let last = total.saturating_sub(1);
         let popup_parent = self.path_popup.as_ref().and_then(|p| p.current.clone());
         shown
@@ -670,19 +679,25 @@ impl Explorer {
                         }
                     }))
                 });
+                // Every level can shrink, so a name too long for the bar truncates instead of
+                // running over what's next to it; the current folder gives way last. The "…"
+                // never shrinks: squeezed, it would leave a stray ›.
+                let shrink = match crumb {
+                    None => 0.,
+                    Some(_) if is_last => 1.,
+                    Some(_) => CRUMBS_GIVE_WAY,
+                };
                 let piece = match crumb {
                     // Collapsed levels: list them for direct jumps.
                     None => more_piece(i, hidden.clone(), cx),
                     Some((label, target)) => crumb_piece(i, label, target, is_last, cx),
                 };
-                // Every level can shrink, so a name too long for the bar truncates instead of
-                // running over what's next to it; the current folder gives way last.
                 div()
                     .debug_selector(move || format!("crumb-{i}"))
                     .flex()
                     .items_center()
                     .min_w_0()
-                    .flex_shrink(if is_last { 1. } else { CRUMBS_GIVE_WAY })
+                    .flex_shrink(shrink)
                     .children(chevron)
                     .child(piece)
                     .into_any_element()
@@ -988,7 +1003,17 @@ impl Explorer {
         self.suggest.items.iter().map(|(n, _)| n.clone()).collect()
     }
 
+    /// Tests: the search box's input.
+    pub(crate) fn filter_input_for_test(&self) -> gpui::Entity<crate::text_input::TextInput> {
+        self.filter_input.clone()
+    }
+
     /// Tests: path input text.
+    #[cfg(test)]
+    pub(crate) fn path_input_for_test(&self) -> gpui::Entity<crate::text_input::TextInput> {
+        self.path_input.clone()
+    }
+
     pub(crate) fn path_text(&self, cx: &App) -> String {
         self.path_input.read(cx).text().to_owned()
     }

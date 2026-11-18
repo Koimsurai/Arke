@@ -7,10 +7,11 @@
 //! One app-wide copy (`Global`) shared by all windows.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use arke_core::sort::{SortColumn, SortSpec};
-use gpui::{App, AppContext, Context, Entity, Global, Task};
+use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
 use serde::{Deserialize, Serialize};
 
 use crate::explorer::ViewMode;
@@ -21,6 +22,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 /// in time the first window opens with the saved size, tabs and language; otherwise defaults are used
 /// and the file is applied when it arrives (e.g. %APPDATA% on a slow network).
 const STARTUP_WAIT: Duration = Duration::from_millis(60);
+/// Most windows a restored session opens: each takes a moment to open, and many at once would
+/// keep a second `arke.exe` waiting.
+pub(crate) const RESTORED_WINDOWS_MAX: usize = 20;
 /// Number of recent folders to remember.
 pub(crate) const RECENT_MAX: usize = 50;
 /// Max favorite tiles; further pins go to the list below.
@@ -53,6 +57,19 @@ pub(crate) enum TabLayout {
     Vertical,
     /// Tabs on top (browsers, Windows 11 Explorer).
     Horizontal,
+}
+
+/// What Ctrl+T and the New tab buttons do (#90).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NewTabAction {
+    /// The "Go to folder" box.
+    #[default]
+    GoToFolder,
+    /// A new tab with Home.
+    Home,
+    /// A new tab on the current folder, as in File Explorer.
+    CurrentFolder,
 }
 
 /// Dark, light, or follow the system.
@@ -177,8 +194,8 @@ pub(crate) enum StartLocation {
     Home,
     /// The last folder visited.
     LastFolder,
-    /// All tabs from last time, including splits. If a window is already open, new windows open
-    /// Home.
+    /// Every window open when Arke last quit, with all its tabs and splits, like a browser. If a
+    /// window is already open, new windows open Home.
     LastSession,
     /// Home page (recent files, drives, network locations).
     HomePage,
@@ -207,12 +224,28 @@ const fn half() -> f32 {
     0.5
 }
 
-/// Last session, from the window that changed most recently.
+/// The tabs of one window.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Session {
     pub(crate) tabs: Vec<SessionTab>,
     pub(crate) active: usize,
+}
+
+/// One window of the last session: its tabs and where it was.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct SessionWindow {
+    #[serde(flatten)]
+    pub(crate) session: Session,
+    pub(crate) place: Option<WindowPlace>,
+}
+
+impl SessionWindow {
+    /// The folder its first tab opens on; `None` for a window with nothing to restore.
+    pub(crate) fn first_folder(&self) -> Option<&PathBuf> {
+        self.session.tabs.first().and_then(|t| t.panes.first())
+    }
 }
 
 /// Last window position and size in logical pixels. When maximized this is the restored size.
@@ -410,6 +443,10 @@ pub(crate) struct Settings {
     /// Recent folders, newest first (for Ctrl+T).
     pub(crate) recent: Vec<PathBuf>,
     pub(crate) tab_layout: TabLayout,
+    /// Opening a folder in a new tab switches to a tab already showing it instead.
+    pub(crate) one_tab_per_folder: bool,
+    /// What Ctrl+T does (#90).
+    pub(crate) new_tab: NewTabAction,
     pub(crate) density: Density,
     /// Preview pane on the right.
     pub(crate) preview_pane: bool,
@@ -480,9 +517,10 @@ pub(crate) struct Settings {
     /// With `open_folders_in_arke`, Win+E and File Explorer started from the taskbar or Start
     /// (the same verb) open Arke too. Off: File Explorer started on purpose stays File Explorer.
     pub(crate) win_e_opens_arke: bool,
-    /// Folders opened from other programs open as a tab in the window used last, not a window of
-    /// their own (#11).
-    pub(crate) open_external_in_tab: bool,
+    /// One window: folders from other programs (#11), Win+E and Arke started again open as a tab
+    /// in the window used last instead of a window of their own. "Open in new window" still opens
+    /// one. Before 0.7 `open_external_in_tab` (see [`Settings::migrate_single_window`]).
+    pub(crate) single_window: bool,
     /// What back and forward move through.
     pub(crate) nav_scope: NavScope,
     /// A two-finger swipe left or right on a precision touchpad goes back or forward (#70).
@@ -572,8 +610,12 @@ pub(crate) struct Settings {
     pub(crate) start_menu: bool,
     /// The first-run card offering the Start menu shortcut was answered or dismissed.
     pub(crate) start_menu_offered: bool,
-    /// Last session, for "Open new windows at: last session".
+    /// The tabs of the window used last (the first of `session_windows`), which versions before
+    /// 0.7 read as the whole last session.
     pub(crate) session: Session,
+    /// Every window open when Arke last quit, the one used last first, for "New windows open to:
+    /// Last tabs" (`session.rs`).
+    pub(crate) session_windows: Vec<SessionWindow>,
     /// Last window position and size.
     pub(crate) window: Option<WindowPlace>,
 }
@@ -586,6 +628,8 @@ impl Default for Settings {
             recycle_pinned: true,
             recent: Vec::new(),
             tab_layout: TabLayout::default(),
+            one_tab_per_folder: true,
+            new_tab: NewTabAction::default(),
             density: Density::default(),
             preview_pane: false,
             space_quicklook: false,
@@ -622,7 +666,7 @@ impl Default for Settings {
             keep_running: true,
             open_folders_in_arke: false,
             win_e_opens_arke: false,
-            open_external_in_tab: true,
+            single_window: true,
             nav_scope: NavScope::AcrossTabs,
             swipe_nav: true,
             fast_recycle: true,
@@ -669,6 +713,7 @@ impl Default for Settings {
             start_menu: false,
             start_menu_offered: false,
             session: Session::default(),
+            session_windows: Vec::new(),
             window: None,
         }
     }
@@ -860,6 +905,11 @@ pub(crate) struct SettingsStore {
     pub(crate) first_run: bool,
     path: Option<PathBuf>,
     save_task: Option<Task<()>>,
+    /// Changes made so far; each write says which change it holds (see [`save_change`]).
+    changes: u64,
+    /// The newest change written to the file so far (see [`save_change`]).
+    written: Arc<parking_lot::Mutex<u64>>,
+    _quit: Option<Subscription>,
 }
 
 pub(crate) struct GlobalSettings(pub(crate) Entity<SettingsStore>);
@@ -869,15 +919,7 @@ impl Global for GlobalSettings {}
 impl SettingsStore {
     /// Creates the global settings and reads the file in the background. With `path` `None` it is memory only (tests).
     pub(crate) fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<Self> {
-        let store = cx.new(|_| Self {
-            settings: Settings::default(),
-            loaded: false,
-            last_session_folder: None,
-            first_run: false,
-            path: path.clone(),
-            save_task: None,
-        });
-        cx.set_global(GlobalSettings(store.clone()));
+        let store = Self::unread(path.clone(), cx);
         if let Some(path) = path {
             let (tx, rx) = flume::bounded::<(Settings, bool)>(1);
             let spawned = std::thread::Builder::new()
@@ -913,6 +955,39 @@ impl SettingsStore {
         store
     }
 
+    /// The global settings on `path`, at the defaults until the file is read.
+    fn unread(path: Option<PathBuf>, cx: &mut App) -> Entity<Self> {
+        let store = cx.new(|cx| Self {
+            settings: Settings::default(),
+            loaded: false,
+            last_session_folder: None,
+            first_run: false,
+            _quit: path
+                .is_some()
+                .then(|| cx.on_app_quit(Self::save_before_quit)),
+            path,
+            save_task: None,
+            changes: 0,
+            written: Arc::default(),
+        });
+        cx.set_global(GlobalSettings(store.clone()));
+        store
+    }
+
+    /// Settings on `path` whose file is read only when the test calls [`Self::finish_reading`]
+    /// (a slow disk).
+    #[cfg(test)]
+    pub(crate) fn reading_slowly(path: PathBuf, cx: &mut App) -> Entity<Self> {
+        Self::unread(Some(path), cx)
+    }
+
+    /// The file read at last for [`Self::reading_slowly`].
+    #[cfg(test)]
+    pub(crate) fn finish_reading(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let loaded = load(path).unwrap_or_default();
+        self.merge_loaded(loaded, cx);
+    }
+
     /// Global settings. Creates a memory-only copy when not initialized (unit tests).
     pub(crate) fn global(cx: &mut App) -> Entity<Self> {
         match cx.try_global::<GlobalSettings>() {
@@ -926,15 +1001,21 @@ impl SettingsStore {
         cx.try_global::<GlobalSettings>().map(|g| g.0.clone())
     }
 
-    /// Applies the loaded file, keeping folders visited in the few milliseconds since startup.
+    /// Applies the loaded file, keeping folders visited in the few milliseconds since startup, and
+    /// writes it if that added any.
     fn merge_loaded(&mut self, mut loaded: Settings, cx: &mut Context<Self>) {
         self.loaded = true;
         self.last_session_folder = loaded.recent.first().cloned();
+        let file = loaded.clone();
         for path in self.settings.recent.iter().rev() {
             loaded.remember(path);
         }
+        let merged = loaded != file;
         self.settings = loaded;
         cx.notify();
+        if merged {
+            self.schedule_save(cx);
+        }
     }
 
     /// Pretends the settings file was read (tests use memory-only settings).
@@ -944,7 +1025,9 @@ impl SettingsStore {
         cx.notify();
     }
 
-    /// Changes settings: applies now, writes the file in the background shortly after.
+    /// Changes settings: applies now, writes the file in the background shortly after. Until the
+    /// file is read only memory changes: a write then would replace the user's settings with the
+    /// defaults (the folders visited meanwhile are kept by [`Self::merge_loaded`]).
     pub(crate) fn update(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         let before = self.settings.clone();
         f(&mut self.settings);
@@ -952,24 +1035,65 @@ impl SettingsStore {
             return;
         }
         cx.notify();
+        if self.loaded {
+            self.schedule_save(cx);
+        }
+    }
+
+    /// Writes the settings shortly, as one write with any change that follows.
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.path.clone() else {
             return;
         };
+        self.changes += 1;
+        let written = Arc::clone(&self.written);
         let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_DELAY).await;
-            let Ok(snapshot) = this.read_with(cx, |store, _| store.settings.clone()) else {
+            let Ok((snapshot, change)) =
+                this.read_with(cx, |store, _| (store.settings.clone(), store.changes))
+            else {
                 return;
             };
             let _ = std::thread::Builder::new()
                 .name("settings-save".into())
-                .spawn(move || {
-                    if let Err(err) = save(&path, &snapshot) {
-                        log::warn!("failed to write settings {}: {err}", path.display());
-                    }
-                });
+                .spawn(move || save_change(&path, &snapshot, change, &written));
         });
         // A newer change replaces the pending write.
         self.save_task = Some(task);
+    }
+
+    /// Quitting (the notification area's Quit, the last window closing) within the write delay of
+    /// a change, such as a window closed just before: write it now instead of losing it. Nothing
+    /// before the file is read, which would write the defaults.
+    fn save_before_quit(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + use<> {
+        let pending = self
+            .path
+            .clone()
+            .filter(|_| self.loaded && self.save_task.take().is_some())
+            .map(|path| (path, self.settings.clone(), self.changes));
+        let written = Arc::clone(&self.written);
+        let background = cx.background_executor().clone();
+        async move {
+            if let Some((path, settings, change)) = pending {
+                background
+                    .spawn(async move { save_change(&path, &settings, change, &written) })
+                    .await;
+            }
+        }
+    }
+}
+
+/// Writes the settings as of change number `change`, unless a newer change is already written
+/// (`written`): a write of an older one that finishes later is skipped, so the write at quit is
+/// never overwritten by one that started before it.
+fn save_change(path: &Path, settings: &Settings, change: u64, written: &parking_lot::Mutex<u64>) {
+    let mut written = written.lock();
+    if change <= *written {
+        return;
+    }
+    match save(path, settings) {
+        Ok(()) => *written = change,
+        Err(err) => log::warn!("failed to write settings {}: {err}", path.display()),
     }
 }
 
@@ -1029,6 +1153,8 @@ fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
             settings
                 .net_places
                 .retain(|p| arke_core::net::server_of(p).is_some());
+            settings.migrate_session();
+            settings.migrate_single_window(bytes);
             Some(settings)
         }
         Err(err) => {
@@ -1053,6 +1179,47 @@ fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
 }
 
 impl Settings {
+    /// Settings from before 0.7 kept one window's tabs (`session`) and the last placement: they
+    /// become the one window of the last session.
+    fn migrate_session(&mut self) {
+        if self.session_windows.is_empty() && !self.session.tabs.is_empty() {
+            self.session_windows = vec![SessionWindow {
+                session: self.session.clone(),
+                place: self.window,
+            }];
+        }
+    }
+
+    /// "Open folders from other apps in a tab" (`open_external_in_tab`, before 0.7) became single
+    /// window mode: a file that has only the old switch keeps its choice. The old key is read here
+    /// rather than as an alias, which would fail the whole file (and so fall back to the defaults)
+    /// when both keys are in it.
+    fn migrate_single_window(&mut self, bytes: &[u8]) {
+        const OLD: &str = "open_external_in_tab";
+        if !bytes.windows(OLD.len()).any(|w| w == OLD.as_bytes()) {
+            return;
+        }
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(bytes) else {
+            return;
+        };
+        if !map.contains_key("single_window")
+            && let Some(old) = map.get(OLD).and_then(serde_json::Value::as_bool)
+        {
+            self.single_window = old;
+        }
+    }
+
+    /// The windows of the last session that have something to restore, the one used last first;
+    /// at most [`RESTORED_WINDOWS_MAX`].
+    pub(crate) fn last_windows(&self) -> Vec<SessionWindow> {
+        self.session_windows
+            .iter()
+            .filter(|w| w.first_folder().is_some())
+            .take(RESTORED_WINDOWS_MAX)
+            .cloned()
+            .collect()
+    }
+
     /// Network locations global search actually indexes: user-added ones plus, when auto is on, network
     /// drives `drives` and recent shares, minus exclusions.
     pub(crate) fn searched_network(&self, drives: &[PathBuf]) -> Vec<PathBuf> {
@@ -1127,6 +1294,7 @@ impl Settings {
     fn for_export(&self) -> Self {
         let mut out = self.clone();
         out.session = Session::default();
+        out.session_windows.clear();
         out.window = None;
         out.recent.clear();
         out
@@ -1135,6 +1303,7 @@ impl Settings {
     /// Applies imported settings while keeping this machine's tabs, window placement and recent folders.
     pub(crate) fn imported(&self, mut from: Self) -> Self {
         from.session.clone_from(&self.session);
+        from.session_windows.clone_from(&self.session_windows);
         from.window = self.window;
         from.recent.clone_from(&self.recent);
         from
@@ -1205,6 +1374,105 @@ mod tests {
         assert_eq!(gray.dark_shade, DarkShade::Gray);
     }
 
+    /// Settings from before 0.7 kept one window's tabs and the last placement: they become the one
+    /// window of the last session. A file with every window keeps them as they are.
+    #[test]
+    fn an_old_single_window_session_becomes_the_first_window() {
+        let old = br#"{
+            "session": {"tabs": [{"panes": ["C:\\a", "C:\\b"]}, {"panes": ["C:\\c"]}], "active": 1},
+            "window": {"x": 10, "y": 20, "width": 900, "height": 700}
+        }"#;
+        let s = parse_settings(old, Path::new("settings.json")).unwrap();
+        let windows = s.last_windows();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].session, s.session);
+        assert_eq!(windows[0].session.active, 1);
+        assert_eq!(windows[0].place, s.window);
+        assert_eq!(windows[0].first_folder(), Some(&PathBuf::from(r"C:\a")));
+
+        let tab = |path: &str| SessionTab {
+            panes: vec![PathBuf::from(path)],
+            active_pane: 0,
+            ratio: 0.5,
+            pinned: false,
+            synced: false,
+            home: false,
+        };
+        let window = |path: &str| SessionWindow {
+            session: Session {
+                tabs: vec![tab(path)],
+                active: 0,
+            },
+            place: None,
+        };
+        let new = Settings {
+            session: window(r"C:\front").session,
+            session_windows: vec![window(r"C:\front"), window(r"C:\behind")],
+            ..Settings::default()
+        };
+        let bytes = serde_json::to_vec(&new).unwrap();
+        let back = parse_settings(&bytes, Path::new("settings.json")).unwrap();
+        assert_eq!(back.session_windows, new.session_windows);
+        // Nothing to restore in an empty session.
+        assert!(Settings::default().last_windows().is_empty());
+    }
+
+    /// "Open folders from other apps in a tab" turned off before 0.7 keeps single window mode off.
+    #[test]
+    fn the_old_tab_switch_carries_over_to_single_window() {
+        let off = parse_settings(
+            br#"{"open_external_in_tab": false}"#,
+            Path::new("settings.json"),
+        )
+        .unwrap();
+        assert!(!off.single_window);
+        let default = parse_settings(b"{}", Path::new("settings.json")).unwrap();
+        assert!(default.single_window);
+        // The old key isn't written back.
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(!json.contains("open_external_in_tab"), "{json}");
+    }
+
+    /// A file with both the old switch and single window mode (an older Arke ran after 0.7 and
+    /// kept the key it knew) is read, not replaced by the defaults; the new key wins.
+    #[test]
+    fn both_tab_switches_in_one_file_still_read() {
+        let both =
+            br#"{"single_window": false, "open_external_in_tab": true, "show_hidden": true}"#;
+        let s = parse_settings(both, Path::new("settings.json")).expect("read");
+        assert!(!s.single_window);
+        assert!(s.show_hidden, "the rest of the file too");
+        let both = br#"{"open_external_in_tab": false, "single_window": true}"#;
+        assert!(
+            parse_settings(both, Path::new("settings.json"))
+                .unwrap()
+                .single_window
+        );
+    }
+
+    /// Writes finishing out of order: a write of an older change that ends after a newer one
+    /// leaves the newer one in the file.
+    #[test]
+    fn an_older_write_never_replaces_a_newer_one() {
+        let dir = std::env::temp_dir().join(format!("arke-save-order-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        let written = parking_lot::Mutex::new(0);
+        let with_recent = |p: &str| Settings {
+            recent: vec![PathBuf::from(p)],
+            ..Settings::default()
+        };
+        save_change(&path, &with_recent(r"C:\new"), 2, &written);
+        save_change(&path, &with_recent(r"C:\old"), 1, &written);
+        assert_eq!(load(&path).unwrap().recent, [PathBuf::from(r"C:\new")]);
+        // The same change again is no newer either.
+        save_change(&path, &with_recent(r"C:\again"), 2, &written);
+        assert_eq!(load(&path).unwrap().recent, [PathBuf::from(r"C:\new")]);
+        save_change(&path, &with_recent(r"C:\newer"), 3, &written);
+        assert_eq!(load(&path).unwrap().recent, [PathBuf::from(r"C:\newer")]);
+        assert_eq!(*written.lock(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Settings saved before the Recycle Bin moved into the pinned list keep it pinned.
     #[test]
     fn recycle_bin_is_pinned_unless_unpinned() {
@@ -1231,6 +1499,10 @@ mod tests {
             synced: false,
             home: false,
         });
+        mine.session_windows.push(SessionWindow {
+            session: mine.session.clone(),
+            place: None,
+        });
         let bytes = export_json(&mine).unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();
         assert!(text.contains(EXPORT_MARK));
@@ -1245,6 +1517,7 @@ mod tests {
             serde_json::json!([]),
             "tabs are not exported"
         );
+        assert_eq!(value["session_windows"], serde_json::json!([]));
         let back = parse_export(&bytes).unwrap();
         assert_eq!(back.density, Density::Compact);
         assert!(back.show_hidden);

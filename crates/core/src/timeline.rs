@@ -87,6 +87,40 @@ impl<P: Copy + Eq> Timeline<P> {
         self.steps[self.done..].iter()
     }
 
+    /// `pane` went `count` folders back (or forward) in one jump instead of one at a time: its
+    /// `count` nearest navigations are undone (or redone) in one go, wherever they sit among
+    /// the other steps.
+    pub fn shift(&mut self, pane: P, count: usize, back: bool) {
+        if back {
+            let ixs: Vec<usize> = (0..self.done)
+                .rev()
+                .filter(|&i| self.steps[i] == Step::Nav(pane))
+                .take(count)
+                .collect();
+            // `ixs` runs from the latest down, so removing in that order keeps the rest valid.
+            for &ix in &ixs {
+                self.steps.remove(ix);
+            }
+            self.done -= ixs.len();
+            // The undone steps wait right after the ones still done, for forward to redo.
+            for _ in &ixs {
+                self.steps.insert(self.done, Step::Nav(pane));
+            }
+        } else {
+            let ixs: Vec<usize> = (self.done..self.steps.len())
+                .filter(|&i| self.steps[i] == Step::Nav(pane))
+                .take(count)
+                .collect();
+            for &ix in ixs.iter().rev() {
+                self.steps.remove(ix);
+            }
+            for _ in &ixs {
+                self.steps.insert(self.done, Step::Nav(pane));
+            }
+            self.done += ixs.len();
+        }
+    }
+
     /// Forgets every step that involves `pane` (closed). A switch to or from it can't be undone
     /// anymore.
     pub fn forget(&mut self, pane: P) {
@@ -156,6 +190,26 @@ mod tests {
         t.forget('b');
         assert_eq!(t.behind().copied().collect::<Vec<_>>(), [Step::Nav('a')]);
         assert_eq!(t.ahead().copied().collect::<Vec<_>>(), [Step::Nav('a')]);
+    }
+
+    #[test]
+    fn shift_moves_a_panes_steps_over_the_others() {
+        let mut t = Timeline::default();
+        t.record_nav('a');
+        t.record_nav('b');
+        t.record_nav('a');
+        t.record_nav('a');
+        // 'a' jumps back two folders: its two latest steps are undone, b's stays done.
+        t.shift('a', 2, true);
+        assert_eq!(
+            t.behind().copied().collect::<Vec<_>>(),
+            [Step::Nav('b'), Step::Nav('a')]
+        );
+        assert_eq!(t.ahead().count(), 2);
+        // And forward over both again.
+        t.shift('a', 2, false);
+        assert_eq!(t.ahead().count(), 0);
+        assert_eq!(t.behind().count(), 4);
     }
 
     #[test]

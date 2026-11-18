@@ -187,6 +187,63 @@ struct SizeQueue {
 
 type Todo = VecDeque<(Arc<str>, Option<SystemTime>)>;
 
+/// A tab's size worker. If it stops without finishing its queue, the list must not wait for
+/// those folders forever before sorting by size: a folder it panicked on is reported unknown
+/// and the rest are left for a new worker ([`Explorer::handle_folder_size`] starts one); if its
+/// thread couldn't start at all, they are all reported unknown.
+struct SizeWorker {
+    queue: Arc<SizeQueue>,
+    tx: flume::Sender<AppEvent>,
+    /// The thread started.
+    started: bool,
+    /// The folder being computed.
+    current: Option<Arc<str>>,
+    /// Stopped as it should: the queue ran out or the folder was left.
+    finished: bool,
+}
+
+impl SizeWorker {
+    fn send(&self, name: Arc<str>, bytes: Option<u64>) {
+        let _ = self.tx.send(AppEvent::FolderSize {
+            dir: self.queue.dir.clone(),
+            name,
+            bytes,
+        });
+    }
+
+    const fn finish(&mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for SizeWorker {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let lost: Vec<Arc<str>> = {
+            let mut todo = self.queue.todo.lock();
+            // No thread works on the queue anymore: the next request starts one.
+            todo.1 = false;
+            match self.current.take() {
+                Some(name) if self.started => vec![name],
+                current => current
+                    .into_iter()
+                    .chain(todo.0.drain(..).map(|(name, _)| name))
+                    .collect(),
+            }
+        };
+        log::warn!(
+            "folder sizes stopped in {}: {} left unknown",
+            self.queue.dir.display(),
+            lost.len()
+        );
+        for name in lost {
+            self.send(name, None);
+        }
+    }
+}
+
 impl FolderSizes {
     fn stop(&mut self) {
         if let Some(queue) = self.queue.take() {
@@ -436,20 +493,22 @@ impl Explorer {
     /// folder, otherwise one by one by walking. Quits when the queue is empty.
     fn start_size_worker(&self, queue: Arc<SizeQueue>, cx: &mut App) {
         let fs = Arc::clone(&self.services.fs);
-        let tx = self.events_tx.clone();
         let index = crate::global_search::GlobalSearch::local_service(cx);
         let shared = shared(cx);
+        // Made out here so that a thread that can't start reports its folders too.
+        let mut worker = SizeWorker {
+            queue,
+            tx: self.events_tx.clone(),
+            started: false,
+            current: None,
+            finished: false,
+        };
         spawn_thread("folder-sizes", move || {
+            worker.started = true;
             crate::win::lower_io_priority();
+            let queue = Arc::clone(&worker.queue);
             let path = &queue.dir;
             let cancel = &queue.cancel;
-            let send = |name: Arc<str>, bytes: Option<u64>| {
-                let _ = tx.send(AppEvent::FolderSize {
-                    dir: path.clone(),
-                    name,
-                    bytes,
-                });
-            };
             // The index answers the whole folder in one pass (subfolders it lacks are walked).
             let indexed: HashMap<String, u64> = index
                 .and_then(|svc| svc.child_dir_sizes(path, cancel))
@@ -469,18 +528,23 @@ impl Explorer {
                     next
                 };
                 let Some((name, modified)) = next else {
+                    worker.finish();
                     return;
                 };
                 if cancel.load(Ordering::Relaxed) {
+                    worker.finish();
                     return;
                 }
+                worker.current = Some(Arc::clone(&name));
                 let full = path.join(&*name);
                 if let Some(&bytes) = indexed.get(&name.to_lowercase()) {
                     shared.put(full, bytes, modified);
-                    send(name, Some(bytes));
+                    worker.current = None;
+                    worker.send(name, Some(bytes));
                     continue;
                 }
                 let Some(slot) = shared.walk_slot(cancel) else {
+                    worker.finish();
                     return;
                 };
                 // Another tab may have just computed it.
@@ -499,6 +563,7 @@ impl Explorer {
                         &mut |sub| shared.put(sub.path, sub.size.bytes, sub.modified),
                     );
                     if cancel.load(Ordering::Relaxed) {
+                        worker.finish();
                         return;
                     }
                     if let Some(size) = size {
@@ -507,7 +572,8 @@ impl Explorer {
                     size.map(|s| s.bytes)
                 };
                 drop(slot);
-                send(name, bytes);
+                worker.current = None;
+                worker.send(name, bytes);
             }
         });
     }
@@ -532,6 +598,18 @@ impl Explorer {
                 None => sizes.remove(&name),
             };
             self.folder_sizes.rev += 1;
+        }
+        // A worker that stopped on a folder (see `SizeWorker`) left the rest queued: go on.
+        if let Some(queue) = self.folder_sizes.queue.clone() {
+            let restart = {
+                let mut todo = queue.todo.lock();
+                let idle = !todo.0.is_empty() && !todo.1;
+                todo.1 |= idle;
+                idle
+            };
+            if restart {
+                self.start_size_worker(queue, cx);
+            }
         }
         // Re-sort when sorting by size (always once when everything is done).
         self.ensure_sorted(cx);

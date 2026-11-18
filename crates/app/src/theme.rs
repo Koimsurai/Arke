@@ -217,9 +217,6 @@ pub(crate) fn sidebar_width() -> Pixels {
     }
 }
 pub(crate) const FILTER_W: Pixels = px(220.);
-/// Narrowest the path bar gets on a short path, so it stays an easy click target; the rest of
-/// the title bar drags the window.
-pub(crate) const PATH_MIN_W: Pixels = px(200.);
 /// Search options panel below the filter box (scope, filters, contents): wide enough for every
 /// control on one line in each language.
 pub(crate) const SEARCH_PANEL_W: Pixels = px(456.);

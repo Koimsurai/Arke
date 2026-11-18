@@ -117,13 +117,16 @@ impl Explorer {
             .flex_none()
             .items_center()
             .gap(theme::S_4)
-            .child(toggle(
-                "toggle-sync",
-                Icon::Link,
-                self.pane.synced,
-                format!("{} (Ctrl+Shift+S)", t!("compare.sync_tip")),
-                cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ExplorerEvent::ToggleSync)),
-            ))
+            // A pinned tab keeps both folders: synchronized browsing can't move them.
+            .when(!self.locked, |d| {
+                d.child(toggle(
+                    "toggle-sync",
+                    Icon::Link,
+                    self.pane.synced,
+                    format!("{} (Ctrl+Shift+S)", t!("compare.sync_tip")),
+                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ExplorerEvent::ToggleSync)),
+                ))
+            })
             .child(toggle(
                 "toggle-compare",
                 Icon::Compare,

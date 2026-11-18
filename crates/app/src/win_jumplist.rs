@@ -166,12 +166,14 @@ pub(crate) fn update(
             let name = wide(std::ffi::OsStr::new(&*rust_i18n::t!("jumplist.recent")));
             let _ = list.AppendCategory(PCWSTR(name.as_ptr()), &arr);
         }
-        // Task: new window (handed to the running instance when Arke stays resident).
+        // Task: new window (handed to the running instance when Arke stays resident), a window
+        // even in single window mode.
         let tasks: IObjectCollection =
             CoCreateInstance(&EnumerableObjectCollection, None, CLSCTX_INPROC_SERVER)?;
         let exe_icon = exe.display().to_string();
         let title = rust_i18n::t!("tray.open").into_owned();
-        if let Some(new_window) = link(&exe, "", &title, &title, (&exe_icon, 0)) {
+        let args = crate::instance::NEW_WINDOW_ARG;
+        if let Some(new_window) = link(&exe, args, &title, &title, (&exe_icon, 0)) {
             let _ = tasks.AddObject(&new_window);
         }
         let tasks: IObjectArray = tasks.cast()?;

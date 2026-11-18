@@ -63,6 +63,14 @@ impl Workspace {
         self.open_home_as(new_tab, new_tab, window, cx);
     }
 
+    /// Ctrl+T (and the New tab buttons) set to Home: always a new tab with Home, even when Home
+    /// is already open somewhere. There is one Home page, so one open elsewhere gives way and
+    /// its tab shows the folder under it (as when Back brings Home to another tab).
+    pub(super) fn open_home_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.home_page = None;
+        self.open_home_as(true, true, window, cx);
+    }
+
     /// [`Self::open_home`]; `start`: Home is where the tab starts (see [`HomeView::start`]).
     pub(super) fn open_home_as(
         &mut self,
@@ -157,6 +165,9 @@ impl Workspace {
             self.open_in_background(path.clone(), window, cx);
             return;
         }
+        if self.home_opens_elsewhere(event, window, cx) {
+            return;
+        }
         // Home yields and the folder opens in the same tab, even if the tab was created for Home.
         // Back from that folder brings Home back.
         let start = self.home_page.take().is_some_and(|p| p.start);
@@ -183,6 +194,52 @@ impl Workspace {
                 });
             }
         }
+    }
+
+    /// A folder picked on Home that doesn't open under it: in a pinned tab, which keeps Home, it
+    /// opens in a new tab; on Home in a tab of its own (Ctrl+T), a tab already showing it comes
+    /// forward and the Home tab closes (one tab per folder). Returns whether it was handled.
+    fn home_opens_elsewhere(
+        &mut self,
+        event: &HomeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (folder, select) = match event {
+            HomeEvent::OpenFolder(path) => (path.clone(), Vec::new()),
+            HomeEvent::Reveal(path) => match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => (
+                    parent.to_path_buf(),
+                    vec![std::sync::Arc::from(name.to_string_lossy().as_ref())],
+                ),
+                _ => return false,
+            },
+            HomeEvent::OpenRecycle | HomeEvent::OpenInNewTab(_) => return false,
+        };
+        if self.active_pinned_elsewhere(&folder, cx) {
+            let at = self.active + 1;
+            self.open_folder_tab(folder.clone(), at, true, window, cx);
+        } else {
+            let own_tab = self.home_page.as_ref().is_some_and(|p| p.owner.own_tab());
+            let Some(view) = self
+                .tab_showing(&folder, cx)
+                .filter(|&(tab, _)| own_tab && tab != self.active && Self::one_tab_per_folder(cx))
+                .map(|(tab, pane)| self.tabs[tab].panes[pane].view.clone())
+            else {
+                return false;
+            };
+            if let Some(page) = self.home_page.take() {
+                self.dismiss_page(&page.owner, window, cx);
+            }
+            if let Some((tab, pane)) = self.locate(&view) {
+                self.activate_pane(tab, pane, window, cx);
+            }
+        }
+        if !select.is_empty() {
+            self.active_view()
+                .update(cx, |e, cx| e.select_in_folder(&folder, select, cx));
+        }
+        true
     }
 
     /// Called before paint: closes Home once its tab is gone or has navigated elsewhere.

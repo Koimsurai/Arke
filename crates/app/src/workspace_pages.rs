@@ -20,6 +20,13 @@ pub(super) struct Owner {
     opener: Option<EntityId>,
 }
 
+impl Owner {
+    /// The tab was opened just for this page.
+    pub(super) const fn own_tab(&self) -> bool {
+        self.own_tab
+    }
+}
+
 impl Workspace {
     /// Makes the active tab the owner.
     pub(super) fn owner_here(&mut self, own_tab: bool, cx: &App) -> Owner {
@@ -226,6 +233,37 @@ impl Workspace {
             self.focus_active(window, cx);
         }
         cx.notify();
+    }
+
+    /// The window's title: the active tab's folder or page, as the taskbar and tools that read
+    /// window titles (Listary, AutoHotkey) see it.
+    pub(crate) fn window_title(&self, cx: &App) -> String {
+        let view = self.active_view();
+        let page = self
+            .page_title(view.entity_id())
+            .filter(|_| {
+                self.home_open()
+                    || self.settings_open()
+                    || self.recycle_open()
+                    || self.whats_new_open()
+            })
+            .map(|(title, _)| title);
+        if let Some(page) = page {
+            return format!("{page} - Arke");
+        }
+        let explorer = view.read(cx);
+        match explorer.display_path() {
+            Some(_) => format!("{} - Arke", explorer.tab_title()),
+            None => "Arke".into(),
+        }
+    }
+
+    pub(super) fn sync_window_title(&mut self, window: &mut Window, cx: &App) {
+        let title = self.window_title(cx);
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
     }
 }
 

@@ -41,8 +41,14 @@ pub(super) struct CompareState {
 impl Workspace {
     // --- Synchronized browsing ---
 
+    /// Turns synchronized browsing on or off. Not in a pinned tab: its panes keep their folders,
+    /// so there would be nothing to repeat.
     pub(super) fn toggle_sync(&mut self, tab_ix: usize, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(tab_ix).filter(|t| t.is_split()) {
+        if let Some(tab) = self
+            .tabs
+            .get_mut(tab_ix)
+            .filter(|t| t.is_split() && !t.pinned)
+        {
             tab.synced = !tab.synced;
             // Start from where both panes are now.
             for pane in &mut tab.panes {
@@ -79,7 +85,7 @@ impl Workspace {
             }
             cx.notify();
         }
-        if !tab.synced || !tab.is_split() || pane_ix != tab.active_pane {
+        if !tab.synced || tab.pinned || !tab.is_split() || pane_ix != tab.active_pane {
             return;
         }
         let Some(step) = old.and_then(|old| path_move(&old, path)) else {
@@ -250,9 +256,17 @@ impl Workspace {
         let mut active = None;
         let mut first = None;
         for (ix, tab) in saved.tabs.iter().enumerate() {
+            // The same folders in another spelling (`C:\Work` and `c:\work\`) are the same tab.
             let already = tab
                 .pinned
-                .then(|| pinned.iter().find(|(_, p)| *p == tab.panes))
+                .then(|| {
+                    pinned.iter().find(|(_, p)| {
+                        p.len() == tab.panes.len()
+                            && p.iter()
+                                .zip(&tab.panes)
+                                .all(|(a, b)| crate::explorer::same_folder(a, b))
+                    })
+                })
                 .flatten();
             let id = match already {
                 Some((id, _)) => *id,

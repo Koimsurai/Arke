@@ -786,6 +786,33 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = owner;
         false
     }
+    /// How far (physical pixels at `owner`'s DPI, on either side of the press) the pointer moves
+    /// with the button held before it counts as a drag. UI thread.
+    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
+        let _ = owner;
+        (4, 4)
+    }
+    /// Whether the mouse press being handled came from a touch screen or a pen (Windows turns
+    /// those into mouse messages too). Only meaningful while that press is handled. UI thread.
+    fn press_from_touch(&self) -> bool {
+        false
+    }
+    /// Hands a press that turned into a drag to Windows as a title bar drag, so the window moves
+    /// (with Snap) as if the press had been on the title bar. `at`: the press's point in the
+    /// window's client area, physical pixels. UI thread.
+    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
+        let _ = (owner, at);
+    }
+    /// The system's double-click time, and the size of the rectangle (physical pixels at
+    /// `owner`'s DPI, centered on the first click) the second click must land in. UI thread.
+    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
+        let _ = owner;
+        (std::time::Duration::from_millis(500), (4, 4))
+    }
+    /// Maximizes `owner`, or restores it if it's maximized (a title bar double click). UI thread.
+    fn toggle_maximize(&self, owner: Option<isize>) {
+        let _ = owner;
+    }
     /// Builds the drag image. `base` is an existing thumbnail; falls back to the system icon. Background thread.
     fn drag_image(
         &self,

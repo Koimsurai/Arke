@@ -200,12 +200,20 @@ pub fn selected_names(folder: &Path, items: &[String]) -> Vec<String> {
     names
 }
 
-/// Whether `a` and `b` name the same folder (case-insensitive, trailing backslash ignored).
+/// Whether `a` and `b` name the same folder: case-insensitive (non-ASCII letters too, as NTFS
+/// compares them), `/` taken as `\`, trailing separators ignored.
 pub fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.to_string_lossy();
     let b = b.to_string_lossy();
-    a.trim_end_matches('\\')
-        .eq_ignore_ascii_case(b.trim_end_matches('\\'))
+    let a = a.trim_end_matches(['\\', '/']);
+    let b = b.trim_end_matches(['\\', '/']);
+    let fold = |s: &str| {
+        s.chars()
+            .map(|c| if c == '/' { '\\' } else { c })
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    a.eq_ignore_ascii_case(b) || fold(a) == fold(b)
 }
 
 /// How long a "leave this one to Explorer" mark stays valid.
@@ -515,6 +523,24 @@ mod tests {
         // Expired marks don't count.
         assert!(!bypass.take(Path::new(r"C:\x"), t0 + BYPASS_TTL));
         assert!(bypass.is_empty());
+    }
+
+    #[test]
+    fn same_path_ignores_case_separators_and_trailing_slashes() {
+        assert!(same_path(Path::new(r"C:\Work\"), Path::new(r"c:\WORK")));
+        assert!(same_path(
+            Path::new("C:/Work/Docs"),
+            Path::new(r"C:\work\docs\")
+        ));
+        assert!(same_path(
+            Path::new("D:\\\u{c4}rger"),
+            Path::new("d:\\\u{e4}RGER")
+        ));
+        assert!(!same_path(Path::new(r"C:\Work"), Path::new(r"C:\Work2")));
+        assert!(!same_path(
+            Path::new(r"C:\Work"),
+            Path::new(r"C:\Work\Docs")
+        ));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Rendering for `Explorer`.
 //!
-//! - **Top bar** is drawn on the frame (transparent): back/forward/up, path, drag area, filter box,
+//! - **Top bar** is drawn on the frame (transparent): back/forward/up, path, filter box, drag area,
 //!   window buttons.
 //! - **Paper** (`surface` + `elev_2`): context bar, column headers, list; toasts sit in the paper's
 //!   bottom-right.
@@ -23,9 +23,9 @@ use arke_core::format::{format_count, format_size};
 use arke_core::path::NameError;
 use arke_core::search::MAX_HITS;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, ExternalPaths, Focusable, MouseButton,
-    MouseDownEvent, NavigationDirection, ObjectFit, Pixels, RenderImage, SharedString, Window,
-    WindowControlArea, anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
+    AnyElement, App, ClickEvent, Context, Entity, ExternalPaths, MouseButton, MouseDownEvent,
+    NavigationDirection, ObjectFit, Pixels, RenderImage, SharedString, Window, WindowControlArea,
+    anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
 };
 
 use super::layout;
@@ -69,8 +69,6 @@ const RENAME_BALLOON_W: Pixels = px(440.);
 /// Above this many selected items the total size isn't computed (avoids a long walk on every
 /// render)
 pub(super) const SIZE_SUM_MAX: usize = 5_000;
-/// Below this pane width the filter box collapses to a magnifier, leaving room for the path
-const NARROW_TOP_BAR: Pixels = px(760.);
 /// Below this pane width context bar buttons show icons only
 const COMPACT_BAR: Pixels = px(860.);
 /// Below this pane width "Copy to/Move to the other side" show icons only (split view)
@@ -81,24 +79,15 @@ const SCROLLBAR_GUTTER: Pixels = px(12.);
 impl Explorer {
     // ───────────────────────── Top bar (on the frame) ─────────────────────────
 
-    fn render_top_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Back and forward (right click: their history menus).
+    fn history_buttons(&self, cx: &mut Context<Self>) -> [AnyElement; 2] {
         let (can_back, can_forward) = self
             .global_nav
-            .unwrap_or_else(|| (self.history.can_go_back(), self.history.can_go_forward()));
-        let can_up = self
-            .display_path()
-            .and_then(arke_core::path::parent)
-            .is_some();
-        let nav_here = !self.pane.nav_in_sidebar;
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(theme::S_2)
-            .h(theme::H_BAR)
-            .pr(theme::S_8)
-            .when(nav_here, |d| {
-                d.child(crate::spring::back_target(
+            .unwrap_or_else(|| (self.can_go(true), self.can_go(false)));
+        [
+            div()
+                .on_mouse_down(MouseButton::Right, history_menu_listener(true, cx))
+                .child(crate::spring::back_target(
                     "list",
                     crate::spring::Target::Explorer(cx.entity().downgrade()),
                     can_back,
@@ -113,6 +102,9 @@ impl Explorer {
                     ),
                     cx,
                 ))
+                .into_any_element(),
+            div()
+                .on_mouse_down(MouseButton::Right, history_menu_listener(false, cx))
                 .child(ghost_button(
                     "forward",
                     Icon::ArrowRight,
@@ -122,80 +114,118 @@ impl Explorer {
                         cx.emit(ExplorerEvent::HistoryButton(false));
                     }),
                 ))
-            })
-            .child(ghost_button(
+                .into_any_element(),
+        ]
+    }
+
+    fn render_top_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_up = self
+            .display_path()
+            .and_then(arke_core::path::parent)
+            .is_some();
+        let nav_here = !self.pane.nav_in_sidebar;
+        // Controls left to right; every gap between them drags the window.
+        let mut controls: Vec<AnyElement> = Vec::new();
+        if nav_here {
+            controls.extend(self.history_buttons(cx));
+        }
+        controls.push(
+            ghost_button(
                 "up",
                 Icon::ArrowUp,
                 can_up,
                 t!("nav.up"),
                 cx.listener(|this, _: &ClickEvent, w, cx| this.go_up(&GoUp, w, cx)),
-            ))
-            .when(nav_here && !self.pane.split, |d| d.child(ghost_button(
-                "refresh",
-                Icon::Refresh,
-                self.model.is_some(),
-                t!("nav.refresh"),
-                cx.listener(|this, _: &ClickEvent, w, cx| this.refresh(&Refresh, w, cx)),
-            )))
-            // Space after the path drags the window and maximizes on double click (the system
-            // handles both through the caption hit test).
-            .child({
-                let drag = div()
-                    .id("drag")
-                    .window_control_area(WindowControlArea::Drag)
-                    // Click on empty title bar space ends path editing (not consumed, so the window
-                    // still drags).
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                            this.cancel_path_edit(window, cx);
-                        }),
-                    )
-                    .on_mouse_up(
-                        gpui::MouseButton::Right,
-                        cx.listener(|_, e: &gpui::MouseUpEvent, _, cx| {
-                            cx.emit(ExplorerEvent::WindowMenu(e.position));
-                            cx.stop_propagation();
-                        }),
-                    );
-                self.render_path_slot(drag, window, cx)
+            )
+            .into_any_element(),
+        );
+        if nav_here && !self.pane.split {
+            controls.push(
+                ghost_button(
+                    "refresh",
+                    Icon::Refresh,
+                    self.model.is_some(),
+                    t!("nav.refresh"),
+                    cx.listener(|this, _: &ClickEvent, w, cx| this.refresh(&Refresh, w, cx)),
+                )
+                .into_any_element(),
+            );
+        }
+        // The path bar fills the row up to the search box.
+        controls.push(self.render_top_row(window, cx));
+        // The operation center is window-wide state, so split view shows it once (right pane).
+        if self.pane.show_ops {
+            controls.extend(
+                self.render_op_center(window, cx)
+                    .map(IntoElement::into_any_element),
+            );
+        }
+        let show_caption = self.pane.show_caption;
+        // The window buttons and the space after them, which the bands above and below the
+        // controls leave alone (maximized, the buttons reach up to the screen edge).
+        let caption_w = if show_caption {
+            theme::H_CTL * 3. + theme::S_2 * 2. + theme::S_8
+        } else {
+            theme::S_8
+        };
+        let mut row = div()
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(theme::H_BAR)
+            .children(Self::title_drag_bands(caption_w, cx))
+            .child(self.bar_right_probe());
+        for (i, control) in controls.into_iter().enumerate() {
+            if i > 0 {
+                row = row.child(Self::title_drag(("title-gap", i), cx).w(theme::S_2));
+            }
+            row = row.child(control);
+        }
+        row
+            // The space before the window buttons drags too.
+            .when(show_caption, |d| {
+                d.child(
+                    Self::title_drag("caption-lead", cx)
+                        .debug_selector(|| "caption-lead".to_owned())
+                        .w(theme::S_8),
+                )
+                .child(caption_group(window))
             })
-            // The operation center is window-wide state, so split view shows it once (right pane).
-            .when(self.pane.show_ops, |d| {
-                d.children(self.render_op_center(window, cx))
-            })
-            .child(self.render_filter_box(window, cx))
-            .when(self.pane.show_caption, |d| d.child(caption_buttons(window)))
+            .child(Self::title_drag("title-end", cx).w(theme::S_8))
     }
 
-    fn render_filter_box(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let in_box = self
-            .filter_input
-            .read(cx)
-            .focus_handle(cx)
-            .contains_focused(window, cx);
-        // The search panel below counts as part of the box.
-        let focused = in_box || self.panel_focus.contains_focused(window, cx);
+    /// The search box at `width` (see [`super::top_bar`]). At the width of a button it shows only
+    /// its magnifier until clicked (or Ctrl+F).
+    pub(super) fn render_filter_box(
+        &mut self,
+        state: layout::SearchBox,
+        width: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let focused = state == layout::SearchBox::Typing;
         let active = !self.query.is_empty() || self.search_mode;
-        // When narrow, show only the magnifier until clicked (or Ctrl+F), leaving room for the
-        // path.
-        let collapsed = !focused
-            && !active
-            && if self.pane.split {
-                self.narrow()
-            } else {
-                self.bar_width < NARROW_TOP_BAR
-            };
+        let collapsed = width <= theme::H_CTL;
+        // Not in use but holding text: it shows from its start and ends in "…"; the tooltip has
+        // all of it.
+        let summary = !focused && !collapsed && !self.query.is_empty();
         let filter_box = div()
             .id("filter-box")
+            .debug_selector(|| "filter-box".to_owned())
             .key_context("FilterBar")
             .on_action(cx.listener(Self::filter_to_list))
             .w_full()
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.focus_filter_input(window, cx);
-            }))
+            .map(|d| Self::search_box_presses(d, collapsed, summary, cx))
             .overflow_hidden()
-            .when(collapsed, |d| d.tooltip_below(t!("filter.placeholder")))
+            .when(collapsed, |d| {
+                d.tooltip_below(if self.query.is_empty() {
+                    t!("filter.placeholder").into_owned()
+                } else {
+                    self.query.clone()
+                })
+            })
+            .when(summary, |d| d.tooltip_below(self.query.clone()))
             .h(theme::H_CTL)
             .flex()
             .items_center()
@@ -232,33 +262,38 @@ impl Explorer {
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .child(self.filter_input.clone()),
+                        .when(summary, |d| {
+                            d.relative()
+                                .truncate()
+                                .text_color(theme::text())
+                                .child(self.search_summary_measure())
+                                .child(SharedString::from(self.query.clone()))
+                        })
+                        .when(!summary, |d| d.child(self.filter_input.clone())),
                 )
             })
-            .when(!self.query.is_empty(), |d| d.child(Self::filter_clear(cx)))
+            .when(!self.query.is_empty() && !collapsed, |d| {
+                d.child(Self::filter_clear(cx))
+            })
             // Scope other than "this folder": show it on the right.
             .when(!collapsed, |d| d.children(self.render_scope_chip(focused, cx)));
         let filter_box = Self::bind_scope_actions(filter_box, cx);
         div()
             .relative()
-            .w(if collapsed {
-                theme::H_CTL
-            } else if self.pane.split {
-                px(150.)
-            } else {
-                theme::FILTER_W
-            })
+            .flex_none()
+            .w(width)
             .min_w(theme::H_CTL)
-            .when(!self.pane.split, gpui::Styled::flex_none)
-            .mr(theme::S_8)
             .child(filter_box)
             // While the box has focus, the scope strip shows below (this folder / subfolders / this
             // PC). It collapses once typing starts so it doesn't cover the list (Tab or the scope
             // chip reopens it).
+            // Not while the box's edit menu is open (right-click on the empty box): the menu is
+            // what was asked for.
             .when(
                 focused
                     && !self.panel_dismissed
-                    && (self.query.is_empty() || self.scope_strip_open),
+                    && (self.query.is_empty() || self.scope_strip_open)
+                    && !self.filter_input.read(cx).menu_open(),
                 |d| d.child(self.render_scope_strip(window, cx)),
             )
     }
@@ -609,10 +644,20 @@ impl Explorer {
     }
 
     /// Info on the left of the context bar (replaces the old status bar).
-    pub(super) fn info_parts(&self, cx: &App) -> Vec<String> {
+    pub(crate) fn info_parts(&self, cx: &App) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if self.search_global {
             return self.computer_info(cx);
+        }
+        // The whole query, since the search box cuts long text off when it isn't in use.
+        if !self.query.is_empty() && (self.search_mode || self.is_filtering()) {
+            let folder = self.display_path().map_or_default(|p| {
+                p.file_name().map_or_else(
+                    || p.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            });
+            parts.push(t!("info.query_in", folder = folder, query = self.query).into_owned());
         }
         if self.search_mode {
             if let Some(r) = &self.search_results {
@@ -2552,6 +2597,12 @@ fn segment(
 /// snap layouts menu. Maximized, they also take the screen edge above them and Close the corner
 /// (`caption.rs`).
 pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
+    caption_group(window).pl(theme::S_8)
+}
+
+/// [`caption_buttons`] without the space before them (the title row makes that space a drag
+/// area).
+fn caption_group(window: &Window) -> gpui::Div {
     let maximized = window.is_maximized();
     let gap = theme::S_2;
     let button = |id: &'static str, icon: Icon, area: WindowControlArea, close: bool| {
@@ -2593,7 +2644,6 @@ pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
         .flex_none()
         .items_center()
         .gap(gap)
-        .pl(theme::S_8)
         .child(button(
             "win-min",
             Icon::WinMin,
@@ -3322,6 +3372,23 @@ pub(super) fn date_cell(
                 shell.format_time_short(t)
             }
         }))
+}
+
+/// Right click on the back or forward button: asks the workspace to list that direction's
+/// folders.
+fn history_menu_listener(
+    back: bool,
+    cx: &mut Context<Explorer>,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+        if !this.history_menu(back).is_empty() {
+            cx.stop_propagation();
+            cx.emit(ExplorerEvent::HistoryMenu {
+                back,
+                position: e.position,
+            });
+        }
+    })
 }
 
 /// Cloud file state after the name, like Explorer: a cloud for online-only; inside sync roots a

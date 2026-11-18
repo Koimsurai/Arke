@@ -54,12 +54,18 @@ mod remote;
 mod tabs;
 #[path = "tests_columns.rs"]
 mod tests_columns;
+#[path = "tests_text_input_menu.rs"]
+mod text_input_menu;
+#[path = "tests_top_bar.rs"]
+mod top_bar;
 #[path = "tests_views.rs"]
 mod views;
 #[path = "tests_virtual_drop.rs"]
 mod virtual_drop;
 #[path = "tests_whats_new.rs"]
 mod whats_new;
+#[path = "tests_windows.rs"]
+mod windows;
 
 type OpHook = Box<dyn Fn(&FileOp) + Send + Sync>;
 /// A PDF page render request: path, page, box.
@@ -161,6 +167,16 @@ struct FakeShell {
     quicklook_runs: Mutex<Vec<(Option<PathBuf>, PathBuf)>>,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
+    /// System drag distance (physical pixels); `None` is Windows' default of 4.
+    drag_threshold: Mutex<Option<(i32, i32)>>,
+    /// Title bar drags handed to Windows (press point, physical client pixels).
+    window_moves: Mutex<Vec<(i32, i32)>>,
+    /// System double-click time and rectangle; `None` is 500 ms and 4x4.
+    double_click: Mutex<Option<(Duration, (i32, i32))>>,
+    /// Times the window was maximized or restored by a title bar double click.
+    maximize_toggles: AtomicU32,
+    /// Presses come from a touch screen.
+    touch: std::sync::atomic::AtomicBool,
 }
 
 impl FakeShell {
@@ -364,6 +380,28 @@ impl Shell for FakeShell {
 
     fn covered_at_cursor(&self, _owner: Option<isize>) -> bool {
         self.covered.load(Ordering::Relaxed)
+    }
+
+    fn drag_threshold(&self, _owner: Option<isize>) -> (i32, i32) {
+        self.drag_threshold.lock().unwrap_or((4, 4))
+    }
+
+    fn press_from_touch(&self) -> bool {
+        self.touch.load(Ordering::Relaxed)
+    }
+
+    fn begin_window_move(&self, _owner: Option<isize>, at: (i32, i32)) {
+        self.window_moves.lock().push(at);
+    }
+
+    fn double_click_rule(&self, _owner: Option<isize>) -> (Duration, (i32, i32)) {
+        self.double_click
+            .lock()
+            .unwrap_or((Duration::from_millis(500), (4, 4)))
+    }
+
+    fn toggle_maximize(&self, _owner: Option<isize>) {
+        self.maximize_toggles.fetch_add(1, Ordering::Relaxed);
     }
 
     fn drag_image(
@@ -4079,6 +4117,54 @@ fn going_up_in_a_size_sorted_folder_keeps_the_folder_on_screen(cx: &mut TestAppC
     );
 }
 
+/// Sorting by size before the folder sizes are known: the rows stay where they are while sizes
+/// come in, and the list reorders once, when the last one is known (it used to reorder as each
+/// arrived, so rows kept jumping).
+#[gpui::test]
+fn sorting_by_size_reorders_once_when_sizes_are_done(cx: &mut TestAppContext) {
+    use crate::explorer::FolderSize;
+    let fs = FakeFs::new();
+    let root = Path::new(r"C:\q");
+    fs.insert_dir(
+        root,
+        vec![dir("a-small"), dir("b-big"), dir("c-tiny"), dir("d-mid")],
+    );
+    fs.insert_dir(r"C:\q\a-small", vec![file("x", 10)]);
+    fs.insert_dir(r"C:\q\b-big", vec![file("x", 900)]);
+    fs.insert_dir(r"C:\q\c-tiny", vec![file("x", 1)]);
+    fs.insert_dir(r"C:\q\d-mid", vec![file("x", 300)]);
+    // No size is known when the sort starts; the last folder stays slow after the others.
+    for name in ["a-small", "b-big", "c-tiny", "d-mid"] {
+        fs.hang(format!(r"C:\q\{name}"));
+    }
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q");
+    wait_until(cx, &view, "load", loaded(r"C:\q"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    cx.run_until_parked();
+    let before = view.update(cx, |v, _| names(v));
+    for name in ["a-small", "b-big", "c-tiny"] {
+        fs.release(Path::new(&format!(r"C:\q\{name}")));
+    }
+    let sized = |v: &Explorer, n: &str| matches!(v.folder_size(n), FolderSize::Known { .. });
+    wait_until(cx, &view, "the quick ones", |v| {
+        ["a-small", "b-big", "c-tiny"].iter().all(|n| sized(v, n))
+    });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        before,
+        "rows keep their places while a size is still coming"
+    );
+    fs.release_all();
+    wait_until(cx, &view, "sorted once all are known", |v| {
+        names(v) == ["b-big", "d-mid", "a-small", "c-tiny"]
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "One scenario end to end: sizes arrive in the background while the sort is applied"
@@ -4273,6 +4359,133 @@ fn type_order_follows_names_that_arrive_later(cx: &mut TestAppContext) {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Type names that arrive while folder sizes are still being computed reorder a list sorted by
+/// type at once: only a sort by size waits for the sizes.
+#[gpui::test]
+fn type_order_does_not_wait_for_folder_sizes(cx: &mut TestAppContext) {
+    rust_i18n::set_locale("en");
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\t6",
+        vec![dir("slow"), file("b.bak", 1), file("a.zqw6", 1)],
+    );
+    fs.insert_dir(r"C:\t6\slow", vec![file("x", 1)]);
+    fs.hang(r"C:\t6\slow");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\t6");
+    wait_until(cx, &view, "load", loaded(r"C:\t6"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Type, true, false), cx);
+    });
+    let files = |v: &Explorer| {
+        names(v)
+            .into_iter()
+            .filter(|n| n.contains('.'))
+            .collect::<Vec<_>>()
+    };
+    wait_until(cx, &view, "sorted by type", |v| {
+        files(v) == ["b.bak", "a.zqw6"]
+    });
+    wait_until(cx, &view, "a folder size computing", |v| {
+        v.folder_sizes_computing()
+    });
+    arke_core::format::set_type_name("zqw6", Some("Aardvark Document"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while view.update(cx, |v, _| files(v)) != ["a.zqw6", "b.bak"] {
+        assert!(Instant::now() < deadline, "waited for the folder size");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(view.update(cx, |v, _| v.folder_sizes_computing()));
+    fs.release_all();
+}
+
+/// Sorted by size, the folder is relisted (the watcher lost track) while a size is still being
+/// computed: the fresh listing knows no folder sizes, so it is sorted once with the sizes known
+/// so far instead of showing the folders in name order until the last size comes.
+#[gpui::test]
+fn a_relisting_while_sizes_compute_keeps_the_size_order(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let root = Path::new(r"C:\s6");
+    // Size order is neither name order nor its reverse.
+    fs.insert_dir(root, vec![dir("f0"), dir("f1"), dir("f2"), dir("f3")]);
+    for (name, size) in [("f0", 200), ("f1", 400), ("f2", 100), ("f3", 300)] {
+        fs.insert_dir(root.join(name), vec![file("x", size)]);
+    }
+    let by_size = ["f1", "f3", "f0", "f2"];
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\s6");
+    wait_until(cx, &view, "load", loaded(r"C:\s6"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    wait_until(cx, &view, "sized", |v| {
+        !v.folder_sizes_computing() && names(v) == by_size
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs.watcher_count(root) == 0 {
+        assert!(Instant::now() < deadline, "watcher did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A new folder whose size takes a while.
+    fs.insert_dir(root.join("g"), vec![file("x", 1)]);
+    fs.hang(root.join("g"));
+    fs.emit_changed(root, &["g"]);
+    wait_until(cx, &view, "g computing", |v| {
+        names(v).contains(&"g".to_owned()) && v.folder_sizes_computing()
+    });
+    let generation = view.update(cx, |v, _| v.model.as_ref().map(|m| m.generation));
+    fs.emit(root, &arke_core::fs::WatchEvent::Rescan);
+    wait_until(cx, &view, "relisted", |v| {
+        v.model
+            .as_ref()
+            .is_some_and(|m| Some(m.generation) != generation && m.complete)
+    });
+    cx.run_until_parked();
+    let known: Vec<String> = view.update(cx, |v, _| {
+        names(v).into_iter().filter(|n| n != "g").collect()
+    });
+    assert_eq!(known, by_size);
+    assert!(view.update(cx, |v, _| v.folder_sizes_computing()));
+    fs.release_all();
+}
+
+/// A folder size walk that panics doesn't leave the list waiting forever: that folder is
+/// unknown, the others are computed, and the list is sorted by size.
+#[gpui::test]
+fn a_folder_size_walk_that_panics_still_lets_the_list_sort(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\q6", vec![dir("a-crash"), dir("b-small"), dir("c-big")]);
+    fs.insert_dir(r"C:\q6\a-crash", vec![file("x", 50)]);
+    fs.insert_dir(r"C:\q6\b-small", vec![file("x", 10)]);
+    fs.insert_dir(r"C:\q6\c-big", vec![file("x", 900)]);
+    fs.crash(r"C:\q6\a-crash");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q6");
+    wait_until(cx, &view, "load", loaded(r"C:\q6"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    wait_until(cx, &view, "sorted by the sizes found", |v| {
+        !v.folder_sizes_computing() && names(v)[..2] == ["c-big", "b-small"]
+    });
+    assert_eq!(
+        view.update(cx, |v, _| v.folder_size("a-crash")),
+        crate::explorer::FolderSize::Unknown
+    );
+}
+
+/// Remote folders compare exactly (a server may tell `Docs` from `docs`), local ones ignoring
+/// case and a trailing separator, and a local path is never the same as a remote one.
+#[test]
+fn same_folder_tells_remote_and_local_paths_apart() {
+    use crate::explorer::same_folder;
+    let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
+    assert!(same(r"C:\Docs", r"c:\docs\"));
+    assert!(same("sftp://u@nas/docs", "sftp://u@nas/docs/"));
+    assert!(!same("sftp://u@nas/Docs", "sftp://u@nas/docs"));
+    assert!(!same(r"C:\docs", "sftp://u@nas/docs"));
+    assert!(!same("sftp://u@nas/docs", r"\\nas\docs"));
 }
 
 #[gpui::test]

@@ -1689,3 +1689,1052 @@ fn a_very_long_folder_name_stays_inside_the_path_bar(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// Opens the back (or forward) button's menu on the active pane, the way its right click does.
+fn open_history_menu(
+    ws: &Entity<Workspace>,
+    view: &Entity<Explorer>,
+    cx: &mut VisualTestContext,
+    back: bool,
+) -> Option<Vec<String>> {
+    view.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::HistoryMenu {
+            back,
+            position: gpui::point(gpui::px(100.), gpui::px(40.)),
+        });
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, _| ws.history_menu_labels_for_test())
+}
+
+fn pick_menu_row(ws: &Entity<Workspace>, cx: &mut VisualTestContext, ix: usize) {
+    ws.update_in(cx, |ws, window, cx| {
+        ws.pick_menu_row_for_test(ix, window, cx);
+    });
+    cx.run_until_parked();
+}
+
+/// #152: right click on Back lists the folders behind, nearest first; choosing one goes there at
+/// once and Forward then lists the ones passed over, like repeated Back.
+#[gpui::test]
+fn history_menu_jumps_back_and_keeps_forward_consistent(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    for dir in ["a", "b", "c", "d", "e"] {
+        fs.insert_many(format!(r"C:\{dir}"), 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    for dir in ["b", "c", "d", "e"] {
+        let path = format!(r"C:\{dir}");
+        view.update(cx, |e, cx| e.navigate(p(&path), NavKind::New, cx));
+        wait_until(cx, &view, &path, loaded(&path));
+    }
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["d".into(), "c".into(), "b".into(), "a".into()])
+    );
+    assert_eq!(open_history_menu(&ws, &view, cx, false), None);
+
+    // Third entry: b, in one step.
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true).map(|m| m[2].clone()),
+        Some("b".into())
+    );
+    pick_menu_row(&ws, cx, 2);
+    wait_until(cx, &view, "b", loaded(r"C:\b"));
+    assert_eq!(at(cx), Some(p(r"C:\b")));
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test()),
+        None,
+        "choosing closes the menu"
+    );
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["a".into()])
+    );
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec!["c".into(), "d".into(), "e".into()]),
+        "the folders passed over wait on the forward side"
+    );
+
+    // Back and Forward carry on from there (the timeline agrees).
+    ws.update_in(cx, |ws, window, cx| ws.go_in_history(true, window, cx));
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    ws.update_in(cx, |ws, window, cx| ws.go_in_history(false, window, cx));
+    wait_until(cx, &view, "b again", loaded(r"C:\b"));
+    ws.update_in(cx, |ws, window, cx| ws.go_in_history(false, window, cx));
+    wait_until(cx, &view, "c", loaded(r"C:\c"));
+
+    // Forward menu: jump to the last entry.
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec!["d".into(), "e".into()])
+    );
+    pick_menu_row(&ws, cx, 1);
+    wait_until(cx, &view, "e", loaded(r"C:\e"));
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["d".into(), "c".into(), "b".into(), "a".into()])
+    );
+    assert_eq!(open_history_menu(&ws, &view, cx, false), None);
+    ws.update_in(cx, |ws, window, cx| ws.go_in_history(true, window, cx));
+    wait_until(cx, &view, "d", loaded(r"C:\d"));
+}
+
+/// #152: nothing to list, no menu; and a long history lists only the nearest 15.
+#[gpui::test]
+fn history_menu_is_empty_without_history_and_capped(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    for n in 0..20 {
+        fs.insert_many(format!(r"C:\d{n}"), 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\d0");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "d0", loaded(r"C:\d0"));
+    assert_eq!(open_history_menu(&ws, &view, cx, true), None);
+    assert_eq!(open_history_menu(&ws, &view, cx, false), None);
+
+    for n in 1..20 {
+        let path = format!(r"C:\d{n}");
+        view.update(cx, |e, cx| e.navigate(p(&path), NavKind::New, cx));
+        wait_until(cx, &view, &path, loaded(&path));
+    }
+    let hidden = |cx: &mut VisualTestContext| {
+        ws.update_in(cx, |_, window, _| crate::workspace::tooltips_hidden(window))
+    };
+    assert!(!hidden(cx));
+    let menu = open_history_menu(&ws, &view, cx, true).expect("a menu");
+    assert_eq!(menu.len(), 15);
+    assert_eq!(menu[0], "d18");
+    assert_eq!(menu[14], "d4");
+    // The button's tooltip doesn't show over the menu its right click opened.
+    assert!(hidden(cx));
+}
+
+// --- Tab behaviors: pinned tabs keep their folder, one tab per folder, Ctrl+T (#90) ---
+
+fn tab_count(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
+    ws.update(cx, |ws, _| ws.tab_views().count())
+}
+
+#[gpui::test]
+fn a_pinned_tab_opens_other_folders_in_a_new_tab(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![dir("sub")]);
+    fs.insert_many(r"C:\p\sub", 2);
+    fs.insert_many(r"C:\other", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\other");
+    let pinned = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &pinned, "load", loaded(r"C:\other"));
+    pinned.update(cx, |e, cx| e.navigate(p(r"C:\p"), NavKind::New, cx));
+    wait_until(cx, &pinned, "p", loaded(r"C:\p"));
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+
+    // Enter on a subfolder: it opens in a new tab beside the pinned one, which stays.
+    cx.simulate_keystrokes("down enter");
+    cx.run_until_parked();
+    let sub = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &sub, "sub", loaded(r"C:\p\sub"));
+    ws.update(cx, |ws, cx| {
+        assert_eq!(tab_paths(ws, cx), [Some(p(r"C:\p")), Some(p(r"C:\p\sub"))]);
+        assert_eq!(ws.pinned_for_test(), [true, false]);
+        assert_eq!(ws.active, 1);
+    });
+
+    // Back from there returns to the pinned tab; its own history stays put (no tab per step).
+    cx.simulate_keystrokes("alt-left");
+    cx.run_until_parked();
+    assert_eq!(active(&ws, cx), 0);
+    assert!(
+        !pinned.update(cx, |e, _| e.can_go(true)),
+        "back is off in a pinned tab"
+    );
+    assert_eq!(
+        open_history_menu(&ws, &pinned, cx, true),
+        None,
+        "and so is its history menu"
+    );
+    cx.simulate_keystrokes("alt-left");
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 2);
+    assert_eq!(
+        pinned.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\p"))
+    );
+
+    // The sidebar too: a new tab the first time, the tab already on it the second.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.sidebar_open_for_test(p(r"C:\other"), window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 3);
+    ws.update_in(cx, |ws, window, cx| {
+        ws.activate(0, window, cx);
+        ws.sidebar_open_for_test(p(r"C:\Other\"), window, cx);
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(tab_paths(ws, cx).len(), 3);
+        assert_eq!(tab_paths(ws, cx)[ws.active], Some(p(r"C:\other")));
+        assert_eq!(
+            tab_paths(ws, cx)[0],
+            Some(p(r"C:\p")),
+            "the pinned tab stayed"
+        );
+    });
+
+    // Unpinned, the tab browses again.
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    pinned.update(cx, |e, cx| e.navigate(p(r"C:\p\sub"), NavKind::New, cx));
+    wait_until(cx, &pinned, "sub in place", loaded(r"C:\p\sub"));
+    assert_eq!(tab_count(&ws, cx), 3);
+}
+
+#[gpui::test]
+fn opening_a_folder_already_in_a_tab_switches_to_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    fs.insert_many(r"C:\b", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+
+    // Open in new tab from the list, in another spelling: the tab on b comes forward.
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    first.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::OpenInNewTab {
+            path: p(r"c:\B\"),
+            activate: true,
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!((tab_count(&ws, cx), active(&ws, cx)), (2, 1));
+
+    // In the background (middle click) it's left where it is.
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    first.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::OpenInNewTab {
+            path: p(r"C:\b"),
+            activate: false,
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!((tab_count(&ws, cx), active(&ws, cx)), (2, 0));
+
+    // The sidebar's Open in new tab, and the Go to folder box.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.sidebar_open_in_new_tab_for_test(p(r"C:\b"), window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!((tab_count(&ws, cx), active(&ws, cx)), (2, 1));
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    cx.simulate_input(r"C:\b");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!((tab_count(&ws, cx), active(&ws, cx)), (2, 1));
+
+    // Home in a tab of its own: a folder already open elsewhere closes it and switches there.
+    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(true, window, cx));
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 3);
+    ws.update_in(cx, |ws, window, cx| {
+        ws.home_open_folder_for_test(p(r"C:\a"), window, cx);
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(tab_paths(ws, cx), [Some(p(r"C:\a")), Some(p(r"C:\b"))]);
+        assert_eq!(ws.active, 0);
+        assert_eq!(ws.shown_page_for_test(), None);
+    });
+
+    // Duplicate tab still duplicates.
+    ws.update_in(cx, |ws, window, cx| {
+        let label = t!("sidebar.duplicate_tab").into_owned();
+        ws.run_tab_menu_for_test(1, &label, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 3);
+
+    // Turned off, a second tab opens.
+    change(cx, |s| s.one_tab_per_folder = false);
+    first.update(cx, |_, cx| {
+        cx.emit(ExplorerEvent::OpenInNewTab {
+            path: p(r"C:\b"),
+            activate: true,
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 4);
+}
+
+#[gpui::test]
+fn the_tab_menu_pins_its_folder_to_the_sidebar(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\work", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\work");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\work"));
+    let pin = t!("sidebar.pin_tab_folder").into_owned();
+    let unpin = t!("sidebar.unpin_tab_folder").into_owned();
+    let on_sidebar = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, cx| {
+            let places = ws.active_view().read(cx).places.clone();
+            crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .is_pinned(Path::new(r"C:\work"), &places)
+        })
+    };
+    assert!(!on_sidebar(cx));
+    assert!(ws.update(cx, |ws, cx| {
+        ws.tab_menu_labels_for_test(0, cx).contains(&pin)
+    }));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_tab_menu_for_test(0, &pin, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(on_sidebar(cx));
+    ws.update(cx, |ws, cx| {
+        let labels = ws.tab_menu_labels_for_test(0, cx);
+        assert!(labels.contains(&unpin) && !labels.contains(&pin));
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_tab_menu_for_test(0, &unpin, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(!on_sidebar(cx));
+
+    // A page has no folder to pin.
+    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(true, window, cx));
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        let labels = ws.tab_menu_labels_for_test(1, cx);
+        assert!(!labels.contains(&pin) && !labels.contains(&unpin));
+    });
+}
+
+#[gpui::test]
+fn ctrl_t_does_what_settings_say(cx: &mut TestAppContext) {
+    use crate::settings::NewTabAction;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+
+    // Default: the Go to folder box.
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    assert!(ws.update(cx, |ws, _| ws.palette.is_some()));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 1);
+
+    // A new tab on the current folder, straight away.
+    change(cx, |s| s.new_tab = NewTabAction::CurrentFolder);
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert!(ws.palette.is_none());
+        assert_eq!(tab_paths(ws, cx), [Some(p(r"C:\a")), Some(p(r"C:\a"))]);
+        assert_eq!(ws.active, 1);
+    });
+
+    // A new tab with Home.
+    change(cx, |s| s.new_tab = NewTabAction::Home);
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    let home = t!("home.title").into_owned();
+    ws.update(cx, |ws, _| {
+        assert!(ws.palette.is_none());
+        assert_eq!(ws.tab_views().count(), 3);
+        assert_eq!(ws.active, 2);
+        assert_eq!(ws.shown_page_for_test(), Some(home));
+    });
+}
+
+/// The window's title follows the active tab, also back to a tab that had the title before
+/// (each pane used to remember what it last set, so switching back left the other tab's name).
+#[gpui::test]
+fn window_title_follows_the_active_tab(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    for dir in ["alpha", "beta"] {
+        fs.insert_many(format!(r"C:\{dir}"), 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\alpha");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "alpha", loaded(r"C:\alpha"));
+    cx.run_until_parked();
+    assert_eq!(cx.window_title().as_deref(), Some("alpha - Arke"));
+    open_tabs(&ws, cx, &[r"C:\beta"]);
+    cx.run_until_parked();
+    assert_eq!(cx.window_title().as_deref(), Some("beta - Arke"));
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    cx.run_until_parked();
+    assert_eq!(cx.window_title().as_deref(), Some("alpha - Arke"));
+}
+
+/// In a split tab the title follows the pane in use; a page names the window after the page.
+#[gpui::test]
+fn window_title_follows_the_active_pane_and_names_pages(cx: &mut TestAppContext) {
+    use arke_core::takeover::Target;
+    let fs = FakeFs::new();
+    for dir in ["alpha", "beta"] {
+        fs.insert_many(format!(r"C:\{dir}"), 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\alpha");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "alpha", loaded(r"C:\alpha"));
+    let title = |cx: &mut VisualTestContext| cx.window_title().unwrap_or_default();
+    let page = |key: &str| format!("{} - Arke", t!(key));
+
+    let (left, right) = split_to(&ws, cx, r"C:\beta");
+    right.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));
+    cx.run_until_parked();
+    assert_eq!(title(cx), "beta - Arke");
+    left.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));
+    cx.run_until_parked();
+    assert_eq!(title(cx), "alpha - Arke");
+
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_external(Target::RecycleBin, Vec::new(), window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(title(cx), page("recycle.title"));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_external(Target::Home, Vec::new(), window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(title(cx), page("home.title"));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    assert_eq!(title(cx), page("settings.title"));
+    // Back to the split tab.
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    cx.run_until_parked();
+    assert_eq!(title(cx), "alpha - Arke");
+}
+
+// --- History menus that go stale, the timeline, pinned tabs (#152) ---
+
+fn at(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Option<PathBuf> {
+    view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+}
+
+fn go(view: &Entity<Explorer>, cx: &mut VisualTestContext, path: &str) {
+    view.update(cx, |e, cx| e.navigate(p(path), NavKind::New, cx));
+    wait_until(cx, view, path, loaded(path));
+}
+
+fn folders(paths: &[&str]) -> Arc<FakeFs> {
+    let fs = FakeFs::new();
+    for path in paths {
+        fs.insert_many(*path, 1);
+    }
+    fs
+}
+
+/// A row chosen after the pane's history moved under the open menu (a slow folder finished
+/// loading) still goes to the folder it named; one whose folder left that side does nothing.
+/// Rows tell two folders of the same name apart by where they are.
+#[gpui::test]
+fn a_history_menu_row_goes_to_its_folder_after_the_history_moved(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\one\src", r"C:\two\src", r"C:\b", r"C:\c", r"C:\e"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\one\src");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "src", loaded(r"C:\one\src"));
+    for path in [r"C:\two\src", r"C:\b", r"C:\c"] {
+        go(&view, cx, path);
+    }
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["b".into(), "src".into(), "src".into()])
+    );
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.menu_details_for_test()),
+        Some(vec![r"C:\".into(), r"C:\two".into(), r"C:\one".into()])
+    );
+    // C:\two\src, two steps back when the menu opened.
+    let row = ws.update(cx, |ws, _| ws.menu_row_for_test(1)).expect("row");
+
+    // Meanwhile the pane gets somewhere (a folder that was loading): its menu closes.
+    go(&view, cx, r"C:\e");
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test()),
+        None
+    );
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_menu_row_for_test(row, window, cx);
+    });
+    wait_until(cx, &view, r"C:\two\src", loaded(r"C:\two\src"));
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec!["b".into(), "c".into(), "e".into()])
+    );
+
+    // A forward row whose folder is gone from the forward side by the time it is chosen.
+    let row = ws.update(cx, |ws, _| ws.menu_row_for_test(2)).expect("row");
+    go(&view, cx, r"C:\b");
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_menu_row_for_test(row, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(at(&view, cx), Some(p(r"C:\b")));
+}
+
+/// A jump to a folder that can't be opened (deleted, offline) leaves the timeline where it was:
+/// Back then still goes back in this tab instead of skipping to the other one.
+#[gpui::test]
+fn a_history_jump_that_fails_leaves_the_timeline_alone(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c", r"C:\d", r"C:\e"]);
+    let (ws, cx) = setup_workspace(cx, Arc::clone(&fs), r"C:\a");
+    let (_, b) = two_tabs_with_history(&ws, cx);
+    go(&b, cx, r"C:\e");
+    assert_eq!(
+        open_history_menu(&ws, &b, cx, true),
+        Some(vec!["d".into(), "c".into()])
+    );
+    fs.remove_dir(Path::new(r"C:\c"));
+    pick_menu_row(&ws, cx, 1);
+    wait_until(cx, &b, "the error", |e| e.error.is_some());
+    assert_eq!(at(&b, cx), Some(p(r"C:\e")));
+
+    cx.simulate_keystrokes("alt-left");
+    wait_until(cx, &b, "back in this tab", loaded(r"C:\d"));
+    assert_eq!(active(&ws, cx), 1);
+}
+
+/// Back and forward across two tabs with a history jump in between: the jump takes the steps it
+/// passed over, and the round trip comes back the way it went. With back and forward across
+/// tabs, the menu's first row is where the button goes.
+#[gpui::test]
+fn history_jumps_and_the_timeline_round_trip_across_tabs(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c", r"C:\d", r"C:\e", r"C:\f"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let (a, b) = two_tabs_with_history(&ws, cx);
+    go(&b, cx, r"C:\e");
+    cx.simulate_keystrokes("ctrl-1");
+    cx.run_until_parked();
+    go(&a, cx, r"C:\f");
+    cx.simulate_keystrokes("ctrl-2");
+    cx.run_until_parked();
+    assert_eq!(active(&ws, cx), 1);
+
+    // Back would first return to tab A (on f): that row comes first, then B's own folders.
+    assert_eq!(
+        open_history_menu(&ws, &b, cx, true),
+        Some(vec!["f".into(), "d".into(), "c".into()])
+    );
+    pick_menu_row(&ws, cx, 2);
+    wait_until(cx, &b, "B jumps to c", loaded(r"C:\c"));
+
+    let here = |cx: &mut VisualTestContext| {
+        let view = ws.update(cx, |ws, _| ws.active_view().clone());
+        wait_until(cx, &view, "listed", |e| {
+            e.model.as_ref().is_some_and(|m| m.complete) && e.display_path() == e.current_path()
+        });
+        (active(&ws, cx), at(&view, cx).expect("a folder"))
+    };
+    let mut trip = Vec::new();
+    for keys in ["alt-left"; 5].into_iter().chain(["alt-right"; 7]) {
+        cx.simulate_keystrokes(keys);
+        cx.run_until_parked();
+        trip.push(here(cx));
+    }
+    assert_eq!(
+        trip,
+        [
+            // Back: tab A as it was left, A's own step, B where the jump left it, then A.
+            (0, p(r"C:\f")),
+            (0, p(r"C:\b")),
+            (1, p(r"C:\c")),
+            (0, p(r"C:\b")),
+            (0, p(r"C:\a")),
+            // Forward retraces it, then redoes the folders the jump passed over.
+            (0, p(r"C:\b")),
+            (1, p(r"C:\c")),
+            (0, p(r"C:\b")),
+            (0, p(r"C:\f")),
+            (1, p(r"C:\c")),
+            (1, p(r"C:\d")),
+            (1, p(r"C:\e")),
+        ]
+    );
+
+    // Back over the folders the jump passed: then the first row is what the button does.
+    for _ in 0..2 {
+        cx.simulate_keystrokes("alt-left");
+        cx.run_until_parked();
+        here(cx);
+    }
+    assert_eq!(here(cx), (1, p(r"C:\c")));
+    assert_eq!(
+        open_history_menu(&ws, &b, cx, true).map(|m| m[0].clone()),
+        Some("f".into())
+    );
+    pick_menu_row(&ws, cx, 0);
+    assert_eq!(here(cx), (0, p(r"C:\f")));
+}
+
+/// A history menu on the side of a split tab that isn't active: the jump happens there and
+/// that side becomes the active one.
+#[gpui::test]
+fn a_history_jump_on_the_other_side_of_a_split(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let left = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &left, "a", loaded(r"C:\a"));
+    go(&left, cx, r"C:\b");
+    let (left, right) = split_to(&ws, cx, r"C:\c");
+    assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 1);
+    let menu = open_history_menu(&ws, &left, cx, true).expect("a menu");
+    assert_eq!(menu.last().map(String::as_str), Some("a"));
+    pick_menu_row(&ws, cx, menu.len() - 1);
+    wait_until(cx, &left, "left back to a", loaded(r"C:\a"));
+    assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
+    assert_eq!(at(&right, cx), Some(p(r"C:\c")));
+
+    // The steps stay in line: forward on the left comes back after the right's own step.
+    cx.simulate_keystrokes("alt-left");
+    wait_until(cx, &right, "right back to b", loaded(r"C:\b"));
+    cx.simulate_keystrokes("alt-right");
+    wait_until(cx, &right, "right forward to c", loaded(r"C:\c"));
+    cx.simulate_keystrokes("alt-right");
+    wait_until(cx, &left, "left forward to b", loaded(r"C:\b"));
+}
+
+/// Jumping back past a folder opened from Home shows Home, as pressing Back that many times
+/// does; with Home where the tab started, the folders under it aren't offered.
+#[gpui::test]
+fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\me", r"C:\me\Desktop", r"C:\x", r"C:\y"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    go(&view, cx, r"C:\me");
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_start_home_for_test(window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\me\Desktop"));
+    go(&view, cx, r"C:\x");
+    go(&view, cx, r"C:\y");
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["x".into(), "Desktop".into(), "me".into()])
+    );
+    pick_menu_row(&ws, cx, 2);
+    wait_until(cx, &view, "me", loaded(r"C:\me"));
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(t!("home.title").into_owned())
+    );
+}
+
+/// Keys close the open menu (its rows name tabs and folders a key may move), and so does a tab
+/// opening or closing behind it: the tab menu's Close then can't hit another tab.
+#[gpui::test]
+fn menus_close_on_keys_and_when_the_tabs_change(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    go(&view, cx, r"C:\b");
+    assert!(open_history_menu(&ws, &view, cx, true).is_some());
+    cx.simulate_keystrokes("backspace");
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test()),
+        None
+    );
+
+    open_tabs(&ws, cx, &[r"C:\c"]);
+    // The tab menu of the second tab, then a tab closes before a row is chosen.
+    ws.update(cx, |ws, cx| ws.open_tab_menu_for_test(1, cx));
+    assert!(ws.update(cx, |ws, _| ws.menu_row_for_test(0)).is_some());
+    ws.update_in(cx, |ws, window, cx| ws.close_tab(0, window, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test()),
+        None
+    );
+    assert!(
+        ws.update(cx, |ws, _| ws.menu_row_for_test(0)).is_none(),
+        "no stale row to choose"
+    );
+    assert_eq!(tab_count(&ws, cx), 1);
+}
+
+/// Ctrl+T set to Home opens a Home tab every time, also when Home is already open.
+#[gpui::test]
+fn ctrl_t_opens_home_again_and_again(cx: &mut TestAppContext) {
+    use crate::settings::NewTabAction;
+    let (ws, cx) = setup_workspace(cx, folders(&[r"C:\a"]), r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    change(cx, |s| s.new_tab = NewTabAction::Home);
+    let home = t!("home.title").into_owned();
+    for (tabs, active_tab) in [(2, 1), (3, 2)] {
+        cx.simulate_keystrokes("ctrl-t");
+        cx.run_until_parked();
+        ws.update(cx, |ws, _| {
+            assert_eq!((ws.tab_views().count(), ws.active), (tabs, active_tab));
+            assert_eq!(ws.shown_page_for_test(), Some(home.clone()));
+        });
+    }
+    // From another tab too: a new one, not a switch to the tab with Home.
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!((ws.tab_views().count(), ws.active), (4, 1));
+        assert_eq!(ws.shown_page_for_test(), Some(home.clone()));
+        assert_eq!(
+            ws.tab_titles_for_test(cx)
+                .iter()
+                .filter(|t| **t == home)
+                .count(),
+            1,
+            "one Home page; the others show their folder"
+        );
+    });
+}
+
+/// A pinned tab whose folder can't be shown (gone, unplugged) can be sent somewhere else.
+#[gpui::test]
+fn a_pinned_tab_on_a_missing_folder_can_be_pointed_elsewhere(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\other", r"C:\third"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\gone");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "error page", |e| e.failed.is_some());
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    ws.update_in(cx, |ws, window, cx| {
+        ws.sidebar_open_for_test(p(r"C:\other"), window, cx);
+    });
+    wait_until(cx, &view, "in place", loaded(r"C:\other"));
+    assert_eq!(tab_count(&ws, cx), 1);
+    assert_eq!(ws.update(cx, |ws, _| ws.pinned_for_test()), [true]);
+
+    // Shown again, it keeps its folder.
+    view.update(cx, |e, cx| e.navigate(p(r"C:\third"), NavKind::New, cx));
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 2);
+    assert_eq!(at(&view, cx), Some(p(r"C:\other")));
+}
+
+/// "New folder in" on a subfolder of a pinned tab makes it in a tab on that subfolder.
+#[gpui::test]
+fn new_folder_in_a_subfolder_of_a_pinned_tab(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![dir("sub")]);
+    fs.insert_many(r"C:\p\sub", 1);
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\p");
+    let pinned = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &pinned, "p", loaded(r"C:\p"));
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    right_click(&pinned, cx, Some(0));
+    run_command(&pinned, cx, MenuCommand::NewFolderIn);
+    let sub = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &sub, "sub", loaded(r"C:\p\sub"));
+    wait_shell("created", || !shell.ops().is_empty());
+    assert_eq!(
+        shell.ops(),
+        [FileOp::NewFolder {
+            parent: p(r"C:\p\sub"),
+            name: t!("ops.new_folder_name").into_owned(),
+        }]
+    );
+    assert_eq!(at(&pinned, cx), Some(p(r"C:\p")));
+    assert_eq!(tab_count(&ws, cx), 2);
+}
+
+/// A file typed in a pinned tab's path bar opens, and shows selected in its folder: in the
+/// pinned tab when that is its folder, else in a tab on the folder (not on the file).
+#[gpui::test]
+fn a_file_typed_in_a_pinned_tab_opens_without_a_duplicate_tab(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1), file("notes.txt", 1)]);
+    fs.insert_dir(r"C:\q", vec![file("x.txt", 1), file("y.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\p");
+    let pinned = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &pinned, "p", loaded(r"C:\p"));
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("ctrl-l");
+    cx.simulate_input(r"C:\p\notes.txt");
+    cx.simulate_keystrokes("enter");
+    wait_shell("opened", || !shell.opened.lock().is_empty());
+    wait_until(cx, &pinned, "selected", |e| {
+        selected_name(e).as_deref() == Some("notes.txt")
+    });
+    assert_eq!(tab_count(&ws, cx), 1);
+    assert_eq!(shell.opened.lock().as_slice(), [p(r"C:\p\notes.txt")]);
+
+    cx.simulate_keystrokes("ctrl-l");
+    cx.simulate_input(r"C:\q\y.txt");
+    cx.simulate_keystrokes("enter");
+    wait_shell("opened", || shell.opened.lock().len() == 2);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while tab_count(&ws, cx) < 2 {
+        assert!(Instant::now() < deadline, "no tab opened");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let q = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &q, "q with y selected", |e| {
+        loaded(r"C:\q")(e) && selected_name(e).as_deref() == Some("y.txt")
+    });
+    assert_eq!(at(&pinned, cx), Some(p(r"C:\p")));
+}
+
+/// Dragging over a pinned tab's targets starts no countdown (there's nowhere it could go).
+#[gpui::test]
+fn no_spring_countdown_over_a_pinned_tab(cx: &mut TestAppContext) {
+    let (ws, cx) = setup_workspace(cx, folders(&[r"C:\p", r"C:\p\sub"]), r"C:\p");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "p", loaded(r"C:\p"));
+    let hover = |cx: &mut VisualTestContext, inside: bool| {
+        let target = crate::spring::Target::Explorer(view.downgrade());
+        cx.update(|window, cx| {
+            crate::spring::hover_at(
+                "crumb:test".into(),
+                crate::spring::Action::Open(p(r"C:\p\sub")),
+                target,
+                inside,
+                gpui::point(gpui::px(10.), gpui::px(10.)),
+                window,
+                cx,
+            );
+            crate::spring::pending_key(cx)
+        })
+    };
+    assert_eq!(hover(cx, true).as_deref(), Some("crumb:test"));
+    assert_eq!(hover(cx, false), None);
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    assert_eq!(hover(cx, true), None);
+}
+
+/// Middle click on a folder already open in a tab: that tab flashes instead of nothing
+/// happening.
+#[gpui::test]
+fn a_folder_already_open_flashes_its_tab(cx: &mut TestAppContext) {
+    let (ws, cx) = setup_workspace(cx, folders(&[r"C:\a", r"C:\b"]), r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_flash_for_test(1)), None);
+    let middle_click_b = |cx: &mut VisualTestContext| {
+        first.update(cx, |_, cx| {
+            cx.emit(ExplorerEvent::OpenInNewTab {
+                path: p(r"C:\B"),
+                activate: false,
+            });
+        });
+        cx.run_until_parked();
+    };
+    middle_click_b(cx);
+    assert_eq!((tab_count(&ws, cx), active(&ws, cx)), (2, 0));
+    let flash = ws.update(cx, |ws, _| ws.tab_flash_for_test(1));
+    assert!(flash.is_some());
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_flash_for_test(0)), None);
+    // Again: a new flash.
+    middle_click_b(cx);
+    assert_ne!(ws.update(cx, |ws, _| ws.tab_flash_for_test(1)), flash);
+}
+
+/// A saved workspace's pinned tab in another spelling of an open pinned tab's folder isn't
+/// opened a second time.
+#[gpui::test]
+fn saved_workspaces_match_pinned_tabs_in_any_spelling(cx: &mut TestAppContext) {
+    use crate::settings::SessionTab;
+    let (ws, cx) = setup_workspace(cx, folders(&[r"C:\Work", r"C:\x"]), r"C:\Work");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "work", loaded(r"C:\Work"));
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    let tab = |path: &str, pinned: bool| SessionTab {
+        panes: vec![p(path)],
+        active_pane: 0,
+        ratio: 0.5,
+        pinned,
+        synced: false,
+        home: false,
+    };
+    let tabs = vec![tab(r"c:\work\", true), tab(r"C:\x", false)];
+    cx.update(|_, cx| {
+        WorkspaceStore::global(cx).update(cx, |s, cx| {
+            s.update(|w| w.save("Spelled", tabs, 1), cx).expect("saved");
+        });
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_saved_workspace("Spelled", window, cx);
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(
+            ws.all_paths_for_test(cx),
+            [vec![p(r"C:\Work")], vec![p(r"C:\x")]]
+        );
+        assert_eq!(ws.pinned_for_test(), [true, false]);
+    });
+}
+
+/// A pinned split tab keeps both folders: a move on either side opens a new tab, and
+/// synchronized browsing can't be turned on there.
+#[gpui::test]
+fn a_pinned_split_tab_keeps_both_sides(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\l", r"C:\l\sub", r"C:\r", r"C:\r\sub"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\l");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "l", loaded(r"C:\l"));
+    let (left, right) = split_to(&ws, cx, r"C:\r");
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    cx.dispatch_action(ToggleSyncBrowsing);
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.synced_for_test()), [false]);
+
+    right.update(cx, |e, cx| e.navigate(p(r"C:\r\sub"), NavKind::New, cx));
+    cx.run_until_parked();
+    let new = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &new, r"r\sub in a new tab", loaded(r"C:\r\sub"));
+    assert_eq!(tab_count(&ws, cx), 2);
+    assert_eq!(at(&left, cx), Some(p(r"C:\l")));
+    assert_eq!(at(&right, cx), Some(p(r"C:\r")));
+}
+
+/// Home or Settings over a pinned tab: a folder chosen from Home or the sidebar opens in a new
+/// tab and the pinned one keeps its folder.
+#[gpui::test]
+fn a_page_over_a_pinned_tab_opens_folders_beside_it(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\p", r"C:\other", r"C:\third"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\p");
+    let pinned = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &pinned, "p", loaded(r"C:\p"));
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.home_open_folder_for_test(p(r"C:\other"), window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(tab_count(&ws, cx), 2);
+    assert_eq!(at(&pinned, cx), Some(p(r"C:\p")));
+
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    ws.update_in(cx, Workspace::open_settings_for_test);
+    ws.update_in(cx, |ws, window, cx| {
+        ws.sidebar_open_for_test(p(r"C:\third"), window, cx);
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(
+            tab_paths(ws, cx),
+            [Some(p(r"C:\p")), Some(p(r"C:\third")), Some(p(r"C:\other"))]
+        );
+    });
+}
+
+/// Up from a pinned tab opens the parent in a new tab with the folder it came from selected.
+#[gpui::test]
+fn up_from_a_pinned_tab_selects_where_it_came_from(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![dir("a"), dir("sub"), dir("z")]);
+    fs.insert_many(r"C:\p\sub", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\p\sub");
+    let pinned = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &pinned, "sub", loaded(r"C:\p\sub"));
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("alt-up");
+    cx.run_until_parked();
+    let up = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &up, "p with sub selected", |e| {
+        loaded(r"C:\p")(e) && selected_name(e).as_deref() == Some("sub")
+    });
+    assert_eq!(at(&pinned, cx), Some(p(r"C:\p\sub")));
+}
+
+/// Pins brought back by a session or by Ctrl+Shift+T keep their folders too.
+#[gpui::test]
+fn restored_pinned_tabs_are_locked(cx: &mut TestAppContext) {
+    use crate::settings::{Session, SessionTab};
+    let fs = folders(&[r"C:\p", r"C:\q"]);
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::text_input::bind_keys(cx);
+        crate::explorer::bind_keys(cx);
+        crate::workspace::bind_keys(cx);
+    });
+    let tab = |path: &str, pinned: bool| SessionTab {
+        panes: vec![p(path)],
+        active_pane: 0,
+        ratio: 0.5,
+        pinned,
+        synced: false,
+        home: false,
+    };
+    let session = Session {
+        tabs: vec![tab(r"C:\p", true), tab(r"C:\q", false)],
+        active: 0,
+    };
+    let services = Services {
+        fs,
+        shell: Arc::new(FakeShell::default()),
+        remotes: crate::remote_shell::test_remotes(),
+    };
+    let (ws, cx) = cx.add_window_view(move |window, cx| {
+        Workspace::new(
+            services,
+            p(r"C:\p"),
+            false,
+            Some(session),
+            None,
+            Instant::now(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let locks = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, cx| {
+            ws.tab_views()
+                .map(|v| v.read(cx).locked)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(locks(cx), [true, false]);
+
+    ws.update_in(cx, |ws, window, cx| ws.close_tab(0, window, cx));
+    cx.run_until_parked();
+    assert_eq!(locks(cx), [false]);
+    cx.simulate_keystrokes("ctrl-shift-t");
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.pinned_for_test()), [true, false]);
+    assert_eq!(locks(cx), [true, false]);
+}

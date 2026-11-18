@@ -243,8 +243,9 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Ctrl+Z in the box takes the filter back out.
         self.filter_input.update(cx, |input, cx| {
-            input.set_text(text.clone(), cx);
+            input.replace_text(text.clone(), cx);
             let at = caret.unwrap_or(text.len());
             input.select_range(at..at, cx);
         });

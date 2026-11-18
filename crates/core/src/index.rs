@@ -304,9 +304,10 @@ pub struct Index {
     skipped_build_dirs: bool,
     /// Exclusions used for the build ([`BuildRules::fingerprint`]; 0 for none).
     excluded_hash: u32,
-    /// Build-time only: name hash -> existing span in the string pool (each name stored once).
-    /// Dropped after the build.
-    dedup: Option<HashMap<u64, (u32, u16)>>,
+    /// Build-time only: one node per distinct name, found by [`name_hash`], so each name is
+    /// stored once in the pool. Holds just the node id (4 bytes a name; a map keyed by the hash
+    /// would take 16). Dropped after the build.
+    dedup: Option<hashbrown::HashTable<u32>>,
 }
 
 /// Build progress: items listed so far.
@@ -314,6 +315,9 @@ pub struct Index {
 pub struct BuildProgress {
     /// Items listed so far; updated from the walker threads.
     pub scanned: AtomicUsize,
+    /// Items and name bytes of the index this build replaces (0 for a first build). Memory for
+    /// about that much is set aside up front instead of growing into it.
+    pub expected: (AtomicUsize, AtomicUsize),
 }
 
 /// One query.
@@ -384,6 +388,11 @@ impl Index {
         self.nodes.is_empty()
     }
 
+    /// Bytes of the name pool (each distinct name once).
+    pub fn name_bytes(&self) -> usize {
+        self.names.len()
+    }
+
     /// Root paths this index covers, in build order.
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots
@@ -437,21 +446,31 @@ impl Index {
         let name_len = u16::try_from(name.len()).ok()?;
         // Repeated names (`index.js`, `package.json`, `mod.rs`...) are stored once in the pool,
         // which saves more than half on a developer's disk.
-        let key = self.dedup.as_ref().map(|_| name_hash(name));
-        let known = key.and_then(|k| {
-            let &(start, len) = self.dedup.as_ref()?.get(&k)?;
-            let start_ix = start as usize;
-            (len == name_len && self.names.get(start_ix..start_ix + len as usize) == Some(name))
-                .then_some(start)
-        });
-        let name_start = if let Some(start) = known {
-            start
+        let name_start = if let Some(dedup) = self.dedup.as_mut() {
+            let (nodes, names) = (&*self.nodes, &*self.names);
+            let name_of = |id: u32| {
+                let node = nodes[id as usize];
+                let start = node.name_start as usize;
+                &names[start..start + node.name_len as usize]
+            };
+            match dedup.entry(
+                name_hash(name),
+                |&id| name_of(id) == name,
+                |&id| name_hash(name_of(id)),
+            ) {
+                hashbrown::hash_table::Entry::Occupied(known) => {
+                    nodes[*known.get() as usize].name_start
+                }
+                hashbrown::hash_table::Entry::Vacant(slot) => {
+                    let start = u32::try_from(names.len()).ok()?;
+                    slot.insert(id);
+                    self.names.push_str(name);
+                    start
+                }
+            }
         } else {
             let start = u32::try_from(self.names.len()).ok()?;
             self.names.push_str(name);
-            if let (Some(k), Some(map)) = (key, self.dedup.as_mut()) {
-                map.entry(k).or_insert((start, name_len));
-            }
             start
         };
         self.nodes.push(Node {
@@ -530,9 +549,12 @@ impl Index {
             built_at: unix_secs(SystemTime::now()),
             skipped_build_dirs: rules.skip_build_dirs,
             excluded_hash: rules.fingerprint(),
-            dedup: Some(HashMap::new()),
             ..Self::default()
         };
+        index.reserve(
+            progress.expected.0.load(Ordering::Relaxed),
+            progress.expected.1.load(Ordering::Relaxed),
+        );
         // Work: folders to list (node id, path). Results: their contents.
         let (work_tx, work_rx) = flume::unbounded::<(u32, PathBuf)>();
         let (done_tx, done_rx) = flume::unbounded::<(u32, Vec<Entry>)>();
@@ -617,12 +639,32 @@ impl Index {
             drop(work_tx);
         });
         index.dedup = None;
-        index.names.shrink_to_fit();
-        index.nodes.shrink_to_fit();
-        index.sizes.shrink_to_fit();
-        index.mtimes.shrink_to_fit();
-        index.masks.shrink_to_fit();
+        // Not shrunk here: it's usually saved and mapped right away, and shrinking copies every
+        // column while the old one is still allocated (see [`Index::shrink_to_fit`]).
         index
+    }
+
+    /// Sets aside memory for `items` items with `name_bytes` of names (a little over, so a
+    /// rebuild that found a few more doesn't double everything), and starts the name dedup.
+    fn reserve(&mut self, items: usize, name_bytes: usize) {
+        let (items, name_bytes) = (items + items / 16, name_bytes + name_bytes / 16);
+        self.nodes.owned().reserve_exact(items);
+        self.sizes.owned().reserve_exact(items);
+        self.mtimes.owned().reserve_exact(items);
+        self.masks.owned().reserve_exact(items);
+        self.names.reserve_exact(name_bytes);
+        // About a third of the names on a disk are distinct.
+        self.dedup = Some(hashbrown::HashTable::with_capacity(items / 3));
+    }
+
+    /// Gives back the memory a build or merge set aside beyond what it used. Only for an index
+    /// kept in memory (not saved): copying every column briefly needs both copies.
+    pub fn shrink_to_fit(&mut self) {
+        self.names.shrink_to_fit();
+        self.nodes.shrink_to_fit();
+        self.sizes.shrink_to_fit();
+        self.mtimes.shrink_to_fit();
+        self.masks.shrink_to_fit();
     }
 
     /// Adds one folder's contents. Subfolders go through `descend` (true means it will be entered).
@@ -749,9 +791,9 @@ impl Index {
         self.mtimes.owned().truncate(nodes);
         self.masks.owned().truncate(nodes);
         self.names.truncate(names);
-        // Dedup entries pointing into the removed names are no longer valid.
-        if let Some(map) = self.dedup.as_mut() {
-            map.retain(|_, &mut (start, len)| start as usize + len as usize <= names);
+        // Dedup entries for the removed nodes are no longer valid.
+        if let Some(dedup) = self.dedup.as_mut() {
+            dedup.retain(|id| (*id as usize) < nodes);
         }
     }
 
@@ -1128,7 +1170,6 @@ impl Index {
                 placed[r][c] = new;
             }
         }
-        out.names.shrink_to_fit();
         Some(Merged {
             index: out,
             unplaced,
@@ -1685,6 +1726,13 @@ impl Layout {
     }
 }
 
+/// How much a full column (or name pool) of `capacity` grows to fit `needed` more: half again,
+/// not the standard doubling. A build of millions of items would otherwise end up to twice the
+/// size it needs (a third more on average), on top of the old allocation while it's copied.
+fn grow_by(capacity: usize, needed: usize) -> usize {
+    (capacity / 2).max(needed).max(4096)
+}
+
 /// One index column: on the heap when built, mapped from the file when loaded ([`Index::open`]).
 enum Column<T: Copy + 'static> {
     Owned(Vec<T>),
@@ -1736,7 +1784,11 @@ impl<T: Copy> Column<T> {
     }
 
     fn push(&mut self, value: T) {
-        self.owned().push(value);
+        let v = self.owned();
+        if v.len() == v.capacity() {
+            v.reserve_exact(grow_by(v.capacity(), 1));
+        }
+        v.push(value);
     }
 
     fn shrink_to_fit(&mut self) {
@@ -1796,7 +1848,16 @@ impl Names {
             *self = Self::Owned(self.to_string());
         }
         if let Self::Owned(owned) = self {
+            if owned.capacity() - owned.len() < s.len() {
+                owned.reserve_exact(grow_by(owned.capacity(), s.len()));
+            }
             owned.push_str(s);
+        }
+    }
+
+    fn reserve_exact(&mut self, additional: usize) {
+        if let Self::Owned(owned) = self {
+            owned.reserve_exact(additional);
         }
     }
 
@@ -2046,6 +2107,14 @@ impl Overlay {
     pub fn prune_before(&mut self, seq: u64) {
         self.added.retain(|_, (_, s)| *s > seq);
         self.removed.retain(|_, s| *s > seq);
+        self.shrink();
+    }
+
+    /// Gives back the room of pruned records: up to 100,000 of them pile up between merges,
+    /// and a map keeps its size when emptied.
+    fn shrink(&mut self) {
+        self.added.shrink_to_fit();
+        self.removed.shrink_to_fit();
     }
 
     /// After [`Index::merged`]: drops records up to `seq` except `keep` (the ones it couldn't
@@ -2054,6 +2123,7 @@ impl Overlay {
         let keep: HashSet<&PathBuf> = keep.iter().collect();
         self.added.retain(|p, (_, s)| *s > seq || keep.contains(p));
         self.removed.retain(|_, s| *s > seq);
+        self.shrink();
     }
 
     /// Saves to a small file (for journal checkpoints, see index_service): added paths with their
@@ -2896,6 +2966,84 @@ mod tests {
         let mut hits = paths(&find(&index, "index.js", 10, false));
         hits.sort();
         assert_eq!(hits, [r"C:\a\index.js", r"C:\b\index.js"]);
+    }
+
+    /// Records folded into the index are dropped with the room they took.
+    #[test]
+    fn a_pruned_overlay_gives_its_room_back() {
+        let mut overlay = Overlay::default();
+        let seen = Seen {
+            is_dir: false,
+            hidden: false,
+            size: 1,
+            modified: 0,
+        };
+        for i in 0..20_000 {
+            overlay.record(PathBuf::from(format!(r"C:\build\out{i}.o")), Some(seen));
+            overlay.record(PathBuf::from(format!(r"C:\old\gone{i}.o")), None);
+        }
+        let seq = overlay.seq();
+        overlay.record(PathBuf::from(r"C:\later.txt"), Some(seen));
+        overlay.prune_merged(seq, &[]);
+        assert_eq!(overlay.len(), 1);
+        assert!(
+            overlay.added.capacity() < 100 && overlay.removed.capacity() < 100,
+            "{} / {}",
+            overlay.added.capacity(),
+            overlay.removed.capacity()
+        );
+    }
+
+    /// A build grows its columns by half, not double; a rebuild sets aside about what the index
+    /// it replaces used and never grows. Only an index kept in memory is shrunk.
+    #[test]
+    fn builds_set_aside_little_more_than_they_use() {
+        let fs = FakeFs::new();
+        let folders: Vec<_> = (0..40).map(|i| dir(&format!("folder {i}"))).collect();
+        fs.insert_dir(r"C:\", folders);
+        for i in 0..40 {
+            let files: Vec<_> = (0..500).map(|j| file(&format!("f{i}-{j}.txt"))).collect();
+            fs.insert_dir(&format!(r"C:\folder {i}"), files);
+        }
+        let build = |progress: &BuildProgress| {
+            Index::build(
+                fs.as_ref(),
+                &[PathBuf::from(r"C:\")],
+                2,
+                &AtomicBool::new(false),
+                progress,
+                &|| {},
+                false,
+            )
+        };
+        let first = build(&BuildProgress::default());
+        let items = first.len();
+        assert_eq!(items, 1 + 40 + 40 * 500);
+        let capacity = first.nodes.heap_capacity();
+        assert!(
+            capacity >= items && capacity <= items + items / 2 + 4096,
+            "{capacity} for {items}"
+        );
+
+        let progress = BuildProgress::default();
+        progress.expected.0.store(items, Ordering::Relaxed);
+        progress
+            .expected
+            .1
+            .store(first.name_bytes(), Ordering::Relaxed);
+        let mut again = build(&progress);
+        assert_eq!(again.len(), items);
+        assert_eq!(again.nodes.heap_capacity(), items + items / 16);
+        let names = first.name_bytes();
+        assert_eq!(again.names.heap_capacity(), names + names / 16);
+
+        again.shrink_to_fit();
+        assert_eq!(again.nodes.heap_capacity(), items);
+        assert_eq!(again.names.heap_capacity(), names);
+        assert_eq!(
+            paths(&find(&again, "f39-499", 10, false)),
+            [r"C:\folder 39\f39-499.txt"]
+        );
     }
 
     #[test]

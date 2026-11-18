@@ -16,6 +16,7 @@ rust-i18n.workspace = true
 flume.workspace = true
 rayon-core.workspace = true
 memmap2.workspace = true
+hashbrown.workspace = true
 parking_lot.workspace = true
 image.workspace = true
 jpeg-decoder.workspace = true

@@ -1392,6 +1392,21 @@ impl Shared {
         );
         self.building.store(true, Ordering::Release);
         self.progress.scanned.store(0, Ordering::Relaxed);
+        // The index it replaces, if it covers the same roots, tells how big this one will be.
+        let expected = self
+            .index
+            .read()
+            .as_ref()
+            .filter(|old| old.roots() == self.opts.roots.as_slice())
+            .map_or((0, 0), |old| (old.len(), old.name_bytes()));
+        self.progress
+            .expected
+            .0
+            .store(expected.0, Ordering::Relaxed);
+        self.progress
+            .expected
+            .1
+            .store(expected.1, Ordering::Relaxed);
         (self.on_change)();
         // Periodic progress while building (ends when done or stopped).
         let weak = Arc::downgrade(self);
@@ -1502,6 +1517,10 @@ impl Shared {
                 },
                 Err(err) => log::warn!("failed to save index file {}: {err}", target.display()),
             }
+        }
+        if index.heap_bytes() > 0 {
+            // Not saved (or not read back): it stays in memory, so give back the room set aside.
+            index.shrink_to_fit();
         }
         (index, replaced)
     }

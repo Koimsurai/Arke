@@ -40,6 +40,9 @@ flume = "0.12"
 rayon-core = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 memmap2 = "0.9"
+# Search index name dedup: `HashTable` stores only a node id per name (std's HashMap would need
+# the key too); already in the build through accesskit
+hashbrown = { version = "0.16", default-features = false }
 # Fuzzy matching (Helix's engine). MPL-2.0, used unmodified; see THIRD_PARTY_NOTICES.md
 nucleo = "0.5"
 # Archive support: zip (deflate only), tar and .tar.gz

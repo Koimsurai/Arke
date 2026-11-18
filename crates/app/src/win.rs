@@ -1049,31 +1049,26 @@ impl Shell for WinShell {
     }
 
     fn choose_app(&self, path: &Path, owner: Option<isize>) -> Result<(), ShellError> {
-        use windows::Win32::UI::Shell::{
-            OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SHOpenWithDialog,
-        };
         debug_assert!(
             !arke_core::fs::is_ui_thread(),
             "choose_app must not run on the UI thread"
         );
-        let file = wide(path.as_os_str());
-        let info = OPENASINFO {
-            pcszFile: PCWSTR(file.as_ptr()),
-            pcszClass: PCWSTR::null(),
-            // Open with the chosen app; Windows itself remembers "Always use this app".
-            oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT | OAIF_EXEC,
-        };
         let owner = owner.map(|h| windows::Win32::Foundation::HWND(h as *mut _));
-        // SAFETY: info and file are valid for the call; owner is Arke's own window or none.
-        // The dialog is shown by OpenWith.exe, so no third-party extensions load into Arke.
-        let result = unsafe { SHOpenWithDialog(owner, &raw const info) };
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) if e.code() == windows::Win32::Foundation::ERROR_CANCELLED.to_hresult() => {
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
+        // SAFETY: initializes STA on this dedicated background thread; ShellExecuteEx needs COM.
+        let com =
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+        let result = open_as(path, owner).or_else(|e| {
+            log::warn!(
+                "openas failed for {}, falling back to SHOpenWithDialog: {e:?}",
+                path.display()
+            );
+            open_with_dialog(path, owner)
+        });
+        if com.is_ok() {
+            // SAFETY: pairs with the successful CoInitializeEx above.
+            unsafe { CoUninitialize() };
         }
+        Ok(result?)
     }
 
     fn open_terminal(&self, dir: &Path) -> Result<(), ShellError> {
@@ -1575,6 +1570,55 @@ mod tests {
         let s = WinShell.expand_env("%SystemRoot%\\System32");
         assert!(!s.contains('%'), "{s}");
         assert!(WinShell.expand_env("~").len() > 3);
+    }
+}
+
+/// Explorer's "Choose another app" for one file: the `openas` verb Windows registers on the
+/// `Unknown` class (`OpenWith.exe "%1"`, a COM local server). This dialog has "Always", and
+/// Windows itself saves that choice. `SHOpenWithDialog` ignores the registration flags since
+/// Windows 10 and only offers "Just once". Nothing third-party loads into Arke.
+fn open_as(
+    path: &Path,
+    owner: Option<windows::Win32::Foundation::HWND>,
+) -> windows::core::Result<()> {
+    use windows::Win32::UI::Shell::{SEE_MASK_CLASSNAME, SEE_MASK_FLAG_NO_UI};
+    let verb = wide(std::ffi::OsStr::new("openas"));
+    let class = wide(std::ffi::OsStr::new("Unknown"));
+    let file = wide(path.as_os_str());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        // CLASSNAME: use the Unknown class's verb whatever app the file type has.
+        // NOASYNC: return only once OpenWith.exe is started, since this thread exits after.
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_CLASSNAME | SEE_MASK_FLAG_NO_UI,
+        hwnd: owner.unwrap_or_default(),
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpClass: PCWSTR(class.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    // SAFETY: the string pointers in info are valid for the call; owner is Arke's own window.
+    unsafe { ShellExecuteExW(&raw mut info) }
+}
+
+/// `SHOpenWithDialog`, "Just once" only (see [`open_as`]). Blocks until the dialog closes;
+/// Cancel is not an error.
+fn open_with_dialog(
+    path: &Path,
+    owner: Option<windows::Win32::Foundation::HWND>,
+) -> windows::core::Result<()> {
+    use windows::Win32::UI::Shell::{OAIF_EXEC, OPENASINFO, SHOpenWithDialog};
+    let file = wide(path.as_os_str());
+    let info = OPENASINFO {
+        pcszFile: PCWSTR(file.as_ptr()),
+        pcszClass: PCWSTR::null(),
+        oaifInFlags: OAIF_EXEC,
+    };
+    // SAFETY: info and file are valid for the call; owner is Arke's own window or none.
+    // The dialog is shown by OpenWith.exe, so no third-party extensions load into Arke.
+    match unsafe { SHOpenWithDialog(owner, &raw const info) } {
+        Err(e) if e.code() == windows::Win32::Foundation::ERROR_CANCELLED.to_hresult() => Ok(()),
+        other => other,
     }
 }
 

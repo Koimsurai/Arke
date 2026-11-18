@@ -142,6 +142,8 @@ struct FakeShell {
     no_bin: Mutex<Vec<PathBuf>>,
     /// QuickLook runs (exe, item).
     quicklook_runs: Mutex<Vec<(PathBuf, PathBuf)>>,
+    /// Files Windows' "Choose another app" dialog was opened for.
+    chose_app: Mutex<Vec<PathBuf>>,
 }
 
 impl FakeShell {
@@ -669,6 +671,15 @@ impl Shell for FakeShell {
         self.quicklook_runs
             .lock()
             .push((exe.to_path_buf(), item.to_path_buf()));
+        Ok(())
+    }
+
+    fn choose_app(&self, path: &Path, _owner: Option<isize>) -> Result<(), ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "choose_app called on the UI thread"
+        );
+        self.chose_app.lock().push(path.to_path_buf());
         Ok(())
     }
 
@@ -3191,6 +3202,48 @@ fn shortcuts_to_folders_open_inside_arke(cx: &mut TestAppContext) {
     wait_until(cx, &view, "folder containing the target", |v| {
         loaded(r"C:\apps")(v) && selected_names(v) == ["tool.exe"]
     });
+}
+
+/// "Open with..." hands the one selected file to Windows' "Choose another app" dialog (the one
+/// with "Always") off the UI thread. Folders and multi-selections don't offer it.
+#[gpui::test]
+fn open_with_opens_choose_another_app_for_one_file(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\w",
+        vec![dir("docs"), file("a.log", 1), file("b.log", 1)],
+    );
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\w");
+    wait_until(cx, &view, "load", loaded(r"C:\w"));
+    // Order: docs, a.log, b.log.
+    let choose = t!("menu.choose_app").into_owned();
+
+    right_click(&view, cx, Some(1));
+    let labels = menu_labels(&view, cx).expect("menu should be open");
+    assert!(labels.contains(&choose), "{labels:?}");
+    run_command(&view, cx, MenuCommand::ChooseApp);
+    wait_shell("choose another app", || !shell.chose_app.lock().is_empty());
+    assert_eq!(*shell.chose_app.lock(), [PathBuf::from(r"C:\w\a.log")]);
+    assert!(
+        shell.opened.lock().is_empty(),
+        "the file should not also open with its current app"
+    );
+
+    cx.simulate_keystrokes("escape");
+    right_click(&view, cx, Some(0));
+    let labels = menu_labels(&view, cx).expect("menu should be open");
+    assert!(!labels.contains(&choose), "folders: {labels:?}");
+
+    cx.simulate_keystrokes("escape home down shift-down");
+    right_click(&view, cx, Some(2));
+    assert_eq!(
+        view.update(cx, |v, _| selected_names(v)),
+        ["a.log", "b.log"]
+    );
+    let labels = menu_labels(&view, cx).expect("menu should be open");
+    assert!(!labels.contains(&choose), "several files: {labels:?}");
+    assert_eq!(shell.chose_app.lock().len(), 1);
 }
 
 /// In cloud folders like OneDrive the menu offers "Always keep on this device" (checked when all

@@ -940,8 +940,8 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = root;
         Err(ShellError::Unsupported)
     }
-    /// Windows "Open with" dialog. "Always use this app" is remembered by Windows itself.
-    /// Blocks until the dialog closes; background thread.
+    /// Windows "Choose another app" dialog, as Explorer opens it, with "Always" (saved by
+    /// Windows itself, never by Arke). Background thread.
     fn choose_app(&self, path: &Path, owner: Option<isize>) -> Result<(), ShellError> {
         let _ = (path, owner);
         Err(ShellError::Unsupported)

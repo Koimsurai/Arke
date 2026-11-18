@@ -1503,7 +1503,7 @@ impl Explorer {
                 }
             }
             C::Properties => self.run_shell_verb(&targets, "properties", window),
-            // Windows' own "Open with" dialog, opened in the menu process.
+            // Windows' "Choose another app" dialog, with "Always", as Explorer opens it.
             C::ChooseApp => {
                 if let Some((path, false)) = targets.first().cloned() {
                     self.choose_app(path, window);

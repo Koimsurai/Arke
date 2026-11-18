@@ -37,6 +37,8 @@ Windows registers when you install it, Arke writes to the registry only if you t
 (under `HKEY_CURRENT_USER\Software\Classes` only), and turning the setting off puts everything back.
 Shell extensions from other programs run in a separate process, so a buggy one can't take Arke down.
 
+If Arke is useful to you, a ⭐ on GitHub helps other people find it.
+
 ## Features
 
 <table>
@@ -67,10 +69,14 @@ Shell extensions from other programs run in a separate process, so a buggy one c
 - Spring-loaded folders, a shelf for collecting files from different folders, and a Home page
   with recent files, drives and network locations.
 - Swipe with two fingers on a touchpad to go back and forward, like in a browser.
+- The sidebar collapses to a column of icons (Ctrl+B) and opens over the content when you rest the
+  pointer on it. Columns in the columns view can be resized.
 
 **Preview**
 - A resizable preview pane and Quick Look (Space) for images, PDF, Word, Excel and PowerPoint,
   text and code with syntax highlighting, Markdown, archives and folders.
+- Videos show a frame as their thumbnail. Quick Look zooms text, documents and PDF pages
+  (Ctrl+wheel), and with QuickLook installed, Space can open that instead.
 
 **Search**
 - As you type, in this folder, its subfolders or the whole computer, with fuzzy matching and

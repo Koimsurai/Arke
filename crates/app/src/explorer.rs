@@ -1155,11 +1155,13 @@ impl Explorer {
             dir_service = dir_service.with_probe(probe);
         }
         let search_tx = events_tx.clone();
-        let search = SearchService::new(
+        // Below a network location in "this PC" search, its index stands in for walking the share.
+        let search = SearchService::with_index(
             Arc::clone(&services.fs),
             Arc::new(move |results| {
                 let _ = search_tx.send(AppEvent::Search(results));
             }),
+            Some(Arc::new(crate::global_search::indexed_tree)),
         );
         // Background results are handled in order on this foreground task; awaiting doesn't block
         // the UI thread.

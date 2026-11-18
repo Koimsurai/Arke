@@ -5367,6 +5367,70 @@ fn ctrl_k_searches_the_whole_computer(cx: &mut TestAppContext) {
 
 /// Whole-PC search: network locations added by the user have their own index, and their results
 /// merge with local ones. Removing a location drops its results.
+/// Searching file contents below a network location that "this PC" search indexes takes the files
+/// from its index: the share isn't walked again, only the files that qualify are read.
+#[gpui::test]
+fn content_search_on_an_indexed_share_uses_the_index(cx: &mut TestAppContext) {
+    use crate::global_search::{GlobalSearch, Roots};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\", vec![]);
+    fs.insert_dir(r"\\nas\share", vec![dir("team")]);
+    fs.insert_dir(
+        r"\\nas\share\team",
+        vec![file("memo.txt", 1), file("todo.txt", 1)],
+    );
+    fs.set_content(r"\\nas\share\team\memo.txt", b"pay the invoice\n".to_vec());
+    fs.set_content(r"\\nas\share\team\todo.txt", b"nothing\n".to_vec());
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"\\nas\share");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"\\nas\share"));
+    let global = cx.update(|_, cx| {
+        GlobalSearch::init(
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
+            Roots::Fixed(vec![PathBuf::from(r"C:\")]),
+            None,
+            cx,
+        )
+    });
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.global_search = true;
+                    st.search_network = vec![PathBuf::from(r"\\nas\share")];
+                },
+                cx,
+            );
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !global.update(cx, |g, _| {
+        g.net
+            .iter()
+            .any(|n| n.status.count == Some(4) && n.status.scanning.is_none())
+    }) {
+        assert!(Instant::now() < deadline, "network index not built");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let listed = fs.read_dir_calls();
+    cx.dispatch_action(FocusFilter);
+    cx.simulate_input("invoice");
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.toggle_contents(window, cx);
+            v.set_scope(crate::explorer::scope::Scope::Subfolders, cx);
+            v.keep_filter_focus(window, cx);
+        });
+    });
+    wait_until_ticking(cx, &view, "content match from the index", |v| {
+        final_hits(v) == [r"team\memo.txt"]
+    });
+    assert_eq!(fs.read_dir_calls(), listed, "the share wasn't walked again");
+}
+
 #[gpui::test]
 fn whole_computer_search_includes_chosen_network_locations(cx: &mut TestAppContext) {
     use crate::explorer::scope::Scope;

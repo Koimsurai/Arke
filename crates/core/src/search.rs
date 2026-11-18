@@ -26,6 +26,7 @@ use crate::content::ContentMatcher;
 use crate::entry::{Entry, EntryKind};
 use crate::filter::entry_accepted;
 use crate::fs::Fs;
+use crate::index::IndexedItem;
 use crate::index_query::{Clock, Query};
 use crate::service::Gen;
 
@@ -80,6 +81,11 @@ pub struct SearchResults {
 /// Receives result snapshots on the coordinator thread.
 pub type SearchSink = Arc<dyn Fn(SearchResults) + Send + Sync>;
 
+/// Everything below a folder (any depth) from an index: `(folder, show hidden, cancel)`, `None`
+/// when no index covers the folder (see [`crate::index_service::IndexService::items_under`]).
+pub type TreeSource =
+    Arc<dyn Fn(&std::path::Path, bool, &AtomicBool) -> Option<Vec<IndexedItem>> + Send + Sync>;
+
 enum Cmd {
     Start {
         generation: Gen,
@@ -104,11 +110,17 @@ pub struct SearchService {
 impl SearchService {
     /// Spawns the coordinator thread; nothing is walked until [`Self::start`].
     pub fn new(fs: Arc<dyn Fs>, sink: SearchSink) -> Self {
+        Self::with_index(fs, sink, None)
+    }
+
+    /// Like [`Self::new`], but a search below a network folder that `index` covers takes the
+    /// folder's items from it instead of walking the share.
+    pub fn with_index(fs: Arc<dyn Fs>, sink: SearchSink, index: Option<TreeSource>) -> Self {
         let (cmd, rx) = flume::unbounded();
         let wake_tx = cmd.downgrade();
         let spawned = std::thread::Builder::new()
             .name("search".into())
-            .spawn(move || coordinator(&fs, &sink, &rx, &wake_tx));
+            .spawn(move || coordinator(&fs, index, &sink, &rx, &wake_tx));
         if let Err(err) = spawned {
             log::error!("failed to spawn search thread: {err}");
         }
@@ -191,6 +203,7 @@ type Notify = Arc<dyn Fn() + Send + Sync>;
 /// Coordinator thread state.
 struct Coordinator {
     fs: Arc<dyn Fs>,
+    index: Option<TreeSource>,
     notify: Notify,
     wake_pending: Arc<AtomicBool>,
     nucleo: Option<Nucleo<Arc<SearchHit>>>,
@@ -204,6 +217,7 @@ struct Coordinator {
 
 fn coordinator(
     fs: &Arc<dyn Fs>,
+    index: Option<TreeSource>,
     sink: &SearchSink,
     rx: &flume::Receiver<Cmd>,
     wake_tx: &flume::WeakSender<Cmd>,
@@ -224,6 +238,7 @@ fn coordinator(
     };
     let mut c = Coordinator {
         fs: Arc::clone(fs),
+        index,
         notify,
         wake_pending,
         nucleo: None,
@@ -317,6 +332,7 @@ impl Coordinator {
                 root: root.clone(),
                 show_hidden,
                 query: query.clone(),
+                index: self.index.clone(),
             },
             nucleo.injector(),
             Arc::clone(&self.notify),
@@ -428,6 +444,8 @@ struct WalkSpec {
     root: PathBuf,
     show_hidden: bool,
     query: Query,
+    /// Takes the place of the walk where it covers the root.
+    index: Option<TreeSource>,
 }
 
 fn spawn_walk(
@@ -483,10 +501,25 @@ fn walk_tree(
     } else {
         (1, CONTENT_THREADS)
     };
+    // On a file server an index that covers the folder stands in for the walk: listing the
+    // share folder by folder is what takes the time there.
+    let mut indexed = if network {
+        spec.index
+            .as_ref()
+            .and_then(|source| source(&spec.root, spec.show_hidden, cancel))
+    } else {
+        None
+    };
     let Some(matcher) = spec.query.content_needle().and_then(ContentMatcher::new) else {
-        walk_items(fs, spec, list_threads, cancel, progress, &mut |hit| {
-            push_hit(injector, hit);
-        });
+        gather(
+            fs,
+            spec,
+            indexed.take(),
+            list_threads,
+            cancel,
+            progress,
+            &mut |hit| push_hit(injector, hit),
+        );
         return;
     };
     // Name text with a content search: only open files whose name matches too.
@@ -520,22 +553,64 @@ fn walk_tree(
             });
         }
         drop(rx);
-        walk_items(fs, spec, list_threads, cancel, progress, &mut |hit| {
-            if !crate::content::worth_reading(&hit.entry) {
-                return;
-            }
-            if let Some(p) = &name_pattern
-                && p.score(
-                    nucleo::Utf32Str::new(&hit.entry.name, &mut buf),
-                    &mut name_matcher,
-                )
-                .is_none()
-            {
-                return;
-            }
-            let _ = tx.send(hit);
-        });
+        gather(
+            fs,
+            spec,
+            indexed.take(),
+            list_threads,
+            cancel,
+            progress,
+            &mut |hit| {
+                if !crate::content::worth_reading(&hit.entry) {
+                    return;
+                }
+                if let Some(p) = &name_pattern
+                    && p.score(
+                        nucleo::Utf32Str::new(&hit.entry.name, &mut buf),
+                        &mut name_matcher,
+                    )
+                    .is_none()
+                {
+                    return;
+                }
+                let _ = tx.send(hit);
+            },
+        );
     });
+}
+
+/// Hands every item below the root to `found`: from `indexed` (an index's items) when given,
+/// otherwise by walking.
+fn gather(
+    fs: &dyn Fs,
+    spec: &WalkSpec,
+    indexed: Option<Vec<IndexedItem>>,
+    threads: usize,
+    cancel: &AtomicBool,
+    progress: &Progress,
+    found: &mut dyn FnMut(SearchHit),
+) {
+    let Some(items) = indexed else {
+        walk_items(fs, spec, threads, cancel, progress, found);
+        return;
+    };
+    let filtered = spec.query.has_filters() || spec.query.content.is_some();
+    for item in items {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if !filtered || entry_accepted(&spec.query, &item.entry) {
+            found(SearchHit {
+                rel: Arc::from(item.rel),
+                entry: item.entry,
+                snippet: None,
+            });
+        }
+        if progress.scanned.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_ITEMS {
+            progress.truncated.store(true, Ordering::Relaxed);
+            return;
+        }
+    }
 }
 
 /// Walks breadth first: `threads` list folders (one keeps the order folders were found in),
@@ -758,6 +833,49 @@ mod tests {
         );
         let r = settle(&rx, g);
         assert_eq!((rels(&r), r.read), (vec![r"docs\plan.txt".to_owned()], 1));
+    }
+
+    /// Below a network folder an index covers, a search takes the items from the index: nothing
+    /// is listed, and a content search opens only the files that qualify. Elsewhere it walks.
+    #[test]
+    fn indexed_network_folders_are_not_walked() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"\\nas\s", vec![dir("docs")]);
+        fs.insert_dir(r"\\nas\s\docs", vec![file("plan.txt"), file("pic.jpg")]);
+        fs.set_content(r"\\nas\s\docs\plan.txt", b"budget".to_vec());
+        fs.insert_dir(r"C:\local", vec![file("plan.txt")]);
+        fs.set_content(r"C:\local\plan.txt", b"budget".to_vec());
+        let source: TreeSource = Arc::new(|root, _, _| {
+            (root == std::path::Path::new(r"\\nas\s")).then(|| {
+                [
+                    ("docs", dir("docs")),
+                    (r"docs\plan.txt", file("plan.txt")),
+                    (r"docs\pic.jpg", file("pic.jpg")),
+                ]
+                .into_iter()
+                .map(|(rel, entry)| IndexedItem {
+                    rel: rel.to_owned(),
+                    entry,
+                })
+                .collect()
+            })
+        });
+        let (sink, rx) = collect();
+        let svc = SearchService::with_index(Arc::clone(&fs) as Arc<dyn Fs>, sink, Some(source));
+        let g = svc.start(PathBuf::from(r"\\nas\s"), false, "plan", Clock::default());
+        assert_eq!(rels(&settle(&rx, g)), [r"docs\plan.txt"]);
+        let g = svc.start(
+            PathBuf::from(r"\\nas\s"),
+            false,
+            "content:budget",
+            Clock::default(),
+        );
+        let r = settle(&rx, g);
+        assert_eq!((rels(&r), r.read), (vec![r"docs\plan.txt".to_owned()], 1));
+        assert_eq!(fs.read_dir_calls(), 0, "the share was never listed");
+        let g = svc.start(PathBuf::from(r"C:\local"), false, "plan", Clock::default());
+        assert_eq!(rels(&settle(&rx, g)), ["plan.txt"]);
+        assert_eq!(fs.read_dir_calls(), 1, "local folders are walked");
     }
 
     /// On a file server several folders are listed at once: a slow one doesn't hold up the rest.

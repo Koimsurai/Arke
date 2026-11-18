@@ -78,6 +78,24 @@ const NET_MAX_ITEMS: usize = 2_000_000;
 /// items took eight minutes; eight at once (with large fetches) take a little over three.
 const NET_THREADS: usize = 8;
 
+/// The network locations' index services, for searches on background threads (see
+/// [`indexed_tree`]).
+static NET_SERVICES: parking_lot::RwLock<Vec<Arc<IndexService>>> =
+    parking_lot::RwLock::new(Vec::new());
+
+/// Everything below `dir` from the index of the network location it is in, so a search there
+/// doesn't walk the share; `None` when no network index covers it. Background threads only.
+pub(crate) fn indexed_tree(
+    dir: &std::path::Path,
+    show_hidden: bool,
+    cancel: &AtomicBool,
+) -> Option<Vec<arke_core::index::IndexedItem>> {
+    let services = NET_SERVICES.read().clone();
+    services
+        .iter()
+        .find_map(|service| service.items_under(dir, show_hidden, cancel))
+}
+
 /// Index of one network location.
 pub(crate) struct NetIndex {
     pub(crate) root: PathBuf,
@@ -324,9 +342,16 @@ impl GlobalSearch {
                 changed = true;
             }
         }
+        self.publish_net();
         if changed {
             cx.notify();
         }
+    }
+
+    /// Makes the network locations' indexes available to searches below them
+    /// ([`indexed_tree`]).
+    fn publish_net(&self) {
+        *NET_SERVICES.write() = self.net.iter().filter_map(|n| n.service.clone()).collect();
     }
 
     /// Start indexing a network location. If not opened yet this session (NAS may be asleep), read
@@ -363,14 +388,17 @@ impl GlobalSearch {
                 // still answers everyone else.
                 threads: NET_THREADS,
                 thread_init: Arc::new(crate::win::lower_io_priority),
-                // The watcher keeps it current; full walk only weekly.
-                refresh_after: std::time::Duration::from_hours(24 * 7),
+                // The watcher keeps it current while Arke runs; changes made while it was closed come
+                // in with a daily rewalk, which lists again only folders that may have changed.
+                refresh_after: std::time::Duration::from_hours(24),
                 journal: None,
                 can_build: can_build(real),
                 skip_build_dirs,
                 passive: !online,
                 excluded: Vec::new(),
                 max_items: Some(NET_MAX_ITEMS),
+                // After the first walk, folders whose contents can't have changed aren't listed again.
+                incremental: true,
             };
             let service = IndexService::start(fs, options, move || {
                 let _ = changed_tx.send(());
@@ -433,6 +461,7 @@ impl GlobalSearch {
                     this.start_net(root, cx);
                 }
             }
+            this.publish_net();
             cx.notify();
         });
     }
@@ -466,6 +495,7 @@ impl GlobalSearch {
                         this.start_net(root, cx);
                     }
                 }
+                this.publish_net();
             });
         })
         .detach();
@@ -478,6 +508,7 @@ impl GlobalSearch {
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
+        self.publish_net();
         for net in &mut self.net {
             let status = net.service.as_ref().map_or_default(|s| s.status());
             if status != net.status {
@@ -674,6 +705,7 @@ pub(crate) fn local_index_options(
         passive: false,
         excluded,
         max_items: None,
+        incremental: false,
     }
 }
 

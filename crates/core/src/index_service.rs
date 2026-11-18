@@ -157,6 +157,9 @@ pub struct IndexOptions {
     pub excluded: Vec<PathBuf>,
     /// Stop walking past this many items (network locations); `None` for no limit.
     pub max_items: Option<usize>,
+    /// Rewalks list again only the folders that may have changed since the last one (see
+    /// [`Index::refresh`]); network locations, where every listing is a round trip.
+    pub incremental: bool,
 }
 
 impl IndexOptions {
@@ -481,8 +484,9 @@ impl IndexService {
         show_hidden: bool,
         cancel: &AtomicBool,
     ) -> Option<Vec<IndexHit>> {
+        // Before the first build ends: what it has walked so far.
         let index = self.shared.index.read().clone();
-        let Some(index) = index else {
+        let Some(index) = index.or_else(|| self.shared.progress.partial.lock().clone()) else {
             return Some(Vec::new());
         };
         let query = Query::parse(input, clock);
@@ -602,6 +606,25 @@ impl IndexService {
             out.push((child.name, size));
         }
         Some(out)
+    }
+
+    /// Every item below `dir` this index has, with the changes seen since its build (see
+    /// [`Index::items_under`]): a search below `dir` can take these instead of walking it. `None`
+    /// when the index can't stand in for a walk: only reading the saved index (not watching, so
+    /// changes since aren't known), no index yet, `dir` not covered, or cancelled.
+    pub fn items_under(
+        &self,
+        dir: &Path,
+        show_hidden: bool,
+        cancel: &AtomicBool,
+    ) -> Option<Vec<crate::index::IndexedItem>> {
+        let shared = &self.shared;
+        if shared.opts.passive {
+            return None;
+        }
+        let index = shared.index.read().clone()?;
+        let overlay = shared.overlay.lock().under(dir);
+        index.items_under(dir, &overlay, show_hidden, cancel)
     }
 
     /// Rewalks (no-op if a build is already running).
@@ -1460,25 +1483,50 @@ impl Shared {
                 _ => Err(io::ErrorKind::Unsupported.into()),
             }
         };
-        let index = Index::build_listed(
-            self.fs.as_ref(),
-            &self.opts.roots,
-            self.opts.threads,
-            &self.stopped,
-            &self.progress,
-            &move || init(),
-            &self.rules,
-            &lister,
-        )
+        let current = self.index.read().clone();
+        let base = self.refresh_base(current.as_ref(), reason);
+        self.progress.reused.store(0, Ordering::Relaxed);
+        // Nothing to search yet: the walk shares what it has so far.
+        self.progress
+            .want_partial
+            .store(current.is_none(), Ordering::Relaxed);
+        drop(current);
+        let index = match &base {
+            Some(old) => Index::refresh(
+                self.fs.as_ref(),
+                old,
+                self.opts.threads,
+                &self.stopped,
+                &self.progress,
+                &move || init(),
+                &self.rules,
+            ),
+            None => Index::build_listed(
+                self.fs.as_ref(),
+                &self.opts.roots,
+                self.opts.threads,
+                &self.stopped,
+                &self.progress,
+                &move || init(),
+                &self.rules,
+                &lister,
+            ),
+        }
         .with_cursors(cursors.clone());
+        drop(base);
+        self.progress.want_partial.store(false, Ordering::Relaxed);
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
         log::info!(
-            "global search index built: {}, {} items, {:.1} s",
+            "global search index built: {}, {} items, {:.1} s{}",
             crate::index::roots_label(&self.opts.roots),
             index.len(),
-            started.elapsed().as_secs_f32()
+            started.elapsed().as_secs_f32(),
+            match self.progress.reused.load(Ordering::Relaxed) {
+                0 => String::new(),
+                n => format!(", {n} unchanged folders not listed again"),
+            }
         );
         let (index, replaced) = self.save_and_map(index);
         self.overlay.lock().prune_before(seq);
@@ -1490,6 +1538,28 @@ impl Shared {
             let _ = std::fs::remove_file(old);
         }
         self.follow_all(&cursors);
+    }
+
+    /// The index an incremental rewalk starts from ([`IndexOptions::incremental`]): the current
+    /// one with the changes recorded since folded in, so folders taken over unchanged carry them.
+    /// `None` for a full walk: not incremental, asked for by the user, nothing to start from,
+    /// built with other rules, or cut off at the item limit (folders it never got to would look
+    /// empty and unchanged).
+    fn refresh_base(&self, current: Option<&Arc<Index>>, reason: Rebuild) -> Option<Arc<Index>> {
+        let old = current.filter(|old| {
+            self.opts.incremental
+                && !matches!(reason, Rebuild::Requested)
+                && old.roots() == self.opts.roots.as_slice()
+                && old.skipped_build_dirs() == self.rules.skip_build_dirs
+                && old.excluded_hash() == self.rules.fingerprint()
+                && self.rules.max_items.is_none_or(|max| old.len() < max)
+        })?;
+        let overlay = self.overlay.lock().clone();
+        if overlay.is_empty() {
+            return Some(Arc::clone(old));
+        }
+        old.merged(&overlay, &self.rules, &self.stopped)
+            .map(|merged| Arc::new(merged.index))
     }
 
     /// Writes `index` to the cache file not currently mapped and maps it instead (the in-memory
@@ -1657,6 +1727,7 @@ mod tests {
             passive: false,
             excluded: Vec::new(),
             max_items: None,
+            incremental: false,
         }
     }
 
@@ -1670,6 +1741,71 @@ mod tests {
     fn ready(svc: &IndexService) -> bool {
         let s = svc.status();
         s.count.is_some() && s.scanning.is_none()
+    }
+
+    /// Before the first index exists, searches see what the walk has found so far.
+    #[test]
+    fn a_first_build_is_searchable_before_it_ends() {
+        let fs = FakeFs::new();
+        let dir = |name: &str| Entry::new(name, EntryKind::Dir, 0, None, 0);
+        let file = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        fs.insert_dir(r"C:\", vec![dir("a"), dir("b"), dir("slow")]);
+        fs.insert_dir(r"C:\a", vec![file("found.txt")]);
+        fs.insert_dir(r"C:\b", vec![file("other.txt")]);
+        fs.set_delay(r"C:\b", Duration::from_millis(50));
+        fs.insert_dir(r"C:\slow", vec![file("late.txt")]);
+        fs.hang(r"C:\slow");
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            IndexOptions {
+                threads: 3,
+                ..opts(None)
+            },
+            || {},
+        );
+        wait("partial results", || {
+            found(&svc, "found") == [r"C:\a\found.txt"]
+        });
+        assert!(svc.status().scanning.is_some(), "still walking");
+        assert!(found(&svc, "late").is_empty());
+        fs.release_all();
+        wait("built", || ready(&svc));
+        assert_eq!(found(&svc, "late"), [r"C:\slow\late.txt"]);
+    }
+
+    /// With `incremental`, a rewalk lists again only folders that may have changed; one the user
+    /// asks for lists everything.
+    #[test]
+    fn incremental_rebuilds_list_only_changed_folders() {
+        let fs = FakeFs::new();
+        let then = Some(std::time::UNIX_EPOCH + Duration::from_secs(1_000));
+        let dir = |name: &str| Entry::new(name, EntryKind::Dir, 0, then, 0);
+        let file = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        fs.insert_dir(r"C:\", vec![dir("a"), dir("b")]);
+        fs.insert_dir(r"C:\a", vec![file("a.txt")]);
+        fs.insert_dir(r"C:\b", vec![file("b.txt")]);
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            IndexOptions {
+                incremental: true,
+                refresh_after: Duration::from_hours(1),
+                ..opts(None)
+            },
+            || {},
+        );
+        wait("built", || ready(&svc));
+        let calls = fs.read_dir_calls();
+        svc.shared.request_build(Rebuild::Stale);
+        wait("rewalked", || svc.rebuilds() == 2 && ready(&svc));
+        assert_eq!(
+            fs.read_dir_calls() - calls,
+            1,
+            "only the root is listed again"
+        );
+        assert_eq!(found(&svc, "b.txt"), [r"C:\b\b.txt"]);
+        svc.rebuild();
+        wait("rebuilt", || svc.rebuilds() == 3 && ready(&svc));
+        assert_eq!(fs.read_dir_calls() - calls, 4);
     }
 
     /// Skip build folders: `node_modules` and Rust `target` are not entered (the folder itself is

@@ -709,7 +709,9 @@ pub(crate) trait Shell: Send + Sync + 'static {
         Vec::new()
     }
     /// Opens a file with its default program. Background thread (runs shell extensions and other third-party code).
-    fn open(&self, path: &Path) -> Result<(), ShellError>;
+    /// `sort` is the order of the folder view it is opened from: viewers that step through the folder (Photos'
+    /// previous and next) follow it, as when opened from File Explorer. `None` outside a folder view.
+    fn open(&self, path: &Path, sort: Option<arke_core::SortSpec>) -> Result<(), ShellError>;
     /// Expands environment variables such as `%USERPROFILE%` and a leading `~`. Pure.
     fn expand_env(&self, input: &str) -> String;
     /// Local time for display. Pure.

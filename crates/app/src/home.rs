@@ -230,7 +230,7 @@ impl HomePage {
         crate::search_history::SearchHistory::record(&path, false, cx);
         let shell = Arc::clone(&self.shell);
         spawn_thread("home-open", move || {
-            if let Err(err) = shell.open(&path) {
+            if let Err(err) = shell.open(&path, None) {
                 log::info!("home cannot open {}: {err}", path.display());
             }
         });

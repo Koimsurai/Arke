@@ -2966,9 +2966,9 @@ impl Explorer {
         }
     }
 
-    /// Opens with the default app. ShellExecuteExW loads third-party shell extensions, so it runs
-    /// on a
-    /// dedicated STA thread. Shortcuts (`.lnk`) to folders open in Arke instead of Explorer.
+    /// Opens with the default app, in this view's sort order (Photos steps through the folder in
+    /// it). ShellExecuteExW loads third-party shell extensions, so it runs on a dedicated STA
+    /// thread. Shortcuts (`.lnk`) to folders open in Arke instead of Explorer.
     fn open_file(&self, path: PathBuf, cx: &mut App) {
         // Opened files rank first among same-name results in "This PC" search.
         crate::search_history::SearchHistory::record(&path, false, cx);
@@ -2977,12 +2977,13 @@ impl Explorer {
         let shortcut = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("lnk"));
+        let sort = self.sort;
         spawn_thread("shell-open", move || {
             if shortcut && let Some((target, true)) = shell.shortcut_target(&path) {
                 let _ = tx.send(AppEvent::OpenFolder(target));
                 return;
             }
-            if let Err(error) = shell.open(&path) {
+            if let Err(error) = shell.open(&path, Some(sort)) {
                 let _ = tx.send(AppEvent::OpenFailed { path, error });
             }
         });

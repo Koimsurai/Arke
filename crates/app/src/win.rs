@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+use windows::Win32::Foundation::{FILETIME, HINSTANCE, SYSTEMTIME};
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, QueryDosDeviceW,
@@ -23,11 +23,11 @@ use windows::Win32::System::Time::{
 };
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures,
-    FOLDERID_Profile, FOLDERID_Videos, KF_FLAG_DONT_VERIFY, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
-    SHGetKnownFolderPath, ShellExecuteExW,
+    FOLDERID_Profile, FOLDERID_Videos, KF_FLAG_DONT_VERIFY, SEE_MASK_FLAG_HINST_IS_SITE,
+    SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHGetKnownFolderPath, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-use windows::core::{GUID, PCWSTR};
+use windows::core::{GUID, Interface, PCWSTR};
 
 use crate::shell::{
     ClipboardFiles, CloudPin, FileOp, KnownFolder, OpOutcome, Place, PlaceKind, Shell, ShellError,
@@ -646,7 +646,7 @@ impl Shell for WinShell {
         places
     }
 
-    fn open(&self, path: &Path) -> Result<(), ShellError> {
+    fn open(&self, path: &Path, sort: Option<arke_core::SortSpec>) -> Result<(), ShellError> {
         debug_assert!(
             !arke_core::fs::is_ui_thread(),
             "open must not run on the UI thread"
@@ -656,17 +656,30 @@ impl Shell for WinShell {
         // SAFETY: initializes STA on this dedicated background thread; ShellExecuteEx needs COM.
         let com =
             unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+        // The folder view it is opened from, so Photos and the like can step through the folder
+        // in this order (`win_viewsite.rs`).
+        let site = sort.and_then(|sort| crate::win_viewsite::site(path, &sort));
         let mut info = SHELLEXECUTEINFOW {
             cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
             // NOASYNC: return only when done, since this thread exits right after.
-            fMask: SEE_MASK_NOASYNC,
+            fMask: SEE_MASK_NOASYNC
+                | if site.is_some() {
+                    SEE_MASK_FLAG_HINST_IS_SITE
+                } else {
+                    0
+                },
             lpFile: PCWSTR(file.as_ptr()),
             lpDirectory: dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
             nShow: SW_SHOWNORMAL.0,
+            hInstApp: site
+                .as_ref()
+                .map_or_else(HINSTANCE::default, |s| HINSTANCE(s.as_raw())),
             ..Default::default()
         };
-        // SAFETY: the string pointers in info live until the end of the function.
+        // SAFETY: the string pointers in info live until the end of the function, and so does
+        // the site, which the shell only borrows for the call.
         let result = unsafe { ShellExecuteExW(&raw mut info) };
+        drop(site);
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };

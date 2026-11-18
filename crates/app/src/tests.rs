@@ -64,6 +64,8 @@ type PdfRenderCall = (PathBuf, u32, (u32, u32));
 #[derive(Default)]
 struct FakeShell {
     opened: Mutex<Vec<PathBuf>>,
+    /// The view order each `opened` file was opened in.
+    opened_sorts: Mutex<Vec<Option<SortSpec>>>,
     ops: Mutex<Vec<FileOp>>,
     clipboard: Mutex<Option<(ClipboardFiles, u32)>>,
     seq: AtomicU32,
@@ -169,11 +171,12 @@ impl Shell for FakeShell {
         places
     }
 
-    fn open(&self, path: &Path) -> Result<(), ShellError> {
+    fn open(&self, path: &Path, sort: Option<SortSpec>) -> Result<(), ShellError> {
         assert!(
             !arke_core::fs::is_ui_thread(),
             "open called on the UI thread"
         );
+        self.opened_sorts.lock().push(sort);
         self.opened.lock().push(path.to_path_buf());
         Ok(())
     }
@@ -1171,6 +1174,29 @@ fn opening_files_and_loading_places_run_off_ui_thread(cx: &mut TestAppContext) {
         shell.opened.lock().as_slice(),
         [PathBuf::from(r"C:\home\readme.md")]
     );
+}
+
+/// A file opens in the view's order, so Photos' previous and next follow Arke's sort.
+#[gpui::test]
+fn opened_files_carry_the_view_sort(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\home", vec![file("a.png", 1), file("b.png", 2)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\home");
+    wait_until(cx, &view, "load", loaded(r"C:\home"));
+    let spec = SortSpec::by(SortColumn::Size, false, false);
+    view.update(cx, |v, cx| v.set_sort(spec, cx));
+    wait_until(cx, &view, "sorted", |v| {
+        v.model.as_ref().is_some_and(|m| m.sorted_by == spec)
+    });
+
+    cx.simulate_keystrokes("down enter");
+    wait_shell("file opened", || !shell.opened.lock().is_empty());
+    assert_eq!(
+        shell.opened.lock().as_slice(),
+        [PathBuf::from(r"C:\home\b.png")]
+    );
+    assert_eq!(shell.opened_sorts.lock().as_slice(), [Some(spec)]);
 }
 
 #[gpui::test]

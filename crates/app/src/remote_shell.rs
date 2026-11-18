@@ -509,13 +509,14 @@ impl Shell for RemoteShell {
     fn disk_spaces(&self, roots: &[PathBuf]) -> Vec<(PathBuf, (u64, u64))> {
         self.inner.disk_spaces(roots)
     }
-    fn open(&self, path: &Path) -> Result<(), ShellError> {
+    fn open(&self, path: &Path, sort: Option<arke_core::SortSpec>) -> Result<(), ShellError> {
         match remote(path) {
+            // A downloaded copy has no folder to step through.
             Some(url) => {
                 let local = self.remotes.fetch(&url, OPEN_MAX)?;
-                self.inner.open(&local)
+                self.inner.open(&local, None)
             }
-            None => self.inner.open(path),
+            None => self.inner.open(path, sort),
         }
     }
     fn expand_env(&self, input: &str) -> String {

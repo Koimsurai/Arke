@@ -103,6 +103,7 @@ mod win_purge;
 mod win_recycle;
 mod win_registry;
 mod win_takeover;
+mod win_viewsite;
 mod workspace;
 
 #[cfg(test)]

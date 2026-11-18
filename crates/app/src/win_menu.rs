@@ -544,7 +544,9 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
 /// The folder a menu for `paths` is for: the folder itself for its background, else the items'
 /// folder. NUL-terminated, for [`Session::directory`].
 fn menu_directory(paths: &[PathBuf], background: bool) -> Vec<u16> {
-    let first = paths.first().map_or_else(|| Path::new(""), PathBuf::as_path);
+    let first = paths
+        .first()
+        .map_or_else(|| Path::new(""), PathBuf::as_path);
     let folder = if background {
         first
     } else {

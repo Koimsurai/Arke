@@ -1796,9 +1796,41 @@ mod tests {
         }
     }
 
+    impl Sandbox {
+        /// Permanently deletes the Recycle Bin entries this sandbox put there, found by
+        /// their original location (a path component named like the sandbox). Runs on drop,
+        /// so it also covers a test that failed halfway. Other bin items are never touched.
+        fn purge_own_recycled(&self) {
+            let Some(own) = self
+                .0
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+            else {
+                return;
+            };
+            let Ok(items) = crate::win_recycle::list() else {
+                return;
+            };
+            let mine: Vec<String> = items
+                .into_iter()
+                .filter(|item| {
+                    item.from
+                        .components()
+                        .any(|c| c.as_os_str().to_string_lossy().to_lowercase() == own)
+                })
+                .map(|item| item.now)
+                .collect();
+            let mine: Vec<&str> = mine.iter().map(String::as_str).collect();
+            if !mine.is_empty() {
+                let _ = purge_recycled(&mine, None);
+            }
+        }
+    }
+
     impl Drop for Sandbox {
         fn drop(&mut self) {
             if self.0.starts_with(crate::win::long_temp_dir()) {
+                self.purge_own_recycled();
                 // Verbatim: tests leave names and lengths only `\\?\` paths reach.
                 let _ = fs::remove_dir_all(arke_core::path::verbatim(&self.0));
             }

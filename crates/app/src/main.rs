@@ -417,6 +417,7 @@ fn app_main(mut args: Args) {
         app
     };
     app.run(move |cx: &mut App| {
+        start_type_names(cx);
         motion::sync_app(cx);
         frame_probe::init();
         text_input::bind_keys(cx);
@@ -1012,6 +1013,21 @@ fn follow_language_setting(store: &gpui::Entity<settings::SettingsStore>, cx: &m
     .detach();
     // Also apply what is set now: the observer only hears later changes.
     apply_language(&store.read(cx).settings.language.locale(), cx);
+}
+
+/// Starts looking up Windows' names for file types the built-in table doesn't have; windows
+/// repaint (and re-sort by type) when names arrive.
+fn start_type_names(cx: &mut App) {
+    let (tx, rx) = flume::bounded::<()>(1);
+    arke_core::format::start_type_names(win_dragimage::registered_type_name, move || {
+        let _ = tx.try_send(());
+    });
+    cx.spawn(async move |cx| {
+        while rx.recv_async().await.is_ok() {
+            cx.update(App::refresh_windows);
+        }
+    })
+    .detach();
 }
 
 /// Switches strings and the CJK font fallback order to `locale`, repainting if either changed.

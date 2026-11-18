@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use arke_core::Entry;
 use arke_core::NavKind;
+use arke_core::SortColumn;
 use arke_core::filetype::{FileKind, file_kind};
 use arke_core::format::{format_count, format_size};
 use arke_core::path::NameError;
@@ -2908,6 +2909,12 @@ impl Explorer {
     /// needed (preview, parent, folder sizes).
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.on_frame(window, cx);
+        // Windows' type names arrive after the first sort: order by what the column shows.
+        if self.sort.uses(SortColumn::Type)
+            && self.type_order != Some(arke_core::format::type_names_version())
+        {
+            self.ensure_sorted(cx);
+        }
         self.track_notice_exit(cx);
         self.screen = (window.viewport_size(), window.scale_factor());
         let window_w = window.viewport_size().width;

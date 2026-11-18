@@ -1,6 +1,11 @@
 //! Display formatting: file sizes, counts and type labels.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock};
+
 use crate::entry::{Entry, EntryKind};
+use parking_lot::Mutex;
 use rust_i18n::t;
 
 /// Use base-1000 sizes (disk vendors) instead of base-1024 (Windows). Process-wide.
@@ -52,8 +57,9 @@ pub fn format_count(n: usize) -> String {
     out
 }
 
-/// Text for the Type column. Deliberately avoids the registry file type description
-/// (that loads registry data and shell extensions) and uses a built-in table.
+/// Text for the Type column. Extensions in the built-in table keep the built-in name (it doesn't
+/// depend on the default app). Others show the name Windows has for the type once the background
+/// lookup ([`start_type_names`]) has answered, and the built-in "XYZ File" until then.
 pub fn type_label(entry: &Entry) -> String {
     match entry.kind {
         EntryKind::Dir => return t!("type.folder").into_owned(),
@@ -67,7 +73,108 @@ pub fn type_label(entry: &Entry) -> String {
     if let Some(key) = known_type(ext) {
         return t!(key).into_owned();
     }
+    if let Some(name) = system_type_name(ext) {
+        return name.to_string();
+    }
     t!("type.ext_file", ext = ext.to_uppercase()).into_owned()
+}
+
+/// Type names Windows gave, per extension (`None`: it has no usable one), for one UI language.
+#[derive(Default)]
+struct SystemNames {
+    locale: String,
+    names: HashMap<String, Option<Arc<str>>>,
+    /// Extensions already sent to the lookup thread.
+    asked: HashSet<String>,
+}
+
+impl SystemNames {
+    /// Forgets the names when the UI language changed since they were stored.
+    fn follow_language(&mut self) {
+        let locale = rust_i18n::locale();
+        if *locale != *self.locale {
+            self.locale = locale.to_string();
+            self.names.clear();
+            self.asked.clear();
+            NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+static SYSTEM_NAMES: LazyLock<Mutex<SystemNames>> = LazyLock::new(Mutex::default);
+/// Requests to the lookup thread; unset until [`start_type_names`].
+static ASK: OnceLock<flume::Sender<String>> = OnceLock::new();
+/// Bumped whenever a name arrives or the language changes; texts cached under an older one are
+/// stale.
+static NAMES_VERSION: AtomicU32 = AtomicU32::new(0);
+
+/// Version of the known system type names (see [`type_label`]).
+pub fn type_names_version() -> u32 {
+    NAMES_VERSION.load(Ordering::Relaxed)
+}
+
+/// The name for `ext` if Windows gave one; otherwise asks the lookup thread (once) and `None`.
+fn system_type_name(ext: &str) -> Option<Arc<str>> {
+    let mut state = SYSTEM_NAMES.lock();
+    state.follow_language();
+    if let Some(known) = state.names.get(ext) {
+        return known.clone();
+    }
+    if let Some(ask) = ASK.get()
+        && state.asked.insert(ext.to_owned())
+    {
+        let _ = ask.send(ext.to_owned());
+    }
+    drop(state);
+    None
+}
+
+/// Records what Windows said the type name of `ext` is (`raw`, `None`: nothing). Names that are
+/// not friendly (see [`friendly_type_name`]) count as none. Public for the tests of other crates.
+pub fn set_type_name(ext: &str, raw: Option<&str>) {
+    let name = raw.and_then(|raw| friendly_type_name(ext, raw));
+    let mut state = SYSTEM_NAMES.lock();
+    state.follow_language();
+    state.names.insert(ext.to_owned(), name.map(Arc::from));
+    drop(state);
+    NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// `raw` as a type name, unless it is no name: Windows answers with the registered ProgID
+/// ("Word.Document.12", no spaces and a dot) when the program is not installed, or with the
+/// extension itself.
+pub fn friendly_type_name(ext: &str, raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let progid_like = !raw.contains(char::is_whitespace) && raw.contains('.');
+    let is_ext = raw.eq_ignore_ascii_case(ext) || raw.eq_ignore_ascii_case(&format!(".{ext}"));
+    (!raw.is_empty() && !progid_like && !is_ext).then(|| raw.to_owned())
+}
+
+/// Starts the thread that asks `source` for the type name of each extension [`type_label`] needs
+/// (Windows' friendly name; it never touches a file), so the UI thread never waits for it.
+/// `changed` runs after names arrived.
+pub fn start_type_names(
+    source: impl Fn(&str) -> Option<String> + Send + 'static,
+    changed: impl Fn() + Send + 'static,
+) {
+    let (tx, rx) = flume::unbounded::<String>();
+    if ASK.set(tx).is_err() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("type-names".into())
+        .spawn(move || {
+            while let Ok(ext) = rx.recv() {
+                set_type_name(&ext, source(&ext).as_deref());
+                while let Ok(ext) = rx.try_recv() {
+                    set_type_name(&ext, source(&ext).as_deref());
+                }
+                changed();
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("type name thread: {e}");
+    }
 }
 
 /// Translation key for an extension (`type.*` in `locales/core.yml`).
@@ -119,6 +226,69 @@ fn known_type(ext: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file(name: &str) -> Entry {
+        Entry::new(name, EntryKind::File, 1, None, 0)
+    }
+
+    #[test]
+    fn friendly_names_reject_progids_and_the_extension() {
+        let ok = |raw| friendly_type_name("dwg", raw);
+        assert_eq!(ok("AutoCAD Drawing").as_deref(), Some("AutoCAD Drawing"));
+        assert_eq!(
+            ok(" Word 97-2003.doc ").as_deref(),
+            Some("Word 97-2003.doc")
+        );
+        assert_eq!(ok("Word.Document.12"), None, "a ProgID");
+        assert_eq!(ok("DWG"), None);
+        assert_eq!(ok(".dwg"), None);
+        assert_eq!(ok(""), None);
+    }
+
+    /// Built-in names win; others show Windows' name once known, else the built-in "XYZ File".
+    #[test]
+    fn type_label_decides_between_table_windows_and_fallback() {
+        rust_i18n::set_locale("en");
+        assert_eq!(type_label(&file("a.dwg")), "DWG File");
+        set_type_name("dwg", Some("AutoCAD Drawing"));
+        set_type_name("txt", Some("Something Else"));
+        assert_eq!(type_label(&file("a.dwg")), "AutoCAD Drawing");
+        assert_eq!(type_label(&file("a.txt")), "Text Document", "table first");
+        set_type_name("qqq", Some("Qqq.Document.3"));
+        assert_eq!(type_label(&file("a.qqq")), "QQQ File", "ProgID rejected");
+        set_type_name("rrr", None);
+        assert_eq!(type_label(&file("a.rrr")), "RRR File");
+    }
+
+    /// The lookup runs on its own thread, once per extension; the label shows the built-in name
+    /// until the answer arrives.
+    #[test]
+    fn names_are_looked_up_off_the_calling_thread() {
+        rust_i18n::set_locale("en");
+        let caller = std::thread::current().id();
+        let (asked_tx, asked_rx) = flume::unbounded::<(String, bool)>();
+        let (changed_tx, changed_rx) = flume::unbounded::<()>();
+        start_type_names(
+            move |ext| {
+                let _ = asked_tx.send((ext.to_owned(), std::thread::current().id() != caller));
+                Some("AutoCAD Drawing".to_owned())
+            },
+            move || {
+                let _ = changed_tx.send(());
+            },
+        );
+        let before = type_names_version();
+        assert_eq!(type_label(&file("a.dwg")), "DWG File");
+        changed_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(type_label(&file("c.dwg")), "AutoCAD Drawing");
+        assert_ne!(type_names_version(), before);
+        assert_eq!(
+            asked_rx.try_iter().collect::<Vec<_>>(),
+            [("dwg".to_owned(), true)]
+        );
+    }
 
     #[test]
     fn sizes() {

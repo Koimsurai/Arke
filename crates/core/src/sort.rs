@@ -247,12 +247,15 @@ fn column_cmp(column: SortColumn, a: &Entry, b: &Entry, size_a: u64, size_b: u64
 /// text is built once per extension (not per file) and never asks the shell.
 struct TypeKeys {
     locale: String,
+    /// Version of the system type names the texts were made with.
+    version: u32,
     keys: HashMap<String, Arc<str>>,
 }
 
 thread_local! {
     static TYPE_KEYS: std::cell::RefCell<TypeKeys> = std::cell::RefCell::new(TypeKeys {
         locale: String::new(),
+        version: 0,
         keys: HashMap::new(),
     });
 }
@@ -266,8 +269,10 @@ fn type_cmp(a: &Entry, b: &Entry) -> Ordering {
     }
     TYPE_KEYS.with_borrow_mut(|cache| {
         let locale = rust_i18n::locale();
-        if *locale != *cache.locale {
+        let version = crate::format::type_names_version();
+        if *locale != *cache.locale || version != cache.version {
             cache.locale = locale.to_string();
+            cache.version = version;
             cache.keys.clear();
         }
         let mut key_of = |e: &Entry| -> Arc<str> {
@@ -616,6 +621,25 @@ mod tests {
             names(&v),
             ["dir", "noext", "d.bak", "c.dwg", "z.log", "b.md", "a.txt"]
         );
+    }
+
+    /// Sorting uses exactly the text shown: once Windows' name for a type arrives, the order follows
+    /// it ("AutoCAD Drawing" before "BAK File"); until then the built-in "DWG File" is used.
+    #[test]
+    fn type_sort_follows_system_type_names() {
+        rust_i18n::set_locale("en");
+        let f = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        let mut v = vec![f("b.bak"), f("a.dwg")];
+        let spec = SortSpec::by(SortColumn::Type, true, false);
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["b.bak", "a.dwg"], "BAK File, DWG File");
+        crate::format::set_type_name("dwg", Some("AutoCAD Drawing"));
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["a.dwg", "b.bak"], "AutoCAD Drawing, BAK File");
+        // A name that is only a ProgID doesn't count.
+        crate::format::set_type_name("dwg", Some("AutoCAD.Drawing.24"));
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["b.bak", "a.dwg"]);
     }
 
     /// The type texts are cached per extension, but a language change gives new ones.

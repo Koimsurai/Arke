@@ -593,6 +593,10 @@ fn sort_entries(
     }
 }
 
+/// A sort running in the background: (folder, content version, sort, folder size version, system
+/// type name version) it was started with.
+type SortJob = (Gen, u64, SortSpec, Option<u64>, Option<u32>);
+
 struct Filtered {
     key: FilterKey,
     entries: Arc<Vec<Entry>>,
@@ -650,7 +654,10 @@ pub(crate) struct Explorer {
     pub(crate) network_thumbnails: bool,
     /// Language currently used for input placeholders.
     language: crate::settings::Language,
-    sort_inflight: Option<(Gen, u64, SortSpec, Option<u64>)>,
+    sort_inflight: Option<SortJob>,
+    /// Version of the system type names the current order was sorted with (`None`: the sort
+    /// doesn't use the Type column). Names arrive after the first sort.
+    type_order: Option<u32>,
     /// Folder size version the current order was sorted with (dir, content version, size version).
     /// `None` if sizes weren't used.
     size_order: Option<(Gen, u64, u64)>,
@@ -1000,6 +1007,7 @@ impl Explorer {
             network_thumbnails: settings.read(cx).settings.network_thumbnails,
             language: crate::settings::Language::System,
             sort_inflight: None,
+            type_order: None,
             size_order: None,
             size_resort_cooling: false,
             size_resort_task: None,
@@ -2043,10 +2051,16 @@ impl Explorer {
             .size_order
             .filter(|o| (o.0, o.1) == (model.generation, model.version))
             .map(|o| o.2);
-        let key = (model.generation, model.version, self.sort, want);
-        // Column and direction already match; only folder sizes are out of date.
+        let want_type = self
+            .sort
+            .uses(SortColumn::Type)
+            .then(arke_core::format::type_names_version);
+        let key = (model.generation, model.version, self.sort, want, want_type);
+        // Column and direction already match; only folder sizes (or type names) are out of date.
         let only_sizes = model.sorted_by == self.sort;
-        if (only_sizes && have == want) || self.sort_inflight == Some(key) {
+        if (only_sizes && have == want && self.type_order == want_type)
+            || self.sort_inflight == Some(key)
+        {
             return;
         }
         if only_sizes
@@ -2064,7 +2078,7 @@ impl Explorer {
         if only_sizes && model.entries.len() <= INLINE_SORT_MAX {
             // Small lists sort inline (under 1 ms) so a refresh doesn't briefly show name order.
             let sorted = sort_entries(&model.entries, spec, sizes.as_deref());
-            self.apply_sorted(sorted, spec, want, cx);
+            self.apply_sorted(sorted, spec, want, want_type, cx);
             return;
         }
         self.sort_inflight = Some(key);
@@ -2081,7 +2095,7 @@ impl Explorer {
                     && model.version == version
                     && this.sort == spec
                 {
-                    this.apply_sorted(sorted, spec, want, cx);
+                    this.apply_sorted(sorted, spec, want, want_type, cx);
                     // The user changed the sort: keep the selected item on screen. Don't scroll
                     // when only folder sizes arrived.
                     if !only_sizes && let Some(ix) = this.cursor {
@@ -2100,12 +2114,14 @@ impl Explorer {
         sorted: Vec<Entry>,
         spec: SortSpec,
         sizes_rev: Option<u64>,
+        type_rev: Option<u32>,
         cx: &mut Context<Self>,
     ) {
         let Some(model) = self.model.as_mut() else {
             return;
         };
         model.replace_sorted(Arc::new(sorted), spec);
+        self.type_order = type_rev;
         self.size_order = sizes_rev.map(|rev| (model.generation, model.version, rev));
         if sizes_rev.is_some() && self.folder_sizes.computing() {
             self.size_resort_cooling = true;

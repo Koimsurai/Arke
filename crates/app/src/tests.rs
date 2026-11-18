@@ -3915,6 +3915,31 @@ fn size_order_follows_the_folder_being_shown(cx: &mut TestAppContext) {
     });
 }
 
+/// Windows' type names arrive after the folder was sorted by type: the list is ordered again by
+/// the text the column shows then.
+#[gpui::test]
+fn type_order_follows_names_that_arrive_later(cx: &mut TestAppContext) {
+    rust_i18n::set_locale("en");
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![file("b.bak", 1), file("a.dwg", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\t");
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Type, true, false), cx);
+    });
+    wait_until(cx, &view, "sorted by type", |v| {
+        names(v) == ["b.bak", "a.dwg"]
+    });
+    arke_core::format::set_type_name("dwg", Some("AutoCAD Drawing"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while view.update(cx, |v, _| names(v)) != ["a.dwg", "b.bak"] {
+        assert!(Instant::now() < deadline, "not sorted by the new names");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[gpui::test]
 fn marquee_selects_rows(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, point, px};

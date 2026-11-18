@@ -24,8 +24,8 @@ use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IDataO
 use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::{
     CLSID_DragDropHelper, DSH_ALLOWDROPDESCRIPTIONTEXT, IDragSourceHelper, IDragSourceHelper2,
-    SHDRAGIMAGE, SHFILEINFOW, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW,
-    SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO,
+    SHDRAGIMAGE, SHFILEINFOW, SHGFI_SYSICONINDEX, SHGFI_TYPENAME, SHGFI_USEFILEATTRIBUTES,
+    SHGetFileInfoW, SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 use windows::core::{Interface, PCWSTR, w};
@@ -180,6 +180,34 @@ pub(crate) fn registered_type_icon(ext: &str) -> Option<Thumbnail> {
         return None;
     }
     index_icon(index)
+}
+
+/// Windows' type name for files with extension `ext` (no dot), as File Explorer's Type column
+/// has it ("AutoCAD Drawing"). Only the extension is looked at (a dummy name; no file is read),
+/// so network shares stay cheap. Background thread.
+pub(crate) fn registered_type_name(ext: &str) -> Option<String> {
+    let name = wide(std::ffi::OsStr::new(&format!("x.{ext}")));
+    let mut info = SHFILEINFOW::default();
+    // SAFETY: name is NUL-terminated; info is a correctly sized out struct. With
+    // USEFILEATTRIBUTES the file is not accessed.
+    let ok = unsafe {
+        SHGetFileInfoW(
+            PCWSTR(name.as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0x80),
+            Some(&raw mut info),
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let len = info
+        .szTypeName
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(info.szTypeName.len());
+    Some(String::from_utf16_lossy(&info.szTypeName[..len]))
 }
 
 /// The `DefaultIcon` registered for files of type `ext` (no dot): the default value of

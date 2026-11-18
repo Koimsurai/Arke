@@ -177,7 +177,8 @@ pub(crate) enum StartLocation {
     Home,
     /// The last folder visited.
     LastFolder,
-    /// All tabs from last time, including splits. If a window is already open, new windows use the profile folder.
+    /// All tabs from last time, including splits. If a window is already open, new windows open
+    /// Home.
     LastSession,
     /// Home page (recent files, drives, network locations).
     HomePage,

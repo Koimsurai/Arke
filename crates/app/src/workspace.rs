@@ -825,15 +825,17 @@ impl Workspace {
                 }
             }
             crate::settings::StartLocation::LastSession => {
-                // Settings loaded after the window: restore all last-session tabs only if this is the only window.
+                // The last tabs are already open in another window (restoring them again would
+                // duplicate them): a new window starts on Home instead (#178).
+                if cx.windows().len() > 1 {
+                    self.open_home_as(false, true, window, cx);
+                    return;
+                }
                 let session = store.settings.session.clone();
                 let Some(first) = session.tabs.first().and_then(|t| t.panes.first()).cloned()
                 else {
                     return;
                 };
-                if cx.windows().len() > 1 {
-                    return;
-                }
                 self.active_view()
                     .update(cx, |v, cx| v.navigate(first, NavKind::New, cx));
                 self.restore_session(&session, window, cx);

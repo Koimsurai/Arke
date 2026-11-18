@@ -1296,8 +1296,10 @@ fn a_new_window_follows_startup_when_settings_are_already_read(cx: &mut TestAppC
     });
     let home = t!("home.title").into_owned();
     for (start, expect_page, expect_folder) in [
-        (StartLocation::HomePage, Some(home), r"C:\Users\me"),
+        (StartLocation::HomePage, Some(home.clone()), r"C:\Users\me"),
         (StartLocation::LastFolder, None, r"C:\last"),
+        // Last tabs, with other windows open: Home, not the tabs again or the profile (#178).
+        (StartLocation::LastSession, Some(home), r"C:\Users\me"),
     ] {
         cx.update(|cx| {
             SettingsStore::global(cx).update(cx, |s, cx| {

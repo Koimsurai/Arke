@@ -92,8 +92,12 @@ impl WindowsWindowInner {
             // whichever window was active before the click. If that handler consumes the
             // press, `DefWindowProc` never sees it, so the window is never activated at all.
             // So, let's eagerly activate the window.
-            WM_MOUSEACTIVATE => Some(MA_ACTIVATE as isize),
-            WM_ACTIVATE => self.handle_activate_msg(wparam),
+            // A left press in the client area is the exception, see `mouse_activate_answer`.
+            WM_MOUSEACTIVATE => Some(self.handle_mouse_activate_msg(lparam)),
+            WM_ACTIVATE => {
+                self.state.activate_on_release.set(false);
+                self.handle_activate_msg(wparam)
+            }
             WM_CREATE => self.handle_create_msg(handle),
             WM_MOVE => self.handle_move_msg(handle, lparam),
             WM_SIZE => self.handle_size_msg(wparam, lparam),
@@ -478,6 +482,12 @@ impl WindowsWindowInner {
         Some(0)
     }
 
+    fn handle_mouse_activate_msg(&self, lparam: LPARAM) -> isize {
+        let answer = mouse_activate_answer(u32::from(lparam.loword()), u32::from(lparam.hiword()));
+        self.state.activate_on_release.set(answer == MA_NOACTIVATE);
+        answer as isize
+    }
+
     fn handle_mouse_down_msg(
         &self,
         handle: HWND,
@@ -500,7 +510,8 @@ impl WindowsWindowInner {
             position: logical_point(x as f32, y as f32, scale_factor),
             modifiers: current_modifiers(),
             click_count,
-            first_mouse: false,
+            // The press on an inactive window that will activate it on release.
+            first_mouse: button == MouseButton::Left && self.state.activate_on_release.get(),
         });
         let handled = !func(input).propagate;
         self.state.callbacks.input.set(Some(func));
@@ -510,11 +521,22 @@ impl WindowsWindowInner {
 
     fn handle_mouse_up_msg(
         &self,
-        _handle: HWND,
+        handle: HWND,
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
         unsafe { ReleaseCapture().log_err() };
+        if button == MouseButton::Left && self.state.activate_on_release.take() {
+            // The press that skipped activation ended on this window (a click, or a drag that
+            // stayed in it): activate now, before the release reaches GPUI, so click handlers
+            // run in an active window as they did when the press activated it. This process got
+            // the input, so it may take the foreground.
+            unsafe {
+                if GetForegroundWindow() != handle {
+                    let _ = SetForegroundWindow(handle);
+                }
+            }
+        }
 
         let Some(mut func) = self.state.callbacks.input.take() else {
             return Some(1);
@@ -1822,6 +1844,22 @@ fn get_frame_thicknessy(dpi: u32) -> i32 {
     resize_frame_thickness + padding_thickness
 }
 
+/// What `WM_MOUSEACTIVATE` answers for a press on an inactive window, from the hit-test code and
+/// the mouse message (the low and high words of its `lParam`).
+///
+/// A left press in the client area doesn't activate the window yet, as in File Explorer: a file
+/// can be dragged from a window behind another program onto that program, and the window stays
+/// behind instead of coming to the front and covering it. The window is activated when the
+/// button is released over it. Every other press (title bar, caption buttons, borders, right
+/// and middle button) activates at once.
+pub(crate) fn mouse_activate_answer(hit_test: u32, mouse_message: u32) -> u32 {
+    if hit_test == HTCLIENT && mouse_message == WM_LBUTTONDOWN {
+        MA_NOACTIVATE
+    } else {
+        MA_ACTIVATE
+    }
+}
+
 fn notify_frame_changed(handle: HWND) {
     unsafe {
         SetWindowPos(
@@ -1842,5 +1880,38 @@ fn notify_frame_changed(handle: HWND) {
                 | SWP_NOZORDER,
         )
         .log_err();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mouse_activate_answer;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    #[test]
+    fn left_presses_in_the_client_area_wait_for_the_release() {
+        assert_eq!(
+            mouse_activate_answer(HTCLIENT, WM_LBUTTONDOWN),
+            MA_NOACTIVATE
+        );
+    }
+
+    #[test]
+    fn other_presses_activate_at_once() {
+        for (hit, message) in [
+            (HTCAPTION, WM_LBUTTONDOWN),
+            (HTCLOSE, WM_LBUTTONDOWN),
+            (HTMAXBUTTON, WM_LBUTTONDOWN),
+            (HTBOTTOMRIGHT, WM_LBUTTONDOWN),
+            (HTCLIENT, WM_RBUTTONDOWN),
+            (HTCLIENT, WM_MBUTTONDOWN),
+            (HTCLIENT, WM_XBUTTONDOWN),
+        ] {
+            assert_eq!(
+                mouse_activate_answer(hit, message),
+                MA_ACTIVATE,
+                "{hit} {message}"
+            );
+        }
     }
 }

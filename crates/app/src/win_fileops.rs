@@ -1190,7 +1190,7 @@ pub(crate) fn drag_out(
         }
         // Custom drop source: cancel when the cursor returns to the Arke window so Arke's
         // internal drag can take over.
-        let home = windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow();
+        let home = drag_home();
         let source = drag_source::ReturnAware::new(home);
         let returned = Rc::clone(&source.returned);
         let source: windows::Win32::System::Ole::IDropSource = source.into();
@@ -1210,6 +1210,23 @@ pub(crate) fn drag_out(
         } else {
             None
         })
+    }
+}
+
+/// The Arke window the drag started in: the one holding the mouse since the press. A press on a
+/// window behind another program doesn't activate it (like Explorer, so the window doesn't cover
+/// the drop target), so the active window can be none; it is the fallback.
+fn drag_home() -> HWND {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, GetCapture};
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor};
+    // SAFETY: plain queries about this thread's windows.
+    unsafe {
+        let captured = GetCapture();
+        if captured.is_invalid() {
+            GetActiveWindow()
+        } else {
+            GetAncestor(captured, GA_ROOT)
+        }
     }
 }
 

@@ -40,3 +40,11 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   drag and only extract to a temp folder when asked after the button is released (and delete it
   once the drop returns), so dropping from them moved files that didn't exist (#168). When the
   list changed, the drag is entered again with the new list before the drop.
+- `src/events.rs` `WM_MOUSEACTIVATE` (`mouse_activate_answer`, `handle_mouse_activate_msg`,
+  `handle_mouse_down_msg`, `handle_mouse_up_msg`) and `src/window.rs` `activate_on_release`: a left
+  press in the client area of an inactive window answers `MA_NOACTIVATE`, and the window is
+  activated when that button is released over it. Upstream activates on every press, so dragging a
+  file from a maximized Arke behind a chat window brought Arke to the front, covering the window
+  the file was meant for. File Explorer stays behind in the same case. Title bar, caption buttons,
+  borders and the other buttons still activate at once. That press is reported with `first_mouse`
+  set.

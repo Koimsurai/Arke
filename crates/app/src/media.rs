@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use arke_core::Entry;
@@ -25,6 +25,7 @@ use arke_core::loader::Loader;
 use arke_core::thumb_cache::{ThumbCache, ThumbKey};
 use arke_core::thumbs::{SOURCE_SIZES, THUMBNAIL_SIZE, Thumbnail, decode_thumbnail};
 use gpui::{App, AppContext, Context, Entity, Global, RenderImage, Task};
+use parking_lot::Mutex;
 
 use crate::explorer::Services;
 
@@ -85,6 +86,31 @@ pub(crate) struct MediaKey {
     px: u32,
 }
 
+/// Per extension: whether the registered icon is the file itself, so no type icon exists. Read
+/// from the registry once per extension.
+fn icon_is_per_file(ext: &str) -> bool {
+    static CACHE: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Mutex::default);
+    if let Some(&known) = CACHE.lock().get(ext) {
+        return known;
+    }
+    let per_file = registered_default_icon(ext)
+        .is_some_and(|icon| arke_core::filetype::default_icon_is_the_file(&icon));
+    CACHE.lock().insert(ext.to_owned(), per_file);
+    per_file
+}
+
+/// The `DefaultIcon` registered for `ext` (registry, read only).
+#[cfg(not(test))]
+fn registered_default_icon(ext: &str) -> Option<String> {
+    crate::win_dragimage::registered_default_icon(ext)
+}
+
+/// Tests: `.dwf` is registered with the file itself as its icon.
+#[cfg(test)]
+fn registered_default_icon(ext: &str) -> Option<String> {
+    (ext == "dwf").then(|| "\"%1\"".to_owned())
+}
+
 impl MediaKey {
     /// Whether (and which) media this item needs, with thumbnails at the default size. With
     /// `thumbnails` false (Details view) only system icons.
@@ -100,6 +126,16 @@ impl MediaKey {
 
     /// Key for the file at `path` (whose listing entry is `entry`).
     pub(crate) fn at(path: PathBuf, entry: &Entry, thumbnail_px: Option<u32>) -> Option<Self> {
+        if wants_type_icon(entry) && icon_is_per_file(entry.extension()) {
+            // The registered icon is the file's own (`%1`): ask for this file, like `.ico`.
+            return Some(Self {
+                path,
+                modified: entry.modified,
+                size: entry.size,
+                kind: MediaKind::SystemIcon,
+                px: 0,
+            });
+        }
         if let Some(key) = Self::type_icon(entry) {
             return Some(key);
         }
@@ -126,7 +162,7 @@ impl MediaKey {
     /// extension, shared by every file of that type. Reads no file, so also for folders where
     /// thumbnails and file icons aren't loaded (network shares).
     pub(crate) fn type_icon(entry: &Entry) -> Option<Self> {
-        wants_type_icon(entry).then(|| Self {
+        (wants_type_icon(entry) && !icon_is_per_file(entry.extension())).then(|| Self {
             path: PathBuf::from(format!("{TYPE_ICON_PREFIX}{}", entry.extension())),
             modified: None,
             size: 0,

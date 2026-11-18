@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryKind};
 
 /// Column a listing is sorted by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -14,13 +14,13 @@ pub enum SortColumn {
     Name,
     /// Last write time.
     Modified,
-    /// Extension.
+    /// Type text as shown in the Type column (natural order), like File Explorer.
     Type,
     /// Size in bytes (folders use computed sizes where available).
     Size,
     /// Creation time.
     Created,
-    /// Extension on its own column (same order as `Type`, its own column and groups).
+    /// Extension on its own column (sorted by the extension itself, with its own groups).
     Extension,
     /// Read-only, Hidden, System and Archive attributes, by their letters.
     Attributes,
@@ -235,11 +235,58 @@ fn column_cmp(column: SortColumn, a: &Entry, b: &Entry, size_a: u64, size_b: u64
         // Name is the final tiebreaker too; as a key it decides on its own.
         SortColumn::Name => name_cmp(a, b),
         SortColumn::Modified => a.modified.cmp(&b.modified),
-        SortColumn::Type | SortColumn::Extension => a.extension().cmp(b.extension()),
+        SortColumn::Type => type_cmp(a, b),
+        SortColumn::Extension => a.extension().cmp(b.extension()),
         SortColumn::Size => size_a.cmp(&size_b),
         SortColumn::Created => a.created.cmp(&b.created),
         SortColumn::Attributes => a.attribute_letters().cmp(b.attribute_letters()),
     }
+}
+
+/// Lowercased type text per extension, for the current locale. Looked up per comparison, so the
+/// text is built once per extension (not per file) and never asks the shell.
+struct TypeKeys {
+    locale: String,
+    keys: HashMap<String, Arc<str>>,
+}
+
+thread_local! {
+    static TYPE_KEYS: std::cell::RefCell<TypeKeys> = std::cell::RefCell::new(TypeKeys {
+        locale: String::new(),
+        keys: HashMap::new(),
+    });
+}
+
+/// Type column order: the shown type text in natural order (File Explorer sorts by the type's
+/// display name too), not the extension.
+fn type_cmp(a: &Entry, b: &Entry) -> Ordering {
+    // Same kind of item with the same extension: same text, no lookup.
+    if a.kind == b.kind && a.extension() == b.extension() {
+        return Ordering::Equal;
+    }
+    TYPE_KEYS.with_borrow_mut(|cache| {
+        let locale = rust_i18n::locale();
+        if *locale != *cache.locale {
+            cache.locale = locale.to_string();
+            cache.keys.clear();
+        }
+        let mut key_of = |e: &Entry| -> Arc<str> {
+            // Folders and folder links have their own texts; no extension can contain `<`.
+            let id = match e.kind {
+                EntryKind::Dir => "<dir>",
+                EntryKind::Link { is_dir: true } => "<link>",
+                _ => e.extension(),
+            };
+            if let Some(k) = cache.keys.get(id) {
+                return Arc::clone(k);
+            }
+            let k: Arc<str> = crate::format::type_label(e).to_lowercase().into();
+            cache.keys.insert(id.to_owned(), Arc::clone(&k));
+            k
+        };
+        let (ka, kb) = (key_of(a), key_of(b));
+        natural_cmp(&ka, &kb)
+    })
 }
 
 /// Natural, case-insensitive name order, then the exact name so the order is total.
@@ -535,6 +582,55 @@ mod tests {
             .toggled(SortColumn::Attributes)
             .sort(&mut v);
         assert_eq!(names(&v), ["d.txt", "b.zip", "c", "a.TXT"]);
+    }
+
+    /// The Type column sorts by the type text shown, like File Explorer, not by extension: `.log`
+    /// files are "Text Document" and so come after "Markdown Document", and same-text types tie on
+    /// name.
+    #[test]
+    fn type_sorts_by_the_shown_type_text() {
+        rust_i18n::set_locale("en");
+        let f = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        let mut v = vec![
+            f("z.log"),
+            f("a.txt"),
+            f("b.md"),
+            f("c.dwg"),
+            f("d.bak"),
+            f("noext"),
+            Entry::new("dir", EntryKind::Dir, 0, None, 0),
+        ];
+        SortSpec::by(SortColumn::Type, true, false).sort(&mut v);
+        assert_eq!(
+            names(&v),
+            ["dir", "d.bak", "c.dwg", "noext", "b.md", "a.txt", "z.log"]
+        );
+        SortSpec::by(SortColumn::Type, false, false).sort(&mut v);
+        assert_eq!(
+            names(&v),
+            ["dir", "z.log", "a.txt", "b.md", "noext", "c.dwg", "d.bak"]
+        );
+        // The Extension column still sorts by the extension itself.
+        SortSpec::by(SortColumn::Extension, true, false).sort(&mut v);
+        assert_eq!(
+            names(&v),
+            ["dir", "noext", "d.bak", "c.dwg", "z.log", "b.md", "a.txt"]
+        );
+    }
+
+    /// The type texts are cached per extension, but a language change gives new ones.
+    #[test]
+    fn type_order_follows_the_language() {
+        let f = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        let mut v = vec![f("a.zzz"), f("b.txt")];
+        let spec = SortSpec::by(SortColumn::Type, true, false);
+        rust_i18n::set_locale("en");
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["b.txt", "a.zzz"], "Text Document, ZZZ File");
+        rust_i18n::set_locale("zh-TW");
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["a.zzz", "b.txt"], "Latin text before CJK");
+        rust_i18n::set_locale("en");
     }
 
     /// Three keys over 100k entries: a total order (every neighbor pair in order), and quick.

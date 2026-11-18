@@ -182,6 +182,44 @@ pub(crate) fn registered_type_icon(ext: &str) -> Option<Thumbnail> {
     index_icon(index)
 }
 
+/// The `DefaultIcon` registered for files of type `ext` (no dot): the default value of
+/// `HKCR\<ProgId>\DefaultIcon`, with the ProgId from `HKCR\.<ext>`. Read only.
+#[cfg(not(test))]
+pub(crate) fn registered_default_icon(ext: &str) -> Option<String> {
+    let prog_id = classes_default(&format!(".{ext}"))?;
+    classes_default(&format!(r"{prog_id}\DefaultIcon"))
+}
+
+/// Default value (text) of `HKEY_CLASSES_ROOT\<key>`.
+#[cfg(not(test))]
+fn classes_default(key: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{
+        HKEY_CLASSES_ROOT, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    let key = wide(std::ffi::OsStr::new(key));
+    let mut buf = vec![0u16; 520];
+    let mut bytes = u32::try_from(buf.len() * 2).ok()?;
+    // SAFETY: key is NUL-terminated; buf has `bytes` writable bytes; RRF_NOEXPAND-less read of a
+    // string value; nothing is written to the registry.
+    let code = unsafe {
+        RegGetValueW(
+            HKEY_CLASSES_ROOT,
+            PCWSTR(key.as_ptr()),
+            PCWSTR::null(),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&raw mut bytes),
+        )
+    };
+    if code.0 != 0 {
+        return None;
+    }
+    let len = (bytes as usize / 2).min(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    Some(text.trim_end_matches('\0').to_owned())
+}
+
 /// Index in the system image list of the icon for `name` with `attributes`, from the name's
 /// extension only (`SHGFI_USEFILEATTRIBUTES`: the file isn't accessed).
 fn icon_index(name: &std::ffi::OsStr, attributes: u32) -> Option<i32> {

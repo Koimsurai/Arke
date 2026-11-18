@@ -21,7 +21,7 @@ use crate::explorer::{
     DeleteFiles, Explorer, ExplorerEvent, FocusFilter, FocusPathBar, FocusSearch, OpenInNewTab,
     Services, StartClock,
 };
-use crate::media::MediaKind;
+use crate::media::{MediaKey, MediaKind};
 use crate::shell::{
     ClipboardFiles, FileOp, KnownFolder, OpOutcome, Place, PlaceKind, Shell, ShellError,
 };
@@ -4076,6 +4076,22 @@ fn unknown_types_get_the_registered_icon(cx: &mut TestAppContext) {
         [PathBuf::from(r"C:\cad\app.exe")],
         "no file icon on the share"
     );
+}
+
+/// A type whose registered icon is the file itself (`DefaultIcon` `%1`) has no icon by extension
+/// (Windows gives the blank document), so each file is asked for its own, like `.ico`. Other
+/// unknown types keep one shared icon per extension.
+#[test]
+fn per_file_icon_types_are_asked_per_file() {
+    let dir = Path::new(r"C:\cad");
+    let per_file = MediaKey::sized(dir, &file("plan.dwf", 10), None).unwrap();
+    assert_eq!(per_file.path, PathBuf::from(r"C:\cad\plan.dwf"));
+    assert_eq!(per_file.kind, MediaKind::SystemIcon);
+    let shared = MediaKey::sized(dir, &file("plan.dwg", 10), None).unwrap();
+    assert_eq!(shared.path, PathBuf::from("*.dwg"));
+    // No type icon to show where file icons aren't loaded (network shares): the theme icon stays.
+    assert!(MediaKey::type_icon(&file("plan.dwf", 10)).is_none());
+    assert!(MediaKey::type_icon(&file("plan.dwg", 10)).is_some());
 }
 
 /// Grid view: thumbnails for local images, system icons only for .exe. One hung image doesn't

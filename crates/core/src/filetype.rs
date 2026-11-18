@@ -106,6 +106,13 @@ pub fn wants_type_icon(entry: &Entry) -> bool {
         && kind_for_extension(entry.extension()) == FileKind::Other
 }
 
+/// Whether a type's registered `DefaultIcon` is the file itself (`%1`, possibly quoted): every
+/// file has its own icon, so the one Windows gives for the extension alone is the blank document
+/// and the icon has to be asked for per file, as for `.ico`.
+pub fn default_icon_is_the_file(default_icon: &str) -> bool {
+    default_icon.trim().trim_matches('"') == "%1"
+}
+
 /// Size limit for thumbnail sources. Larger images take too long and too much memory to
 /// decode, so they get the type icon.
 pub const MAX_THUMBNAIL_SOURCE: u64 = 64 * 1024 * 1024;
@@ -135,6 +142,17 @@ pub fn can_thumbnail(entry: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `DefaultIcon` of `%1` (quoted or not) means the file holds its own icon.
+    #[test]
+    fn default_icon_of_the_file_itself() {
+        assert!(default_icon_is_the_file("%1"));
+        assert!(default_icon_is_the_file("\"%1\""));
+        assert!(default_icon_is_the_file(" \"%1\" "));
+        assert!(!default_icon_is_the_file(r"C:\cad\acad.exe,3"));
+        assert!(!default_icon_is_the_file(r#""C:\cad\%1.exe""#));
+        assert!(!default_icon_is_the_file(""));
+    }
 
     fn file(name: &str, size: u64) -> Entry {
         Entry::new(name, EntryKind::File, size, None, 0)

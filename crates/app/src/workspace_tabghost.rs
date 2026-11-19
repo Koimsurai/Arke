@@ -23,6 +23,16 @@ pub(crate) struct TabGhost {
     alive: Rc<Cell<bool>>,
 }
 
+impl Drop for TabGhost {
+    /// The window closed during the drag: the drag image inside the other windows is not left
+    /// switched off.
+    fn drop(&mut self) {
+        if self.alive.get() {
+            SHOWN.with(|s| s.set(false));
+        }
+    }
+}
+
 /// How far right of and below the pointer the dragged tab is drawn (logical pixels).
 const GHOST_OFFSET: f32 = 14.;
 
@@ -63,13 +73,18 @@ impl Workspace {
         let (x, y) = crate::popup::to_screen(window, local);
         let offset = (GHOST_OFFSET * window.scale_factor()).round() as i32;
         let at = (x + offset, y + offset);
+        // Near the right or bottom edge it goes to the other side of the pointer.
+        let moved = crate::popup::Moved {
+            at,
+            flip: (x - offset, y - offset),
+        };
         if let Some(ghost) = &self.tab_ghost {
             let changed = *ghost.hint.borrow() != hint;
             if changed {
                 *ghost.hint.borrow_mut() = hint;
             }
             if let Some(popup) = ghost.popup.borrow().as_ref() {
-                popup.move_to(at, cx);
+                popup.move_to(moved, cx);
                 if changed && let Some(window) = popup.window() {
                     cx.defer(move |cx| {
                         let _ = window.update(cx, |_, window, _| window.refresh());
@@ -120,6 +135,9 @@ impl Workspace {
                 cx.defer(move |cx| {
                     let _ = window.update(cx, |_, window, _| window.refresh());
                 });
+            }
+            if let Some(state) = &state {
+                state.move_to(moved, cx);
             }
             *slot.borrow_mut() = state;
         });

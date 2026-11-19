@@ -230,7 +230,8 @@ pub(crate) type Dismiss = Rc<dyn Fn(&mut App)>;
 /// An open popup: where it is and which way it opened.
 pub(crate) struct PopupState {
     anchor: Anchor,
-    monitor: Monitor,
+    /// The monitor it is on: where it opened, or where a moved popup is now.
+    monitor: Cell<Monitor>,
     /// The panel in its window (logical pixels), once drawn.
     panel: Cell<Option<Bounds<Pixels>>>,
     /// The panel's place on the screen, once placed.
@@ -241,17 +242,49 @@ pub(crate) struct PopupState {
     window: Cell<Option<AnyWindowHandle>>,
     group: Group,
     /// A popup opened at a point that was moved since (a drag image following the pointer).
-    moved_to: Cell<Option<(i32, i32)>>,
+    moved_to: Cell<Option<Moved>>,
+}
+
+/// Where a moved popup goes (physical screen pixels): its top-left corner at `at`, or, where it
+/// doesn't fit, its far corner at `flip` (the other side of the pointer, so it never covers it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Moved {
+    pub(crate) at: (i32, i32),
+    pub(crate) flip: (i32, i32),
+}
+
+/// A panel of `size` placed at `moved`, kept inside `work`.
+fn place_moved(moved: Moved, size: (i32, i32), work: ScreenRect) -> ScreenRect {
+    let left = if moved.at.0 + size.0 <= work.right {
+        moved.at.0
+    } else {
+        moved.flip.0 - size.0
+    };
+    let top = if moved.at.1 + size.1 <= work.bottom {
+        moved.at.1
+    } else {
+        moved.flip.1 - size.1
+    };
+    let left = left.clamp(work.left, (work.right - size.0).max(work.left));
+    let top = top.clamp(work.top, (work.bottom - size.1).max(work.top));
+    ScreenRect::new(left, top, size.0, size.1)
 }
 
 impl PopupState {
     /// Moves a popup opened at a point to `at` (physical screen pixels) on its next frame, which
     /// is asked for here.
-    pub(crate) fn move_to(&self, at: (i32, i32), cx: &mut App) {
-        if self.moved_to.get() == Some(at) {
+    pub(crate) fn move_to(&self, to: Moved, cx: &mut App) {
+        if self.moved_to.get() == Some(to) {
             return;
         }
-        self.moved_to.set(Some(at));
+        self.moved_to.set(Some(to));
+        // Onto a monitor with another scale: drawn again, it gets that monitor's size.
+        let monitor = monitor_at(&monitors(), to.at.0, to.at.1);
+        if monitor != self.monitor.get() {
+            self.monitor.set(monitor);
+            self.group.refresh(cx);
+            return;
+        }
         // Placed already: the window moves as it is, without drawing again (a redraw racing the
         // move leaves parts of the last frame behind). A frame drawn later places it the same way.
         let (Some(panel), Some(frame), Some(window)) =
@@ -276,7 +309,11 @@ impl PopupState {
         self.placed.set(Some(placed));
         self.frame.set(Some(moved));
         if let Ok(Some(hwnd)) = window.update(cx, |_, window, _| hwnd_of(window)) {
-            crate::win_popup::move_popup(hwnd, moved);
+            // Not now: the window answers the move at once, while the app is busy with the event
+            // that moved it.
+            cx.foreground_executor()
+                .spawn(async move { crate::win_popup::move_popup(hwnd, moved) })
+                .detach();
         }
     }
 
@@ -297,24 +334,22 @@ impl PopupState {
 
     /// The tallest the panel may be: its monitor's work area, less the room for the shadow.
     fn max_height(&self) -> Pixels {
-        px(self.monitor.work.height() as f32 / self.monitor.scale - SHADOW_TOP - SHADOW_BOTTOM)
+        let monitor = self.monitor.get();
+        px(monitor.work.height() as f32 / monitor.scale - SHADOW_TOP - SHADOW_BOTTOM)
     }
 
     /// Where the panel goes for a panel of `panel` size, and whether it opens to the left.
     fn target(&self, panel: Size<Pixels>) -> Option<(ScreenRect, bool)> {
-        let scale = self.monitor.scale;
+        let monitor = self.monitor.get();
+        let scale = monitor.scale;
         let size = (
             (f32::from(panel.width) * scale).ceil() as i32,
             (f32::from(panel.height) * scale).ceil() as i32,
         );
-        let work = self.monitor.work;
+        let work = monitor.work;
         Some(match &self.anchor {
             Anchor::At(x, y) => match self.moved_to.get() {
-                // Kept on the screen it is moved onto now.
-                Some(at) => (
-                    place_at(at, size, monitor_at(&monitors(), at.0, at.1).work),
-                    false,
-                ),
+                Some(moved) => (place_moved(moved, size, work), false),
                 None => (place_at((*x, *y), size, work), false),
             },
             Anchor::Below {
@@ -328,7 +363,8 @@ impl PopupState {
                 let parent = parent.upgrade()?;
                 let (parent_panel, parent_frame) = (parent.placed.get()?, parent.frame.get()?);
                 let row = row()?;
-                let row_top = parent_frame.top + phys(f32::from(row.top()), parent.monitor.scale)
+                let row_top = parent_frame.top
+                    + phys(f32::from(row.top()), parent.monitor.get().scale)
                     - phys(f32::from(*pad), scale);
                 place_beside(
                     parent_panel,
@@ -351,7 +387,7 @@ impl PopupState {
         if self.placed.get() == Some(panel) && self.left.get() == left {
             return;
         }
-        let scale = self.monitor.scale;
+        let scale = self.monitor.get().scale;
         let frame = ScreenRect {
             left: panel.left - phys(f32::from(bounds.origin.x), scale),
             top: panel.top - phys(f32::from(bounds.origin.y), scale),
@@ -396,11 +432,11 @@ pub(crate) fn open(
     let monitor = match &anchor {
         Anchor::At(x, y) => monitor_at(&monitors(), *x, *y),
         Anchor::Below { control, .. } => monitor_at(&monitors(), control.left, control.bottom),
-        Anchor::Beside { parent, .. } => parent.upgrade()?.monitor,
+        Anchor::Beside { parent, .. } => parent.upgrade()?.monitor.get(),
     };
     let state = Rc::new(PopupState {
         anchor,
-        monitor,
+        monitor: Cell::new(monitor),
         panel: Cell::new(None),
         placed: Cell::new(None),
         frame: Cell::new(None),

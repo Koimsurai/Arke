@@ -219,10 +219,6 @@ impl Workspace {
         })
     }
 
-    /// The menu of a back or forward button: the folders of `view`'s history, nearest first.
-    /// With back and forward across tabs, when the button would first go to another tab, that
-    /// comes first, so the top row is always what the button does. Nothing opens when there is
-    /// nothing to list.
     /// Opens the back (or forward) history menu for `view`, as a right click on the button does.
     #[cfg(test)]
     pub(crate) fn open_history_menu_for_test(
@@ -235,6 +231,10 @@ impl Workspace {
         self.open_history_menu(view, back, position, cx);
     }
 
+    /// The menu of a back or forward button: the folders of `view`'s history, nearest first.
+    /// With back and forward across tabs, when the button would first go to another tab, that
+    /// comes first, so the top row is always what the button does. Nothing opens when there is
+    /// nothing to list.
     pub(super) fn open_history_menu(
         &mut self,
         view: &gpui::Entity<crate::explorer::Explorer>,

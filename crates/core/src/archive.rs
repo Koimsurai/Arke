@@ -996,15 +996,36 @@ fn cancelled(opts: &ExtractOptions<'_>) -> bool {
     opts.cancel.load(Ordering::Relaxed)
 }
 
-/// Writes a file, skipping it if the destination exists. Returns true if written. `expected`:
-/// the entry's size, when the archive states it reliably; fewer bytes means it broke off.
+/// What became of one file of an archive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Written {
+    Done,
+    /// Something by that name was there already; it is left alone.
+    Exists,
+    /// The job was cancelled partway; the part written is gone again.
+    Cancelled,
+}
+
+impl Written {
+    /// Counts it in `summary` (a cancelled file counts as neither).
+    pub(super) const fn count(self, summary: &mut ExtractSummary) {
+        match self {
+            Self::Done => summary.files += 1,
+            Self::Exists => summary.skipped_existing += 1,
+            Self::Cancelled => {}
+        }
+    }
+}
+
+/// Writes a file, skipping it if the destination exists. `expected`: the entry's size, when the
+/// archive states it reliably; fewer bytes means it broke off.
 fn write_new_file(
     path: &Path,
     mut reader: impl Read,
     expected: Option<u64>,
     on_bytes: &mut dyn FnMut(u64),
     opts: &ExtractOptions<'_>,
-) -> Result<bool, ArchiveError> {
+) -> Result<Written, ArchiveError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| ArchiveError::Create {
             path: parent.to_path_buf(),
@@ -1014,7 +1035,7 @@ fn write_new_file(
     // create_new: atomic create-if-absent, never overwrites the user's file.
     let file = match File::options().write(true).create_new(true).open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(Written::Exists),
         Err(source) => {
             return Err(ArchiveError::Write {
                 path: path.to_path_buf(),
@@ -1023,13 +1044,13 @@ fn write_new_file(
         }
     };
     match copy_entry(file, path, &mut reader, expected, on_bytes, opts) {
-        Ok(true) => Ok(true),
+        Ok(true) => Ok(Written::Done),
         // Cancelled partway, or the archive broke off (an old tar.exe stops at a RAR entry it
         // can't decode): the half-written file would look like the real one, so it goes (#229).
         // `create_new` above made it, so it was never the user's.
         Ok(false) => {
             let _ = fs::remove_file(path);
-            Ok(false)
+            Ok(Written::Cancelled)
         }
         Err(e) => {
             let _ = fs::remove_file(path);
@@ -1128,12 +1149,8 @@ fn extract_zip(
             (opts.progress)(progress);
         };
         let size = entry.size();
-        if write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)? {
-            summary.files += 1;
-            progress.files = summary.files;
-        } else {
-            summary.skipped_existing += 1;
-        }
+        write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)?.count(&mut summary);
+        progress.files = summary.files;
     }
     summary.cancelled = cancelled(opts);
     Ok(summary)
@@ -1198,12 +1215,9 @@ fn extract_tar_with_counter(
                     (opts.progress)(progress);
                 };
                 let size = entry.size();
-                if write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)? {
-                    summary.files += 1;
-                    progress.files = summary.files;
-                } else {
-                    summary.skipped_existing += 1;
-                }
+                write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)?
+                    .count(&mut summary);
+                progress.files = summary.files;
             }
             // pax / GNU long names are handled by the tar crate; links and device files are
             // skipped.
@@ -1720,6 +1734,7 @@ mod tests {
         .unwrap();
         assert!(summary.cancelled);
         assert_eq!(summary.files, 0);
+        assert_eq!(summary.skipped_existing, 0, "not counted as already there");
         assert!(!dest.join("big.bin").exists());
     }
 

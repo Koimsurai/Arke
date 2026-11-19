@@ -2994,12 +2994,15 @@ impl Workspace {
             .collect();
         // The active tab is scrolled into view each time it changes (opened, switched to with keys).
         let scroll = &self.sidebar_ui.strip_scroll;
-        if self.sidebar_ui.strip_revealed.get() != Some(self.active) {
+        // Again when the strip changes width (the window was made narrower, say).
+        let reveal = (self.active, scroll.bounds().size.width);
+        if self.sidebar_ui.strip_revealed.get() != Some(reveal) {
             // Once the tabs were laid out (the first frame after opening has no places yet).
             if scroll.bounds_for_item(self.active).is_some() {
-                self.sidebar_ui.strip_revealed.set(Some(self.active));
+                self.sidebar_ui.strip_revealed.set(Some(reveal));
                 scroll.scroll_to_item(self.active);
-            } else {
+            } else if reveal.1 <= px(0.) {
+                // Not laid out yet: once more next frame (never in a loop).
                 cx.notify();
             }
         }

@@ -298,7 +298,9 @@ impl Workspace {
             .tabs
             .first()
             .and_then(|t| self.tab_layout.borrow().slots.get(&t.id).copied())
-            .map_or_else(|| point(px(120.), px(60.)), |b| b.center());
+            .map_or_else(|| point(px(120.), px(60.)), |b| b.center())
+            // Tabs on top, scrolled sideways: where the first tab is in the new window, unscrolled.
+            - point(self.sidebar_ui.strip_scroll.offset().x, px(0.));
         let screen_bounds = cx
             .displays()
             .iter()

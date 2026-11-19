@@ -34,7 +34,7 @@ pub(super) struct SidebarUi {
     /// Tabs on top: the strip, which scrolls sideways when the tabs don't fit, and the tab last
     /// scrolled into view there (the active one, once each time it changes).
     pub(super) strip_scroll: gpui::ScrollHandle,
-    pub(super) strip_revealed: std::cell::Cell<Option<usize>>,
+    pub(super) strip_revealed: std::cell::Cell<Option<(usize, gpui::Pixels)>>,
     /// The open-over-the-content sidebar just closed and fades out (serial, for the animation id).
     peek_ghost: Option<u64>,
     peek_ghost_task: Option<gpui::Task<()>>,

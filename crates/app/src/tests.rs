@@ -58,6 +58,8 @@ mod quick_look;
 mod quiet_update;
 #[path = "tests_remote.rs"]
 mod remote;
+#[path = "tests_tab_drag.rs"]
+mod tab_drag;
 #[path = "tests_tabs.rs"]
 mod tabs;
 #[path = "tests_columns.rs"]
@@ -5640,29 +5642,33 @@ fn pin_folders_favorites_and_expand_the_tree(cx: &mut TestAppContext) {
     wait_until(cx, &view, "sidebar", |v| !v.places.is_empty());
     let b = PathBuf::from(r"C:\p\b");
 
-    // Folder context menu: pin to the sidebar.
+    // Folder context menu: add to the sidebar's favorites.
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).expect("menu should be open");
     assert!(
-        labels.contains(&t!("sidebar.pin").into_owned()),
+        labels.contains(&t!("sidebar.add_favorite").into_owned()),
         "{labels:?}"
     );
     run_command(&view, cx, MenuCommand::TogglePin);
-    // Only one "Pin" entry: goes to a free tile (one after the default Desktop), not the list.
-    assert!(
-        !labels.iter().any(|l| l.to_lowercase().contains("favorite")),
-        "no separate \"add to favorites\" item: {labels:?}"
+    // One entry: goes to a free tile (one after the default Desktop), not the list.
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|l| l.to_lowercase().contains("favorite"))
+            .count(),
+        1,
+        "a single \"Add to favorites\" item: {labels:?}"
     );
     assert_eq!(
         settings(cx).favorites,
         Some(vec![PathBuf::from(r"C:\home\Desktop"), b.clone()])
     );
     assert!(settings(cx).pinned.is_empty());
-    // Already pinned: the menu shows "Unpin", which removes it from the tiles.
+    // Already a favorite: the menu shows "Remove from favorites", which takes it off the tiles.
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).unwrap();
     assert!(
-        labels.contains(&t!("sidebar.unpin").into_owned()),
+        labels.contains(&t!("sidebar.remove_favorite").into_owned()),
         "{labels:?}"
     );
     run_command(&view, cx, MenuCommand::TogglePin);

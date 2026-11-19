@@ -1979,14 +1979,14 @@ fn opening_a_folder_already_in_a_tab_switches_to_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_tab_menu_pins_its_folder_to_the_sidebar(cx: &mut TestAppContext) {
+fn the_tab_menu_adds_its_folder_to_the_favorites(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_many(r"C:\work", 1);
     let (ws, cx) = setup_workspace(cx, fs, r"C:\work");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\work"));
-    let pin = t!("sidebar.pin_tab_folder").into_owned();
-    let unpin = t!("sidebar.unpin_tab_folder").into_owned();
+    let pin = t!("sidebar.add_favorite").into_owned();
+    let unpin = t!("sidebar.remove_favorite").into_owned();
     let on_sidebar = |cx: &mut VisualTestContext| {
         ws.update(cx, |ws, cx| {
             let places = ws.active_view().read(cx).places.clone();

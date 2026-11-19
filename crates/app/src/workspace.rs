@@ -43,6 +43,8 @@ mod nav;
 mod pages;
 #[path = "workspace_placename.rs"]
 mod place_rename;
+#[path = "workspace_pindrop.rs"]
+pub(crate) mod pindrop;
 #[path = "workspace_rail.rs"]
 mod rail;
 #[path = "workspace_recycle.rs"]
@@ -61,6 +63,8 @@ mod shortcuts;
 mod sidebar;
 #[path = "workspace_tabdrag.rs"]
 mod tabdrag;
+#[path = "workspace_tabmove.rs"]
+mod tabmove;
 #[path = "workspace_uninstall.rs"]
 mod uninstall_page;
 #[path = "workspace_update.rs"]
@@ -72,6 +76,7 @@ pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
 pub(crate) use sidebar::{leave_drive_everywhere, place_icon};
+pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
 /// window order on Windows (`window_stack` is `None` there), so each window records activation.
@@ -279,7 +284,24 @@ struct DraggedTab {
 }
 
 impl Render for DraggedTab {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Over the favorites (the tiles or the list): what dropping there does.
+        let pin = pindrop::current(window, cx).map(|_| {
+            div()
+                .flex()
+                .items_center()
+                .gap(theme::S_4)
+                .pl(theme::S_4)
+                .text_size(theme::FS_12)
+                .text_color(theme::text_muted())
+                .child(
+                    gpui::svg()
+                        .path(crate::assets::Icon::Pin.path())
+                        .size(theme::ICON_SM)
+                        .text_color(theme::signal()),
+                )
+                .child(pindrop::action_label())
+        });
         div()
             .h(theme::H_ROW)
             .px(theme::S_8)
@@ -294,6 +316,7 @@ impl Render for DraggedTab {
             .text_color(theme::text())
             .child(kind_icon(FileKind::Folder, theme::ICON))
             .child(self.title.clone())
+            .children(pin)
     }
 }
 
@@ -355,8 +378,13 @@ pub(crate) struct Workspace {
     dragging_tab: Option<usize>,
     /// Animation and hit testing for tab and favorite tile reordering.
     tab_drag: tabdrag::TabDrag,
+    /// Where the tabs were drawn last, for a tab dropped here from another window.
+    tab_layout: Rc<std::cell::RefCell<tabmove::TabLayoutCache>>,
     /// Dragging a pinned folder; an empty list needs a drop target.
     dragging_pin: bool,
+    /// Where dragged folders would be added to the sidebar, as of this frame (`pindrop.rs`).
+    pin_shown: Option<crate::settings::PinSlot>,
+    pin_mark: Option<pindrop::Mark>,
     /// The shelf's items are shown in the sidebar.
     shelf_open: bool,
     /// The collapsed sidebar is open over the content (pointer resting on it, or the Shelf
@@ -671,7 +699,10 @@ impl Workspace {
             resizing: false,
             dragging_tab: None,
             tab_drag: tabdrag::TabDrag::default(),
+            tab_layout: Rc::default(),
             dragging_pin: false,
+            pin_shown: None,
+            pin_mark: None,
             shelf_open: false,
             rail_peek: false,
             rail_hover: 0,
@@ -2371,6 +2402,8 @@ impl Workspace {
             self.dragging_pin = false;
             self.dragging_tab = None;
             self.tab_drag.end_tile();
+            self.tab_drag.end_spring();
+            pindrop::clear(cx);
         }
     }
 }
@@ -2391,6 +2424,9 @@ impl Render for Workspace {
         note_menu_open(window, self.sidebar_menu.is_some());
         self.after_drag(cx);
         self.tab_drag.frame();
+        self.tab_layout.borrow_mut().clear();
+        self.pin_shown = pindrop::current(window, cx);
+        self.pin_mark = pindrop::current_mark(window, cx);
         self.sync_locks(cx);
         self.sync_panes(cx);
         self.settings_follow_navigation(cx);
@@ -2647,6 +2683,7 @@ impl Render for Workspace {
                 }))
             })
             .children(self.render_drag_out_watch(cx))
+            .children(self.render_tab_drop_watch(cx))
             .children(self.render_sidebar_menu(cx))
             .children(welcome::welcome_card(cx))
             .children(update_page::update_notice(cx))
@@ -2822,6 +2859,8 @@ impl Workspace {
             .collect();
         div()
             .id("tab-strip")
+            .relative()
+            .child(self.tab_area_recorder(tabmove::AreaPart::Strip))
             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
             // Dropping a tab between tabs or on the empty space to the right moves it to the end.
             .on_drop(cx.listener(Self::drop_tab_at_end))

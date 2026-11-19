@@ -913,6 +913,10 @@ impl Shell for WinShell {
         })
     }
 
+    fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {
+        win_fileops::window_at_cursor()
+    }
+
     fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
         use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
         let (x, y) = metrics_for_window(owner, (SM_CXDRAG, SM_CYDRAG));

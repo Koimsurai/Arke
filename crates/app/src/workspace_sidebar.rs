@@ -8,17 +8,18 @@ use std::sync::Arc;
 
 use arke_core::filetype::FileKind;
 use gpui::{
-    AnimationExt, AnyElement, App, ClickEvent, Context, Div, Entity, ExternalPaths, MouseButton,
-    MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window, anchored,
-    deferred, div, prelude::*, px, relative, svg,
+    AnimationExt, AnyElement, App, ClickEvent, Context, Div, DragMoveEvent, Entity, ExternalPaths,
+    MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window,
+    anchored, deferred, div, prelude::*, px, relative, svg,
 };
 use rust_i18n::t;
 
+use super::pindrop::{self, PinArea, PinDrops as _};
 use super::{DraggedTab, Tab, Workspace};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, Explorer, drop_external_into, drop_into, kind_icon};
-use crate::settings::{FAVORITES_LARGE, FAVORITES_MAX, SettingsStore};
+use crate::settings::{FAVORITES_LARGE, FAVORITES_MAX, PinSlot, SettingsStore};
 use crate::shell::{KnownFolder, Place, PlaceKind};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
@@ -291,9 +292,9 @@ fn folder_menu(
         ),
         (
             if pinned {
-                t!("sidebar.unpin")
+                t!("sidebar.remove_favorite")
             } else {
-                t!("sidebar.pin")
+                t!("sidebar.add_favorite")
             }
             .to_string()
             .into(),
@@ -464,31 +465,54 @@ impl FileDropTarget for gpui::Stateful<gpui::Div> {
         let spring_key = format!("side:{}", dest.display());
         let spring_bar = crate::spring::bar(&spring_key, cx);
         let workspace = cx.entity().downgrade();
+        // Near the edge of a favorite or pinned folder, dragged folders are added to the sidebar
+        // there instead (`workspace_pindrop.rs`), not dropped into this one. That is handled here:
+        // GPUI ends the drag at the first target of its kind, even one that turns it down.
         self.relative()
             .children(spring_bar)
-            .can_drop(move |value, _, cx| crate::explorer::accepts_drop(value, &check, cx))
+            .can_drop(move |value, window, cx| {
+                pindrop::inserting(window, cx) || crate::explorer::accepts_drop(value, &check, cx)
+            })
             .on_drag_move(move |e: &gpui::DragMoveEvent<DraggedFiles>, window, cx| {
-                crate::explorer::report_drop_target(&hovered, e, cx);
-                crate::spring::hover(
+                let inserting = pindrop::inserting(window, cx);
+                if !inserting {
+                    crate::explorer::report_drop_target(&hovered, e, cx);
+                }
+                crate::spring::hover_at(
                     spring_key.clone(),
                     crate::spring::Action::Open(hovered.clone()),
                     crate::spring::Target::Workspace(workspace.clone()),
-                    e,
+                    !inserting && e.bounds.contains(&e.event.position),
+                    e.event.position,
                     window,
                     cx,
                 );
             })
-            .drag_over::<DraggedFiles>(|s, _, _, _| {
+            .drag_over::<DraggedFiles>(|s, _, window, cx| {
+                if pindrop::inserting(window, cx) {
+                    return s;
+                }
                 s.bg(theme::signal_wash())
                     .border_color(theme::signal_line())
             })
-            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(theme::signal_wash()))
-            .on_drop(move |dragged: &DraggedFiles, window, cx| {
-                drop_into(dragged, dest.clone(), window, cx);
+            .drag_over::<ExternalPaths>(|s, _, window, cx| {
+                if pindrop::inserting(window, cx) {
+                    return s;
+                }
+                s.bg(theme::signal_wash())
             })
+            .on_drop(
+                cx.listener(move |this, dragged: &DraggedFiles, window, cx| {
+                    if !this.drop_files_to_pin(dragged, window, cx) {
+                        drop_into(dragged, dest.clone(), window, cx);
+                    }
+                }),
+            )
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                let target = this.active_view().clone();
-                drop_external_into(paths, external.clone(), &target, window, cx);
+                if !this.drop_external_to_pin(paths, window, cx) {
+                    let target = this.active_view().clone();
+                    drop_external_into(paths, external.clone(), &target, window, cx);
+                }
             }))
     }
 }
@@ -538,8 +562,15 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Pinned list row: draggable, flashes when just added.
-    fn pin_list_row(ix: usize, path: &Path, row: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+    /// Pinned list row: draggable, flashes when just added. A folder or tab dragged over its top or
+    /// bottom edge goes in above or below it (`workspace_pindrop.rs`).
+    fn pin_list_row(
+        &self,
+        ix: usize,
+        path: &Path,
+        row: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let workspace = cx.entity().downgrade();
         let dragged = DraggedPin {
             path: path.to_path_buf(),
@@ -547,10 +578,37 @@ impl Workspace {
             icon: Icon::Folder,
             from_tile: false,
         };
+        // Over this row, or over the "Pinned" heading (first in the list).
+        let mark = match (self.pin_shown, self.pin_mark) {
+            (Some(_), Some(m)) if m.area == PinArea::List && m.ix == ix => {
+                Some(pindrop::insertion_mark(false, m.before))
+            }
+            (Some(PinSlot::List(0)), None) if ix == 0 => Some(pindrop::insertion_mark(false, true)),
+            _ => None,
+        };
         let row = div()
             .id(SharedString::from(format!("pin-row-{}", path.display())))
+            .debug_selector(move || format!("pin-row-{ix}"))
+            .relative()
             .rounded(theme::R_8)
             .child(row)
+            .children(mark)
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.pin_hover(PinArea::List, ix, e, cx);
+                }),
+            )
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                    this.pin_hover(PinArea::List, ix, e, cx);
+                }),
+            )
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    this.pin_hover(PinArea::List, ix, e, cx);
+                }),
+            )
+            .with_pin_drops(cx)
             .on_drag(dragged, move |dragged, _, _, cx| {
                 start_pin_drag(&workspace, dragged, cx)
             })
@@ -607,6 +665,10 @@ impl Workspace {
     }
 
     /// Pins section: draggable tiles, the "Pinned" header, and the overflow list below.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the tiles, the heading and the list, each with its drops, read top to bottom"
+    )]
     fn render_pins(&self, current: Option<&Path>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let settings = &SettingsStore::global(cx).read(cx).settings;
         let pinned = settings.pinned.clone();
@@ -639,7 +701,7 @@ impl Workspace {
             );
             // The list row itself (not its expanded children) is draggable: reorder or drop onto tiles.
             let row = pinned_rows.remove(row_at);
-            pinned_rows.insert(row_at, Self::pin_list_row(ix, path, row, cx));
+            pinned_rows.insert(row_at, self.pin_list_row(ix, path, row, cx));
         }
         // With an empty list, a dragged tile still needs somewhere to drop.
         let list_drop = (pinned.is_empty() && self.dragging_pin).then(|| {
@@ -665,13 +727,32 @@ impl Workspace {
                     this.place_pin(&dragged.path, crate::settings::PinSlot::List(0), cx);
                 }))
         });
+        // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
+        // the last one (`workspace_pindrop.rs`).
+        let add_slot = self.render_add_favorite_slot(tile_count, large, cx);
         let mut out = vec![
             div()
                 .id("pin-tiles")
+                .debug_selector(|| "pin-tiles".to_owned())
                 .grid()
                 .grid_cols(if large { 3 } else { 4 })
                 .gap(theme::S_4)
+                .rounded(theme::R_8)
+                .when(add_slot.is_some(), |d| d.bg(theme::signal_wash()))
                 .children(tiles)
+                .children(add_slot)
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.tiles_hover(e, cx);
+                }))
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                    this.tiles_hover(e, cx);
+                }))
+                .on_drag_move(
+                    cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                        this.tiles_hover(e, cx);
+                    }),
+                )
+                .with_pin_drops(cx)
                 .on_drop(cx.listener(move |this, dragged: &DraggedPin, _, cx| {
                     this.drop_pin_between_tiles(dragged, tile_count, cx);
                 }))
@@ -686,7 +767,26 @@ impl Workspace {
             out.push(
                 div()
                     .id("pin-list-label")
-                    .child(section_label(t!("sidebar.pinned")))
+                    .debug_selector(|| "pin-list-label".to_owned())
+                    .relative()
+                    .rounded(theme::R_8)
+                    .child(section_label(t!("sidebar.favorites")))
+                    // A folder or tab goes first in the list; with no folder pinned yet, the
+                    // heading itself shows it.
+                    .when(
+                        pinned.is_empty() && self.pin_shown == Some(PinSlot::List(0)),
+                        |d| d.child(pindrop::insertion_mark(false, false)),
+                    )
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                    }))
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                    }))
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                    }))
+                    .with_pin_drops(cx)
                     // Dropping on the "Pinned" header puts it first in the list.
                     .on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| {
                         this.place_pin(&dragged.path, crate::settings::PinSlot::List(0), cx);
@@ -784,9 +884,11 @@ impl Workspace {
             .when(!horizontal, |d| {
                 d.child(
                         div()
+                            .relative()
                             .flex()
                             .flex_none()
                             .items_end()
+                            .child(self.tab_area_recorder(super::tabmove::AreaPart::ListHead))
                             .child(div().flex_1().child(section_label(t!("sidebar.tabs"))))
                             .child(Self::workspaces_button(cx))
                             .child(tab_layout_button(false, cx)),
@@ -821,6 +923,8 @@ impl Workspace {
                     .child(
                         div()
                             .id("tab-list-end")
+                            .relative()
+                            .child(self.tab_area_recorder(super::tabmove::AreaPart::ListEnd))
                             .flex_1()
                             .min_h(theme::S_32)
                             .on_drop(cx.listener(Self::drop_tab_at_end)),
@@ -1138,7 +1242,7 @@ impl Workspace {
                                 SidebarAction::MoveToList(p.clone()),
                             ),
                             (
-                                t!("sidebar.unpin").to_string().into(),
+                                t!("sidebar.remove_favorite").to_string().into(),
                                 SidebarAction::TogglePin(p),
                             ),
                         ],
@@ -1916,7 +2020,8 @@ impl Workspace {
     pub(super) fn tab_menu(&self, ix: usize, cx: &App) -> Vec<(SharedString, SidebarAction)> {
         let pinned = self.tabs.get(ix).is_some_and(|t| t.pinned);
         let split = self.tabs.get(ix).is_some_and(Tab::is_split);
-        // The tab's folder can go on the sidebar's pinned list (the same pin as a folder's own menu).
+        // The tab's folder can go in the sidebar's favorites (the same as a folder's own menu:
+        // the tiles, then the list below once they are full).
         let folder = self
             .tabs
             .get(ix)
@@ -1925,13 +2030,13 @@ impl Workspace {
             .and_then(|view| view.read(cx).display_path().map(Path::to_path_buf))
             .map(|path| {
                 let places = &self.active_view().read(cx).places;
-                let on_sidebar = SettingsStore::try_global(cx)
+                let favorite = SettingsStore::try_global(cx)
                     .is_some_and(|s| s.read(cx).settings.is_pinned(&path, places));
                 (
-                    if on_sidebar {
-                        t!("sidebar.unpin_tab_folder")
+                    if favorite {
+                        t!("sidebar.remove_favorite")
                     } else {
-                        t!("sidebar.pin_tab_folder")
+                        t!("sidebar.add_favorite")
                     }
                     .to_string()
                     .into(),
@@ -2151,11 +2256,10 @@ impl Workspace {
                     .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
             })
             // Dragging another tab over this one reorders live (workspace_tabdrag.rs); dropping on the right half
-            // of the content area opens it side by side. Files dropped on a tab go into its current folder.
-            .when_some(
-                tab.view().read(cx).current_path().map(Path::to_path_buf),
-                |d, dest| d.with_file_drop(dest, cx),
-            )
+            // of the content area opens it side by side. Files dropped on a tab go into its current folder (#32).
+            .when_some(self.tab_drop_folder(ix, cx), |d, dest| {
+                self.with_tab_file_drop(ix, dest, d)
+            })
             // Position was already updated during the drag.
             .on_drop(cx.listener(move |this, _: &DraggedTab, _, cx| {
                 this.dragging_tab = None;

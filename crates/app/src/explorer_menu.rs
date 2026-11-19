@@ -3143,9 +3143,9 @@ fn zip_stem_for(path: &std::path::Path, is_dir: bool) -> String {
 
 fn pin_label(pinned: bool) -> std::borrow::Cow<'static, str> {
     if pinned {
-        t!("sidebar.unpin")
+        t!("sidebar.remove_favorite")
     } else {
-        t!("sidebar.pin")
+        t!("sidebar.add_favorite")
     }
 }
 

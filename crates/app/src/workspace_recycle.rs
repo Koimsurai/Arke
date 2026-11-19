@@ -130,7 +130,7 @@ impl Workspace {
                 SidebarAction::OpenRecycleInNewTab,
             ),
             (
-                t!("sidebar.unpin").to_string().into(),
+                t!("sidebar.remove_favorite").to_string().into(),
                 SidebarAction::SetRecyclePinned(false),
             ),
         ];
@@ -248,7 +248,7 @@ impl Workspace {
                     "recycle-pin",
                     Icon::Pin,
                     true,
-                    t!("sidebar.pin"),
+                    t!("sidebar.add_favorite"),
                     |_: &ClickEvent, _: &mut Window, cx: &mut App| Self::set_recycle_pinned(true, cx),
                 ))
             })

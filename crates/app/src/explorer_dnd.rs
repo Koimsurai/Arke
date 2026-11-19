@@ -83,6 +83,14 @@ impl DraggedFiles {
             .map_or_default(|e| e.read(cx).drag_paths(self.ix))
     }
 
+    /// The dragged paths if they are all folders (they can go on the sidebar), else `None`.
+    pub(crate) fn folders(&self, cx: &App) -> Option<Vec<PathBuf>> {
+        if self.shelf.is_some() {
+            return None;
+        }
+        self.source.upgrade()?.read(cx).drag_folders(self.ix)
+    }
+
     /// Whether a drop moves: shelf items copy unless Shift is held; list items follow
     /// Explorer's rules ([`drop_is_move`]).
     pub(crate) fn moves(&self, modifiers: Modifiers, paths: &[PathBuf], dest: &Path) -> bool {
@@ -330,7 +338,15 @@ impl DragPreview {
             .and_then(|h| h.dest.as_ref().map(|(p, _)| p.clone()))
             .filter(|d| useful_drop(&self.paths, d));
         let modifiers = window.modifiers();
+        // Over the sidebar's favorites or pinned list, where folders are added rather than dropped
+        // into one (only reported for folders).
+        let pin = crate::workspace::pindrop::current(window, cx);
         let (icon, text, strong) = match dest {
+            _ if pin.is_some() => (
+                Icon::Pin,
+                crate::workspace::pindrop::action_label().to_string(),
+                true,
+            ),
             None => (Icon::Folder, t!("dnd.no_target").into_owned(), false),
             Some(_) if modifiers.alt || cx.has_global::<RightDrag>() => {
                 (Icon::Menu, t!("dnd.will_ask").into_owned(), true)
@@ -732,6 +748,29 @@ impl Explorer {
         } else {
             self.path_at(ix).map(|(p, _)| p).into_iter().collect()
         }
+    }
+
+    /// [`Self::drag_paths`] if every one is a folder.
+    pub(crate) fn drag_folders(&self, ix: usize) -> Option<Vec<PathBuf>> {
+        if self.search_mode {
+            return self
+                .path_at(ix)
+                .filter(|(_, is_dir)| *is_dir)
+                .map(|(p, _)| vec![p]);
+        }
+        let (model, view) = (self.model.as_ref()?, self.view()?);
+        let at = view.get(ix)?;
+        let dragged: Vec<&arke_core::Entry> = if self.selection.contains(&at.name) {
+            view.iter()
+                .filter(|e| self.selection.contains(&e.name))
+                .collect()
+        } else {
+            vec![at]
+        };
+        dragged
+            .iter()
+            .all(|e| e.is_dir_like())
+            .then(|| dragged.iter().map(|e| model.path.join(&*e.name)).collect())
     }
 
     /// What to build the drag image from for item `ix`, the one under the cursor.

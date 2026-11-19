@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, Focusable, SharedString, Window, div, prelude::*,
-    px, svg,
+    svg,
 };
 use rust_i18n::t;
 

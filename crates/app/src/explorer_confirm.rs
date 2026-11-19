@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use gpui::{
     AnimationExt, App, ClickEvent, Context, FocusHandle, KeyBinding, SharedString, Window, actions,
-    deferred, div, prelude::*, px,
+    deferred, div, prelude::*,
 };
 use rust_i18n::t;
 

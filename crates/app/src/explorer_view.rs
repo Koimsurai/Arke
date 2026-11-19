@@ -1595,6 +1595,7 @@ impl Explorer {
     }
 
     /// List content: rows, tiles, search results, or the empty/loading state.
+    #[allow(clippy::too_many_lines, reason = "one match over every list state")]
     fn list_body(&mut self, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let message = |text: SharedString| {
             div()

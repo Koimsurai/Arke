@@ -25,7 +25,7 @@ use arke_core::index_query::Facet;
 use arke_core::{Entry, EntryKind, SearchHit, SearchResults};
 use gpui::{
     AnyElement, App, ClickEvent, Context, Focusable, KeyBinding, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Window, actions, anchored, deferred, div, prelude::*, px, svg,
+    MouseDownEvent, SharedString, Window, actions, anchored, deferred, div, prelude::*, svg,
 };
 use rust_i18n::t;
 

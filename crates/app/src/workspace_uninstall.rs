@@ -8,7 +8,7 @@ use std::borrow::Cow;
 
 use gpui::{
     AnimationExt, App, ClickEvent, Context, FocusHandle, KeyBinding, SharedString, Window, actions,
-    div, prelude::*, px,
+    div, prelude::*,
 };
 use rust_i18n::t;
 

@@ -184,10 +184,12 @@ impl Explorer {
         window: &Window,
     ) -> (Pixels, Pixels) {
         let aligned = self.aligned_search_width();
-        let normal = aligned.unwrap_or(if self.pane.split {
-            split_search_w()
-        } else {
-            theme::filter_w()
+        let normal = aligned.unwrap_or_else(|| {
+            if self.pane.split {
+                split_search_w()
+            } else {
+                theme::filter_w()
+            }
         });
         // At its cap the box no longer reaches the divider: the usual spacing, and the path bar
         // takes the rest.

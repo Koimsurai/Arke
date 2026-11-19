@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, ScrollHandle, SharedString, Window, div, prelude::*, px, svg,
+    MouseDownEvent, ScrollHandle, SharedString, Window, div, prelude::*, svg,
 };
 use rust_i18n::t;
 

@@ -2997,7 +2997,7 @@ impl Explorer {
     }
 
     /// Split panes are half width, so they use compact density.
-    pub(crate) const fn row_height(&self) -> Pixels {
+    pub(crate) fn row_height(&self) -> Pixels {
         if self.pane.split {
             return theme::h_row_compact();
         }

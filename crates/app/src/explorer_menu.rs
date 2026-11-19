@@ -2476,7 +2476,7 @@ impl Explorer {
             let width = geometry
                 .panels
                 .get(&level)
-                .map_or(crate::theme::scaled_px(240.), |b| b.size.width);
+                .map_or_else(|| crate::theme::scaled_px(240.), |b| b.size.width);
             let ancestors: Vec<(f32, f32)> = (0..level)
                 .filter_map(|l| geometry.panels.get(&l))
                 .map(|b| (f32::from(b.left()), f32::from(b.right())))

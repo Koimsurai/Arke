@@ -18,7 +18,7 @@ use std::sync::Arc;
 use arke_core::filter::rank_paths;
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
-    KeyBinding, SharedString, StyledText, Subscription, Window, actions, div, prelude::*, px, svg,
+    KeyBinding, SharedString, StyledText, Subscription, Window, actions, div, prelude::*, svg,
 };
 
 use crate::a11y::A11yExt as _;

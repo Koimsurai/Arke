@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use gpui::{AnyElement, Image, ImageFormat, IntoElement, ParentElement, Styled, div, img, px};
+use gpui::{AnyElement, Image, ImageFormat, IntoElement, ParentElement, Styled, div, img};
 
 use crate::theme;
 

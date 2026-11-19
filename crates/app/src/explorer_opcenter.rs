@@ -9,9 +9,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
-    AnimationExt, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, Pixels,
-    SharedString, Transformation, Window, anchored, deferred, div, point, prelude::*, px, radians,
-    svg,
+    AnimationExt, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, SharedString,
+    Transformation, Window, anchored, deferred, div, point, prelude::*, px, radians, svg,
 };
 use rust_i18n::t;
 

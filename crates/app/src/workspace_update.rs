@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use gpui::{
     AnimationExt as _, AnyElement, App, ClickEvent, Context, SharedString, Window, div, prelude::*,
-    px, svg,
+    svg,
 };
 use rust_i18n::t;
 

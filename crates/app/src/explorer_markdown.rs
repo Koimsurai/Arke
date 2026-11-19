@@ -71,7 +71,7 @@ struct Layout {
 }
 
 impl Layout {
-    const fn block_gap(&self) -> gpui::Pixels {
+    fn block_gap(&self) -> gpui::Pixels {
         if self.large {
             theme::s_16()
         } else {

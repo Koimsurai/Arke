@@ -24,7 +24,7 @@ use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
 
 /// One tree indent level.
-fn indent() -> gpui::Pixels {
+fn tree_indent() -> gpui::Pixels {
     crate::theme::scaled_px(16.)
 }
 /// Drive usage bar: thin, under the label, inside the row (the row keeps its height).
@@ -1181,7 +1181,7 @@ impl Workspace {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu = self.tree_menu(path, depth, cx);
-        let indent = indent() * depth as f32;
+        let indent = tree_indent() * depth as f32;
         out.push(
             div()
                 .id(SharedString::from(format!(
@@ -1248,7 +1248,7 @@ impl Workspace {
                     );
                 }
             }
-            _ => out.push(loading_row(indent + indent() + theme::s_32())),
+            _ => out.push(loading_row(indent + tree_indent() + theme::s_32())),
         }
         // Just expanded: the new rows drop in under their parent.
         if let Some(serial) = cue {

@@ -10,7 +10,7 @@
 //!   to the clipboard for the user to paste.
 //! - Log reading, file writes and clipboard access run on background threads.
 
-use gpui::{App, Context, SharedString, div, prelude::*, px, svg};
+use gpui::{App, Context, SharedString, div, prelude::*, svg};
 use rust_i18n::t;
 use std::rc::Rc;
 use std::sync::Arc;

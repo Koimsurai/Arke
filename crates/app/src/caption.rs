@@ -118,8 +118,8 @@ mod tests {
     use crate::theme::{h_bar, h_ctl, s_2, s_8};
 
     const SCREEN: Size<Pixels> = Size {
-        width: crate::theme::scaled_px(1920.),
-        height: crate::theme::scaled_px(1080.),
+        width: px(1920.),
+        height: px(1080.),
     };
 
     /// Buttons laid out as in the title bar: centered in it, the last one `s_8()` from the right.

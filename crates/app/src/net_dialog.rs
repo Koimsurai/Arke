@@ -25,7 +25,7 @@ use arke_core::remote::{RemoteUrl, Scheme};
 use arke_remote::{HostKey, RemoteError, Remotes};
 use gpui::{
     AnimationExt, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyBinding, SharedString, Subscription, Window, actions, div, prelude::*, px,
+    KeyBinding, SharedString, Subscription, Window, actions, div, prelude::*,
 };
 use rust_i18n::t;
 

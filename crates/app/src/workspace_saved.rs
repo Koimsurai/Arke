@@ -16,7 +16,7 @@ use arke_core::NavKind;
 use arke_core::path::{PathMove, apply_move, path_move};
 use gpui::{
     AnimationExt, App, ClickEvent, Context, Entity, EventEmitter, Focusable, SharedString,
-    Subscription, Task, Window, div, prelude::*, px, svg,
+    Subscription, Task, Window, div, prelude::*, svg,
 };
 use rust_i18n::t;
 

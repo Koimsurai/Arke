@@ -33,7 +33,7 @@ use crate::a11y::A11yExt as _;
 use crate::theme::{self, UiFont as _};
 
 /// Height of a sheet row and of the column letters
-fn cell_h() -> gpui::Pixels {
+fn row_cell_h() -> gpui::Pixels {
     theme::s_24()
 }
 /// Narrowest and widest sheet column (logical pixels at 12 px text)
@@ -569,7 +569,7 @@ fn sheet_grid_at(
     let zoom = zoom.unwrap_or(1.);
     // Quick Look's text is 13 px instead of 12.
     let scale = if large { 13. / 12. } else { 1. } * zoom;
-    let cell_h = cell_h() * zoom;
+    let cell_h = row_cell_h() * zoom;
     let widths: Vec<Pixels> = view.widths.iter().map(|w| px(w * scale)).collect();
     let total_w = widths.iter().fold(px(0.), |a, w| a + *w);
     let rows = sheet.rows.len();
@@ -738,7 +738,7 @@ fn sheet_grid_at(
     .children(note.map(|note| {
         hairline(
             div()
-                .h(cell_h())
+                .h(row_cell_h())
                 .flex_none()
                 .flex()
                 .items_center()

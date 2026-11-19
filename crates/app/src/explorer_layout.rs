@@ -198,8 +198,8 @@ fn list_min(input: &FitInput) -> Pixels {
         }
         fixed += input.parent_w;
     } else if input.search {
-        let modified = width(Col::Modified).unwrap_or(theme::col_modified());
-        let size = width(Col::Size).unwrap_or(theme::col_size());
+        let modified = width(Col::Modified).unwrap_or_else(theme::col_modified);
+        let size = width(Col::Size).unwrap_or_else(theme::col_size);
         fixed += gap * 3. + input.location_w + modified + size;
     } else if input.details
         && let Some(size) = width(Col::Size)
@@ -526,7 +526,9 @@ mod tests {
         row_chrome() + name_min() + col_gap() + theme::col_size()
     }
 
-    const OTHERS: [Pixels; 3] = [theme::col_modified(), theme::col_type(), theme::col_size()];
+    fn others() -> [Pixels; 3] {
+        [theme::col_modified(), theme::col_type(), theme::col_size()]
+    }
 
     /// The preview pane scales with the window between its bounds.
     #[test]
@@ -648,13 +650,13 @@ mod tests {
     /// with the gap before it, so it ends where the last column does, whatever the pane's width.
     #[test]
     fn the_row_spans_exactly_the_columns() {
-        let rest = OTHERS.iter().fold(px(0.), |s, w| s + col_gap() + *w);
+        let rest = others().iter().fold(px(0.), |s, w| s + col_gap() + *w);
         for room in [
             crate::theme::scaled_px(400.),
             crate::theme::scaled_px(900.),
             crate::theme::scaled_px(2400.),
         ] {
-            let c = columns(room, Some(crate::theme::scaled_px(300.)), &OTHERS);
+            let c = columns(room, Some(crate::theme::scaled_px(300.)), &others());
             assert_eq!(
                 c.name,
                 crate::theme::scaled_px(300.),
@@ -669,12 +671,12 @@ mod tests {
         let narrow = columns(
             crate::theme::scaled_px(900.),
             Some(crate::theme::scaled_px(300.)),
-            &OTHERS,
+            &others(),
         );
         let wide = columns(
             crate::theme::scaled_px(900.),
             Some(crate::theme::scaled_px(360.)),
-            &OTHERS,
+            &others(),
         );
         assert_eq!(wide.row - narrow.row, crate::theme::scaled_px(60.));
     }
@@ -685,15 +687,15 @@ mod tests {
     #[test]
     fn the_default_name_width_follows_the_room() {
         let rest =
-            OTHERS.iter().fold(px(0.), |s, w| s + col_gap() + *w) + row_pad_l() + row_pad_r();
-        let mid = columns(rest + crate::theme::scaled_px(380.), None, &OTHERS);
+            others().iter().fold(px(0.), |s, w| s + col_gap() + *w) + row_pad_l() + row_pad_r();
+        let mid = columns(rest + crate::theme::scaled_px(380.), None, &others());
         assert_eq!(mid.name, crate::theme::scaled_px(380.));
         assert_eq!(
             mid.row,
             rest + crate::theme::scaled_px(380.),
             "fills the room exactly"
         );
-        let wide = columns(crate::theme::scaled_px(2400.), None, &OTHERS);
+        let wide = columns(crate::theme::scaled_px(2400.), None, &others());
         assert_eq!(wide.name, theme::col_name_max());
         assert!(
             wide.row < crate::theme::scaled_px(2400.),
@@ -730,7 +732,7 @@ mod tests {
             rest + crate::theme::scaled_px(420.),
             "so does an extra column"
         );
-        let narrow = columns(crate::theme::scaled_px(300.), None, &OTHERS);
+        let narrow = columns(crate::theme::scaled_px(300.), None, &others());
         assert_eq!(narrow.name, theme::col_name());
         assert!(
             narrow.row > crate::theme::scaled_px(300.),

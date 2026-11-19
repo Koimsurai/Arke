@@ -265,7 +265,7 @@ impl Explorer {
 
     /// Width of the parent column: what the user gave it, or the default.
     pub(super) fn parent_column_width() -> Pixels {
-        crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or(parent_w())
+        crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or_else(parent_w)
     }
 
     /// Width the parent column is drawn at: [`Self::parent_column_width`], but no more than this

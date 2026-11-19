@@ -4336,6 +4336,26 @@ fn size_order_follows_the_folder_being_shown(cx: &mut TestAppContext) {
     });
 }
 
+/// "Show in folder" of other programs only reaches Arke through the folder handler setting, so its
+/// description says so in every language (#215).
+#[test]
+fn takeover_setting_mentions_show_in_folder() {
+    for (locale, phrase) in [
+        ("en", "Show in folder"),
+        (
+            "zh-TW",
+            "\u{5728}\u{8CC7}\u{6599}\u{593E}\u{4E2D}\u{986F}\u{793A}",
+        ),
+        (
+            "zh-CN",
+            "\u{5728}\u{6587}\u{4EF6}\u{5939}\u{4E2D}\u{663E}\u{793A}",
+        ),
+    ] {
+        let text = rust_i18n::t!("settings.takeover_desc", locale = locale).into_owned();
+        assert!(text.contains(phrase), "{locale}: {text}");
+    }
+}
+
 /// Windows' type names arrive after the folder was sorted by type: the list is ordered again by
 /// the text the column shows then.
 #[gpui::test]

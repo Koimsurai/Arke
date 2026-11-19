@@ -1134,22 +1134,25 @@ impl Workspace {
                 cx,
             ),
             font_card(s, &page.fonts, ui),
-            card(
-                Icon::Density,
-                t!("settings.density"),
-                None,
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(theme::s_8())
-                    .child(choice(
+            // One card, each choice on a row of its own with its name (#230).
+            div()
+                .flex()
+                .flex_col()
+                .child(card(
+                    Icon::Density,
+                    t!("settings.ui_scale"),
+                    None,
+                    choice(
                         "ui-scale",
                         &theme::SCALES.map(|pct| (pct, Cow::Owned(format!("{pct}%")))),
                         s.ui_scale,
                         |st, v: u32| st.ui_scale = v,
                         ui,
-                    ))
-                    .child(choice(
+                    ),
+                ))
+                .child(sub_row(
+                    t!("settings.list_density"),
+                    choice(
                         "density",
                         &[
                             (Density::Compact, t!("density.compact")),
@@ -1159,9 +1162,9 @@ impl Workspace {
                         s.density,
                         |st, v| st.density = v,
                         ui,
-                    ))
-                    .into_any_element(),
-            ),
+                    ),
+                ))
+                .into_any_element(),
             tabs_card(s, ui),
             card(
                 Icon::Globe,
@@ -1704,25 +1707,27 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
         .into_any_element()
 }
 
+/// A line under a card's title row for one more of its choices: lined up with the title, without
+/// an icon of its own.
+fn sub_row(title: Cow<'static, str>, control: AnyElement) -> gpui::Div {
+    let a11y = crate::a11y::active();
+    let title = SharedString::from(title.into_owned());
+    div()
+        .pl(theme::s_16() + icon_col() + theme::s_16())
+        .pr(theme::s_16())
+        .pb(theme::s_12())
+        .flex()
+        .items_center()
+        .gap(theme::s_16())
+        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+        .child(row_text(title, None))
+        .child(div().flex_none().child(control))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
+}
+
 /// Tabs: where they go, then two lines under it for one tab per folder and what Ctrl+T does
 /// (#90), all in one card.
 fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
-    // Lined up with the card's title, without an icon of their own.
-    let a11y = crate::a11y::active();
-    let sub_row = |title: Cow<'static, str>, control: AnyElement| {
-        let title = SharedString::from(title.into_owned());
-        div()
-            .pl(theme::s_16() + icon_col() + theme::s_16())
-            .pr(theme::s_16())
-            .pb(theme::s_12())
-            .flex()
-            .items_center()
-            .gap(theme::s_16())
-            .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
-            .child(row_text(title, None))
-            .child(div().flex_none().child(control))
-            .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
-    };
     div()
         .flex()
         .flex_col()

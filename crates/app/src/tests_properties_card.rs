@@ -537,7 +537,8 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
     ready(cx, &view);
     cx.run_until_parked();
     let (height, user) = view.update(cx, |v, _| v.height_for_test());
-    assert!((440.0..=520.0).contains(&height), "fits: {height}");
+    // As tall as what it shows: no longer capped below the screen's height.
+    assert!((440.0..=760.0).contains(&height), "fits: {height}");
     assert!(!user);
 
     cx.update(|_, cx| {

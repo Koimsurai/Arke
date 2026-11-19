@@ -289,6 +289,9 @@ impl Explorer {
         div()
             .flex()
             .min_w_0()
+            // Squeezed past its buttons (a small window at a large scale): cut off, rather than
+            // drawn over the view buttons.
+            .overflow_hidden()
             .items_center()
             .gap(theme::s_4())
             .child(
@@ -420,6 +423,7 @@ impl Explorer {
             .debug_selector(|| "selection-actions".to_owned())
             .flex()
             .min_w_0()
+            .overflow_hidden()
             .items_center()
             .gap(theme::s_4())
             .overflow_hidden()

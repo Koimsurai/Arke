@@ -202,7 +202,8 @@ fn several_items_share_attributes(cx: &mut TestAppContext) {
 
     click(cx, "props-hidden");
     wait_for(cx, &view, "the change", |v| {
-        v.attribute(ATTR_HIDDEN) == Tri::On
+        // The change runs on its own thread: wait for it to reach the shell too.
+        v.attribute(ATTR_HIDDEN) == Tri::On && !shell.attribute_calls.lock().is_empty()
     });
     assert_eq!(
         *shell.attribute_calls.lock(),

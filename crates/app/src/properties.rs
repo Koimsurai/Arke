@@ -267,11 +267,11 @@ pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
         .read(cx)
         .settings
         .properties_window;
-    let height = saved.and_then(|p| p.height).unwrap_or(sc(START_HEIGHT));
+    let height = saved.and_then(|p| p.height).unwrap_or_else(|| sc(START_HEIGHT));
     // A width saved by the old, narrow window would only give a single column: start afresh.
     let width = saved
         .filter(|p| p.width >= sc(MIN_WIDTH))
-        .map_or(sc(WIDTH), |p| p.width.min(sc(1200.)));
+        .map_or_else(|| sc(WIDTH), |p| p.width.min(sc(1200.)));
     let fresh = Bounds::centered(None, size(px(width), px(height)), cx);
     let Some(place) = saved else {
         return fresh;

@@ -261,7 +261,12 @@ fn a_recorded_key_is_stored_and_works_at_once(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(current(&ws, cx), PathBuf::from(r"C:\a\sub"));
     cx.simulate_keystrokes("ctrl-shift-u");
-    cx.run_until_parked();
+    // The folder loads on its own thread.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while current(&ws, cx) != Path::new(r"C:\a") && Instant::now() < deadline {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let page = ws.update(cx, |ws, _| ws.shown_page_for_test());
     let up = cx.update(|_, cx| {
         let map = cx.key_bindings();

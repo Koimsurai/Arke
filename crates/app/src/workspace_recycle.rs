@@ -201,7 +201,6 @@ impl Workspace {
             .recycle_page
             .as_ref()
             .filter(|p| self.shows(&p.owner))?;
-        let horizontal = Self::horizontal_tabs(cx);
         let pinned = SettingsStore::global(cx).read(cx).settings.recycle_pinned;
         let top_bar = div()
             .h(theme::h_bar())
@@ -210,18 +209,6 @@ impl Workspace {
             .items_center()
             .gap(theme::s_2())
             .pr(theme::s_8())
-            // With horizontal tabs the sidebar has no back button, so add one here.
-            .when(horizontal, |d| {
-                d.child(crate::explorer::ghost_button(
-                    "recycle-back",
-                    Icon::ArrowLeft,
-                    true,
-                    t!("nav.back"),
-                    cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.close_recycle(window, cx);
-                    }),
-                ))
-            })
             .child(
                 div()
                     .flex()
@@ -252,9 +239,7 @@ impl Workspace {
                     |_: &ClickEvent, _: &mut Window, cx: &mut App| Self::set_recycle_pinned(true, cx),
                 ))
             })
-            .when(!horizontal, |d| {
-                d.child(crate::explorer::caption_buttons(window))
-            });
+            .child(crate::explorer::caption_buttons(window));
         Some(
             div()
                 .id("recycle-page")
@@ -264,6 +249,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .child(top_bar)
+                .children(self.tab_strip_under_bar(window, cx))
                 .child(
                     // Same paper surface as the file list.
                     div()

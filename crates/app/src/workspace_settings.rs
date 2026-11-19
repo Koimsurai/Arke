@@ -986,6 +986,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .child(top_bar)
+                .children(self.tab_strip_under_bar(window, cx))
                 .child(
                     // Same paper surface as the file list.
                     div()
@@ -1017,12 +1018,11 @@ impl Workspace {
         )
     }
 
-    /// Settings top bar: back button (horizontal tabs only), title, drag area, caption buttons.
+    /// Settings top bar: title, drag area, caption buttons.
     fn render_settings_top_bar(
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let horizontal = Self::horizontal_tabs(cx);
         div()
             .h(theme::h_bar())
             .flex_none()
@@ -1030,18 +1030,6 @@ impl Workspace {
             .items_center()
             .gap(theme::s_2())
             .pr(theme::s_8())
-            // With horizontal tabs the sidebar has no back button, so add one here.
-            .when(horizontal, |d| {
-                d.child(crate::explorer::ghost_button(
-                    "settings-back",
-                    Icon::ArrowLeft,
-                    true,
-                    t!("nav.back"),
-                    cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.close_settings(&CloseSettings, window, cx);
-                    }),
-                ))
-            })
             .child(
                 div()
                     .flex()
@@ -1062,9 +1050,7 @@ impl Workspace {
                     ),
             )
             .child(super::drag_area("settings-drag", cx).flex_1().h_full())
-            .when(!horizontal, |d| {
-                d.child(crate::explorer::caption_buttons(window))
-            })
+            .child(crate::explorer::caption_buttons(window))
     }
 
     /// Each category (name, icon) and its cards.

@@ -1035,7 +1035,7 @@ impl gpui::Render for PaneHost {
         let title = self.title.clone();
         let row = self
             .view
-            .update(cx, |e, cx| e.render_title_row(&title, false, window, cx));
+            .update(cx, |e, cx| e.render_title_row(&title, window, cx));
         gpui::div()
             .size_full()
             .flex()

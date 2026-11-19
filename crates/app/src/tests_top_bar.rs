@@ -403,9 +403,11 @@ fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext
     assert_eq!(menus(cx), 1, "⋯ opens the selection's menu");
 }
 
+/// Tabs on top, as in VS Code: the title row (search, window buttons) stays on top, as with tabs
+/// in the sidebar; the tab strip goes under it, over the panes.
 #[gpui::test]
-fn horizontal_tabs_keep_the_title_row_below_the_tabs(cx: &mut TestAppContext) {
-    let (_ws, _view, cx) = open_deep(cx, 1000.);
+fn horizontal_tabs_go_under_the_title_row(cx: &mut TestAppContext) {
+    let (ws, _view, cx) = open_deep(cx, 1000.);
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
             s.update(
@@ -416,9 +418,36 @@ fn horizontal_tabs_keep_the_title_row_below_the_tabs(cx: &mut TestAppContext) {
     });
     settle(cx);
     let title = bounds(cx, "title-row");
+    let strip = bounds(cx, "tab-strip");
     let search = bounds(cx, "filter-box");
-    assert!(title.top() >= theme::h_bar(), "below the tab strip");
+    assert_eq!(title.top(), px(0.), "the title row is on top");
+    assert!(strip.top() >= title.bottom() - px(0.5), "the tabs under it");
+    assert!(
+        strip.left() >= title.left() - px(0.5),
+        "over the panes, not the sidebar"
+    );
     assert!(search.right() <= title.right());
-    // The tab strip has the window buttons.
-    assert!(cx.debug_bounds("caption-lead").is_none());
+    assert!(
+        cx.debug_bounds("caption-lead").is_some(),
+        "the title row has the window buttons"
+    );
+
+    // More tabs than fit: the strip scrolls, and the active tab is scrolled into view.
+    let paths: Vec<String> = (0..14).map(|i| format!(r"C:\tabs\tab{i}")).collect();
+    for path in &paths {
+        ws.update_in(cx, |ws, window, cx| {
+            let at = ws.tab_views().count();
+            ws.open_tab(PathBuf::from(path), at, true, window, cx);
+        });
+    }
+    settle(cx);
+    let strip = bounds(cx, "tab-strip-tabs");
+    let last = ws.update(cx, |ws, _| ws.tab_views().count() - 1);
+    let tab = cx
+        .debug_bounds(Box::leak(format!("tab-{last}").into_boxed_str()))
+        .expect("the active tab is drawn");
+    assert!(
+        tab.left() >= strip.left() - px(1.) && tab.right() <= strip.right() + px(1.),
+        "the active (last) tab is in view: {tab:?} in {strip:?}"
+    );
 }

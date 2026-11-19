@@ -31,7 +31,7 @@ use gpui::{
 use super::layout;
 use super::{
     CopyFiles, CutFiles, DeleteFiles, ErrorAction, Escape, Explorer, ExplorerEvent, FocusOtherPane,
-    GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, Refresh, RenameFile, ViewColumns,
+    GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, RenameFile, ViewColumns,
     ViewDetails, ViewMode,
 };
 use super::{DragPreview, DraggedFiles, drop_external_into, drop_into};
@@ -88,56 +88,6 @@ fn scrollbar_gutter() -> gpui::Pixels {
 
 impl Explorer {
     // ───────────────────────── Top bar (on the frame) ─────────────────────────
-
-    /// Back and forward (right click: their history menus).
-    pub(super) fn history_buttons(&self, cx: &mut Context<Self>) -> [AnyElement; 2] {
-        let (can_back, can_forward) = self
-            .global_nav
-            .unwrap_or_else(|| (self.can_go(true), self.can_go(false)));
-        [
-            div()
-                .on_mouse_down(MouseButton::Right, history_menu_listener(true, cx))
-                .child(crate::spring::back_target(
-                    "list",
-                    crate::spring::Target::Explorer(cx.entity().downgrade()),
-                    can_back,
-                    ghost_button(
-                        "back",
-                        Icon::ArrowLeft,
-                        can_back,
-                        t!("nav.back"),
-                        cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ExplorerEvent::HistoryButton(true));
-                        }),
-                    ),
-                    cx,
-                ))
-                .into_any_element(),
-            div()
-                .on_mouse_down(MouseButton::Right, history_menu_listener(false, cx))
-                .child(ghost_button(
-                    "forward",
-                    Icon::ArrowRight,
-                    can_forward,
-                    t!("nav.forward"),
-                    cx.listener(|_, _: &ClickEvent, _, cx| {
-                        cx.emit(ExplorerEvent::HistoryButton(false));
-                    }),
-                ))
-                .into_any_element(),
-        ]
-    }
-
-    pub(super) fn refresh_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        ghost_button(
-            "refresh",
-            Icon::Refresh,
-            self.model.is_some(),
-            t!("nav.refresh"),
-            cx.listener(|this, _: &ClickEvent, w, cx| this.refresh(&Refresh, w, cx)),
-        )
-        .into_any_element()
-    }
 
     /// The search box at `width` (see [`super::top_bar`]). At the width of a button it shows only
     /// its magnifier until clicked (or Ctrl+F).
@@ -3435,23 +3385,6 @@ pub(super) fn date_cell(
                 shell.format_time_short(t)
             }
         }))
-}
-
-/// Right click on the back or forward button: asks the workspace to list that direction's
-/// folders.
-fn history_menu_listener(
-    back: bool,
-    cx: &mut Context<Explorer>,
-) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
-    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-        if !this.history_menu(back).is_empty() {
-            cx.stop_propagation();
-            cx.emit(ExplorerEvent::HistoryMenu {
-                back,
-                position: e.position,
-            });
-        }
-    })
 }
 
 /// Cloud file state after the name, like Explorer: a cloud for online-only; inside sync roots a

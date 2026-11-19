@@ -438,13 +438,6 @@ pub(crate) enum ExplorerEvent {
         stepped: bool,
         kind: NavKind,
     },
-    /// The back (`true`) or forward toolbar button: the workspace decides what it moves.
-    HistoryButton(bool),
-    /// Right click on the back (`true`) or forward button: the workspace lists the folders.
-    HistoryMenu {
-        back: bool,
-        position: gpui::Point<gpui::Pixels>,
-    },
     /// Back left a folder that was opened from Home: the workspace shows Home again.
     BackToHome {
         start: bool,

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use arke_core::filetype::FileKind;
 use gpui::{
     AnimationExt, AnyElement, App, ClickEvent, Context, Div, Entity, ExternalPaths, MouseButton,
-    MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window, anchored,
-    deferred, div, prelude::*, px, relative, svg,
+    MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window, div, prelude::*,
+    px, relative, svg,
 };
 use rust_i18n::t;
 
@@ -159,6 +159,8 @@ pub(super) struct SidebarMenu {
     /// The tabs when it opened: rows name tabs by index, so a tab opened or closed meanwhile
     /// would make them act on the wrong one; the menu closes instead.
     tabs: Vec<u64>,
+    /// The window it is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
 
 /// Whether `dir` has at least one non-hidden subfolder. Stops at the first one.
@@ -1416,6 +1418,7 @@ impl Workspace {
             position,
             items,
             tabs,
+            popup: crate::popup::Single::new(),
         });
         cx.stop_propagation();
         cx.notify();
@@ -1721,8 +1724,47 @@ impl Workspace {
         .detach();
     }
 
-    pub(super) fn render_sidebar_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// While the tab, sidebar or history menu is open, what stays in the window: closing it on a
+    /// press anywhere in the window. The menu is drawn in a window of its own (`popup.rs`).
+    pub(super) fn render_sidebar_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let menu = self.sidebar_menu.as_mut()?;
+        let at = crate::popup::to_screen(window, menu.position);
+        menu.popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.sidebar_menu.as_mut().map(|m| &mut m.popup),
+            Self::sidebar_menu_panel,
+            |this, _, cx| {
+                this.sidebar_menu = None;
+                cx.notify();
+            },
+            window,
+            cx,
+        );
+        Some(
+            div()
+                .absolute()
+                .size_0()
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.sidebar_menu = None;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The tab, sidebar or history menu's panel, drawn in its own window.
+    fn sidebar_menu_panel(
+        &mut self,
+        max_h: Pixels,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let menu = self.sidebar_menu.as_ref()?;
+        let owner = menu.popup.owner();
         let rows: Vec<AnyElement> = menu
             .items
             .iter()
@@ -1761,52 +1803,42 @@ impl Workspace {
                                 .child(detail),
                         )
                     })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.drop_stale_menu();
-                        if this.sidebar_menu.is_some() {
-                            this.run_sidebar_action(action.clone(), window, cx);
-                        }
-                        cx.notify();
-                    }))
+                    .on_click(crate::popup::listener_in(
+                        owner,
+                        cx,
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.drop_stale_menu();
+                            if this.sidebar_menu.is_some() {
+                                this.run_sidebar_action(action.clone(), window, cx);
+                            }
+                            cx.notify();
+                        },
+                    ))
                     .into_any_element()
             })
             .collect();
         Some(
-            deferred(
-                anchored()
-                    .position(menu.position)
-                    .snap_to_window_with_margin(theme::S_8)
-                    .child(
-                        div()
-                            .id("sidebar-menu")
-                            // Occlude items below; otherwise the covered item thinks it is hovered and its tooltip covers the menu.
-                            .occlude()
-                            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                                this.sidebar_menu = None;
-                                cx.notify();
-                            }))
-                            .min_w(px(200.))
-                            .py(theme::S_4)
-                            .rounded(theme::R_12)
-                            .bg(theme::overlay())
-                            .shadow(theme::elev_float())
-                            .ui_font()
-                            .text_size(theme::FS_14)
-                            .text_color(theme::text())
-                            .children(rows)
-                            // Like the list's context menu: fades in, again for each new
-                            // right-click position.
-                            .with_animation(
-                                gpui::ElementId::Name(
-                                    format!("sidebar-menu-{:?}", menu.position).into(),
-                                ),
-                                crate::motion::menu_enter(),
-                                crate::motion::fade_in,
-                            ),
-                    ),
-            )
-            .with_priority(1)
-            .into_any_element(),
+            div()
+                .id("sidebar-menu")
+                .occlude()
+                .min_w(px(200.))
+                .max_h(max_h)
+                .overflow_y_scroll()
+                .py(theme::S_4)
+                .rounded(theme::R_12)
+                .bg(theme::overlay())
+                .shadow(theme::elev_float())
+                .ui_font()
+                .text_size(theme::FS_14)
+                .text_color(theme::text())
+                .children(rows)
+                // Like the list's context menu: fades in, again for each new menu.
+                .with_animation(
+                    gpui::ElementId::Name(format!("sidebar-menu-{:?}", menu.position).into()),
+                    crate::motion::menu_enter(),
+                    crate::motion::fade_in,
+                )
+                .into_any_element(),
         )
     }
 
@@ -2232,6 +2264,11 @@ impl Workspace {
     pub(crate) fn open_tab_menu_for_test(&mut self, ix: usize, cx: &mut Context<Self>) {
         let items = self.tab_menu(ix, cx);
         self.open_sidebar_menu(gpui::point(px(100.), px(100.)), items, cx);
+    }
+
+    /// The window the open tab, sidebar or history menu is drawn in.
+    pub(crate) fn sidebar_menu_window_for_test(&self) -> Option<gpui::AnyWindowHandle> {
+        self.sidebar_menu.as_ref()?.popup.window()
     }
 
     pub(crate) fn tab_menu_labels_for_test(&self, ix: usize, cx: &App) -> Vec<String> {

@@ -42,6 +42,8 @@ mod live_recycle;
 mod menu_parts;
 #[path = "tests_motion.rs"]
 mod motion;
+#[path = "tests_popup_menus.rs"]
+mod popup_menus;
 #[path = "tests_preview_info.rs"]
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
@@ -8138,16 +8140,23 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
     assert_eq!(menu(cx), None, "its own button closes it");
 }
 
-/// #114: a menu taller than the window stays inside it and scrolls; the keyboard brings the
-/// highlighted row into view.
+/// #114: a menu taller than the screen stays inside its work area and scrolls; the keyboard brings
+/// the highlighted row into view.
 #[gpui::test]
-fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
+fn a_menu_taller_than_the_screen_scrolls(cx: &mut TestAppContext) {
+    use crate::popup::{Monitor, ScreenRect};
     use gpui::{px, size};
+    let work = ScreenRect::new(0, 0, 1920, 260);
+    crate::popup::set_test_monitors(vec![Monitor {
+        bounds: work,
+        work,
+        scale: 1.,
+    }]);
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let (view, cx) = setup(cx, fs, Arc::default(), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
-    cx.simulate_resize(size(px(900.), px(260.)));
+    cx.simulate_resize(size(px(900.), px(600.)));
     cx.run_until_parked();
     right_click(&view, cx, Some(0));
     cx.run_until_parked();
@@ -8158,9 +8167,16 @@ fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
     };
     let (bounds, offset) = panel(cx);
     let bounds = bounds.expect("menu drawn");
+    assert!(bounds.size.height <= px(260.), "{bounds:?}");
+    let placed = view
+        .update(cx, |v, _| {
+            v.context_menu.as_ref().unwrap().popup_for_test(0)
+        })
+        .and_then(|(_, placed)| placed)
+        .expect("placed");
     assert!(
-        bounds.top() >= px(0.) && bounds.bottom() <= px(260.),
-        "{bounds:?}"
+        placed.top >= work.top && placed.bottom <= work.bottom,
+        "{placed:?}"
     );
     assert_eq!(offset, px(0.));
     // Up from nothing highlights the last row, at the bottom: the menu scrolls to it.

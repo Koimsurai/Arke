@@ -321,6 +321,8 @@ pub(crate) struct Workspace {
     /// Folders a background check found to have no subfolders (no chevron in the tree).
     tree_leaf: HashSet<PathBuf>,
     sidebar_menu: Option<sidebar::SidebarMenu>,
+    /// The window a settings dropdown's list was drawn in last frame, drawn again after this one.
+    dropdown_window: Option<gpui::AnyWindowHandle>,
     /// A tab that flashes once (its id, and a serial so each flash animates anew): the folder a
     /// middle click asked for is already open there.
     tab_flash: Option<(u64, u32)>,
@@ -645,6 +647,7 @@ impl Workspace {
             tree_children: HashMap::new(),
             tree_leaf: HashSet::new(),
             sidebar_menu: None,
+            dropdown_window: None,
             tab_flash: None,
             palette: None,
             closing_palette: None,
@@ -892,7 +895,7 @@ impl Workspace {
         if startup == Startup::AroundAsked {
             // Opened on a folder before the settings were read: the last session comes back
             // around it, as when they are read in time (`open_explorer_window`).
-            if start != crate::settings::StartLocation::LastSession || cx.windows().len() > 1 {
+            if start != crate::settings::StartLocation::LastSession || other_explorer_windows(cx) {
                 return;
             }
             let mut others = store.settings.last_windows();
@@ -927,7 +930,7 @@ impl Workspace {
             crate::settings::StartLocation::LastSession => {
                 // The last tabs are already open in another window (restoring them again would
                 // duplicate them): a new window starts on Home instead (#178).
-                if cx.windows().len() > 1 {
+                if other_explorer_windows(cx) {
                     self.open_home_as(false, true, window, cx);
                     return;
                 }
@@ -2332,6 +2335,9 @@ impl Render for Workspace {
         self.sync_window_title(window, cx);
         self.drop_stale_menu();
         note_menu_open(window, self.sidebar_menu.is_some());
+        let sidebar_menu = self.render_sidebar_menu(window, cx);
+        // Opened and redrawn after this frame, with the list the settings page draws in it.
+        self.sync_dropdown_popup(window, cx);
         self.after_drag(cx);
         self.tab_drag.frame();
         self.sync_locks(cx);
@@ -2589,7 +2595,7 @@ impl Render for Workspace {
                 }))
             })
             .children(self.render_drag_out_watch(cx))
-            .children(self.render_sidebar_menu(cx))
+            .children(sidebar_menu)
             .children(welcome::welcome_card(cx))
             .children(update_page::update_notice(cx))
             .children(self.net_dialog.as_ref().map(|slot| slot.dialog.clone()))
@@ -2880,6 +2886,16 @@ fn note_menu_open(window: &Window, open: bool) {
             set.remove(&id);
         }
     });
+}
+
+/// Whether another Arke window is open besides this one. Menus open in windows of their own
+/// (`popup.rs`), so not every window counts.
+fn other_explorer_windows(cx: &App) -> bool {
+    cx.windows()
+        .iter()
+        .filter(|w| w.downcast::<Workspace>().is_some())
+        .count()
+        > 1
 }
 
 pub(crate) fn tooltips_hidden(window: &Window) -> bool {

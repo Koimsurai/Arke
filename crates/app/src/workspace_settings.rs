@@ -19,7 +19,7 @@ use std::sync::Arc;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
     KeyBinding, ScrollHandle, SharedString, Subscription, UniformListScrollHandle, WeakEntity,
-    Window, actions, anchored, deferred, div, point, prelude::*, px, svg, uniform_list,
+    Window, actions, anchored, canvas, deferred, div, point, prelude::*, px, svg, uniform_list,
 };
 use rust_i18n::t;
 
@@ -33,7 +33,7 @@ use crate::settings::{
     SettingsStore, SortBy, StartLocation, TabLayout, ThemeMode, Tint,
 };
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme;
+use crate::theme::{self, UiFont as _};
 
 actions!(
     workspace,
@@ -98,6 +98,13 @@ pub(super) struct SettingsPage {
     dropdown: Option<Dropdown>,
     /// Scroll position of a long dropdown list (fonts), so the open list can show the selection.
     list_scroll: UniformListScrollHandle,
+    /// The open dropdown's list, as last drawn, for the window it is shown in.
+    dropdown_panel: Rc<std::cell::RefCell<Option<PanelBuilder>>>,
+    /// Which dropdown it is (`Single::serial`), 0 while none is open.
+    dropdown_shown: Rc<std::cell::Cell<u64>>,
+    /// Where each dropdown's button is in the window.
+    dropdown_buttons:
+        Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
     /// Thumbnail of the background image, decoded in the background when it changes.
     backdrop: Option<BackdropThumb>,
     /// Whether the opacity slider is being dragged.
@@ -175,7 +182,12 @@ struct Dropdown {
     id: &'static str,
     cursor: usize,
     options: Vec<Applier>,
+    /// The window its list is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
+
+/// Draws an open dropdown's list.
+type PanelBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 /// Slide distance for the page's small animations (dropdowns, expanders, category changes). See
 /// `motion.rs`.
@@ -211,6 +223,11 @@ pub(super) struct Ui {
     workspace: WeakEntity<Workspace>,
     viewport: gpui::Size<gpui::Pixels>,
     list_scroll: UniformListScrollHandle,
+    /// The open dropdown puts its list here.
+    panel: Rc<std::cell::RefCell<Option<PanelBuilder>>>,
+    /// Every dropdown records where its button is.
+    buttons:
+        Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
 }
 
 /// Opens (`Some`) or closes the dropdown.
@@ -327,6 +344,9 @@ impl Workspace {
             backup: None,
             dropdown: None,
             list_scroll: UniformListScrollHandle::new(),
+            dropdown_panel: Rc::default(),
+            dropdown_shown: Rc::default(),
+            dropdown_buttons: Rc::default(),
             backdrop: None,
             slider_drag: std::rc::Rc::default(),
             uninstall: None,
@@ -616,6 +636,65 @@ impl Workspace {
         if let Some(page) = self.settings_panel.take() {
             self.dismiss_page(&page.owner, window, cx);
         }
+    }
+
+    /// After the page drew: the open dropdown's list is shown in a window of its own under its
+    /// button (`popup.rs`), redrawn with what the page just drew.
+    pub(super) fn sync_dropdown_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The list shown last frame draws again after this one: with the rows the page draws
+        // now, or not at all once its dropdown (or the page) closed, and its window goes.
+        if let Some(popup) = self.dropdown_window.take() {
+            App::defer(cx, move |cx| {
+                let _ = popup.update(cx, |_, window, _| window.refresh());
+            });
+        }
+        let Some(page) = self.settings_panel.as_mut() else {
+            return;
+        };
+        page.dropdown_shown
+            .set(page.dropdown.as_ref().map_or(0, |d| d.popup.serial()));
+        let Some(dropdown) = page.dropdown.as_mut() else {
+            return;
+        };
+        let Some(button) = page.dropdown_buttons.borrow().get(dropdown.id).copied() else {
+            return;
+        };
+        let control = crate::popup::rect_to_screen(window, button);
+        let content: crate::popup::Content = {
+            let panel = Rc::downgrade(&page.dropdown_panel);
+            let shown = Rc::downgrade(&page.dropdown_shown);
+            let serial = dropdown.popup.serial();
+            Rc::new(move |_, window, cx| {
+                if shown.upgrade()?.get() != serial {
+                    return None;
+                }
+                let build = panel.upgrade()?.borrow().clone()?;
+                Some(build(window, cx))
+            })
+        };
+        dropdown.popup.ensure_handed(
+            || crate::popup::Anchor::Below {
+                control,
+                align_right: true,
+            },
+            |this: &mut Self| {
+                this.settings_panel
+                    .as_mut()?
+                    .dropdown
+                    .as_mut()
+                    .map(|d| &mut d.popup)
+            },
+            content,
+            |this, _, cx| {
+                if let Some(page) = this.settings_panel.as_mut() {
+                    page.dropdown = None;
+                }
+                cx.notify();
+            },
+            window,
+            cx,
+        );
+        self.dropdown_window = page.dropdown.as_ref().and_then(|d| d.popup.window());
     }
 
     /// Arrow keys move and Enter selects while a dropdown is open.
@@ -979,6 +1058,8 @@ impl Workspace {
             workspace: cx.entity().downgrade(),
             viewport: window.viewport_size(),
             list_scroll: page.list_scroll.clone(),
+            panel: Rc::clone(&page.dropdown_panel),
+            buttons: Rc::clone(&page.dropdown_buttons),
         };
         let ui = &ui;
         let material = theme::mica_available().then(|| {
@@ -2102,11 +2183,24 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                         id,
                         cursor: at,
                         options: appliers.clone(),
+                        popup: crate::popup::Single::new(),
                     }),
                     cx,
                 );
             }
         });
+    // Where each button is, for its list to open under it.
+    let buttons = std::rc::Rc::clone(&ui.buttons);
+    let button = div().relative().child(button).child(
+        canvas(
+            move |bounds, _, _| {
+                buttons.borrow_mut().insert(id, bounds);
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .size_full(),
+    );
     if !open {
         return div().child(button).into_any_element();
     }
@@ -2177,27 +2271,54 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         }
     };
     let count = options.len();
-    let list = if long {
-        // Only the rows in view are built, each in its own font.
-        let height = (theme::H_CTL * count as f32).min(DROPDOWN_MAX_H - theme::S_8);
+    let row = std::rc::Rc::new(row);
+    let list_scroll = ui.list_scroll.clone();
+    // The list is drawn in a window of its own (`popup.rs`), under the button and past the
+    // window's edge when it has to be; `Workspace::sync_dropdown_popup` opens it.
+    *ui.panel.borrow_mut() = Some(std::rc::Rc::new(move |_: &mut Window, _: &mut App| {
+        let row = std::rc::Rc::clone(&row);
+        let list = if long {
+            // Only the rows in view are built, each in its own font.
+            let height = (theme::H_CTL * count as f32).min(DROPDOWN_MAX_H - theme::S_8);
+            div()
+                .w(FONT_LIST_W)
+                .child(
+                    uniform_list((id, usize::MAX - 3), count, move |range, _, _| {
+                        range.map(|ix| row(ix)).collect::<Vec<_>>()
+                    })
+                    .track_scroll(&list_scroll)
+                    .h(height),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::S_2)
+                .children((0..count).map(|ix| row(ix)))
+                .into_any_element()
+        };
         div()
-            .w(FONT_LIST_W)
-            .child(
-                uniform_list((id, usize::MAX - 3), count, move |range, _, _| {
-                    range.map(&row).collect::<Vec<_>>()
-                })
-                .track_scroll(&ui.list_scroll)
-                .h(height),
-            )
+            .id((id, usize::MAX - 1))
+            .role(gpui::Role::ListBox)
+            .aria_size_of_set(count)
+            .occlude()
+            .max_h(DROPDOWN_MAX_H)
+            .when(!long, gpui::StatefulInteractiveElement::overflow_y_scroll)
+            .min_w(DROPDOWN_MIN_W)
+            .p(theme::S_4)
+            .rounded(theme::R_8)
+            .bg(theme::overlay())
+            .shadow(theme::elev_2())
+            .ui_font()
+            .text_size(theme::FS_14)
+            .text_color(theme::text())
+            .child(list)
+            .with_animation((id, usize::MAX - 2), anim(), |el, t| {
+                crate::motion::slide_in(el, t, 0., -ANIM_SLIDE)
+            })
             .into_any_element()
-    } else {
-        div()
-            .flex()
-            .flex_col()
-            .gap(theme::S_2)
-            .children((0..count).map(row))
-            .into_any_element()
-    };
+    }));
     let scrim = deferred(
         anchored().position(point(px(0.), px(0.))).child(
             div()
@@ -2212,42 +2333,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         ),
     )
     .with_priority(1);
-    let menu = deferred(
-        anchored()
-            .anchor(gpui::Anchor::TopRight)
-            .snap_to_window_with_margin(theme::S_8)
-            .child(
-                div()
-                    .id((id, usize::MAX - 1))
-                    .role(gpui::Role::ListBox)
-                    .aria_size_of_set(count)
-                    .occlude()
-                    .max_h(DROPDOWN_MAX_H)
-                    .when(!long, gpui::StatefulInteractiveElement::overflow_y_scroll)
-                    .min_w(DROPDOWN_MIN_W)
-                    .p(theme::S_4)
-                    .rounded(theme::R_8)
-                    .bg(theme::overlay())
-                    .shadow(theme::elev_2())
-                    .child(list)
-                    .with_animation((id, usize::MAX - 2), anim(), |el, t| {
-                        crate::motion::slide_in(el, t, 0., -ANIM_SLIDE)
-                    }),
-            ),
-    )
-    .with_priority(2);
-    div()
-        .relative()
-        .child(button)
-        .child(scrim)
-        .child(
-            div()
-                .absolute()
-                .top(theme::H_CTL + theme::S_4)
-                .right_0()
-                .child(menu),
-        )
-        .into_any_element()
+    div().child(button).child(scrim).into_any_element()
 }
 
 /// Expandable card. The whole header (icon, name, description, current value, chevron) is clickable;

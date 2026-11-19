@@ -46,12 +46,22 @@ fn tab_count(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
     ws.update(cx, |ws, cx| ws.tab_titles_for_test(cx).len())
 }
 
+/// Clicks what `id` names, in the window or in a menu's own window (a dropdown's list).
 fn click(cx: &mut VisualTestContext, id: &'static str) {
-    let bounds = cx
-        .debug_bounds(id)
-        .unwrap_or_else(|| panic!("{id} should be drawn"));
-    cx.simulate_click(bounds.center(), Modifiers::none());
-    cx.run_until_parked();
+    if let Some(bounds) = cx.debug_bounds(id) {
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+        return;
+    }
+    for popup in cx.update(|_, cx| crate::popup::open_popups(cx)) {
+        let mut popup = VisualTestContext::from_window(popup.into(), &cx.cx);
+        if let Some(bounds) = popup.debug_bounds(id) {
+            popup.simulate_click(bounds.center(), Modifiers::none());
+            cx.run_until_parked();
+            return;
+        }
+    }
+    panic!("{id} should be drawn");
 }
 
 /// After an update the page opens once, in a tab of its own after the restored ones, listing

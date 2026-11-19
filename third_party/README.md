@@ -56,3 +56,18 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   the file was meant for. File Explorer stays behind in the same case. Title bar, caption buttons,
   borders and the other buttons still activate at once. That press is reported with `first_mouse`
   set.
+- `WindowKind::AnchoredPopup` (`src/window.rs` `WindowsWindow::new`, `popup_rect`, `activate`,
+  `set_popup_mouse_passthrough`; `src/platform.rs` `open_window`; `src/events.rs`
+  `handle_mouse_activate_msg`, `handle_hit_test_msg`). Upstream rejects popups on Windows, so
+  menus could only be drawn inside the window they belong to: near its edge they were squeezed,
+  and none could reach past it. A popup is now a `WS_POPUP` window owned by
+  `PopupOptions::parent` (it stays above it without being topmost over other programs), with
+  `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry). It is made at the
+  `anchor` point of `anchor_rect` plus `offset`, extending toward `gravity`, sized from
+  `window_bounds` at that monitor's scale, so it gets that monitor's DPI from the start.
+  `constraint_adjustment` and `grab` are not applied: Arke places its menus itself against the
+  monitor's work area and moves them with `SetWindowPos` (`crates/app/src/popup.rs`). A popup is
+  never activated: `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`, and `activate` only shows it, so
+  focus and the keyboard stay in the parent. It is all client area to hit testing, or
+  `HTTRANSPARENT` after `set_popup_mouse_passthrough` (a closed menu fading out lets presses
+  through to the window below). It takes no drops.

@@ -142,7 +142,8 @@ pub(crate) struct RecycleBin {
     scroll: UniformListScrollHandle,
     scrollbar_drag: ScrollbarDrag,
     ask: Option<Ask>,
-    menu: Option<Point<Pixels>>,
+    /// The open context menu: where it was opened, and the window it is drawn in (`popup.rs`).
+    menu: Option<(Point<Pixels>, crate::popup::Single)>,
     notice: Option<SharedString>,
     /// Why the last restore or permanent delete failed (some items or all), until closed
     failure: Option<SharedString>,
@@ -337,7 +338,7 @@ impl RecycleBin {
             self.selected = BTreeSet::from([ix]);
             self.cursor = Some(ix);
         }
-        self.menu = Some(position);
+        self.menu = Some((position, crate::popup::Single::new()));
         self.notice = None;
         cx.notify();
     }
@@ -959,11 +960,23 @@ impl RecycleBin {
             .collect()
     }
 
-    /// Context menu: restore, open original location (single selection), delete permanently.
-    fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let position = self.menu?;
+    /// Context menu: restore, open original location (single selection), delete permanently. It
+    /// is drawn in a window of its own (`popup.rs`); what stays here is the scrim that closes it.
+    fn render_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (position, popup) = self.menu.as_mut()?;
+        let at = crate::popup::to_screen(window, *position);
+        popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.menu.as_mut().map(|(_, popup)| popup),
+            |this, _, _, cx| Some(this.menu_panel(cx)),
+            |this, _, cx| {
+                this.menu = None;
+                cx.notify();
+            },
+            window,
+            cx,
+        );
         let viewport = window.viewport_size();
-        let one = self.selected.len() == 1;
         let scrim = deferred(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
@@ -990,7 +1003,13 @@ impl RecycleBin {
             ),
         )
         .with_priority(1);
-        let panel = div()
+        Some(scrim.into_any_element())
+    }
+
+    /// The context menu's rows, drawn in its own window.
+    fn menu_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let one = self.selected.len() == 1;
+        div()
             .id("recycle-menu")
             .role(gpui::Role::Menu)
             .occlude()
@@ -1037,15 +1056,8 @@ impl RecycleBin {
                 "recycle-menu-appear",
                 crate::motion::menu_enter(),
                 crate::motion::fade_in,
-            );
-        let menu = deferred(
-            anchored()
-                .position(position)
-                .snap_to_window_with_margin(theme::S_8)
-                .child(panel),
-        )
-        .with_priority(2);
-        Some(div().child(scrim).child(menu).into_any_element())
+            )
+            .into_any_element()
     }
 
     /// Confirmation dialog over the page: Enter confirms, Esc or clicking outside cancels.

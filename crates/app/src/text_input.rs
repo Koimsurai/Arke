@@ -134,6 +134,8 @@ struct EditMenu {
     can_paste: bool,
     /// Row chosen with the arrow keys (an index into [`MENU_ROWS`]); Enter runs it.
     highlighted: Option<usize>,
+    /// The window it is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
 
 /// The edit menu's rows, in Windows order.
@@ -550,6 +552,7 @@ impl TextInput {
             position,
             can_paste,
             highlighted: None,
+            popup: crate::popup::Single::new(),
         });
         cx.notify();
     }
@@ -1251,10 +1254,29 @@ impl TextInput {
     /// The edit menu over the page: Windows order (undo, cut, copy, paste, delete, select all),
     /// rows that don't apply greyed out. It never takes focus, so the box (and a rename or address
     /// edit that ends when focus leaves) stays as it is; the row chosen with the keyboard is
-    /// reported to screen readers as focused instead.
-    fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let menu = self.menu.as_ref()?;
-        let panel = self.menu_panel(cx);
+    /// reported to screen readers as focused instead. The menu is drawn in a window of its own
+    /// (`popup.rs`); what stays here is the scrim that closes it.
+    fn render_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.menu.as_mut()?;
+        let at = crate::popup::to_screen(window, menu.position);
+        menu.popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.menu.as_mut().map(|m| &mut m.popup),
+            |this, _, _, cx| {
+                Some(
+                    this.menu_panel(cx)
+                        .with_animation(
+                            "text-input-menu-appear",
+                            crate::motion::menu_enter(),
+                            crate::motion::fade_in,
+                        )
+                        .into_any_element(),
+                )
+            },
+            |this, _, cx| this.close_menu(cx),
+            window,
+            cx,
+        );
         let viewport = window.viewport_size();
         // A click anywhere else only closes the menu.
         let scrim = deferred(
@@ -1281,18 +1303,7 @@ impl TextInput {
             ),
         )
         .with_priority(MENU_PRIORITY);
-        let menu = deferred(
-            anchored()
-                .position(menu.position)
-                .snap_to_window_with_margin(theme::S_8)
-                .child(panel.with_animation(
-                    "text-input-menu-appear",
-                    crate::motion::menu_enter(),
-                    crate::motion::fade_in,
-                )),
-        )
-        .with_priority(MENU_PRIORITY + 1);
-        Some(div().child(scrim).child(menu).into_any_element())
+        Some(scrim.into_any_element())
     }
 
     /// The rows of the edit menu.
@@ -1347,6 +1358,7 @@ impl TextInput {
             .text_size(theme::FS_14)
             .text_color(theme::text());
         let chosen = self.menu.as_ref().and_then(|menu| menu.highlighted);
+        let owner = self.menu.as_ref().and_then(|menu| menu.popup.owner());
         for (ix, (command, label, shortcut, glyph)) in rows.into_iter().enumerate() {
             let enabled = self.can(command);
             let highlighted = chosen == Some(ix);
@@ -1383,9 +1395,13 @@ impl TextInput {
                         d.cursor_pointer()
                             .when(highlighted, |d| d.bg(theme::wash_strong()))
                             .hover(|s| s.bg(theme::wash()))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.run_edit(command, window, cx);
-                            }))
+                            .on_click(crate::popup::listener_in(
+                                owner,
+                                cx,
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.run_edit(command, window, cx);
+                                },
+                            ))
                     })
                     .child(div().size(theme::ICON).flex_none().children(
                         glyph.map(|glyph| {

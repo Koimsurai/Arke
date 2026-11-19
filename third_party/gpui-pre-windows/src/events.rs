@@ -483,6 +483,10 @@ impl WindowsWindowInner {
     }
 
     fn handle_mouse_activate_msg(&self, lparam: LPARAM) -> isize {
+        if self.popup {
+            // Arke: clicking a menu leaves focus in the window it belongs to.
+            return MA_NOACTIVATE as isize;
+        }
         let answer = mouse_activate_answer(u32::from(lparam.loword()), u32::from(lparam.hiword()));
         self.state.activate_on_release.set(answer == MA_NOACTIVATE);
         answer as isize
@@ -988,6 +992,14 @@ impl WindowsWindowInner {
     }
 
     fn handle_hit_test_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+        if self.popup {
+            // Arke: a popup is all client area, or lets the mouse through (a menu fading out).
+            return Some(if self.mouse_passthrough.get() {
+                HTTRANSPARENT as isize
+            } else {
+                HTCLIENT as isize
+            });
+        }
         if self.state.is_fullscreen() {
             return None;
         }

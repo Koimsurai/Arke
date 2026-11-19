@@ -2789,13 +2789,14 @@ impl Render for Workspace {
             // tabs are, without moving the tabs.
             .when(horizontal, |d| {
                 d.children(self.pin_drop_zone(cx).map(|zone| {
-                    // An opaque card under the accent wash, since it covers the sidebar (and
-                    // keeps the drop from reaching what is under it).
+                    // An opaque card under the accent wash, since it covers the panes (and keeps
+                    // the drop from reaching what is under it). The strip is under the title row,
+                    // right of the sidebar.
                     div()
                         .occlude()
                         .absolute()
-                        .top(theme::h_bar() + theme::s_4())
-                        .left(theme::s_8())
+                        .top(theme::h_bar() * 2. + theme::s_4())
+                        .left(theme::sidebar_width() + theme::s_8())
                         .w(theme::sidebar_full_width() - theme::s_16())
                         .rounded(theme::r_8())
                         .bg(theme::overlay())

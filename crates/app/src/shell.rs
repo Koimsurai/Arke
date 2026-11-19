@@ -946,11 +946,19 @@ pub(crate) trait Shell: Send + Sync + 'static {
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError>;
     /// Reads files from the clipboard with the sequence number at read time; `None` if there are no files. Background thread.
     fn clipboard_files(&self) -> Result<Option<(ClipboardFiles, u32)>, ShellError>;
+    /// Reads virtual files from the clipboard (Remote Desktop, Outlook attachments, files in a zip
+    /// folder), which have no `CF_HDROP` list on disk (#221); `None` if there are none. The
+    /// thread must have OLE (`ComThread::ole`) for as long as the result is used. Background thread.
+    fn clipboard_virtual_files(
+        &self,
+    ) -> Result<Option<crate::win_virtual_drop::VirtualDrop>, ShellError> {
+        Ok(None)
+    }
     /// Clears the clipboard after a cut and paste, only if the sequence is still `seq` so later copies survive. Background thread.
     fn clear_clipboard_if(&self, seq: u32);
     /// Clipboard sequence number; changes on every content change. Does not open the clipboard or block; UI thread safe.
     fn clipboard_seq(&self) -> u32;
-    /// Whether the clipboard has files (format check only, clipboard not opened). UI thread safe.
+    /// Whether the clipboard has files, virtual ones included (format check only, clipboard not opened). UI thread safe.
     fn clipboard_has_files(&self) -> bool;
 
     /// Whether the path is on a fixed local disk (thumbnails and system icons are local only). Background thread.

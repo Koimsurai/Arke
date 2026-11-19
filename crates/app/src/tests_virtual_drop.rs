@@ -123,3 +123,121 @@ fn a_virtual_drop_with_nothing_in_it_says_so(cx: &mut TestAppContext) {
     });
     assert!(shell.ops().is_empty());
 }
+
+/// Virtual files on the clipboard (a Remote Desktop copy, an Outlook attachment) paste like a
+/// drop: written to a folder of Arke's own, moved into the current folder, listed as a copy (#221).
+#[gpui::test]
+fn virtual_files_on_the_clipboard_are_pasted(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![]);
+    let shell = Arc::new(FakeShell::default());
+    let moved: Arc<Mutex<Vec<Moved>>> = Arc::default();
+    {
+        let moved = Arc::clone(&moved);
+        *shell.on_op.lock() = Some(Box::new(move |op| {
+            if let FileOp::Move { sources, .. } = op {
+                for source in sources {
+                    let name = source.file_name().unwrap().to_string_lossy().into_owned();
+                    moved.lock().push((name, std::fs::read(source).unwrap()));
+                }
+            }
+        }));
+    }
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\a");
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    cx.run_until_parked();
+
+    let source = FakeSource::new(vec![
+        FakeItem::memory("report.txt", b"hello"),
+        FakeItem::stream("big.bin", 3000),
+    ]);
+    *shell.virtual_clipboard.lock() = Some(FakeClipboardData(source.data()));
+    assert!(shell.clipboard_has_files(), "Paste is offered");
+    cx.simulate_keystrokes("ctrl-v");
+    wait_until(cx, &view, "paste done", |v| {
+        v.ops_running == 0 && !shell.ops().is_empty()
+    });
+
+    let ops = shell.ops();
+    let [FileOp::Move { sources, dest }] = ops.as_slice() else {
+        panic!("one move expected: {:?}", shell.ops());
+    };
+    assert_eq!(dest, Path::new(r"C:\a"));
+    assert_eq!(
+        *moved.lock(),
+        [
+            ("report.txt".to_owned(), b"hello".to_vec()),
+            ("big.bin".to_owned(), (0..3000).map(pattern).collect()),
+        ]
+    );
+    assert!(!sources[0].parent().unwrap().exists());
+    let (verb, undo) = cx.update(|_, cx| {
+        let last = crate::explorer::UndoHistory::last(cx).unwrap();
+        (last.verb, last.undo.clone())
+    });
+    assert_eq!(verb, "op.copy");
+    assert_eq!(
+        undo,
+        Undo::Remove(vec![
+            PathBuf::from(r"C:\a\report.txt"),
+            PathBuf::from(r"C:\a\big.bin"),
+        ])
+    );
+    view.update(cx, |v, _| assert_eq!(v.error, None));
+}
+
+/// Files listed on disk (`CF_HDROP`) paste the way they always did, even when virtual files
+/// are offered too.
+#[gpui::test]
+fn files_on_disk_are_pasted_before_virtual_ones(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\a");
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    cx.run_until_parked();
+
+    *shell.clipboard.lock() = Some((
+        ClipboardFiles {
+            paths: vec![PathBuf::from(r"C:\other\x.txt")],
+            cut: false,
+        },
+        1,
+    ));
+    *shell.virtual_clipboard.lock() = Some(FakeClipboardData(
+        FakeSource::new(vec![FakeItem::memory("v.txt", b"v")]).data(),
+    ));
+    cx.simulate_keystrokes("ctrl-v");
+    wait_until(cx, &view, "paste done", |v| {
+        v.ops_running == 0 && !shell.ops().is_empty()
+    });
+    assert_eq!(
+        shell.ops(),
+        [FileOp::Copy {
+            sources: vec![PathBuf::from(r"C:\other\x.txt")],
+            dest: PathBuf::from(r"C:\a"),
+        }]
+    );
+}
+
+/// Virtual files that can't be read say why, not that the clipboard has no files.
+#[gpui::test]
+fn virtual_files_on_the_clipboard_that_cant_be_read_show_the_error(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\a");
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    cx.run_until_parked();
+
+    *shell.virtual_clipboard.lock() = Some(FakeClipboardData(FakeSource::new(Vec::new()).data()));
+    cx.simulate_keystrokes("ctrl-v");
+    wait_until(cx, &view, "error", |v| v.error.is_some());
+    view.update(cx, |v, _| {
+        let error = v.error.as_deref().unwrap();
+        assert!(error.contains(&*t!("ops.virtual_none")), "{error}");
+        assert!(!error.contains(&*t!("clip.empty")), "{error}");
+        assert_eq!(v.ops_running, 0);
+    });
+    assert!(shell.ops().is_empty());
+}

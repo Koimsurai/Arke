@@ -1653,9 +1653,9 @@ settings.takeover:
   zh-TW: "用 Arke 開啟資料夾"
   zh-CN: "用 Arke 打开文件夹"
 settings.takeover_desc:
-  en: "Registers Arke as the folder handler for this Windows account. Turn it off to undo it"
-  zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，關閉即還原"
-  zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，关闭即还原"
+  en: "Registers Arke as the folder handler for this Windows account, so \"Show in folder\" in other apps opens Arke too. Turn it off to undo it"
+  zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，其他程式的「在資料夾中顯示」也會開 Arke，關閉即還原"
+  zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，其他程序的“在文件夹中显示”也会打开 Arke，关闭即还原"
 settings.single_window:
   en: "Single window"
   zh-TW: "單一視窗"

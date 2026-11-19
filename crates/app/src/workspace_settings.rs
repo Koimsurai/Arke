@@ -48,12 +48,18 @@ actions!(
 
 /// Max width of the card column, centered in the content area so wide windows don't leave one
 /// side empty.
-const PAGE_MAX_W: gpui::Pixels = px(1000.);
+fn page_max_w() -> gpui::Pixels {
+    crate::theme::scaled_px(1000.)
+}
 /// Minimum row height on every settings page (one or two lines of text), matching Windows 11
 /// Settings.
-pub(super) const CARD_MIN_H: gpui::Pixels = px(64.);
+pub(super) fn card_min_h() -> gpui::Pixels {
+    crate::theme::scaled_px(64.)
+}
 /// Width of the icon column at the start of each row, so titles line up whatever the icon.
-pub(super) const ICON_COL: gpui::Pixels = px(20.);
+pub(super) fn icon_col() -> gpui::Pixels {
+    crate::theme::scaled_px(20.)
+}
 
 pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -119,7 +125,9 @@ struct BackdropThumb {
 const BACKDROP_THUMB: (f32, f32) = (160., 100.);
 /// Decoded size: twice the thumbnail, for high-DPI screens.
 const BACKDROP_THUMB_PX: u32 = 320;
-const SLIDER_W: gpui::Pixels = px(240.);
+fn slider_w() -> gpui::Pixels {
+    crate::theme::scaled_px(240.)
+}
 
 /// What a Browse button picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,16 +200,28 @@ thread_local! {
 }
 
 /// Below this window width the category list shows icons only.
-const NAV_COMPACT_BELOW: gpui::Pixels = px(1040.);
-const NAV_W: gpui::Pixels = px(208.);
-const NAV_W_COMPACT: gpui::Pixels = px(56.);
+fn nav_compact_below() -> gpui::Pixels {
+    crate::theme::scaled_px(1040.)
+}
+fn nav_w() -> gpui::Pixels {
+    crate::theme::scaled_px(208.)
+}
+fn nav_w_compact() -> gpui::Pixels {
+    crate::theme::scaled_px(56.)
+}
 /// Minimum width of dropdown buttons and lists.
-const DROPDOWN_MIN_W: gpui::Pixels = px(148.);
-const DROPDOWN_MAX_H: gpui::Pixels = px(340.);
+fn dropdown_min_w() -> gpui::Pixels {
+    crate::theme::scaled_px(148.)
+}
+fn dropdown_max_h() -> gpui::Pixels {
+    crate::theme::scaled_px(340.)
+}
 /// Lists longer than this only build the rows in view (hundreds of fonts, each in its own font).
 const LONG_LIST: usize = 12;
 /// Width of the font list, which shows a sample next to each name.
-const FONT_LIST_W: gpui::Pixels = px(380.);
+fn font_list_w() -> gpui::Pixels {
+    crate::theme::scaled_px(380.)
+}
 
 /// Context for drawing controls: the open dropdown, who to update, and the viewport size
 /// (the outside layer has to cover it).
@@ -690,14 +710,14 @@ impl Workspace {
             .a11y(gpui::Role::Link, t!("settings.title"))
             .relative()
             .flex_none()
-            .h(theme::H_ROW)
-            .mx(theme::S_8)
-            .mb(theme::S_8)
-            .pl(theme::S_8)
+            .h(theme::h_row())
+            .mx(theme::s_8())
+            .mb(theme::s_8())
+            .pl(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .cursor_pointer()
             .when(open, |d| {
                 d.text_color(theme::text())
@@ -710,7 +730,7 @@ impl Workspace {
             .child(
                 svg()
                     .path(Icon::Settings.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .text_color(if open {
                         theme::text()
                     } else {
@@ -745,19 +765,19 @@ impl Workspace {
             .filter(|p| self.shows(&p.owner))?;
         let s = SettingsStore::global(cx).read(cx).settings.clone();
         let top_bar = Self::render_settings_top_bar(window, cx);
-        let compact = self.last_viewport_width < NAV_COMPACT_BELOW;
+        let compact = self.last_viewport_width < nav_compact_below();
         let mut categories = Self::settings_sections(&s, page, window, cx);
         let selected = page.category.min(categories.len().saturating_sub(1));
         let nav = div()
             .id("settings-nav")
             .a11y(gpui::Role::TabList, t!("settings.title"))
             .flex_none()
-            .w(if compact { NAV_W_COMPACT } else { NAV_W })
+            .w(if compact { nav_w_compact() } else { nav_w() })
             .h_full()
-            .p(theme::S_8)
+            .p(theme::s_8())
             .flex()
             .flex_col()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .border_r_1()
             .border_color(theme::line())
             .children(
@@ -771,12 +791,12 @@ impl Workspace {
                             .a11y_lazy(gpui::Role::Tab, || title.to_string())
                             .aria_selected(on)
                             .relative()
-                            .h(theme::H_ROW + theme::S_4)
-                            .px(theme::S_12)
+                            .h(theme::h_row() + theme::s_4())
+                            .px(theme::s_12())
                             .flex()
                             .items_center()
-                            .gap(theme::S_12)
-                            .rounded(theme::R_8)
+                            .gap(theme::s_12())
+                            .rounded(theme::r_8())
                             .cursor_pointer()
                             .when(on, |d| d.bg(theme::selection()))
                             .when(!on, |d| {
@@ -788,7 +808,7 @@ impl Workspace {
                                 svg()
                                     .path(icon.path())
                                     .flex_none()
-                                    .size(theme::ICON)
+                                    .size(theme::icon())
                                     .text_color(if on {
                                         theme::text()
                                     } else {
@@ -833,22 +853,22 @@ impl Workspace {
                 // Centered column with symmetric padding.
                 div()
                     .w_full()
-                    .px(theme::S_32)
-                    .pt(theme::S_24)
-                    .pb(theme::S_32)
+                    .px(theme::s_32())
+                    .pt(theme::s_24())
+                    .pb(theme::s_32())
                     .flex()
                     .justify_center()
                     .child(
                         div()
                             .w_full()
-                            .max_w(PAGE_MAX_W)
+                            .max_w(page_max_w())
                             .flex()
                             .flex_col()
-                            .gap(theme::S_4)
+                            .gap(theme::s_4())
                             .child(
                                 div()
-                                    .pb(theme::S_4)
-                                    .text_size(theme::FS_24)
+                                    .pb(theme::s_4())
+                                    .text_size(theme::fs_24())
                                     .font_weight(theme::FW_STRONG)
                                     .child(title.into_owned()),
                             )
@@ -856,7 +876,7 @@ impl Workspace {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(theme::S_8)
+                                    .gap(theme::s_8())
                                     .children(cards)
                                     .with_animation(
                                         ("settings-category-body", selected),
@@ -890,9 +910,9 @@ impl Workspace {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .mr(theme::S_8)
-                        .mb(theme::S_8)
-                        .rounded(theme::R_12)
+                        .mr(theme::s_8())
+                        .mb(theme::s_8())
+                        .rounded(theme::r_12())
                         .bg(theme::paper())
                         .shadow(theme::elev_2())
                         .overflow_hidden()
@@ -920,12 +940,12 @@ impl Workspace {
     ) -> impl IntoElement + use<> {
         let horizontal = Self::horizontal_tabs(cx);
         div()
-            .h(theme::H_BAR)
+            .h(theme::h_bar())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_2)
-            .pr(theme::S_8)
+            .gap(theme::s_2())
+            .pr(theme::s_8())
             // With horizontal tabs the sidebar has no back button, so add one here.
             .when(horizontal, |d| {
                 d.child(crate::explorer::ghost_button(
@@ -943,12 +963,12 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_8)
-                    .px(theme::S_8)
+                    .gap(theme::s_8())
+                    .px(theme::s_8())
                     .child(
                         svg()
                             .path(Icon::Settings.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(theme::text_muted()),
                     )
                     .child(
@@ -1046,17 +1066,29 @@ impl Workspace {
                 Icon::Density,
                 t!("settings.density"),
                 None,
-                choice(
-                    "density",
-                    &[
-                        (Density::Compact, t!("density.compact")),
-                        (Density::Standard, t!("density.standard")),
-                        (Density::Comfortable, t!("density.comfortable")),
-                    ],
-                    s.density,
-                    |st, v| st.density = v,
-                    ui,
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::s_8())
+                    .child(choice(
+                        "ui-scale",
+                        &theme::SCALES.map(|pct| (pct, Cow::Owned(format!("{pct}%")))),
+                        s.ui_scale,
+                        |st, v: u32| st.ui_scale = v,
+                        ui,
+                    ))
+                    .child(choice(
+                        "density",
+                        &[
+                            (Density::Compact, t!("density.compact")),
+                            (Density::Standard, t!("density.standard")),
+                            (Density::Comfortable, t!("density.comfortable")),
+                        ],
+                        s.density,
+                        |st, v| st.density = v,
+                        ui,
+                    ))
+                    .into_any_element(),
             ),
             tabs_card(s, ui),
             card(
@@ -1585,7 +1617,7 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
     div()
         .flex()
         .items_center()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(text_button(
             "clear-thumbnail-cache",
             t!("settings.clear_thumbnail_cache", size = size),
@@ -1603,12 +1635,12 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
     let sub_row = |title: Cow<'static, str>, control: AnyElement| {
         let title = SharedString::from(title.into_owned());
         div()
-            .pl(theme::S_16 + ICON_COL + theme::S_16)
-            .pr(theme::S_16)
-            .pb(theme::S_12)
+            .pl(theme::s_16() + icon_col() + theme::s_16())
+            .pr(theme::s_16())
+            .pb(theme::s_12())
             .flex()
             .items_center()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
             .child(row_text(title, None))
             .child(div().flex_none().child(control))
@@ -1672,14 +1704,14 @@ fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
     let chip = div()
         .id("space-quicklook")
         .a11y_toggle(tip.clone(), on)
-        .h(theme::S_24)
-        .px(theme::S_12)
+        .h(theme::s_24())
+        .px(theme::s_12())
         .flex()
         .items_center()
         .rounded(theme::R_FULL)
         .border_1()
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .tooltip(super::tooltip(tip))
         .when(on, |d| {
             d.bg(theme::signal_wash())
@@ -1696,7 +1728,7 @@ fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(chip)
         .child(toggle)
         .into_any_element()
@@ -1705,32 +1737,32 @@ fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
 /// About header: the app mark, the name and the version. The only place the version is shown.
 fn about_header() -> AnyElement {
     div()
-        .pt(theme::S_8)
-        .pb(theme::S_16)
-        .px(theme::S_4)
+        .pt(theme::s_8())
+        .pb(theme::s_16())
+        .px(theme::s_4())
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(crate::brand::about_mark())
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(theme::S_2)
+                .gap(theme::s_2())
                 .child(
                     div()
-                        .text_size(theme::FS_20)
+                        .text_size(theme::fs_20())
                         .font_weight(theme::FW_STRONG)
                         .child("Arke"),
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_13)
+                        .text_size(theme::fs_13())
                         .child(t!("settings.about_tagline").into_owned()),
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_13)
+                        .text_size(theme::fs_13())
                         .text_color(theme::text_muted())
                         .child(
                             t!(
@@ -1748,12 +1780,12 @@ fn about_header() -> AnyElement {
 /// The license line under the version, with links to the source code and the license texts.
 fn about_legal() -> AnyElement {
     div()
-        .pt(theme::S_4)
+        .pt(theme::s_4())
         .flex()
         .flex_wrap()
         .items_center()
-        .gap_x(theme::S_12)
-        .text_size(theme::FS_12)
+        .gap_x(theme::s_12())
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(t!("settings.about_legal").into_owned())
         .child(about_link(
@@ -1887,22 +1919,22 @@ pub(super) fn group_with(
     });
     let heading = (title.is_some() || note.is_some()).then(|| {
         div()
-            .pt(theme::S_16)
-            .pb(theme::S_8)
-            .px(theme::S_4)
+            .pt(theme::s_16())
+            .pb(theme::s_8())
+            .px(theme::s_4())
             .flex()
             .flex_col()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .children(title.map(|t| {
                 div()
-                    .text_size(theme::FS_13)
+                    .text_size(theme::fs_13())
                     .font_weight(theme::FW_STRONG)
                     .text_color(theme::text_muted())
                     .child(SharedString::from(t.into_owned()))
             }))
             .children(note.map(|n| {
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(SharedString::from(n.into_owned()))
             }))
@@ -1915,7 +1947,7 @@ pub(super) fn group_with(
             div()
                 .flex()
                 .flex_col()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .bg(theme::card())
                 .border_1()
                 .border_color(theme::line())
@@ -1936,7 +1968,7 @@ pub(super) fn card(
 }
 
 /// The one row layout every settings page uses: icon column, title over an optional second line,
-/// control on the right; at least [`CARD_MIN_H`] tall and vertically centered.
+/// control on the right; at least [`card_min_h()`] tall and vertically centered.
 pub(super) fn row(
     icon: Icon,
     title: SharedString,
@@ -1946,12 +1978,12 @@ pub(super) fn row(
     // The switch or dropdown on the right is named after the row for screen readers.
     let a11y = crate::a11y::active();
     div()
-        .min_h(CARD_MIN_H)
-        .px(theme::S_16)
-        .py(theme::S_12)
+        .min_h(card_min_h())
+        .px(theme::s_16())
+        .py(theme::s_12())
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc))
@@ -1962,13 +1994,18 @@ pub(super) fn row(
 
 /// Icon centered in the fixed icon column.
 pub(super) fn row_icon(icon: Icon, color: gpui::Rgba) -> gpui::Div {
-    div().w(ICON_COL).flex_none().flex().justify_center().child(
-        svg()
-            .path(icon.path())
-            .flex_none()
-            .size(theme::ICON)
-            .text_color(color),
-    )
+    div()
+        .w(icon_col())
+        .flex_none()
+        .flex()
+        .justify_center()
+        .child(
+            svg()
+                .path(icon.path())
+                .flex_none()
+                .size(theme::icon())
+                .text_color(color),
+        )
 }
 
 /// Title and an optional second line.
@@ -1978,7 +2015,7 @@ pub(super) fn row_text(title: SharedString, desc: Option<AnyElement>) -> gpui::D
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(theme::S_2)
+        .gap(theme::s_2())
         .child(title)
         .children(desc)
 }
@@ -1986,7 +2023,7 @@ pub(super) fn row_text(title: SharedString, desc: Option<AnyElement>) -> gpui::D
 /// Second line of a row: a short description or status.
 pub(super) fn row_desc(text: Cow<'static, str>) -> AnyElement {
     div()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_subtle())
         .child(SharedString::from(text.into_owned()))
         .into_any_element()
@@ -2048,15 +2085,15 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_combo(label.clone(), open)
-        .h(theme::H_CTL)
-        .min_w(DROPDOWN_MIN_W)
-        .pl(theme::S_12)
-        .pr(theme::S_8)
+        .h(theme::h_ctl())
+        .min_w(dropdown_min_w())
+        .pl(theme::s_12())
+        .pr(theme::s_8())
         .flex()
         .items_center()
         .justify_between()
-        .gap(theme::S_12)
-        .rounded(theme::R_8)
+        .gap(theme::s_12())
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line_strong())
         .cursor_pointer()
@@ -2073,7 +2110,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
             svg()
                 .path(Icon::ChevronRight.path())
                 .flex_none()
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(theme::text_subtle())
                 .with_transformation(gpui::Transformation::rotate(gpui::radians(
                     std::f32::consts::FRAC_PI_2,
@@ -2132,13 +2169,13 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                 .aria_position_in_set(ix)
                 // Keep row height fixed when the list scrolls.
                 .flex_none()
-                .h(theme::H_CTL)
-                .pl(theme::S_8)
-                .pr(theme::S_16)
+                .h(theme::h_ctl())
+                .pl(theme::s_8())
+                .pr(theme::s_16())
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
-                .rounded(theme::R_4)
+                .gap(theme::s_8())
+                .rounded(theme::r_4())
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::wash()))
                 // Keyboard cursor.
@@ -2148,7 +2185,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                     svg()
                         .path(Icon::Check.path())
                         .flex_none()
-                        .size(theme::ICON)
+                        .size(theme::icon())
                         .text_color(if on { theme::signal() } else { theme::clear() }),
                 )
                 .child(match font {
@@ -2159,7 +2196,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap(theme::S_16)
+                        .gap(theme::s_16())
                         .font_family(font)
                         .child(div().min_w_0().truncate().child(label))
                         .child(
@@ -2179,9 +2216,9 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let count = options.len();
     let list = if long {
         // Only the rows in view are built, each in its own font.
-        let height = (theme::H_CTL * count as f32).min(DROPDOWN_MAX_H - theme::S_8);
+        let height = (theme::h_ctl() * count as f32).min(dropdown_max_h() - theme::s_8());
         div()
-            .w(FONT_LIST_W)
+            .w(font_list_w())
             .child(
                 uniform_list((id, usize::MAX - 3), count, move |range, _, _| {
                     range.map(&row).collect::<Vec<_>>()
@@ -2194,7 +2231,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         div()
             .flex()
             .flex_col()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .children((0..count).map(row))
             .into_any_element()
     };
@@ -2215,18 +2252,18 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let menu = deferred(
         anchored()
             .anchor(gpui::Anchor::TopRight)
-            .snap_to_window_with_margin(theme::S_8)
+            .snap_to_window_with_margin(theme::s_8())
             .child(
                 div()
                     .id((id, usize::MAX - 1))
                     .role(gpui::Role::ListBox)
                     .aria_size_of_set(count)
                     .occlude()
-                    .max_h(DROPDOWN_MAX_H)
+                    .max_h(dropdown_max_h())
                     .when(!long, gpui::StatefulInteractiveElement::overflow_y_scroll)
-                    .min_w(DROPDOWN_MIN_W)
-                    .p(theme::S_4)
-                    .rounded(theme::R_8)
+                    .min_w(dropdown_min_w())
+                    .p(theme::s_4())
+                    .rounded(theme::r_8())
                     .bg(theme::overlay())
                     .shadow(theme::elev_2())
                     .child(list)
@@ -2243,7 +2280,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         .child(
             div()
                 .absolute()
-                .top(theme::H_CTL + theme::S_4)
+                .top(theme::h_ctl() + theme::s_4())
                 .right_0()
                 .child(menu),
         )
@@ -2276,12 +2313,12 @@ pub(super) fn expander(
                 .debug_selector(move || id.to_owned())
                 .a11y_lazy(gpui::Role::Button, || title.to_string())
                 .aria_expanded(open)
-                .min_h(CARD_MIN_H)
-                .px(theme::S_16)
-                .py(theme::S_12)
+                .min_h(card_min_h())
+                .px(theme::s_16())
+                .py(theme::s_12())
                 .flex()
                 .items_center()
-                .gap(theme::S_16)
+                .gap(theme::s_16())
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::wash()))
                 .child(row_icon(icon, theme::text_muted()))
@@ -2291,7 +2328,7 @@ pub(super) fn expander(
                     svg()
                         .path(Icon::ChevronRight.path())
                         .flex_none()
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(theme::text_subtle())
                         .with_transformation(gpui::Transformation::rotate(gpui::radians(
                             if open {
@@ -2315,7 +2352,7 @@ pub(super) fn expander(
                 div()
                     .border_t_1()
                     .border_color(theme::line())
-                    .p(theme::S_16)
+                    .p(theme::s_16())
                     .child(body)
                     .with_animation((id, 0usize), anim(), |el, t| {
                         crate::motion::slide_in(el, t, 0., -ANIM_SLIDE)
@@ -2328,7 +2365,7 @@ pub(super) fn expander(
 /// Right side of an expander header: the current value as text.
 fn text_summary(label: String) -> AnyElement {
     div()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(label)
         .into_any_element()
@@ -2339,12 +2376,12 @@ fn look_summary(color: gpui::Rgba, label: String) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(theme::S_8)
-        .text_size(theme::FS_12)
+        .gap(theme::s_8())
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(
             div()
-                .size(theme::ICON)
+                .size(theme::icon())
                 .rounded(theme::R_FULL)
                 .border_1()
                 .border_color(theme::line_strong())
@@ -2401,7 +2438,7 @@ const THEME_TILE: (f32, f32) = (120., 80.);
 fn mini_window(look: TileLook, width: f32) -> gpui::Div {
     let bar = |width: f32, color: gpui::Rgba| {
         div()
-            .h(px(3.))
+            .h(crate::theme::scaled_px(3.))
             .w(px(width))
             .rounded(theme::R_FULL)
             .bg(color)
@@ -2410,18 +2447,18 @@ fn mini_window(look: TileLook, width: f32) -> gpui::Div {
         .w(px(width))
         .h_full()
         .flex_none()
-        .p(theme::S_6)
+        .p(theme::s_6())
         .flex()
-        .gap(theme::S_6)
+        .gap(theme::s_6())
         .bg(look.frame)
         // Sidebar.
         .child(
             div()
-                .w(px(20.))
-                .pt(theme::S_4)
+                .w(crate::theme::scaled_px(20.))
+                .pt(theme::s_4())
                 .flex()
                 .flex_col()
-                .gap(theme::S_4)
+                .gap(theme::s_4())
                 .child(bar(18., look.faint))
                 .child(bar(13., look.faint))
                 .child(bar(16., look.faint)),
@@ -2430,19 +2467,19 @@ fn mini_window(look: TileLook, width: f32) -> gpui::Div {
         .child(
             div()
                 .flex_1()
-                .p(theme::S_6)
+                .p(theme::s_6())
                 .flex()
                 .flex_col()
-                .gap(theme::S_4)
-                .rounded(theme::R_4)
+                .gap(theme::s_4())
+                .rounded(theme::r_4())
                 .bg(look.paper)
                 // Selected row: the accent wash, as in the file list.
                 .child(
                     div()
                         .flex()
-                        .px(theme::S_4)
-                        .py(theme::S_2)
-                        .rounded(theme::R_4)
+                        .px(theme::s_4())
+                        .py(theme::s_2())
+                        .rounded(theme::r_4())
                         .bg(gpui::Rgba {
                             a: 0.2,
                             ..look.accent
@@ -2454,8 +2491,8 @@ fn mini_window(look: TileLook, width: f32) -> gpui::Div {
                 .child(
                     div().flex().justify_end().child(
                         div()
-                            .w(px(16.))
-                            .h(px(8.))
+                            .w(crate::theme::scaled_px(16.))
+                            .h(crate::theme::scaled_px(8.))
                             .rounded(theme::R_FULL)
                             .bg(look.accent),
                     ),
@@ -2502,7 +2539,7 @@ fn tile(
         .w(px(width))
         .flex()
         .flex_col()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_2()
         .overflow_hidden()
         .cursor_pointer()
@@ -2514,12 +2551,12 @@ fn tile(
         .child(div().h(px(height)).flex().overflow_hidden().child(preview))
         .child(
             div()
-                .h(px(26.))
-                .px(theme::S_6)
+                .h(crate::theme::scaled_px(26.))
+                .px(theme::s_6())
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .when(selected, |d| d.font_weight(theme::FW_STRONG))
                 .when(!selected, |d| d.text_color(theme::text_muted()))
                 .child(
@@ -2590,7 +2627,7 @@ fn theme_body(s: &Settings) -> AnyElement {
     div()
         .flex()
         .flex_wrap()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .children(
             options
                 .into_iter()
@@ -2705,14 +2742,14 @@ fn accent_body(s: &Settings, input: &Entity<TextInput>, window: &Window, cx: &Ap
     }
     let focused = input.focus_handle(cx).is_focused(window);
     let code = div()
-        .w(px(96.))
-        .h(theme::H_CTL_SM)
-        .px(theme::S_8)
+        .w(crate::theme::scaled_px(96.))
+        .h(theme::h_ctl_sm())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .when(focused, |d| {
             d.bg(theme::surface()).border_color(theme::signal_line())
         })
@@ -2723,17 +2760,17 @@ fn accent_body(s: &Settings, input: &Entity<TextInput>, window: &Window, cx: &Ap
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_16)
-        .child(div().flex().flex_wrap().gap(theme::S_8).children(tiles))
+        .gap(theme::s_16())
+        .child(div().flex().flex_wrap().gap(theme::s_8()).children(tiles))
         .child(
             div()
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(theme::S_12)
+                .gap(theme::s_12())
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_muted())
                         .child(t!("settings.custom").into_owned()),
                 )
@@ -2789,7 +2826,7 @@ fn tint_body(s: &Settings) -> AnyElement {
     div()
         .flex()
         .flex_wrap()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .children(tiles)
         .into_any_element()
 }
@@ -2832,7 +2869,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
     };
     // Live sample under the name, in the chosen font.
     let sample = div()
-        .text_size(theme::FS_13)
+        .text_size(theme::fs_13())
         .text_color(theme::text_muted())
         .when_some(names.get(current).cloned(), gpui::Styled::font_family)
         .child(t!("settings.font_sample").into_owned())
@@ -2876,13 +2913,13 @@ fn background_summary(s: &Settings, page: &SettingsPage) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .children(image.map(|image| {
             div()
-                .w(px(32.))
-                .h(px(20.))
+                .w(crate::theme::scaled_px(32.))
+                .h(crate::theme::scaled_px(20.))
                 .flex_none()
-                .rounded(theme::R_4)
+                .rounded(theme::r_4())
                 .overflow_hidden()
                 .border_1()
                 .border_color(theme::line())
@@ -2894,11 +2931,11 @@ fn background_summary(s: &Settings, page: &SettingsPage) -> AnyElement {
         }))
         .child(
             div()
-                .max_w(px(220.))
+                .max_w(crate::theme::scaled_px(220.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted())
                 .child(name),
         )
@@ -2923,11 +2960,11 @@ fn background_body(
     let focused = input.focus_handle(cx).is_focused(window);
     let field = div()
         .w_full()
-        .h(theme::H_CTL)
-        .px(theme::S_8)
+        .h(theme::h_ctl())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .when(focused, |d| {
             d.bg(theme::surface()).border_color(theme::signal_line())
@@ -2946,14 +2983,14 @@ fn background_body(
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .bg(theme::wash())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(
                 svg()
                     .path(icon.path())
-                    .size(theme::S_20)
+                    .size(theme::s_20())
                     .text_color(theme::text_disabled()),
             )
             .children(text)
@@ -2979,7 +3016,7 @@ fn background_body(
             .w(px(thumb_w))
             .h(px(thumb_h))
             .flex_none()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .overflow_hidden()
             .border_1()
             .border_color(theme::line_strong())
@@ -2995,7 +3032,7 @@ fn background_body(
     let chooser = div()
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(frame(thumbnail))
         .child(
             div()
@@ -3003,13 +3040,13 @@ fn background_body(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(field)
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(theme::S_8)
+                        .gap(theme::s_8())
                         .child(browse)
                         .when(s.background_image.is_some(), |d| {
                             d.child(text_button(
@@ -3021,7 +3058,7 @@ fn background_body(
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(t!("settings.background_hint").into_owned()),
                 ),
@@ -3031,24 +3068,24 @@ fn background_body(
     let preview = {
         let line = |width: f32, color: gpui::Rgba| {
             div()
-                .h(px(4.))
+                .h(crate::theme::scaled_px(4.))
                 .w(px(width))
                 .rounded(theme::R_FULL)
                 .bg(color)
         };
         let row = |selected: bool, width: f32| {
             div()
-                .h(px(16.))
-                .px(theme::S_6)
+                .h(crate::theme::scaled_px(16.))
+                .px(theme::s_6())
                 .flex()
                 .items_center()
-                .gap(theme::S_6)
-                .rounded(theme::R_4)
+                .gap(theme::s_6())
+                .rounded(theme::r_4())
                 .when(selected, |d| d.bg(theme::selection()))
                 .child(
                     div()
-                        .size(px(8.))
-                        .rounded(theme::R_4)
+                        .size(crate::theme::scaled_px(8.))
+                        .rounded(theme::r_4())
                         .bg(theme::text_disabled()),
                 )
                 .child(line(
@@ -3083,10 +3120,10 @@ fn background_body(
                     .top_0()
                     .left_0()
                     .size_full()
-                    .p(theme::S_8)
+                    .p(theme::s_8())
                     .flex()
                     .flex_col()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .child(row(false, 70.))
                     .child(row(true, 52.))
                     .child(row(false, 84.))
@@ -3098,7 +3135,7 @@ fn background_body(
     let strength = div()
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(frame(preview))
         .child(
             div()
@@ -3106,24 +3143,24 @@ fn background_body(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(t!("settings.background_opacity").into_owned())
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(theme::S_12)
+                        .gap(theme::s_12())
                         .child(opacity_slider(opacity, Rc::clone(&page.slider_drag)))
                         .child(
                             div()
-                                .w(px(40.))
+                                .w(crate::theme::scaled_px(40.))
                                 .text_color(theme::text_muted())
                                 .child(format!("{opacity}%")),
                         ),
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(t!("settings.background_preview").into_owned()),
                 ),
@@ -3131,7 +3168,7 @@ fn background_body(
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(chooser)
         .child(div().h(px(1.)).bg(theme::line()))
         .child(strength)
@@ -3149,7 +3186,7 @@ fn opacity_slider(value: u8, dragging: std::rc::Rc<std::cell::Cell<bool>>) -> An
             set_backdrop_opacity((fraction * 100.).round() as u8, cx);
         }),
     )
-    .w(SLIDER_W)
+    .w(slider_w())
     .into_any_element()
 }
 
@@ -3173,14 +3210,14 @@ fn column_toggles(s: &Settings) -> AnyElement {
         div()
             .id(("col-chip", col as usize))
             .a11y_toggle(col.label().into_owned(), on)
-            .h(theme::S_24)
-            .px(theme::S_12)
+            .h(theme::s_24())
+            .px(theme::s_12())
             .flex()
             .items_center()
             .rounded(theme::R_FULL)
             .border_1()
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .when(on, |d| {
                 d.bg(theme::signal_wash())
                     .border_color(theme::signal_line())
@@ -3204,7 +3241,7 @@ fn column_toggles(s: &Settings) -> AnyElement {
         .flex()
         .flex_wrap()
         .justify_end()
-        .gap(theme::S_6)
+        .gap(theme::s_6())
         .children(Col::ALL.into_iter().filter(|&c| c != Col::Name).map(chip))
         .into_any_element()
 }
@@ -3234,8 +3271,8 @@ fn hue_strip() -> impl IntoElement {
             let color = theme::accent_from_hue(ix as f32 * HUE_STEP);
             div()
                 .id(("accent-hue", ix))
-                .w(px(8.))
-                .h(px(16.))
+                .w(crate::theme::scaled_px(8.))
+                .h(crate::theme::scaled_px(16.))
                 .bg(theme::accent_preview(color))
                 .cursor_pointer()
                 .on_click(move |_, _, cx| set(cx, |s| s.accent = Accent::Color(color)))
@@ -3270,7 +3307,9 @@ pub(crate) fn switch(
         .map(|(_, serial)| serial);
     // Animation progress 0 to 1; on moves right (0 to 1), off moves left (1 to 0).
     let place = move |t: f32| if on { t } else { 1. - t };
-    let thumb = div().size(px(14.)).rounded(theme::R_FULL);
+    let thumb = div()
+        .size(crate::theme::scaled_px(14.))
+        .rounded(theme::R_FULL);
     let thumb = match playing {
         Some(serial) => thumb
             .with_animation(
@@ -3295,11 +3334,11 @@ pub(crate) fn switch(
         .id(id)
         .a11y_switch(on)
         .debug_selector(|| id.to_owned())
-        .w(px(40.))
-        .h(px(20.))
+        .w(crate::theme::scaled_px(40.))
+        .h(crate::theme::scaled_px(20.))
         .flex()
         .items_center()
-        .px(px(3.))
+        .px(crate::theme::scaled_px(3.))
         .rounded(theme::R_FULL)
         .cursor_pointer()
         .border_1()
@@ -3351,7 +3390,7 @@ fn folder_views_card(s: &Settings, cx: &mut App) -> AnyElement {
         )
     } else {
         div()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(t!("settings.folder_views_none").to_string())
             .into_any_element()
@@ -3363,7 +3402,7 @@ fn folder_views_card(s: &Settings, cx: &mut App) -> AnyElement {
         div()
             .flex()
             .items_center()
-            .gap(theme::S_12)
+            .gap(theme::s_12())
             .child(reset)
             .child(switch("folder-views", s.remember_folder_views, |st| {
                 st.remember_folder_views = !st.remember_folder_views;
@@ -3391,7 +3430,7 @@ fn search_history_card(s: &Settings, cx: &mut App) -> AnyElement {
         )
     } else {
         div()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(t!("settings.search_history_none").to_string())
             .into_any_element()
@@ -3403,7 +3442,7 @@ fn search_history_card(s: &Settings, cx: &mut App) -> AnyElement {
         div()
             .flex()
             .items_center()
-            .gap(theme::S_12)
+            .gap(theme::s_12())
             .child(clear)
             .child(switch("search-history", s.search_history, |st| {
                 st.search_history = !st.search_history;
@@ -3422,15 +3461,15 @@ pub(super) fn text_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line_strong())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .hover(|s| s.bg(theme::wash()))
         .child(label)
         .on_click(on_click)
@@ -3451,7 +3490,7 @@ fn service_control(cx: &App) -> AnyElement {
         });
     if busy {
         return div()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_muted())
             .child(t!("search.service_busy").to_string())
             .into_any_element();
@@ -3486,7 +3525,7 @@ fn service_control(cx: &App) -> AnyElement {
     );
     div()
         .flex()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .child(update)
         .child(toggle)
         .into_any_element()
@@ -3780,15 +3819,15 @@ fn network_row(
     let apply = std::rc::Rc::new(apply);
     let button = div()
         .id(id)
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line_strong())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .hover(|s| s.bg(theme::wash()))
         .child(action)
         .on_click(move |_: &ClickEvent, _, cx: &mut App| {
@@ -3796,12 +3835,12 @@ fn network_row(
             set(cx, move |st| apply(st));
         });
     div()
-        .min_h(CARD_MIN_H)
-        .px(theme::S_16)
-        .py(theme::S_12)
+        .min_h(card_min_h())
+        .px(theme::s_16())
+        .py(theme::s_12())
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(row_icon(
             icon,
             if dimmed {

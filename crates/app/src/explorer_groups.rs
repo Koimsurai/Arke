@@ -547,19 +547,19 @@ impl Explorer {
             .w_full()
             .when_some(self.cols, |d, c| d.min_w(c.row))
             .h(height.unwrap_or_else(|| self.row_height()))
-            .px(theme::S_12)
+            .px(theme::s_12())
             .flex()
             .items_end()
-            .pb(theme::S_6)
-            .gap(theme::S_8)
+            .pb(theme::s_6())
+            .gap(theme::s_8())
             .cursor_pointer()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .hover(|s| s.bg(theme::wash()))
             // A heading, not a caption: item size, semibold, full ink.
             .child(
                 div()
                     .flex_none()
-                    .text_size(theme::FS_14)
+                    .text_size(theme::fs_14())
                     .font_weight(theme::FW_STRONG)
                     .text_color(theme::text())
                     .child(label),
@@ -567,11 +567,11 @@ impl Explorer {
             .child(
                 div()
                     .flex_none()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(arke_core::format::format_count(count)),
             )
-            .child(div().flex_1().h(px(1.)).mb(px(6.)).bg(theme::line()))
+            .child(div().flex_1().h(px(1.)).mb(crate::theme::scaled_px(6.)).bg(theme::line()))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, _, _| {
                 // Don't start a marquee from a header.
                 this.row_pressed = true;

@@ -23,38 +23,66 @@ use crate::theme;
 
 /// The narrowest list the preview pane leaves: room for a name this wide and the Size column.
 /// Below that the preview pane narrows and then hides.
-pub(super) const NAME_MIN: Pixels = px(200.);
+pub(super) fn name_min() -> gpui::Pixels {
+    crate::theme::scaled_px(200.)
+}
 /// Preview pane width bounds; in between it takes [`PREVIEW_SHARE`] of the window.
-pub(super) const PREVIEW_W_MIN: Pixels = px(280.);
-pub(super) const PREVIEW_W_MAX: Pixels = px(380.);
+pub(super) fn preview_w_min() -> gpui::Pixels {
+    crate::theme::scaled_px(280.)
+}
+pub(super) fn preview_w_max() -> gpui::Pixels {
+    crate::theme::scaled_px(380.)
+}
 /// Share of the window width the preview pane takes between its bounds.
 const PREVIEW_SHARE: f32 = 0.22;
 /// Narrowest the preview pane gets when squeezed by a narrow pane; below this it's hidden instead.
 /// Also the narrowest it can be dragged.
-pub(super) const PREVIEW_MIN: Pixels = px(220.);
+pub(super) fn preview_min() -> gpui::Pixels {
+    crate::theme::scaled_px(220.)
+}
 /// Widest the preview pane can be dragged (the list keeps its own minimum on top of this).
-pub(super) const PREVIEW_DRAG_MAX: Pixels = px(960.);
+pub(super) fn preview_drag_max() -> gpui::Pixels {
+    crate::theme::scaled_px(960.)
+}
 /// Details row padding: left and right (the last column keeps this much air before its divider).
-pub(super) const ROW_PAD_L: Pixels = theme::S_12;
-pub(super) const ROW_PAD_R: Pixels = theme::S_16;
+pub(super) fn row_pad_l() -> Pixels {
+    theme::s_12()
+}
+pub(super) fn row_pad_r() -> Pixels {
+    theme::s_16()
+}
 /// Gap between Details columns. A column's divider sits in the middle of the gap after it.
-pub(super) const COL_GAP: Pixels = theme::S_12;
+pub(super) fn col_gap() -> Pixels {
+    theme::s_12()
+}
 /// Blank strip right of the columns, even when they fill the pane or scroll: there's always empty
 /// space beside the rows to right-click for the folder menu or to start a marquee.
-pub(super) const LIST_GUTTER: Pixels = theme::S_24;
+pub(super) fn list_gutter() -> Pixels {
+    theme::s_24()
+}
 /// Horizontal space a Details row can't use for columns: the paper's outer margins (2 × 8), the
-/// list's side padding (2 × 8), [`LIST_GUTTER`], the row's padding ([`ROW_PAD_L`] +
-/// [`ROW_PAD_R`]), and the icon with its gap.
-pub(super) const ROW_CHROME: Pixels = px(16. + 16. + 24. + 12. + 16. + 16. + 12.);
+/// list's side padding (2 × 8), [`list_gutter()`], the row's padding ([`row_pad_l()`] +
+/// [`row_pad_r()`]), and the icon with its gap.
+pub(super) fn row_chrome() -> Pixels {
+    crate::theme::scaled_px(16. + 16. + 24. + 12. + 16. + 16. + 12.)
+}
 /// What a pane's box loses before its rows: the paper's outer margins, the list's side padding
-/// and [`LIST_GUTTER`].
-pub(super) const LIST_CHROME: Pixels = px(16. + 16. + 24.);
+/// and [`list_gutter()`].
+pub(super) fn list_chrome() -> Pixels {
+    crate::theme::scaled_px(16. + 16. + 24.)
+}
 /// The paper's right margin (its left edge touches the sidebar or the split divider): a pane's
 /// box less this is the list and the preview pane.
-pub(super) const PAPER_MARGIN: Pixels = theme::S_8;
+pub(super) fn paper_margin() -> Pixels {
+    theme::s_8()
+}
 /// Column view: narrowest a column can be dragged, and the bounds of fitting one to its names.
-pub(super) const VIEW_COLUMN_MIN: Pixels = px(160.);
-pub(super) const VIEW_COLUMN_FIT_MAX: Pixels = px(600.);
+pub(super) fn view_column_min() -> gpui::Pixels {
+    crate::theme::scaled_px(160.)
+}
+pub(super) fn view_column_fit_max() -> gpui::Pixels {
+    crate::theme::scaled_px(600.)
+}
 
 /// A Details row's geometry: the Name column's width (its checkbox, tree indent and icon
 /// included) and the whole row's, padding included. Rows, their selection wash and the header
@@ -65,17 +93,17 @@ pub(super) struct Columns {
     pub(super) row: Pixels,
 }
 
-/// The Details columns in a list with `room` for rows (the pane less [`LIST_CHROME`]). `name` is
+/// The Details columns in a list with `room` for rows (the pane less [`list_chrome()`]). `name` is
 /// the width the user gave the Name column; until then it takes what the other columns
-/// (`others`, left to right, as shown and sized) leave, kept between [`theme::COL_NAME`] and
-/// [`theme::COL_NAME_MAX`] so it's roomy in a wide window without pushing the other columns far
+/// (`others`, left to right, as shown and sized) leave, kept between [`theme::col_name()`] and
+/// [`theme::col_name_max()`] so it's roomy in a wide window without pushing the other columns far
 /// away. So Name gives way first when the pane narrows (the preview pane widens, a column is
 /// switched on or sized wider); only once it's at its minimum do the columns scroll.
 pub(super) fn columns(room: Pixels, name: Option<Pixels>, others: &[Pixels]) -> Columns {
-    let rest = others.iter().fold(px(0.), |sum, w| sum + COL_GAP + *w);
-    let pad = ROW_PAD_L + ROW_PAD_R;
+    let rest = others.iter().fold(px(0.), |sum, w| sum + col_gap() + *w);
+    let pad = row_pad_l() + row_pad_r();
     let name =
-        name.unwrap_or_else(|| (room - pad - rest).clamp(theme::COL_NAME, theme::COL_NAME_MAX));
+        name.unwrap_or_else(|| (room - pad - rest).clamp(theme::col_name(), theme::col_name_max()));
     Columns {
         name,
         row: pad + name + rest,
@@ -83,7 +111,7 @@ pub(super) fn columns(room: Pixels, name: Option<Pixels>, others: &[Pixels]) -> 
 }
 
 /// Whether the preview pane fits at the current width, decided before each render. In a narrow
-/// pane it narrows (down to [`PREVIEW_MIN`]) and then hides so the list keeps its minimum; the
+/// pane it narrows (down to [`preview_min()`]) and then hides so the list keeps its minimum; the
 /// Details columns keep their widths and scroll sideways instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Fit {
@@ -97,7 +125,7 @@ impl Default for Fit {
     fn default() -> Self {
         Self {
             preview: true,
-            preview_w: PREVIEW_W_MIN,
+            preview_w: preview_w_min(),
         }
     }
 }
@@ -137,41 +165,41 @@ pub(super) struct FitInput {
 
 /// Preview pane width for a window `window` wide. Automatic (`user` is `None`): 22 % of the
 /// window, kept between 280 and 380 px so it neither crowds a laptop screen nor turns into a
-/// billboard on a wide monitor. Dragged: that width, between [`PREVIEW_MIN`] and
-/// [`PREVIEW_DRAG_MAX`]. Either way [`fit`] may still squeeze or hide it in a narrow pane.
+/// billboard on a wide monitor. Dragged: that width, between [`preview_min()`] and
+/// [`preview_drag_max()`]. Either way [`fit`] may still squeeze or hide it in a narrow pane.
 pub(super) fn preview_width(window: Pixels, user: Option<Pixels>) -> Pixels {
     user.map_or_else(
-        || (window * PREVIEW_SHARE).clamp(PREVIEW_W_MIN, PREVIEW_W_MAX),
-        |w| w.clamp(PREVIEW_MIN, PREVIEW_DRAG_MAX),
+        || (window * PREVIEW_SHARE).clamp(preview_w_min(), preview_w_max()),
+        |w| w.clamp(preview_min(), preview_drag_max()),
     )
 }
 
 /// Widest the preview pane can be dragged in this pane: whatever the list leaves at its minimum
-/// ([`bare_list`]), up to [`PREVIEW_DRAG_MAX`]. Never below [`PREVIEW_MIN`], so a drag in a
+/// ([`bare_list`]), up to [`preview_drag_max()`]. Never below [`preview_min()`], so a drag in a
 /// cramped pane still has a valid range.
 pub(super) fn preview_room(input: &FitInput) -> Pixels {
-    (input.bar - list_min(input)).clamp(PREVIEW_MIN, PREVIEW_DRAG_MAX)
+    (input.bar - list_min(input)).clamp(preview_min(), preview_drag_max())
 }
 
-/// The narrowest list the preview pane leaves: row chrome, a name [`NAME_MIN`] wide and the Size
+/// The narrowest list the preview pane leaves: row chrome, a name [`name_min()`] wide and the Size
 /// column (search: its fixed columns; column view: the parent column). Wider columns scroll.
 fn list_min(input: &FitInput) -> Pixels {
-    let gap = COL_GAP;
+    let gap = col_gap();
     let width = |col: Col| input.col_w[col as usize];
-    let mut fixed = ROW_CHROME + NAME_MIN;
+    let mut fixed = row_chrome() + name_min();
     if input.checkboxes {
-        fixed += theme::ICON + gap;
+        fixed += theme::icon() + gap;
     }
     // Search modified/size are always shown; fall back to the default widths if switched off.
     if input.columns_view {
         // A current folder column the user made narrower than that is its own minimum.
         if let Some(current) = input.current_w {
-            fixed = fixed.min(PAPER_MARGIN + current);
+            fixed = fixed.min(paper_margin() + current);
         }
         fixed += input.parent_w;
     } else if input.search {
-        let modified = width(Col::Modified).unwrap_or(theme::COL_MODIFIED);
-        let size = width(Col::Size).unwrap_or(theme::COL_SIZE);
+        let modified = width(Col::Modified).unwrap_or(theme::col_modified());
+        let size = width(Col::Size).unwrap_or(theme::col_size());
         fixed += gap * 3. + input.location_w + modified + size;
     } else if input.details
         && let Some(size) = width(Col::Size)
@@ -188,7 +216,7 @@ pub(super) fn fit(input: &FitInput) -> Fit {
         // Like Finder's last column: the sized columns keep their widths, the preview gets the
         // rest (so the current column comes out exactly as wide as the user made it).
         Some(current) if input.columns_view => {
-            (input.bar - PAPER_MARGIN - input.parent_w - current).max(PREVIEW_MIN)
+            (input.bar - paper_margin() - input.parent_w - current).max(preview_min())
         }
         _ => preview_width(input.window, input.preview_user),
     };
@@ -201,7 +229,7 @@ pub(super) fn fit(input: &FitInput) -> Fit {
         }
         // Too narrow for the list next to it: narrow the preview pane before hiding it.
         let squeezed = input.bar - list;
-        if squeezed >= PREVIEW_MIN {
+        if squeezed >= preview_min() {
             return Fit {
                 preview: true,
                 preview_w: squeezed,
@@ -215,7 +243,9 @@ pub(super) fn fit(input: &FitInput) -> Fit {
 }
 
 /// Space between the right pane's paper and a split tab's shared preview.
-pub(crate) const SHARED_GAP: Pixels = theme::S_8;
+pub(crate) fn shared_gap() -> gpui::Pixels {
+    theme::s_8()
+}
 
 /// A split tab's preview: one for the whole tab, at its right end after both panes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -229,7 +259,7 @@ pub(crate) struct SharedPreview {
 impl SharedPreview {
     /// Room the preview takes at the right end of the tab, its gap to the right pane included.
     pub(crate) fn reserve(self) -> Pixels {
-        self.width + SHARED_GAP
+        self.width + shared_gap()
     }
 }
 
@@ -237,7 +267,7 @@ impl SharedPreview {
 /// `window` wide. `ratio` is the left pane's share of what the preview leaves and `mins` each
 /// pane's narrowest list ([`list_min`]). Like one pane's preview in [`fit`]: it keeps its width
 /// while both panes have their narrowest list (wider columns scroll), then narrows down to
-/// [`PREVIEW_MIN`], then hides (`None`).
+/// [`preview_min()`], then hides (`None`).
 pub(crate) fn shared_preview(
     window: Pixels,
     content: Pixels,
@@ -247,13 +277,13 @@ pub(crate) fn shared_preview(
 ) -> Option<SharedPreview> {
     let ratio = ratio.clamp(0.05, 0.95);
     let needed = (mins[0] / ratio).max(mins[1] / (1. - ratio));
-    let room = content - SHARED_GAP - needed;
-    if room < PREVIEW_MIN {
+    let room = content - shared_gap() - needed;
+    if room < preview_min() {
         return None;
     }
     Some(SharedPreview {
         width: preview_width(window, user).min(room),
-        room: room.min(PREVIEW_DRAG_MAX),
+        room: room.min(preview_drag_max()),
     })
 }
 
@@ -265,26 +295,26 @@ pub(super) fn bare_list(input: &FitInput) -> Pixels {
 /// What a shown preview needs while a column view column is sized: its minimum.
 fn preview_keep(input: &FitInput) -> Pixels {
     if input.wants_preview && fit(input).preview {
-        PREVIEW_MIN
+        preview_min()
     } else {
         px(0.)
     }
 }
 
 /// Column view: widest the parent column may be dragged, so the current folder's column keeps
-/// its minimum (see [`list_min`]) and a shown preview keeps [`PREVIEW_MIN`].
+/// its minimum (see [`list_min`]) and a shown preview keeps [`preview_min()`].
 pub(super) fn parent_room(input: &FitInput) -> Pixels {
     let others = list_min(&FitInput {
         parent_w: px(0.),
         ..*input
     });
-    (input.bar - others - preview_keep(input)).max(VIEW_COLUMN_MIN)
+    (input.bar - others - preview_keep(input)).max(view_column_min())
 }
 
 /// Column view: widest the current folder's column may be made, leaving a shown preview its
 /// minimum.
 pub(super) fn current_room(input: &FitInput) -> Pixels {
-    (input.bar - PAPER_MARGIN - input.parent_w - preview_keep(input)).max(VIEW_COLUMN_MIN)
+    (input.bar - paper_margin() - input.parent_w - preview_keep(input)).max(view_column_min())
 }
 
 /// Breadcrumb segments to hide behind "…" so the path fits in `avail`.
@@ -338,10 +368,14 @@ pub(super) fn collapse_crumbs(
 
 /// Narrowest the path bar gets while the search box is widened for typing: room for
 /// "… › current folder".
-pub(super) const PATH_BAR_MIN: Pixels = px(120.);
+pub(super) fn path_bar_min() -> gpui::Pixels {
+    crate::theme::scaled_px(120.)
+}
 /// Narrowest search box that still shows its text field. Below it, an empty search box that isn't
 /// in use shows only its magnifier.
-pub(super) const SEARCH_MIN: Pixels = px(120.);
+pub(super) fn search_min() -> gpui::Pixels {
+    crate::theme::scaled_px(120.)
+}
 
 /// What the search box in the title row is doing, which decides its width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,17 +385,19 @@ pub(super) enum SearchBox {
     /// Focused: grows over the path bar with its text.
     Typing,
     /// The path is being edited: the search box keeps its usual width while the path input still
-    /// gets [`PATH_EDIT_MIN`], and steps aside to its magnifier otherwise.
+    /// gets [`path_edit_min()`], and steps aside to its magnifier otherwise.
     PathEditing,
 }
 
 /// Room the path input keeps while editing before the search box steps aside.
-pub(super) const PATH_EDIT_MIN: Pixels = px(360.);
+pub(super) fn path_edit_min() -> gpui::Pixels {
+    crate::theme::scaled_px(360.)
+}
 
 /// Width of the search box when the path bar and the search box share `row`. `normal`: its usual
 /// width. While typing it grows with `content` (what it needs to show the text, its icon, clear
 /// button and scope chip), from `normal` up to `typing_max`. The path bar takes what's left,
-/// never less than [`PATH_BAR_MIN`] unless the search box is at its own minimum. Zero `row` (not
+/// never less than [`path_bar_min()`] unless the search box is at its own minimum. Zero `row` (not
 /// measured yet): the usual width.
 pub(super) fn search_width(
     row: Pixels,
@@ -374,24 +410,24 @@ pub(super) fn search_width(
         return normal;
     }
     if state == SearchBox::PathEditing {
-        return if row - normal >= PATH_EDIT_MIN {
+        return if row - normal >= path_edit_min() {
             normal
         } else {
-            theme::H_CTL
+            theme::h_ctl()
         };
     }
-    let room = (row - PATH_BAR_MIN).max(px(0.));
+    let room = (row - path_bar_min()).max(px(0.));
     let fitted = match state {
         SearchBox::Typing => room.min(content.min(typing_max).max(normal)),
         _ => normal.min(room),
     };
-    if fitted >= SEARCH_MIN {
+    if fitted >= search_min() {
         return fitted;
     }
     match state {
         // In use: keep the field, even if the path bar has to give way.
-        SearchBox::Typing | SearchBox::Idle { text: true } => SEARCH_MIN.min(row),
-        _ => theme::H_CTL,
+        SearchBox::Typing | SearchBox::Idle { text: true } => search_min().min(row),
+        _ => theme::h_ctl(),
     }
 }
 
@@ -411,8 +447,8 @@ mod tests {
 
     #[test]
     fn search_box_width_per_state() {
-        let normal = px(220.);
-        let cap = px(560.);
+        let normal = crate::theme::scaled_px(220.);
+        let cap = crate::theme::scaled_px(560.);
         let idle = SearchBox::Idle { text: false };
         let with_text = SearchBox::Idle { text: true };
         let typing = SearchBox::Typing;
@@ -426,28 +462,28 @@ mod tests {
         // and never past what the path bar's minimum leaves.
         assert_eq!(w(800., typing, 0.), normal);
         assert_eq!(w(800., typing, 150.), normal);
-        assert_eq!(w(800., typing, 400.), px(400.));
+        assert_eq!(w(800., typing, 400.), crate::theme::scaled_px(400.));
         assert_eq!(w(800., typing, 900.), cap);
-        assert_eq!(w(500., typing, 900.), px(380.));
+        assert_eq!(w(500., typing, 900.), crate::theme::scaled_px(380.));
         // Editing the path: the box stays while the path input keeps its room, else it's just the
         // magnifier.
         assert_eq!(w(800., SearchBox::PathEditing, 0.), normal);
         assert_eq!(w(580., SearchBox::PathEditing, 0.), normal);
-        assert_eq!(w(560., SearchBox::PathEditing, 0.), theme::H_CTL);
+        assert_eq!(w(560., SearchBox::PathEditing, 0.), theme::h_ctl());
         // A narrow row: the box gives way so the path bar keeps its minimum.
-        assert_eq!(w(260., idle, 0.), px(140.));
+        assert_eq!(w(260., idle, 0.), crate::theme::scaled_px(140.));
         // Narrower still: an unused box folds to its magnifier, one with text keeps its minimum.
-        assert_eq!(w(200., idle, 0.), theme::H_CTL);
-        assert_eq!(w(200., with_text, 0.), SEARCH_MIN);
-        assert_eq!(w(200., typing, 900.), SEARCH_MIN);
+        assert_eq!(w(200., idle, 0.), theme::h_ctl());
+        assert_eq!(w(200., with_text, 0.), search_min());
+        assert_eq!(w(200., typing, 900.), search_min());
         // Not measured yet.
         assert_eq!(w(0., idle, 0.), normal);
     }
 
     #[test]
     fn a_drag_starts_past_the_threshold() {
-        let at = gpui::point(px(100.), px(20.));
-        let threshold = gpui::size(px(4.), px(4.));
+        let at = gpui::point(crate::theme::scaled_px(100.), crate::theme::scaled_px(20.));
+        let threshold = gpui::size(crate::theme::scaled_px(4.), crate::theme::scaled_px(4.));
         let moved = |dx: f32, dy: f32| beyond_drag(at, at + gpui::point(px(dx), px(dy)), threshold);
         assert!(!moved(0., 0.));
         assert!(!moved(4., -4.), "within the threshold on both axes");
@@ -466,13 +502,13 @@ mod tests {
             search: false,
             wants_preview: false,
             preview_user: None,
-            parent_w: px(220.),
+            parent_w: crate::theme::scaled_px(220.),
             current_w: None,
-            location_w: theme::COL_LOCATION,
+            location_w: theme::col_location(),
             col_w: widths(&[
-                (Col::Modified, theme::COL_MODIFIED),
-                (Col::Type, theme::COL_TYPE),
-                (Col::Size, theme::COL_SIZE),
+                (Col::Modified, theme::col_modified()),
+                (Col::Type, theme::col_type()),
+                (Col::Size, theme::col_size()),
             ]),
         }
     }
@@ -487,25 +523,52 @@ mod tests {
 
     /// The narrowest list: chrome, the name's minimum and the Size column.
     fn bare() -> Pixels {
-        ROW_CHROME + NAME_MIN + COL_GAP + theme::COL_SIZE
+        row_chrome() + name_min() + col_gap() + theme::col_size()
     }
 
-    const OTHERS: [Pixels; 3] = [theme::COL_MODIFIED, theme::COL_TYPE, theme::COL_SIZE];
+    const OTHERS: [Pixels; 3] = [theme::col_modified(), theme::col_type(), theme::col_size()];
 
     /// The preview pane scales with the window between its bounds.
     #[test]
     fn preview_width_is_a_clamped_share_of_the_window() {
-        assert_eq!(preview_width(px(1000.), None), PREVIEW_W_MIN);
-        assert_eq!(preview_width(px(1500.), None), px(330.));
-        assert_eq!(preview_width(px(1936.), None), PREVIEW_W_MAX);
+        assert_eq!(
+            preview_width(crate::theme::scaled_px(1000.), None),
+            preview_w_min()
+        );
+        assert_eq!(
+            preview_width(crate::theme::scaled_px(1500.), None),
+            crate::theme::scaled_px(330.)
+        );
+        assert_eq!(
+            preview_width(crate::theme::scaled_px(1936.), None),
+            preview_w_max()
+        );
     }
 
     /// A dragged width wins over the window share, within the drag bounds.
     #[test]
     fn dragged_preview_width_is_kept_within_bounds() {
-        assert_eq!(preview_width(px(1000.), Some(px(520.))), px(520.));
-        assert_eq!(preview_width(px(1000.), Some(px(50.))), PREVIEW_MIN);
-        assert_eq!(preview_width(px(4000.), Some(px(5000.))), PREVIEW_DRAG_MAX);
+        assert_eq!(
+            preview_width(
+                crate::theme::scaled_px(1000.),
+                Some(crate::theme::scaled_px(520.))
+            ),
+            crate::theme::scaled_px(520.)
+        );
+        assert_eq!(
+            preview_width(
+                crate::theme::scaled_px(1000.),
+                Some(crate::theme::scaled_px(50.))
+            ),
+            preview_min()
+        );
+        assert_eq!(
+            preview_width(
+                crate::theme::scaled_px(4000.),
+                Some(crate::theme::scaled_px(5000.))
+            ),
+            preview_drag_max()
+        );
     }
 
     /// A wide dragged pane keeps its width while the bare list fits beside it (the columns
@@ -514,13 +577,19 @@ mod tests {
     fn dragged_preview_squeezes_like_the_automatic_one() {
         let mut i = input(1200.);
         i.wants_preview = true;
-        i.preview_user = Some(px(700.));
+        i.preview_user = Some(crate::theme::scaled_px(700.));
         let f = fit(&i);
-        assert!(f.preview && f.preview_w == px(700.), "{f:?}");
-        i.bar = bare() + px(500.);
+        assert!(
+            f.preview && f.preview_w == crate::theme::scaled_px(700.),
+            "{f:?}"
+        );
+        i.bar = bare() + crate::theme::scaled_px(500.);
         let f = fit(&i);
-        assert!(f.preview && f.preview_w == px(500.), "{f:?}");
-        i.bar = bare() + PREVIEW_MIN - px(1.);
+        assert!(
+            f.preview && f.preview_w == crate::theme::scaled_px(500.),
+            "{f:?}"
+        );
+        i.bar = bare() + preview_min() - px(1.);
         assert!(!fit(&i).preview);
     }
 
@@ -528,12 +597,12 @@ mod tests {
     #[test]
     fn preview_room_leaves_the_list_its_minimum() {
         let mut i = input(0.);
-        i.bar = bare() + px(600.);
-        assert_eq!(preview_room(&i), px(600.));
-        i.bar = px(300.);
-        assert_eq!(preview_room(&i), PREVIEW_MIN);
-        i.bar = px(4000.);
-        assert_eq!(preview_room(&i), PREVIEW_DRAG_MAX);
+        i.bar = bare() + crate::theme::scaled_px(600.);
+        assert_eq!(preview_room(&i), crate::theme::scaled_px(600.));
+        i.bar = crate::theme::scaled_px(300.);
+        assert_eq!(preview_room(&i), preview_min());
+        i.bar = crate::theme::scaled_px(4000.);
+        assert_eq!(preview_room(&i), preview_drag_max());
     }
 
     /// A split tab's preview keeps its width while both panes fit their bare list, then
@@ -541,22 +610,37 @@ mod tests {
     #[test]
     fn shared_preview_narrows_then_hides() {
         let mins = [bare(), bare()];
-        let window = px(1600.);
+        let window = crate::theme::scaled_px(1600.);
         let want = preview_width(window, None);
-        let wide = shared_preview(window, px(1400.), 0.5, mins, None).expect("fits");
+        let wide =
+            shared_preview(window, crate::theme::scaled_px(1400.), 0.5, mins, None).expect("fits");
         assert_eq!(wide.width, want);
-        assert_eq!(wide.reserve(), want + SHARED_GAP);
+        assert_eq!(wide.reserve(), want + shared_gap());
         // Exactly two bare lists, the gap and the minimum preview.
-        let tight = bare() * 2. + SHARED_GAP + PREVIEW_MIN;
+        let tight = bare() * 2. + shared_gap() + preview_min();
         let f = shared_preview(window, tight, 0.5, mins, None).expect("fits at its minimum");
-        assert_eq!(f.width, PREVIEW_MIN);
+        assert_eq!(f.width, preview_min());
         assert!(shared_preview(window, tight - px(1.), 0.5, mins, None).is_none());
         // An uneven divider: the narrower side decides.
-        let left = shared_preview(window, px(1400.), 0.4, mins, None).expect("fits");
-        assert_eq!(left.room, px(1400.) - SHARED_GAP - bare() / 0.4);
+        let left =
+            shared_preview(window, crate::theme::scaled_px(1400.), 0.4, mins, None).expect("fits");
+        assert_eq!(
+            left.room,
+            crate::theme::scaled_px(1400.) - shared_gap() - bare() / 0.4
+        );
         // A dragged width is kept within what the panes leave.
-        let dragged = shared_preview(window, px(1400.), 0.5, mins, Some(px(900.))).expect("fits");
-        assert_eq!(dragged.width, px(1400.) - SHARED_GAP - bare() * 2.);
+        let dragged = shared_preview(
+            window,
+            crate::theme::scaled_px(1400.),
+            0.5,
+            mins,
+            Some(crate::theme::scaled_px(900.)),
+        )
+        .expect("fits");
+        assert_eq!(
+            dragged.width,
+            crate::theme::scaled_px(1400.) - shared_gap() - bare() * 2.
+        );
         assert_eq!(dragged.width, dragged.room);
     }
 
@@ -564,16 +648,35 @@ mod tests {
     /// with the gap before it, so it ends where the last column does, whatever the pane's width.
     #[test]
     fn the_row_spans_exactly_the_columns() {
-        let rest = OTHERS.iter().fold(px(0.), |s, w| s + COL_GAP + *w);
-        for room in [px(400.), px(900.), px(2400.)] {
-            let c = columns(room, Some(px(300.)), &OTHERS);
-            assert_eq!(c.name, px(300.), "the user's width wins at {room:?}");
-            assert_eq!(c.row, ROW_PAD_L + px(300.) + rest + ROW_PAD_R);
+        let rest = OTHERS.iter().fold(px(0.), |s, w| s + col_gap() + *w);
+        for room in [
+            crate::theme::scaled_px(400.),
+            crate::theme::scaled_px(900.),
+            crate::theme::scaled_px(2400.),
+        ] {
+            let c = columns(room, Some(crate::theme::scaled_px(300.)), &OTHERS);
+            assert_eq!(
+                c.name,
+                crate::theme::scaled_px(300.),
+                "the user's width wins at {room:?}"
+            );
+            assert_eq!(
+                c.row,
+                row_pad_l() + crate::theme::scaled_px(300.) + rest + row_pad_r()
+            );
         }
         // Each column's right edge (where its divider is) moves with the columns before it only.
-        let narrow = columns(px(900.), Some(px(300.)), &OTHERS);
-        let wide = columns(px(900.), Some(px(360.)), &OTHERS);
-        assert_eq!(wide.row - narrow.row, px(60.));
+        let narrow = columns(
+            crate::theme::scaled_px(900.),
+            Some(crate::theme::scaled_px(300.)),
+            &OTHERS,
+        );
+        let wide = columns(
+            crate::theme::scaled_px(900.),
+            Some(crate::theme::scaled_px(360.)),
+            &OTHERS,
+        );
+        assert_eq!(wide.row - narrow.row, crate::theme::scaled_px(60.));
     }
 
     /// Until the user sizes it, Name takes what the other columns leave, between its bounds: a
@@ -581,30 +684,56 @@ mod tests {
     /// (and scrolls sideways). A wider or an extra column takes its room from Name.
     #[test]
     fn the_default_name_width_follows_the_room() {
-        let rest = OTHERS.iter().fold(px(0.), |s, w| s + COL_GAP + *w) + ROW_PAD_L + ROW_PAD_R;
-        let mid = columns(rest + px(380.), None, &OTHERS);
-        assert_eq!(mid.name, px(380.));
-        assert_eq!(mid.row, rest + px(380.), "fills the room exactly");
-        let wide = columns(px(2400.), None, &OTHERS);
-        assert_eq!(wide.name, theme::COL_NAME_MAX);
-        assert!(wide.row < px(2400.), "blank background after the columns");
-        let wider = [theme::COL_MODIFIED, theme::COL_TYPE, px(200.)];
-        let c = columns(rest + px(380.), None, &wider);
-        assert_eq!(c.name, px(380.) - (px(200.) - theme::COL_SIZE));
-        assert_eq!(c.row, rest + px(380.), "a wider Size still fits");
-        let more = [
-            theme::COL_MODIFIED,
-            theme::COL_MODIFIED,
-            theme::COL_TYPE,
-            theme::COL_SIZE,
-        ];
-        let c = columns(rest + px(420.), None, &more);
-        assert_eq!(c.name, px(420.) - COL_GAP - theme::COL_MODIFIED);
-        assert_eq!(c.row, rest + px(420.), "so does an extra column");
-        let narrow = columns(px(300.), None, &OTHERS);
-        assert_eq!(narrow.name, theme::COL_NAME);
+        let rest =
+            OTHERS.iter().fold(px(0.), |s, w| s + col_gap() + *w) + row_pad_l() + row_pad_r();
+        let mid = columns(rest + crate::theme::scaled_px(380.), None, &OTHERS);
+        assert_eq!(mid.name, crate::theme::scaled_px(380.));
+        assert_eq!(
+            mid.row,
+            rest + crate::theme::scaled_px(380.),
+            "fills the room exactly"
+        );
+        let wide = columns(crate::theme::scaled_px(2400.), None, &OTHERS);
+        assert_eq!(wide.name, theme::col_name_max());
         assert!(
-            narrow.row > px(300.),
+            wide.row < crate::theme::scaled_px(2400.),
+            "blank background after the columns"
+        );
+        let wider = [
+            theme::col_modified(),
+            theme::col_type(),
+            crate::theme::scaled_px(200.),
+        ];
+        let c = columns(rest + crate::theme::scaled_px(380.), None, &wider);
+        assert_eq!(
+            c.name,
+            crate::theme::scaled_px(380.) - (crate::theme::scaled_px(200.) - theme::col_size())
+        );
+        assert_eq!(
+            c.row,
+            rest + crate::theme::scaled_px(380.),
+            "a wider Size still fits"
+        );
+        let more = [
+            theme::col_modified(),
+            theme::col_modified(),
+            theme::col_type(),
+            theme::col_size(),
+        ];
+        let c = columns(rest + crate::theme::scaled_px(420.), None, &more);
+        assert_eq!(
+            c.name,
+            crate::theme::scaled_px(420.) - col_gap() - theme::col_modified()
+        );
+        assert_eq!(
+            c.row,
+            rest + crate::theme::scaled_px(420.),
+            "so does an extra column"
+        );
+        let narrow = columns(crate::theme::scaled_px(300.), None, &OTHERS);
+        assert_eq!(narrow.name, theme::col_name());
+        assert!(
+            narrow.row > crate::theme::scaled_px(300.),
             "wider than the pane: the list scrolls"
         );
     }
@@ -620,16 +749,21 @@ mod tests {
             i.wants_preview = true;
             fit(&i)
         };
-        let wide = with_preview(px(1400.));
-        assert!(wide.preview && wide.preview_w == preview_width(px(1648.), None));
-        let at = bare() + PREVIEW_W_MIN;
+        let wide = with_preview(crate::theme::scaled_px(1400.));
+        assert!(
+            wide.preview && wide.preview_w == preview_width(crate::theme::scaled_px(1648.), None)
+        );
+        let at = bare() + preview_w_min();
         let f = with_preview(at);
-        assert!(f.preview && f.preview_w == PREVIEW_W_MIN, "{f:?}");
-        let f = with_preview(at - px(10.));
-        assert!(f.preview && f.preview_w == PREVIEW_W_MIN - px(10.), "{f:?}");
-        let f = with_preview(bare() + PREVIEW_MIN);
-        assert!(f.preview && f.preview_w == PREVIEW_MIN, "{f:?}");
-        let f = with_preview(bare() + PREVIEW_MIN - px(1.));
+        assert!(f.preview && f.preview_w == preview_w_min(), "{f:?}");
+        let f = with_preview(at - crate::theme::scaled_px(10.));
+        assert!(
+            f.preview && f.preview_w == preview_w_min() - crate::theme::scaled_px(10.),
+            "{f:?}"
+        );
+        let f = with_preview(bare() + preview_min());
+        assert!(f.preview && f.preview_w == preview_min(), "{f:?}");
+        let f = with_preview(bare() + preview_min() - px(1.));
         assert!(!f.preview, "{f:?}");
         assert!(!fit(&input(1400.)).preview, "only when switched on");
     }
@@ -644,7 +778,7 @@ mod tests {
             i.details = false;
             i.columns_view = true;
             i.wants_preview = true;
-            i.parent_w = px(240.);
+            i.parent_w = crate::theme::scaled_px(240.);
             i.current_w = current.map(px);
             i
         };
@@ -656,28 +790,37 @@ mod tests {
         let f = fit(&columns(1400., None));
         assert_eq!(
             f.preview_w,
-            preview_width(px(1400.) + theme::sidebar_width(), None)
+            preview_width(
+                crate::theme::scaled_px(1400.) + theme::sidebar_width(),
+                None
+            )
         );
         // No room left for the preview's minimum: it stays at that while the list keeps its own.
         let f = fit(&columns(800., Some(400.)));
-        assert!(f.preview && f.preview_w == PREVIEW_MIN, "{f:?}");
+        assert!(f.preview && f.preview_w == preview_min(), "{f:?}");
         assert!(!fit(&columns(500., Some(400.))).preview);
         // A narrow current column is its own minimum, so a small pane keeps the preview.
         let f = fit(&columns(8. + 240. + 160. + 300., Some(160.)));
-        assert!(f.preview && f.preview_w == px(300.), "{f:?}");
+        assert!(
+            f.preview && f.preview_w == crate::theme::scaled_px(300.),
+            "{f:?}"
+        );
         // Dragging stops where the preview would go below its minimum.
         let i = columns(1400., Some(300.));
-        assert_eq!(current_room(&i), px(1400. - 8. - 240.) - PREVIEW_MIN);
+        assert_eq!(current_room(&i), px(1400. - 8. - 240.) - preview_min());
         // The parent may take room until the current column is down to its own width.
         assert_eq!(
             parent_room(&i),
-            px(1400.) - PAPER_MARGIN - px(300.) - PREVIEW_MIN
+            crate::theme::scaled_px(1400.)
+                - paper_margin()
+                - crate::theme::scaled_px(300.)
+                - preview_min()
         );
         assert_eq!(
             parent_room(&columns(1400., None)),
-            px(1400.) - ROW_CHROME - NAME_MIN - PREVIEW_MIN
+            crate::theme::scaled_px(1400.) - row_chrome() - name_min() - preview_min()
         );
-        assert_eq!(parent_room(&columns(300., None)), VIEW_COLUMN_MIN);
+        assert_eq!(parent_room(&columns(300., None)), view_column_min());
     }
 
     fn crumbs(widths: &[f32]) -> Vec<Pixels> {
@@ -688,11 +831,29 @@ mod tests {
     #[test]
     fn crumbs_show_in_full_when_they_fit() {
         let w = crumbs(&[40., 80., 80., 80., 120.]);
-        assert_eq!(collapse_crumbs(&w, px(400.), px(30.)), None);
-        assert_eq!(collapse_crumbs(&w, px(1000.), px(30.)), None);
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(400.),
+                crate::theme::scaled_px(30.)
+            ),
+            None
+        );
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(1000.),
+                crate::theme::scaled_px(30.)
+            ),
+            None
+        );
         // Two levels never collapse (there's no middle).
         assert_eq!(
-            collapse_crumbs(&crumbs(&[40., 900.]), px(100.), px(30.)),
+            collapse_crumbs(
+                &crumbs(&[40., 900.]),
+                crate::theme::scaled_px(100.),
+                crate::theme::scaled_px(30.)
+            ),
             None
         );
     }
@@ -702,13 +863,48 @@ mod tests {
     fn crumbs_collapse_from_the_middle() {
         let w = crumbs(&[40., 80., 80., 80., 80., 120.]);
         // Hiding one middle level is enough.
-        assert_eq!(collapse_crumbs(&w, px(450.), px(30.)), Some(2..3));
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(450.),
+                crate::theme::scaled_px(30.)
+            ),
+            Some(2..3)
+        );
         // Then it grows outwards, alternating, towards the drive first.
-        assert_eq!(collapse_crumbs(&w, px(370.), px(30.)), Some(1..3));
-        assert_eq!(collapse_crumbs(&w, px(300.), px(30.)), Some(1..4));
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(370.),
+                crate::theme::scaled_px(30.)
+            ),
+            Some(1..3)
+        );
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(300.),
+                crate::theme::scaled_px(30.)
+            ),
+            Some(1..4)
+        );
         // Only the drive, "…" and the current folder fit.
-        assert_eq!(collapse_crumbs(&w, px(190.), px(30.)), Some(1..5));
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(190.),
+                crate::theme::scaled_px(30.)
+            ),
+            Some(1..5)
+        );
         // Not even that: the drive goes too, leaving "… › current folder".
-        assert_eq!(collapse_crumbs(&w, px(50.), px(30.)), Some(0..5));
+        assert_eq!(
+            collapse_crumbs(
+                &w,
+                crate::theme::scaled_px(50.),
+                crate::theme::scaled_px(30.)
+            ),
+            Some(0..5)
+        );
     }
 }

@@ -403,7 +403,7 @@ pub(super) fn report_card(
 ) -> gpui::AnyElement {
     let repo = build_info::RELEASES_REPO;
     let note = cx.try_global::<ReportNote>().cloned().unwrap_or_default().0;
-    let mut actions = div().flex().flex_wrap().gap(theme::S_8);
+    let mut actions = div().flex().flex_wrap().gap(theme::s_8());
     if !repo.is_empty() {
         let workspace = cx.entity().downgrade();
         actions = actions.child(button(
@@ -454,7 +454,7 @@ pub(super) fn report_card(
         .flex()
         .flex_wrap()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(check_row(
             "report-mask",
             t!("report.mask_names"),
@@ -492,10 +492,10 @@ pub(super) fn report_card(
     let body = div()
         .flex()
         .flex_col()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(t!("report.what").to_string()),
         )
@@ -504,15 +504,15 @@ pub(super) fn report_card(
             div()
                 .id("report-preview")
                 .debug_selector(|| "report-preview".to_owned())
-                .max_h(px(280.))
+                .max_h(crate::theme::scaled_px(280.))
                 .overflow_y_scroll()
                 .track_scroll(scroll)
-                .px(theme::S_12)
-                .py(theme::S_8)
-                .rounded(theme::R_8)
+                .px(theme::s_12())
+                .py(theme::s_8())
+                .rounded(theme::r_8())
                 .bg(theme::wash())
                 .font_family("Cascadia Mono")
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted())
                 .child(SharedString::from(preview)),
             scroll,
@@ -527,15 +527,15 @@ pub(super) fn report_card(
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
-                .min_h(px(28.))
+                .gap(theme::s_8())
+                .min_h(crate::theme::scaled_px(28.))
                 .child(
                     svg()
                         .path(icon.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(color),
                 )
-                .child(div().text_size(theme::FS_12).child(text))
+                .child(div().text_size(theme::fs_12()).child(text))
         }))
         .into_any_element();
     expander(
@@ -579,23 +579,23 @@ pub(super) fn check_row(
         .aria_toggled(crate::a11y::toggled(on))
         .flex()
         .items_center()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .cursor_pointer()
-        .text_size(theme::FS_13)
+        .text_size(theme::fs_13())
         .child(
             div()
-                .size(theme::ICON)
+                .size(theme::icon())
                 .flex()
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_4)
+                .rounded(theme::r_4())
                 .border_1()
                 .when(on, |d| {
                     d.bg(theme::signal()).border_color(theme::signal()).child(
                         svg()
                             .path(Icon::Check.path())
-                            .size(theme::ICON_SM)
+                            .size(theme::icon_sm())
                             .text_color(theme::on_signal()),
                     )
                 })

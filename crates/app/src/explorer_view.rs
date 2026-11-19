@@ -48,16 +48,18 @@ use crate::workspace::TooltipBelowExt as _;
 /// It's added as blank trailing list items (see [`tail_items`]), not as bottom padding:
 /// `uniform_list` only draws rows inside its padded area, so padding would leave a blank band at
 /// the bottom of the list at every scroll position, not just after the last row.
-const LIST_TAIL: Pixels = px(96.);
+fn list_tail() -> gpui::Pixels {
+    crate::theme::scaled_px(96.)
+}
 
-/// Number of blank trailing items of height `item` that make up [`LIST_TAIL`]. The row callbacks
+/// Number of blank trailing items of height `item` that make up [`list_tail()`]. The row callbacks
 /// draw nothing for indexes past the real items, so these are just empty space.
 fn tail_items(item: Pixels) -> usize {
     if item <= px(0.) {
         return 0;
     }
     // A handful at most (3 rows, or one tile row), so the cast can't truncate.
-    (LIST_TAIL / item).ceil() as usize
+    (list_tail() / item).ceil() as usize
 }
 
 /// How long regular toasts stay before closing
@@ -65,16 +67,24 @@ const NOTICE_TTL: Duration = Duration::from_secs(5);
 /// A notice with Undo stays longer, so there's time to reach the button.
 const NOTICE_UNDO_TTL: Duration = Duration::from_secs(10);
 /// Widest the rename problem message gets before wrapping.
-const RENAME_BALLOON_W: Pixels = px(440.);
+fn rename_balloon_w() -> gpui::Pixels {
+    crate::theme::scaled_px(440.)
+}
 /// Above this many selected items the total size isn't computed (avoids a long walk on every
 /// render)
 pub(super) const SIZE_SUM_MAX: usize = 5_000;
 /// Below this pane width context bar buttons show icons only
-const COMPACT_BAR: Pixels = px(860.);
+fn compact_bar() -> gpui::Pixels {
+    crate::theme::scaled_px(860.)
+}
 /// Below this pane width "Copy to/Move to the other side" show icons only (split view)
-const PEER_LABELS_MIN: Pixels = px(600.);
+fn peer_labels_min() -> gpui::Pixels {
+    crate::theme::scaled_px(600.)
+}
 /// Scrollbar width (subtracted when computing grid columns)
-const SCROLLBAR_GUTTER: Pixels = px(12.);
+fn scrollbar_gutter() -> gpui::Pixels {
+    crate::theme::scaled_px(12.)
+}
 
 impl Explorer {
     // ───────────────────────── Top bar (on the frame) ─────────────────────────
@@ -164,21 +174,21 @@ impl Explorer {
         // The window buttons and the space after them, which the bands above and below the
         // controls leave alone (maximized, the buttons reach up to the screen edge).
         let caption_w = if show_caption {
-            theme::H_CTL * 3. + theme::S_2 * 2. + theme::S_8
+            theme::h_ctl() * 3. + theme::s_2() * 2. + theme::s_8()
         } else {
-            theme::S_8
+            theme::s_8()
         };
         let mut row = div()
             .relative()
             .flex()
             .flex_none()
             .items_center()
-            .h(theme::H_BAR)
+            .h(theme::h_bar())
             .children(Self::title_drag_bands(caption_w, cx))
             .child(self.bar_right_probe());
         for (i, control) in controls.into_iter().enumerate() {
             if i > 0 {
-                row = row.child(Self::title_drag(("title-gap", i), cx).w(theme::S_2));
+                row = row.child(Self::title_drag(("title-gap", i), cx).w(theme::s_2()));
             }
             row = row.child(control);
         }
@@ -188,11 +198,11 @@ impl Explorer {
                 d.child(
                     Self::title_drag("caption-lead", cx)
                         .debug_selector(|| "caption-lead".to_owned())
-                        .w(theme::S_8),
+                        .w(theme::s_8()),
                 )
                 .child(caption_group(window))
             })
-            .child(Self::title_drag("title-end", cx).w(theme::S_8))
+            .child(Self::title_drag("title-end", cx).w(theme::s_8()))
     }
 
     /// The search box at `width` (see [`super::top_bar`]). At the width of a button it shows only
@@ -206,7 +216,7 @@ impl Explorer {
     ) -> impl IntoElement {
         let focused = state == layout::SearchBox::Typing;
         let active = !self.query.is_empty() || self.search_mode;
-        let collapsed = width <= theme::H_CTL;
+        let collapsed = width <= theme::h_ctl();
         // Not in use but holding text: it shows from its start and ends in "…"; the tooltip has
         // all of it.
         let summary = !focused && !collapsed && !self.query.is_empty();
@@ -226,13 +236,13 @@ impl Explorer {
                 })
             })
             .when(summary, |d| d.tooltip_below(self.query.clone()))
-            .h(theme::H_CTL)
+            .h(theme::h_ctl())
             .flex()
             .items_center()
-            .gap(theme::S_6)
+            .gap(theme::s_6())
             .when(collapsed, gpui::Styled::justify_center)
-            .when(!collapsed, |d| d.pl(theme::S_12).pr(theme::S_4))
-            .rounded(theme::R_8)
+            .when(!collapsed, |d| d.pl(theme::s_12()).pr(theme::s_4()))
+            .rounded(theme::r_8())
             .border_1()
             .when(focused, |d| {
                 d.bg(theme::surface()).border_color(theme::signal_line())
@@ -247,7 +257,7 @@ impl Explorer {
             .child(
                 svg()
                     .path(Icon::Search.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .flex_none()
                     .text_color(if active {
                         theme::text_muted()
@@ -282,7 +292,7 @@ impl Explorer {
             .relative()
             .flex_none()
             .w(width)
-            .min_w(theme::H_CTL)
+            .min_w(theme::h_ctl())
             .child(filter_box)
             // While the box has focus, the scope strip shows below (this folder / subfolders / this
             // PC). It collapses once typing starts so it doesn't cover the list (Tab or the scope
@@ -303,18 +313,18 @@ impl Explorer {
         div()
             .id("filter-clear")
             .a11y_button(t!("a11y.clear_filter"))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(
                 svg()
                     .path(Icon::Close.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(theme::text_muted()),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -339,10 +349,10 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_4)
-            .h(theme::H_CTX)
-            .pl(theme::S_20)
-            .pr(theme::S_12)
+            .gap(theme::s_4())
+            .h(theme::h_ctx())
+            .pl(theme::s_20())
+            .pr(theme::s_12())
             .child(left)
             .child(vertical_divider())
             .child(self.render_view_controls(window, cx))
@@ -352,7 +362,7 @@ impl Explorer {
     /// Context bar buttons show icons only (labels move to tooltips): in split view or when the
     /// pane is narrow.
     pub(super) fn compact_bar(&self) -> bool {
-        self.pane.split || self.bar_width < COMPACT_BAR
+        self.pane.split || self.bar_width < compact_bar()
     }
 
     fn render_folder_actions(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -364,13 +374,13 @@ impl Explorer {
             .flex_1()
             .min_w_0()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(self.info_parts(cx).join(" · ")),
             )
@@ -407,7 +417,7 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             // Split panes are half width: the switcher folds into the view options button (the
             // flyout has the same choices), leaving room for Copy to/Move to.
             .when(!self.pane.split, |d| {
@@ -416,9 +426,9 @@ impl Explorer {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_2)
-                    .p(theme::S_2)
-                    .rounded(theme::R_8)
+                    .gap(theme::s_2())
+                    .p(theme::s_2())
+                    .rounded(theme::r_8())
                     // Same segmented style as the search scope strip: a recessed track with the
                     // current view as a raised pill.
                     .bg(theme::segment_track())
@@ -487,19 +497,19 @@ impl Explorer {
             .flex_1()
             .min_w_0()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .overflow_hidden()
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_8)
-                    .mr(theme::S_4)
+                    .gap(theme::s_8())
+                    .mr(theme::s_4())
                     .font_weight(theme::FW_STRONG)
                     .child(
                         div()
-                            .size(theme::S_6)
+                            .size(theme::s_6())
                             .rounded(theme::R_FULL)
                             .bg(theme::signal()),
                     )
@@ -578,7 +588,7 @@ impl Explorer {
     /// down to "…" says nothing.
     fn render_peer_actions(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let peer = self.peer_target()?.to_path_buf();
-        let labels = self.paper_width >= PEER_LABELS_MIN;
+        let labels = self.paper_width >= peer_labels_min();
         let name = peer.file_name().map_or_else(
             || peer.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -588,7 +598,7 @@ impl Explorer {
                 .flex()
                 .min_w_0()
                 .items_center()
-                .gap(theme::S_4)
+                .gap(theme::s_4())
                 .child(peer_button(
                     "sel-copy-peer",
                     Icon::Copy,
@@ -778,9 +788,9 @@ impl Explorer {
             .h(height)
             .flex()
             .items_center()
-            .pl(layout::ROW_PAD_L)
-            .pr(layout::ROW_PAD_R)
-            .gap(layout::COL_GAP)
+            .pl(layout::row_pad_l())
+            .pr(layout::row_pad_r())
+            .gap(layout::col_gap())
     }
 
     /// Shared by rows and tiles: selection background, cursor ring, mouse events.
@@ -842,7 +852,7 @@ impl Explorer {
                     drop_external_into(paths, external.clone(), &target, window, cx);
                 })
             })
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .border_1()
             .border_color(if is_cursor && focused {
                 theme::signal_line()
@@ -906,7 +916,7 @@ impl Explorer {
             .min_w_0()
             .flex()
             .items_center()
-            .gap(theme::S_12)
+            .gap(theme::s_12())
             .child(name_cell(
                 entry,
                 rename_input,
@@ -926,7 +936,7 @@ impl Explorer {
         div()
             .flex()
             .items_center()
-            .gap(layout::COL_GAP)
+            .gap(layout::col_gap())
             .map(|d| match self.cols {
                 Some(c) => d.w(c.name).flex_none(),
                 None => d.flex_1().min_w_0(),
@@ -998,7 +1008,7 @@ impl Explorer {
                             .child(self.tree_lead(
                                 ix,
                                 entry,
-                                listed_visual(shares, entry, image, theme::ICON, theme::ICON),
+                                listed_visual(shares, entry, image, theme::icon(), theme::icon()),
                                 cx,
                             ))
                             .child(self.name_column(
@@ -1104,7 +1114,7 @@ impl Explorer {
                 // Two lines can't fit (long name with no break points): ellipsize the second line
                 // rather than clipping the sides.
                 .text_ellipsis()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .child(shown_name(entry, self.show_extensions))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -1161,16 +1171,16 @@ impl Explorer {
                             .map(|badge| {
                                 div()
                                     .absolute()
-                                    .top(theme::S_4)
-                                    .right(theme::S_4)
+                                    .top(theme::s_4())
+                                    .right(theme::s_4())
                                     .child(badge)
                             });
                         // Checkbox in the tile's top-left
                         let check = self.show_checkboxes.then(|| {
                             div()
                                 .absolute()
-                                .top(theme::S_6)
-                                .left(theme::S_6)
+                                .top(theme::s_6())
+                                .left(theme::s_6())
                                 .child(self.item_checkbox(ix, is_selected, cx))
                         });
                         Self::item_shell(ix, is_selected, is_cursor, focused, self.drop_dir(ix), cx)
@@ -1187,9 +1197,9 @@ impl Explorer {
                             .flex()
                             .flex_col()
                             .items_center()
-                            .pt(theme::S_4)
-                            .px(theme::S_4)
-                            .gap(theme::S_4)
+                            .pt(theme::s_4())
+                            .px(theme::s_4())
+                            .gap(theme::s_4())
                             .when(entry.is_hidden(), |d| d.text_color(theme::text_subtle()))
                             .when(cut.get(k).copied().unwrap_or(false), |d| d.opacity(0.5))
                             .child(
@@ -1209,7 +1219,7 @@ impl Explorer {
                     .collect();
                 div()
                     .flex()
-                    .px(theme::S_8)
+                    .px(theme::s_8())
                     .children(tiles)
                     .into_any_element()
             })
@@ -1219,8 +1229,11 @@ impl Explorer {
     fn grid_list(&mut self, len: usize, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         // Pane width (preview pane already excluded) minus paper margin, list padding and
         // scrollbar.
-        let avail =
-            self.pane_width - theme::S_8 - theme::S_32 - SCROLLBAR_GUTTER - layout::LIST_GUTTER;
+        let avail = self.pane_width
+            - theme::s_8()
+            - theme::s_32()
+            - scrollbar_gutter()
+            - layout::list_gutter();
         let tile = self.tile();
         self.grid_cols = ((avail / tile.w).floor() as usize).max(1);
         if std::mem::take(&mut self.recenter_grid)
@@ -1247,7 +1260,7 @@ impl Explorer {
         .track_scroll(&self.scroll)
         // A sideways swipe is back or forward (#70), not a scroll down the list.
         .map(sideways_is_not_down)
-        .pt(theme::S_4)
+        .pt(theme::s_4())
         .flex_1();
         self.with_scrollbar(list, &self.scroll)
     }
@@ -1271,15 +1284,15 @@ impl Explorer {
         .track_scroll(&self.scroll)
         // A sideways swipe is back or forward (#70), not a scroll down the list.
         .map(sideways_is_not_down)
-        .pl(theme::S_8)
-        .pr(theme::S_8 + layout::LIST_GUTTER)
+        .pl(theme::s_8())
+        .pr(theme::s_8() + layout::list_gutter())
         .flex_1();
         self.with_scrollbars(list, &self.scroll)
     }
 
     /// [`Self::with_scrollbar`] for Details rows and search results: columns wider than the pane
     /// scroll sideways (the header along), like Explorer, with a scrollbar along the bottom. The
-    /// list's right padding keeps [`layout::LIST_GUTTER`] blank after the last column even then.
+    /// list's right padding keeps [`layout::list_gutter()`] blank after the last column even then.
     fn with_scrollbars(
         &self,
         list: gpui::UniformList,
@@ -1337,7 +1350,7 @@ impl Explorer {
     ) -> AnyElement {
         let icon = svg()
             .path(Icon::Search.path())
-            .size(theme::S_32)
+            .size(theme::s_32())
             .text_color(theme::text_subtle())
             .into_any_element();
         let widen = if self.query.trim().is_empty() {
@@ -1364,17 +1377,17 @@ impl Explorer {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(theme::S_8)
+            .gap(theme::s_8())
             .child(div().opacity(0.7).child(icon))
             .child(
                 div()
-                    .text_size(theme::FS_15)
+                    .text_size(theme::fs_15())
                     .text_color(theme::text_muted())
                     .child(title),
             )
             .children(hint.map(|h| {
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(h)
             }))
@@ -1396,17 +1409,17 @@ impl Explorer {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(theme::S_8)
-            .px(theme::S_32)
+            .gap(theme::s_8())
+            .px(theme::s_32())
             .child(
                 svg()
                     .path(Icon::Close.path())
-                    .size(theme::S_24)
+                    .size(theme::s_24())
                     .text_color(theme::danger()),
             )
             .child(
                 div()
-                    .text_size(theme::FS_15)
+                    .text_size(theme::fs_15())
                     .font_weight(theme::FW_STRONG)
                     .child(t!("list.failed_title", name = name).into_owned()),
             )
@@ -1419,7 +1432,7 @@ impl Explorer {
             .child(
                 div()
                     .max_w_full()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -1429,8 +1442,8 @@ impl Explorer {
             .child(
                 div()
                     .flex()
-                    .gap(theme::S_8)
-                    .mt(theme::S_8)
+                    .gap(theme::s_8())
+                    .mt(theme::s_8())
                     .child(outline_button(
                         "failed-retry",
                         if login {
@@ -1519,14 +1532,14 @@ impl Explorer {
                     // after the name.
                     .child(
                         self.name_block()
-                            .child(entry_visual(entry, None, theme::ICON, theme::ICON))
+                            .child(entry_visual(entry, None, theme::icon(), theme::icon()))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .flex()
                                     .items_center()
-                                    .gap(theme::S_12)
+                                    .gap(theme::s_12())
                                     .child(
                                         div()
                                             .debug_selector({
@@ -1534,7 +1547,7 @@ impl Explorer {
                                                 move || format!("name:{name}")
                                             })
                                             .when(hit.snippet.is_some(), |d| {
-                                                d.flex_none().max_w(px(240.))
+                                                d.flex_none().max_w(crate::theme::scaled_px(240.))
                                             })
                                             .min_w_0()
                                             .truncate()
@@ -1545,7 +1558,7 @@ impl Explorer {
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(theme::FS_12)
+                                            .text_size(theme::fs_12())
                                             .text_color(theme::text_muted())
                                             .child(SharedString::from(line))
                                     })),
@@ -1553,13 +1566,13 @@ impl Explorer {
                     )
                     .child(
                         div()
-                            .w(theme::COL_LOCATION)
+                            .w(theme::col_location())
                             .flex_none()
                             // Keep the end of long paths (the folders nearest the file).
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis_start()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_muted())
                             .child(location),
                     )
@@ -1567,7 +1580,7 @@ impl Explorer {
                         div()
                             .w(crate::prefs::modified_width())
                             .flex_none()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_muted())
                             .child(
                                 entry
@@ -1615,8 +1628,8 @@ impl Explorer {
                     .track_scroll(&self.search_scroll)
                     // A sideways swipe is back or forward (#70), not a scroll down the list.
                     .map(sideways_is_not_down)
-                    .pl(theme::S_8)
-                    .pr(theme::S_8 + layout::LIST_GUTTER)
+                    .pl(theme::s_8())
+                    .pr(theme::s_8() + layout::list_gutter())
                     .flex_1();
                     self.with_scrollbars(list, &self.search_scroll)
                 }
@@ -1639,13 +1652,17 @@ impl Explorer {
                     if view_len == Some(0) && model.complete && lists_shares(Some(&model.path)) =>
                 {
                     Self::empty_state(
-                        crate::assets::tinted(Icon::NetDrive, px(40.), theme::text_muted()),
+                        crate::assets::tinted(
+                            Icon::NetDrive,
+                            crate::theme::scaled_px(40.),
+                            theme::text_muted(),
+                        ),
                         t!("list.no_shares").into_owned(),
                         None,
                     )
                 }
                 Some(model) if view_len == Some(0) && model.complete => Self::empty_state(
-                    kind_icon(FileKind::Folder, px(40.)),
+                    kind_icon(FileKind::Folder, crate::theme::scaled_px(40.)),
                     t!("list.empty").into_owned(),
                     Some(t!("list.empty_hint").into_owned()),
                 ),
@@ -1668,7 +1685,7 @@ impl Explorer {
                                     .flex_col()
                                     .flex_1()
                                     .min_w_0()
-                                    .pt(theme::S_4)
+                                    .pt(theme::s_4())
                                     .child(list),
                             )
                             .child(self.render_parent_divider(cx))
@@ -1706,7 +1723,7 @@ impl Explorer {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .pb(theme::S_8)
+            .pb(theme::s_8())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
@@ -1991,12 +2008,12 @@ impl Explorer {
         Some(
             div()
                 .absolute()
-                .right(theme::S_16)
-                .bottom(theme::S_16)
-                .w(px(360.))
+                .right(theme::s_16())
+                .bottom(theme::s_16())
+                .w(crate::theme::scaled_px(360.))
                 .flex()
                 .flex_col()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .children(toasts)
                 .into_any_element(),
         )
@@ -2058,9 +2075,9 @@ impl Explorer {
         Some(
             div()
                 .absolute()
-                .right(theme::S_16)
-                .bottom(theme::S_16)
-                .w(px(360.))
+                .right(theme::s_16())
+                .bottom(theme::s_16())
+                .w(crate::theme::scaled_px(360.))
                 .flex()
                 .flex_col()
                 .child(crate::motion::leave(
@@ -2164,10 +2181,10 @@ fn toast_body(
     toast
         .flex()
         .flex_col()
-        .gap(theme::S_8)
-        .px(theme::S_16)
-        .py(theme::S_12)
-        .rounded(theme::R_12)
+        .gap(theme::s_8())
+        .px(theme::s_16())
+        .py(theme::s_12())
+        .rounded(theme::r_12())
         .bg(if danger {
             theme::danger_surface()
         } else {
@@ -2178,8 +2195,8 @@ fn toast_body(
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
-                .child(glyph.size(theme::ICON).flex_none())
+                .gap(theme::s_8())
+                .child(glyph.size(theme::icon()).flex_none())
                 .child(div().flex_1().min_w_0().line_clamp(4).child(text))
                 .children(
                     actions
@@ -2191,10 +2208,10 @@ fn toast_body(
                                 .debug_selector(move || format!("{id}-action-{ix}"))
                                 .a11y_button(label.to_string())
                                 .flex_none()
-                                .px(theme::S_6)
-                                .rounded(theme::R_4)
+                                .px(theme::s_6())
+                                .rounded(theme::r_4())
                                 .cursor_pointer()
-                                .text_size(theme::FS_12)
+                                .text_size(theme::fs_12())
                                 .text_color(theme::text_muted())
                                 .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
                                 .child(label.to_string())
@@ -2212,7 +2229,7 @@ fn toast_body(
                 div()
                     .id("toast-progress")
                     .a11y_progress(known)
-                    .h(theme::S_4)
+                    .h(theme::s_4())
                     .w_full()
                     .rounded(theme::R_FULL)
                     .bg(theme::line())
@@ -2238,11 +2255,11 @@ pub(crate) fn tooltip(
 
 fn kbd(text: &'static str) -> impl IntoElement {
     div()
-        .px(theme::S_4)
-        .rounded(theme::R_4)
+        .px(theme::s_4())
+        .rounded(theme::r_4())
         .border_1()
         .border_color(theme::line_strong())
-        .text_size(theme::FS_11)
+        .text_size(theme::fs_11())
         .text_color(theme::text_subtle())
         .child(text)
 }
@@ -2250,8 +2267,8 @@ fn kbd(text: &'static str) -> impl IntoElement {
 fn vertical_divider() -> impl IntoElement {
     div()
         .w(px(1.))
-        .h(theme::S_16)
-        .mx(theme::S_4)
+        .h(theme::s_16())
+        .mx(theme::s_4())
         .flex_none()
         .bg(theme::line())
 }
@@ -2281,12 +2298,12 @@ pub(crate) fn ghost_button_turned(
         .id(id)
         .a11y_button(tip.clone())
         .a11y_disabled(!enabled)
-        .size(theme::H_CTL)
+        .size(theme::h_ctl())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .when(enabled, |d| {
             d.cursor_pointer()
                 .hover(|s| s.bg(theme::wash_strong()))
@@ -2295,7 +2312,7 @@ pub(crate) fn ghost_button_turned(
         .child(
             svg()
                 .path(icon.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .with_transformation(gpui::Transformation::rotate(gpui::radians(turn)))
                 .text_color(if enabled {
                     theme::text_muted()
@@ -2325,15 +2342,15 @@ fn action_button(
         .id(id)
         .a11y_button(label.clone())
         .group(id)
-        .h(theme::H_CTL_SM)
-        .px(theme::S_8)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_8())
         .flex()
         .flex_none()
         .items_center()
-        .gap(theme::S_6)
-        .rounded(theme::R_8)
+        .gap(theme::s_6())
+        .rounded(theme::r_8())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .hover(|s| {
             let s = s.bg(theme::wash());
@@ -2346,7 +2363,7 @@ fn action_button(
         .child(
             svg()
                 .path(icon.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_muted())
                 .group_hover(id, move |s| {
                     s.text_color(if danger {
@@ -2357,7 +2374,7 @@ fn action_button(
                 }),
         )
         // At half width keep only the icon and move the label to the tooltip.
-        .when(compact, |d| d.px(theme::S_6).tooltip_below(label.clone()))
+        .when(compact, |d| d.px(theme::s_6()).tooltip_below(label.clone()))
         .when(!compact, |d| d.child(label.clone()))
         .on_click(on_click)
 }
@@ -2370,21 +2387,21 @@ fn clear_selection_button(
     div()
         .id("sel-clear")
         .a11y_button(t!("sel.clear"))
-        .h(theme::H_CTL_SM)
-        .px(theme::S_8)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_8())
         .flex()
         .flex_none()
         .items_center()
-        .gap(theme::S_6)
-        .rounded(theme::R_8)
+        .gap(theme::s_6())
+        .rounded(theme::r_8())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
         .child(
             svg()
                 .path(Icon::Close.path())
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(theme::text_subtle()),
         )
         .when(!compact, |d| {
@@ -2403,16 +2420,16 @@ fn outline_button(
     div()
         .id(id)
         .a11y_lazy(gpui::Role::Button, || label.to_string())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line_strong())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .hover(|s| s.bg(theme::wash()))
         .child(label.to_string())
         .on_click(on_click)
@@ -2444,19 +2461,19 @@ fn preview_button(on: bool, cx: &mut Context<Explorer>) -> impl IntoElement + us
     div()
         .id("toggle-preview")
         .a11y_toggle(t!("ctx.preview"), on)
-        .h(theme::H_CTL_SM)
-        .px(theme::S_6)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_6())
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(on, |d| d.bg(theme::wash_strong()))
         .when(!on, |d| d.hover(|s| s.bg(theme::wash())))
         .child(
             svg()
                 .path(Icon::Preview.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(if on {
                     theme::text()
                 } else {
@@ -2486,12 +2503,12 @@ fn split_button(
             },
             split,
         )
-        .h(theme::H_CTL_SM)
-        .px(theme::S_6)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_6())
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(split, |d| d.bg(theme::wash_strong()))
         .when(!split, |d| d.hover(|s| s.bg(theme::wash())))
@@ -2499,7 +2516,7 @@ fn split_button(
         .child(
             svg()
                 .path(Icon::Split.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(if split {
                     theme::text()
                 } else {
@@ -2524,25 +2541,25 @@ fn peer_button(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .h(theme::H_CTL_SM)
-        .px(theme::S_8)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_8())
         .flex()
         // Truncate the folder name when space is short so the button isn't squeezed out.
-        .when(show_label, |d| d.flex_shrink(1.).min_w(theme::S_32))
+        .when(show_label, |d| d.flex_shrink(1.).min_w(theme::s_32()))
         .when(!show_label, gpui::Styled::flex_none)
         .items_center()
-        .gap(theme::S_6)
-        .rounded(theme::R_8)
+        .gap(theme::s_6())
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::signal_line())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text())
         .hover(|s| s.bg(theme::signal_wash()))
         .child(
             svg()
                 .path(icon.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .flex_none()
                 .text_color(theme::signal()),
         )
@@ -2565,12 +2582,12 @@ fn segment(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .w(px(28.))
-        .h(super::viewopts::SEGMENT_H)
+        .w(crate::theme::scaled_px(28.))
+        .h(super::viewopts::segment_h())
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
         .when(active, |d| {
             d.bg(theme::segment_thumb()).shadow(theme::elev_thumb())
@@ -2580,7 +2597,7 @@ fn segment(
         .child(
             svg()
                 .path(icon.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(if active {
                     theme::text()
                 } else {
@@ -2597,14 +2614,14 @@ fn segment(
 /// snap layouts menu. Maximized, they also take the screen edge above them and Close the corner
 /// (`caption.rs`).
 pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
-    caption_group(window).pl(theme::S_8)
+    caption_group(window).pl(theme::s_8())
 }
 
 /// [`caption_buttons`] without the space before them (the title row makes that space a drag
 /// area).
 fn caption_group(window: &Window) -> gpui::Div {
     let maximized = window.is_maximized();
-    let gap = theme::S_2;
+    let gap = theme::s_2();
     let button = |id: &'static str, icon: Icon, area: WindowControlArea, close: bool| {
         div()
             .id(id)
@@ -2615,12 +2632,12 @@ fn caption_group(window: &Window) -> gpui::Div {
                 _ => t!("window.close"),
             })
             .group(id)
-            .size(theme::H_CTL)
+            .size(theme::h_ctl())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .window_control_area(area)
             .when(!close, |d| d.hover(|s| s.bg(theme::wash_strong())))
             .when(close, |d| d.hover(|s| s.bg(theme::danger())))
@@ -2628,7 +2645,7 @@ fn caption_group(window: &Window) -> gpui::Div {
             .child(
                 svg()
                     .path(icon.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .text_color(if close && crate::caption::close_edge_hovered() {
                         theme::on_signal()
                     } else {
@@ -2684,7 +2701,9 @@ pub(crate) fn shown_name(entry: &Entry, show_ext: bool) -> SharedString {
 }
 
 /// Space between the rename box's edge and its text: its padding plus the 1 px border.
-const RENAME_INSET: Pixels = px(4. + 1.);
+fn rename_inset() -> gpui::Pixels {
+    crate::theme::scaled_px(4. + 1.)
+}
 
 /// Names of the entries in `range` (indexes past the end are skipped).
 fn names_in(entries: &[Entry], range: Range<usize>) -> Vec<Arc<str>> {
@@ -2722,17 +2741,17 @@ fn name_cell(
             .relative()
             .map(|d| {
                 if in_row {
-                    d.flex_1().ml(-RENAME_INSET)
+                    d.flex_1().ml(-rename_inset())
                 } else {
                     d.w_full().flex_none()
                 }
             })
             .min_w_0()
-            .h(theme::S_24)
-            .px(RENAME_INSET - px(1.))
+            .h(theme::s_24())
+            .px(rename_inset() - px(1.))
             .flex()
             .items_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .bg(theme::surface())
             .border_1()
             .border_color(if problem.is_some() {
@@ -2778,22 +2797,22 @@ fn rename_balloon(problem: NameError) -> impl IntoElement {
     div().absolute().left_0().bottom_0().child(
         deferred(
             anchored()
-                .offset(gpui::point(px(0.), theme::S_4))
-                .snap_to_window_with_margin(theme::S_8)
+                .offset(gpui::point(px(0.), theme::s_4()))
+                .snap_to_window_with_margin(theme::s_8())
                 .child(
                     div()
                         .id("rename-problem")
                         .a11y_live(gpui::Role::Alert, problem.to_string())
                         .occlude()
-                        .max_w(RENAME_BALLOON_W)
-                        .px(theme::S_8)
-                        .py(theme::S_6)
-                        .rounded(theme::R_8)
+                        .max_w(rename_balloon_w())
+                        .px(theme::s_8())
+                        .py(theme::s_6())
+                        .rounded(theme::r_8())
                         .bg(theme::overlay())
                         .shadow(theme::elev_float())
                         .border_1()
                         .border_color(theme::danger())
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text())
                         .whitespace_normal()
                         .child(problem.to_string()),
@@ -2855,7 +2874,7 @@ fn plain_visual(
         return img(image)
             .size(size)
             .flex_none()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .object_fit(ObjectFit::Contain)
             .into_any_element();
     }
@@ -2875,7 +2894,7 @@ pub(crate) fn kind_icon(kind: FileKind, size: Pixels) -> AnyElement {
             .text_color(color)
     };
     let base = div().relative().size(size).flex_none();
-    let small = size <= SMALL_ICON;
+    let small = size <= small_icon();
     if kind == FileKind::Folder {
         let (back, front) = theme::folder_colors();
         if small {
@@ -2922,7 +2941,9 @@ pub(crate) fn kind_icon(kind: FileKind, size: Pixels) -> AnyElement {
 }
 
 /// Icons at or below this size count as small (list, Ctrl+T, menus)
-const SMALL_ICON: Pixels = px(20.);
+fn small_icon() -> gpui::Pixels {
+    crate::theme::scaled_px(20.)
+}
 /// Glyph scale for small icons
 const GLYPH_ZOOM: f32 = 1.25;
 
@@ -3047,7 +3068,7 @@ impl Render for Explorer {
             .flex_col()
             .text_color(theme::text())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::go_up))
@@ -3096,8 +3117,8 @@ impl Render for Explorer {
                     .flex_1()
                     .min_h_0()
                     .mr(self.paper_margin_right())
-                    .mb(theme::S_8)
-                    .rounded(theme::R_12)
+                    .mb(theme::s_8())
+                    .rounded(theme::r_12())
                     .bg(theme::paper())
                     .shadow(if self.pane.split && self.pane.active {
                         theme::elev_2_active()
@@ -3149,9 +3170,9 @@ impl Explorer {
     /// shared preview too (the pane's box runs on under it).
     fn paper_margin_right(&self) -> Pixels {
         if self.pane.trailing {
-            theme::S_8 + self.pane.reserve
+            theme::s_8() + self.pane.reserve
         } else {
-            theme::S_8
+            theme::s_8()
         }
     }
 
@@ -3195,7 +3216,7 @@ impl Explorer {
             preview_user: crate::prefs::preview_width(),
             parent_w: Self::parent_column_width(),
             current_w: crate::prefs::view_column_width(crate::prefs::ViewColumn::Current),
-            location_w: theme::COL_LOCATION,
+            location_w: theme::col_location(),
             col_w: crate::prefs::Col::ALL.map(|col| {
                 // Search results always show modified and size.
                 let on = match col {
@@ -3267,7 +3288,7 @@ impl Explorer {
                 frame
                     .items_center()
                     .justify_center()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(t!("preview.in_last_column").to_string())
                     .into_any_element(),
@@ -3292,7 +3313,7 @@ impl Explorer {
                 .relative()
                 .size_full()
                 .flex()
-                .rounded(theme::R_12)
+                .rounded(theme::r_12())
                 .bg(theme::paper())
                 .shadow(theme::elev_2())
                 .children(contents)
@@ -3343,7 +3364,7 @@ fn backdrop_layer() -> Option<impl IntoElement> {
             .top_0()
             .left_0()
             .size_full()
-            .rounded(theme::R_12)
+            .rounded(theme::r_12())
             .overflow_hidden()
             .opacity(opacity)
             .child(
@@ -3363,7 +3384,7 @@ pub(super) fn date_cell(
     div()
         .w(width)
         .flex_none()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(time.map_or_default(|t| {
             if crate::prefs::full_dates() {
@@ -3414,7 +3435,12 @@ fn cloud_badge(
             .id(("cloud-badge", ix))
             .flex_none()
             .tooltip(tooltip(tip.into_owned()))
-            .child(svg().path(icon.path()).size(theme::ICON).text_color(color)),
+            .child(
+                svg()
+                    .path(icon.path())
+                    .size(theme::icon())
+                    .text_color(color),
+            ),
     )
 }
 

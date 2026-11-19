@@ -491,6 +491,10 @@ pub(crate) struct Settings {
     pub(crate) background_image: Option<PathBuf>,
     /// Background image opacity in percent.
     pub(crate) background_opacity: u8,
+    /// Interface scale in percent (80..=150), on top of the Windows DPI scale.
+    pub(crate) ui_scale: u32,
+    /// Dragged sidebar width at 100% scale; 0 is the default width.
+    pub(crate) sidebar_width: f32,
     /// Show hidden items (Ctrl+H, applies to all tabs).
     pub(crate) show_hidden: bool,
     pub(crate) start_location: StartLocation,
@@ -653,6 +657,8 @@ impl Default for Settings {
             font: String::new(),
             background_image: None,
             background_opacity: 20,
+            ui_scale: 100,
+            sidebar_width: 0.,
             show_hidden: false,
             start_location: StartLocation::default(),
             show_extensions: true,

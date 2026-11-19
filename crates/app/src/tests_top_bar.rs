@@ -61,14 +61,14 @@ fn the_search_box_grows_with_its_text_and_steps_aside_for_the_path(cx: &mut Test
     let idle = |cx: &mut VisualTestContext| {
         let path = bounds(cx, "path-bar");
         let search = bounds(cx, "filter-box");
-        assert!(near(search.size.width, theme::FILTER_W), "usual width");
+        assert!(near(search.size.width, theme::filter_w()), "usual width");
         // The path bar runs up to the search box, which ends where the space before the window buttons starts.
-        assert!(search.left() - path.right() <= theme::S_8 + px(1.));
+        assert!(search.left() - path.right() <= theme::s_8() + px(1.));
         assert!(search.right() <= gap.left() + px(0.5));
         path
     };
     assert!(
-        near(gap.size.width, theme::S_8),
+        near(gap.size.width, theme::s_8()),
         "just the usual spacing before the window buttons"
     );
     let wide_path = idle(cx);
@@ -92,7 +92,7 @@ fn the_search_box_grows_with_its_text_and_steps_aside_for_the_path(cx: &mut Test
     assert!(near(search.size.width, px(560.)), "{search:?}");
     assert!(near(
         path.size.width,
-        wide_path.size.width - (px(560.) - theme::FILTER_W)
+        wide_path.size.width - (px(560.) - theme::filter_w())
     ));
     assert!(
         cx.debug_bounds("crumb-5").is_some(),
@@ -131,7 +131,7 @@ fn the_magnifier_focuses_search_on_the_press(cx: &mut TestAppContext) {
     cx.dispatch_action(FocusPathBar);
     settle(cx);
     let magnifier = bounds(cx, "filter-box");
-    assert!(near(magnifier.size.width, theme::H_CTL), "{magnifier:?}");
+    assert!(near(magnifier.size.width, theme::h_ctl()), "{magnifier:?}");
 
     let at = magnifier.center();
     cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
@@ -164,12 +164,12 @@ fn a_narrow_window_keeps_every_minimum(cx: &mut TestAppContext) {
     assert!(search.size.width >= px(120.), "search box {search:?}");
     assert!(path.right() <= search.left());
     assert!(search.right() <= gap.left() + px(0.5));
-    assert!(near(gap.size.width, theme::S_8));
+    assert!(near(gap.size.width, theme::s_8()));
     // The narrow bar gives its room to "… › reports", not to the trailing › and blank end.
     let current = bounds(cx, "crumb-5");
     assert!(current.size.width >= px(60.), "current folder {current:?}");
     // Three window buttons fit after that space.
-    assert!(gap.right() + theme::H_CTL * 3. <= px(800.));
+    assert!(gap.right() + theme::h_ctl() * 3. <= px(800.));
 }
 
 #[gpui::test]
@@ -186,7 +186,7 @@ fn horizontal_tabs_put_the_search_box_after_the_path_bar(cx: &mut TestAppContext
     settle(cx);
     let path = bounds(cx, "path-bar");
     let search = bounds(cx, "filter-box");
-    assert!(near(search.size.width, theme::FILTER_W));
+    assert!(near(search.size.width, theme::filter_w()));
     assert!(path.right() <= search.left());
     assert!(search.right() <= px(1000.));
     // The tab strip has the window buttons and its own drag space.
@@ -460,6 +460,6 @@ fn the_search_box_lines_up_with_the_preview_divider(cx: &mut TestAppContext) {
     preview(cx, None);
     settle(cx);
     assert!(cx.debug_bounds("preview-pane").is_none());
-    assert!(near(bounds(cx, "filter-box").size.width, theme::FILTER_W));
-    assert!(near(bounds(cx, "path-search-gap").size.width, theme::S_8));
+    assert!(near(bounds(cx, "filter-box").size.width, theme::filter_w()));
+    assert!(near(bounds(cx, "path-search-gap").size.width, theme::s_8()));
 }

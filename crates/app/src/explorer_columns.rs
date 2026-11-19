@@ -31,7 +31,9 @@ use crate::prefs::ViewColumn;
 use crate::theme;
 
 /// Default width of the left (parent) column
-pub(super) const PARENT_W: Pixels = px(240.);
+pub(super) fn parent_w() -> gpui::Pixels {
+    crate::theme::scaled_px(240.)
+}
 /// Fitting measures at most this many names, the longest by character count: enough to find the
 /// widest one without shaping every name of a huge folder.
 const FIT_CANDIDATES: usize = 256;
@@ -168,12 +170,12 @@ impl Explorer {
                         d.tooltip(super::view::tooltip(SharedString::from(&*entry.name)))
                     })
                     .relative()
-                    .h(theme::H_ROW_COMPACT)
-                    .px(theme::S_8)
+                    .h(theme::h_row_compact())
+                    .px(theme::s_8())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
-                    .rounded(theme::R_8)
+                    .gap(theme::s_8())
+                    .rounded(theme::r_8())
                     .cursor_pointer()
                     // The folder shown on the right: neutral selection (focus is there).
                     .when(current, |d| d.bg(theme::selection()))
@@ -187,8 +189,8 @@ impl Explorer {
                         shares,
                         entry,
                         images.get(ix - start).cloned().flatten(),
-                        theme::ICON,
-                        theme::ICON,
+                        theme::icon(),
+                        theme::icon(),
                     ))
                     .child(
                         div()
@@ -225,7 +227,7 @@ impl Explorer {
             .h_full()
             .flex()
             .flex_col()
-            .pt(theme::S_4)
+            .pt(theme::s_4())
             .border_r_1()
             .border_color(theme::line());
         let Some(parent) = &self.parent_column else {
@@ -235,7 +237,7 @@ impl Explorer {
             return column
                 .items_center()
                 .justify_center()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(rust_i18n::t!("info.loading").to_string())
                 .into_any_element();
@@ -250,7 +252,7 @@ impl Explorer {
                     }),
                 )
                 .track_scroll(&parent.scroll)
-                .px(theme::S_8)
+                .px(theme::s_8())
                 .flex_1(),
             )
             .into_any_element()
@@ -263,7 +265,7 @@ impl Explorer {
 
     /// Width of the parent column: what the user gave it, or the default.
     pub(super) fn parent_column_width() -> Pixels {
-        crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or(PARENT_W)
+        crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or(parent_w())
     }
 
     /// Width the parent column is drawn at: [`Self::parent_column_width`], but no more than this
@@ -301,7 +303,7 @@ impl Explorer {
         width: Pixels,
         cx: &mut Context<Self>,
     ) {
-        let width = width.clamp(layout::VIEW_COLUMN_MIN, self.view_column_room(col));
+        let width = width.clamp(layout::view_column_min(), self.view_column_room(col));
         crate::prefs::set_view_column_width(col, Some(width));
         self.view_column_resized = Some(col);
         cx.notify();
@@ -338,9 +340,9 @@ impl Explorer {
             ViewColumn::Current => self.current_row_chrome(true),
         };
         // A little air so subpixel rounding never truncates the widest name.
-        let width = (chrome + widest + theme::S_4)
+        let width = (chrome + widest + theme::s_4())
             .ceil()
-            .clamp(layout::VIEW_COLUMN_MIN, layout::VIEW_COLUMN_FIT_MAX)
+            .clamp(layout::view_column_min(), layout::view_column_fit_max())
             .min(self.view_column_room(col));
         log::info!("column view fit: {col:?} {width:?}");
         crate::prefs::set_view_column_width(col, Some(width));
@@ -364,13 +366,13 @@ impl Explorer {
     /// Room a current column row takes besides its name: the list's padding and gutter, the row's
     /// padding, the checkbox and icon, and the folder arrow (`chevron`).
     fn current_row_chrome(&self, chevron: bool) -> Pixels {
-        let mut w = theme::S_8 * 2.
-            + layout::LIST_GUTTER
-            + layout::ROW_PAD_L
-            + layout::ROW_PAD_R
+        let mut w = theme::s_8() * 2.
+            + layout::list_gutter()
+            + layout::row_pad_l()
+            + layout::row_pad_r()
             + self.name_lead(None);
         if chevron {
-            w += layout::COL_GAP + theme::ICON_SM;
+            w += layout::col_gap() + theme::icon_sm();
         }
         w
     }
@@ -392,10 +394,10 @@ impl Explorer {
                 let mut room = width - self.current_row_chrome(Self::column_row_tail_shown(entry));
                 // The sync or compare badge after the name, roughly.
                 if in_cloud {
-                    room -= theme::S_12 + theme::ICON;
+                    room -= theme::s_12() + theme::icon();
                 }
                 if self.compare_mark(&entry.name).is_some() {
-                    room -= theme::S_12 + px(64.);
+                    room -= theme::s_12() + crate::theme::scaled_px(64.);
                 }
                 name_width(
                     window,
@@ -420,8 +422,8 @@ impl Explorer {
             .absolute()
             .top_0()
             .bottom_0()
-            .left(self.parent_column_drawn() - theme::S_4)
-            .w(theme::S_8)
+            .left(self.parent_column_drawn() - theme::s_4())
+            .w(theme::s_8())
             // Presses stay here: the list under it would clear the selection.
             .occlude()
             .cursor_col_resize()
@@ -431,7 +433,7 @@ impl Explorer {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(theme::S_4 - px(1.))
+                    .left(theme::s_4() - px(1.))
                     .w(px(2.))
                     .when(dragging, |d| d.bg(theme::signal()))
                     .when(!dragging, |d| {
@@ -475,22 +477,22 @@ impl Explorer {
 /// Room a parent column row takes besides its name: the column's border, the list's and the
 /// row's padding, the icon, and the folder arrow (`chevron`).
 fn parent_row_chrome(chevron: bool) -> Pixels {
-    let mut w = px(1.) + theme::S_8 * 4. + theme::ICON + theme::S_8;
+    let mut w = px(1.) + theme::s_8() * 4. + theme::icon() + theme::s_8();
     if chevron {
-        w += theme::S_8 + theme::ICON_SM;
+        w += theme::s_8() + theme::icon_sm();
     }
     w
 }
 
 /// Width of a row's name as drawn.
 fn name_width(window: &Window, name: &str) -> Pixels {
-    super::details::text_width(window, name, theme::FS_14, gpui::FontWeight::NORMAL)
+    super::details::text_width(window, name, theme::fs_14(), gpui::FontWeight::NORMAL)
 }
 
 fn chevron() -> impl IntoElement {
     gpui::svg()
         .path(crate::assets::Icon::ChevronRight.path())
-        .size(theme::ICON_SM)
+        .size(theme::icon_sm())
         .flex_none()
         .text_color(theme::text_subtle())
 }

@@ -210,7 +210,7 @@ impl LocationPalette {
         };
         let icon = crate::assets::tinted(
             row.candidate.icon.unwrap_or(icon),
-            theme::ICON,
+            theme::icon(),
             theme::text_muted(),
         );
         let mark = HighlightStyle {
@@ -219,7 +219,7 @@ impl LocationPalette {
             ..HighlightStyle::default()
         };
         let (name, parent) = row_text(row, mark);
-        let height = theme::S_32 + theme::S_4;
+        let height = theme::s_32() + theme::s_4();
         div()
             .id(("palette-row", ix))
             .a11y_lazy(gpui::Role::ListBoxOption, || {
@@ -229,12 +229,12 @@ impl LocationPalette {
             .aria_position_in_set(ix)
             .relative()
             .h(height)
-            .mx(theme::S_4)
-            .px(theme::S_12)
+            .mx(theme::s_4())
+            .px(theme::s_12())
             .flex()
             .items_center()
-            .gap(theme::S_12)
-            .rounded(theme::R_8)
+            .gap(theme::s_12())
+            .rounded(theme::r_8())
             .cursor_pointer()
             // The panel owns the keyboard, so the highlighted row looks like a focused list's
             // selection: the accent wash.
@@ -247,7 +247,7 @@ impl LocationPalette {
                     .min_w_0()
                     .flex()
                     .items_baseline()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         div()
                             .flex_shrink(1.)
@@ -265,7 +265,7 @@ impl LocationPalette {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis_start()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(parent)
                     })),
@@ -273,7 +273,7 @@ impl LocationPalette {
             .child(
                 div()
                     .flex_none()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(tag.to_string()),
             )
@@ -292,11 +292,11 @@ impl LocationPalette {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(theme::S_6)
+                .gap(theme::s_6())
                 .child(
                     div()
-                        .px(theme::S_4)
-                        .rounded(theme::R_4)
+                        .px(theme::s_4())
+                        .rounded(theme::r_4())
                         .border_1()
                         .border_color(theme::line_strong())
                         .child(key),
@@ -304,14 +304,14 @@ impl LocationPalette {
                 .child(text)
         };
         div()
-            .h(theme::S_32 + theme::S_4)
-            .px(theme::S_16)
+            .h(theme::s_32() + theme::s_4())
+            .px(theme::s_16())
             .flex()
             .items_center()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .border_t_1()
             .border_color(theme::line())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(hint("Enter", t!("palette.hint_open").to_string()))
             .child(hint("Shift Enter", t!("palette.hint_split").to_string()))
@@ -423,32 +423,32 @@ impl Render for LocationPalette {
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::split))
-            .w(px(640.))
+            .w(crate::theme::scaled_px(640.))
             .flex()
             .flex_col()
-            .rounded(theme::R_12)
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
             .overflow_hidden()
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             // Clicks on the panel don't close it (only the backdrop does).
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .h(px(52.))
-                    .px(theme::S_16)
+                    .h(crate::theme::scaled_px(52.))
+                    .px(theme::s_16())
                     .flex()
                     .items_center()
-                    .gap(theme::S_12)
-                    .text_size(theme::FS_15)
+                    .gap(theme::s_12())
+                    .text_size(theme::fs_15())
                     .border_b_1()
                     .border_color(theme::line())
                     .child(
                         svg()
                             .path(Icon::Search.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .flex_none()
                             .text_color(theme::text_subtle()),
                     )
@@ -459,14 +459,14 @@ impl Render for LocationPalette {
                     .id("palette-results")
                     .role(gpui::Role::ListBox)
                     .aria_size_of_set(count)
-                    .py(theme::S_4)
+                    .py(theme::s_4())
                     .flex()
                     .flex_col()
                     .when(rows.is_empty(), |d| {
                         d.child(
                             div()
-                                .h(theme::S_32 + theme::S_4)
-                                .px(theme::S_16)
+                                .h(theme::s_32() + theme::s_4())
+                                .px(theme::s_16())
                                 .flex()
                                 .items_center()
                                 .text_color(theme::text_subtle())

@@ -66,13 +66,13 @@ fn welcome_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .when(primary, |d| {
             d.bg(theme::signal())
                 .text_color(theme::on_signal())
@@ -104,25 +104,25 @@ pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
             .a11y(gpui::Role::Dialog, t!("welcome.title"))
             .occlude()
             .w_full()
-            .p(theme::S_16)
+            .p(theme::s_16())
             .flex()
             .flex_col()
-            .gap(theme::S_12)
-            .rounded(theme::R_12)
+            .gap(theme::s_12())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
-            .text_size(theme::FS_13)
+            .text_size(theme::fs_13())
             .child(
                 div()
                     .flex()
                     .items_start()
-                    .gap(theme::S_12)
+                    .gap(theme::s_12())
                     .child(
                         svg()
                             .path(Icon::WindowStart.path())
                             .flex_none()
-                            .mt(theme::S_2)
-                            .size(theme::ICON)
+                            .mt(theme::s_2())
+                            .size(theme::icon())
                             .text_color(theme::signal()),
                     )
                     .child(
@@ -131,10 +131,10 @@ pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(theme::S_4)
+                            .gap(theme::s_4())
                             .child(
                                 div()
-                                    .text_size(theme::FS_14)
+                                    .text_size(theme::fs_14())
                                     .font_weight(theme::FW_STRONG)
                                     .child(t!("welcome.title").into_owned()),
                             )
@@ -147,7 +147,7 @@ pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
             )
             .child(
                 div()
-                    .pl(theme::ICON + theme::S_12)
+                    .pl(theme::icon() + theme::s_12())
                     .child(super::report_page::check_row(
                         "welcome-autostart",
                         t!("welcome.autostart"),
@@ -167,12 +167,12 @@ pub(super) fn welcome_card(cx: &App) -> Option<gpui::AnyElement> {
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(t!("welcome.later_hint").into_owned()),
                     )

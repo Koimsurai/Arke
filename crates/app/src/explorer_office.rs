@@ -26,14 +26,16 @@ use rust_i18n::t;
 
 use super::super::{AppEvent, kind_icon, spawn_thread};
 use super::{
-    Explorer, IMAGE_SIDE, PANE_IMAGE_RATIO, PDF_PAD, PDF_PAD_BOTTOM, PageTurn, PreviewBody,
-    PreviewData, fit_rect,
+    Explorer, IMAGE_SIDE, PANE_IMAGE_RATIO, PageTurn, PreviewBody, PreviewData, fit_rect, pdf_pad,
+    pdf_pad_bottom,
 };
 use crate::a11y::A11yExt as _;
 use crate::theme::{self, UiFont as _};
 
 /// Height of a sheet row and of the column letters
-const CELL_H: Pixels = theme::S_24;
+fn cell_h() -> gpui::Pixels {
+    theme::s_24()
+}
 /// Narrowest and widest sheet column (logical pixels at 12 px text)
 const COL_MIN: f32 = 44.;
 const COL_MAX: f32 = 240.;
@@ -262,18 +264,18 @@ impl Explorer {
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .overflow_x_scroll()
             .children(view.book.names.iter().enumerate().map(|(ix, name)| {
                 div()
                     .id(("sheet-tab", ix))
-                    .h(theme::H_CTL_SM)
-                    .px(theme::S_12)
+                    .h(theme::h_ctl_sm())
+                    .px(theme::s_12())
                     .flex()
                     .flex_none()
                     .items_center()
-                    .rounded(theme::R_4)
-                    .text_size(theme::FS_12)
+                    .rounded(theme::r_4())
+                    .text_size(theme::fs_12())
                     .whitespace_nowrap()
                     .a11y_toggle(SharedString::from(name.clone()), ix == active)
                     .when(ix == active, |d| {
@@ -293,7 +295,7 @@ impl Explorer {
             .size_full()
             .flex()
             .flex_col()
-            .gap(theme::S_8)
+            .gap(theme::s_8())
             .child(div().flex_1().min_h_0().child(grid))
             .child(tabs)
             .into_any_element()
@@ -325,9 +327,9 @@ impl Explorer {
             ));
         div()
             .size_full()
-            .pt(PDF_PAD)
-            .px(PDF_PAD)
-            .pb(PDF_PAD_BOTTOM)
+            .pt(pdf_pad())
+            .px(pdf_pad())
+            .pb(pdf_pad_bottom())
             .flex()
             .items_center()
             .justify_center()
@@ -377,19 +379,19 @@ pub(super) fn document_at(
         .overflow_y_scroll()
         .track_scroll(scroll)
         // Quick Look reads like the Markdown page: a sheet on the stage.
-        .when(large, |d| d.p(theme::S_24))
-        .when(!large, |d| d.p(theme::S_12).map(theme::preview_sheet))
+        .when(large, |d| d.p(theme::s_24()))
+        .when(!large, |d| d.p(theme::s_12()).map(theme::preview_sheet))
         .child(
             div().w_full().flex().justify_center().child(
                 div()
                     .w_full()
                     // Zoomed text keeps as many words per line, up to the stage's width.
-                    .max_w(theme::READ_W * zoom)
+                    .max_w(theme::read_w() * zoom)
                     .when(large, |d| {
-                        d.px(theme::S_32)
-                            .py(theme::S_24)
+                        d.px(theme::s_32())
+                            .py(theme::s_24())
                             .map(theme::preview_sheet)
-                            .rounded(theme::R_12)
+                            .rounded(theme::r_12())
                     })
                     .child(document_view(doc, large, zoom)),
             ),
@@ -398,25 +400,29 @@ pub(super) fn document_at(
 }
 
 fn document_view(doc: &Document, large: bool, zoom: f32) -> AnyElement {
-    let body = if large { theme::FS_15 } else { theme::FS_13 } * zoom;
-    let small = theme::FS_12 * zoom;
+    let body = if large {
+        theme::fs_15()
+    } else {
+        theme::fs_13()
+    } * zoom;
+    let small = theme::fs_12() * zoom;
     let blocks = doc.blocks.iter().map(|block| match block {
         Block::Heading { level, spans } => div()
-            .mt(theme::S_4)
+            .mt(theme::s_4())
             .text_size(match level {
-                1 => theme::FS_20 * zoom,
-                2 => theme::FS_15 * zoom,
+                1 => theme::fs_20() * zoom,
+                2 => theme::fs_15() * zoom,
                 _ => body,
             })
             .font_weight(theme::FW_STRONG)
             .child(rich(spans))
             .into_any_element(),
-        Block::Paragraph(spans) if spans.is_empty() => div().h(theme::S_4).into_any_element(),
+        Block::Paragraph(spans) if spans.is_empty() => div().h(theme::s_4()).into_any_element(),
         Block::Paragraph(spans) => div().child(rich(spans)).into_any_element(),
         Block::ListItem { depth, spans } => div()
             .flex()
-            .gap(theme::S_6)
-            .pl(theme::S_4 + theme::S_16 * f32::from(*depth))
+            .gap(theme::s_6())
+            .pl(theme::s_4() + theme::s_16() * f32::from(*depth))
             .child(
                 div()
                     .flex_none()
@@ -427,7 +433,7 @@ fn document_view(doc: &Document, large: bool, zoom: f32) -> AnyElement {
             .into_any_element(),
         Block::Table(rows) => table_view(rows, small),
         Block::PageBreak => div()
-            .my(theme::S_8)
+            .my(theme::s_8())
             .h(px(1.))
             .bg(theme::line_strong())
             .into_any_element(),
@@ -437,14 +443,17 @@ fn document_view(doc: &Document, large: bool, zoom: f32) -> AnyElement {
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_6)
-                    .px(theme::S_8)
-                    .py(theme::S_4)
-                    .rounded(theme::R_4)
+                    .gap(theme::s_6())
+                    .px(theme::s_8())
+                    .py(theme::s_4())
+                    .rounded(theme::r_4())
                     .bg(theme::wash_strong())
                     .text_size(small)
                     .text_color(theme::text_subtle())
-                    .child(kind_icon(arke_core::filetype::FileKind::Image, px(14.)))
+                    .child(kind_icon(
+                        arke_core::filetype::FileKind::Image,
+                        crate::theme::scaled_px(14.),
+                    ))
                     .child(t!("preview.office_image").into_owned()),
             )
             .into_any_element(),
@@ -452,7 +461,7 @@ fn document_view(doc: &Document, large: bool, zoom: f32) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_6)
+        .gap(theme::s_6())
         .ui_font()
         .text_size(body)
         .text_color(theme::text())
@@ -486,10 +495,10 @@ fn rich(spans: &[Span]) -> StyledText {
 fn table_view(rows: &[Vec<String>], text: Pixels) -> AnyElement {
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
     div()
-        .my(theme::S_4)
+        .my(theme::s_4())
         .flex()
         .flex_col()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .border_1()
         .border_color(theme::line())
         .text_size(text)
@@ -501,8 +510,8 @@ fn table_view(rows: &[Vec<String>], text: Pixels) -> AnyElement {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .px(theme::S_6)
-                        .py(theme::S_4)
+                        .px(theme::s_6())
+                        .py(theme::s_4())
                         .when(c > 0, |d| d.border_l_1().border_color(theme::line()))
                         .child(row.get(c).cloned().unwrap_or_default())
                 }))
@@ -512,8 +521,8 @@ fn table_view(rows: &[Vec<String>], text: Pixels) -> AnyElement {
 
 fn truncated_note() -> AnyElement {
     div()
-        .pt(theme::S_8)
-        .text_size(theme::FS_12)
+        .pt(theme::s_8())
+        .text_size(theme::fs_12())
         .text_color(theme::text_subtle())
         .child(t!("preview.office_truncated").into_owned())
         .into_any_element()
@@ -550,9 +559,9 @@ fn sheet_grid_at(
             .flex()
             .items_center()
             .justify_center()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .bg(theme::wash())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(t!("preview.sheet_empty").into_owned())
             .into_any_element();
@@ -560,7 +569,7 @@ fn sheet_grid_at(
     let zoom = zoom.unwrap_or(1.);
     // Quick Look's text is 13 px instead of 12.
     let scale = if large { 13. / 12. } else { 1. } * zoom;
-    let cell_h = CELL_H * zoom;
+    let cell_h = cell_h() * zoom;
     let widths: Vec<Pixels> = view.widths.iter().map(|w| px(w * scale)).collect();
     let total_w = widths.iter().fold(px(0.), |a, w| a + *w);
     let rows = sheet.rows.len();
@@ -633,7 +642,7 @@ fn sheet_grid_at(
                     .flex()
                     .items_center()
                     .justify_end()
-                    .pr(theme::S_6)
+                    .pr(theme::s_6())
                     .border_b_1(),
             )
             .child((r + 1).to_string())
@@ -670,7 +679,7 @@ fn sheet_grid_at(
                             .flex_none()
                             .flex()
                             .items_center()
-                            .px(theme::S_6)
+                            .px(theme::s_6())
                             .border_r_1()
                             .border_b_1(),
                     )
@@ -711,11 +720,17 @@ fn sheet_grid_at(
             .size_full()
             .flex()
             .flex_col()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .border_1()
             .overflow_hidden()
             .ui_font()
-            .text_size(if large { theme::FS_13 } else { theme::FS_12 } * zoom)
+            .text_size(
+                if large {
+                    theme::fs_13()
+                } else {
+                    theme::fs_12()
+                } * zoom,
+            )
             .text_color(theme::text()),
     )
     .child(header)
@@ -723,13 +738,13 @@ fn sheet_grid_at(
     .children(note.map(|note| {
         hairline(
             div()
-                .h(CELL_H)
+                .h(cell_h())
                 .flex_none()
                 .flex()
                 .items_center()
-                .px(theme::S_8)
+                .px(theme::s_8())
                 .border_t_1()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(div().truncate().child(note)),
         )
@@ -746,7 +761,7 @@ pub(super) fn slides_pane(view: &SlidesView) -> AnyElement {
             .size_full()
             .aspect_ratio(PANE_IMAGE_RATIO)
             .object_fit(ObjectFit::Contain)
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .into_any_element(),
         None => slide_card(
             view.deck.slides.first(),
@@ -778,19 +793,19 @@ fn slide_card_at(
     scroll: &gpui::ScrollHandle,
 ) -> AnyElement {
     let (title_size, line_size) = if large {
-        (theme::FS_24 * zoom, theme::FS_15 * zoom)
+        (theme::fs_24() * zoom, theme::fs_15() * zoom)
     } else {
-        (theme::FS_13, theme::FS_11)
+        (theme::fs_13(), theme::fs_11())
     };
-    let indent = if large { theme::S_24 } else { theme::S_12 };
+    let indent = if large { theme::s_24() } else { theme::s_12() };
     let card = div()
         .id("slide-card")
         .flex_none()
         .flex()
         .flex_col()
-        .gap(if large { theme::S_12 } else { theme::S_4 })
-        .p(if large { theme::S_32 } else { theme::S_12 })
-        .rounded(theme::R_8)
+        .gap(if large { theme::s_12() } else { theme::s_4() })
+        .p(if large { theme::s_32() } else { theme::s_12() })
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line())
         .bg(theme::card())
@@ -835,7 +850,7 @@ fn bullet(depth: u8, text: &str, indent: Pixels, size: Pixels) -> gpui::Div {
     div()
         .flex()
         .flex_none()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .pl(indent * f32::from(depth))
         .text_size(size)
         .text_color(theme::text_muted())
@@ -865,7 +880,7 @@ pub(super) fn slides_list(
                 div()
                     .w_full()
                     .h(width * ratio)
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .overflow_hidden()
                     .border_1()
                     .border_color(theme::line())
@@ -878,11 +893,11 @@ pub(super) fn slides_list(
             .flex()
             .flex_none()
             .flex_col()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .debug_selector(move || format!("pane-slide-{}", ix + 1))
             .child(
                 div()
-                    .text_size(theme::FS_11)
+                    .text_size(theme::fs_11())
                     .text_color(theme::text_subtle())
                     .child(
                         t!(
@@ -899,7 +914,7 @@ pub(super) fn slides_list(
         .size_full()
         .flex()
         .flex_col()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .overflow_y_scroll()
         .track_scroll(scroll)
         .children(items)
@@ -915,9 +930,9 @@ fn slide_text(slide: &Slide) -> AnyElement {
         .flex()
         .flex_none()
         .flex_col()
-        .gap(theme::S_4)
-        .p(theme::S_12)
-        .rounded(theme::R_8)
+        .gap(theme::s_4())
+        .p(theme::s_12())
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line())
         .bg(theme::card())
@@ -925,7 +940,7 @@ fn slide_text(slide: &Slide) -> AnyElement {
         .text_color(theme::text());
     if slide.title.is_empty() && slide.lines.is_empty() {
         return card
-            .text_size(theme::FS_11)
+            .text_size(theme::fs_11())
             .text_color(theme::text_subtle())
             .child(t!("preview.slide_no_text").into_owned())
             .into_any_element();
@@ -933,7 +948,7 @@ fn slide_text(slide: &Slide) -> AnyElement {
     card.when(!slide.title.is_empty(), |d| {
         d.child(
             div()
-                .text_size(theme::FS_13)
+                .text_size(theme::fs_13())
                 .font_weight(theme::FW_STRONG)
                 .child(slide.title.clone()),
         )
@@ -942,7 +957,7 @@ fn slide_text(slide: &Slide) -> AnyElement {
         slide
             .lines
             .iter()
-            .map(|(depth, text)| bullet(*depth, text, theme::S_12, theme::FS_11)),
+            .map(|(depth, text)| bullet(*depth, text, theme::s_12(), theme::fs_11())),
     )
     .into_any_element()
 }

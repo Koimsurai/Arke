@@ -27,21 +27,37 @@ use crate::theme;
 /// Recent files listed: enough to find today's work, few enough to stay a list and not a log.
 pub(crate) const RECENT_MAX: usize = 10;
 /// Content column width; centered on wide windows like Settings.
-const PAGE_MAX_W: gpui::Pixels = px(1100.);
+fn page_max_w() -> gpui::Pixels {
+    crate::theme::scaled_px(1000.)
+}
 /// Quick access card size.
-const QUICK_W: gpui::Pixels = px(132.);
-const QUICK_H: gpui::Pixels = px(88.);
+fn quick_w() -> gpui::Pixels {
+    crate::theme::scaled_px(132.)
+}
+fn quick_h() -> gpui::Pixels {
+    crate::theme::scaled_px(88.)
+}
 /// Drive and network card size.
-const PLACE_W: gpui::Pixels = px(260.);
-const PLACE_H: gpui::Pixels = px(72.);
+fn place_w() -> gpui::Pixels {
+    crate::theme::scaled_px(260.)
+}
+fn place_h() -> gpui::Pixels {
+    crate::theme::scaled_px(72.)
+}
 /// Large icons on the cards.
-const CARD_ICON: gpui::Pixels = px(32.);
+fn card_icon() -> gpui::Pixels {
+    crate::theme::scaled_px(32.)
+}
 /// Drive usage bar thickness.
-const USAGE_H: gpui::Pixels = px(6.);
+fn usage_h() -> gpui::Pixels {
+    crate::theme::scaled_px(6.)
+}
 /// Above this fraction used, the usage bar turns to the danger color (same as the sidebar).
 const NEARLY_FULL: f32 = 0.9;
 /// Recent file row height (name over folder).
-const RECENT_ROW_H: gpui::Pixels = px(48.);
+fn recent_row_h() -> gpui::Pixels {
+    crate::theme::scaled_px(48.)
+}
 /// Known folders on the quick access row, in this order.
 const QUICK_FOLDERS: [KnownFolder; 6] = [
     KnownFolder::Desktop,
@@ -239,10 +255,10 @@ impl HomePage {
     /// Section heading, the same for every section.
     fn section(title: impl Into<SharedString>) -> impl IntoElement {
         div()
-            .pt(theme::S_24)
-            .pb(theme::S_8)
-            .px(theme::S_4)
-            .text_size(theme::FS_15)
+            .pt(theme::s_24())
+            .pb(theme::s_8())
+            .px(theme::s_4())
+            .text_size(theme::fs_15())
             .font_weight(theme::FW_STRONG)
             .child(title.into())
     }
@@ -266,8 +282,8 @@ impl HomePage {
     fn render_recent(&self, cx: &mut Context<Self>) -> AnyElement {
         let note = |text: String| {
             div()
-                .px(theme::S_4)
-                .text_size(theme::FS_12)
+                .px(theme::s_4())
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(text)
                 .into_any_element()
@@ -301,15 +317,15 @@ impl HomePage {
                     crate::a11y::item_label(&name, &[folder.as_str()])
                 })
                 .group(group.clone())
-                .h(RECENT_ROW_H)
-                .px(theme::S_12)
+                .h(recent_row_h())
+                .px(theme::s_12())
                 .flex()
                 .items_center()
-                .gap(theme::S_12)
+                .gap(theme::s_12())
                 .when(ix > 0, |d| d.border_t_1().border_color(theme::line()))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::wash()))
-                .child(kind_icon(kind_for_extension(&ext), theme::ICON))
+                .child(kind_icon(kind_for_extension(&ext), theme::icon()))
                 .child(
                     div()
                         .flex_1()
@@ -320,7 +336,7 @@ impl HomePage {
                         .child(
                             div()
                                 .truncate()
-                                .text_size(theme::FS_12)
+                                .text_size(theme::fs_12())
                                 .text_color(theme::text_subtle())
                                 .child(folder),
                         ),
@@ -329,7 +345,7 @@ impl HomePage {
                     div()
                         .flex_none()
                         .text_color(theme::text_subtle())
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .child(self.time_label(file.used)),
                 )
                 // Shown on hover: go to the file's folder.
@@ -337,19 +353,19 @@ impl HomePage {
                     div()
                         .id(("home-reveal", ix))
                         .a11y_button(t!("home.reveal"))
-                        .size(theme::H_CTL_SM)
+                        .size(theme::h_ctl_sm())
                         .flex()
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .rounded(theme::R_8)
+                        .rounded(theme::r_8())
                         .invisible()
                         .group_hover(group, gpui::Styled::visible)
                         .hover(|s| s.bg(theme::wash_strong()))
                         .child(
                             svg()
                                 .path(Icon::Folder.path())
-                                .size(theme::ICON_SM)
+                                .size(theme::icon_sm())
                                 .text_color(theme::text_muted()),
                         )
                         .tooltip(crate::explorer::tooltip(t!("home.reveal").into_owned()))
@@ -375,7 +391,7 @@ impl HomePage {
         div()
             .flex()
             .flex_col()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .bg(theme::card())
             .border_1()
             .border_color(theme::line())
@@ -409,14 +425,14 @@ impl HomePage {
         let card = div()
             .id(("home-quick", ix))
             .a11y_lazy(gpui::Role::Link, || place.label.clone())
-            .w(QUICK_W)
-            .h(QUICK_H)
+            .w(quick_w())
+            .h(quick_h())
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .bg(theme::card())
             .border_1()
             .border_color(theme::line())
@@ -424,15 +440,15 @@ impl HomePage {
             .hover(|s| s.bg(theme::wash()))
             .child(crate::assets::tinted(
                 crate::workspace::place_icon(place.kind),
-                CARD_ICON,
+                card_icon(),
                 theme::text_muted(),
             ))
             .child(
                 div()
                     .max_w_full()
-                    .px(theme::S_8)
+                    .px(theme::s_8())
                     .truncate()
-                    .text_size(theme::FS_13)
+                    .text_size(theme::fs_13())
                     .child(place.label.clone()),
             );
         Self::card_actions(
@@ -481,26 +497,30 @@ impl HomePage {
             .a11y_lazy(gpui::Role::Link, || {
                 crate::a11y::item_label(&label, &[detail.as_deref().unwrap_or_default()])
             })
-            .w(PLACE_W)
-            .h(PLACE_H)
-            .px(theme::S_16)
+            .w(place_w())
+            .h(place_h())
+            .px(theme::s_16())
             .flex()
             .items_center()
-            .gap(theme::S_12)
-            .rounded(theme::R_8)
+            .gap(theme::s_12())
+            .rounded(theme::r_8())
             .bg(theme::card())
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash()))
-            .child(crate::assets::tinted(icon, CARD_ICON, theme::text_muted()))
+            .child(crate::assets::tinted(
+                icon,
+                card_icon(),
+                theme::text_muted(),
+            ))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .child(div().truncate().child(label))
                     .children(used.map(|used| {
                         let color = if used > NEARLY_FULL {
@@ -509,7 +529,7 @@ impl HomePage {
                             theme::signal()
                         };
                         div()
-                            .h(USAGE_H)
+                            .h(usage_h())
                             .w_full()
                             .rounded(theme::R_FULL)
                             .bg(theme::wash_strong())
@@ -524,7 +544,7 @@ impl HomePage {
                     .children(detail.map(|d| {
                         div()
                             .truncate()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(d)
                     })),
@@ -619,7 +639,7 @@ impl Render for HomePage {
             })
             .collect();
         let cards =
-            |items: Vec<AnyElement>| div().flex().flex_wrap().gap(theme::S_12).children(items);
+            |items: Vec<AnyElement>| div().flex().flex_wrap().gap(theme::s_12()).children(items);
         let has_quick = !quick.is_empty();
         let has_net = !net.is_empty();
         div()
@@ -632,21 +652,21 @@ impl Render for HomePage {
             .child(
                 div()
                     .w_full()
-                    .px(theme::S_32)
-                    .pt(theme::S_24)
-                    .pb(theme::S_32)
+                    .px(theme::s_32())
+                    .pt(theme::s_24())
+                    .pb(theme::s_32())
                     .flex()
                     .justify_center()
                     .child(
                         div()
                             .w_full()
-                            .max_w(PAGE_MAX_W)
+                            .max_w(page_max_w())
                             .flex()
                             .flex_col()
                             .child(
                                 div()
-                                    .px(theme::S_4)
-                                    .text_size(theme::FS_24)
+                                    .px(theme::s_4())
+                                    .text_size(theme::fs_24())
                                     .font_weight(theme::FW_STRONG)
                                     .child(t!("home.title").into_owned()),
                             )

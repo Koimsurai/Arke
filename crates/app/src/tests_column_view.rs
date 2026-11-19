@@ -118,7 +118,7 @@ fn dragging_the_parent_divider_sizes_and_saves_it(cx: &mut TestAppContext) {
     let (list, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     let first_row = point(
         list.left() + px(340.) + px(16.),
-        list.top() + crate::theme::S_4 + row / 2.,
+        list.top() + crate::theme::s_4() + row / 2.,
     );
     cx.simulate_click(first_row, Modifiers::none());
     wait_until(cx, &view, "row selected", |v| {

@@ -31,7 +31,9 @@ const MAX_KEPT: usize = 10;
 /// Shortest slot, relative to its width, so banner-shaped pages don't put dozens in view.
 const MIN_SLOT_RATIO: f32 = 0.25;
 /// Space below each page.
-const GAP: Pixels = theme::S_8;
+fn gap() -> gpui::Pixels {
+    theme::s_8()
+}
 
 /// The pane's pages of the PDF on screen.
 #[derive(Default)]
@@ -182,13 +184,13 @@ impl Explorer {
         // From the scroll offset, not the range the list asks to build: it also builds the first
         // row on every frame to measure it, which would keep the first pages wanted.
         let top = -base.offset().y;
-        let visible = in_view(top, frame.height, slot + GAP, pages);
+        let visible = in_view(top, frame.height, slot + gap(), pages);
         // The page in the middle; at the end the last one, which may never get there.
-        let at_end = top > px(0.) && top + frame.height + px(1.) >= (slot + GAP) * pages as f32;
+        let at_end = top > px(0.) && top + frame.height + px(1.) >= (slot + gap()) * pages as f32;
         let middle = if at_end {
             pages.saturating_sub(1)
         } else {
-            in_view(top + frame.height / 2., px(0.), slot + GAP, pages).start
+            in_view(top + frame.height / 2., px(0.), slot + gap(), pages).start
         };
         let width = frame.width;
         let list = uniform_list(
@@ -212,19 +214,19 @@ impl Explorer {
             .child(
                 div()
                     .absolute()
-                    .bottom(theme::S_8)
+                    .bottom(theme::s_8())
                     .left_0()
                     .right_0()
                     .flex()
                     .justify_center()
                     .child(
                         div()
-                            .px(theme::S_8)
-                            .py(theme::S_2)
+                            .px(theme::s_8())
+                            .py(theme::s_2())
                             .rounded(theme::R_FULL)
                             .bg(theme::overlay())
                             .shadow(theme::elev_float())
-                            .text_size(theme::FS_11)
+                            .text_size(theme::fs_11())
                             .text_color(theme::text_muted())
                             .child(
                                 t!(
@@ -320,8 +322,8 @@ impl Explorer {
                 let failed = list.failed.contains(&page);
                 div()
                     .w(width)
-                    .h(slot + GAP)
-                    .pb(GAP)
+                    .h(slot + gap())
+                    .pb(gap())
                     .debug_selector(move || format!("pane-pdf-page-{}", page + 1))
                     .child(if let Some(render) = image {
                         Self::pdf_page_view(render, area, false)
@@ -330,7 +332,7 @@ impl Explorer {
                         // other placeholders (still once it failed, so nothing keeps drawing).
                         let sheet = div()
                             .size_full()
-                            .rounded(theme::R_4)
+                            .rounded(theme::r_4())
                             .border_1()
                             .border_color(theme::line())
                             .bg(theme::wash());
@@ -424,22 +426,83 @@ mod tests {
     #[test]
     fn slots_follow_the_page_but_stay_in_the_frame() {
         // Portrait A4 in a short frame: the frame's height.
-        assert_eq!(slot_h(px(300.), px(390.), 1.414), px(390.));
+        assert_eq!(
+            slot_h(
+                crate::theme::scaled_px(300.),
+                crate::theme::scaled_px(390.),
+                1.414
+            ),
+            crate::theme::scaled_px(390.)
+        );
         // Landscape: the page's own height at the frame's width.
-        assert_eq!(slot_h(px(300.), px(390.), 0.5), px(150.));
+        assert_eq!(
+            slot_h(
+                crate::theme::scaled_px(300.),
+                crate::theme::scaled_px(390.),
+                0.5
+            ),
+            crate::theme::scaled_px(150.)
+        );
         // A banner doesn't shrink to a sliver.
-        assert_eq!(slot_h(px(300.), px(390.), 0.01), px(75.));
+        assert_eq!(
+            slot_h(
+                crate::theme::scaled_px(300.),
+                crate::theme::scaled_px(390.),
+                0.01
+            ),
+            crate::theme::scaled_px(75.)
+        );
     }
 
     #[test]
     fn pages_in_view_follow_the_scroll() {
         // Slots 100 apart in a 250 tall frame.
-        assert_eq!(in_view(px(0.), px(250.), px(100.), 10), 0..3);
-        assert_eq!(in_view(px(150.), px(250.), px(100.), 10), 1..4);
-        assert_eq!(in_view(px(900.), px(250.), px(100.), 10), 9..10);
+        assert_eq!(
+            in_view(
+                px(0.),
+                crate::theme::scaled_px(250.),
+                crate::theme::scaled_px(100.),
+                10
+            ),
+            0..3
+        );
+        assert_eq!(
+            in_view(
+                crate::theme::scaled_px(150.),
+                crate::theme::scaled_px(250.),
+                crate::theme::scaled_px(100.),
+                10
+            ),
+            1..4
+        );
+        assert_eq!(
+            in_view(
+                crate::theme::scaled_px(900.),
+                crate::theme::scaled_px(250.),
+                crate::theme::scaled_px(100.),
+                10
+            ),
+            9..10
+        );
         // Past the end (before the list clamps its offset), and an empty document.
-        assert_eq!(in_view(px(5000.), px(250.), px(100.), 10), 10..10);
-        assert_eq!(in_view(px(0.), px(250.), px(100.), 0), 0..0);
+        assert_eq!(
+            in_view(
+                crate::theme::scaled_px(5000.),
+                crate::theme::scaled_px(250.),
+                crate::theme::scaled_px(100.),
+                10
+            ),
+            10..10
+        );
+        assert_eq!(
+            in_view(
+                px(0.),
+                crate::theme::scaled_px(250.),
+                crate::theme::scaled_px(100.),
+                0
+            ),
+            0..0
+        );
     }
 
     #[test]

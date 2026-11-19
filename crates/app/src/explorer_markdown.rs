@@ -27,7 +27,11 @@ pub(super) fn markdown_at(doc: &Doc, large: bool, zoom: f32) -> AnyElement {
     let layout = Layout {
         large,
         zoom,
-        body: if large { theme::FS_15 } else { theme::FS_13 } * zoom,
+        body: if large {
+            theme::fs_15()
+        } else {
+            theme::fs_13()
+        } * zoom,
         next_id: Cell::new(0),
     };
     div()
@@ -68,7 +72,11 @@ struct Layout {
 
 impl Layout {
     const fn block_gap(&self) -> gpui::Pixels {
-        if self.large { theme::S_16 } else { theme::S_12 }
+        if self.large {
+            theme::s_16()
+        } else {
+            theme::s_12()
+        }
     }
 
     fn block(&self, block: &Block, tone: Tone) -> AnyElement {
@@ -76,18 +84,18 @@ impl Layout {
             Block::Heading { level, text } => self.heading(*level, text),
             Block::Paragraph(text) => self.text(text, FontWeight::NORMAL, tone),
             Block::Quote(blocks) => div()
-                .pl(theme::S_12)
+                .pl(theme::s_12())
                 .border_l_2()
                 .border_color(theme::line_strong())
                 .flex()
                 .flex_col()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .children(blocks.iter().map(|b| self.block(b, Tone::Quoted)))
                 .into_any_element(),
             Block::List { start, items } => self.list(*start, items, tone),
             Block::Code { lang, text, marks } => self.code(lang, text, marks),
             Block::Rule => div()
-                .my(theme::S_4)
+                .my(theme::s_4())
                 .h(px(1.))
                 .bg(theme::line())
                 .into_any_element(),
@@ -98,8 +106,8 @@ impl Layout {
     /// `#` and `##` get a rule below, like GitHub; the rest step down in size and color.
     fn heading(&self, level: u8, text: &Inline) -> AnyElement {
         let size = match (level, self.large) {
-            (1, _) | (2, true) => theme::FS_20 * self.zoom,
-            (2, false) | (3, true) => theme::FS_15 * self.zoom,
+            (1, _) | (2, true) => theme::fs_20() * self.zoom,
+            (2, false) | (3, true) => theme::fs_15() * self.zoom,
             _ => self.body,
         };
         let tone = if level >= 4 {
@@ -108,9 +116,9 @@ impl Layout {
             Tone::Normal
         };
         div()
-            .when(level > 1, |d| d.mt(theme::S_8))
+            .when(level > 1, |d| d.mt(theme::s_8()))
             .when(level <= 2, |d| {
-                d.pb(theme::S_6).border_b_1().border_color(theme::line())
+                d.pb(theme::s_6()).border_b_1().border_color(theme::line())
             })
             .text_size(size)
             .child(self.text(text, theme::FW_STRONG, tone))
@@ -118,7 +126,11 @@ impl Layout {
     }
 
     fn list(&self, start: Option<u64>, items: &[Item], tone: Tone) -> AnyElement {
-        let gap = if self.large { theme::S_6 } else { theme::S_4 };
+        let gap = if self.large {
+            theme::s_6()
+        } else {
+            theme::s_4()
+        };
         div()
             .flex()
             .flex_col()
@@ -137,11 +149,11 @@ impl Layout {
                 };
                 div()
                     .flex()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         div()
                             .flex_none()
-                            .min_w(theme::S_16)
+                            .min_w(theme::s_16())
                             .flex()
                             .justify_end()
                             .child(marker),
@@ -176,30 +188,30 @@ impl Layout {
             )
         });
         div()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .border_1()
             .border_color(theme::line())
             .bg(theme::wash())
             .when(!lang.is_empty(), |d| {
                 d.child(
                     div()
-                        .px(theme::S_12)
-                        .pt(theme::S_8)
-                        .text_size(theme::FS_11 * self.zoom)
+                        .px(theme::s_12())
+                        .pt(theme::s_8())
+                        .text_size(theme::fs_11() * self.zoom)
                         .text_color(theme::text_subtle())
                         .child(lang.to_owned()),
                 )
             })
             .child(
                 div()
-                    .px(theme::S_12)
-                    .py(theme::S_8)
+                    .px(theme::s_12())
+                    .py(theme::s_8())
                     .font_family(MONO)
                     .text_size(
                         if self.large {
-                            theme::FS_13
+                            theme::fs_13()
                         } else {
-                            theme::FS_12
+                            theme::fs_12()
                         } * self.zoom,
                     )
                     .child(StyledText::new(text.to_owned()).with_highlights(highlights)),
@@ -217,8 +229,8 @@ impl Layout {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .px(theme::S_8)
-                        .py(theme::S_6)
+                        .px(theme::s_8())
+                        .py(theme::s_6())
                         .flex()
                         .when(align == Align::Center, gpui::Styled::justify_center)
                         .when(align == Align::Right, gpui::Styled::justify_end)
@@ -236,7 +248,7 @@ impl Layout {
             )
         };
         div()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .border_1()
             .border_color(theme::line())
             .overflow_hidden()
@@ -332,12 +344,12 @@ fn text_run(len: usize, style: Style, weight: FontWeight, tone: Tone) -> TextRun
 /// `[x]` / `[ ]` drawn like Arke's check boxes.
 fn task_box(done: bool) -> AnyElement {
     div()
-        .mt(px(3.))
-        .size(px(14.))
+        .mt(crate::theme::scaled_px(3.))
+        .size(crate::theme::scaled_px(14.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .border_1()
         .when(done, |d| {
             d.bg(theme::signal()).border_color(theme::signal())
@@ -347,7 +359,7 @@ fn task_box(done: bool) -> AnyElement {
             d.child(
                 svg()
                     .path(Icon::Check.path())
-                    .size(px(10.))
+                    .size(crate::theme::scaled_px(10.))
                     .text_color(theme::on_signal()),
             )
         })

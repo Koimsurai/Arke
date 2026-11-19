@@ -170,15 +170,15 @@ impl Col {
 
     fn default_width(self) -> Pixels {
         match self {
-            Self::Name => theme::COL_NAME_MAX,
+            Self::Name => theme::col_name_max(),
             // Full date-times are longer.
             Self::Modified | Self::Created if full_dates() => px(180.),
-            Self::Modified | Self::Created => theme::COL_MODIFIED,
-            Self::Type => theme::COL_TYPE,
-            Self::Size => theme::COL_SIZE,
-            Self::Extension => theme::COL_EXTENSION,
-            Self::Attributes => theme::COL_ATTRIBUTES,
-            Self::LinkTarget => theme::COL_LINK_TARGET,
+            Self::Modified | Self::Created => theme::col_modified(),
+            Self::Type => theme::col_type(),
+            Self::Size => theme::col_size(),
+            Self::Extension => theme::col_extension(),
+            Self::Attributes => theme::col_attributes(),
+            Self::LinkTarget => theme::col_link_target(),
         }
     }
 

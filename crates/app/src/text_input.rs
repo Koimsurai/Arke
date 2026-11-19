@@ -932,12 +932,14 @@ impl EntityInputHandler for TextInput {
     }
 }
 
-const CARET_WIDTH: Pixels = px(1.5);
+fn caret_width() -> gpui::Pixels {
+    crate::theme::scaled_px(1.5)
+}
 
 /// Scroll offset after a change: unchanged while the caret is visible, otherwise just enough to
 /// bring it back in, and never past the end of the text.
 fn follow_caret(scroll: Pixels, caret: Pixels, text_width: Pixels, field_width: Pixels) -> Pixels {
-    let view = (field_width - CARET_WIDTH).max(Pixels::ZERO);
+    let view = (field_width - caret_width()).max(Pixels::ZERO);
     let mut scroll = scroll;
     if caret - scroll > view {
         scroll = caret - view;
@@ -1078,7 +1080,7 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::new(
                         point(left + cursor_pos, bounds.top()),
-                        size(CARET_WIDTH, bounds.bottom() - bounds.top()),
+                        size(caret_width(), bounds.bottom() - bounds.top()),
                     ),
                     theme::signal(),
                 )),
@@ -1126,7 +1128,7 @@ impl Element for TextElement {
         // Text scrolled out of the field is clipped; the caret may sit on the right edge.
         let mask = Bounds::new(
             bounds.origin,
-            size(bounds.size.width + CARET_WIDTH, bounds.size.height),
+            size(bounds.size.width + caret_width(), bounds.size.height),
         );
         window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
             if let Some(selection) = prepaint.selection.take() {
@@ -1284,7 +1286,7 @@ impl TextInput {
         let menu = deferred(
             anchored()
                 .position(menu.position)
-                .snap_to_window_with_margin(theme::S_8)
+                .snap_to_window_with_margin(theme::s_8())
                 .child(panel.with_animation(
                     "text-input-menu-appear",
                     crate::motion::menu_enter(),
@@ -1338,13 +1340,13 @@ impl TextInput {
             .id("text-input-menu")
             .role(gpui::Role::Menu)
             .occlude()
-            .min_w(px(220.))
-            .py(theme::S_4)
-            .rounded(theme::R_12)
+            .min_w(crate::theme::scaled_px(220.))
+            .py(theme::s_4())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text());
         let chosen = self.menu.as_ref().and_then(|menu| menu.highlighted);
         for (ix, (command, label, shortcut, glyph)) in rows.into_iter().enumerate() {
@@ -1355,8 +1357,8 @@ impl TextInput {
                 panel = panel.child(
                     div()
                         .h(px(1.))
-                        .my(theme::S_4)
-                        .mx(theme::S_8)
+                        .my(theme::s_4())
+                        .mx(theme::s_8())
                         .bg(theme::line()),
                 );
             }
@@ -1371,13 +1373,13 @@ impl TextInput {
                     .debug_selector(move || format!("text-input-menu-{command:?}"))
                     .a11y_menu_item(label.clone(), enabled, false, highlighted)
                     .aria_keyshortcuts(shortcut)
-                    .h(theme::H_CTL_SM + theme::S_4)
-                    .mx(theme::S_4)
-                    .px(theme::S_8)
+                    .h(theme::h_ctl_sm() + theme::s_4())
+                    .mx(theme::s_4())
+                    .px(theme::s_8())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
-                    .rounded(theme::R_8)
+                    .gap(theme::s_8())
+                    .rounded(theme::r_8())
                     .when(!enabled, |d| d.text_color(theme::text_disabled()))
                     .when(enabled, |d| {
                         d.cursor_pointer()
@@ -1387,17 +1389,23 @@ impl TextInput {
                                 this.run_edit(command, window, cx);
                             }))
                     })
-                    .child(div().size(theme::ICON).flex_none().children(
-                        glyph.map(|glyph| {
-                            svg().path(glyph.path()).size(theme::ICON).text_color(color)
-                        }),
-                    ))
+                    .child(
+                        div()
+                            .size(theme::icon())
+                            .flex_none()
+                            .children(glyph.map(|glyph| {
+                                svg()
+                                    .path(glyph.path())
+                                    .size(theme::icon())
+                                    .text_color(color)
+                            })),
+                    )
                     .child(div().flex_1().min_w_0().truncate().child(label))
                     .child(
                         div()
                             .flex_none()
-                            .pl(theme::S_16)
-                            .text_size(theme::FS_12)
+                            .pl(theme::s_16())
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(shortcut),
                     ),
@@ -1506,23 +1514,36 @@ mod scroll_tests {
 
     #[test]
     fn long_text_scrolls_to_keep_the_caret_in_view() {
-        let (field, text) = (px(100.), px(300.));
-        let view = px(100.) - CARET_WIDTH;
+        let (field, text) = (crate::theme::scaled_px(100.), crate::theme::scaled_px(300.));
+        let view = crate::theme::scaled_px(100.) - caret_width();
         // Fits: never scrolls.
-        assert_eq!(follow_caret(px(0.), px(80.), px(80.), field), px(0.));
+        assert_eq!(
+            follow_caret(
+                px(0.),
+                crate::theme::scaled_px(80.),
+                crate::theme::scaled_px(80.),
+                field
+            ),
+            px(0.)
+        );
         // Caret past the right edge (typing or pasting at the end): just enough to show it.
         assert_eq!(follow_caret(px(0.), text, text, field), text - view);
         // Moving left inside the visible part leaves the scroll alone.
         assert_eq!(
-            follow_caret(text - view, px(250.), text, field),
+            follow_caret(text - view, crate::theme::scaled_px(250.), text, field),
             text - view
         );
         // Home: back to the start.
         assert_eq!(follow_caret(text - view, px(0.), text, field), px(0.));
         // Text got shorter (deleted at the end): no empty space after it.
         assert_eq!(
-            follow_caret(px(200.), px(120.), px(120.), field),
-            px(120.) - view
+            follow_caret(
+                crate::theme::scaled_px(200.),
+                crate::theme::scaled_px(120.),
+                crate::theme::scaled_px(120.),
+                field
+            ),
+            crate::theme::scaled_px(120.) - view
         );
     }
 }

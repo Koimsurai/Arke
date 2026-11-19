@@ -112,7 +112,9 @@ struct ClosedTab {
 }
 
 /// Minimum width of each side in dual pane.
-const PANE_MIN: gpui::Pixels = px(420.);
+fn pane_min() -> gpui::Pixels {
+    crate::theme::scaled_px(420.)
+}
 
 pub(crate) fn bind_keys(cx: &mut App) {
     settings_panel::bind_keys(cx);
@@ -274,18 +276,18 @@ struct DraggedTab {
 impl Render for DraggedTab {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(theme::H_ROW)
-            .px(theme::S_8)
+            .h(theme::h_row())
+            .px(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
-            .child(kind_icon(FileKind::Folder, theme::ICON))
+            .child(kind_icon(FileKind::Folder, theme::icon()))
             .child(self.title.clone())
     }
 }
@@ -344,6 +346,8 @@ pub(crate) struct Workspace {
     startup: Startup,
     /// Dragging the divider between the panes.
     resizing: bool,
+    /// Dragging the sidebar edge: the live width is kept in the theme and saved on release.
+    pub(crate) sidebar_resizing: bool,
     /// Tab being dragged; dropping on the right half of the content area splits, like Arc.
     dragging_tab: Option<usize>,
     /// Animation and hit testing for tab and favorite tile reordering.
@@ -525,6 +529,8 @@ fn apply_theme(window: &mut Window, cx: &mut App) {
     });
     crate::prefs::apply(&look);
     theme::set_font(&look.font);
+    theme::set_scale(look.ui_scale);
+    theme::set_sidebar_base(look.sidebar_width);
     theme::set_backdrop(look.background_image.clone().map(|path| {
         (
             path,
@@ -662,6 +668,7 @@ impl Workspace {
                 Startup::Done
             },
             resizing: false,
+            sidebar_resizing: false,
             dragging_tab: None,
             tab_drag: tabdrag::TabDrag::default(),
             dragging_pin: false,
@@ -671,7 +678,7 @@ impl Workspace {
             peek_closing: false,
             sidebar_ui: rail::SidebarUi::default(),
             _shelf: shelf,
-            last_viewport_width: px(1200.),
+            last_viewport_width: crate::theme::scaled_px(1200.),
             window_title: String::new(),
             shared_preview: None,
             _appearance: appearance,
@@ -1889,12 +1896,78 @@ impl Workspace {
         self.shared_preview = shared;
     }
 
+    /// Saves the sidebar width the drag ended on.
+    pub(crate) fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_resizing = false;
+        let width = theme::sidebar_base();
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_width = width, cx));
+        cx.notify();
+    }
+
+    /// Double-click on the sidebar edge: back to the default width.
+    pub(crate) fn reset_sidebar_width(cx: &mut Context<Self>) {
+        theme::set_sidebar_base(0.);
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_width = 0., cx));
+        cx.notify();
+    }
+
+    /// Drag handle on the full sidebar's right edge (not drawn for the collapsed rail or while it
+    /// slides or peeks).
+    fn render_sidebar_edge(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if theme::sidebar_collapsed() || self.sidebar_ui.motion.is_some() {
+            return None;
+        }
+        let active = self.sidebar_resizing;
+        Some(
+            div()
+                .id("sidebar-edge")
+                .debug_selector(|| "sidebar-edge".to_owned())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(theme::sidebar_full_width() - px(4.))
+                .w(px(8.))
+                .cursor_col_resize()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        if event.click_count >= 2 {
+                            Self::reset_sidebar_width(cx);
+                        } else {
+                            this.sidebar_resizing = true;
+                        }
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(
+                    div()
+                        .h_full()
+                        .w(px(2.))
+                        .mx_auto()
+                        .when(active, |d| d.bg(theme::signal()))
+                        .hover(|s| s.bg(theme::signal_line())),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn on_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.sidebar_resizing {
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.finish_sidebar_drag(cx);
+                return;
+            }
+            let base = f32::from(event.position.x) * 100. / theme::scale_pct() as f32;
+            if theme::set_sidebar_base(base) {
+                cx.notify();
+            }
+            return;
+        }
         if !self.resizing {
             return;
         }
@@ -1908,8 +1981,8 @@ impl Workspace {
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
         let width = window.viewport_size().width - theme::sidebar_width() - reserve;
         let ratio = (event.position.x - theme::sidebar_width()) / width;
-        // Keep at least PANE_MIN per side so the top bar and columns do not get crushed.
-        let min = (PANE_MIN / width).min(0.5);
+        // Keep at least pane_min() per side so the top bar and columns do not get crushed.
+        let min = (pane_min() / width).min(0.5);
         self.tabs[self.active].ratio = ratio.clamp(min, 1. - min);
         cx.notify();
     }
@@ -2085,10 +2158,10 @@ impl Workspace {
                 .id("pane-gutter")
                 .group("pane-gutter")
                 .absolute()
-                .top(theme::H_BAR)
-                .bottom(theme::S_8)
-                .left(-theme::S_12 + px(2.))
-                .w(theme::S_12)
+                .top(theme::h_bar())
+                .bottom(theme::s_8())
+                .left(-theme::s_12() + px(2.))
+                .w(theme::s_12())
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2109,8 +2182,8 @@ impl Workspace {
                 }))
                 .child(
                     div()
-                        .w(px(3.))
-                        .h(theme::S_32 + theme::S_8)
+                        .w(crate::theme::scaled_px(3.))
+                        .h(theme::s_32() + theme::s_8())
                         .rounded(theme::R_FULL)
                         .bg(if resizing {
                             theme::signal()
@@ -2131,9 +2204,9 @@ impl Workspace {
             Some(
                 div()
                     .absolute()
-                    .top(theme::H_BAR)
-                    .bottom(theme::S_8)
-                    .right(theme::S_8)
+                    .top(theme::h_bar())
+                    .bottom(theme::s_8())
+                    .right(theme::s_8())
                     .w(shared.width)
                     .child(preview),
             )
@@ -2181,17 +2254,17 @@ impl Workspace {
                 .id("split-drop-zone")
                 .absolute()
                 .top(if Self::horizontal_tabs(cx) {
-                    theme::H_BAR + theme::H_BAR
+                    theme::h_bar() + theme::h_bar()
                 } else {
-                    theme::H_BAR
+                    theme::h_bar()
                 })
-                .bottom(theme::S_8)
-                .right(theme::S_8)
-                .w((self.panes_width_hint() - theme::S_8) / 2.)
+                .bottom(theme::s_8())
+                .right(theme::s_8())
+                .w((self.panes_width_hint() - theme::s_8()) / 2.)
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_12)
+                .rounded(theme::r_12())
                 .border_2()
                 .border_color(theme::signal_line())
                 .bg(theme::signal_wash())
@@ -2360,14 +2433,14 @@ impl Render for Workspace {
             // crossfade. Their icons sit in different places, so swapping one for the other at
             // the end would read as a jump.
             let (from, to) = if collapsing {
-                (theme::SIDEBAR_W, theme::RAIL_W)
+                (theme::sidebar_full_width(), theme::rail_w())
             } else {
-                (theme::RAIL_W, theme::SIDEBAR_W)
+                (theme::rail_w(), theme::sidebar_full_width())
             };
             let full = div()
                 .id("sidebar-slide-full")
                 .debug_selector(|| "sidebar-slide-full".to_owned())
-                .w(theme::SIDEBAR_W)
+                .w(theme::sidebar_full_width())
                 .flex_none()
                 .h_full()
                 .flex()
@@ -2382,7 +2455,7 @@ impl Render for Workspace {
                 .top_0()
                 .left_0()
                 .h_full()
-                .w(theme::RAIL_W)
+                .w(theme::rail_w())
                 .child(self.render_rail(cx));
             let fade = |el: gpui::Stateful<gpui::Div>, name: &'static str, going: bool| {
                 gpui::AnimationExt::with_animation(
@@ -2415,6 +2488,7 @@ impl Render for Workspace {
             .into_any_element()
         };
         let body = div()
+            .relative()
             .flex()
             .flex_1()
             .min_h_0()
@@ -2436,7 +2510,8 @@ impl Render for Workspace {
                         }
                     },
                 },
-            });
+            })
+            .children(self.render_sidebar_edge(cx));
         div()
             .id("workspace")
             .key_context("Workspace")
@@ -2447,8 +2522,11 @@ impl Render for Workspace {
             .bg(theme::frame())
             .text_color(theme::text())
             .ui_font()
-            .text_size(theme::FS_14)
-            .when(self.resizing, gpui::Styled::cursor_col_resize)
+            .text_size(theme::fs_14())
+            .when(
+                self.resizing || self.sidebar_resizing,
+                gpui::Styled::cursor_col_resize,
+            )
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
@@ -2565,6 +2643,9 @@ impl Render for Workspace {
                         this.resizing = false;
                         cx.notify();
                     }
+                    if this.sidebar_resizing {
+                        this.finish_sidebar_drag(cx);
+                    }
                 }),
             )
             .when(horizontal, |d| d.child(self.render_tab_strip(window, cx)))
@@ -2579,10 +2660,10 @@ impl Render for Workspace {
                     div()
                         .occlude()
                         .absolute()
-                        .top(theme::H_BAR + theme::S_4)
-                        .left(theme::S_8)
-                        .w(theme::SIDEBAR_W - theme::S_16)
-                        .rounded(theme::R_8)
+                        .top(theme::h_bar() + theme::s_4())
+                        .left(theme::s_8())
+                        .w(theme::sidebar_full_width() - theme::s_16())
+                        .rounded(theme::r_8())
                         .bg(theme::overlay())
                         .shadow(theme::elev_float())
                         .child(zone)
@@ -2603,7 +2684,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .pt(px(96.))
+                    .pt(crate::theme::scaled_px(96.))
                     // A light scrim over the whole window (sidebar and title bar too), like
                     // Quick Look; it occludes so the list underneath shows no hover.
                     .occlude()
@@ -2636,7 +2717,7 @@ impl Render for Workspace {
                                 .flex()
                                 .flex_col()
                                 .items_center()
-                                .pt(px(96.))
+                                .pt(crate::theme::scaled_px(96.))
                                 .bg(theme::scrim())
                                 .child(crate::motion::inert(div().child(ghost.value.clone()))),
                             ghost.id("palette-leave"),
@@ -2680,14 +2761,14 @@ impl Workspace {
             }
         };
         div()
-            .w(theme::SIDEBAR_W)
-            .h(theme::H_BAR)
+            .w(theme::sidebar_full_width())
+            .h(theme::h_bar())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             // Same left edge as the sidebar items below.
-            .pl(theme::S_12)
+            .pl(theme::s_12())
             .child(crate::brand::sidebar_mark())
             .child(if self.settings_open()
                 || self.recycle_open()
@@ -2746,7 +2827,7 @@ impl Workspace {
                 nav(|e, w, cx| e.refresh(&Refresh, w, cx)),
             ))
             .child(drag_area("brand", cx).h_full().flex_1().min_w_0())
-            .child(div().pr(theme::S_8).child(Self::sidebar_toggle(cx)))
+            .child(div().pr(theme::s_8()).child(Self::sidebar_toggle(cx)))
     }
 
     /// Horizontal tabs: tabs on the top row like a browser, caption buttons on the far right.
@@ -2756,8 +2837,12 @@ impl Workspace {
                 // Pinned tabs are narrow and don't shrink, like a browser's.
                 let pinned = self.tabs[ix].pinned;
                 div()
-                    .when(pinned, |d| d.w(px(132.)).flex_none())
-                    .when(!pinned, |d| d.w(px(200.)).min_w(px(96.)).flex_shrink(1.))
+                    .when(pinned, |d| d.w(crate::theme::scaled_px(132.)).flex_none())
+                    .when(!pinned, |d| {
+                        d.w(crate::theme::scaled_px(200.))
+                            .min_w(crate::theme::scaled_px(96.))
+                            .flex_shrink(1.)
+                    })
                     .child(self.render_tab(ix, cx))
                     .into_any_element()
             })
@@ -2767,32 +2852,32 @@ impl Workspace {
             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
             // Dropping a tab between tabs or on the empty space to the right moves it to the end.
             .on_drop(cx.listener(Self::drop_tab_at_end))
-            .h(theme::H_BAR)
-            .pr(theme::S_8)
+            .h(theme::h_bar())
+            .pr(theme::s_8())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             // Collapsed, the toggle is centred over the rail's icons.
             .map(|d| {
                 if theme::sidebar_collapsed() {
                     d.child(
                         div()
-                            .w(theme::RAIL_W)
+                            .w(theme::rail_w())
                             .flex_none()
                             .flex()
                             .justify_center()
                             .child(Self::sidebar_toggle(cx)),
                     )
                 } else {
-                    d.pl(theme::S_8).child(Self::sidebar_toggle(cx))
+                    d.pl(theme::s_8()).child(Self::sidebar_toggle(cx))
                 }
             })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .min_w_0()
                     .overflow_hidden()
                     .children(tabs),
@@ -2802,18 +2887,18 @@ impl Workspace {
                     .id("strip-new-tab")
                     .a11y_button(t!("sidebar.new_tab"))
                     .aria_keyshortcuts("Ctrl+T")
-                    .size(theme::H_CTL)
+                    .size(theme::h_ctl())
                     .flex()
                     .flex_none()
                     .items_center()
                     .justify_center()
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::wash_strong()))
                     .child(
                         gpui::svg()
                             .path(crate::assets::Icon::Plus.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(theme::text_muted()),
                     )
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -2823,7 +2908,7 @@ impl Workspace {
             .child(
                 drag_area("strip-drag", cx)
                     .flex_1()
-                    .min_w(theme::S_32)
+                    .min_w(theme::s_32())
                     .h_full(),
             )
             .child(Self::workspaces_button(cx))
@@ -2888,9 +2973,11 @@ pub(crate) fn tooltips_hidden(window: &Window) -> bool {
 }
 
 /// Space between a control and a tooltip placed below it.
-const TOOLTIP_GAP: gpui::Pixels = theme::S_8;
+fn tooltip_gap() -> gpui::Pixels {
+    theme::s_8()
+}
 
-/// Text tooltip that sits [`TOOLTIP_GAP`] below its control instead of at the mouse, so it never
+/// Text tooltip that sits [`tooltip_gap()`] below its control instead of at the mouse, so it never
 /// covers the neighbouring buttons in a toolbar. `pad` is the empty space above the card, from
 /// where gpui puts tooltips (just below the mouse) down to the control's bottom edge plus the gap.
 pub(crate) struct TooltipBelow {
@@ -2932,7 +3019,7 @@ pub(crate) trait TooltipBelowExt:
             let top = window.mouse_position().y + px(1.);
             let pad = anchor
                 .get()
-                .map_or(px(0.), |b| (b.bottom() + TOOLTIP_GAP - top).max(px(0.)));
+                .map_or(px(0.), |b| (b.bottom() + tooltip_gap() - top).max(px(0.)));
             let text = text.clone();
             cx.new(|_| TooltipBelow { text, pad }).into()
         })
@@ -2960,14 +3047,14 @@ fn tooltip_card(text: &SharedString) -> gpui::Div {
     // Tooltips lay out at minimum size (max_w has no effect), so long text gets an explicit width to wrap.
     let long = text.chars().count() > 48;
     div()
-        .px(theme::S_8)
-        .py(theme::S_4)
-        .when(long, |d| d.w(theme::TOOLTIP_MAX_W))
-        .rounded(theme::R_8)
+        .px(theme::s_8())
+        .py(theme::s_4())
+        .when(long, |d| d.w(theme::tooltip_max_w()))
+        .rounded(theme::r_8())
         .bg(theme::overlay())
         .shadow(theme::elev_tooltip())
         .ui_font()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text())
         .child(text.clone())
 }

@@ -143,55 +143,123 @@ pub(crate) fn set_backdrop(image: Option<(std::path::PathBuf, f32)>) -> bool {
 }
 pub(crate) const FW_STRONG: FontWeight = FontWeight::SEMIBOLD;
 
-/// Keyboard shortcut badges only (`Ctrl T`, `Esc`); everything else reads at 12 px or more.
-pub(crate) const FS_11: Pixels = px(11.);
-/// Secondary text: dates, types, sizes, captions, hints.
-pub(crate) const FS_12: Pixels = px(12.);
-pub(crate) const FS_13: Pixels = px(13.);
-/// Body: list names, menu items, sidebar items, section headings (WinUI's body size).
-pub(crate) const FS_14: Pixels = px(14.);
-pub(crate) const FS_15: Pixels = px(15.);
-pub(crate) const FS_20: Pixels = px(20.);
-/// Page titles (Home, Settings), semibold.
-pub(crate) const FS_24: Pixels = px(24.);
+// --- Interface scale ---
+
+/// Interface scale in percent (80..=150), applied on top of the Windows DPI scale.
+static SCALE_PCT: AtomicU32 = AtomicU32::new(100);
+
+pub(crate) const SCALES: [u32; 6] = [80, 90, 100, 110, 125, 150];
+
+/// Sets the interface scale (percent). Returns whether it changed; every window repaints.
+pub(crate) fn set_scale(pct: u32) -> bool {
+    let pct = pct.clamp(SCALES[0], SCALES[SCALES.len() - 1]);
+    if SCALE_PCT.swap(pct, Ordering::Relaxed) == pct {
+        return false;
+    }
+    LOOK.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+pub(crate) fn scale_pct() -> u32 {
+    SCALE_PCT.load(Ordering::Relaxed)
+}
+
+/// A size in logical pixels at 100%, multiplied by the interface scale.
+pub(crate) fn scaled_px(base: f32) -> Pixels {
+    px(base * scale_pct() as f32 / 100.)
+}
+
+macro_rules! scaled {
+    ($name:ident, $base:expr) => {
+        #[inline]
+        pub(crate) fn $name() -> Pixels {
+            scaled_px($base)
+        }
+    };
+}
+
+// Keyboard shortcut badges only (`Ctrl T`, `Esc`); everything else reads at 12 px or more.
+scaled!(fs_11, 11.);
+// Secondary text: dates, types, sizes, captions, hints.
+scaled!(fs_12, 12.);
+scaled!(fs_13, 13.);
+// Body: list names, menu items, sidebar items, section headings (WinUI's body size).
+scaled!(fs_14, 14.);
+scaled!(fs_15, 15.);
+scaled!(fs_20, 20.);
+// Page titles (Home, Settings), semibold.
+scaled!(fs_24, 24.);
 
 // --- Spacing and heights (multiples of 4) ---
 
-pub(crate) const S_2: Pixels = px(2.);
-pub(crate) const S_4: Pixels = px(4.);
-pub(crate) const S_6: Pixels = px(6.);
-pub(crate) const S_8: Pixels = px(8.);
-pub(crate) const S_12: Pixels = px(12.);
-pub(crate) const S_16: Pixels = px(16.);
-pub(crate) const S_20: Pixels = px(20.);
-pub(crate) const S_24: Pixels = px(24.);
-/// Max tooltip width; longer text wraps.
-pub(crate) const TOOLTIP_MAX_W: Pixels = px(360.);
-pub(crate) const S_32: Pixels = px(32.);
+scaled!(s_2, 2.);
+scaled!(s_4, 4.);
+scaled!(s_6, 6.);
+scaled!(s_8, 8.);
+scaled!(s_12, 12.);
+scaled!(s_16, 16.);
+scaled!(s_20, 20.);
+scaled!(s_24, 24.);
+// Max tooltip width; longer text wraps.
+scaled!(tooltip_max_w, 360.);
+scaled!(s_32, 32.);
 
-/// List row height (standard density).
-pub(crate) const H_ROW: Pixels = px(32.);
-/// List row height (compact, used in dual pane).
-pub(crate) const H_ROW_COMPACT: Pixels = px(28.);
-/// List row height (comfortable).
-pub(crate) const H_ROW_COMFORTABLE: Pixels = px(40.);
-/// Controls: buttons, inputs.
-pub(crate) const H_CTL: Pixels = px(32.);
-/// Small controls: context bar actions.
-pub(crate) const H_CTL_SM: Pixels = px(26.);
-/// Controls inside popovers: segments, filter buttons, menu rows.
-pub(crate) const H_CTL_MD: Pixels = px(30.);
-/// Frame top bar.
-pub(crate) const H_BAR: Pixels = px(48.);
-/// Context bar.
-pub(crate) const H_CTX: Pixels = px(44.);
-/// Column header row.
-pub(crate) const H_HEADER: Pixels = px(30.);
+// List row height (standard density).
+scaled!(h_row, 32.);
+// List row height (compact, used in dual pane).
+scaled!(h_row_compact, 28.);
+// List row height (comfortable).
+scaled!(h_row_comfortable, 40.);
+// Controls: buttons, inputs.
+scaled!(h_ctl, 32.);
+// Small controls: context bar actions.
+scaled!(h_ctl_sm, 26.);
+// Controls inside popovers: segments, filter buttons, menu rows.
+scaled!(h_ctl_md, 30.);
+// Frame top bar.
+scaled!(h_bar, 48.);
+// Context bar.
+scaled!(h_ctx, 44.);
+// Column header row.
+scaled!(h_header, 30.);
 
-/// Sidebar width, including the left margin.
-pub(crate) const SIDEBAR_W: Pixels = px(248.);
-/// Width of the collapsed sidebar: a column of icons (#91).
-pub(crate) const RAIL_W: Pixels = px(52.);
+// Sidebar width, including the left margin.
+pub(crate) const SIDEBAR_W_BASE: f32 = 248.;
+pub(crate) const SIDEBAR_MIN: f32 = 180.;
+pub(crate) const SIDEBAR_MAX: f32 = 420.;
+
+static SIDEBAR_BASE: AtomicU32 = AtomicU32::new(0);
+
+/// Sets the dragged sidebar width (at 100%); 0 is the default. Returns whether it changed.
+pub(crate) fn set_sidebar_base(base: f32) -> bool {
+    let bits = if base <= 0. {
+        0
+    } else {
+        base.clamp(SIDEBAR_MIN, SIDEBAR_MAX).to_bits()
+    };
+    if SIDEBAR_BASE.swap(bits, Ordering::Relaxed) == bits {
+        return false;
+    }
+    LOOK.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+/// The dragged sidebar width at 100% (0 when it is the default).
+pub(crate) fn sidebar_base() -> f32 {
+    f32::from_bits(SIDEBAR_BASE.load(Ordering::Relaxed))
+}
+
+/// Full sidebar width, including the left margin.
+pub(crate) fn sidebar_full_width() -> Pixels {
+    let bits = SIDEBAR_BASE.load(Ordering::Relaxed);
+    scaled_px(if bits == 0 {
+        SIDEBAR_W_BASE
+    } else {
+        f32::from_bits(bits)
+    })
+}
+// Width of the collapsed sidebar: a column of icons (#91).
+scaled!(rail_w, 52.);
 
 static SIDEBAR_COLLAPSED: AtomicBool = AtomicBool::new(false);
 
@@ -211,30 +279,30 @@ pub(crate) fn sidebar_collapsed() -> bool {
 /// The sidebar's width now: full, or the column of icons.
 pub(crate) fn sidebar_width() -> Pixels {
     if sidebar_collapsed() {
-        RAIL_W
+        rail_w()
     } else {
-        SIDEBAR_W
+        sidebar_full_width()
     }
 }
-pub(crate) const FILTER_W: Pixels = px(220.);
-/// Search options panel below the filter box (scope, filters, contents): wide enough for every
-/// control on one line in each language.
-pub(crate) const SEARCH_PANEL_W: Pixels = px(456.);
-/// Widest value shown on a filter button (a long hand-typed term is cut off).
-pub(crate) const FILTER_VALUE_MAX_W: Pixels = px(180.);
-/// Narrowest filter menu in the search panel.
-pub(crate) const FILTER_MENU_W: Pixels = px(208.);
-/// The Name column's automatic width, until the user sizes it: what the other columns leave in
-/// the pane, but at least `COL_NAME` and at most `COL_NAME_MAX` (see `explorer_layout.rs`).
-pub(crate) const COL_NAME: Pixels = px(240.);
-pub(crate) const COL_NAME_MAX: Pixels = px(480.);
-pub(crate) const COL_MODIFIED: Pixels = px(140.);
-pub(crate) const COL_TYPE: Pixels = px(130.);
-pub(crate) const COL_SIZE: Pixels = px(84.);
-pub(crate) const COL_EXTENSION: Pixels = px(72.);
-pub(crate) const COL_ATTRIBUTES: Pixels = px(64.);
-pub(crate) const COL_LINK_TARGET: Pixels = px(240.);
-pub(crate) const COL_LOCATION: Pixels = px(260.);
+scaled!(filter_w, 220.);
+// Search options panel below the filter box (scope, filters, contents): wide enough for every
+// control on one line in each language.
+scaled!(search_panel_w, 456.);
+// Widest value shown on a filter button (a long hand-typed term is cut off).
+scaled!(filter_value_max_w, 180.);
+// Narrowest filter menu in the search panel.
+scaled!(filter_menu_w, 208.);
+// The Name column's automatic width, until the user sizes it: what the other columns leave in
+// the pane, but at least `col_name()` and at most `col_name_max()` (see `explorer_layout.rs`).
+scaled!(col_name, 240.);
+scaled!(col_name_max, 480.);
+scaled!(col_modified, 140.);
+scaled!(col_type, 130.);
+scaled!(col_size, 84.);
+scaled!(col_extension, 72.);
+scaled!(col_attributes, 64.);
+scaled!(col_link_target, 240.);
+scaled!(col_location, 260.);
 /// One icon size of the grid: cell size, the area a thumbnail fills, and the kind icon drawn when
 /// there is no thumbnail.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,32 +343,32 @@ pub(crate) const TILE_XL: Tile = Tile {
     image: px(192.),
     icon: px(128.),
 };
-/// Details view tree: indent per nesting level and the expand chevron's box.
-pub(crate) const TREE_INDENT: Pixels = px(18.);
-pub(crate) const TREE_CHEVRON: Pixels = px(16.);
-/// Quick Look card: the largest it grows on big screens, and the smallest gap it keeps to the
-/// window edges (it otherwise takes a share of the window, see `explorer_preview.rs`).
-pub(crate) const QL_MAX_W: Pixels = px(1280.);
-pub(crate) const QL_MAX_H: Pixels = px(960.);
-pub(crate) const QL_MARGIN: Pixels = px(24.);
-/// Comfortable reading width for documents (Quick Look's Markdown).
-pub(crate) const READ_W: Pixels = px(760.);
-/// Quick Look's empty states: the kind icon, large.
-pub(crate) const ICON_HERO: Pixels = px(96.);
-/// Title icons (the preview pane's folder name, Quick Look's title bar).
-pub(crate) const ICON_LG: Pixels = px(20.);
-/// Icons.
-pub(crate) const ICON: Pixels = px(16.);
-pub(crate) const ICON_SM: Pixels = px(12.);
+// Details view tree: indent per nesting level and the expand chevron's box.
+scaled!(tree_indent, 18.);
+scaled!(tree_chevron, 16.);
+// Quick Look card: the largest it grows on big screens, and the smallest gap it keeps to the
+// window edges (it otherwise takes a share of the window, see `explorer_preview.rs`).
+scaled!(ql_max_w, 1280.);
+scaled!(ql_max_h, 960.);
+scaled!(ql_margin, 24.);
+// Comfortable reading width for documents (Quick Look's Markdown).
+scaled!(read_w, 760.);
+// Quick Look's empty states: the kind icon, large.
+scaled!(icon_hero, 96.);
+// Title icons (the preview pane's folder name, Quick Look's title bar).
+scaled!(icon_lg, 20.);
+// Icons.
+scaled!(icon, 16.);
+scaled!(icon_sm, 12.);
 
 // --- Radii: outer - padding = inner ---
 
-/// Badges, kbd, thumbnails.
-pub(crate) const R_4: Pixels = px(4.);
-/// Buttons, rows, inputs, menu items.
-pub(crate) const R_8: Pixels = px(8.);
-/// Cards, menus, dialogs.
-pub(crate) const R_12: Pixels = px(12.);
+// Badges, kbd, thumbnails.
+scaled!(r_4, 4.);
+// Buttons, rows, inputs, menu items.
+scaled!(r_8, 8.);
+// Cards, menus, dialogs.
+scaled!(r_12, 12.);
 /// Pills, progress bars.
 pub(crate) const R_FULL: Pixels = px(999.);
 
@@ -943,7 +1011,7 @@ pub(crate) fn list_selection(focused: bool) -> Rgba {
 /// edge, so it reads as a sheet rather than a hole in the pane.
 pub(crate) fn preview_sheet<E: gpui::Styled>(element: E) -> E {
     element
-        .rounded(R_8)
+        .rounded(r_8())
         .border_1()
         .border_color(line())
         .bg(card())

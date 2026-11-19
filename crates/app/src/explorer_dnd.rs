@@ -368,13 +368,13 @@ impl DragPreview {
         div()
             .flex()
             .items_center()
-            .gap(theme::S_6)
-            .text_size(theme::FS_12)
+            .gap(theme::s_6())
+            .text_size(theme::fs_12())
             .text_color(color)
             .child(
                 gpui::svg()
                     .path(icon.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(color),
             )
             .child(text)
@@ -423,40 +423,40 @@ impl Render for DragPreview {
         let card = div()
             .flex()
             .flex_col()
-            .gap(theme::S_2)
-            .px(theme::S_12)
-            .py(theme::S_6)
-            .rounded(theme::R_8)
+            .gap(theme::s_2())
+            .px(theme::s_12())
+            .py(theme::s_6())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(kind_icon(
                         if self.count > 1 {
                             FileKind::Other
                         } else {
                             self.kind
                         },
-                        theme::ICON,
+                        theme::icon(),
                     ))
                     .child(self.label.clone()),
             )
             .child(self.action_line(window, cx))
             .child(
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(t!("dnd.keys").to_string()),
             );
         div()
-            .pl(self.grab.x + theme::S_12)
-            .pt(self.grab.y + theme::S_12)
+            .pl(self.grab.x + theme::s_12())
+            .pt(self.grab.y + theme::s_12())
             .child(card)
     }
 }

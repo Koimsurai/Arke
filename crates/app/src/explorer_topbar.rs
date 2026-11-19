@@ -31,22 +31,36 @@ use super::layout::{self, SearchBox};
 use crate::theme;
 
 /// Widest the search box gets while typing (it also stops at half the row).
-const TYPING_MAX: Pixels = px(560.);
+fn typing_max() -> gpui::Pixels {
+    crate::theme::scaled_px(560.)
+}
 /// Space before the path bar.
-const PATH_LEAD: Pixels = theme::S_4;
+fn path_lead() -> gpui::Pixels {
+    theme::s_4()
+}
 /// Search box width in a split pane (half width).
-const SPLIT_SEARCH_W: Pixels = px(150.);
+fn split_search_w() -> gpui::Pixels {
+    crate::theme::scaled_px(150.)
+}
 /// Space between the path bar and the search box.
-const ROW_GAP: Pixels = theme::S_8;
+fn row_gap() -> gpui::Pixels {
+    theme::s_8()
+}
 /// With a preview column below, the gap between the path bar and the search box sits over its
 /// divider: this much on each side of it (about the divider and the list's scrollbar).
-const DIVIDER_GAP: Pixels = px(14.);
+fn divider_gap() -> gpui::Pixels {
+    crate::theme::scaled_px(14.)
+}
 /// The search box lines up with the preview column only while that leaves it at least this wide
-/// (a wider column keeps it at [`TYPING_MAX`], right-aligned).
-const ALIGNED_MIN: Pixels = px(180.);
+/// (a wider column keeps it at [`typing_max()`], right-aligned).
+fn aligned_min() -> gpui::Pixels {
+    crate::theme::scaled_px(180.)
+}
 /// A path bar narrower than this shows only "… › current folder" (no trailing ›, little blank
 /// end), so the current folder's name keeps some room.
-const PATH_COMPACT_BELOW: Pixels = px(200.);
+fn path_compact_below() -> gpui::Pixels {
+    crate::theme::scaled_px(200.)
+}
 /// A press from touch or a pen moves the window only past this many times the drag distance.
 const TOUCH_DRAG_FACTOR: f32 = 3.;
 
@@ -115,28 +129,28 @@ impl Explorer {
             return px(0.);
         }
         let normal = gpui::FontWeight::NORMAL;
-        let chip = theme::S_6 * 2.
-            + theme::ICON_SM
+        let chip = theme::s_6() * 2.
+            + theme::icon_sm()
             + self.scope_chip_label().map_or(px(0.), |label| {
-                theme::S_4 + text_width(&label, theme::FS_12, normal, window)
+                theme::s_4() + text_width(&label, theme::fs_12(), normal, window)
             });
         // Padding and border, the magnifier, the gaps between the parts, the clear button and room
         // for the caret.
-        theme::S_12
-            + theme::S_4
+        theme::s_12()
+            + theme::s_4()
             + px(2.)
-            + theme::ICON
-            + theme::S_6 * 3.
-            + text_width(text, theme::FS_14, normal, window)
-            + theme::S_20
+            + theme::icon()
+            + theme::s_6() * 3.
+            + text_width(text, theme::fs_14(), normal, window)
+            + theme::s_20()
             + chip
-            + theme::S_8
+            + theme::s_8()
     }
 
     /// Resting width of the search box that puts the gap before it right over the divider of the
     /// preview column below (this pane's preview pane, or a split tab's shared preview right of
     /// it). `None`: no such column, or it would leave the search box narrower than
-    /// [`ALIGNED_MIN`].
+    /// [`aligned_min()`].
     ///
     /// The column's width is this frame's (so the gap follows a divider drag at once); how far
     /// the row's end sits from the pane's right edge comes from the last layout, and only changes
@@ -157,8 +171,8 @@ impl Explorer {
         // Past the row's end: the window buttons and spacing.
         let tail = bar_right - row.right();
         // The paper (holding the list and the preview) ends a margin before the pane's edge.
-        let width = column + layout::PAPER_MARGIN - DIVIDER_GAP - tail;
-        (width >= ALIGNED_MIN).then(|| width.min(TYPING_MAX))
+        let width = column + layout::paper_margin() - divider_gap() - tail;
+        (width >= aligned_min()).then(|| width.min(typing_max()))
     }
 
     /// The search box's width for `state` (`content`: what its text needs) in the row measured at
@@ -171,22 +185,22 @@ impl Explorer {
     ) -> (Pixels, Pixels) {
         let aligned = self.aligned_search_width();
         let normal = aligned.unwrap_or(if self.pane.split {
-            SPLIT_SEARCH_W
+            split_search_w()
         } else {
-            theme::FILTER_W
+            theme::filter_w()
         });
         // At its cap the box no longer reaches the divider: the usual spacing, and the path bar
         // takes the rest.
-        let gap = if aligned.is_some_and(|w| w < TYPING_MAX) {
-            DIVIDER_GAP * 2.
+        let gap = if aligned.is_some_and(|w| w < typing_max()) {
+            divider_gap() * 2.
         } else {
-            ROW_GAP
+            row_gap()
         };
         let row = self.top_row.bounds.get().size.width;
-        // Typing widens it with the text, up to half the row or TYPING_MAX.
-        let typing_max = (self.bar_width * 0.5).min(TYPING_MAX);
+        // Typing widens it with the text, up to half the row or typing_max().
+        let typing_max = (self.bar_width * 0.5).min(typing_max());
         let target = layout::search_width(
-            (row - PATH_LEAD - gap).max(px(0.)),
+            (row - path_lead() - gap).max(px(0.)),
             state,
             normal,
             typing_max,
@@ -228,7 +242,7 @@ impl Explorer {
         let (search_w, gap) = self.search_box_width(state, content, window);
         // A narrow path bar (as laid out on the last frame) keeps only the current folder.
         let slot = self.path_slot.get();
-        let compact = slot > px(0.) && slot < PATH_COMPACT_BELOW;
+        let compact = slot > px(0.) && slot < path_compact_below();
         let bounds = Rc::clone(&self.top_row.bounds);
         // The search box sizes from these bounds: when they change, draw once more with the new
         // value (they don't depend on the row's content, so this settles at once).
@@ -250,7 +264,7 @@ impl Explorer {
             .h_full()
             .items_center()
             .child(capture)
-            .child(Self::title_drag("path-lead", cx).w(PATH_LEAD))
+            .child(Self::title_drag("path-lead", cx).w(path_lead()))
             .child(self.render_path_slot(compact, window, cx))
             .child(
                 Self::title_drag("path-search-gap", cx)
@@ -312,7 +326,7 @@ impl Explorer {
     /// Empty title bar above and below the controls (they're shorter than the row), as drag
     /// areas. They stop `right` short of the row's end, where the window buttons sit.
     pub(super) fn title_drag_bands(right: Pixels, cx: &mut Context<Self>) -> [AnyElement; 2] {
-        let band = (theme::H_BAR - theme::H_CTL) / 2.;
+        let band = (theme::h_bar() - theme::h_ctl()) / 2.;
         [
             Self::title_drag("title-band-top", cx)
                 .absolute()
@@ -520,7 +534,7 @@ impl Explorer {
     ) {
         let text = self.filter_input.read(cx).text().to_owned();
         let left = self.top_row.summary_text.get().left();
-        let offset = text_offset(&text, at.x - left, theme::FS_14, window);
+        let offset = text_offset(&text, at.x - left, theme::fs_14(), window);
         self.panel_dismissed = false;
         self.filter_input.update(cx, |input, cx| {
             input.select_range(offset..offset, cx);

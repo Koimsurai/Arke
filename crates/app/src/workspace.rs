@@ -63,6 +63,8 @@ mod shortcuts;
 mod sidebar;
 #[path = "workspace_tabdrag.rs"]
 mod tabdrag;
+#[path = "workspace_tabghost.rs"]
+mod tabghost;
 #[path = "workspace_tabmove.rs"]
 mod tabmove;
 #[path = "workspace_uninstall.rs"]
@@ -287,6 +289,10 @@ struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Past the window's edge the tab is drawn beside the pointer instead (`tabghost`).
+        if tabghost::shown() {
+            return div().into_any_element();
+        }
         // Over the favorites (the tiles or the list): what dropping there does.
         let pin = pindrop::current(window, cx).map(|_| {
             div()
@@ -319,6 +325,7 @@ impl Render for DraggedTab {
             .child(kind_icon(FileKind::Folder, theme::icon()))
             .child(self.title.clone())
             .children(pin)
+            .into_any_element()
     }
 }
 
@@ -384,6 +391,8 @@ pub(crate) struct Workspace {
     title_layout: crate::explorer::TitleLayout,
     /// Tab being dragged; dropping on the right half of the content area splits, like Arc.
     dragging_tab: Option<usize>,
+    /// The dragged tab beside the pointer once it is outside the window.
+    tab_ghost: Option<tabghost::TabGhost>,
     /// Animation and hit testing for tab and favorite tile reordering.
     tab_drag: tabdrag::TabDrag,
     /// Where the tabs were drawn last, for a tab dropped here from another window.
@@ -729,6 +738,7 @@ impl Workspace {
             resizing: false,
             title_layout: crate::explorer::TitleLayout::default(),
             dragging_tab: None,
+            tab_ghost: None,
             tab_drag: tabdrag::TabDrag::default(),
             tab_layout: Rc::default(),
             dragging_pin: false,
@@ -2514,6 +2524,7 @@ impl Workspace {
         if !cx.has_active_drag() {
             self.dragging_pin = false;
             self.dragging_tab = None;
+            self.close_tab_ghost(cx);
             self.tab_drag.end_tile();
             self.tab_drag.end_spring();
             pindrop::clear(cx);

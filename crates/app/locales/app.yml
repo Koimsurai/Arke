@@ -4873,3 +4873,11 @@ cmd.move_to_peer:
   en: Move to the other pane
   zh-TW: 移動到另一側窗格
   zh-CN: 移动到另一侧窗格
+tabs.drop_new_window:
+  en: Release to open in a new window
+  zh-TW: 放開以在新視窗開啟
+  zh-CN: 松开以在新窗口打开
+tabs.drop_into_window:
+  en: Release to move to this window
+  zh-TW: 放開以移到這個視窗
+  zh-CN: 松开以移到这个窗口

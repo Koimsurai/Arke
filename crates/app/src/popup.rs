@@ -240,9 +240,46 @@ pub(crate) struct PopupState {
     left: Cell<bool>,
     window: Cell<Option<AnyWindowHandle>>,
     group: Group,
+    /// A popup opened at a point that was moved since (a drag image following the pointer).
+    moved_to: Cell<Option<(i32, i32)>>,
 }
 
 impl PopupState {
+    /// Moves a popup opened at a point to `at` (physical screen pixels) on its next frame, which
+    /// is asked for here.
+    pub(crate) fn move_to(&self, at: (i32, i32), cx: &mut App) {
+        if self.moved_to.get() == Some(at) {
+            return;
+        }
+        self.moved_to.set(Some(at));
+        // Placed already: the window moves as it is, without drawing again (a redraw racing the
+        // move leaves parts of the last frame behind). A frame drawn later places it the same way.
+        let (Some(panel), Some(frame), Some(window)) =
+            (self.panel.get(), self.frame.get(), self.window.get())
+        else {
+            self.group.refresh(cx);
+            return;
+        };
+        let Some((placed, _)) = self.target(panel.size) else {
+            return;
+        };
+        let (dx, dy) = (
+            placed.left - self.placed.get().map_or(placed.left, |p| p.left),
+            placed.top - self.placed.get().map_or(placed.top, |p| p.top),
+        );
+        let moved = ScreenRect {
+            left: frame.left + dx,
+            top: frame.top + dy,
+            right: frame.right + dx,
+            bottom: frame.bottom + dy,
+        };
+        self.placed.set(Some(placed));
+        self.frame.set(Some(moved));
+        if let Ok(Some(hwnd)) = window.update(cx, |_, window, _| hwnd_of(window)) {
+            crate::win_popup::move_popup(hwnd, moved);
+        }
+    }
+
     /// Whether it opened to the left of its parent level.
     pub(crate) const fn opens_left(&self) -> bool {
         self.left.get()
@@ -272,7 +309,14 @@ impl PopupState {
         );
         let work = self.monitor.work;
         Some(match &self.anchor {
-            Anchor::At(x, y) => (place_at((*x, *y), size, work), false),
+            Anchor::At(x, y) => match self.moved_to.get() {
+                // Kept on the screen it is moved onto now.
+                Some(at) => (
+                    place_at(at, size, monitor_at(&monitors(), at.0, at.1).work),
+                    false,
+                ),
+                None => (place_at((*x, *y), size, work), false),
+            },
             Anchor::Below {
                 control,
                 align_right,
@@ -363,6 +407,7 @@ pub(crate) fn open(
         left: Cell::new(false),
         window: Cell::new(None),
         group: group.clone(),
+        moved_to: Cell::new(None),
     });
     // Made hidden over the monitor's work area, where it gets that monitor's scale, and large
     // enough for the panel's natural size; its first frame fits and places it, and shows it.

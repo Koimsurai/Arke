@@ -426,3 +426,41 @@ fn a_settings_dropdown_opened_with_the_mouse_shows_no_keyboard_cursor(cx: &mut T
         "arrow keys start from the current choice"
     );
 }
+
+/// A dropdown under a control across two monitors goes on the monitor of the edge it lines up
+/// with (a settings list's right edge), not the one its left edge is on.
+#[gpui::test]
+fn a_dropdown_across_two_monitors_takes_the_monitor_of_its_aligned_edge(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let (control, _) = open_language_dropdown_scrolled(&ws, cx);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(popups(cx).is_empty());
+    let scale = cx.update(|window, _| window.scale_factor());
+    // The seam runs through the button, near its left edge.
+    let seam = control.left + 10;
+    crate::popup::set_test_monitors(vec![
+        Monitor {
+            bounds: ScreenRect::new(0, 0, seam, 6000),
+            work: ScreenRect::new(0, 0, seam, 6000),
+            scale,
+        },
+        Monitor {
+            bounds: ScreenRect::new(seam, 0, 8000, 6000),
+            work: ScreenRect::new(seam, 0, 8000, 6000),
+            scale,
+        },
+    ]);
+    let button = cx.debug_bounds("language").expect("Language drawn");
+    cx.simulate_click(button.center(), Modifiers::none());
+    cx.run_until_parked();
+    let placed = ws
+        .update(cx, |ws, _| ws.settings_dropdown_placed_for_test())
+        .expect("the list is placed");
+    assert!(
+        placed.left >= seam,
+        "on the right-hand monitor: {control:?} {placed:?}"
+    );
+}

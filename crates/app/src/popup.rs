@@ -449,7 +449,19 @@ pub(crate) fn open(
 ) -> Option<Rc<PopupState>> {
     let monitor = match &anchor {
         Anchor::At(x, y) => monitor_at(&monitors(), *x, *y),
-        Anchor::Below { control, .. } => monitor_at(&monitors(), control.left, control.bottom),
+        // A control across two monitors: the one with the edge the list lines up with, where
+        // it can stay lined up, not the one its left edge happens to be on.
+        Anchor::Below {
+            control,
+            align_right,
+        } => {
+            let x = if *align_right {
+                control.right - 1
+            } else {
+                control.left
+            };
+            monitor_at(&monitors(), x, i32::midpoint(control.top, control.bottom))
+        }
         Anchor::Beside { parent, .. } => parent.upgrade()?.monitor.get(),
     };
     let state = Rc::new(PopupState {

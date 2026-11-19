@@ -86,7 +86,7 @@ impl Global for UndoHistory {}
 impl UndoHistory {
     /// Records an operation for Ctrl+Z and returns its id. A new operation (`fresh`, anything but
     /// a redo) clears what Ctrl+Y could redo, like every editor.
-    pub(super) fn push(
+    pub(crate) fn push(
         cx: &mut App,
         verb: &'static str,
         undo: Undo,

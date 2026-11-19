@@ -747,6 +747,36 @@ impl Shell for RemoteShell {
         }
         self.inner.reveal_in_explorer(path, select)
     }
+    fn file_details(&self, path: &Path) -> crate::shell::FileDetails {
+        if remote(path).is_some() {
+            return crate::shell::FileDetails::default();
+        }
+        self.inner.file_details(path)
+    }
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.set_attributes(paths, set, clear)
+    }
+    fn default_app(&self, path: &Path) -> Option<String> {
+        if remote(path).is_some() {
+            return None;
+        }
+        self.inner.default_app(path)
+    }
+    fn volume_info(&self, root: &Path) -> Option<crate::shell::VolumeInfo> {
+        if remote(root).is_some() {
+            return None;
+        }
+        self.inner.volume_info(root)
+    }
+    fn show_properties(&self, paths: &[PathBuf], owner: Option<isize>) -> Result<(), ShellError> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.show_properties(paths, owner)
+    }
     fn shortcut_target(&self, path: &Path) -> Option<(PathBuf, bool)> {
         if remote(path).is_some() {
             return None;

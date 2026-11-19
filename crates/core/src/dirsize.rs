@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
+use crate::entry::{Entry, EntryKind};
 use crate::fs::{Fs, SizeItem};
 
 /// Size of one folder.
@@ -117,11 +118,140 @@ pub fn dir_size_tree(
     Some(total)
 }
 
+/// What a Properties window shows for folders: sizes and counts, found as the walk goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Total size of all files in bytes.
+    pub bytes: u64,
+    /// Space the files take on disk, estimated from the cluster size. Cloud placeholders that are
+    /// not on this device take none.
+    pub on_disk: u64,
+    /// Files, recursively.
+    pub files: u64,
+    /// Folders below, recursively (not the folder itself).
+    pub folders: u64,
+    /// Something could not be read, so the numbers are an undercount.
+    pub partial: bool,
+}
+
+impl AddAssign for Usage {
+    fn add_assign(&mut self, other: Self) {
+        self.bytes += other.bytes;
+        self.on_disk += other.on_disk;
+        self.files += other.files;
+        self.folders += other.folders;
+        self.partial |= other.partial;
+    }
+}
+
+/// `size` rounded up to a whole number of `cluster`s (`size` itself when the cluster is unknown).
+pub const fn round_to_clusters(size: u64, cluster: u64) -> u64 {
+    if cluster == 0 {
+        size
+    } else {
+        size.div_ceil(cluster).saturating_mul(cluster)
+    }
+}
+
+/// Space one listed file takes on disk. Listings only; a cloud placeholder is never opened.
+pub const fn file_on_disk(entry: &Entry, cluster: u64) -> u64 {
+    if entry.is_cloud_placeholder() {
+        0
+    } else {
+        round_to_clusters(entry.size, cluster)
+    }
+}
+
+/// Walks everything below the folder `root` and counts it, calling `progress` after each folder
+/// with what is known so far. Only lists folders (names, sizes, attributes), so files are never
+/// opened and cloud placeholders are not downloaded. Links are not followed. `None` when
+/// cancelled; an unreadable folder makes the result `partial`.
+pub fn usage(
+    fs: &dyn Fs,
+    root: &Path,
+    cluster: u64,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&Usage),
+) -> Option<Usage> {
+    crate::fs::debug_assert_not_ui_thread("usage", root);
+    let mut total = Usage::default();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        match fs.read_dir(&dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(e) => match e.kind {
+                            EntryKind::File => {
+                                total.bytes += e.size;
+                                total.on_disk += file_on_disk(&e, cluster);
+                                total.files += 1;
+                            }
+                            EntryKind::Dir => {
+                                total.folders += 1;
+                                stack.push(dir.join(&*e.name));
+                            }
+                            EntryKind::Link { .. } => {}
+                        },
+                        Err(_) => total.partial = true,
+                    }
+                }
+            }
+            Err(_) => total.partial = true,
+        }
+        progress(&total);
+    }
+    Some(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::entry::{Entry, EntryKind};
     use crate::fake::FakeFs;
+
+    #[test]
+    fn usage_counts_files_folders_and_space_on_disk() {
+        let fs = FakeFs::new();
+        let placeholder = 0x40_0000;
+        fs.insert_dir(
+            r"C:\u",
+            vec![
+                dir("a"),
+                file("small", 1),
+                Entry::new("cloud", EntryKind::File, 9000, None, placeholder),
+            ],
+        );
+        fs.insert_dir(
+            r"C:\u\a",
+            vec![file("x", 4096), file("y", 4097), dir("gone")],
+        );
+        let cancel = AtomicBool::new(false);
+        let mut steps = 0;
+        let got = usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| steps += 1).unwrap();
+        assert_eq!(got.bytes, 1 + 9000 + 4096 + 4097);
+        // 1 -> 4096, placeholder -> 0, 4096 -> 4096, 4097 -> 8192
+        assert_eq!(got.on_disk, 4096 + 4096 + 8192);
+        assert_eq!((got.files, got.folders), (4, 2));
+        assert!(got.partial, "the unreadable folder makes it an undercount");
+        assert_eq!(steps, 3, "progress after every folder");
+        cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| {}),
+            None
+        );
+    }
+
+    #[test]
+    fn clusters_round_up() {
+        assert_eq!(round_to_clusters(0, 4096), 0);
+        assert_eq!(round_to_clusters(1, 4096), 4096);
+        assert_eq!(round_to_clusters(8192, 4096), 8192);
+        assert_eq!(round_to_clusters(5, 0), 5);
+    }
 
     fn file(name: &str, size: u64) -> Entry {
         Entry::new(name, EntryKind::File, size, None, 0)

@@ -60,6 +60,7 @@ mod op_center;
 mod op_queue;
 mod palette;
 mod prefs;
+mod properties;
 mod quicklook;
 mod recycle_bin;
 mod remote_shell;

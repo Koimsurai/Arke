@@ -10,7 +10,7 @@ use arke_core::filetype::FileKind;
 use gpui::{
     AnimationExt, AnyElement, App, ClickEvent, Context, Div, DragMoveEvent, Entity, ExternalPaths,
     MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window,
-    anchored, deferred, div, prelude::*, px, relative, svg,
+    div, prelude::*, px, relative, svg,
 };
 use rust_i18n::t;
 

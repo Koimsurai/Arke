@@ -97,6 +97,20 @@ fn only_folders_and_several_items_get_a_space_card(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("props-space-bar").is_none());
 }
 
+/// An empty folder, once counted, has nothing to break down: no space card, rather than an empty
+/// bar that looks as if it were still loading.
+#[gpui::test]
+fn an_empty_folder_gets_no_space_card(cx: &mut TestAppContext) {
+    let fs = file_fs();
+    fs.insert_dir(r"C:\p\empty", vec![]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = props(cx, &fs, &shell, &[(r"C:\p\empty", true)]);
+    ready(cx, &view);
+    wait_for(cx, &view, "the count", |v| !v.is_counting_for_test());
+    assert!(view.update(cx, |v, _| v.space_view()).is_none());
+    assert!(cx.debug_bounds("props-space-bar").is_none());
+}
+
 #[gpui::test]
 fn several_items_share_one_space_card(cx: &mut TestAppContext) {
     let fs = file_fs();

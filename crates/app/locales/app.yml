@@ -3124,11 +3124,11 @@ props.act_open_with:
   zh-CN: 打开方式…
 props.act_favorite:
   en: Add to favorites
-  zh-TW: 加入我的最愛
+  zh-TW: 加入最愛
   zh-CN: 添加到收藏夹
 props.act_unfavorite:
   en: Remove from favorites
-  zh-TW: 從我的最愛移除
+  zh-TW: 從最愛移除
   zh-CN: 从收藏夹移除
 props.act_show:
   en: Show in folder

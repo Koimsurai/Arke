@@ -49,8 +49,8 @@ actions!(properties, [CloseProperties]);
 
 const CONTEXT: &str = "Properties";
 
-/// Window width and the height it starts with (it then fits what is shown, up to this height;
-/// what does not fit scrolls).
+/// Window width and the height it starts with; it then grows to fit what is shown, up to the
+/// height of the screen (only what does not fit on the screen scrolls).
 const WIDTH: f32 = 760.;
 const START_HEIGHT: f32 = 520.;
 /// The window is never smaller than this, and keeps this much of the screen free.
@@ -429,25 +429,44 @@ impl Properties {
         });
     }
 
-    /// Sizes the window to what is drawn, unless the user sized it.
+    /// Sizes the window to what is drawn, unless the user sized it: as tall as the content, up
+    /// to the screen it is on. A window that would grow past the bottom of the screen moves up.
     fn fit_window(&mut self, window: &mut Window, cx: &App) {
         if self.user_sized || self.loaded.is_none() {
             return;
         }
-        let screen = cx
-            .primary_display()
-            .map_or(1000., |d| f32::from(d.visible_bounds().size.height));
-        let want = self.estimate.get().clamp(
-            MIN_HEIGHT,
-            START_HEIGHT.min(screen - SCREEN_MARGIN).max(MIN_HEIGHT),
-        );
+        let screen = window.display(cx).or_else(|| cx.primary_display());
+        let area = screen.as_ref().map(|d| d.visible_bounds());
+        let room = area.map_or(1000., |a| f32::from(a.size.height)) - SCREEN_MARGIN;
+        let want = self.estimate.get().clamp(MIN_HEIGHT, room.max(MIN_HEIGHT));
         if (want - self.fit_height).abs() <= 6. {
             return;
         }
         self.fit_height = want;
         self.fit_at = Instant::now();
-        let width = window.bounds().size.width;
-        window.resize(size(width, px(want)));
+        let bounds = window.bounds();
+        if let (Some(screen), Some(area)) = (screen, area) {
+            let top = area.origin.y + px(SCREEN_MARGIN / 2.);
+            let bottom = area.origin.y + area.size.height - px(SCREEN_MARGIN / 2.);
+            // gpui can resize a window but not move it.
+            if bounds.origin.y + px(want) > bottom
+                && let Some(hwnd) = crate::explorer::Explorer::owner_from(window)
+            {
+                let y = (bottom - px(want)).max(top);
+                let to = Bounds::new(
+                    gpui::point(bounds.origin.x, y),
+                    size(bounds.size.width, px(want)),
+                );
+                // Not while this frame is drawn: the window reads its new size from the
+                // message Windows sends it, which would arrive in the middle of the frame.
+                let (monitor, screen) = (u64::from(screen.id()), screen.bounds());
+                cx.foreground_executor()
+                    .spawn(async move { crate::win::move_window(hwnd, monitor, screen, to) })
+                    .detach();
+                return;
+            }
+        }
+        window.resize(size(bounds.size.width, px(want)));
     }
 
     // ───────────────────────────── Reading ─────────────────────────────
@@ -1058,7 +1077,9 @@ impl Properties {
     /// biggest folders inside, and the total they are measured against.
     pub(crate) fn space_view(&self) -> Option<SpaceView> {
         let space = self.space.as_ref()?;
-        if !self.any_folder() {
+        // An empty folder, once counted, has nothing to break down.
+        let empty = space.usage.bytes == 0 && matches!(self.counting, Counting::Done);
+        if !self.any_folder() || empty {
             return None;
         }
         let mut categories: Vec<(Category, u64)> = Category::ALL

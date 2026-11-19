@@ -372,30 +372,64 @@ pub(super) fn button(
         .into_any_element()
 }
 
-/// "Update available" badge next to the sidebar Settings entry.
+/// "Update available" badge next to the sidebar Settings entry. For an update downloaded in the
+/// background it is the one place that says so: "Restart to update", which restarts on click.
 pub(super) fn sidebar_badge(cx: &App) -> Option<AnyElement> {
-    UpdateState::has_news(cx).then(|| {
-        div()
-            .ml_auto()
-            .mr(theme::S_8)
-            .px(theme::S_6)
-            .h(theme::S_20)
-            .flex()
-            .items_center()
-            .rounded(theme::R_FULL)
-            .bg(theme::signal_wash())
-            .text_size(theme::FS_12)
-            .text_color(theme::text())
-            .child(t!("update.badge").to_string())
-            .into_any_element()
-    })
+    if !UpdateState::has_news(cx) {
+        return None;
+    }
+    let badge = div()
+        .ml_auto()
+        .mr(theme::S_8)
+        .px(theme::S_6)
+        .h(theme::S_20)
+        .flex()
+        .items_center()
+        .rounded(theme::R_FULL)
+        .bg(theme::signal_wash())
+        .text_size(theme::FS_12)
+        .text_color(theme::text());
+    if !crate::update_quiet::ready_quietly(cx) {
+        return Some(
+            badge
+                .child(t!("update.badge").to_string())
+                .into_any_element(),
+        );
+    }
+    let label = if crate::update_quiet::restart_waiting(cx) {
+        t!("update.restart_after_ops")
+    } else {
+        t!("update.ready_short")
+    };
+    Some(
+        badge
+            .id("update-badge-restart")
+            .debug_selector(|| "update-badge-restart".to_owned())
+            .a11y_lazy(gpui::Role::Button, {
+                let label = label.to_string();
+                move || label
+            })
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::signal()).text_color(theme::on_signal()))
+            .child(label.into_owned())
+            .on_click(|_, _, cx| {
+                cx.stop_propagation();
+                crate::update_quiet::restart_now(cx);
+            })
+            .into_any_element(),
+    )
 }
 
 /// Corner card for a new version found by the check (automatic or by hand), with What's new
 /// and Download; then the download's progress and Restart. Closing it hides it until a newer
 /// version comes (`update_dismissed`); the sidebar badge and Settings › About stay.
 pub(super) fn update_notice(cx: &mut Context<Workspace>) -> Option<AnyElement> {
-    if super::welcome::welcome_due(cx) || update::package_manager().is_some() {
+    // A background download says nothing while it runs, and once ready only the sidebar badge.
+    if super::welcome::welcome_due(cx)
+        || update::package_manager().is_some()
+        || crate::update_quiet::hidden(cx)
+        || crate::update_quiet::ready_quietly(cx)
+    {
         return None;
     }
     let state = UpdateState::get(cx);

@@ -1077,13 +1077,13 @@ update.channel_desc:
   zh-TW: "正式版最穩定；RC 是下一版的候選；Nightly 每天更新"
   zh-CN: "正式版最稳定；RC 是下一版的候选；Nightly 每天更新"
 update.auto:
-  en: Check automatically
-  zh-TW: 自動檢查
-  zh-CN: 自动检查
+  en: Update automatically
+  zh-TW: 自動更新
+  zh-CN: 自动更新
 update.auto_desc:
-  en: "At most once a day; never installs on its own"
-  zh-TW: "一天最多檢查一次，不會自動安裝"
-  zh-CN: "每天最多检查一次，不会自动安装"
+  en: "Checks once a day and downloads in the background; installs the next time Arke restarts"
+  zh-TW: "一天檢查一次並在背景下載，下次 Arke 重新啟動時安裝"
+  zh-CN: "每天检查一次并在后台下载，下次 Arke 重启时安装"
 update.check:
   en: Check now
   zh-TW: "立即檢查"
@@ -1132,6 +1132,10 @@ update.restart:
   en: Restart now
   zh-TW: "立即重新啟動"
   zh-CN: 立即重启
+update.restart_after_ops:
+  en: Restarts when file tasks finish
+  zh-TW: 檔案作業完成後重新啟動
+  zh-CN: 文件操作完成后重启
 update.failed:
   en: "Couldn't update: %{error}"
   zh-TW: 無法更新：%{error}

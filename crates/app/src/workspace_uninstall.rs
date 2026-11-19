@@ -183,7 +183,7 @@ impl Workspace {
         match uninstall::start_from_app(ask.keep_settings) {
             Ok(()) => {
                 log::info!("uninstall: handed over, quitting");
-                cx.quit();
+                crate::update_quiet::quit(crate::update_quiet::QuitReason::Other, cx);
             }
             Err(err) => {
                 ask.error =

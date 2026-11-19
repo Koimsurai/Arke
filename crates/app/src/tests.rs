@@ -62,6 +62,8 @@ mod quiet_update;
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_stuck_drag.rs"]
+mod stuck_drag;
 #[path = "tests_tab_drag.rs"]
 mod tab_drag;
 #[path = "tests_tabs.rs"]

@@ -389,6 +389,8 @@ pub(crate) struct Workspace {
     resizing: bool,
     /// Where the title row above the panes was laid out (the active pane draws it).
     title_layout: crate::explorer::TitleLayout,
+    /// Mouse buttons pressed in this window, to end presses whose release went elsewhere.
+    held_buttons: crate::press_guard::HeldButtons,
     /// Tab being dragged; dropping on the right half of the content area splits, like Arc.
     dragging_tab: Option<usize>,
     /// The dragged tab beside the pointer once it is outside the window.
@@ -650,8 +652,16 @@ impl Workspace {
         // is dispatched, so it also works with the focus outside the workspace's elements.
         let this_window = window.window_handle();
         let weak = cx.entity().downgrade();
-        let menu_keys = cx.intercept_keystrokes(move |_, window, cx| {
+        let menu_keys = cx.intercept_keystrokes(move |event, window, cx| {
             if window.window_handle() != this_window {
+                return;
+            }
+            // Esc during a drag cancels it; spring-opened folders go back to where they were.
+            // Taken here, before the list's or a menu's own Esc binding can take the key.
+            if event.keystroke.key == "escape" && cx.has_active_drag() {
+                crate::explorer::stop_drag(window, cx);
+                window.refresh();
+                cx.stop_propagation();
                 return;
             }
             weak.update(cx, |this, cx| {
@@ -737,6 +747,7 @@ impl Workspace {
             sidebar_resizing: false,
             resizing: false,
             title_layout: crate::explorer::TitleLayout::default(),
+            held_buttons: crate::press_guard::HeldButtons::default(),
             dragging_tab: None,
             tab_ghost: None,
             tab_drag: tabdrag::TabDrag::default(),
@@ -1743,13 +1754,6 @@ impl Workspace {
     /// Ctrl+1..8 switches to tab N, Ctrl+9 to the last tab, as in browsers.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
-        // Esc during a drag cancels it; spring-opened folders go back to where they were.
-        if ks.key == "escape" && cx.has_active_drag() {
-            cx.stop_active_drag(window);
-            window.refresh();
-            cx.stop_propagation();
-            return;
-        }
         if !ks.modifiers.control || ks.modifiers.alt || ks.modifiers.shift {
             return;
         }
@@ -2469,7 +2473,7 @@ impl Workspace {
                                     // Dragged back in: Arke's drag continues, and leaving again hands off to Windows again.
                                     cx.set_global(pending);
                                 } else {
-                                    cx.stop_active_drag(window);
+                                    crate::explorer::stop_drag(window, cx);
                                 }
                                 window.refresh();
                             });
@@ -2664,6 +2668,8 @@ impl Render for Workspace {
             .text_color(theme::text())
             .ui_font()
             .text_size(theme::fs_14())
+            // First, so it hears every mouse event before the elements do.
+            .child(self.held_buttons.watch())
             .when(
                 self.resizing || self.sidebar_resizing,
                 gpui::Styled::cursor_col_resize,

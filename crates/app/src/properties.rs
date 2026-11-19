@@ -267,7 +267,9 @@ pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
         .read(cx)
         .settings
         .properties_window;
-    let height = saved.and_then(|p| p.height).unwrap_or_else(|| sc(START_HEIGHT));
+    let height = saved
+        .and_then(|p| p.height)
+        .unwrap_or_else(|| sc(START_HEIGHT));
     // A width saved by the old, narrow window would only give a single column: start afresh.
     let width = saved
         .filter(|p| p.width >= sc(MIN_WIDTH))
@@ -443,7 +445,10 @@ impl Properties {
         let screen = window.display(cx).or_else(|| cx.primary_display());
         let area = screen.as_ref().map(|d| d.visible_bounds());
         let room = area.map_or(1000., |a| f32::from(a.size.height)) - SCREEN_MARGIN;
-        let want = self.estimate.get().clamp(sc(MIN_HEIGHT), room.max(sc(MIN_HEIGHT)));
+        let want = self
+            .estimate
+            .get()
+            .clamp(sc(MIN_HEIGHT), room.max(sc(MIN_HEIGHT)));
         if (want - self.fit_height).abs() <= 6. {
             return;
         }

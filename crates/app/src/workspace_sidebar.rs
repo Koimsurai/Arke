@@ -9,8 +9,8 @@ use std::sync::Arc;
 use arke_core::filetype::FileKind;
 use gpui::{
     AnimationExt, AnyElement, App, ClickEvent, Context, Div, DragMoveEvent, Entity, ExternalPaths,
-    MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window,
-    div, prelude::*, px, relative, svg,
+    MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window, div,
+    prelude::*, px, relative, svg,
 };
 use rust_i18n::t;
 

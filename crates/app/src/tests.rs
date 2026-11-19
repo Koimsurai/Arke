@@ -50,8 +50,6 @@ mod popup_menus;
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
-#[path = "tests_scale.rs"]
-mod scale;
 #[path = "tests_properties_card.rs"]
 mod properties_card;
 #[path = "tests_properties.rs"]
@@ -62,6 +60,8 @@ mod quick_look;
 mod quiet_update;
 #[path = "tests_remote.rs"]
 mod remote;
+#[path = "tests_scale.rs"]
+mod scale;
 #[path = "tests_tab_drag.rs"]
 mod tab_drag;
 #[path = "tests_tabs.rs"]

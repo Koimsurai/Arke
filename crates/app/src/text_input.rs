@@ -349,7 +349,12 @@ impl TextInput {
         self.move_to(self.next_word(self.cursor_offset()), window, cx);
     }
 
-    fn select_word_left(&mut self, _: &SelectWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_word_left(
+        &mut self,
+        _: &SelectWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.select_to(self.previous_word(self.cursor_offset()), window, cx);
     }
 
@@ -371,7 +376,12 @@ impl TextInput {
     }
 
     /// Ctrl+Backspace: erases back to the start of the word (a selection is erased instead).
-    fn delete_word_left(&mut self, _: &DeleteWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.selected_range.is_empty() {
             let to = self.previous_word(self.cursor_offset());
             if to == self.cursor_offset() {

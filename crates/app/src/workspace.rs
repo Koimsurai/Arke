@@ -41,10 +41,10 @@ pub(crate) mod menuprefs;
 mod nav;
 #[path = "workspace_pages.rs"]
 mod pages;
-#[path = "workspace_placename.rs"]
-mod place_rename;
 #[path = "workspace_pindrop.rs"]
 pub(crate) mod pindrop;
+#[path = "workspace_placename.rs"]
+mod place_rename;
 #[path = "workspace_rail.rs"]
 mod rail;
 #[path = "workspace_recycle.rs"]

@@ -368,7 +368,10 @@ fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext
     let (ws, left, cx) = open_deep(cx, 1200.);
     cx.simulate_keystrokes("ctrl-a");
     settle(cx);
-    assert!(cx.debug_bounds("sel-more").is_none(), "a wide pane keeps its buttons");
+    assert!(
+        cx.debug_bounds("sel-more").is_none(),
+        "a wide pane keeps its buttons"
+    );
 
     cx.simulate_resize(size(px(1000.), px(650.)));
     settle(cx);
@@ -382,7 +385,10 @@ fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext
         .clone();
     assert!(view.update(cx, |v, _| v.selection_folds()));
     let actions = bounds(cx, "selection-actions");
-    assert!(actions.size.width < px(100.), "only the count and ⋯: {actions:?}");
+    assert!(
+        actions.size.width < px(100.),
+        "only the count and ⋯: {actions:?}"
+    );
     assert!(bounds(cx, "sel-count").size.width > px(0.));
     // Both panes may hold a selection: whichever "⋯" is pressed opens its own pane's menu.
     let menus = |cx: &mut VisualTestContext| {

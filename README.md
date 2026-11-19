@@ -233,6 +233,7 @@ ranks higher; turn it off or clear it in Settings › Search.
 | Keys | Action |
 | --- | --- |
 | Ctrl+T | Go to a folder (recent places, open tabs and paths) |
+| Ctrl+Shift+P | Command palette: search any command and run it; every shortcut can be changed in Settings › Keyboard shortcuts |
 | Ctrl+W · Ctrl+Shift+T | Close tab (in split view, the active side) · reopen closed tab |
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | Switch tabs |
 | Ctrl+Shift+S · Ctrl+Shift+D | Dual pane: synchronized browsing · compare folders |

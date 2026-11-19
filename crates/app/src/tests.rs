@@ -58,6 +58,8 @@ mod remote;
 mod tabs;
 #[path = "tests_columns.rs"]
 mod tests_columns;
+#[path = "tests_commands.rs"]
+mod tests_commands;
 #[path = "tests_text_input_menu.rs"]
 mod text_input_menu;
 #[path = "tests_top_bar.rs"]
@@ -1879,10 +1881,7 @@ fn setup_workspace_services(
     rust_i18n::set_locale("en");
     cx.executor().allow_parking();
     cx.update(|cx| {
-        crate::text_input::bind_keys(cx);
-        crate::explorer::bind_keys(cx);
-        crate::workspace::bind_keys(cx);
-        crate::palette::bind_keys(cx);
+        crate::commands::init(&crate::settings::SettingsStore::global(cx), cx);
     });
     cx.add_window_view(move |window, cx| {
         Workspace::new(

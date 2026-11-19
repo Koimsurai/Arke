@@ -250,10 +250,14 @@ impl Explorer {
 
     /// Quick Look on a workbook: the grid, with sheet tabs below when there are several.
     pub(super) fn workbook_look(&self, view: &WorkbookView, cx: &mut Context<Self>) -> AnyElement {
-        let grid = Self::with_preview_scrollbar(
-            sheet_grid_at(view, Some(self.doc_zoom()), &self.look_scroll),
+        let grid = sheet_grid_at(
+            view,
+            Some(self.doc_zoom()),
             &self.look_scroll,
-            &self.look_scrollbar,
+            Some((
+                std::rc::Rc::clone(&self.look_scrollbar),
+                std::rc::Rc::clone(&self.look_hscrollbar),
+            )),
         );
         if view.book.names.len() < 2 {
             return grid;
@@ -530,14 +534,21 @@ fn truncated_note() -> AnyElement {
 
 // ───────────────────────── Sheets ─────────────────────────
 
+/// The vertical and sideways scrollbar states of a sheet.
+pub(super) type SheetBars = (
+    crate::scrollbar::ScrollbarDrag,
+    crate::scrollbar::ScrollbarDrag,
+);
+
 /// A sheet as a grid: column letters and row numbers stay in place while the cells scroll both
 /// ways. Only the rows in view are built.
 pub(super) fn sheet_grid(
     view: &WorkbookView,
     large: bool,
     scroll: &gpui::ScrollHandle,
+    bars: Option<SheetBars>,
 ) -> AnyElement {
-    sheet_grid_at(view, large.then_some(1.), scroll)
+    sheet_grid_at(view, large.then_some(1.), scroll, bars)
 }
 
 /// [`sheet_grid`]; `zoom` is Quick Look's text scale (`None` in the pane). Rows and columns grow
@@ -550,6 +561,7 @@ fn sheet_grid_at(
     view: &WorkbookView,
     zoom: Option<f32>,
     scroll: &gpui::ScrollHandle,
+    bars: Option<SheetBars>,
 ) -> AnyElement {
     let large = zoom.is_some();
     let sheet = &view.book.sheet;
@@ -692,14 +704,26 @@ fn sheet_grid_at(
                     )
                 }))
         }));
+    // Both axes scroll, so the plain wheel goes up and down and Shift+wheel (or a sideways swipe)
+    // goes along the columns. The bars sit over the cells, not over the header or the note.
     let body = div()
-        .id("preview-sheet")
         .flex_1()
         .min_w_0()
         .h_full()
-        .overflow_scroll()
-        .track_scroll(scroll)
-        .child(div().w(total_w).h(row_y(rows)).relative().child(cells));
+        .relative()
+        .child(
+            div()
+                .id("preview-sheet")
+                .debug_selector(|| "preview-sheet".into())
+                .size_full()
+                .overflow_scroll()
+                .track_scroll(scroll)
+                .child(div().w(total_w).h(row_y(rows)).relative().child(cells)),
+        )
+        .when_some(bars, |d, (bar, hbar)| {
+            d.child(crate::scrollbar::scrollbar(scroll.clone(), bar))
+                .child(crate::scrollbar::hscrollbar(scroll.clone(), hbar))
+        });
     let (rows_shown, cols_shown) = (
         arke_core::format::format_count(office::SHEET_ROWS as usize),
         arke_core::format::format_count(office::SHEET_COLS as usize),

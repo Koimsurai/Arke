@@ -802,6 +802,15 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Tests: the preview pane's scroll position and how far it can scroll each way.
+    #[cfg(test)]
+    pub(crate) fn preview_scroll_for_test(&self) -> (Point<Pixels>, Point<Pixels>) {
+        (
+            self.preview_scroll.offset(),
+            self.preview_scroll.max_offset(),
+        )
+    }
+
     /// Tests: the Info list's rows (label, value) for the item on screen.
     #[cfg(test)]
     pub(crate) fn preview_info_for_test(&self) -> Vec<(String, String)> {
@@ -1391,8 +1400,16 @@ impl Explorer {
                 | PreviewBody::Archive(_)
                 | PreviewBody::Folder { .. }
                 | PreviewBody::Document(_)
-                | PreviewBody::Workbook(_)
         )
+    }
+
+    /// Text that is a table (CSV, TSV): lines stay whole and the preview scrolls sideways instead
+    /// of wrapping, so the columns stay lined up.
+    fn is_table_text(preview: &Preview) -> bool {
+        matches!(preview.body, PreviewBody::Text { .. })
+            && std::path::Path::new(preview.entry.name.as_ref())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("csv") || e.eq_ignore_ascii_case("tsv"))
     }
 
     /// Stack scrollable content with its scrollbar on the right.
@@ -1401,15 +1418,36 @@ impl Explorer {
         scroll: &gpui::ScrollHandle,
         drag: &crate::scrollbar::ScrollbarDrag,
     ) -> AnyElement {
+        Self::with_preview_scrollbars(body, scroll, drag, None)
+    }
+
+    /// [`Self::with_preview_scrollbar`], plus a sideways bar along the bottom for content that can
+    /// be wider than its frame.
+    fn with_preview_scrollbars(
+        body: AnyElement,
+        scroll: &gpui::ScrollHandle,
+        drag: &crate::scrollbar::ScrollbarDrag,
+        hdrag: Option<&crate::scrollbar::ScrollbarDrag>,
+    ) -> AnyElement {
         div()
             .relative()
             .size_full()
             .child(body)
             .child(crate::scrollbar::scrollbar(scroll.clone(), Rc::clone(drag)))
+            .when_some(hdrag, |d, hdrag| {
+                d.child(crate::scrollbar::hscrollbar(
+                    scroll.clone(),
+                    Rc::clone(hdrag),
+                ))
+            })
             .into_any_element()
     }
 
-    fn preview_body(preview: &Preview, scroll: &gpui::ScrollHandle) -> AnyElement {
+    fn preview_body(
+        preview: &Preview,
+        scroll: &gpui::ScrollHandle,
+        bars: office::SheetBars,
+    ) -> AnyElement {
         match &preview.body {
             // Give the element the frame's aspect ratio; otherwise GPUI sizes by the image's own
             // ratio and portrait photos overflow.
@@ -1423,7 +1461,9 @@ impl Explorer {
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
-            PreviewBody::Text { lines, .. } => code_view(lines, false, scroll),
+            PreviewBody::Text { lines, .. } => {
+                code_view(lines, false, !Self::is_table_text(preview), scroll)
+            }
             PreviewBody::Archive(listing) => Self::archive_list(listing, scroll),
             PreviewBody::Markdown(text) => div()
                 .id("preview-markdown")
@@ -1438,7 +1478,7 @@ impl Explorer {
                 Self::folder_list(&preview.path, entries, *total, scroll, None)
             }
             PreviewBody::Document(doc) => office::document_body(doc, false, scroll),
-            PreviewBody::Workbook(view) => office::sheet_grid(view, false, scroll),
+            PreviewBody::Workbook(view) => office::sheet_grid(view, false, scroll, Some(bars)),
             PreviewBody::Slides(view) => office::slides_pane(view),
             PreviewBody::Loading(since) if media_loading(&preview.entry) => {
                 media_placeholder(*since, &preview.entry)
@@ -2035,12 +2075,21 @@ impl Explorer {
                             &self.preview_scrollbar,
                         )
                     } else {
-                        let body = Self::preview_body(preview, &self.preview_scroll);
+                        let body = Self::preview_body(
+                            preview,
+                            &self.preview_scroll,
+                            (
+                                Rc::clone(&self.preview_scrollbar),
+                                Rc::clone(&self.preview_hscrollbar),
+                            ),
+                        );
                         if Self::scrolls(&preview.body) {
-                            Self::with_preview_scrollbar(
+                            // A table reaches past the frame sideways: its own bar.
+                            Self::with_preview_scrollbars(
                                 body,
                                 &self.preview_scroll,
                                 &self.preview_scrollbar,
+                                Self::is_table_text(preview).then_some(&self.preview_hscrollbar),
                             )
                         } else {
                             body
@@ -3436,10 +3485,12 @@ impl Explorer {
             } => (*width, *height, image),
             PreviewBody::Pdf(view) => return self.pdf_look(view, cx),
             PreviewBody::Text { lines, .. } => {
-                return Self::with_preview_scrollbar(
-                    code_view_at(lines, Some(zoom), &self.look_scroll),
+                let wrap = !Self::is_table_text(preview);
+                return Self::with_preview_scrollbars(
+                    code_view_at(lines, Some(zoom), wrap, &self.look_scroll),
                     &self.look_scroll,
                     &self.look_scrollbar,
+                    (!wrap).then_some(&self.look_hscrollbar),
                 );
             }
             PreviewBody::Markdown(text) => {
@@ -3532,7 +3583,14 @@ impl Explorer {
                         &self.look_scroll,
                         None,
                     ),
-                    _ => Self::preview_body(preview, &self.look_scroll),
+                    _ => Self::preview_body(
+                        preview,
+                        &self.look_scroll,
+                        (
+                            Rc::clone(&self.look_scrollbar),
+                            Rc::clone(&self.look_hscrollbar),
+                        ),
+                    ),
                 };
                 let body = if Self::scrolls(&preview.body) {
                     Self::with_preview_scrollbar(body, &self.look_scroll, &self.look_scrollbar)
@@ -3917,14 +3975,21 @@ mod zoom_tests {
 
 /// Text and code: line numbers on the left; long lines wrap and the number stays aligned to the
 /// first row. `large` (Quick Look) fills the stage like an editor: a ruled gutter, roomier lines.
-fn code_view(lines: &Arc<Vec<CodeLine>>, large: bool, scroll: &gpui::ScrollHandle) -> AnyElement {
-    code_view_at(lines, large.then_some(1.), scroll)
+/// Without `wrap` (tables) lines stay whole and the view scrolls sideways.
+fn code_view(
+    lines: &Arc<Vec<CodeLine>>,
+    large: bool,
+    wrap: bool,
+    scroll: &gpui::ScrollHandle,
+) -> AnyElement {
+    code_view_at(lines, large.then_some(1.), wrap, scroll)
 }
 
 /// [`code_view`]; `zoom` is Quick Look's text scale (`None` in the pane).
 fn code_view_at(
     lines: &Arc<Vec<CodeLine>>,
     zoom: Option<f32>,
+    wrap: bool,
     scroll: &gpui::ScrollHandle,
 ) -> AnyElement {
     let large = zoom.is_some();
@@ -3952,8 +4017,8 @@ fn code_view_at(
                 .text_color(theme::text_disabled())
                 .child((ix + 1).to_string());
             let text = div()
-                .flex_1()
-                .min_w_0()
+                .when(wrap, |d| d.flex_1().min_w_0())
+                .when(!wrap, |d| d.flex_none().whitespace_nowrap())
                 .child(gpui::StyledText::new(line.text.clone()).with_highlights(marks));
             if large {
                 div()
@@ -3982,11 +4047,18 @@ fn code_view_at(
             }
         })
         .collect();
-    div()
+    // Both axes scroll for a table, and the plain wheel still goes up and down: GPUI only turns
+    // the wheel sideways when x alone scrolls.
+    let area = div()
         .id("preview-text")
-        .size_full()
-        .overflow_y_scroll()
-        .track_scroll(scroll)
+        .debug_selector(|| "preview-text".into())
+        .size_full();
+    let area = if wrap {
+        area.overflow_y_scroll()
+    } else {
+        area.overflow_scroll().flex().items_start()
+    };
+    area.track_scroll(scroll)
         .font_family("Cascadia Mono")
         .when(large, |d| {
             d.py(theme::s_12())
@@ -3998,7 +4070,14 @@ fn code_view_at(
                 .map(theme::preview_sheet)
                 .text_size(theme::fs_12())
         })
-        .children(rows)
+        .child(
+            // Without wrapping the lines set the width, which may pass the frame's.
+            div()
+                .flex()
+                .flex_col()
+                .when(!wrap, |d| d.flex_none().min_w_full())
+                .children(rows),
+        )
         .into_any_element()
 }
 

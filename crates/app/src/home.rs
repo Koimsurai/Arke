@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, ScrollHandle, SharedString, Window, div, prelude::*, px, svg,
+    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    MouseButton, MouseDownEvent, ScrollHandle, SharedString, Window, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -22,6 +22,7 @@ use crate::assets::Icon;
 use crate::explorer::{kind_icon, spawn_thread};
 use crate::settings::SettingsStore;
 use crate::shell::{KnownFolder, Place, PlaceKind, Shell};
+use crate::text_input::TextInput;
 use crate::theme;
 
 /// Recent files listed: enough to find today's work, few enough to stay a list and not a log.
@@ -70,6 +71,31 @@ pub(crate) enum HomeEvent {
     Reveal(PathBuf),
     /// Open the Recycle Bin page (listed here only while it is unpinned from the sidebar).
     OpenRecycle,
+    /// Right click on a drive or network card: the workspace opens its menu if the place has one.
+    PlaceMenu {
+        path: PathBuf,
+        position: gpui::Point<gpui::Pixels>,
+    },
+}
+
+/// The name on a drive or network card: text, or the box it is being renamed in.
+enum CardName {
+    Text(String),
+    Editing(Entity<TextInput>),
+}
+
+fn card_label(label: CardName) -> AnyElement {
+    match label {
+        CardName::Text(text) => div()
+            .debug_selector({
+                let text = text.clone();
+                move || format!("home-card {text}")
+            })
+            .truncate()
+            .child(text)
+            .into_any_element(),
+        CardName::Editing(input) => crate::place_names::rename_box(input),
+    }
 }
 
 pub(crate) struct HomePage {
@@ -79,6 +105,10 @@ pub(crate) struct HomePage {
     places: Vec<Place>,
     /// Recently opened shares (`\\server\share`)
     shares: Vec<PathBuf>,
+    /// Names given to mapped drives and network places (settings).
+    names: crate::place_names::Names,
+    /// The place being renamed here and its box.
+    rename: Option<(PathBuf, Entity<TextInput>)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
@@ -187,6 +217,8 @@ impl HomePage {
             recent: None,
             places,
             shares,
+            names: crate::place_names::Names::new(),
+            rename: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
         };
@@ -217,6 +249,39 @@ impl HomePage {
     pub(crate) fn set_locations(&mut self, places: Vec<Place>, shares: Vec<PathBuf>) {
         self.places = places;
         self.shares = shares;
+    }
+
+    /// Custom place names changed, or a place is (no longer) being renamed.
+    pub(crate) fn set_names(
+        &mut self,
+        names: crate::place_names::Names,
+        rename: Option<(PathBuf, Entity<TextInput>)>,
+    ) {
+        self.names = names;
+        self.rename = rename;
+    }
+
+    /// The places with their custom names, for labels.
+    fn named_places(&self) -> Vec<Place> {
+        self.places
+            .iter()
+            .map(|p| Place {
+                label: crate::place_names::place_label(&self.names, p),
+                ..p.clone()
+            })
+            .collect()
+    }
+
+    /// The box the place is being renamed in, when it is this one.
+    fn card_name(&self, path: &Path, label: String) -> CardName {
+        match &self.rename {
+            Some((renaming, input))
+                if crate::place_names::key(renaming) == crate::place_names::key(path) =>
+            {
+                CardName::Editing(input.clone())
+            }
+            _ => CardName::Text(label),
+        }
     }
 
     #[cfg(test)]
@@ -286,7 +351,7 @@ impl HomePage {
             let folder = file
                 .path
                 .parent()
-                .map_or_default(|p| short_folder(p, &self.places));
+                .map_or_default(|p| short_folder(p, &self.named_places()));
             let ext = file
                 .path
                 .extension()
@@ -449,12 +514,20 @@ impl HomePage {
     fn place_card(
         id: (&'static str, usize),
         icon: Icon,
-        label: String,
+        label: CardName,
         detail: Option<String>,
         space: Option<(u64, u64)>,
         event: HomeEvent,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let text = match &label {
+            CardName::Text(text) => text.clone(),
+            CardName::Editing(_) => String::new(),
+        };
+        let menu_path = match &event {
+            HomeEvent::OpenFolder(path) => Some(path.clone()),
+            _ => None,
+        };
         let new_tab = match &event {
             HomeEvent::OpenFolder(path) => Some(path.clone()),
             _ => None,
@@ -479,7 +552,7 @@ impl HomePage {
         let card = div()
             .id(id)
             .a11y_lazy(gpui::Role::Link, || {
-                crate::a11y::item_label(&label, &[detail.as_deref().unwrap_or_default()])
+                crate::a11y::item_label(&text, &[detail.as_deref().unwrap_or_default()])
             })
             .w(PLACE_W)
             .h(PLACE_H)
@@ -501,7 +574,7 @@ impl HomePage {
                     .flex()
                     .flex_col()
                     .gap(theme::S_4)
-                    .child(div().truncate().child(label))
+                    .child(card_label(label))
                     .children(used.map(|used| {
                         let color = if used > NEARLY_FULL {
                             theme::danger()
@@ -529,7 +602,19 @@ impl HomePage {
                             .child(d)
                     })),
             );
-        Self::card_actions(card, event, new_tab, cx).into_any_element()
+        Self::card_actions(card, event, new_tab, cx)
+            .when_some(menu_path, |el, path| {
+                el.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |_, e: &MouseDownEvent, _, cx| {
+                        cx.emit(HomeEvent::PlaceMenu {
+                            path: path.clone(),
+                            position: e.position,
+                        });
+                    }),
+                )
+            })
+            .into_any_element()
     }
 }
 
@@ -569,7 +654,7 @@ impl Render for HomePage {
                 Self::place_card(
                     ("home-drive", ix),
                     Icon::Drive,
-                    p.label,
+                    CardName::Text(p.label),
                     None,
                     space,
                     HomeEvent::OpenFolder(p.path),
@@ -581,7 +666,7 @@ impl Render for HomePage {
             drives.push(Self::place_card(
                 ("home-recycle", 0),
                 Icon::Trash,
-                t!("recycle.title").into_owned(),
+                CardName::Text(t!("recycle.title").into_owned()),
                 None,
                 None,
                 HomeEvent::OpenRecycle,
@@ -593,11 +678,18 @@ impl Render for HomePage {
             .places
             .iter()
             .filter(|p| matches!(p.kind, PlaceKind::Drive { remote: true, .. }))
-            .map(|p| (p.label.clone(), p.path.clone()))
+            .map(|p| {
+                (
+                    crate::place_names::place_label(&self.names, p),
+                    p.path.clone(),
+                )
+            })
             .collect();
         for share in &self.shares {
             if !net.iter().any(|(_, p)| p == share) {
-                net.push((share.display().to_string(), share.clone()));
+                let label = crate::place_names::shown_name(&self.names, share)
+                    .unwrap_or_else(|| share.display().to_string());
+                net.push((label, share.clone()));
             }
         }
         let net: Vec<AnyElement> = net
@@ -610,7 +702,7 @@ impl Render for HomePage {
                 Self::place_card(
                     ("home-net", ix),
                     Icon::NetDrive,
-                    label,
+                    self.card_name(&path, label),
                     detail,
                     None,
                     HomeEvent::OpenFolder(path),

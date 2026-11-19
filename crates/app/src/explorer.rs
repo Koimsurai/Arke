@@ -457,6 +457,9 @@ pub(crate) enum ExplorerEvent {
     ToggleCompare,
     /// Dual pane: select what the comparison marked, in both panes.
     SelectDifferences,
+    /// F2 with nothing to rename in the list while a drive or network place is open: the
+    /// workspace renames that place if it can be renamed.
+    RenamePlace(PathBuf),
 }
 
 /// Where this `Explorer` sits in its tab. Set by `Workspace` before every render.
@@ -675,6 +678,8 @@ pub(crate) struct Explorer {
     pub(crate) show_thumbnails: bool,
     /// Read images and exe icons on network locations too (settings, off by default).
     pub(crate) network_thumbnails: bool,
+    /// Names given to mapped drives and network places (settings), shown for their roots.
+    pub(crate) place_names: crate::place_names::Names,
     /// Language currently used for input placeholders.
     language: crate::settings::Language,
     sort_inflight: Option<SortJob>,
@@ -1033,6 +1038,7 @@ impl Explorer {
             group_cache: groups::GroupCache::default(),
             show_thumbnails: settings.read(cx).settings.show_thumbnails,
             network_thumbnails: settings.read(cx).settings.network_thumbnails,
+            place_names: settings.read(cx).settings.place_names.clone(),
             language: crate::settings::Language::System,
             sort_inflight: None,
             type_order: None,
@@ -1249,10 +1255,13 @@ impl Explorer {
             .is_some_and(arke_core::remote::is_remote)
     }
 
-    /// Tab title: the folder name (`C:\` for drive roots, the share name for `\server\share`).
+    /// Tab title: the folder name (`C:\` for drive roots, the share name for `\server\share`), or the
+    /// name given to a mapped drive or network place.
     pub(crate) fn tab_title(&self) -> SharedString {
         match self.display_path() {
-            Some(p) => tab_title_for(p).into(),
+            Some(p) => crate::place_names::shown_name(&self.place_names, p)
+                .unwrap_or_else(|| tab_title_for(p))
+                .into(),
             None => "Arke".into(),
         }
     }
@@ -2938,6 +2947,7 @@ impl Explorer {
         self.group_rows = settings.group_rows;
         self.show_thumbnails = settings.show_thumbnails;
         self.network_thumbnails = settings.network_thumbnails;
+        self.place_names = settings.place_names.clone();
         self.tree_setting(settings.details_tree);
         if settings.language != self.language {
             self.language = settings.language;

@@ -160,6 +160,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Right click on a drive or network card: its menu, Home stays.
+        if let HomeEvent::PlaceMenu { path, position } = event {
+            self.open_place_menu(*position, path, cx);
+            return;
+        }
         // Middle click: a new tab in the background; Home stays.
         if let HomeEvent::OpenInNewTab(path) = event {
             self.open_in_background(path.clone(), window, cx);
@@ -182,7 +187,7 @@ impl Workspace {
                 });
             }
             HomeEvent::OpenRecycle => self.open_recycle(false, window, cx),
-            HomeEvent::OpenInNewTab(_) => {}
+            HomeEvent::OpenInNewTab(_) | HomeEvent::PlaceMenu { .. } => {}
             HomeEvent::Reveal(path) => {
                 let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                     return;
@@ -214,7 +219,9 @@ impl Workspace {
                 ),
                 _ => return false,
             },
-            HomeEvent::OpenRecycle | HomeEvent::OpenInNewTab(_) => return false,
+            HomeEvent::OpenRecycle | HomeEvent::OpenInNewTab(_) | HomeEvent::PlaceMenu { .. } => {
+                return false;
+            }
         };
         if self.active_pinned_elsewhere(&folder, cx) {
             let at = self.active + 1;
@@ -258,8 +265,42 @@ impl Workspace {
             .settings
             .net_places
             .clone();
-        page.view
-            .update(cx, |home, _| home.set_locations(places, shares));
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
+        let rename = self
+            .sidebar_ui
+            .place_rename
+            .as_ref()
+            .map(|r| (r.path.clone(), r.input.clone()));
+        page.view.update(cx, |home, _| {
+            home.set_locations(places, shares);
+            home.set_names(names, rename);
+        });
+    }
+
+    /// The menu of a drive or network card on Home: only places that can be renamed have one.
+    fn open_place_menu(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
+        let places = self.active_view().read(cx).places.clone();
+        let settings = &SettingsStore::global(cx).read(cx).settings;
+        if super::sidebar::place_default_name(settings, &places, path).is_none() {
+            return;
+        }
+        self.open_sidebar_menu(
+            position,
+            vec![(
+                t!("menu.rename").to_string().into(),
+                super::sidebar::SidebarAction::RenamePlace(path.to_path_buf()),
+            )],
+            cx,
+        );
     }
 
     /// Reloads on window activation; recent files may have changed.

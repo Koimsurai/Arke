@@ -42,6 +42,8 @@ mod live_recycle;
 mod menu_parts;
 #[path = "tests_motion.rs"]
 mod motion;
+#[path = "tests_place_names.rs"]
+mod place_names;
 #[path = "tests_preview_info.rs"]
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]

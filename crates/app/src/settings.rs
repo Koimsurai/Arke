@@ -475,6 +475,9 @@ pub(crate) struct Settings {
     /// Saved SFTP and WebDAV locations (sidebar Network section). Never holds a password: those
     /// stay in Windows Credential Manager.
     pub(crate) remote_places: Vec<RemotePlace>,
+    /// Names the user gave mapped drives, network places and saved remote locations, shown
+    /// instead of the default ones (`place_names.rs`). Windows' own labels are never changed.
+    pub(crate) place_names: crate::place_names::Names,
     pub(crate) theme: ThemeMode,
     /// Background of the dark theme.
     pub(crate) dark_shade: DarkShade,
@@ -643,6 +646,7 @@ impl Default for Settings {
             search_history: true,
             net_places: Vec::new(),
             remote_places: Vec::new(),
+            place_names: crate::place_names::Names::new(),
             theme: ThemeMode::default(),
             accent: Accent::default(),
             tint: Tint::default(),
@@ -761,6 +765,7 @@ impl Settings {
 
     pub(crate) fn forget_share(&mut self, share: &Path) {
         self.net_places.retain(|p| p != share);
+        self.place_names.remove(&crate::place_names::key(share));
     }
 
     /// Adds or updates a saved remote location (same URL replaces), newest first.
@@ -771,6 +776,7 @@ impl Settings {
 
     pub(crate) fn forget_remote_place(&mut self, url: &Path) {
         self.remote_places.retain(|p| p.url != url);
+        self.place_names.remove(&crate::place_names::key(url));
     }
 
     /// Folders on the tiles: the custom list, or the known folders (excluding the profile folder itself).

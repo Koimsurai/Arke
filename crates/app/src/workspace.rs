@@ -41,6 +41,8 @@ pub(crate) mod menuprefs;
 mod nav;
 #[path = "workspace_pages.rs"]
 mod pages;
+#[path = "workspace_placename.rs"]
+mod place_rename;
 #[path = "workspace_rail.rs"]
 mod rail;
 #[path = "workspace_recycle.rs"]
@@ -1162,6 +1164,7 @@ impl Workspace {
                 self.pane_navigated(tab_ix, pane_ix, path, cx);
             }
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
+            ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::ToggleCompare => self.toggle_compare(tab_ix, cx),
             ExplorerEvent::SelectDifferences => self.select_differences(tab_ix, cx),
             ExplorerEvent::RemoteChanged(path) => {

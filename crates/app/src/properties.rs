@@ -564,7 +564,7 @@ impl Properties {
         let shell = &self.services.shell;
         let mut out = Vec::new();
         let single = self.single();
-        if let Some(row) = single {
+        if let Some(row) = single.filter(|_| loaded.drive.is_none()) {
             out.push(InfoRow::plain(
                 "props-type",
                 t!("col.type"),
@@ -1423,7 +1423,7 @@ impl Render for Properties {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::paper())
+            .bg(theme::frame_solid())
             .ui_font()
             .text_size(theme::FS_13)
             .text_color(theme::text())

@@ -238,7 +238,7 @@ impl Explorer {
                     && !self.panel_dismissed
                     && (self.query.is_empty() || self.scope_strip_open)
                     && !self.filter_input.read(cx).menu_open(),
-                |d| d.child(self.render_scope_strip(window, cx)),
+                |d| d.child(self.render_scope_strip(width, window, cx)),
             )
     }
 

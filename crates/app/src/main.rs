@@ -63,6 +63,7 @@ mod palette;
 mod place_names;
 mod popup;
 mod prefs;
+mod press_guard;
 mod properties;
 mod quicklook;
 mod recycle_bin;

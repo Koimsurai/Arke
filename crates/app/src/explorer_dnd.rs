@@ -567,6 +567,15 @@ fn end_right_drag(window: &mut Window, cx: &mut App) {
     }
 }
 
+/// Ends the drag without a drop (Esc, or Windows' drag ended it), with what a right drag left:
+/// a [`RightDrag`] left behind would make the next left drag ask instead of moving.
+pub(crate) fn stop_drag(window: &mut Window, cx: &mut App) {
+    if cx.has_global::<RightDrag>() {
+        cx.remove_global::<RightDrag>();
+    }
+    cx.stop_active_drag(window);
+}
+
 impl Explorer {
     /// Right button pressed on an item: remember it; the menu opens on release, or it becomes a
     /// drag once the mouse moves.
@@ -630,9 +639,19 @@ impl Explorer {
                 }),
                 cx,
             );
-            // The item didn't start a drag (it is being renamed, say): nothing to drop.
+            // The item didn't start a drag (it is being renamed, say): nothing to drop, and the
+            // replayed left press must not stay armed for a later click or drag.
             if !cx.has_active_drag() && cx.has_global::<RightDrag>() {
                 cx.remove_global::<RightDrag>();
+                crate::press_guard::cancel_press(MouseButton::Left, window, cx);
+                let _ = window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: to,
+                        pressed_button: Some(MouseButton::Right),
+                        modifiers,
+                    }),
+                    cx,
+                );
             }
             window.refresh();
         });
@@ -675,6 +694,14 @@ impl Explorer {
                             // A drop target may still take this release (it runs in the same
                             // dispatch and clears the flag itself); otherwise the drag just ends.
                             window.defer(cx, end_right_drag);
+                            return;
+                        }
+                        if crate::press_guard::is_cancel(e) {
+                            // The real release went elsewhere: no menu.
+                            let _ = on_up.update(cx, |this, cx| {
+                                this.right_press = None;
+                                cx.notify();
+                            });
                             return;
                         }
                         let _ = on_up.update(cx, |this, cx| {

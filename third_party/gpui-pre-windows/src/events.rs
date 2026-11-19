@@ -148,6 +148,7 @@ impl WindowsWindowInner {
             WM_XBUTTONUP => {
                 self.handle_xbutton_msg(handle, wparam, lparam, Self::handle_mouse_up_msg)
             }
+            WM_CAPTURECHANGED => self.handle_capture_changed_msg(lparam),
             WM_MOUSEWHEEL => self.handle_mouse_wheel_msg(handle, wparam, lparam),
             WM_MOUSEHWHEEL => self.handle_mouse_horizontal_wheel_msg(handle, wparam, lparam),
             WM_SYSKEYUP => self.handle_syskeyup_msg(wparam, lparam),
@@ -374,6 +375,20 @@ impl WindowsWindowInner {
             }
             _ => None,
         };
+        // A button this move shows up was released somewhere else.
+        let down = MODIFIERKEYS_FLAGS(wparam.loword() as u32);
+        let still = [
+            (MK_LBUTTON, MouseButton::Left),
+            (MK_RBUTTON, MouseButton::Right),
+            (MK_MBUTTON, MouseButton::Middle),
+            (MK_XBUTTON1, MouseButton::Navigate(NavigationDirection::Back)),
+            (MK_XBUTTON2, MouseButton::Navigate(NavigationDirection::Forward)),
+        ]
+        .into_iter()
+        .filter(|(flag, _)| down.contains(*flag))
+        .fold(0, |bits, (_, button)| bits | button_bit(button));
+        let pressed = &self.state.pressed_buttons;
+        pressed.set(pressed.get() & still);
 
         // Suppress synthetic WM_MOUSEMOVE events that Windows fires when a window
         // repaints under the cursor (e.g. command palette opening). These are not
@@ -499,6 +514,8 @@ impl WindowsWindowInner {
         lparam: LPARAM,
     ) -> Option<isize> {
         unsafe { SetCapture(handle) };
+        let pressed = &self.state.pressed_buttons;
+        pressed.set(pressed.get() | button_bit(button));
 
         let Some(mut func) = self.state.callbacks.input.take() else {
             return Some(1);
@@ -529,6 +546,9 @@ impl WindowsWindowInner {
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
+        // Before releasing the capture: that sends `WM_CAPTURECHANGED`, which isn't a lost press.
+        let pressed = &self.state.pressed_buttons;
+        pressed.set(pressed.get() & !button_bit(button));
         unsafe { ReleaseCapture().log_err() };
         if button == MouseButton::Left && self.state.activate_on_release.take() {
             // The press that skipped activation ended on this window (a click, or a drag that
@@ -560,6 +580,51 @@ impl WindowsWindowInner {
         self.state.callbacks.input.set(Some(func));
 
         if handled { Some(0) } else { Some(1) }
+    }
+
+    /// The mouse capture left this window. GPUI keeps a press armed (a click or a drag waiting
+    /// for its release) until it hears a mouse up, but when another program takes the capture in
+    /// the middle of a press (a program opened by a double-click coming up under the cursor) the
+    /// release goes there, and the press stayed armed: the next move with no button down started
+    /// a drag, and the next click dropped it. So each button still down is released here, outside
+    /// the window so nothing takes it as a click or a drop, and with `click_count` 0 so the app can
+    /// tell it from a real release.
+    ///
+    /// A window of this thread taking the capture (a menu loop, OLE drag and drop, the window's
+    /// own move loop) is part of the press and is left alone; so is a change while an event is
+    /// being dispatched, where GPUI can't take another. The app then finds out from the next move.
+    fn handle_capture_changed_msg(&self, lparam: LPARAM) -> Option<isize> {
+        let pressed = self.state.pressed_buttons.get();
+        if pressed == 0 {
+            return None;
+        }
+        let to = HWND(lparam.0 as _);
+        if !to.is_invalid()
+            && unsafe { GetWindowThreadProcessId(to, None) }
+                == unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
+        {
+            return None;
+        }
+        let mut func = self.state.callbacks.input.take()?;
+        self.state.pressed_buttons.set(0);
+        for button in [
+            MouseButton::Left,
+            MouseButton::Right,
+            MouseButton::Middle,
+            MouseButton::Navigate(NavigationDirection::Back),
+            MouseButton::Navigate(NavigationDirection::Forward),
+        ] {
+            if pressed & button_bit(button) != 0 {
+                func(PlatformInput::MouseUp(MouseUpEvent {
+                    button,
+                    position: point(px(-100_000.), px(-100_000.)),
+                    modifiers: current_modifiers(),
+                    click_count: 0,
+                }));
+            }
+        }
+        self.state.callbacks.input.set(Some(func));
+        None
     }
 
     fn handle_xbutton_msg(
@@ -1869,6 +1934,17 @@ pub(crate) fn mouse_activate_answer(hit_test: u32, mouse_message: u32) -> u32 {
         MA_NOACTIVATE
     } else {
         MA_ACTIVATE
+    }
+}
+
+/// One bit per mouse button, for the window state's `pressed_buttons`.
+const fn button_bit(button: MouseButton) -> u8 {
+    match button {
+        MouseButton::Left => 1,
+        MouseButton::Right => 2,
+        MouseButton::Middle => 4,
+        MouseButton::Navigate(NavigationDirection::Back) => 8,
+        MouseButton::Navigate(NavigationDirection::Forward) => 16,
     }
 }
 

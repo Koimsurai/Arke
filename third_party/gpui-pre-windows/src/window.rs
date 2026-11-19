@@ -86,6 +86,9 @@ pub struct WindowsWindowState {
     /// when that button is released over it; a press that became a drag to another program
     /// never is.
     pub activate_on_release: Cell<bool>,
+    /// Buttons pressed in the client area and not yet released, one bit each (see
+    /// `handle_capture_changed_msg` in `events.rs`).
+    pub pressed_buttons: Cell<u8>,
 
     pub display: Cell<WindowsDisplay>,
     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
@@ -199,6 +202,7 @@ impl WindowsWindowState {
             cursor_visible,
             nc_button_pressed: Cell::new(nc_button_pressed),
             activate_on_release: Cell::new(false),
+            pressed_buttons: Cell::new(0),
             display: Cell::new(display),
             fullscreen: Cell::new(fullscreen),
             initial_placement: Cell::new(initial_placement),

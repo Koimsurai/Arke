@@ -129,8 +129,13 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// How long another process's empty held-drop folder is left alone: it may be about to be
+/// filled (a drop in another Arke, or a test run beside this one).
+const OTHERS_GRACE: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Removes held-drop folders that finished transfers left empty (with empty folders inside).
-/// Anything still holding files stays: its transfer may still run, or have failed.
+/// Anything still holding files stays: its transfer may still run, or have failed. Another
+/// process's folders go only once they are old, since an empty one may be a drop in progress.
 fn prune(root: &Path) {
     fn remove_if_empty(dir: &Path) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -149,8 +154,17 @@ fn prune(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
+    let own = format!("{}-", std::process::id());
     for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let ours = entry.file_name().to_string_lossy().starts_with(&own);
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > OTHERS_GRACE));
+        if ours || old {
             remove_if_empty(&entry.path());
         }
     }

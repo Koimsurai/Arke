@@ -158,6 +158,34 @@ fn dragging_a_tab_out_of_the_window_opens_it_in_a_new_window(cx: &mut TestAppCon
     assert_eq!(firsts, [vec![p(r"C:\a")], vec![p(r"C:\c")]]);
 }
 
+/// A tab drag whose release went to another program ends on the next move with no button down:
+/// the tab stays in its window, and no window is torn off.
+#[gpui::test]
+fn a_tab_drag_whose_release_was_lost_tears_off_nothing(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    for dir in [r"C:\a", r"C:\b"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    cx.run_until_parked();
+
+    start_tab_drag(cx, "tab-1");
+    move_to(cx, point(px(-40.), px(300.)));
+    // Released over another program's window; the next move Arke hears has no button down.
+    cx.simulate_mouse_move(point(px(300.), px(300.)), None, Modifiers::none());
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(!cx.has_active_drag(), "the drag is over"));
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_ghost_shown_for_test()), None);
+    assert_eq!(workspaces(cx).len(), 1, "no window torn off");
+    assert_eq!(
+        tabs_in(workspaces(cx)[0], cx),
+        [Some(p(r"C:\a")), Some(p(r"C:\b"))]
+    );
+}
+
 /// Past the window's edge the drag image inside it stops; the tab is drawn beside the pointer in a
 /// window of its own instead, saying what letting go does, and goes when the pointer comes back or
 /// the tab is dropped. The only tab has nothing to tear off, so nothing shows for it.

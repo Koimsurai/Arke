@@ -96,6 +96,11 @@ impl WhatsNewPage {
         }
         // An update's own notes, or the newest version: open; the rest folded.
         let expanded = (!sections.is_empty()).then_some(0).into_iter().collect();
+        if let Mode::Available(release) = &mode
+            && lang != "en"
+        {
+            Self::fetch_localized_notes(release.version.clone(), lang, cx);
+        }
         Self {
             mode,
             version,
@@ -104,6 +109,41 @@ impl WhatsNewPage {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
         }
+    }
+
+    /// The GitHub release body is English only. Fetches the new version's section of the
+    /// changelog in the UI language (what What's new shows after the update) and swaps it in when
+    /// it arrives; on any failure the English notes stay.
+    fn fetch_localized_notes(version: String, lang: &'static str, cx: &mut Context<Self>) {
+        let (tx, rx) = flume::bounded(1);
+        let asked = version.clone();
+        crate::explorer::spawn_thread("update-notes", move || {
+            let _ = tx.send(whats_new::fetch_localized_changelog(lang, &asked));
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(text) = rx.recv_async().await else {
+                return;
+            };
+            let Some(localized) = whats_new::available_in(&version, text.as_deref()) else {
+                return;
+            };
+            let _ = this.update(cx, |page, cx| {
+                if let Some(first) = page.sections.first_mut()
+                    && first.release.version == version
+                {
+                    first.release = localized;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn first_notes_for_test(&self) -> Vec<Block> {
+        self.sections
+            .first()
+            .map_or_default(|s| s.release.blocks.clone())
     }
 
     #[cfg(test)]

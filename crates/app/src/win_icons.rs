@@ -86,6 +86,29 @@ pub(crate) fn video_thumbnail(path: &Path, size: u32) -> Option<Thumbnail> {
 
 /// Reads an HBITMAP as straight-alpha RGBA.
 pub(crate) fn bitmap_pixels(bitmap: HBITMAP) -> Option<Thumbnail> {
+    let (width, height, bgra) = bitmap_bgra(bitmap)?;
+    Some(Thumbnail {
+        width,
+        height,
+        rgba: bgra_premultiplied_to_rgba(bgra, None),
+    })
+}
+
+/// Reads an icon's colour bitmap with its AND mask (`ICONINFO::hbmMask`, set bits are
+/// transparent) as straight-alpha RGBA. Icons without an alpha channel (older ones, or a 32-bit
+/// bitmap whose alpha was never filled in) are cut out by the mask instead of coming out blank.
+pub(crate) fn icon_pixels(color: HBITMAP, mask: HBITMAP) -> Option<Thumbnail> {
+    let (width, height, bgra) = bitmap_bgra(color)?;
+    let mask = bitmap_bgra(mask).filter(|(w, h, _)| (*w, *h) == (width, height));
+    Some(Thumbnail {
+        width,
+        height,
+        rgba: bgra_premultiplied_to_rgba(bgra, mask.as_ref().map(|(_, _, m)| m.as_slice())),
+    })
+}
+
+/// A bitmap's size and its 32-bit BGRA pixels, top-down.
+fn bitmap_bgra(bitmap: HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
     let mut bm = BITMAP::default();
     // SAFETY: bm is a correctly sized output buffer.
     let got = unsafe {
@@ -129,29 +152,41 @@ pub(crate) fn bitmap_pixels(bitmap: HBITMAP) -> Option<Thumbnail> {
         ReleaseDC(None, hdc);
         lines
     };
-    if lines == 0 {
-        return None;
-    }
-    Some(Thumbnail {
-        width: width as u32,
-        height: height as u32,
-        rgba: bgra_premultiplied_to_rgba(buf),
-    })
+    (lines != 0).then_some((width as u32, height as u32, buf))
 }
 
-/// GDI returns premultiplied BGRA. Bitmaps without an alpha channel have alpha 0
-/// everywhere and are treated as opaque.
-fn bgra_premultiplied_to_rgba(mut buf: Vec<u8>) -> Vec<u8> {
-    let has_alpha = buf.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
-    for p in buf.as_chunks_mut::<4>().0 {
+/// GDI returns premultiplied BGRA. A bitmap whose alpha channel is missing is opaque, or, with
+/// an icon's `mask` (BGRA of its AND mask: white is transparent), opaque where the mask says so.
+///
+/// The alpha channel counts as missing when it is empty, and also when only a few pixels have
+/// any while many more have colour at alpha 0: a type's icon built from an old-style resource
+/// can come back with a stray pixel or two of alpha, and trusting that drew the whole icon
+/// transparent except for a dot.
+fn bgra_premultiplied_to_rgba(mut buf: Vec<u8>, mask: Option<&[u8]>) -> Vec<u8> {
+    let (mut with_alpha, mut hidden) = (0usize, 0usize);
+    for p in buf.as_chunks::<4>().0 {
+        if p[3] != 0 {
+            with_alpha += 1;
+        } else if p[..3].iter().any(|&c| c != 0) {
+            hidden += 1;
+        }
+    }
+    let has_alpha = with_alpha > hidden;
+    let mask = mask.filter(|m| m.len() == buf.len());
+    for (i, p) in buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         p.swap(0, 2);
-        if !has_alpha {
-            p[3] = 255;
-        } else if p[3] != 0 && p[3] != 255 {
-            let a = u16::from(p[3]);
-            for c in &mut p[..3] {
-                *c = (u16::from(*c) * 255 / a).min(255) as u8;
+        if has_alpha {
+            if p[3] != 0 && p[3] != 255 {
+                let a = u16::from(p[3]);
+                for c in &mut p[..3] {
+                    *c = (u16::from(*c) * 255 / a).min(255) as u8;
+                }
             }
+        } else if mask.is_some_and(|m| m[i * 4] != 0) {
+            // The mask marks it transparent.
+            *p = [0; 4];
+        } else {
+            p[3] = 255;
         }
     }
     buf
@@ -186,10 +221,52 @@ mod tests {
     #[test]
     fn unpremultiplies_and_swaps_channels() {
         // Premultiplied BGRA (b=50, g=0, r=100, a=128) -> RGBA about (199, 0, 99, 128).
-        let out = bgra_premultiplied_to_rgba(vec![50, 0, 100, 128, 0, 0, 0, 0]);
+        let out = bgra_premultiplied_to_rgba(vec![50, 0, 100, 128, 0, 0, 0, 0], None);
         assert_eq!(&out[..4], &[199, 0, 99, 128]);
         // A bitmap with no alpha at all is opaque.
-        let opaque = bgra_premultiplied_to_rgba(vec![1, 2, 3, 0]);
+        let opaque = bgra_premultiplied_to_rgba(vec![1, 2, 3, 0], None);
         assert_eq!(opaque, [3, 2, 1, 255]);
+    }
+
+    /// An old-style icon: colour at alpha 0 everywhere, cut out by its AND mask.
+    #[test]
+    fn an_icon_without_alpha_is_cut_out_by_its_mask() {
+        // Four pixels of green; the mask (white = transparent) hides the last one.
+        let green = [0, 200, 0, 0];
+        let color = green.repeat(4);
+        let mask = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 0];
+        let out = bgra_premultiplied_to_rgba(color, Some(&mask));
+        assert_eq!(&out[..4], &[0, 200, 0, 255]);
+        assert_eq!(&out[8..12], &[0, 200, 0, 255]);
+        assert_eq!(&out[12..], &[0, 0, 0, 0]);
+    }
+
+    /// One stray pixel of alpha in an icon whose colour sits at alpha 0 used to hide the rest:
+    /// the icon came out as a dot.
+    #[test]
+    fn a_stray_alpha_pixel_does_not_hide_the_icon() {
+        let mut color = [10, 120, 10, 0].repeat(64);
+        color[3] = 255;
+        let out = bgra_premultiplied_to_rgba(color, None);
+        let visible = out
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] == 255)
+            .count();
+        assert_eq!(visible, 64, "every pixel is drawn");
+        // A real alpha channel is still honoured: mostly transparent with a solid shape.
+        let mut sparse = [0, 0, 0, 0].repeat(64);
+        for p in sparse.as_chunks_mut::<4>().0.iter_mut().take(20) {
+            *p = [10, 120, 10, 255];
+        }
+        let out = bgra_premultiplied_to_rgba(sparse, None);
+        let visible = out
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] == 255)
+            .count();
+        assert_eq!(visible, 20);
     }
 }

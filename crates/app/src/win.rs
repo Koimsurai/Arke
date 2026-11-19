@@ -952,6 +952,13 @@ impl Shell for WinShell {
         win_fileops::clipboard_files()
     }
 
+    fn clipboard_virtual_files(
+        &self,
+    ) -> Result<Option<crate::win_virtual_drop::VirtualDrop>, ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_virtual_drop::clipboard_virtual_files()
+    }
+
     fn clear_clipboard_if(&self, seq: u32) {
         debug_assert!(!arke_core::fs::is_ui_thread());
         win_fileops::clear_clipboard_if(seq);

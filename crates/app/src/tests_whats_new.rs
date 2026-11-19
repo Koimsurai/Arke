@@ -255,6 +255,66 @@ fn update_notice_shows_the_notes_and_can_be_closed(cx: &mut TestAppContext) {
     );
 }
 
+/// The notes the page shows first for an update to 0.4.0 in a Traditional Chinese UI, when the
+/// changelog fetch gives `fetched`.
+fn update_notes_with(
+    cx: &mut TestAppContext,
+    fetched: Option<&str>,
+) -> Vec<crate::whats_new::Block> {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.update(|_, cx| Workspace::pretend_build_for_test("0.3.0", Some(Channel::Stable), cx));
+    rust_i18n::set_locale("zh-TW");
+    crate::whats_new::set_localized_changelog_for_test(fetched);
+    cx.update(|_, cx| UpdateState::set_for_test(cx, UpdateState::Available(release("0.4.0"))));
+    cx.run_until_parked();
+    click(cx, "update-notice-notes");
+    let page = ws.update(cx, |ws, _| ws.whats_new_for_test()).unwrap();
+    // The fetch runs on its own thread: give it time to answer. Without a translation nothing
+    // changes, so that case just waits the same while.
+    let english = page.update(cx, |p, _| p.first_notes_for_test());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut notes = english.clone();
+    while std::time::Instant::now() < deadline && (fetched.is_none() || notes == english) {
+        cx.run_until_parked();
+        notes = page.update(cx, |p, _| p.first_notes_for_test());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    rust_i18n::set_locale("en");
+    notes
+}
+
+/// The GitHub release body is English; with a translated UI the page swaps in that language's
+/// changelog section once it is fetched.
+#[gpui::test]
+fn an_update_shows_its_notes_in_the_ui_language(cx: &mut TestAppContext) {
+    use crate::whats_new::Block;
+    let zh = "# 變更記錄
+
+## 0.4.0 (2026-11-20)\n\n### 修正\n\n- 修好圖示\n";
+    assert_eq!(
+        update_notes_with(cx, Some(zh)),
+        [
+            Block::Heading("修正".into()),
+            Block::Item("修好圖示".into())
+        ]
+    );
+}
+
+/// A failed fetch (or a changelog without the version) leaves the English release notes.
+#[gpui::test]
+fn the_english_notes_stay_when_the_translation_cant_be_fetched(cx: &mut TestAppContext) {
+    use crate::whats_new::Block;
+    assert_eq!(
+        update_notes_with(cx, None),
+        [
+            Block::Heading("Features".into()),
+            Block::Item("Something new".into())
+        ]
+    );
+}
+
 /// The corner cards stay in the bottom right while they slide in: the slide sets `left` and `top`,
 /// which on the placed box itself pinned it to the top left, as tall as the window.
 #[gpui::test]

@@ -332,6 +332,21 @@ impl PopupState {
         self.placed.get()
     }
 
+    /// Tests: where the panel as last drawn is on the screen (physical pixels): its window's place
+    /// plus its place in the window.
+    #[cfg(test)]
+    pub(crate) fn drawn_on_screen(&self) -> Option<ScreenRect> {
+        let (frame, panel) = (self.frame.get()?, self.panel.get()?);
+        let scale = self.monitor.get().scale;
+        let left = frame.left + phys(f32::from(panel.origin.x), scale);
+        let top = frame.top + phys(f32::from(panel.origin.y), scale);
+        let size = (
+            (f32::from(panel.size.width) * scale).ceil() as i32,
+            (f32::from(panel.size.height) * scale).ceil() as i32,
+        );
+        Some(ScreenRect::new(left, top, size.0, size.1))
+    }
+
     /// The tallest the panel may be: its monitor's work area, less the room for the shadow.
     fn max_height(&self) -> Pixels {
         let monitor = self.monitor.get();
@@ -388,9 +403,12 @@ impl PopupState {
             return;
         }
         let scale = self.monitor.get().scale;
+        // The panel's resting place in its window, not `bounds.origin`: a panel that slides in is
+        // first drawn off that place, and a window fitted to that first frame would leave the
+        // panel short of its target once the slide ends (a dropdown a few pixels too low).
         let frame = ScreenRect {
-            left: panel.left - phys(f32::from(bounds.origin.x), scale),
-            top: panel.top - phys(f32::from(bounds.origin.y), scale),
+            left: panel.left - phys(SHADOW_X, scale),
+            top: panel.top - phys(SHADOW_TOP, scale),
             right: panel.right + phys(SHADOW_X, scale),
             bottom: panel.bottom + phys(SHADOW_BOTTOM, scale),
         };
@@ -431,7 +449,19 @@ pub(crate) fn open(
 ) -> Option<Rc<PopupState>> {
     let monitor = match &anchor {
         Anchor::At(x, y) => monitor_at(&monitors(), *x, *y),
-        Anchor::Below { control, .. } => monitor_at(&monitors(), control.left, control.bottom),
+        // A control across two monitors: the one with the edge the list lines up with, where
+        // it can stay lined up, not the one its left edge happens to be on.
+        Anchor::Below {
+            control,
+            align_right,
+        } => {
+            let x = if *align_right {
+                control.right - 1
+            } else {
+                control.left
+            };
+            monitor_at(&monitors(), x, i32::midpoint(control.top, control.bottom))
+        }
         Anchor::Beside { parent, .. } => parent.upgrade()?.monitor.get(),
     };
     let state = Rc::new(PopupState {
@@ -533,6 +563,18 @@ impl Single {
     /// The popup's window, once open.
     pub(crate) fn window(&self) -> Option<AnyWindowHandle> {
         self.state.as_ref()?.window()
+    }
+
+    /// Tests: where the popup's panel was placed on the screen (physical pixels), once placed.
+    #[cfg(test)]
+    pub(crate) fn placed(&self) -> Option<ScreenRect> {
+        self.state.as_ref()?.placed()
+    }
+
+    /// Tests: where the popup's panel as last drawn is on the screen.
+    #[cfg(test)]
+    pub(crate) fn drawn_on_screen(&self) -> Option<ScreenRect> {
+        self.state.as_ref()?.drawn_on_screen()
     }
 
     /// The window the menu belongs to, where its rows run (`listener_in`).

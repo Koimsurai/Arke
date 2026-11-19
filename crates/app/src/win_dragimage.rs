@@ -25,14 +25,14 @@ use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::{
     CLSID_DragDropHelper, DSH_ALLOWDROPDESCRIPTIONTEXT, IDragSourceHelper, IDragSourceHelper2,
     SHDRAGIMAGE, SHFILEINFOW, SHGFI_SYSICONINDEX, SHGFI_TYPENAME, SHGFI_USEFILEATTRIBUTES,
-    SHGetFileInfoW, SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO,
+    SHGetFileInfoW, SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 use windows::core::{Interface, PCWSTR, w};
 
 use crate::shell::DragImage;
 use crate::win_fileops::{Com, wide};
-use crate::win_icons::{bitmap_pixels, file_icon};
+use crate::win_icons::{file_icon, icon_pixels};
 
 /// Longest side of the image, about what Explorer uses.
 const SIDE: u32 = 96;
@@ -40,8 +40,6 @@ const SIDE: u32 = 96;
 const BADGE_H: u32 = 22;
 const BADGE_PAD: u32 = 7;
 const BADGE_OVERHANG: u32 = 6;
-/// Side of the SHIL_EXTRALARGE icons.
-const EXTRALARGE: u32 = 48;
 
 /// Builds the drag image. Call from a background thread.
 pub(crate) fn compose(
@@ -346,11 +344,73 @@ fn icon_index(name: &std::ffi::OsStr, attributes: u32) -> Option<i32> {
 
 /// The system image list's icon at `index`, as large as Windows has it.
 fn index_icon(index: i32) -> Option<Thumbnail> {
-    // In the jumbo (256) list, types without a large icon get a 48x48 image in the top-left
-    // corner with the rest transparent; use the 48 px list for those.
-    list_icon(SHIL_JUMBO, index)
-        .filter(|icon| !only_top_left(icon, EXTRALARGE))
-        .or_else(|| list_icon(SHIL_EXTRALARGE, index))
+    pick_icon(
+        [SHIL_JUMBO, SHIL_EXTRALARGE, SHIL_LARGE]
+            .into_iter()
+            .map(|list| list_icon(list, index)),
+    )
+}
+
+/// The first of `icons` (largest list first) whose picture fills at least [`FILLS`] of its
+/// side. A type whose icon exists only at small sizes gets that icon placed in a corner (or the
+/// middle) of the larger lists' bitmaps, and drawn from there at list size it shrinks to a dot,
+/// so those are skipped. When none fills its bitmap, the one with the largest picture, cropped
+/// to it.
+fn pick_icon(icons: impl IntoIterator<Item = Option<Thumbnail>>) -> Option<Thumbnail> {
+    let mut best: Option<(u32, Thumbnail)> = None;
+    for icon in icons.into_iter().flatten() {
+        let Some((x, y, w, h)) = content_box(&icon) else {
+            continue;
+        };
+        let side = w.max(h);
+        if side * 100 >= icon.width.max(icon.height) * FILLS {
+            return Some(icon);
+        }
+        if best.as_ref().is_none_or(|(most, _)| side > *most) {
+            best = Some((side, crop(&icon, x, y, w, h)));
+        }
+    }
+    best.map(|(_, icon)| icon)
+}
+
+/// How much of its bitmap's side an icon's picture must cover, in percent, to be used as is.
+const FILLS: u32 = 60;
+
+/// The box (x, y, width, height) around the visible pixels, if any.
+fn content_box(image: &Thumbnail) -> Option<(u32, u32, u32, u32)> {
+    let width = image.width as usize;
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for (i, p) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
+        if p[3] == 0 {
+            continue;
+        }
+        let (x, y) = (i % width, i / width);
+        bounds = Some(match bounds {
+            None => (x, y, x, y),
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+        });
+    }
+    let (x0, y0, x1, y1) = bounds?;
+    Some((
+        x0 as u32,
+        y0 as u32,
+        (x1 - x0 + 1) as u32,
+        (y1 - y0 + 1) as u32,
+    ))
+}
+
+/// The part of `image` in the given box.
+fn crop(image: &Thumbnail, x: u32, y: u32, w: u32, h: u32) -> Thumbnail {
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for row in y..y + h {
+        let start = ((row * image.width + x) * 4) as usize;
+        rgba.extend_from_slice(&image.rgba[start..start + (w * 4) as usize]);
+    }
+    Thumbnail {
+        width: w,
+        height: h,
+        rgba,
+    }
 }
 
 fn list_icon(list: u32, index: i32) -> Option<Thumbnail> {
@@ -361,7 +421,10 @@ fn list_icon(list: u32, index: i32) -> Option<Thumbnail> {
         let icon = images.GetIcon(index, ILD_TRANSPARENT.0).ok()?;
         let mut parts = ICONINFO::default();
         let got = GetIconInfo(icon, &raw mut parts);
-        let pixels = got.is_ok().then(|| bitmap_pixels(parts.hbmColor)).flatten();
+        let pixels = got
+            .is_ok()
+            .then(|| icon_pixels(parts.hbmColor, parts.hbmMask))
+            .flatten();
         if got.is_ok() {
             let _ = DeleteObject(HGDIOBJ(parts.hbmColor.0));
             let _ = DeleteObject(HGDIOBJ(parts.hbmMask.0));
@@ -369,21 +432,6 @@ fn list_icon(list: u32, index: i32) -> Option<Thumbnail> {
         let _ = DestroyIcon(icon);
         pixels
     }
-}
-
-/// Whether only the top-left `side`x`side` area has visible pixels.
-fn only_top_left(image: &Thumbnail, side: u32) -> bool {
-    if image.width <= side || image.height <= side {
-        return false;
-    }
-    let width = image.width as usize;
-    image
-        .rgba
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .enumerate()
-        .all(|(i, p)| p[3] == 0 || ((i % width) < side as usize && (i / width) < side as usize))
 }
 
 /// Shrinks to fit [`SIDE`]; smaller images are not enlarged.
@@ -711,5 +759,54 @@ mod tests {
         )
         .unwrap();
         assert!(folder.bgra.as_chunks::<4>().0.iter().any(|p| p[3] != 0));
+    }
+
+    fn square(side: u32, boxed: (u32, u32, u32, u32)) -> Thumbnail {
+        let (bx, by, bw, bh) = boxed;
+        let mut rgba = vec![0u8; (side * side * 4) as usize];
+        for y in by..by + bh {
+            for x in bx..bx + bw {
+                let i = ((y * side + x) * 4) as usize;
+                rgba[i..i + 4].copy_from_slice(&[0, 160, 0, 255]);
+            }
+        }
+        Thumbnail {
+            width: side,
+            height: side,
+            rgba,
+        }
+    }
+
+    #[test]
+    fn an_icon_that_fills_the_largest_list_is_used_as_is() {
+        let jumbo = square(256, (0, 0, 256, 256));
+        let picked = pick_icon([Some(jumbo.clone()), Some(square(48, (0, 0, 48, 48)))]);
+        assert_eq!(picked, Some(jumbo));
+    }
+
+    #[test]
+    fn a_small_icon_in_a_big_bitmap_falls_through_to_a_list_it_fills() {
+        // 32 px in a corner of the jumbo bitmap, and centred in it, the way the lists place an
+        // icon that has no large size: both draw as a dot at list size.
+        let xl = square(48, (2, 2, 44, 44));
+        for small in [square(256, (0, 0, 32, 32)), square(256, (112, 112, 32, 32))] {
+            assert_eq!(pick_icon([Some(small), Some(xl.clone())]), Some(xl.clone()));
+        }
+        // A list with nothing for the type is skipped.
+        assert_eq!(pick_icon([None, Some(xl.clone())]), Some(xl));
+    }
+
+    #[test]
+    fn when_no_list_fills_its_bitmap_the_picture_is_cropped_to_fit() {
+        let picked = pick_icon([
+            Some(square(256, (100, 100, 16, 16))),
+            Some(square(48, (10, 12, 20, 24))),
+            Some(square(32, (1, 1, 8, 8))),
+        ])
+        .unwrap();
+        assert_eq!((picked.width, picked.height), (20, 24));
+        assert!(picked.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+        // Nothing visible at all: nothing to show.
+        assert_eq!(pick_icon([Some(square(48, (0, 0, 0, 0)))]), None);
     }
 }

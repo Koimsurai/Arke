@@ -637,6 +637,11 @@ impl Shell for RemoteShell {
             (found, _) => found,
         })
     }
+    fn clipboard_virtual_files(
+        &self,
+    ) -> Result<Option<crate::win_virtual_drop::VirtualDrop>, ShellError> {
+        self.inner.clipboard_virtual_files()
+    }
     fn clear_clipboard_if(&self, seq: u32) {
         self.inner.clear_clipboard_if(seq);
     }

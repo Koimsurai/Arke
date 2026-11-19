@@ -1856,6 +1856,7 @@ pub(crate) fn clipboard_seq() -> u32 {
 pub(crate) fn clipboard_has_files() -> bool {
     // SAFETY: only checks format availability; non-blocking.
     unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_ok()
+        || crate::win_virtual_drop::clipboard_has_virtual_files()
 }
 
 #[cfg(test)]

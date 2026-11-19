@@ -106,7 +106,11 @@ fn measure(geometry: &Rc<RefCell<PanelGeometry>>, what: Measured) -> impl IntoEl
         },
         |_, (), _, _| {},
     )
+    // Pinned to the corner: without insets an absolute child starts inside its parent's padding,
+    // which put a filter's menu and the press that closes it off its button.
     .absolute()
+    .top_0()
+    .left_0()
     .size_full()
 }
 
@@ -353,11 +357,13 @@ impl Explorer {
         }
     }
 
-    /// Opens `facet`'s menu (or closes it when open) with the cursor on the current choice. The
-    /// panel takes keyboard focus so the arrows move in the menu.
+    /// Opens `facet`'s menu (or closes it when open) with the cursor on the current choice, shown
+    /// when opened with the keys (`keys`). The panel takes keyboard focus so the arrows move in the
+    /// menu.
     pub(crate) fn toggle_filter_menu(
         &mut self,
         facet: Facet,
+        keys: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -365,6 +371,7 @@ impl Explorer {
             self.filter_menu = None;
         } else {
             self.filter_menu = Some(facet);
+            self.menu_keys = keys;
             self.menu_cursor = self
                 .menu_choices(facet)
                 .iter()
@@ -540,8 +547,8 @@ impl Explorer {
             })
             .when(!set, |d| d.child(chevron()))
             .children(remove)
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.toggle_filter_menu(facet, window, cx);
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                this.toggle_filter_menu(facet, e.is_keyboard(), window, cx);
             }))
             .into_any_element()
     }
@@ -633,7 +640,7 @@ impl Explorer {
                 count,
                 choice,
                 keyboard && at,
-                at,
+                self.menu_keys && at,
                 cx,
             ));
             // "Any …" stands apart from the choices.

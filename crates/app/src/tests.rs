@@ -62,6 +62,8 @@ mod quiet_update;
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_stuck_drag.rs"]
+mod stuck_drag;
 #[path = "tests_tab_drag.rs"]
 mod tab_drag;
 #[path = "tests_tabs.rs"]
@@ -87,6 +89,15 @@ type OpHook = Box<dyn Fn(&FileOp) + Send + Sync>;
 /// A PDF page render request: path, page, box.
 type PdfRenderCall = (PathBuf, u32, (u32, u32));
 
+/// A data object for the fake clipboard to hand out.
+struct FakeClipboardData(::windows::Win32::System::Com::IDataObject);
+
+// SAFETY: only ever holds the in-process fake source of `win_virtual_drop_tests`, which keeps
+// no thread state of its own and is reference-counted atomically, like any COM object.
+unsafe impl Send for FakeClipboardData {}
+// SAFETY: as above.
+unsafe impl Sync for FakeClipboardData {}
+
 #[derive(Default)]
 struct FakeShell {
     opened: Mutex<Vec<PathBuf>>,
@@ -94,6 +105,8 @@ struct FakeShell {
     opened_sorts: Mutex<Vec<Option<SortSpec>>>,
     ops: Mutex<Vec<FileOp>>,
     clipboard: Mutex<Option<(ClipboardFiles, u32)>>,
+    /// Virtual files on the clipboard (a Remote Desktop copy), read when there are no files.
+    virtual_clipboard: Mutex<Option<FakeClipboardData>>,
     seq: AtomicU32,
     /// Simulates an operation's effect on the file system (e.g. a new folder appears in FakeFs).
     on_op: Mutex<Option<OpHook>>,
@@ -524,6 +537,18 @@ impl Shell for FakeShell {
         Ok(self.clipboard.lock().clone())
     }
 
+    fn clipboard_virtual_files(
+        &self,
+    ) -> Result<Option<crate::win_virtual_drop::VirtualDrop>, ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "clipboard opened on the UI thread"
+        );
+        let data = self.virtual_clipboard.lock().as_ref().map(|d| d.0.clone());
+        data.map(|d| crate::win_virtual_drop::VirtualDrop::take(&d))
+            .transpose()
+    }
+
     fn clear_clipboard_if(&self, seq: u32) {
         let mut clip = self.clipboard.lock();
         if clip.as_ref().is_some_and(|(_, s)| *s == seq) {
@@ -539,7 +564,7 @@ impl Shell for FakeShell {
     }
 
     fn clipboard_has_files(&self) -> bool {
-        self.clipboard.lock().is_some()
+        self.clipboard.lock().is_some() || self.virtual_clipboard.lock().is_some()
     }
 
     fn is_local_disk(&self, path: &Path) -> bool {
@@ -8244,8 +8269,7 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
 
     click(cx, type_button.center());
     assert_eq!(menu(cx), Some(Facet::Type));
-    // Blank space at the panel's top right corner. The measured box is the panel's content
-    // (inside its padding), so this stays inside the panel itself, not on the pane below it.
+    // Blank space at the panel's top right corner, in its padding.
     click(cx, point(panel.right() - px(24.), panel.top() + px(8.)));
     assert_eq!(menu(cx), None, "blank space in the panel");
     assert!(
@@ -8262,6 +8286,14 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
     assert_eq!(menu(cx), Some(Facet::Size), "another filter opens its menu");
     click(cx, size_button.center());
     assert_eq!(menu(cx), None, "its own button closes it");
+    // Also at the button's right end: the measured button is the button itself, not shifted by
+    // its padding (a press there left the menu open).
+    click(cx, type_button.center());
+    click(
+        cx,
+        point(type_button.right() - px(2.), type_button.center().y),
+    );
+    assert_eq!(menu(cx), None, "its own button's right end closes it");
 }
 
 /// #114: a menu taller than the screen stays inside its work area and scrolls; the keyboard brings

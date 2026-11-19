@@ -655,3 +655,177 @@ fn the_pane_lists_every_slide(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("pane-slide-2").is_some());
     assert!(cx.debug_bounds("pane-slide-3").is_none());
 }
+
+/// The pane's scroll position (x, y) and how far it can scroll (x, y).
+fn pane_scroll(cx: &mut VisualTestContext, view: &Entity<Explorer>) -> ((f32, f32), (f32, f32)) {
+    view.update(cx, |v, _| {
+        let (at, max) = v.preview_scroll_for_test();
+        (
+            (at.x.as_f32(), at.y.as_f32()),
+            (max.x.as_f32(), max.y.as_f32()),
+        )
+    })
+}
+
+/// A sheet of `rows` rows and `cols` numeric columns, as `<sheetData>` content.
+fn wide_sheet(rows: u32, cols: u32) -> String {
+    use std::fmt::Write as _;
+    let mut data = String::new();
+    for r in 1..=rows {
+        let _ = write!(data, r#"<row r="{r}">"#);
+        for c in 0..cols {
+            let name = arke_core::office::column_name(c);
+            let _ = write!(data, r#"<c r="{name}{r}"><v>{}</v></c>"#, r * 1000 + c);
+        }
+        data.push_str("</row>");
+    }
+    data
+}
+
+/// Shift+wheel (what Windows sends as a horizontal wheel) over `at`.
+fn shift_wheel(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>, dx: f32) {
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, point, px};
+    cx.simulate_event(ScrollEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(dx), px(0.))),
+        modifiers: Modifiers::shift(),
+        ..ScrollEvent::default()
+    });
+    cx.run_until_parked();
+}
+
+fn plain_wheel(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>, dy: f32) {
+    use gpui::{ScrollDelta, ScrollEvent, point, px};
+    cx.simulate_event(ScrollEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+        ..ScrollEvent::default()
+    });
+    cx.run_until_parked();
+}
+
+/// A spreadsheet wider than the pane scrolls sideways with Shift+wheel and a sideways swipe,
+/// the plain wheel still scrolls it up and down, and its bottom scrollbar can be dragged.
+#[gpui::test]
+fn a_wide_spreadsheet_scrolls_sideways_in_the_pane(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollEvent, point, px};
+    let fs = FakeFs::new();
+    let book = arke_core::office::fixtures::xlsx(&[("Data", &wide_sheet(80, 30))], &[], "");
+    fs.insert_dir(r"C:\w", vec![file("wide.xlsx", book.len() as u64)]);
+    fs.set_content(Path::new(r"C:\w\wide.xlsx"), book);
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\w");
+    wait_until(cx, &view, "load", loaded(r"C:\w"));
+    show_preview_pane(cx);
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "sheet", |v| {
+        matches!(
+            v.preview.as_ref().map(|p| &p.body),
+            Some(PreviewBody::Workbook(_))
+        )
+    });
+    cx.run_until_parked();
+    let sheet = cx.debug_bounds("preview-sheet").expect("the grid is drawn");
+    let at = sheet.center();
+    let (start, max) = pane_scroll(cx, &view);
+    assert_eq!(start, (0., 0.));
+    assert!(
+        max.0 > 0. && max.1 > 0.,
+        "wider and taller than the pane: {max:?}"
+    );
+
+    // The plain wheel goes down, not sideways.
+    plain_wheel(cx, at, -100.);
+    let (now, _) = pane_scroll(cx, &view);
+    assert!(now.1 < 0. && now.0 == 0., "{now:?}");
+    // Shift+wheel goes along, not down.
+    let down = now.1;
+    shift_wheel(cx, at, -100.);
+    let (now, _) = pane_scroll(cx, &view);
+    assert!(now.0 < 0. && (now.1 - down).abs() < 0.5, "{now:?}");
+    // A touchpad's sideways swipe (no modifier) does the same, and swiping back returns.
+    let along = now.0;
+    cx.simulate_event(ScrollEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(-60.), px(0.))),
+        ..ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    let (now, _) = pane_scroll(cx, &view);
+    assert!(now.0 < along && (now.1 - down).abs() < 0.5, "{now:?}");
+    shift_wheel(cx, at, 5000.);
+    assert_eq!(pane_scroll(cx, &view).0.0, 0.);
+
+    // Dragging the thumb of the bottom bar moves the columns.
+    let grab = point(sheet.left() + px(20.), sheet.bottom() - px(4.));
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        grab + point(px(60.), px(0.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        grab + point(px(60.), px(0.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let (now, _) = pane_scroll(cx, &view);
+    assert!(
+        now.0 < -50.,
+        "the thumb dragged right scrolls the columns: {now:?}"
+    );
+}
+
+/// CSV and TSV keep each row on one line and scroll sideways; other text still wraps.
+#[gpui::test]
+fn a_wide_csv_scrolls_sideways_while_code_still_wraps(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let row = (0..60)
+        .map(|c| format!("column_{c}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let body = vec![row; 100].join("\n");
+    fs.insert_dir(
+        r"C:\c",
+        vec![
+            file("a.csv", body.len() as u64),
+            file("b.txt", body.len() as u64),
+        ],
+    );
+    fs.set_content(Path::new(r"C:\c\a.csv"), body.clone().into_bytes());
+    fs.set_content(Path::new(r"C:\c\b.txt"), body.into_bytes());
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\c");
+    wait_until(cx, &view, "load", loaded(r"C:\c"));
+    show_preview_pane(cx);
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "csv", |v| {
+        v.preview.as_ref().is_some_and(|p| {
+            p.entry.name.as_ref() == "a.csv" && matches!(p.body, PreviewBody::Text { .. })
+        })
+    });
+    cx.run_until_parked();
+    let at = cx
+        .debug_bounds("preview-text")
+        .expect("text is drawn")
+        .center();
+    let (_, max) = pane_scroll(cx, &view);
+    assert!(max.0 > 0. && max.1 > 0., "{max:?}");
+    plain_wheel(cx, at, -100.);
+    let (now, _) = pane_scroll(cx, &view);
+    assert!(now.1 < 0. && now.0 == 0., "{now:?}");
+    shift_wheel(cx, at, -100.);
+    let (now, _) = pane_scroll(cx, &view);
+    assert!(now.0 < 0., "{now:?}");
+
+    // The same lines in a .txt wrap: nothing to scroll sideways.
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "txt", |v| {
+        v.preview.as_ref().is_some_and(|p| {
+            p.entry.name.as_ref() == "b.txt" && matches!(p.body, PreviewBody::Text { .. })
+        })
+    });
+    cx.run_until_parked();
+    let (_, max) = pane_scroll(cx, &view);
+    assert_eq!(max.0, 0., "{max:?}");
+    assert!(max.1 > 0.);
+}

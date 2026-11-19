@@ -448,6 +448,14 @@ impl Explorer {
             }
         }
         let total = crumbs.len();
+        // Too narrow even for "… › current folder" (a split pane in a small window): just the
+        // current folder. Up still goes up.
+        let slot = self.path_slot.get();
+        if compact && total > 1 && slot > px(0.) && slot < theme::scaled_px(140.) {
+            let hidden = crumbs[..total - 1].to_vec();
+            let current = crumbs.into_iter().last();
+            return (vec![(total - 1, current)], total, hidden);
+        }
         let Some(hide) = self.crumbs_to_hide(&crumbs, compact, window) else {
             let shown = crumbs
                 .into_iter()
@@ -664,7 +672,8 @@ impl Explorer {
         let popup_parent = self.path_popup.as_ref().and_then(|p| p.current.clone());
         shown
             .into_iter()
-            .map(|(i, crumb)| {
+            .enumerate()
+            .map(|(pos, (i, crumb))| {
                 let is_last = i == last;
                 // The › before a segment lists the folders of the level to its left, with this one
                 // highlighted.
@@ -672,7 +681,8 @@ impl Explorer {
                     .as_ref()
                     .map(|(_, p)| p.clone())
                     .or_else(|| hidden.first().map(|(_, p)| p.clone()));
-                let chevron = (i > 0).then(|| {
+                // Not before the first piece shown (the root, "…", or the current folder alone).
+                let chevron = (pos > 0).then(|| {
                     let open = here.is_some() && popup_parent == here;
                     chevron_button(("crumb-sep", i), open).on_click(cx.listener({
                         let here = here.clone();

@@ -55,6 +55,7 @@ icons![
     Paste => "paste",
     Rename => "rename",
     Trash => "trash",
+    More => "more",
     Restore => "restore",
     ViewList => "view-list",
     ViewGrid => "view-grid",

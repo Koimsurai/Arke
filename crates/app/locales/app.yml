@@ -472,6 +472,10 @@ sel.rename:
   en: Rename
   zh-TW: 重新命名
   zh-CN: 重命名
+sel.more:
+  en: More actions
+  zh-TW: 更多動作
+  zh-CN: 更多操作
 sel.delete:
   en: Delete
   zh-TW: 刪除

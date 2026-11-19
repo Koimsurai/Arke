@@ -417,6 +417,9 @@ impl Explorer {
         // Split view with both sides on different folders: Copy to/Move to take the room of the
         // regular buttons. Same folder: they'd copy items onto themselves, so they're left out and
         // the regular buttons come back.
+        if self.selection_folds() {
+            return self.render_folded_selection(count, cx);
+        }
         let peer_actions = self.render_peer_actions(cx);
         let crowded = peer_actions.is_some();
         div()
@@ -500,6 +503,79 @@ impl Explorer {
                 compact,
                 cx.listener(|this, _: &ClickEvent, w, cx| this.escape(&Escape, w, cx)),
             ))
+            .into_any_element()
+    }
+
+    /// Whether the pane is too narrow for the selection's buttons next to the path bar and the
+    /// view buttons (a split pane in a small window, say): they fold into a "⋯" menu.
+    pub(crate) fn selection_folds(&self) -> bool {
+        let needs = if self.pane.split { 600. } else { 720. };
+        self.paper_width < theme::scaled_px(needs)
+    }
+
+    /// The selection in a narrow pane: "● 3" (the tooltip has the whole summary) and "⋯", which
+    /// opens the selection's context menu under it: open, cut, copy, rename, delete, copy or
+    /// move to the other side are all there.
+    fn render_folded_selection(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        let mut summary = t!("sel.count", count = format_count(count)).into_owned();
+        if let Some(size) = self.selected_size() {
+            let _ = write!(summary, " · {}", format_size(size));
+        }
+        div()
+            .debug_selector(|| "selection-actions".to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(theme::s_2())
+            .child(
+                div()
+                    .id("sel-count")
+                    .debug_selector(|| "sel-count".to_owned())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(theme::s_6())
+                    .h(theme::h_ctl_sm())
+                    .px(theme::s_6())
+                    .font_weight(theme::FW_STRONG)
+                    .child(
+                        div()
+                            .size(theme::s_6())
+                            .rounded(theme::R_FULL)
+                            .bg(theme::signal()),
+                    )
+                    .child(format_count(count))
+                    .tooltip_below(summary),
+            )
+            .child(
+                div()
+                    .id("sel-more")
+                    .debug_selector(|| "sel-more".to_owned())
+                    .a11y_button(t!("sel.more"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(theme::h_ctl_sm())
+                    .rounded(theme::r_8())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::wash()))
+                    .child(
+                        svg()
+                            .path(Icon::More.path())
+                            .size(theme::icon())
+                            .text_color(theme::text_muted()),
+                    )
+                    .tooltip_below(t!("sel.more").to_string())
+                    // Opens on press, like the other menus.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_context_menu(event.position, window, cx);
+                        }),
+                    ),
+            )
             .into_any_element()
     }
 

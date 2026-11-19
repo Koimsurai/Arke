@@ -50,6 +50,10 @@ fn path_compact_below() -> gpui::Pixels {
 fn path_min() -> gpui::Pixels {
     crate::theme::scaled_px(160.)
 }
+/// The same in a split pane, half as wide with more view buttons: still "… › current folder".
+fn path_min_split() -> gpui::Pixels {
+    crate::theme::scaled_px(100.)
+}
 /// Widest the filter chip gets (the query is cut off with "…"; its tooltip has all of it).
 fn filter_chip_max() -> gpui::Pixels {
     crate::theme::scaled_px(180.)
@@ -408,7 +412,11 @@ impl Explorer {
                 div()
                     .flex()
                     .flex_1()
-                    .min_w(path_min())
+                    .min_w(if self.pane.split {
+                        path_min_split()
+                    } else {
+                        path_min()
+                    })
                     .h_full()
                     .child(self.render_path_slot(compact, window, cx)),
             )

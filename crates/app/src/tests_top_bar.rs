@@ -361,6 +361,42 @@ fn the_selection_actions_share_the_pane_row(cx: &mut TestAppContext) {
     assert!(bounds(cx, "path-bar").right() <= actions.left());
 }
 
+/// A split pane in a small window has no room for the selection's buttons: they fold into "● 3"
+/// and "⋯", which opens the selection's menu. A wide pane keeps the buttons.
+#[gpui::test]
+fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1200.);
+    cx.simulate_keystrokes("ctrl-a");
+    settle(cx);
+    assert!(cx.debug_bounds("sel-more").is_none(), "a wide pane keeps its buttons");
+
+    cx.simulate_resize(size(px(1000.), px(650.)));
+    settle(cx);
+    let right = split(&ws, &left, cx);
+    cx.simulate_keystrokes("ctrl-a");
+    settle(cx);
+    let view = [&left, &right]
+        .into_iter()
+        .find(|v| v.update(cx, |v, _| !v.selection.is_empty()))
+        .expect("a pane with a selection")
+        .clone();
+    assert!(view.update(cx, |v, _| v.selection_folds()));
+    let actions = bounds(cx, "selection-actions");
+    assert!(actions.size.width < px(100.), "only the count and ⋯: {actions:?}");
+    assert!(bounds(cx, "sel-count").size.width > px(0.));
+    // Both panes may hold a selection: whichever "⋯" is pressed opens its own pane's menu.
+    let menus = |cx: &mut VisualTestContext| {
+        [&left, &right]
+            .into_iter()
+            .filter(|v| v.update(cx, |v, _| v.context_menu.is_some()))
+            .count()
+    };
+    assert_eq!(menus(cx), 0);
+    let more = bounds(cx, "sel-more").center();
+    press(cx, more);
+    assert_eq!(menus(cx), 1, "⋯ opens the selection's menu");
+}
+
 #[gpui::test]
 fn horizontal_tabs_keep_the_title_row_below_the_tabs(cx: &mut TestAppContext) {
     let (_ws, _view, cx) = open_deep(cx, 1000.);

@@ -138,6 +138,10 @@ filter.placeholder_in:
   en: Search %{folder} or this PC (Ctrl+F)
   zh-TW: 搜尋「%{folder}」或此電腦（Ctrl+F）
   zh-CN: 搜索“%{folder}”或此电脑（Ctrl+F）
+filter.placeholder_short:
+  en: Search (Ctrl+F)
+  zh-TW: 搜尋（Ctrl+F）
+  zh-CN: 搜索（Ctrl+F）
 filter.chip_tip:
   en: Show this filter in the search box
   zh-TW: 在搜尋框中顯示這個篩選
@@ -524,10 +528,6 @@ info.filtered:
   en: "%{shown} of %{total} items match"
   zh-TW: 符合 %{shown} 個，共 %{total} 個項目
   zh-CN: 匹配 %{shown} 个，共 %{total} 个项目
-info.query_in:
-  en: "In \"%{folder}\": \"%{query}\""
-  zh-TW: 「%{folder}」中的「%{query}」
-  zh-CN: “%{folder}”中的“%{query}”
 info.items_one:
   en: "1 item"
   zh-TW: "%{count} 個項目"

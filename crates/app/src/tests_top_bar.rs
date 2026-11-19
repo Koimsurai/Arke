@@ -244,17 +244,91 @@ fn a_press_outside_the_path_input_ends_editing(cx: &mut TestAppContext) {
     assert!(editing(cx));
 }
 
+/// The filter chip says what the pane is filtered by (its tooltip has all of it); the pane row
+/// carries no second description of the query, which would squeeze the path bar.
 #[gpui::test]
-fn the_results_header_names_the_whole_query(cx: &mut TestAppContext) {
+fn the_pane_row_has_no_query_description(cx: &mut TestAppContext) {
     let (_ws, view, cx) = open_deep(cx, 1000.);
+    let before = bounds(cx, "path-bar").size.width;
     cx.dispatch_action(FocusFilter);
     cx.simulate_input("file");
     settle(cx);
     let parts = view.update(cx, |v, cx| v.info_parts(cx));
-    assert_eq!(
-        parts.first().map(String::as_str),
-        Some("In \"reports\": \"file\"")
+    assert!(
+        parts.iter().all(|p| !p.contains("file")),
+        "no description of the query: {parts:?}"
     );
+    view.update_in(cx, Explorer::cancel_path_edit);
+    settle(cx);
+    assert!(cx.debug_bounds("filter-chip").is_some());
+    let after = bounds(cx, "path-bar").size.width;
+    assert!(
+        after >= before - px(200.),
+        "the path bar only gives way to the chip: {before:?} -> {after:?}"
+    );
+}
+
+/// Split view: only the active pane has the accent edge, as a thin outline over the paper (never
+/// a shadow, which tints the translucent paper through).
+#[gpui::test]
+fn the_active_pane_has_a_thin_outline_not_a_tint(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1600.);
+    assert!(cx.debug_bounds("active-pane-outline").is_none(), "unsplit");
+    split(&ws, &left, cx);
+    let outline = bounds(cx, "active-pane-outline");
+    assert!(outline.size.width < px(1600.) / 2.);
+    assert!(outline.top() >= bounds(cx, "title-row").bottom());
+    // Unsplit again: the one pane left is no longer marked.
+    let right = ws.update(cx, |ws, _| ws.pane_views()[1].clone());
+    right.update(cx, |_, cx| cx.emit(ExplorerEvent::ToggleSplit));
+    cx.run_until_parked();
+    settle(cx);
+    assert!(cx.debug_bounds("active-pane-outline").is_none());
+}
+
+/// A search box too narrow for "Search <folder> or this PC" shows the short placeholder.
+#[gpui::test]
+fn a_narrow_search_box_shows_the_short_placeholder(cx: &mut TestAppContext) {
+    let placeholder = |cx: &mut VisualTestContext, view: &Entity<Explorer>| {
+        view.update(cx, |v, cx| {
+            v.filter_input_for_test().read(cx).placeholder_for_test()
+        })
+    };
+    let (_ws, view, cx) = open_deep(cx, 1600.);
+    let wide = placeholder(cx, &view);
+    assert!(wide.contains("reports"), "{wide}");
+    cx.simulate_resize(size(px(800.), px(650.)));
+    settle(cx);
+    let narrow = placeholder(cx, &view);
+    assert_eq!(narrow, t!("filter.placeholder_short").into_owned());
+    assert!(!narrow.contains("reports"));
+    cx.simulate_resize(size(px(1600.), px(650.)));
+    settle(cx);
+    assert_eq!(placeholder(cx, &view), wide);
+}
+
+/// A click in the split tab's shared preview leaves the search box too.
+#[gpui::test]
+fn a_click_in_the_shared_preview_leaves_the_search_box(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1700.);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx)
+            .update(cx, |s, cx| s.update(|st| st.preview_pane = true, cx));
+    });
+    let right = split(&ws, &left, cx);
+    settle(cx);
+    assert!(
+        ws.update(cx, |ws, _| ws.shared_preview_for_test())
+            .is_some()
+    );
+    cx.dispatch_action(FocusFilter);
+    settle(cx);
+    let active = ws.update(cx, |ws, _| ws.active_view().clone());
+    assert_eq!(active, right);
+    assert!(searching(cx, &active));
+    let preview = bounds(cx, "shared-preview").center();
+    press(cx, preview);
+    assert!(!searching(cx, &active));
 }
 
 #[gpui::test]

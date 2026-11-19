@@ -266,6 +266,12 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Tests: the text shown while the input is empty.
+    #[cfg(test)]
+    pub(crate) fn placeholder_for_test(&self) -> String {
+        self.placeholder.to_string()
+    }
+
     pub(crate) fn set_placeholder(
         &mut self,
         placeholder: impl Into<SharedString>,

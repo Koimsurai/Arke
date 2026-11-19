@@ -573,16 +573,6 @@ impl Explorer {
         if self.search_global {
             return self.computer_info(cx);
         }
-        // The whole query, since the search box cuts long text off when it isn't in use.
-        if !self.query.is_empty() && (self.search_mode || self.is_filtering()) {
-            let folder = self.display_path().map_or_default(|p| {
-                p.file_name().map_or_else(
-                    || p.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                )
-            });
-            parts.push(t!("info.query_in", folder = folder, query = self.query).into_owned());
-        }
         if self.search_mode {
             if let Some(r) = &self.search_results {
                 let mut s = tn!("info.matched", r.matched as usize).into_owned();
@@ -2173,6 +2163,18 @@ fn kbd(text: &'static str) -> impl IntoElement {
 
 /// Outlines the pane the search box is searching, while it's typed in. Drawn over the paper; it
 /// takes no clicks.
+/// Split view: the active pane's thin accent edge, drawn over the paper's border (a shadow would
+/// show through the translucent paper and tint the whole pane).
+fn active_outline() -> impl IntoElement {
+    div()
+        .debug_selector(|| "active-pane-outline".to_owned())
+        .absolute()
+        .inset_0()
+        .rounded(theme::R_12)
+        .border_1()
+        .border_color(theme::signal_line())
+}
+
 fn search_outline() -> impl IntoElement {
     div()
         .debug_selector(|| "search-target".to_owned())
@@ -3005,11 +3007,7 @@ impl Render for Explorer {
                     .mb(theme::S_8)
                     .rounded(theme::R_12)
                     .bg(theme::paper())
-                    .shadow(if self.pane.split && self.pane.active {
-                        theme::elev_2_active()
-                    } else {
-                        theme::elev_2()
-                    })
+                    .shadow(theme::elev_2())
                     .children(backdrop_layer())
                     .child(self.render_pane_row(window, cx))
                     .child(
@@ -3037,6 +3035,7 @@ impl Render for Explorer {
                             )
                             .children(self.render_preview_appearing(cx)),
                     )
+                    .children((self.pane.split && self.pane.active).then(active_outline))
                     .children(searching.then(search_outline))
                     .children(self.render_toast_stack(cx)),
             )
@@ -3236,6 +3235,14 @@ impl Explorer {
             self.preview_cue.wrap(
                 div()
                 .id("shared-preview")
+                .debug_selector(|| "shared-preview".to_owned())
+                // A click here leaves the search box, as one in the single-pane preview does.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.cancel_path_edit(window, cx);
+                    }),
+                )
                 .a11y(gpui::Role::Region, t!("settings.preview"))
                 .when_some(
                     description,

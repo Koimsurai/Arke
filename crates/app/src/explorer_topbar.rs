@@ -65,8 +65,8 @@ pub(crate) struct TopRow {
     /// The search box was focused on this press already (its magnifier, or its query): the
     /// click that ends the press leaves its text alone.
     pub(super) search_focused_on_press: bool,
-    /// The folder the search box's placeholder names.
-    placeholder_for: Option<String>,
+    /// The folder the search box's placeholder names, and whether it is the short one.
+    placeholder_for: Option<(Option<String>, bool)>,
 }
 
 /// Records `bounds` of the element it's drawn in; draws once more when they change (they don't
@@ -166,19 +166,40 @@ impl Explorer {
         width
     }
 
-    /// Names the folder in the search box's placeholder ("Search <folder> or this PC").
-    fn sync_search_placeholder(&mut self, cx: &mut Context<Self>) {
+    /// Names the folder in the search box's placeholder ("Search <folder> or this PC"); a box too
+    /// narrow for that shows the short one.
+    fn sync_search_placeholder(&mut self, width: Pixels, window: &Window, cx: &mut Context<Self>) {
         let folder = self.folder_label();
-        if self.top_row.placeholder_for == folder {
-            return;
-        }
-        let text = folder.as_ref().map_or_else(
+        let full = folder.as_ref().map_or_else(
             || t!("filter.placeholder").into_owned(),
             |name| t!("filter.placeholder_in", folder = name).into_owned(),
         );
+        let normal = gpui::FontWeight::NORMAL;
+        // Padding and border, the magnifier and the gaps around the text, and the scope chip.
+        let chrome = theme::S_12
+            + theme::S_4
+            + px(2.)
+            + theme::ICON
+            + theme::S_6 * 3.
+            + theme::S_6 * 2.
+            + theme::ICON_SM
+            + theme::S_4
+            + text_width(&self.scope_chip_label(), theme::FS_12, normal, window)
+            + theme::S_8;
+        let short =
+            width > px(0.) && chrome + text_width(&full, theme::FS_14, normal, window) > width;
+        let key = (folder, short);
+        if self.top_row.placeholder_for.as_ref() == Some(&key) {
+            return;
+        }
+        let text = if short {
+            t!("filter.placeholder_short").into_owned()
+        } else {
+            full
+        };
         self.filter_input
             .update(cx, |input, cx| input.set_placeholder(text, cx));
-        self.top_row.placeholder_for = folder;
+        self.top_row.placeholder_for = Some(key);
     }
 
     /// The window's title row, drawn by the active pane (see the module docs). `horizontal`: tabs
@@ -191,10 +212,10 @@ impl Explorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.sync_search_placeholder(cx);
         let state = self.search_box_state(window, cx);
         let content = self.search_content_width(window, cx);
         let width = self.search_box_width(state, content, title, window);
+        self.sync_search_placeholder(width, window, cx);
         // Centered on the row, kept between the buttons on either side.
         let row = title.row.get();
         let middle = title.middle.get();

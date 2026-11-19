@@ -6,7 +6,7 @@
 
 use super::{
     ArchiveError, ArchiveItem, ArchiveListing, ExtractOptions, ExtractProgress, ExtractSummary,
-    cancelled, display_name, safe_relative_path, write_new_file,
+    Written, cancelled, display_name, safe_relative_path, write_new_file,
 };
 use sevenz_rust2::{Archive, ArchiveEntry, ArchiveReader, EntryDecision, Password};
 use std::fs::{self, File};
@@ -127,12 +127,14 @@ pub(super) fn extract(
             progress.done = progress.done.saturating_add(n);
             (opts.progress)(progress);
         };
-        match write_new_file(&target, data, &mut on_bytes, opts) {
-            Ok(true) => {
+        match write_new_file(&target, data, None, &mut on_bytes, opts) {
+            Ok(Written::Done) => {
                 summary.files += 1;
                 progress.files = summary.files;
             }
-            Ok(false) => {
+            // Stops at the check below.
+            Ok(Written::Cancelled) => {}
+            Ok(Written::Exists) => {
                 summary.skipped_existing += 1;
                 // Unread data is still decoded (solid blocks need it), so it counts as progress.
                 progress.done = progress.done.saturating_add(entry.size);

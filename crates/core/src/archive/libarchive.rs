@@ -458,12 +458,9 @@ pub(super) fn extract(
                     progress.done = position.load(Ordering::Relaxed).min(total);
                     (opts.progress)(progress);
                 };
-                if write_new_file(&target, &mut reader, &mut on_bytes, opts)? {
-                    summary.files += 1;
-                    progress.files = summary.files;
-                } else {
-                    summary.skipped_existing += 1;
-                }
+                write_new_file(&target, &mut reader, None, &mut on_bytes, opts)?
+                    .count(&mut summary);
+                progress.files = summary.files;
             }
             EntryType::Other => summary.skipped_unsafe += 1,
         }

@@ -52,7 +52,7 @@ fn path_min() -> gpui::Pixels {
 }
 /// The same in a split pane, half as wide with more view buttons: still "… › current folder".
 fn path_min_split() -> gpui::Pixels {
-    crate::theme::scaled_px(100.)
+    crate::theme::scaled_px(64.)
 }
 /// Widest the filter chip gets (the query is cut off with "…"; its tooltip has all of it).
 fn filter_chip_max() -> gpui::Pixels {
@@ -216,13 +216,11 @@ impl Explorer {
         self.top_row.placeholder_for = Some(key);
     }
 
-    /// The window's title row, drawn by the active pane (see the module docs). `horizontal`: tabs
-    /// are on top, so back, forward and refresh are here and the window buttons are on the tab
-    /// strip.
+    /// The window's title row, drawn by the active pane (see the module docs). With tabs on top
+    /// it is the same; the tab strip goes under it.
     pub(crate) fn render_title_row(
         &mut self,
         title: &TitleLayout,
-        horizontal: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -239,10 +237,6 @@ impl Explorer {
             centered.clamp(middle.left(), last) - middle.left()
         });
         let mut controls: Vec<AnyElement> = Vec::new();
-        if horizontal {
-            controls.extend(self.history_buttons(cx));
-            controls.push(self.refresh_button(cx));
-        }
         controls.push(
             div()
                 .id("title-middle")
@@ -267,11 +261,7 @@ impl Explorer {
         );
         // The window buttons and the space after them, which the bands above and below the
         // controls leave alone (maximized, the buttons reach up to the screen edge).
-        let caption_w = if horizontal {
-            theme::s_8()
-        } else {
-            theme::h_ctl() * 3. + theme::s_2() * 2. + theme::s_8()
-        };
+        let caption_w = theme::h_ctl() * 3. + theme::s_2() * 2. + theme::s_8();
         let mut bar = div()
             .id("title-row")
             .debug_selector(|| "title-row".to_owned())
@@ -288,14 +278,12 @@ impl Explorer {
             }
             bar = bar.child(control);
         }
-        bar.when(!horizontal, |d| {
-            d.child(
-                Self::title_drag("caption-lead", cx)
-                    .debug_selector(|| "caption-lead".to_owned())
-                    .w(theme::s_8()),
-            )
-            .child(super::view::caption_group(window))
-        })
+        bar.child(
+            Self::title_drag("caption-lead", cx)
+                .debug_selector(|| "caption-lead".to_owned())
+                .w(theme::s_8()),
+        )
+        .child(super::view::caption_group(window))
         .child(Self::title_drag("title-end", cx).w(theme::s_8()))
         .into_any_element()
     }
@@ -448,7 +436,11 @@ impl Explorer {
                 .pl(theme::s_6())
                 .pr(theme::s_2())
                 .rounded(theme::R_FULL)
-                .bg(theme::signal_wash())
+                // Solid, so a filtered pane stands out at a glance, beside the other side of a
+                // split too (#216).
+                .bg(theme::signal())
+                .text_color(theme::on_signal())
+                .font_weight(theme::FW_STRONG)
                 .text_size(theme::fs_12())
                 .cursor_pointer()
                 .tooltip_below(query.clone())
@@ -457,7 +449,7 @@ impl Explorer {
                         .path(Icon::Search.path())
                         .size(theme::icon_sm())
                         .flex_none()
-                        .text_color(theme::signal()),
+                        .text_color(theme::on_signal()),
                 )
                 .child(div().min_w_0().truncate().child(query))
                 .child(
@@ -471,12 +463,12 @@ impl Explorer {
                         .items_center()
                         .justify_center()
                         .rounded(theme::R_FULL)
-                        .hover(|s| s.bg(theme::wash_strong()))
+                        .hover(|s| s.bg(gpui::black().opacity(0.18)))
                         .child(
                             svg()
                                 .path(Icon::Close.path())
                                 .size(theme::icon_sm())
-                                .text_color(theme::text_muted()),
+                                .text_color(theme::on_signal()),
                         )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();

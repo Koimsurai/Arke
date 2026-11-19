@@ -363,7 +363,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let page = self.home_page.as_ref().filter(|p| self.shows(&p.owner))?;
-        let horizontal = Self::horizontal_tabs(cx);
         let top_bar = div()
             .h(theme::h_bar())
             .flex_none()
@@ -371,17 +370,6 @@ impl Workspace {
             .items_center()
             .gap(theme::s_2())
             .pr(theme::s_8())
-            .when(horizontal, |d| {
-                d.child(crate::explorer::ghost_button(
-                    "home-back",
-                    Icon::ArrowLeft,
-                    true,
-                    t!("nav.back"),
-                    cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.close_home(window, cx);
-                    }),
-                ))
-            })
             .child(
                 div()
                     .flex()
@@ -402,9 +390,7 @@ impl Workspace {
                     ),
             )
             .child(super::drag_area("home-drag", cx).flex_1().h_full())
-            .when(!horizontal, |d| {
-                d.child(crate::explorer::caption_buttons(window))
-            });
+            .child(crate::explorer::caption_buttons(window));
         Some(
             div()
                 .id("home-page")
@@ -414,6 +400,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .child(top_bar)
+                .children(self.tab_strip_under_bar(window, cx))
                 .child(
                     div()
                         .relative()

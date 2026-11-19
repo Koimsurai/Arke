@@ -158,6 +158,55 @@ fn dragging_a_tab_out_of_the_window_opens_it_in_a_new_window(cx: &mut TestAppCon
     assert_eq!(firsts, [vec![p(r"C:\a")], vec![p(r"C:\c")]]);
 }
 
+/// Past the window's edge the drag image inside it stops; the tab is drawn beside the pointer in a
+/// window of its own instead, saying what letting go does, and goes when the pointer comes back or
+/// the tab is dropped. The only tab has nothing to tear off, so nothing shows for it.
+#[gpui::test]
+fn a_tab_dragged_past_the_edge_is_drawn_beside_the_pointer(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    for dir in [r"C:\a", r"C:\b"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    let shown = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.tab_ghost_shown_for_test());
+    let popups =
+        |cx: &mut VisualTestContext| cx.update(|_, cx| crate::popup::open_popups(cx).len());
+
+    start_tab_drag(cx, "tab-0");
+    move_to(cx, point(px(-40.), px(300.)));
+    assert_eq!(shown(cx), None, "the only tab stays where it is");
+    release_at(cx, point(px(-40.), px(300.)), Modifiers::none());
+
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    start_tab_drag(cx, "tab-1");
+    assert_eq!(shown(cx), None, "inside the window GPUI draws the drag");
+    move_to(cx, point(px(-40.), px(300.)));
+    assert_eq!(
+        shown(cx).as_deref(),
+        Some(t!("tabs.drop_new_window").as_ref())
+    );
+    assert_eq!(popups(cx), 1, "in a window of its own");
+    move_to(cx, point(px(-60.), px(320.)));
+    assert_eq!(popups(cx), 1, "the same one follows the pointer");
+
+    move_to(cx, point(px(300.), px(300.)));
+    assert_eq!(shown(cx), None, "back over the window");
+    assert_eq!(popups(cx), 0);
+
+    move_to(cx, point(px(-40.), px(300.)));
+    assert!(shown(cx).is_some());
+    release_at(cx, point(px(-40.), px(300.)), Modifiers::none());
+    assert_eq!(shown(cx), None, "gone once dropped");
+    assert_eq!(popups(cx), 0);
+    assert_eq!(
+        workspaces(cx).len(),
+        2,
+        "and the tab has a window of its own"
+    );
+}
+
 /// A tab dropped on another Arke window's tabs moves into it, between the tabs under the cursor;
 /// its first window closes with its last tab.
 #[gpui::test]

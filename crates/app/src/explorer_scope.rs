@@ -25,7 +25,8 @@ use arke_core::index_query::Facet;
 use arke_core::{Entry, EntryKind, SearchHit, SearchResults};
 use gpui::{
     AnyElement, App, ClickEvent, Context, Focusable, KeyBinding, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Window, actions, anchored, deferred, div, prelude::*, svg,
+    MouseDownEvent, Pixels, SharedString, Window, actions, anchored, deferred, div, prelude::*,
+    svg,
 };
 use rust_i18n::t;
 
@@ -943,7 +944,12 @@ impl Explorer {
 
     /// The search panel below the focused box (floats over the content): where to search, what
     /// that scope does (index status for "this PC"), the filters, and a keyboard hint.
-    pub(super) fn render_scope_strip(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_scope_strip(
+        &self,
+        box_width: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let current = self.scope();
         let keyboard = self.panel_focus.is_focused(window);
         let rows = self.panel_rows(cx);
@@ -993,7 +999,8 @@ impl Explorer {
             .track_focus(&self.panel_focus)
             .a11y(gpui::Role::Group, t!("search.panel"))
             .relative()
-            .w(theme::search_panel_w())
+            // At least as wide as the box above it, so the two line up.
+            .w(panel_width(box_width))
             .p(theme::s_16())
             .flex()
             .flex_col()
@@ -1034,25 +1041,30 @@ impl Explorer {
             // Last, so it covers what is below its button.
             .children(self.render_filter_menu(keyboard, cx));
         let panel = Self::bind_panel_actions(panel, cx);
-        float_under_box(crate::motion::appear(
-            panel,
-            "search-panel-appear",
-            0.,
-            -crate::motion::NUDGE,
-        ))
+        float_under_box(
+            box_width,
+            crate::motion::appear(panel, "search-panel-appear", 0., -crate::motion::NUDGE),
+        )
     }
 }
 
-/// The search panel's place: under the box, right-aligned, kept inside the window.
-fn float_under_box(panel: AnyElement) -> AnyElement {
+/// Width of the search panel under a box `box_width` wide: its own width, or the box's when
+/// that is wider.
+pub(super) fn panel_width(box_width: Pixels) -> Pixels {
+    box_width.max(theme::search_panel_w())
+}
+
+/// The search panel's place: under the box `box_width` wide, centered on it (lined up with it
+/// when the box is as wide), kept inside the window.
+fn float_under_box(box_width: Pixels, panel: AnyElement) -> AnyElement {
     div()
         .absolute()
         .top(theme::h_ctl() + theme::s_4())
-        .right_0()
+        .left((box_width - panel_width(box_width)) / 2.)
         .child(
             deferred(
                 anchored()
-                    .anchor(gpui::Anchor::TopRight)
+                    .anchor(gpui::Anchor::TopLeft)
                     .snap_to_window_with_margin(theme::s_8())
                     .child(panel),
             )

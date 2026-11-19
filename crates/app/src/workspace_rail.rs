@@ -31,6 +31,10 @@ pub(super) struct SidebarUi {
     pub(super) tabs_scroll: gpui::ScrollHandle,
     rail_places_scroll: gpui::ScrollHandle,
     rail_tabs_scroll: gpui::ScrollHandle,
+    /// Tabs on top: the strip, which scrolls sideways when the tabs don't fit, and the tab last
+    /// scrolled into view there (the active one, once each time it changes).
+    pub(super) strip_scroll: gpui::ScrollHandle,
+    pub(super) strip_revealed: std::cell::Cell<Option<(usize, gpui::Pixels)>>,
     /// The open-over-the-content sidebar just closed and fades out (serial, for the animation id).
     peek_ghost: Option<u64>,
     peek_ghost_task: Option<gpui::Task<()>>,
@@ -230,21 +234,17 @@ impl Workspace {
                     this.open_sidebar_menu(e.position, menu.clone(), cx);
                 }),
             )
-            // Vertical tabs: the toggle sits where the title row is; with tabs on top it is at the
-            // start of the tab strip.
-            .when(!horizontal, |d| {
-                d.child(
-                    div()
-                        .h(theme::h_bar())
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .child(Self::sidebar_toggle(cx)),
-                )
-            })
+            // The toggle sits where the title row is.
+            .child(
+                div()
+                    .h(theme::h_bar())
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(Self::sidebar_toggle(cx)),
+            )
             // Back and forward, which the full sidebar has in its title row.
-            .when(!horizontal, |d| d.child(self.rail_nav(cx)))
-            .when(horizontal, |d| d.pt(theme::s_4()))
+            .child(self.rail_nav(cx))
             .child(
                 rail_button(
                     "rail-home",
@@ -777,7 +777,6 @@ impl Workspace {
     }
 
     fn peek_body(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let horizontal = Self::horizontal_tabs(cx);
         div()
             .size_full()
             .flex()
@@ -786,7 +785,7 @@ impl Workspace {
             .border_r_1()
             .border_color(theme::line())
             .shadow(theme::elev_float())
-            .when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+            .child(self.render_brand_row(cx))
             .child(self.render_home_button(cx))
             .child(self.render_sidebar(cx))
             .child(self.render_settings_button(cx))

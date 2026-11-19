@@ -1700,11 +1700,8 @@ fn open_history_menu(
     cx: &mut VisualTestContext,
     back: bool,
 ) -> Option<Vec<String>> {
-    view.update(cx, |_, cx| {
-        cx.emit(ExplorerEvent::HistoryMenu {
-            back,
-            position: gpui::point(gpui::px(100.), gpui::px(40.)),
-        });
+    ws.update(cx, |ws, cx| {
+        ws.open_history_menu_for_test(view, back, gpui::point(gpui::px(100.), gpui::px(40.)), cx);
     });
     cx.run_until_parked();
     ws.update(cx, |ws, _| ws.history_menu_labels_for_test())
@@ -2308,6 +2305,18 @@ fn a_history_jump_on_the_other_side_of_a_split(cx: &mut TestAppContext) {
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
     assert_eq!(at(&right, cx), Some(p(r"C:\c")));
 
+    // The keys go to the pane the jump focused; a busy machine may take a moment to get there.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !cx.update(|window, cx| {
+        gpui::Focusable::focus_handle(left.read(cx), cx).contains_focused(window, cx)
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "the jump left the focus on the pane"
+        );
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     // The steps stay in line: forward on the left comes back after the right's own step.
     cx.simulate_keystrokes("alt-left");
     wait_until(cx, &right, "right back to b", loaded(r"C:\b"));

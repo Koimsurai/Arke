@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use arke_core::History;
 use gpui::{
-    AnyElement, App, Bounds, Context, DispatchPhase, IntoElement, MouseButton, MouseUpEvent,
-    Pixels, Point, Styled, Window, WindowHandle, canvas, point, px,
+    AnyElement, App, Bounds, Context, DispatchPhase, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Styled, Window, WindowHandle, canvas, point, px,
 };
 
 use super::Workspace;
@@ -106,7 +106,9 @@ fn insert_index(slots: &[Bounds<Pixels>], at: Point<Pixels>, horizontal: bool) -
 }
 
 /// Where a window torn off at `screen` (the cursor) goes: `grab` is where its first tab will be
-/// inside it, kept under the cursor. A good part of it stays on `screen_bounds`.
+/// inside it, kept under the cursor, as long as the whole window stays on `screen_bounds`. Near
+/// an edge it moves in instead: a window whose middle is off every screen is opened by GPUI at the
+/// size of the whole screen.
 fn torn_window_origin(
     screen: Point<Pixels>,
     grab: Point<Pixels>,
@@ -117,13 +119,12 @@ fn torn_window_origin(
     let Some(vis) = screen_bounds else {
         return origin;
     };
-    let keep = px(160.);
+    // Bigger than the screen: its top-left corner stays on it.
+    let right = (vis.right() - size.width).max(vis.left());
+    let bottom = (vis.bottom() - size.height).max(vis.top());
     point(
-        origin
-            .x
-            .max(vis.left() - size.width + keep)
-            .min(vis.right() - keep),
-        origin.y.max(vis.top()).min(vis.bottom() - px(80.)),
+        origin.x.clamp(vis.left(), right),
+        origin.y.clamp(vis.top(), bottom),
     )
 }
 
@@ -152,6 +153,22 @@ impl Workspace {
             canvas(
                 |_, _, _| (),
                 move |_, (), window, _| {
+                    // The mouse stays captured by this window during the drag, so moves past its
+                    // edge arrive here too: past it, the tab is drawn beside the pointer.
+                    let mover = workspace.clone();
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        let size = window.viewport_size();
+                        let outside = e.position.x < px(0.)
+                            || e.position.y < px(0.)
+                            || e.position.x >= size.width
+                            || e.position.y >= size.height;
+                        let _ = mover.update(cx, |ws, cx| {
+                            ws.tab_ghost_moved(outside, e.position, window, cx);
+                        });
+                    });
                     window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
                         if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
                             return;
@@ -185,6 +202,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_tab_ghost(cx);
         let Some(from) = self.dragging_tab.take() else {
             return;
         };
@@ -226,7 +244,7 @@ impl Workspace {
     }
 
     /// The other Arke window at `screen` and the point in it, if any.
-    fn arke_window_at(
+    pub(super) fn arke_window_at(
         &self,
         screen: Point<Pixels>,
         window: &Window,
@@ -280,7 +298,9 @@ impl Workspace {
             .tabs
             .first()
             .and_then(|t| self.tab_layout.borrow().slots.get(&t.id).copied())
-            .map_or_else(|| point(px(120.), px(60.)), |b| b.center());
+            .map_or_else(|| point(px(120.), px(60.)), |b| b.center())
+            // Tabs on top, scrolled sideways: where the first tab is in the new window, unscrolled.
+            - point(self.sidebar_ui.strip_scroll.offset().x, px(0.));
         let screen_bounds = cx
             .displays()
             .iter()
@@ -466,30 +486,32 @@ mod tests {
 
     #[test]
     fn a_torn_off_window_keeps_its_first_tab_under_the_cursor_and_stays_on_screen() {
-        let screen = Some(slot(0., 0., 1920., 1040.));
+        let screen = slot(0., 0., 1920., 1040.);
         let window = size(px(1200.), px(800.));
-        let origin = torn_window_origin(
+        let at = |cursor: (f32, f32), grab: (f32, f32)| {
+            let origin = torn_window_origin(
+                point(px(cursor.0), px(cursor.1)),
+                point(px(grab.0), px(grab.1)),
+                window,
+                Some(screen),
+            );
+            // GPUI opens a window whose middle is off every screen at the whole screen's size.
+            assert!(screen.contains(&Bounds::new(origin, window).center()));
+            origin
+        };
+        assert_eq!(at((700., 200.), (100., 60.)), point(px(600.), px(140.)));
+        // Near the right and bottom edges: moved in, whole on the screen.
+        assert_eq!(at((1919., 1039.), (10., 10.)), point(px(720.), px(240.)));
+        assert_eq!(at((1500., 300.), (100., 400.)), point(px(720.), px(0.)));
+        // Above the top and past the left: the corner stays on the screen.
+        assert_eq!(at((50., 5.), (100., 60.)), point(px(0.), px(0.)));
+        // Bigger than the screen: from its top-left corner.
+        let huge = torn_window_origin(
             point(px(900.), px(500.)),
             point(px(100.), px(60.)),
-            window,
-            screen,
+            size(px(2400.), px(1400.)),
+            Some(screen),
         );
-        assert_eq!(origin, point(px(800.), px(440.)));
-        // Past the right and bottom edges: pulled back so a part stays reachable.
-        let origin = torn_window_origin(
-            point(px(1919.), px(1039.)),
-            point(px(10.), px(10.)),
-            window,
-            screen,
-        );
-        assert_eq!(origin, point(px(1760.), px(960.)));
-        // Above the top: the title row stays on screen.
-        let origin = torn_window_origin(
-            point(px(500.), px(5.)),
-            point(px(100.), px(60.)),
-            window,
-            screen,
-        );
-        assert_eq!(origin.y, px(0.));
+        assert_eq!(huge, point(px(0.), px(0.)));
     }
 }

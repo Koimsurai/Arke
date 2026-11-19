@@ -219,6 +219,18 @@ impl Workspace {
         })
     }
 
+    /// Opens the back (or forward) history menu for `view`, as a right click on the button does.
+    #[cfg(test)]
+    pub(crate) fn open_history_menu_for_test(
+        &mut self,
+        view: &gpui::Entity<crate::explorer::Explorer>,
+        back: bool,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_history_menu(view, back, position, cx);
+    }
+
     /// The menu of a back or forward button: the folders of `view`'s history, nearest first.
     /// With back and forward across tabs, when the button would first go to another tab, that
     /// comes first, so the top row is always what the button does. Nothing opens when there is
@@ -406,27 +418,6 @@ impl Workspace {
     ) {
         if let Some(action) = self.sidebar_menu_action_for_test(ix) {
             self.run_sidebar_action(action, window, cx);
-        }
-    }
-
-    /// A pane's back or forward toolbar button: the timeline when it is on, else that pane.
-    pub(super) fn history_button(
-        &mut self,
-        view: &gpui::Entity<crate::explorer::Explorer>,
-        back: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if Self::across_tabs(cx) {
-            self.step_timeline(back, window, cx);
-        } else {
-            view.update(cx, |e, cx| {
-                if back {
-                    e.go_back(&GoBack, window, cx);
-                } else {
-                    e.go_forward(&GoForward, window, cx);
-                }
-            });
         }
     }
 

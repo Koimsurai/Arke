@@ -63,6 +63,8 @@ mod shortcuts;
 mod sidebar;
 #[path = "workspace_tabdrag.rs"]
 mod tabdrag;
+#[path = "workspace_tabghost.rs"]
+mod tabghost;
 #[path = "workspace_tabmove.rs"]
 mod tabmove;
 #[path = "workspace_uninstall.rs"]
@@ -287,6 +289,10 @@ struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Past the window's edge the tab is drawn beside the pointer instead (`tabghost`).
+        if tabghost::shown() {
+            return div().into_any_element();
+        }
         // Over the favorites (the tiles or the list): what dropping there does.
         let pin = pindrop::current(window, cx).map(|_| {
             div()
@@ -319,6 +325,7 @@ impl Render for DraggedTab {
             .child(kind_icon(FileKind::Folder, theme::icon()))
             .child(self.title.clone())
             .children(pin)
+            .into_any_element()
     }
 }
 
@@ -384,6 +391,8 @@ pub(crate) struct Workspace {
     title_layout: crate::explorer::TitleLayout,
     /// Tab being dragged; dropping on the right half of the content area splits, like Arc.
     dragging_tab: Option<usize>,
+    /// The dragged tab beside the pointer once it is outside the window.
+    tab_ghost: Option<tabghost::TabGhost>,
     /// Animation and hit testing for tab and favorite tile reordering.
     tab_drag: tabdrag::TabDrag,
     /// Where the tabs were drawn last, for a tab dropped here from another window.
@@ -729,6 +738,7 @@ impl Workspace {
             resizing: false,
             title_layout: crate::explorer::TitleLayout::default(),
             dragging_tab: None,
+            tab_ghost: None,
             tab_drag: tabdrag::TabDrag::default(),
             tab_layout: Rc::default(),
             dragging_pin: false,
@@ -1205,10 +1215,6 @@ impl Workspace {
                 );
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
-            ExplorerEvent::HistoryButton(back) => self.history_button(source, *back, window, cx),
-            ExplorerEvent::HistoryMenu { back, position } => {
-                self.open_history_menu(source, *back, *position, cx);
-            }
             ExplorerEvent::BackToHome { start } => self.back_to_home(source, *start, window, cx),
             ExplorerEvent::Navigated {
                 path,
@@ -2254,10 +2260,7 @@ impl Workspace {
     fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let view = self.active_view().clone();
         let title = self.title_layout.clone();
-        let horizontal = Self::horizontal_tabs(cx);
-        let title_row = view.update(cx, |e, cx| {
-            e.render_title_row(&title, horizontal, window, cx)
-        });
+        let title_row = view.update(cx, |e, cx| e.render_title_row(&title, window, cx));
         div()
             .flex()
             .flex_col()
@@ -2265,6 +2268,7 @@ impl Workspace {
             .min_w_0()
             .h_full()
             .child(title_row)
+            .children(self.tab_strip_under_bar(window, cx))
             .child(self.render_pane_area(cx))
             .into_any_element()
     }
@@ -2514,6 +2518,7 @@ impl Workspace {
         if !cx.has_active_drag() {
             self.dragging_pin = false;
             self.dragging_tab = None;
+            self.close_tab_ghost(cx);
             self.tab_drag.end_tile();
             self.tab_drag.end_spring();
             pindrop::clear(cx);
@@ -2581,7 +2586,7 @@ impl Render for Workspace {
                 .h_full()
                 .flex()
                 .flex_col()
-                .when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+                .child(self.render_brand_row(cx))
                 .child(self.render_home_button(cx))
                 .child(self.render_sidebar(cx))
                 .child(self.render_settings_button(cx));
@@ -2616,7 +2621,7 @@ impl Render for Workspace {
             })
             .children(self.render_peek(cx))
             .when(!theme::sidebar_collapsed(), |d| {
-                d.when(!horizontal, |d| d.child(self.render_brand_row(cx)))
+                d.child(self.render_brand_row(cx))
                     .child(self.render_home_button(cx))
                     .child(self.render_sidebar(cx))
                     .child(self.render_settings_button(cx))
@@ -2778,20 +2783,20 @@ impl Render for Workspace {
                     }
                 }),
             )
-            .when(horizontal, |d| d.child(self.render_tab_strip(window, cx)))
             .child(body)
             .children(self.render_split_drop_zone(cx))
             // Horizontal tabs: the pin zone floats under the start of the strip, where the pinned
             // tabs are, without moving the tabs.
             .when(horizontal, |d| {
                 d.children(self.pin_drop_zone(cx).map(|zone| {
-                    // An opaque card under the accent wash, since it covers the sidebar (and
-                    // keeps the drop from reaching what is under it).
+                    // An opaque card under the accent wash, since it covers the panes (and keeps
+                    // the drop from reaching what is under it). The strip is under the title row,
+                    // right of the sidebar.
                     div()
                         .occlude()
                         .absolute()
-                        .top(theme::h_bar() + theme::s_4())
-                        .left(theme::s_8())
+                        .top(theme::h_bar() * 2. + theme::s_4())
+                        .left(theme::sidebar_width() + theme::s_8())
                         .w(theme::sidebar_full_width() - theme::s_16())
                         .rounded(theme::r_8())
                         .bg(theme::overlay())
@@ -2962,7 +2967,16 @@ impl Workspace {
     }
 
     /// Horizontal tabs: tabs on the top row like a browser, caption buttons on the far right.
-    fn render_tab_strip(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Tabs on top: the strip under the title row (of the panes, or of the page shown instead).
+    pub(super) fn tab_strip_under_bar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        Self::horizontal_tabs(cx).then(|| self.render_tab_strip(window, cx).into_any_element())
+    }
+
+    fn render_tab_strip(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs: Vec<AnyElement> = (0..self.tabs.len())
             .map(|ix| {
                 // Pinned tabs are narrow and don't shrink, like a browser's.
@@ -2978,41 +2992,47 @@ impl Workspace {
                     .into_any_element()
             })
             .collect();
+        // The active tab is scrolled into view each time it changes (opened, switched to with keys).
+        let scroll = &self.sidebar_ui.strip_scroll;
+        // Again when the strip changes width (the window was made narrower, say).
+        let reveal = (self.active, scroll.bounds().size.width);
+        if self.sidebar_ui.strip_revealed.get() != Some(reveal) {
+            // Once the tabs were laid out (the first frame after opening has no places yet).
+            if scroll.bounds_for_item(self.active).is_some() {
+                self.sidebar_ui.strip_revealed.set(Some(reveal));
+                scroll.scroll_to_item(self.active);
+            } else if reveal.1 <= px(0.) {
+                // Not laid out yet: once more next frame (never in a loop).
+                cx.notify();
+            }
+        }
         div()
             .id("tab-strip")
+            .debug_selector(|| "tab-strip".to_owned())
             .relative()
             .child(self.tab_area_recorder(tabmove::AreaPart::Strip))
             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
             // Dropping a tab between tabs or on the empty space to the right moves it to the end.
             .on_drop(cx.listener(Self::drop_tab_at_end))
             .h(theme::h_bar())
+            .pl(theme::s_8())
             .pr(theme::s_8())
             .flex_none()
             .flex()
             .items_center()
             .gap(theme::s_4())
-            // Collapsed, the toggle is centred over the rail's icons.
-            .map(|d| {
-                if theme::sidebar_collapsed() {
-                    d.child(
-                        div()
-                            .w(theme::rail_w())
-                            .flex_none()
-                            .flex()
-                            .justify_center()
-                            .child(Self::sidebar_toggle(cx)),
-                    )
-                } else {
-                    d.pl(theme::s_8()).child(Self::sidebar_toggle(cx))
-                }
-            })
+            // Too many tabs to fit: they scroll sideways (the wheel scrolls them too) instead of
+            // the last ones being cut off.
             .child(
                 div()
+                    .id("tab-strip-tabs")
+                    .debug_selector(|| "tab-strip-tabs".to_owned())
                     .flex()
                     .items_center()
                     .gap(theme::s_4())
                     .min_w_0()
-                    .overflow_hidden()
+                    .overflow_x_scroll()
+                    .track_scroll(scroll)
                     .children(tabs),
             )
             .child(
@@ -3046,8 +3066,6 @@ impl Workspace {
             )
             .child(Self::workspaces_button(cx))
             .child(sidebar::tab_layout_button(true, cx))
-
-            .child(crate::explorer::caption_buttons(window))
     }
 }
 

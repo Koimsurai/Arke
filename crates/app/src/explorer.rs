@@ -93,6 +93,7 @@ pub(crate) use layout::{SharedPreview, shared_preview};
 pub(crate) use menu::{app_name, menu_open_with_found, open_with_list, set_open_with};
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
+pub(crate) use top_bar::TitleLayout;
 
 pub(crate) use ops::commit_problem;
 pub(crate) use ops::{
@@ -478,25 +479,16 @@ pub(crate) struct PaneInfo {
     pub(crate) split: bool,
     /// This is the active side.
     pub(crate) active: bool,
-    /// Window caption buttons go in this pane's top bar (the rightmost pane).
-    pub(crate) show_caption: bool,
-    /// The operation center button goes in this pane's top bar. It shows jobs from the whole app,
-    /// so a split tab draws it once (the rightmost pane), not once per side.
-    pub(crate) show_ops: bool,
     /// Current folder of the other pane (copy/move destination).
     pub(crate) peer: Option<PathBuf>,
     /// Share of the list area width.
     pub(crate) share: f32,
     /// Split tab: room at the tab's right end taken by the shared preview (both panes get it).
     pub(crate) reserve: Pixels,
-    /// Split tab: this pane's box runs on under the shared preview (the rightmost pane), so its
-    /// top bar spans the whole tab and keeps the caption buttons in the corner.
+    /// Split tab: this pane's box runs on under the shared preview (the rightmost pane).
     pub(crate) trailing: bool,
     /// Split tab: this is the active side and the tab's shared preview shows its item.
     pub(crate) preview_host: Option<SharedPreview>,
-    /// Back, forward and refresh are drawn in the sidebar header (vertical tabs); the top bar keeps
-    /// only up and the path.
-    pub(crate) nav_in_sidebar: bool,
     /// Dual pane: synchronized browsing is on for this tab.
     pub(crate) synced: bool,
     /// Dual pane: the folders are being compared.
@@ -511,14 +503,11 @@ impl Default for PaneInfo {
         Self {
             split: false,
             active: true,
-            show_caption: true,
-            show_ops: true,
             peer: None,
             share: 1.,
             reserve: px(0.),
             trailing: false,
             preview_host: None,
-            nav_in_sidebar: false,
             synced: false,
             comparing: false,
             pair_toggles: false,

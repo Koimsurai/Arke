@@ -216,7 +216,6 @@ pub(crate) fn sidebar_width() -> Pixels {
         SIDEBAR_W
     }
 }
-pub(crate) const FILTER_W: Pixels = px(220.);
 /// Search options panel below the filter box (scope, filters, contents): wide enough for every
 /// control on one line in each language.
 pub(crate) const SEARCH_PANEL_W: Pixels = px(456.);
@@ -1137,7 +1136,7 @@ pub(crate) fn elev_1() -> Vec<BoxShadow> {
 }
 /// Raised paper (the list sheet, Home, Settings).
 ///
-/// The first shadow is always the outer edge (`elev_2_active` swaps it for the accent). In the
+/// The first shadow is always the outer edge. In the
 /// dark theme the paper gets a near-black outline plus a faint inner line, except under Mica:
 /// drop shadows are painted as full rectangles under the element, and Mica paper is
 /// translucent, so a dark outline there would darken the whole sheet.
@@ -1152,12 +1151,6 @@ pub(crate) fn elev_2() -> Vec<BoxShadow> {
     } else {
         vec![hairline(line()), drop]
     }
-}
-/// Active paper in dual pane: the outer edge uses the signal color.
-pub(crate) fn elev_2_active() -> Vec<BoxShadow> {
-    let mut shadows = elev_2();
-    shadows[0] = hairline(signal_line());
-    shadows
 }
 /// Floating surfaces: menus, popovers, tooltips, toasts, drag previews. They are always opaque
 /// (`overlay()`), so the dark theme can use the outline plus a lit inner edge.

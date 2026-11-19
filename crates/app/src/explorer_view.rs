@@ -80,7 +80,7 @@ impl Explorer {
     // ───────────────────────── Top bar (on the frame) ─────────────────────────
 
     /// Back and forward (right click: their history menus).
-    fn history_buttons(&self, cx: &mut Context<Self>) -> [AnyElement; 2] {
+    pub(super) fn history_buttons(&self, cx: &mut Context<Self>) -> [AnyElement; 2] {
         let (can_back, can_forward) = self
             .global_nav
             .unwrap_or_else(|| (self.can_go(true), self.can_go(false)));
@@ -118,81 +118,15 @@ impl Explorer {
         ]
     }
 
-    fn render_top_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_up = self
-            .display_path()
-            .and_then(arke_core::path::parent)
-            .is_some();
-        let nav_here = !self.pane.nav_in_sidebar;
-        // Controls left to right; every gap between them drags the window.
-        let mut controls: Vec<AnyElement> = Vec::new();
-        if nav_here {
-            controls.extend(self.history_buttons(cx));
-        }
-        controls.push(
-            ghost_button(
-                "up",
-                Icon::ArrowUp,
-                can_up,
-                t!("nav.up"),
-                cx.listener(|this, _: &ClickEvent, w, cx| this.go_up(&GoUp, w, cx)),
-            )
-            .into_any_element(),
-        );
-        if nav_here && !self.pane.split {
-            controls.push(
-                ghost_button(
-                    "refresh",
-                    Icon::Refresh,
-                    self.model.is_some(),
-                    t!("nav.refresh"),
-                    cx.listener(|this, _: &ClickEvent, w, cx| this.refresh(&Refresh, w, cx)),
-                )
-                .into_any_element(),
-            );
-        }
-        // The path bar fills the row up to the search box.
-        controls.push(self.render_top_row(window, cx));
-        // The operation center is window-wide state, so split view shows it once (right pane).
-        if self.pane.show_ops {
-            controls.extend(
-                self.render_op_center(window, cx)
-                    .map(IntoElement::into_any_element),
-            );
-        }
-        let show_caption = self.pane.show_caption;
-        // The window buttons and the space after them, which the bands above and below the
-        // controls leave alone (maximized, the buttons reach up to the screen edge).
-        let caption_w = if show_caption {
-            theme::H_CTL * 3. + theme::S_2 * 2. + theme::S_8
-        } else {
-            theme::S_8
-        };
-        let mut row = div()
-            .relative()
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(theme::H_BAR)
-            .children(Self::title_drag_bands(caption_w, cx))
-            .child(self.bar_right_probe());
-        for (i, control) in controls.into_iter().enumerate() {
-            if i > 0 {
-                row = row.child(Self::title_drag(("title-gap", i), cx).w(theme::S_2));
-            }
-            row = row.child(control);
-        }
-        row
-            // The space before the window buttons drags too.
-            .when(show_caption, |d| {
-                d.child(
-                    Self::title_drag("caption-lead", cx)
-                        .debug_selector(|| "caption-lead".to_owned())
-                        .w(theme::S_8),
-                )
-                .child(caption_group(window))
-            })
-            .child(Self::title_drag("title-end", cx).w(theme::S_8))
+    pub(super) fn refresh_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        ghost_button(
+            "refresh",
+            Icon::Refresh,
+            self.model.is_some(),
+            t!("nav.refresh"),
+            cx.listener(|this, _: &ClickEvent, w, cx| this.refresh(&Refresh, w, cx)),
+        )
+        .into_any_element()
     }
 
     /// The search box at `width` (see [`super::top_bar`]). At the width of a button it shows only
@@ -326,48 +260,30 @@ impl Explorer {
 
     // ───────────────────────── Context bar ─────────────────────────
 
-    /// The left side changes: folder info with no selection, actions for the selection otherwise.
-    /// View tools on the right never move, even with a selection, so they can't be misclicked.
-    fn render_context_bar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let compact = self.compact_bar();
-        let left = if !self.search_mode && !self.selection.is_empty() {
-            self.render_selection_actions(compact, cx)
-        } else {
-            self.render_folder_actions(compact, cx)
-        };
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(theme::S_4)
-            .h(theme::H_CTX)
-            .pl(theme::S_20)
-            .pr(theme::S_12)
-            .child(left)
-            .child(vertical_divider())
-            .child(self.render_view_controls(window, cx))
-            .into_any_element()
-    }
-
-    /// Context bar buttons show icons only (labels move to tooltips): in split view or when the
-    /// pane is narrow.
+    /// Shorter texts in the pane row (in split view or when the pane is narrow).
     pub(super) fn compact_bar(&self) -> bool {
         self.pane.split || self.bar_width < COMPACT_BAR
     }
 
-    fn render_folder_actions(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// With nothing selected, the pane row's end before the view buttons: the folder's item count
+    /// (or the search's), then paste and new folder. It gives way to the path bar: the count is
+    /// cut off first.
+    pub(super) fn render_folder_actions(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // A server's share list takes no new items.
         let loaded = self.model.is_some() && !lists_shares(self.current_path());
         let can_paste = loaded && !self.search_mode && self.services.shell.clipboard_has_files();
         div()
             .flex()
-            .flex_1()
             .min_w_0()
             .items_center()
             .gap(theme::S_4)
             .child(
                 div()
-                    .flex_1()
+                    .debug_selector(|| "pane-info".to_owned())
                     .min_w_0()
                     .truncate()
                     .text_size(theme::FS_12)
@@ -402,7 +318,11 @@ impl Explorer {
     }
 
     /// View tools: details/icons/columns with the view options flyout, preview pane, split.
-    fn render_view_controls(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_view_controls(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_none()
@@ -461,7 +381,11 @@ impl Explorer {
             ))
     }
 
-    fn render_selection_actions(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_selection_actions(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // `compact` decides whether the summary includes the total size; action buttons are always
         // icon-only to keep the bar uncluttered.
         let narrow = compact;
@@ -483,8 +407,8 @@ impl Explorer {
         let peer_actions = self.render_peer_actions(cx);
         let crowded = peer_actions.is_some();
         div()
+            .debug_selector(|| "selection-actions".to_owned())
             .flex()
-            .flex_1()
             .min_w_0()
             .items_center()
             .gap(theme::S_4)
@@ -648,16 +572,6 @@ impl Explorer {
         let mut parts: Vec<String> = Vec::new();
         if self.search_global {
             return self.computer_info(cx);
-        }
-        // The whole query, since the search box cuts long text off when it isn't in use.
-        if !self.query.is_empty() && (self.search_mode || self.is_filtering()) {
-            let folder = self.display_path().map_or_default(|p| {
-                p.file_name().map_or_else(
-                    || p.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                )
-            });
-            parts.push(t!("info.query_in", folder = folder, query = self.query).into_owned());
         }
         if self.search_mode {
             if let Some(r) = &self.search_results {
@@ -2248,7 +2162,31 @@ fn kbd(text: &'static str) -> impl IntoElement {
         .child(text)
 }
 
-fn vertical_divider() -> impl IntoElement {
+/// Outlines the pane the search box is searching, while it's typed in. Drawn over the paper; it
+/// takes no clicks.
+/// Split view: the active pane's thin accent edge, drawn over the paper's border (a shadow would
+/// show through the translucent paper and tint the whole pane).
+fn active_outline() -> impl IntoElement {
+    div()
+        .debug_selector(|| "active-pane-outline".to_owned())
+        .absolute()
+        .inset_0()
+        .rounded(theme::R_12)
+        .border_1()
+        .border_color(theme::signal_line())
+}
+
+fn search_outline() -> impl IntoElement {
+    div()
+        .debug_selector(|| "search-target".to_owned())
+        .absolute()
+        .inset_0()
+        .rounded(theme::R_12)
+        .border_2()
+        .border_color(theme::signal_line())
+}
+
+pub(super) fn vertical_divider() -> impl IntoElement {
     div()
         .w(px(1.))
         .h(theme::S_16)
@@ -2603,7 +2541,7 @@ pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
 
 /// [`caption_buttons`] without the space before them (the title row makes that space a drag
 /// area).
-fn caption_group(window: &Window) -> gpui::Div {
+pub(super) fn caption_group(window: &Window) -> gpui::Div {
     let maximized = window.is_maximized();
     let gap = theme::S_2;
     let button = |id: &'static str, icon: Icon, area: WindowControlArea, close: bool| {
@@ -3040,6 +2978,7 @@ impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::a11y::sync(window);
         self.before_render(window, cx);
+        let searching = self.search_box_state(window, cx) == layout::SearchBox::Typing;
         div()
             .id("explorer")
             .key_context("Explorer")
@@ -3049,7 +2988,71 @@ impl Render for Explorer {
             .text_color(theme::text())
             .ui_font()
             .text_size(theme::FS_14)
-            .on_action(cx.listener(Self::go_back))
+            .map(|d| Self::root_actions(d, cx))
+            // Split view: clicking a side makes it active.
+            .on_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                if this.pane.split && !this.pane.active {
+                    cx.emit(ExplorerEvent::Activated);
+                }
+            }))
+            .map(|d| Self::mouse_navigation(d, cx))
+            .child(
+                // The paper: the single sheet holding the list
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .mr(self.paper_margin_right())
+                    .mb(theme::S_8)
+                    .rounded(theme::R_12)
+                    .bg(theme::paper())
+                    .shadow(theme::elev_2())
+                    .children(backdrop_layer())
+                    .child(self.render_pane_row(window, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w_0()
+                                    // Grid view has no columns, so no header. Also none while "this
+                                    // PC" has no results (off, no text, still building).
+                                    .when(
+                                        self.failed.is_none()
+                                            && (self.search_mode
+                                                || self.view_mode == ViewMode::Details)
+                                            && !(self.search_global
+                                                && self.search_results.is_none()),
+                                        |d| d.child(self.render_header(cx)),
+                                    )
+                                    .child(self.render_list_appearing(window, cx)),
+                            )
+                            .children(self.render_preview_appearing(cx)),
+                    )
+                    .children((self.pane.split && self.pane.active).then(active_outline))
+                    .children(searching.then(search_outline))
+                    .children(self.render_toast_stack(cx)),
+            )
+            .children(self.render_floating(window, cx))
+            .children(self.render_right_drag_listener(cx))
+    }
+}
+
+impl Explorer {
+    /// The pane's commands, reachable from anywhere in the pane and from its search box (which
+    /// is drawn in the title row, outside the pane).
+    pub(super) fn root_actions(
+        el: gpui::Stateful<gpui::Div>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        el.on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::refresh))
@@ -3080,66 +3083,8 @@ impl Render for Explorer {
                     cx.propagate();
                 }
             }))
-            // Split view: clicking a side makes it active.
-            .on_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                if this.pane.split && !this.pane.active {
-                    cx.emit(ExplorerEvent::Activated);
-                }
-            }))
-            .map(|d| Self::mouse_navigation(d, cx))
-            .child(self.render_top_bar(window, cx))
-            .child(
-                // The paper: the single sheet holding the list
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .mr(self.paper_margin_right())
-                    .mb(theme::S_8)
-                    .rounded(theme::R_12)
-                    .bg(theme::paper())
-                    .shadow(if self.pane.split && self.pane.active {
-                        theme::elev_2_active()
-                    } else {
-                        theme::elev_2()
-                    })
-                    .children(backdrop_layer())
-                    .child(self.render_context_bar(window, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_h_0()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w_0()
-                                    // Grid view has no columns, so no header. Also none while "this
-                                    // PC" has no results (off, no text, still building).
-                                    .when(
-                                        self.failed.is_none()
-                                            && (self.search_mode
-                                                || self.view_mode == ViewMode::Details)
-                                            && !(self.search_global
-                                                && self.search_results.is_none()),
-                                        |d| d.child(self.render_header(cx)),
-                                    )
-                                    .child(self.render_list_appearing(window, cx)),
-                            )
-                            .children(self.render_preview_appearing(cx)),
-                    )
-                    .children(self.render_toast_stack(cx)),
-            )
-            .children(self.render_floating(window, cx))
-            .children(self.render_right_drag_listener(cx))
     }
-}
 
-impl Explorer {
     /// Tests: whether the preview pane fit at the last render, and its width.
     #[cfg(test)]
     pub(crate) fn fit_for_test(&self) -> (bool, f32) {
@@ -3227,6 +3172,14 @@ impl Explorer {
                 div()
                 .id("preview-pane")
                 .debug_selector(|| "preview-pane".to_owned())
+                // A click here leaves the search box (and the path being edited), as one on the
+                // list does; the preview itself takes no focus.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.cancel_path_edit(window, cx);
+                    }),
+                )
                 .a11y(gpui::Role::Region, t!("settings.preview"))
                 .when_some(
                     description,
@@ -3283,6 +3236,14 @@ impl Explorer {
             self.preview_cue.wrap(
                 div()
                 .id("shared-preview")
+                .debug_selector(|| "shared-preview".to_owned())
+                // A click here leaves the search box, as one in the single-pane preview does.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.cancel_path_edit(window, cx);
+                    }),
+                )
                 .a11y(gpui::Role::Region, t!("settings.preview"))
                 .when_some(
                     description,

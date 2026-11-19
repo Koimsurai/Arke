@@ -1,9 +1,8 @@
 //! Path bar: breadcrumbs, the › and "…" folder menus, and autocomplete while typing a path.
 //!
-//! - The bar fills the title row up to the search box (see `explorer_topbar.rs`); the gaps around
-//!   it drag the window.
-//! - A segment navigates; a click on the blank end of the bar starts editing (also Ctrl+L, Alt+D),
-//!   a press there dragged past the system drag distance moves the window.
+//! - The bar sits in each pane's first row, between Up and the view buttons (see
+//!   `explorer_topbar.rs`).
+//! - A segment navigates; a click on the blank end of the bar starts editing (also Ctrl+L, Alt+D).
 //! - A › between segments lists the folders in the level to its left (current one highlighted) for
 //!   jumping to siblings; the trailing › lists subfolders. The collapsed "…" lists the hidden
 //!   levels.
@@ -516,8 +515,8 @@ impl Explorer {
         super::layout::collapse_crumbs(&widths, avail, more)
     }
 
-    /// The path bar's slot in the title row: the bar fills it. `compact`: the search box is
-    /// widened over it, so it shows only the current folder.
+    /// The path bar's slot in the pane row: the bar fills it. `compact`: the slot is narrow, so it
+    /// shows only the current folder.
     pub(super) fn render_path_slot(
         &mut self,
         compact: bool,
@@ -546,7 +545,6 @@ impl Explorer {
             .items_center()
             .child(capture)
             .child(self.render_path_bar(compact, window, cx))
-            .children(self.path_press_tracker(cx))
             .into_any_element()
     }
 
@@ -595,9 +593,6 @@ impl Explorer {
                         this.stop_edit_path(window, cx);
                     }
                 }))
-                // The second click of a double click on the blank part: maximize, like the
-                // title bar.
-                .capture_any_mouse_down(cx.listener(Self::path_edit_pressed))
                 .px(theme::S_8)
                 .bg(theme::paper())
                 .border_1()
@@ -617,17 +612,11 @@ impl Explorer {
                 },
             ))
         });
-        // The bar fills the row, so its highlight covers all of it.
+        // The bar fills its slot, so its highlight covers all of it.
         bar.cursor_text()
             .hover(|s| s.bg(theme::wash()))
-            .capture_any_mouse_down(cx.listener(|this, e: &MouseDownEvent, _, _| {
-                this.path_bar_pressed(e);
-            }))
-            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                if this.path_click_edits() {
-                    this.start_edit_path(window, cx);
-                    this.path_edit_clicked(e.position());
-                }
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.start_edit_path(window, cx);
             }))
             // Right click: copy address, copy path, edit address, clear history
             .on_mouse_down(
@@ -639,9 +628,8 @@ impl Explorer {
             )
             .child(div().flex().items_center().min_w_0().children(crumbs))
             .children(tail)
-            // The blank end: a click edits the path, a press dragged past the system drag distance
-            // moves the window. Tooltip only here, so it doesn't cover the menus from segments
-            // and ›.
+            // The blank end: a click edits the path. Tooltip only here, so it doesn't cover the
+            // menus from segments and ›.
             .child(
                 div()
                     .id("path-blank")
@@ -650,12 +638,6 @@ impl Explorer {
                     .flex_1()
                     .min_w(if compact { theme::S_8 } else { PATH_BLANK_MIN })
                     .h_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                            this.path_blank_pressed(e, cx);
-                        }),
-                    )
                     .tooltip(|_, cx| {
                         cx.new(|_| crate::workspace::Tooltip(t!("path.edit_tip").into_owned().into()))
                             .into()

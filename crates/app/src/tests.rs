@@ -181,16 +181,6 @@ struct FakeShell {
     quicklook_runs: Mutex<Vec<(Option<PathBuf>, PathBuf)>>,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
-    /// System drag distance (physical pixels); `None` is Windows' default of 4.
-    drag_threshold: Mutex<Option<(i32, i32)>>,
-    /// Title bar drags handed to Windows (press point, physical client pixels).
-    window_moves: Mutex<Vec<(i32, i32)>>,
-    /// System double-click time and rectangle; `None` is 500 ms and 4x4.
-    double_click: Mutex<Option<(Duration, (i32, i32))>>,
-    /// Times the window was maximized or restored by a title bar double click.
-    maximize_toggles: AtomicU32,
-    /// Presses come from a touch screen.
-    touch: std::sync::atomic::AtomicBool,
     /// Attribute changes asked for (paths, bits set, bits cleared); they fail while
     /// `fail_attributes` is set.
     attribute_calls: Mutex<Vec<(Vec<PathBuf>, u32, u32)>>,
@@ -405,28 +395,6 @@ impl Shell for FakeShell {
 
     fn covered_at_cursor(&self, _owner: Option<isize>) -> bool {
         self.covered.load(Ordering::Relaxed)
-    }
-
-    fn drag_threshold(&self, _owner: Option<isize>) -> (i32, i32) {
-        self.drag_threshold.lock().unwrap_or((4, 4))
-    }
-
-    fn press_from_touch(&self) -> bool {
-        self.touch.load(Ordering::Relaxed)
-    }
-
-    fn begin_window_move(&self, _owner: Option<isize>, at: (i32, i32)) {
-        self.window_moves.lock().push(at);
-    }
-
-    fn double_click_rule(&self, _owner: Option<isize>) -> (Duration, (i32, i32)) {
-        self.double_click
-            .lock()
-            .unwrap_or((Duration::from_millis(500), (4, 4)))
-    }
-
-    fn toggle_maximize(&self, _owner: Option<isize>) {
-        self.maximize_toggles.fetch_add(1, Ordering::Relaxed);
     }
 
     fn drag_image(
@@ -1037,9 +1005,42 @@ fn setup<'a>(
         remotes: crate::remote_shell::test_remotes(),
     };
     let start = PathBuf::from(start);
-    cx.add_window_view(move |window, cx| {
-        Explorer::new(services, start, None, Instant::now(), window, cx)
-    })
+    let (host, cx) = cx.add_window_view(move |window, cx| {
+        use gpui::AppContext as _;
+        let view = cx.new(|cx| Explorer::new(services, start, None, Instant::now(), window, cx));
+        PaneHost {
+            view,
+            title: crate::explorer::TitleLayout::default(),
+        }
+    });
+    let view = host.read_with(cx, |host, _| host.view.clone());
+    (view, cx)
+}
+
+/// One pane under the title row with its search box, as the window draws it.
+struct PaneHost {
+    view: Entity<Explorer>,
+    title: crate::explorer::TitleLayout,
+}
+
+impl gpui::Render for PaneHost {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        let title = self.title.clone();
+        let row = self
+            .view
+            .update(cx, |e, cx| e.render_title_row(&title, false, window, cx));
+        gpui::div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(row)
+            .child(gpui::div().flex_1().min_h_0().child(self.view.clone()))
+    }
 }
 
 fn wait_until(
@@ -8227,12 +8228,17 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
 
     click(cx, type_button.center());
     assert_eq!(menu(cx), Some(Facet::Type));
-    // Blank space at the panel's top right corner.
-    click(cx, point(panel.right() - px(8.), panel.top() + px(8.)));
+    // Blank space at the panel's top right corner. The measured box is the panel's content
+    // (inside its padding), so this stays inside the panel itself, not on the pane below it.
+    click(cx, point(panel.right() - px(24.), panel.top() + px(8.)));
     assert_eq!(menu(cx), None, "blank space in the panel");
     assert!(
         !view.update(cx, |v, _| v.panel_dismissed_for_test()),
         "the panel stays"
+    );
+    assert!(
+        cx.update(|window, cx| view.update(cx, |v, _| v.panel_state_for_test(window).0)),
+        "it keeps the keyboard"
     );
 
     click(cx, type_button.center());

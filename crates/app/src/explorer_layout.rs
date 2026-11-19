@@ -7,8 +7,7 @@
 //! - how wide a split tab's shared preview is ([`shared_preview`]),
 //! - how wide the column view's columns may be dragged ([`parent_room`], [`current_room`]),
 //! - which breadcrumb segments collapse into "…" ([`collapse_crumbs`]),
-//! - how wide the title row's search box is next to the path bar ([`search_width`]), and when a
-//!   press on the path bar turns into a window drag ([`beyond_drag`]).
+//! - how wide the title row's search box is ([`search_width`]).
 //!
 //! Details columns work like File Explorer's: laid out left to right from Name, each with its own
 //! width (Name too). What's right of the last column is blank list background; when the columns
@@ -336,9 +335,6 @@ pub(super) fn collapse_crumbs(
     Some(hidden)
 }
 
-/// Narrowest the path bar gets while the search box is widened for typing: room for
-/// "… › current folder".
-pub(super) const PATH_BAR_MIN: Pixels = px(120.);
 /// Narrowest search box that still shows its text field. Below it, an empty search box that isn't
 /// in use shows only its magnifier.
 pub(super) const SEARCH_MIN: Pixels = px(120.);
@@ -348,61 +344,35 @@ pub(super) const SEARCH_MIN: Pixels = px(120.);
 pub(super) enum SearchBox {
     /// Not focused; `text`: it holds a query (or a search runs).
     Idle { text: bool },
-    /// Focused: grows over the path bar with its text.
+    /// Focused: grows with its text.
     Typing,
-    /// The path is being edited: the search box keeps its usual width while the path input still
-    /// gets [`PATH_EDIT_MIN`], and steps aside to its magnifier otherwise.
-    PathEditing,
 }
 
-/// Room the path input keeps while editing before the search box steps aside.
-pub(super) const PATH_EDIT_MIN: Pixels = px(360.);
-
-/// Width of the search box when the path bar and the search box share `row`. `normal`: its usual
+/// Width of the search box in `room` (the title row between its buttons). `rest`: its usual
 /// width. While typing it grows with `content` (what it needs to show the text, its icon, clear
-/// button and scope chip), from `normal` up to `typing_max`. The path bar takes what's left,
-/// never less than [`PATH_BAR_MIN`] unless the search box is at its own minimum. Zero `row` (not
-/// measured yet): the usual width.
+/// button and scope chip) into the rest of `room`. Zero `room` (not measured yet): the usual
+/// width.
 pub(super) fn search_width(
-    row: Pixels,
+    room: Pixels,
     state: SearchBox,
-    normal: Pixels,
-    typing_max: Pixels,
+    rest: Pixels,
     content: Pixels,
 ) -> Pixels {
-    if row <= px(0.) {
-        return normal;
+    if room <= px(0.) {
+        return rest;
     }
-    if state == SearchBox::PathEditing {
-        return if row - normal >= PATH_EDIT_MIN {
-            normal
-        } else {
-            theme::H_CTL
-        };
-    }
-    let room = (row - PATH_BAR_MIN).max(px(0.));
     let fitted = match state {
-        SearchBox::Typing => room.min(content.min(typing_max).max(normal)),
-        _ => normal.min(room),
+        SearchBox::Typing => content.max(rest).min(room),
+        SearchBox::Idle { .. } => rest.min(room),
     };
     if fitted >= SEARCH_MIN {
         return fitted;
     }
     match state {
-        // In use: keep the field, even if the path bar has to give way.
-        SearchBox::Typing | SearchBox::Idle { text: true } => SEARCH_MIN.min(row),
-        _ => theme::H_CTL,
+        // In use: keep the field as long as there's room for it.
+        SearchBox::Typing | SearchBox::Idle { text: true } => SEARCH_MIN.min(room),
+        SearchBox::Idle { text: false } => theme::H_CTL,
     }
-}
-
-/// Whether the pointer moved from `from` to `to` far enough to be a drag: past `threshold` (the
-/// system drag distance, on either side of the press) in either direction.
-pub(super) fn beyond_drag(
-    from: gpui::Point<Pixels>,
-    to: gpui::Point<Pixels>,
-    threshold: gpui::Size<Pixels>,
-) -> bool {
-    (to.x - from.x).abs() > threshold.width || (to.y - from.y).abs() > threshold.height
 }
 
 #[cfg(test)]
@@ -411,49 +381,29 @@ mod tests {
 
     #[test]
     fn search_box_width_per_state() {
-        let normal = px(220.);
-        let cap = px(560.);
+        let rest = px(400.);
         let idle = SearchBox::Idle { text: false };
         let with_text = SearchBox::Idle { text: true };
         let typing = SearchBox::Typing;
-        let w = |row: f32, state: SearchBox, content: f32| {
-            search_width(px(row), state, normal, cap, px(content))
+        let w = |room: f32, state: SearchBox, content: f32| {
+            search_width(px(room), state, rest, px(content))
         };
         // A roomy row: the usual width, idle with or without text.
-        assert_eq!(w(800., idle, 0.), normal);
-        assert_eq!(w(800., with_text, 900.), normal);
-        // Typing grows with the text: the usual width while it fits, then wider up to the cap,
-        // and never past what the path bar's minimum leaves.
-        assert_eq!(w(800., typing, 0.), normal);
-        assert_eq!(w(800., typing, 150.), normal);
-        assert_eq!(w(800., typing, 400.), px(400.));
-        assert_eq!(w(800., typing, 900.), cap);
-        assert_eq!(w(500., typing, 900.), px(380.));
-        // Editing the path: the box stays while the path input keeps its room, else it's just the
-        // magnifier.
-        assert_eq!(w(800., SearchBox::PathEditing, 0.), normal);
-        assert_eq!(w(580., SearchBox::PathEditing, 0.), normal);
-        assert_eq!(w(560., SearchBox::PathEditing, 0.), theme::H_CTL);
-        // A narrow row: the box gives way so the path bar keeps its minimum.
-        assert_eq!(w(260., idle, 0.), px(140.));
-        // Narrower still: an unused box folds to its magnifier, one with text keeps its minimum.
-        assert_eq!(w(200., idle, 0.), theme::H_CTL);
-        assert_eq!(w(200., with_text, 0.), SEARCH_MIN);
-        assert_eq!(w(200., typing, 900.), SEARCH_MIN);
+        assert_eq!(w(900., idle, 0.), rest);
+        assert_eq!(w(900., with_text, 1200.), rest);
+        // Typing grows with the text from the usual width into the room there is.
+        assert_eq!(w(900., typing, 0.), rest);
+        assert_eq!(w(900., typing, 300.), rest);
+        assert_eq!(w(900., typing, 600.), px(600.));
+        assert_eq!(w(900., typing, 1200.), px(900.));
+        // A narrow row: the box takes what there is.
+        assert_eq!(w(260., idle, 0.), px(260.));
+        // Narrower still: an unused box folds to its magnifier, one in use keeps its minimum.
+        assert_eq!(w(100., idle, 0.), theme::H_CTL);
+        assert_eq!(w(100., with_text, 0.), px(100.));
+        assert_eq!(w(100., typing, 900.), px(100.));
         // Not measured yet.
-        assert_eq!(w(0., idle, 0.), normal);
-    }
-
-    #[test]
-    fn a_drag_starts_past_the_threshold() {
-        let at = gpui::point(px(100.), px(20.));
-        let threshold = gpui::size(px(4.), px(4.));
-        let moved = |dx: f32, dy: f32| beyond_drag(at, at + gpui::point(px(dx), px(dy)), threshold);
-        assert!(!moved(0., 0.));
-        assert!(!moved(4., -4.), "within the threshold on both axes");
-        assert!(moved(5., 0.));
-        assert!(moved(0., -5.));
-        assert!(moved(-5., 2.));
+        assert_eq!(w(0., idle, 0.), rest);
     }
 
     fn input(bar: f32) -> FitInput {

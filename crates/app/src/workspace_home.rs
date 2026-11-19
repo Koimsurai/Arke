@@ -324,21 +324,21 @@ impl Workspace {
             .a11y(gpui::Role::Link, t!("home.title"))
             .relative()
             .flex_none()
-            .h(theme::H_ROW)
-            .mx(theme::S_8)
-            .mb(theme::S_4)
-            .pl(theme::S_8)
+            .h(theme::h_row())
+            .mx(theme::s_8())
+            .mb(theme::s_4())
+            .pl(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .cursor_pointer()
             .when(open, |d| d.bg(theme::selection()).text_color(theme::text()))
             .when(!open, |d| {
                 d.text_color(theme::text_muted())
                     .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
             })
-            .child(crate::assets::tinted(Icon::KfHome, theme::ICON, theme::text()))
+            .child(crate::assets::tinted(Icon::KfHome, theme::icon(), theme::text()))
             .child(t!("home.title").into_owned())
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if open {
@@ -365,12 +365,12 @@ impl Workspace {
         let page = self.home_page.as_ref().filter(|p| self.shows(&p.owner))?;
         let horizontal = Self::horizontal_tabs(cx);
         let top_bar = div()
-            .h(theme::H_BAR)
+            .h(theme::h_bar())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_2)
-            .pr(theme::S_8)
+            .gap(theme::s_2())
+            .pr(theme::s_8())
             .when(horizontal, |d| {
                 d.child(crate::explorer::ghost_button(
                     "home-back",
@@ -387,12 +387,12 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_8)
-                    .px(theme::S_8)
+                    .gap(theme::s_8())
+                    .px(theme::s_8())
                     .child(
                         svg()
                             .path(Icon::KfHome.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(theme::text_muted()),
                     )
                     .child(
@@ -421,9 +421,9 @@ impl Workspace {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .mr(theme::S_8)
-                        .mb(theme::S_8)
-                        .rounded(theme::R_12)
+                        .mr(theme::s_8())
+                        .mb(theme::s_8())
+                        .rounded(theme::r_12())
                         .bg(theme::paper())
                         .shadow(theme::elev_2())
                         .overflow_hidden()

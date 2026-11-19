@@ -9,9 +9,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
-    AnimationExt, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, Pixels,
-    SharedString, Transformation, Window, anchored, deferred, div, point, prelude::*, px, radians,
-    svg,
+    AnimationExt, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, SharedString,
+    Transformation, Window, anchored, deferred, div, point, prelude::*, px, radians, svg,
 };
 use rust_i18n::t;
 
@@ -23,8 +22,12 @@ use crate::shell::OpProgress;
 use crate::theme;
 use crate::workspace::TooltipBelowExt as _;
 
-const PANEL_W: Pixels = px(380.);
-const PANEL_MAX_H: Pixels = px(440.);
+fn panel_w() -> gpui::Pixels {
+    crate::theme::scaled_px(300.)
+}
+fn panel_max_h() -> gpui::Pixels {
+    crate::theme::scaled_px(440.)
+}
 /// Length of the spinning arc while the total is unknown (in turns)
 const SPINNER_SWEEP: f32 = 0.25;
 /// Time for one full turn (ms)
@@ -205,7 +208,7 @@ impl Explorer {
         let flyout = deferred(
             anchored()
                 .anchor(gpui::Anchor::TopRight)
-                .snap_to_window_with_margin(theme::S_8)
+                .snap_to_window_with_margin(theme::s_8())
                 .child(panel),
         )
         .with_priority(2);
@@ -218,7 +221,7 @@ impl Explorer {
                 .child(
                     div()
                         .absolute()
-                        .top(theme::H_CTL + theme::S_4)
+                        .top(theme::h_ctl() + theme::s_4())
                         .right_0()
                         .child(flyout),
                 )
@@ -243,21 +246,21 @@ fn button(
         .a11y_button(tip.clone())
         .aria_expanded(open)
         .relative()
-        .h(theme::H_CTL)
-        .min_w(theme::H_CTL)
-        .px(if speed.is_some() { theme::S_8 } else { px(0.) })
-        .gap(theme::S_6)
+        .h(theme::h_ctl())
+        .min_w(theme::h_ctl())
+        .px(if speed.is_some() { theme::s_8() } else { px(0.) })
+        .gap(theme::s_6())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(open, |d| d.bg(theme::wash_strong()))
         .hover(|s| s.bg(theme::wash_strong()))
         .children(speed.filter(|_| busy).map(|speed| {
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted())
                 .child(speed)
         }))
@@ -266,7 +269,7 @@ fn button(
         } else {
             svg()
                 .path(Icon::History.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_muted())
                 .into_any_element()
         })
@@ -274,9 +277,9 @@ fn button(
         .children(unseen.filter(|_| !open).map(|failed| {
             div()
                 .absolute()
-                .top(theme::S_4)
-                .right(theme::S_4)
-                .size(theme::S_6)
+                .top(theme::s_4())
+                .right(theme::s_4())
+                .size(theme::s_6())
                 .rounded(theme::R_FULL)
                 .bg(if failed {
                     theme::danger()
@@ -306,24 +309,24 @@ fn panel(rows: Vec<Row>, cx: &mut Context<Explorer>) -> impl IntoElement + use<>
         .id("op-center-panel")
         .a11y(gpui::Role::List, t!("ops.center_title"))
         .occlude()
-        .w(PANEL_W)
-        .max_h(PANEL_MAX_H)
+        .w(panel_w())
+        .max_h(panel_max_h())
         .overflow_y_scroll()
-        .p(theme::S_8)
+        .p(theme::s_8())
         .flex()
         .flex_col()
-        .gap(theme::S_2)
-        .rounded(theme::R_12)
+        .gap(theme::s_2())
+        .rounded(theme::r_12())
         .bg(theme::overlay())
         .shadow(theme::elev_3())
-        .text_size(theme::FS_14)
+        .text_size(theme::fs_14())
         .text_color(theme::text())
         .child(
             div()
                 .flex()
                 .items_center()
-                .px(theme::S_8)
-                .h(theme::H_CTL)
+                .px(theme::s_8())
+                .h(theme::h_ctl())
                 .child(
                     div()
                         .flex_1()
@@ -336,10 +339,10 @@ fn panel(rows: Vec<Row>, cx: &mut Context<Explorer>) -> impl IntoElement + use<>
                         div()
                             .id("op-center-clear")
                             .a11y_button(t!("ops.center_clear"))
-                            .px(theme::S_6)
-                            .rounded(theme::R_4)
+                            .px(theme::s_6())
+                            .rounded(theme::r_4())
                             .cursor_pointer()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_muted())
                             .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
                             .child(t!("ops.center_clear").into_owned())
@@ -377,7 +380,7 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
         JobState::Done { .. } => Some(
             svg()
                 .path(Icon::Check.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .flex_none()
                 .text_color(theme::text_subtle())
                 .into_any_element(),
@@ -389,22 +392,22 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
         .a11y_lazy(gpui::Role::ListItem, || {
             crate::a11y::item_label(&row.title, &[&row.detail])
         })
-        .px(theme::S_8)
-        .py(theme::S_8)
+        .px(theme::s_8())
+        .py(theme::s_8())
         .flex()
         .flex_col()
-        .gap(theme::S_4)
-        .rounded(theme::R_8)
+        .gap(theme::s_4())
+        .rounded(theme::r_8())
         .hover(|s| s.bg(theme::wash()))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(
                     svg()
                         .path(row.icon.path())
-                        .size(theme::ICON)
+                        .size(theme::icon())
                         .flex_none()
                         .text_color(if failed {
                             theme::danger()
@@ -417,8 +420,8 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
         )
         .child(
             div()
-                .pl(theme::ICON + theme::S_8)
-                .text_size(theme::FS_12)
+                .pl(theme::icon() + theme::s_8())
+                .text_size(theme::fs_12())
                 .line_clamp(3)
                 .text_color(if failed {
                     theme::danger()
@@ -429,11 +432,14 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
         )
         .when(running, |d| {
             d.child(
-                div().pl(theme::ICON + theme::S_8).pt(theme::S_2).child(
-                    div()
+                div()
+                    .pl(theme::icon() + theme::s_8())
+                    .pt(theme::s_2())
+                    .child(
+                        div()
                         .id("op-center-progress")
                         .a11y_progress(row.fraction)
-                        .h(theme::S_4)
+                        .h(theme::s_4())
                         .w_full()
                         .rounded(theme::R_FULL)
                         .bg(theme::line())
@@ -448,7 +454,7 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
                                     .w(gpui::relative(row.fraction.unwrap_or(0.3))),
                             )
                         }),
-                ),
+                    ),
             )
         })
         .into_any_element()
@@ -461,10 +467,10 @@ fn cancel_button(row: &Row, cx: &mut Context<Explorer>) -> AnyElement {
         .id(("op-center-cancel", usize::try_from(row.id).unwrap_or(0)))
         .a11y_button(t!("toast.cancel"))
         .flex_none()
-        .px(theme::S_6)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
         .child(t!("toast.cancel").into_owned())
@@ -483,10 +489,10 @@ fn retry_button(row: u64, cx: &mut Context<Explorer>) -> AnyElement {
         .id(("op-center-retry", usize::try_from(row).unwrap_or(0)))
         .a11y_button(t!("toast.retry"))
         .flex_none()
-        .px(theme::S_6)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
         .child(t!("toast.retry").into_owned())
@@ -504,10 +510,10 @@ fn undo_button(row: u64, undo: u64, cx: &mut Context<Explorer>) -> AnyElement {
         .id(("op-center-undo", usize::try_from(row).unwrap_or(0)))
         .a11y_button(t!("toast.undo"))
         .flex_none()
-        .px(theme::S_6)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
         .child(t!("toast.undo").into_owned())
@@ -523,10 +529,10 @@ fn redo_button(row: u64, redo: u64, cx: &mut Context<Explorer>) -> AnyElement {
         .id(("op-center-redo", usize::try_from(row).unwrap_or(0)))
         .a11y_button(t!("toast.redo"))
         .flex_none()
-        .px(theme::S_6)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
         .child(t!("toast.redo").into_owned())
@@ -543,10 +549,10 @@ fn pause_button(paused: bool, cx: &mut Context<Explorer>) -> AnyElement {
         .id("op-center-pause")
         .a11y_toggle(t!("ops.queue_pause"), paused)
         .aria_description(t!("ops.queue_pause_tip").into_owned())
-        .px(theme::S_6)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(if paused {
             theme::text()
         } else {
@@ -575,13 +581,13 @@ fn ring(start: f32, sweep: f32) -> impl IntoElement {
             .absolute()
             .top_0()
             .left_0()
-            .size(theme::ICON)
+            .size(theme::icon())
             .path(path)
     };
     div()
         .relative()
         .flex_none()
-        .size(theme::ICON)
+        .size(theme::icon())
         .child(layer(crate::assets::RING_TRACK.into()).text_color(theme::line_strong()))
         .child(
             layer(crate::assets::ring_arc(sweep).into())

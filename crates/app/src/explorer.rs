@@ -1134,17 +1134,23 @@ impl Explorer {
             preview_gen: 0,
             zoom: preview::Zoom::default(),
             pdf_cache: preview::PdfCache::default(),
-            screen: (gpui::size(px(1280.), px(800.)), 1.),
+            screen: (
+                gpui::size(
+                    crate::theme::scaled_px(1280.),
+                    crate::theme::scaled_px(800.),
+                ),
+                1.,
+            ),
             cloud: cloud::CloudStates::default(),
             preview_task: None,
-            pane_width: px(1000.),
+            pane_width: crate::theme::scaled_px(1000.),
             fit: layout::Fit::default(),
             cols: None,
             header_x: std::cell::Cell::new(None),
             pane_frame_h: std::rc::Rc::default(),
             pane_info_scroll: Default::default(),
-            bar_width: px(1000.),
-            paper_width: px(1000.),
+            bar_width: crate::theme::scaled_px(1000.),
+            paper_width: crate::theme::scaled_px(1000.),
             show_loading: false,
             error: None,
             failed: None,
@@ -2904,7 +2910,7 @@ impl Explorer {
     /// Height taken outside the list: top bar, context bar, column header, bottom margin and list
     /// padding.
     fn list_chrome() -> Pixels {
-        theme::H_BAR + theme::H_CTX + theme::H_HEADER + theme::S_8 + theme::S_8
+        theme::h_bar() + theme::h_ctx() + theme::h_header() + theme::s_8() + theme::s_8()
     }
 
     fn on_path_event(
@@ -2995,14 +3001,14 @@ impl Explorer {
     }
 
     /// Split panes are half width, so they use compact density.
-    pub(crate) const fn row_height(&self) -> Pixels {
+    pub(crate) fn row_height(&self) -> Pixels {
         if self.pane.split {
-            return theme::H_ROW_COMPACT;
+            return theme::h_row_compact();
         }
         match self.density {
-            Density::Compact => theme::H_ROW_COMPACT,
-            Density::Standard => theme::H_ROW,
-            Density::Comfortable => theme::H_ROW_COMFORTABLE,
+            Density::Compact => theme::h_row_compact(),
+            Density::Standard => theme::h_row(),
+            Density::Comfortable => theme::h_row_comfortable(),
         }
     }
 

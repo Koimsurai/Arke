@@ -622,7 +622,7 @@ impl Render for PopupView {
             // What the main window's root gives everything in it.
             .text_color(crate::theme::text())
             .ui_font()
-            .text_size(crate::theme::FS_14)
+            .text_size(crate::theme::fs_14())
             // A press on the shadow around the panel is outside the menu.
             .on_mouse_down(
                 MouseButton::Left,

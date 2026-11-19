@@ -25,9 +25,13 @@ use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
 
 /// One tree indent level.
-const INDENT: Pixels = px(16.);
+fn tree_indent() -> gpui::Pixels {
+    crate::theme::scaled_px(16.)
+}
 /// Drive usage bar: thin, under the label, inside the row (the row keeps its height).
-const USAGE_BAR_H: Pixels = px(3.);
+fn usage_bar_h() -> gpui::Pixels {
+    crate::theme::scaled_px(3.)
+}
 /// Used share above which the usage bar turns red.
 const USAGE_DANGER: f32 = 0.9;
 
@@ -121,20 +125,20 @@ pub(super) struct DraggedPin {
 impl Render for DraggedPin {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(theme::H_ROW)
-            .px(theme::S_8)
+            .h(theme::h_row())
+            .px(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .child(crate::assets::tinted(
                 self.icon,
-                theme::ICON,
+                theme::icon(),
                 theme::text_muted(),
             ))
             .child(self.label.clone())
@@ -266,14 +270,14 @@ fn section_label(text: impl Into<SharedString>) -> impl IntoElement {
     let text: SharedString = text.into();
     div()
         .flex_none()
-        .h(theme::H_ROW)
+        .h(theme::h_row())
         .flex()
         .items_end()
-        .px(theme::S_8)
-        .pb(theme::S_6)
+        .px(theme::s_8())
+        .pb(theme::s_6())
         // Section heading (like Files): item size, semibold and full ink, so the groups read as
         // headings rather than captions; the weight alone sets them apart from the items.
-        .text_size(theme::FS_14)
+        .text_size(theme::fs_14())
         .font_weight(theme::FW_STRONG)
         .text_color(theme::text())
         .child(text)
@@ -325,12 +329,12 @@ pub(super) fn tab_layout_button(
         } else {
             t!("sidebar.tabs_to_top")
         })
-        .size(theme::S_24)
+        .size(theme::s_24())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
         .hover(|s| s.bg(theme::wash_strong()))
         .child(
@@ -340,7 +344,7 @@ pub(super) fn tab_layout_button(
                 } else {
                     Icon::TabsTop.path()
                 })
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_subtle()),
         )
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
@@ -419,18 +423,18 @@ fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
     div()
         .id("map-network-drive")
         .a11y_button(t!("sidebar.add_location"))
-        .size(theme::S_24)
+        .size(theme::s_24())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
         .hover(|s| s.bg(theme::wash_strong()))
         .child(
             svg()
                 .path(Icon::Plus.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_subtle()),
         )
         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -443,11 +447,11 @@ fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
 fn loading_row(indent: Pixels) -> AnyElement {
     div()
         .flex_none()
-        .h(theme::H_ROW)
+        .h(theme::h_row())
         .flex()
         .items_center()
         .pl(indent)
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_subtle())
         .child(t!("info.loading").to_string())
         .into_any_element()
@@ -592,7 +596,7 @@ impl Workspace {
             .id(SharedString::from(format!("pin-row-{}", path.display())))
             .debug_selector(move || format!("pin-row-{ix}"))
             .relative()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .child(row)
             .children(mark)
             .on_drag_move(
@@ -709,16 +713,16 @@ impl Workspace {
         let list_drop = (pinned.is_empty() && self.dragging_pin).then(|| {
             div()
                 .id("pin-list-drop")
-                .h(theme::H_ROW)
-                .mx(theme::S_4)
+                .h(theme::h_row())
+                .mx(theme::s_4())
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .border_1()
                 .border_dashed()
                 .border_color(theme::line_strong())
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted())
                 .child(t!("sidebar.drop_to_list").into_owned())
                 .drag_over::<DraggedPin>(|s, _, _, _| {
@@ -738,8 +742,8 @@ impl Workspace {
                 .debug_selector(|| "pin-tiles".to_owned())
                 .grid()
                 .grid_cols(if large { 3 } else { 4 })
-                .gap(theme::S_4)
-                .rounded(theme::R_8)
+                .gap(theme::s_4())
+                .rounded(theme::r_8())
                 .when(add_slot.is_some(), |d| d.bg(theme::signal_wash()))
                 .children(tiles)
                 .children(add_slot)
@@ -771,7 +775,7 @@ impl Workspace {
                     .id("pin-list-label")
                     .debug_selector(|| "pin-list-label".to_owned())
                     .relative()
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .child(section_label(t!("sidebar.favorites")))
                     // A folder or tab goes first in the list; with no folder pinned yet, the
                     // heading itself shows it.
@@ -858,7 +862,11 @@ impl Workspace {
         items.push(section_label(t!("sidebar.this_pc")).into_any_element());
         items.extend(devices);
         items.extend(network);
-        let places = div().id("sidebar-places").flex().flex_col().gap(theme::S_2);
+        let places = div()
+            .id("sidebar-places")
+            .flex()
+            .flex_col()
+            .gap(theme::s_2());
         let places_area = scrolling(
             places,
             items,
@@ -869,7 +877,7 @@ impl Workspace {
                 .when(horizontal, gpui::Styled::flex_1)
                 .when(!horizontal, gpui::Styled::flex_initial)
                 // At least two rows stay visible, so it's clear this part scrolls too.
-                .min_h(theme::H_ROW * 2.),
+                .min_h(theme::h_row() * 2.),
         );
         div()
             .id("sidebar")
@@ -878,10 +886,10 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .pl(theme::S_12)
-            .pr(theme::S_8)
-            .pb(theme::S_8)
-            .gap(theme::S_2)
+            .pl(theme::s_12())
+            .pr(theme::s_8())
+            .pb(theme::s_8())
+            .gap(theme::s_2())
             .child(places_area)
             .when(!horizontal, |d| {
                 d.child(
@@ -909,7 +917,7 @@ impl Workspace {
                             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
                             .flex()
                             .flex_col()
-                            .gap(theme::S_2)
+                            .gap(theme::s_2())
                             // Dropping in the gaps between tabs moves the tab to the end.
                             .on_drop(cx.listener(Self::drop_tab_at_end)),
                         tabs,
@@ -928,7 +936,7 @@ impl Workspace {
                             .relative()
                             .child(self.tab_area_recorder(super::tabmove::AreaPart::ListEnd))
                             .flex_1()
-                            .min_h(theme::S_32)
+                            .min_h(theme::s_32())
                             .on_drop(cx.listener(Self::drop_tab_at_end)),
                     )
             })
@@ -943,7 +951,7 @@ impl Workspace {
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
     fn tab_list_min_height(tabs: usize) -> Pixels {
         let shown = tabs.min(3) as f32;
-        (theme::H_ROW + theme::S_2) * shown
+        (theme::h_row() + theme::s_2()) * shown
     }
 
     /// Drops a tab onto empty space in the tab strip or list: moves it to the end.
@@ -1114,20 +1122,20 @@ impl Workspace {
             .a11y_button(t!("sidebar.new_tab"))
             .aria_keyshortcuts("Ctrl+T")
             .group("new-tab")
-            .h(theme::H_ROW)
+            .h(theme::h_row())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .px(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .px(theme::s_8())
+            .rounded(theme::r_8())
             .cursor_pointer()
             .text_color(theme::text_subtle())
             .hover(|s| s.bg(theme::wash()).text_color(theme::text_muted()))
             .child(
                 svg()
                     .path(Icon::TabNew.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .text_color(theme::text_subtle()),
             )
             .child(div().flex_1().child(t!("sidebar.new_tab").to_string()))
@@ -1136,11 +1144,11 @@ impl Workspace {
                 div()
                     .invisible()
                     .group_hover("new-tab", gpui::Styled::visible)
-                    .px(theme::S_4)
-                    .rounded(theme::R_4)
+                    .px(theme::s_4())
+                    .rounded(theme::r_4())
                     .border_1()
                     .border_color(theme::line_strong())
-                    .text_size(theme::FS_11)
+                    .text_size(theme::fs_11())
                     .child("Ctrl T"),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -1175,15 +1183,15 @@ impl Workspace {
             .id(SharedString::from(format!("tile-{}", path.display())))
             .a11y_lazy(gpui::Role::TreeItem, || label.clone())
             .aria_selected(here)
-            .h(if large { px(56.) } else { px(48.) })
+            .h(if large { crate::theme::scaled_px(56.) } else { crate::theme::scaled_px(48.) })
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(if large { theme::S_4 } else { theme::S_2 })
-            .rounded(theme::R_8)
+            .gap(if large { theme::s_4() } else { theme::s_2() })
+            .rounded(theme::r_8())
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .when(here, |d| {
                 d.relative().child(here_layer()).text_color(theme::text())
             })
@@ -1194,14 +1202,14 @@ impl Workspace {
             })
             .child(crate::assets::tinted(
                 icon,
-                if large { theme::S_20 } else { px(18.) },
+                if large { theme::s_20() } else { crate::theme::scaled_px(18.) },
                 if here {
                     theme::signal()
                 } else {
                     theme::text_muted()
                 },
             ))
-            .child(div().max_w_full().px(theme::S_4).truncate().child(label))
+            .child(div().max_w_full().px(theme::s_4()).truncate().child(label))
             .with_file_drop(path.to_path_buf(), cx)
             // Drag to reorder (live, see `tile_drag_shell`) or onto the list below.
             .on_drag(dragged, move |dragged, _, _, cx| {
@@ -1318,7 +1326,7 @@ impl Workspace {
         let tab_path = path.to_path_buf();
         let menu = self.tree_menu(path, depth, cx);
         let renaming = self.sidebar_rename_box(path);
-        let indent = INDENT * depth as f32;
+        let indent = tree_indent() * depth as f32;
         out.push(
             div()
                 .id(SharedString::from(format!(
@@ -1334,22 +1342,22 @@ impl Workspace {
                 .aria_selected(here)
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
-                .h(theme::H_ROW)
+                .h(theme::h_row())
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_4)
-                .pl(indent + theme::S_4)
-                .pr(theme::S_8)
-                .rounded(theme::R_8)
+                .gap(theme::s_4())
+                .pl(indent + theme::s_4())
+                .pr(theme::s_8())
+                .rounded(theme::r_8())
                 .cursor_pointer()
                 // Current location: neutral wash.
                 .when(here, |d| d.bg(theme::selection()))
                 .when(!here, |d| d.hover(|s| s.bg(theme::wash())))
                 .child(Self::tree_chevron(path, depth, expanded, leaf, cue, cx))
                 .child(match icon {
-                    Some(icon) => crate::assets::tinted(icon, theme::ICON, theme::text_muted()),
-                    None => kind_icon(FileKind::Folder, theme::ICON),
+                    Some(icon) => crate::assets::tinted(icon, theme::icon(), theme::text_muted()),
+                    None => kind_icon(FileKind::Folder, theme::icon()),
                 })
                 .child(match renaming {
                     Some(input) => crate::place_names::rename_box(input),
@@ -1392,7 +1400,7 @@ impl Workspace {
                     );
                 }
             }
-            _ => out.push(loading_row(indent + INDENT + theme::S_32)),
+            _ => out.push(loading_row(indent + tree_indent() + theme::s_32())),
         }
         // Just expanded: the new rows drop in under their parent.
         if let Some(serial) = cue {
@@ -1429,7 +1437,7 @@ impl Workspace {
         };
         let glyph = svg()
             .path(Icon::ChevronRight.path())
-            .size(theme::ICON_SM)
+            .size(theme::icon_sm())
             .text_color(theme::text_subtle());
         let glyph = match cue {
             Some(serial) => glyph
@@ -1446,12 +1454,12 @@ impl Workspace {
                 "chev-{depth}-{}",
                 path.display()
             )))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .when(!leaf, |d| {
                 d.hover(|s| s.bg(theme::wash_strong()))
                     .child(glyph)
@@ -1954,16 +1962,16 @@ impl Workspace {
                 let detail = menu_detail(&action);
                 div()
                     .id(("sidebar-menu-item", ix))
-                    .h(theme::H_CTL_SM + theme::S_4)
-                    .mx(theme::S_4)
-                    .px(theme::S_8)
+                    .h(theme::h_ctl_sm() + theme::s_4())
+                    .mx(theme::s_4())
+                    .px(theme::s_8())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .when(folder, |d| {
-                        d.child(kind_icon(FileKind::Folder, theme::ICON))
+                        d.child(kind_icon(FileKind::Folder, theme::icon()))
                     })
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::wash()))
                     .child(div().flex_none().child(label.clone()))
@@ -1971,9 +1979,9 @@ impl Workspace {
                         d.child(
                             div()
                                 .min_w_0()
-                                .max_w(px(320.))
+                                .max_w(crate::theme::scaled_px(320.))
                                 .truncate()
-                                .text_size(theme::FS_12)
+                                .text_size(theme::fs_12())
                                 .text_color(theme::text_muted())
                                 .child(detail),
                         )
@@ -1996,15 +2004,15 @@ impl Workspace {
             div()
                 .id("sidebar-menu")
                 .occlude()
-                .min_w(px(200.))
+                .min_w(crate::theme::scaled_px(200.))
                 .max_h(max_h)
                 .overflow_y_scroll()
-                .py(theme::S_4)
-                .rounded(theme::R_12)
+                .py(theme::s_4())
+                .rounded(theme::r_12())
                 .bg(theme::overlay())
                 .shadow(theme::elev_float())
                 .ui_font()
-                .text_size(theme::FS_14)
+                .text_size(theme::fs_14())
                 .text_color(theme::text())
                 .children(rows)
                 // Like the list's context menu: fades in, again for each new menu.
@@ -2155,14 +2163,14 @@ impl Workspace {
                     .id(("tab-half", ix * 2 + pane))
                     .flex_1()
                     .min_w_0()
-                    .h(theme::H_CTL_SM)
-                    .px(theme::S_6)
+                    .h(theme::h_ctl_sm())
+                    .px(theme::s_6())
                     .flex()
                     .items_center()
-                    .gap(theme::S_6)
-                    .rounded(theme::R_4)
+                    .gap(theme::s_6())
+                    .rounded(theme::r_4())
                     .when(active_pane == Some(pane), |d| d.bg(theme::signal_wash()))
-                    .child(kind_icon(FileKind::Folder, theme::ICON))
+                    .child(kind_icon(FileKind::Folder, theme::icon()))
                     .child(div().min_w_0().truncate().child(title))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
@@ -2177,18 +2185,18 @@ impl Workspace {
         div()
             .id(("tab-pin", ix))
             .a11y_button(t!("sidebar.unpin_tab"))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(
                 svg()
                     .path(Icon::Pin.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(theme::text_subtle()),
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -2204,18 +2212,18 @@ impl Workspace {
         div()
             .id(("tab-close", ix))
             .a11y_button(t!("sidebar.close_tab"))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(
                 svg()
                     .path(Icon::Close.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(theme::text_subtle()),
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -2249,21 +2257,21 @@ impl Workspace {
             .debug_selector(|| format!("tab-{ix}"))
             .group(group.clone())
             .h(if split {
-                theme::H_ROW + theme::S_8
+                theme::h_row() + theme::s_8()
             } else if tab.pinned {
                 // Pinned tabs are a tighter group at the top.
-                theme::H_ROW_COMPACT
+                theme::h_row_compact()
             } else {
-                theme::H_ROW
+                theme::h_row()
             })
-            .when(tab.pinned, |d| d.text_size(theme::FS_13))
+            .when(tab.pinned, |d| d.text_size(theme::fs_13()))
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_4)
-            .pl(if split { theme::S_4 } else { theme::S_8 })
-            .pr(theme::S_6)
-            .rounded(theme::R_8)
+            .gap(theme::s_4())
+            .pl(if split { theme::s_4() } else { theme::s_8() })
+            .pr(theme::s_6())
+            .rounded(theme::r_8())
             .cursor_pointer()
             // Slides from the old position after a reorder (the offset is relative).
             .relative()
@@ -2275,7 +2283,7 @@ impl Workspace {
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(theme::R_8)
+                        .rounded(theme::r_8())
                         .with_animation(
                             ("tab-flash", serial as usize),
                             gpui::Animation::new(crate::motion::FLASH),
@@ -2353,13 +2361,13 @@ impl Workspace {
             let icon = match self.page_title(tab.view().entity_id()) {
                 Some((_, icon)) => svg()
                     .path(icon.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .flex_none()
                     .text_color(theme::text_muted())
                     .into_any_element(),
-                None => kind_icon(FileKind::Folder, theme::ICON),
+                None => kind_icon(FileKind::Folder, theme::icon()),
             };
-            row.gap(theme::S_8)
+            row.gap(theme::s_8())
                 .child(icon)
                 .child(div().flex_1().min_w_0().truncate().child(title))
         };
@@ -2384,13 +2392,13 @@ impl Workspace {
             div()
                 .flex()
                 .flex_col()
-                .gap(theme::S_2)
+                .gap(theme::s_2())
                 .child(shell)
                 .child(
                     div()
                         .h(px(1.))
-                        .mx(theme::S_8)
-                        .my(theme::S_2)
+                        .mx(theme::s_8())
+                        .my(theme::s_2())
                         .bg(theme::line()),
                 )
                 .into_any_element()
@@ -2438,7 +2446,11 @@ impl Workspace {
     /// Opens tab `ix`'s context menu, as a right click on the tab does.
     pub(crate) fn open_tab_menu_for_test(&mut self, ix: usize, cx: &mut Context<Self>) {
         let items = self.tab_menu(ix, cx);
-        self.open_sidebar_menu(gpui::point(px(100.), px(100.)), items, cx);
+        self.open_sidebar_menu(
+            gpui::point(crate::theme::scaled_px(100.), crate::theme::scaled_px(100.)),
+            items,
+            cx,
+        );
     }
 
     /// The window the open tab, sidebar or history menu is drawn in.
@@ -2484,33 +2496,33 @@ fn tree_label(label: String, space: Option<DriveSpace>) -> impl IntoElement {
             .flex_1()
             .min_w_0()
             .truncate()
-            .pl(theme::S_4)
+            .pl(theme::s_4())
             .child(label);
     };
     div()
         .flex_1()
         .min_w_0()
-        .pl(theme::S_4)
+        .pl(theme::s_4())
         .flex()
         .flex_col()
-        .gap(theme::S_2)
+        .gap(theme::s_2())
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(div().flex_1().min_w_0().truncate().child(label))
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(space.free),
                 ),
         )
         .child(
             div()
-                .h(USAGE_BAR_H)
+                .h(usage_bar_h())
                 .rounded(theme::R_FULL)
                 .bg(theme::line())
                 .overflow_hidden()
@@ -2537,7 +2549,7 @@ fn here_layer() -> AnyElement {
         .top_0()
         .left_0()
         .size_full()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .bg(theme::paper())
         .shadow(theme::elev_1())
         .into_any_element()

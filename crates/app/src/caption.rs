@@ -24,7 +24,9 @@ pub(crate) fn close_edge_hovered() -> bool {
 
 /// How far from an edge a button may sit and still be stretched to it: the title bar's padding.
 /// A button further in (not in the window's top-right corner) keeps its own size.
-const EDGE_REACH: Pixels = crate::theme::S_16;
+fn edge_reach() -> gpui::Pixels {
+    crate::theme::s_16()
+}
 
 /// The extra hit area of a caption button drawn at `button` when the window is maximized: from
 /// the top edge down to the button's bottom, widened by `gap` to the right so the strip above the
@@ -37,12 +39,12 @@ pub(crate) fn edge_hit_bounds(
     last: bool,
     gap: Pixels,
 ) -> Option<Bounds<Pixels>> {
-    if !maximized || button.top() > EDGE_REACH {
+    if !maximized || button.top() > edge_reach() {
         return None;
     }
     let right = if !last {
         button.right() + gap
-    } else if viewport.width - button.right() <= EDGE_REACH {
+    } else if viewport.width - button.right() <= edge_reach() {
         viewport.width
     } else {
         button.right()
@@ -91,7 +93,7 @@ pub(crate) fn edge_hit(area: WindowControlArea, last: bool, gap: Pixels) -> impl
                 } else {
                     crate::theme::wash_strong()
                 };
-                window.paint_quad(fill(button, color).corner_radii(crate::theme::R_8));
+                window.paint_quad(fill(button, color).corner_radii(crate::theme::r_8()));
             }
             window.insert_window_control_hitbox(area, hitbox);
             // Draw again when the pointer enters or leaves the extra area.
@@ -113,21 +115,21 @@ mod tests {
     use gpui::{Point, size};
 
     use super::*;
-    use crate::theme::{H_BAR, H_CTL, S_2, S_8};
+    use crate::theme::{h_bar, h_ctl, s_2, s_8};
 
     const SCREEN: Size<Pixels> = Size {
         width: px(1920.),
         height: px(1080.),
     };
 
-    /// Buttons laid out as in the title bar: centered in it, the last one `S_8` from the right.
+    /// Buttons laid out as in the title bar: centered in it, the last one `s_8()` from the right.
     fn buttons() -> [Bounds<Pixels>; 3] {
-        let top = (H_BAR - H_CTL) / 2.;
-        let close_left = SCREEN.width - S_8 - H_CTL;
+        let top = (h_bar() - h_ctl()) / 2.;
+        let close_left = SCREEN.width - s_8() - h_ctl();
         [2., 1., 0.].map(|n| {
             Bounds::new(
-                point(close_left - (H_CTL + S_2) * n, top),
-                size(H_CTL, H_CTL),
+                point(close_left - (h_ctl() + s_2()) * n, top),
+                size(h_ctl(), h_ctl()),
             )
         })
     }
@@ -137,7 +139,7 @@ mod tests {
         let buttons = buttons();
         buttons.iter().enumerate().position(|(ix, b)| {
             b.contains(&at)
-                || edge_hit_bounds(*b, SCREEN, maximized, ix == 2, S_2)
+                || edge_hit_bounds(*b, SCREEN, maximized, ix == 2, s_2())
                     .is_some_and(|e| e.contains(&at))
         })
     }
@@ -158,7 +160,7 @@ mod tests {
             assert_eq!(target(above, false), None);
             // Above the gap after a button: still that button, no dead pixel.
             if ix < 2 {
-                let gap = point(b.right() + S_2 / 2., px(0.));
+                let gap = point(b.right() + s_2() / 2., px(0.));
                 assert_eq!(target(gap, true), Some(ix));
             }
         }
@@ -175,11 +177,17 @@ mod tests {
         let left_of_min = point(min.left() - px(1.), px(0.));
         assert_eq!(target(left_of_min, true), None);
         // A button lower down (not in the title bar) keeps its own bounds.
-        let low = Bounds::new(point(px(100.), px(200.)), size(H_CTL, H_CTL));
-        assert_eq!(edge_hit_bounds(low, SCREEN, true, true, S_2), None);
+        let low = Bounds::new(
+            point(crate::theme::scaled_px(100.), crate::theme::scaled_px(200.)),
+            size(h_ctl(), h_ctl()),
+        );
+        assert_eq!(edge_hit_bounds(low, SCREEN, true, true, s_2()), None);
         // Close far from the right edge reaches the top, not across the window.
-        let inner = Bounds::new(point(px(100.), px(8.)), size(H_CTL, H_CTL));
-        let hit = edge_hit_bounds(inner, SCREEN, true, true, S_2).expect("near the top");
+        let inner = Bounds::new(
+            point(crate::theme::scaled_px(100.), crate::theme::scaled_px(8.)),
+            size(h_ctl(), h_ctl()),
+        );
+        let hit = edge_hit_bounds(inner, SCREEN, true, true, s_2()).expect("near the top");
         assert_eq!(hit.right(), inner.right());
         assert_eq!(hit.top(), px(0.));
     }

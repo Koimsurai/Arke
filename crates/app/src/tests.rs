@@ -50,6 +50,8 @@ mod popup_menus;
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
+#[path = "tests_scale.rs"]
+mod scale;
 #[path = "tests_properties_card.rs"]
 mod properties_card;
 #[path = "tests_properties.rs"]
@@ -6676,7 +6678,7 @@ fn item_checkboxes_add_to_the_selection(cx: &mut TestAppContext) {
     );
     assert_eq!(view.update(cx, |v, _| selected_names(v)).len(), 1);
     // Header box: select all, click again to clear.
-    let header = point(box_x, bounds.top() - crate::theme::H_HEADER / 2.);
+    let header = point(box_x, bounds.top() - crate::theme::h_header() / 2.);
     cx.simulate_click(header, Modifiers::none());
     assert_eq!(view.update(cx, |v, _| selected_names(v)).len(), 5);
     cx.simulate_click(header, Modifiers::none());

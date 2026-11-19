@@ -21,12 +21,16 @@ use gpui::{
 use crate::theme;
 
 /// Hover-sensitive width (the thumb is drawn at its right edge)
-const TRACK_W: Pixels = px(12.);
+fn track_w() -> gpui::Pixels {
+    crate::theme::scaled_px(12.)
+}
 /// Thumb width: thin and widened
 const THUMB_THIN: f32 = 2.;
 const THUMB_WIDE: f32 = 6.;
 /// Shortest thumb, along the track.
-const THUMB_MIN_H: Pixels = px(24.);
+fn thumb_min_h() -> gpui::Pixels {
+    crate::theme::scaled_px(24.)
+}
 /// Grow and shrink duration (seconds)
 const GROW_SECS: f32 = crate::motion::FAST.as_secs_f32();
 
@@ -84,7 +88,7 @@ fn thumb(
     }
     let room = track.size.along(axis);
     let length = (room * (viewport / (viewport + max)))
-        .max(THUMB_MIN_H)
+        .max(thumb_min_h())
         .min(room);
     let progress = (-handle.offset().along(axis) / max).clamp(0., 1.);
     let start = track.origin.along(axis) + (room - length) * progress;
@@ -116,7 +120,7 @@ pub(crate) fn scrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> impl IntoE
         .top_0()
         .bottom_0()
         .right_0()
-        .w(TRACK_W)
+        .w(track_w())
 }
 
 /// Sideways scrollbar along the bottom of a list whose rows are wider than it (Details columns),
@@ -126,9 +130,9 @@ pub(crate) fn hscrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> impl Into
     bar(handle, drag, Axis::Horizontal)
         .absolute()
         .left_0()
-        .right(TRACK_W)
+        .right(track_w())
         .bottom_0()
-        .h(TRACK_W)
+        .h(track_w())
 }
 
 /// A scroll area inside a scrolling page (the report text in Settings), with its scrollbar.
@@ -191,7 +195,10 @@ fn parts(
                 ),
                 Bounds::new(
                     point(right - px(THUMB_WIDE) - px(2.), track.origin.y),
-                    gpui::size(px(THUMB_WIDE) + px(4.), track.size.height),
+                    gpui::size(
+                        px(THUMB_WIDE) + crate::theme::scaled_px(4.),
+                        track.size.height,
+                    ),
                 ),
             )
         }
@@ -205,7 +212,10 @@ fn parts(
                 ),
                 Bounds::new(
                     point(track.origin.x, bottom - px(THUMB_WIDE) - px(2.)),
-                    gpui::size(track.size.width, px(THUMB_WIDE) + px(4.)),
+                    gpui::size(
+                        track.size.width,
+                        px(THUMB_WIDE) + crate::theme::scaled_px(4.),
+                    ),
                 ),
             )
         }

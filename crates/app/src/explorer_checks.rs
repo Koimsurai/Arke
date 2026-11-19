@@ -27,12 +27,12 @@ enum Check {
 fn check_box(state: Check, visible: bool) -> gpui::Div {
     let on = state != Check::Off;
     div()
-        .size(theme::ICON)
+        .size(theme::icon())
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.))
+        .rounded(crate::theme::scaled_px(4.))
         .border_1()
         .when(on, |d| d.bg(theme::signal()).border_color(theme::signal()))
         .when(!on, |d| {
@@ -43,13 +43,13 @@ fn check_box(state: Check, visible: bool) -> gpui::Div {
             Check::On => Some(
                 svg()
                     .path(Icon::Check.path())
-                    .size(px(12.))
+                    .size(crate::theme::scaled_px(12.))
                     .text_color(theme::on_signal())
                     .into_any_element(),
             ),
             Check::Some => Some(
                 div()
-                    .w(px(8.))
+                    .w(crate::theme::scaled_px(8.))
                     .h(px(2.))
                     .rounded(px(1.))
                     .bg(theme::on_signal())

@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use gpui::{AnyElement, Image, ImageFormat, IntoElement, ParentElement, Styled, div, img, px};
+use gpui::{AnyElement, Image, ImageFormat, IntoElement, ParentElement, Styled, div, img};
 
 use crate::theme;
 
@@ -23,15 +23,15 @@ fn png(bytes: &'static [u8]) -> Arc<Image> {
 pub(crate) fn sidebar_mark() -> impl IntoElement {
     div()
         .flex_none()
-        .ml(theme::S_4)
-        .mr(theme::S_8)
-        .child(img(SMALL.clone()).size(theme::ICON))
+        .ml(theme::s_4())
+        .mr(theme::s_8())
+        .child(img(SMALL.clone()).size(theme::icon()))
 }
 
 /// About page mark, shown next to the app name and version.
 pub(crate) fn about_mark() -> AnyElement {
     img(LARGE.clone())
-        .size(px(56.))
+        .size(crate::theme::scaled_px(56.))
         .flex_none()
         .into_any_element()
 }

@@ -68,20 +68,20 @@ impl Explorer {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_4)
-                .text_size(theme::FS_12)
+                .gap(theme::s_4())
+                .text_size(theme::fs_12())
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(theme::S_6)
-                        .px(theme::S_6)
-                        .h(theme::H_CTL_SM)
+                        .gap(theme::s_6())
+                        .px(theme::s_6())
+                        .h(theme::h_ctl_sm())
                         .text_color(theme::text_muted())
                         .child(
                             svg()
                                 .path(Icon::Compare.path())
-                                .size(theme::ICON)
+                                .size(theme::icon())
                                 .flex_none()
                                 .text_color(theme::diff_changed()),
                         )
@@ -92,11 +92,11 @@ impl Explorer {
                         div()
                             .id("compare-select")
                             .a11y_button(t!("compare.select_tip"))
-                            .h(theme::H_CTL_SM)
-                            .px(theme::S_8)
+                            .h(theme::h_ctl_sm())
+                            .px(theme::s_8())
                             .flex()
                             .items_center()
-                            .rounded(theme::R_8)
+                            .rounded(theme::r_8())
                             .cursor_pointer()
                             .text_color(theme::text())
                             .hover(|s| s.bg(theme::wash_strong()))
@@ -116,7 +116,7 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             // A pinned tab keeps both folders: synchronized browsing can't move them.
             .when(!self.locked, |d| {
                 d.child(toggle(
@@ -154,17 +154,17 @@ fn toggle(
         // A new id per state, so the tooltip from before the click doesn't linger.
         .id(SharedString::from(format!("{id}-{on}")))
         .a11y_toggle(tip.clone(), on)
-        .h(theme::H_CTL_SM)
-        .px(theme::S_6)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_6())
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(on, |d| d.bg(theme::wash_strong()))
         .when(!on, |d| d.hover(|s| s.bg(theme::wash())))
         .on_click(on_click)
-        .child(svg().path(icon.path()).size(theme::ICON).text_color(if on {
+        .child(svg().path(icon.path()).size(theme::icon()).text_color(if on {
             theme::text()
         } else {
             theme::text_subtle()
@@ -185,11 +185,11 @@ pub(super) fn compare_badge(mark: Option<Mark>) -> Option<impl IntoElement> {
     Some(
         div()
             .flex_none()
-            .px(theme::S_4)
-            .rounded(theme::R_4)
+            .px(theme::s_4())
+            .rounded(theme::r_4())
             .bg(theme::diff_wash(color))
             .ui_font()
-            .text_size(theme::FS_11)
+            .text_size(theme::fs_11())
             .font_weight(theme::FW_STRONG)
             .text_color(color)
             .child(text.into_owned()),

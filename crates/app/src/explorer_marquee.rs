@@ -128,8 +128,8 @@ impl Explorer {
         let mut hits: Vec<usize> = Vec::new();
         if self.view_mode == ViewMode::Icons {
             let cols = self.grid_cols.max(1);
-            let top = theme::S_4;
-            let left = theme::S_8;
+            let top = theme::s_4();
+            let left = theme::s_8();
             let tile = self.tile();
             let row = |y: Pixels| ((y - top) / tile.h).floor();
             let col = |x: Pixels| ((x - left) / tile.w).floor();
@@ -163,7 +163,7 @@ impl Explorer {
             let (r0, r1) = ((y0 / height).floor().max(0.), (y1 / height).floor());
             // Rows start after the list's side padding and end with the last column (in the
             // column view they span the list); the box has to reach into them.
-            let left = theme::S_8;
+            let left = theme::s_8();
             let overlaps = x1 >= left && self.cols.is_none_or(|c| x0 <= left + c.row);
             if overlaps && r1 >= r0 {
                 // Grouped rows include headers: map to items and skip the headers.
@@ -276,7 +276,7 @@ impl Explorer {
                     .top(y0)
                     .w(w)
                     .h(h)
-                    .rounded(theme::R_4)
+                    .rounded(theme::r_4())
                     .bg(theme::signal_wash())
                     .border_1()
                     .border_color(theme::signal_line())

@@ -59,6 +59,11 @@ const MIN_HEIGHT: f32 = 440.;
 /// From this width on the cards sit in two columns, below it in one.
 const TWO_COLUMNS_FROM: f32 = 680.;
 const SCREEN_MARGIN: f32 = 72.;
+
+/// One of the sizes above at the interface scale.
+fn sc(base: f32) -> f32 {
+    f32::from(theme::scaled_px(base))
+}
 /// Longest wait between two updates of a folder size that is still being counted.
 const PROGRESS_EVERY: Duration = Duration::from_millis(120);
 /// Width of the labels in the rows.
@@ -237,7 +242,7 @@ pub(crate) fn open(
                 ..Default::default()
             }),
             focus: true,
-            window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
+            window_min_size: Some(size(px(sc(MIN_WIDTH)), px(sc(MIN_HEIGHT)))),
             window_background: if theme::mica() {
                 gpui::WindowBackgroundAppearance::MicaBackdrop
             } else {
@@ -262,11 +267,11 @@ pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
         .read(cx)
         .settings
         .properties_window;
-    let height = saved.and_then(|p| p.height).unwrap_or(START_HEIGHT);
+    let height = saved.and_then(|p| p.height).unwrap_or(sc(START_HEIGHT));
     // A width saved by the old, narrow window would only give a single column: start afresh.
     let width = saved
-        .filter(|p| p.width >= MIN_WIDTH)
-        .map_or(WIDTH, |p| p.width.min(1200.));
+        .filter(|p| p.width >= sc(MIN_WIDTH))
+        .map_or(sc(WIDTH), |p| p.width.min(sc(1200.)));
     let fresh = Bounds::centered(None, size(px(width), px(height)), cx);
     let Some(place) = saved else {
         return fresh;
@@ -438,7 +443,7 @@ impl Properties {
         let screen = window.display(cx).or_else(|| cx.primary_display());
         let area = screen.as_ref().map(|d| d.visible_bounds());
         let room = area.map_or(1000., |a| f32::from(a.size.height)) - SCREEN_MARGIN;
-        let want = self.estimate.get().clamp(MIN_HEIGHT, room.max(MIN_HEIGHT));
+        let want = self.estimate.get().clamp(sc(MIN_HEIGHT), room.max(sc(MIN_HEIGHT)));
         if (want - self.fit_height).abs() <= 6. {
             return;
         }
@@ -1555,16 +1560,16 @@ fn field(label: String, value: AnyElement, height: f32) -> CardRow {
     CardRow {
         element: div()
             .min_h(px(ROW_H))
-            .px(theme::S_16)
-            .py(theme::S_8)
+            .px(theme::s_16())
+            .py(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .child(
                 div()
                     .w(LABEL_W)
                     .flex_none()
-                    .text_size(theme::FS_13)
+                    .text_size(theme::fs_13())
                     .text_color(theme::text_muted())
                     .child(label),
             )
@@ -1579,8 +1584,8 @@ fn wide(element: AnyElement, height: f32) -> CardRow {
     CardRow {
         element: div()
             .min_h(px(ROW_H))
-            .px(theme::S_16)
-            .py(theme::S_8)
+            .px(theme::s_16())
+            .py(theme::s_8())
             .flex()
             .items_center()
             .child(element)
@@ -1594,7 +1599,7 @@ fn text_value(id: &'static str, text: impl Into<SharedString>) -> AnyElement {
         .id(id)
         .debug_selector(move || id.to_owned())
         .min_w_0()
-        .text_size(theme::FS_13)
+        .text_size(theme::fs_13())
         .text_color(theme::text())
         .child(text.into())
         .into_any_element()
@@ -1606,9 +1611,9 @@ fn problem_text(id: &'static str, text: &str) -> CardRow {
             .id(id)
             .debug_selector(move || id.to_owned())
             .a11y_live(gpui::Role::Alert, text.to_owned())
-            .px(theme::S_16)
-            .py(theme::S_8)
-            .text_size(theme::FS_12)
+            .px(theme::s_16())
+            .py(theme::s_8())
+            .text_size(theme::fs_12())
             .text_color(theme::danger())
             .child(text.to_owned())
             .into_any_element(),
@@ -1625,22 +1630,22 @@ fn card(icon: Icon, title: String, rows: Vec<CardRow>) -> (AnyElement, f32) {
         .flex_col()
         .child(
             div()
-                .pt(theme::S_4)
-                .pb(theme::S_8)
-                .px(theme::S_4)
+                .pt(theme::s_4())
+                .pb(theme::s_8())
+                .px(theme::s_4())
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(
                     svg()
                         .path(icon.path())
                         .flex_none()
-                        .size(theme::ICON)
+                        .size(theme::icon())
                         .text_color(theme::text_muted()),
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_13)
+                        .text_size(theme::fs_13())
                         .font_weight(theme::FW_STRONG)
                         .text_color(theme::text_muted())
                         .child(title),
@@ -1650,7 +1655,7 @@ fn card(icon: Icon, title: String, rows: Vec<CardRow>) -> (AnyElement, f32) {
             div()
                 .flex()
                 .flex_col()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .bg(theme::card())
                 .border_1()
                 .border_color(theme::line())
@@ -1676,16 +1681,16 @@ fn button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line_strong())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text())
         .hover(|s| s.bg(theme::wash()))
         .child(label)
@@ -1705,18 +1710,18 @@ fn action(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_8)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_8())
         .flex()
         .flex_none()
         .items_center()
-        .gap(theme::S_6)
-        .rounded(theme::R_8)
+        .gap(theme::s_6())
+        .rounded(theme::r_8())
         .bg(theme::card())
         .border_1()
         .border_color(theme::line())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text())
         .hover(|s| s.bg(theme::wash()))
         .child(
@@ -1744,7 +1749,7 @@ fn link(
         .a11y_button(text.clone())
         .flex_none()
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::signal())
         .hover(gpui::Styled::underline)
         .child(text)
@@ -1755,12 +1760,12 @@ fn link(
 fn check_box(state: Tri) -> gpui::Div {
     let on = state != Tri::Off;
     div()
-        .size(theme::ICON)
+        .size(theme::icon())
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .border_1()
         .when(on, |d| d.bg(theme::signal()).border_color(theme::signal()))
         .when(!on, |d| {
@@ -1854,7 +1859,7 @@ impl Properties {
             .items_center()
             .justify_center()
             .overflow_hidden()
-            .rounded(theme::R_12)
+            .rounded(theme::r_12())
             .bg(theme::card())
             .border_1()
             .border_color(theme::line())
@@ -1867,11 +1872,11 @@ impl Properties {
                 .debug_selector(|| "props-name".to_owned())
                 .w_full()
                 .min_w_0()
-                .h(theme::H_CTL)
-                .px(theme::S_8)
+                .h(theme::h_ctl())
+                .px(theme::s_8())
                 .flex()
                 .items_center()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .bg(theme::surface())
                 .border_1()
                 .border_color(if self.name_error.is_some() {
@@ -1879,7 +1884,7 @@ impl Properties {
                 } else {
                     theme::line_strong()
                 })
-                .text_size(theme::FS_15)
+                .text_size(theme::fs_15())
                 .child(self.name_input.clone())
                 .into_any_element()
         } else {
@@ -1891,7 +1896,7 @@ impl Properties {
             div()
                 .w_full()
                 .min_w_0()
-                .text_size(theme::FS_20)
+                .text_size(theme::fs_20())
                 .font_weight(theme::FW_STRONG)
                 .text_color(theme::text())
                 .truncate()
@@ -1907,7 +1912,7 @@ impl Properties {
         let element = div()
             .flex()
             .items_start()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .child(thumb)
             .child(
                 div()
@@ -1915,7 +1920,7 @@ impl Properties {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(theme::S_6)
+                    .gap(theme::s_6())
                     .child(title)
                     .when_some(self.name_error.as_ref(), |d, e| {
                         d.child(
@@ -1923,18 +1928,18 @@ impl Properties {
                                 .id("props-name-error")
                                 .debug_selector(|| "props-name-error".to_owned())
                                 .a11y_live(gpui::Role::Alert, e.clone())
-                                .text_size(theme::FS_12)
+                                .text_size(theme::fs_12())
                                 .text_color(theme::danger())
                                 .child(e.clone()),
                         )
                     })
                     .children(lines.into_iter().map(|line| {
                         div()
-                            .text_size(theme::FS_13)
+                            .text_size(theme::fs_13())
                             .text_color(theme::text_muted())
                             .child(line)
                     }))
-                    .children(actions.map(|(a, _)| div().pt(theme::S_4).child(a))),
+                    .children(actions.map(|(a, _)| div().pt(theme::s_4()).child(a))),
             )
             .into_any_element();
         (element, height)
@@ -1944,7 +1949,7 @@ impl Properties {
     fn actions(&self, cx: &mut Context<Self>) -> Option<(AnyElement, f32)> {
         self.loaded.as_ref()?;
         let single = self.single();
-        let mut row = div().flex().flex_wrap().gap(theme::S_8);
+        let mut row = div().flex().flex_wrap().gap(theme::s_8());
         if let Some(item) = single {
             row = row.child(action(
                 "props-act-open",
@@ -2001,7 +2006,7 @@ impl Properties {
             div()
                 .id("props-action-error")
                 .debug_selector(|| "props-action-error".to_owned())
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::danger())
                 .child(e.clone())
         });
@@ -2010,7 +2015,7 @@ impl Properties {
             div()
                 .flex()
                 .flex_col()
-                .gap(theme::S_6)
+                .gap(theme::s_6())
                 .child(row)
                 .children(error)
                 .into_any_element(),
@@ -2031,7 +2036,7 @@ impl Properties {
                     .min_w_0()
                     .truncate()
                     .cursor_pointer()
-                    .text_size(theme::FS_13)
+                    .text_size(theme::fs_13())
                     .text_color(theme::signal())
                     .hover(gpui::Styled::underline)
                     .child(info.value)
@@ -2044,7 +2049,7 @@ impl Properties {
             let value = div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(value)
                 .when(stoppable, |d| {
                     d.child(link(
@@ -2074,7 +2079,7 @@ impl Properties {
                     .debug_selector(|| "props-target".to_owned())
                     .a11y_button(shown.clone())
                     .cursor_pointer()
-                    .text_size(theme::FS_13)
+                    .text_size(theme::fs_13())
                     .text_color(theme::signal())
                     .hover(gpui::Styled::underline)
                     .child(shown)
@@ -2147,7 +2152,7 @@ impl Properties {
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(
                     div()
                         .id("props-app")
@@ -2155,7 +2160,7 @@ impl Properties {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(theme::FS_13)
+                        .text_size(theme::fs_13())
                         .text_color(theme::text())
                         .child(app),
                 )
@@ -2194,7 +2199,7 @@ impl Properties {
                 .a11y_toggle(label.clone(), state == Tri::On)
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -2203,7 +2208,7 @@ impl Properties {
                 .child(check_box(state))
                 .child(
                     div()
-                        .text_size(theme::FS_13)
+                        .text_size(theme::fs_13())
                         .text_color(theme::text())
                         .child(label),
                 )
@@ -2224,7 +2229,7 @@ impl Properties {
             HashState::Running(percent) => div()
                 .flex()
                 .items_center()
-                .gap(theme::S_12)
+                .gap(theme::s_12())
                 .child(text_value("props-hash-progress", format!("{percent}%")))
                 .child(link(
                     "props-hash-cancel",
@@ -2238,14 +2243,14 @@ impl Properties {
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         div()
                             .id("props-hash-value")
                             .debug_selector(|| "props-hash-value".to_owned())
                             .flex_1()
                             .min_w_0()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text())
                             .child(format!("{a}\n{b}")),
                     )
@@ -2292,7 +2297,7 @@ impl Properties {
                     .a11y_toggle(t!("props.apply_inside").to_string(), self.recursive)
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -2304,7 +2309,7 @@ impl Properties {
                     .child(check_box(state))
                     .child(
                         div()
-                            .text_size(theme::FS_13)
+                            .text_size(theme::fs_13())
                             .text_color(theme::text())
                             .child(t!("props.apply_inside").to_string()),
                     )
@@ -2360,15 +2365,15 @@ impl Properties {
         let mut legend = div()
             .flex()
             .flex_wrap()
-            .gap_x(theme::S_16)
-            .gap_y(theme::S_4);
+            .gap_x(theme::s_16())
+            .gap_y(theme::s_4());
         for (category, bytes) in &view.categories {
             legend = legend.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_6)
-                    .text_size(theme::FS_12)
+                    .gap(theme::s_6())
+                    .text_size(theme::fs_12())
                     .child(
                         div()
                             .size(px(8.))
@@ -2387,11 +2392,11 @@ impl Properties {
         let lines = view.categories.len().div_ceil(2).max(1) as f32;
         let mut rows = vec![CardRow {
             element: div()
-                .px(theme::S_16)
-                .py(theme::S_12)
+                .px(theme::s_16())
+                .py(theme::s_12())
                 .flex()
                 .flex_col()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(bar)
                 .child(legend)
                 .into_any_element(),
@@ -2401,17 +2406,17 @@ impl Properties {
         for (name, bytes) in &view.largest {
             rows.push(CardRow {
                 element: div()
-                    .px(theme::S_16)
-                    .py(theme::S_8)
+                    .px(theme::s_16())
+                    .py(theme::s_8())
                     .flex()
                     .flex_col()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(theme::S_8)
-                            .text_size(theme::FS_13)
+                            .gap(theme::s_8())
+                            .text_size(theme::fs_13())
                             .child(
                                 svg()
                                     .path(Icon::Folder.path())
@@ -2468,14 +2473,14 @@ impl Properties {
                     .window_control_area(WindowControlArea::Drag)
                     .flex_1()
                     .h_full()
-                    .px(theme::S_16)
+                    .px(theme::s_16())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         svg()
                             .path(Icon::Info.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .flex_none()
                             .text_color(theme::text_muted()),
                     )
@@ -2483,29 +2488,29 @@ impl Properties {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(theme::FS_13)
+                            .text_size(theme::fs_13())
                             .text_color(theme::text_muted())
                             .child(title),
                     ),
             )
-            .child(div().pr(theme::S_8).child(caption_buttons(window)))
+            .child(div().pr(theme::s_8()).child(caption_buttons(window)))
             .into_any_element()
     }
 
     fn footer(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex_none()
-            .px(theme::S_16)
-            .py(theme::S_12)
+            .px(theme::s_16())
+            .py(theme::s_12())
             .flex()
             .flex_col()
-            .gap(theme::S_6)
+            .gap(theme::s_6())
             .when_some(self.native_error.as_ref(), |d, e| {
                 d.child(
                     div()
                         .id("props-native-error")
                         .debug_selector(|| "props-native-error".to_owned())
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::danger())
                         .child(e.clone()),
                 )
@@ -2538,7 +2543,7 @@ impl Render for Properties {
         reason = "one layout: hero, the two columns of cards, footer"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let columns = f32::from(window.bounds().size.width) >= TWO_COLUMNS_FROM;
+        let columns = f32::from(window.bounds().size.width) >= sc(TWO_COLUMNS_FROM);
         self.columns.set(if columns { 2 } else { 1 });
         let mut estimate = EST_TITLE + EST_FOOTER + 8. + 32.;
         let body = if self.loaded.is_some() {
@@ -2562,7 +2567,7 @@ impl Render for Properties {
                 let element = div()
                     .flex()
                     .flex_col()
-                    .gap(theme::S_12)
+                    .gap(theme::s_12())
                     .children(cards.into_iter().map(|(c, _)| c));
                 (element, height)
             };
@@ -2573,7 +2578,7 @@ impl Render for Properties {
                 div()
                     .flex()
                     .items_start()
-                    .gap(theme::S_16)
+                    .gap(theme::s_16())
                     .child(
                         left.id("props-col-left")
                             .debug_selector(|| "props-col-left".to_owned())
@@ -2594,7 +2599,7 @@ impl Render for Properties {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(theme::S_12)
+                    .gap(theme::s_12())
                     .child(
                         left.id("props-col-left")
                             .debug_selector(|| "props-col-left".to_owned()),
@@ -2604,19 +2609,20 @@ impl Render for Properties {
             div()
                 .flex()
                 .flex_col()
-                .gap(theme::S_12)
+                .gap(theme::s_12())
                 .child(hero)
                 .child(grid)
                 .into_any_element()
         } else {
             estimate += 120.;
             div()
-                .text_size(theme::FS_13)
+                .text_size(theme::fs_13())
                 .text_color(theme::text_muted())
                 .child(t!("props.calculating").to_string())
                 .into_any_element()
         };
-        self.estimate.set(estimate);
+        // Worked out in sizes at 100%.
+        self.estimate.set(sc(estimate));
         self.fit_window(window, cx);
         div()
             .id("properties")
@@ -2628,15 +2634,15 @@ impl Render for Properties {
             .flex_col()
             .bg(theme::frame())
             .ui_font()
-            .text_size(theme::FS_13)
+            .text_size(theme::fs_13())
             .text_color(theme::text())
             .child(self.title_bar(window))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .mx(theme::S_8)
-                    .rounded(theme::R_12)
+                    .mx(theme::s_8())
+                    .rounded(theme::r_12())
                     .bg(theme::paper())
                     .overflow_hidden()
                     .child(
@@ -2644,7 +2650,7 @@ impl Render for Properties {
                             .id("props-scroll")
                             .size_full()
                             .overflow_y_scroll()
-                            .p(theme::S_16)
+                            .p(theme::s_16())
                             .child(body),
                     ),
             )

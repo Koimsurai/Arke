@@ -34,16 +34,26 @@ use crate::workspace::TooltipBelowExt as _;
 /// Share of the title row the search box takes at rest.
 const SEARCH_SHARE: f32 = 0.45;
 /// Narrowest and widest the search box rests at.
-const SEARCH_REST_MIN: Pixels = px(280.);
-const SEARCH_REST_MAX: Pixels = px(600.);
+fn search_rest_min() -> gpui::Pixels {
+    crate::theme::scaled_px(280.)
+}
+fn search_rest_max() -> gpui::Pixels {
+    crate::theme::scaled_px(600.)
+}
 /// A path bar narrower than this shows only "… › current folder" (no trailing ›, little blank
 /// end), so the current folder's name keeps some room.
-const PATH_COMPACT_BELOW: Pixels = px(200.);
+fn path_compact_below() -> gpui::Pixels {
+    crate::theme::scaled_px(200.)
+}
 /// The path bar keeps at least this much of the pane row; the item count and the selection's
 /// actions give way first.
-const PATH_MIN: Pixels = px(160.);
+fn path_min() -> gpui::Pixels {
+    crate::theme::scaled_px(160.)
+}
 /// Widest the filter chip gets (the query is cut off with "…"; its tooltip has all of it).
-const FILTER_CHIP_MAX: Pixels = px(180.);
+fn filter_chip_max() -> gpui::Pixels {
+    crate::theme::scaled_px(180.)
+}
 
 /// Where the title row and the part of it between its buttons were at the last layout. The
 /// window keeps one, since whichever pane is active draws the row.
@@ -112,21 +122,21 @@ impl Explorer {
             return px(0.);
         }
         let normal = gpui::FontWeight::NORMAL;
-        let chip = theme::S_6 * 2.
-            + theme::ICON_SM
-            + theme::S_4
-            + text_width(&self.scope_chip_label(), theme::FS_12, normal, window);
+        let chip = theme::s_6() * 2.
+            + theme::icon_sm()
+            + theme::s_4()
+            + text_width(&self.scope_chip_label(), theme::fs_12(), normal, window);
         // Padding and border, the magnifier, the gaps between the parts, the clear button and room
         // for the caret.
-        theme::S_12
-            + theme::S_4
+        theme::s_12()
+            + theme::s_4()
             + px(2.)
-            + theme::ICON
-            + theme::S_6 * 3.
-            + text_width(text, theme::FS_14, normal, window)
-            + theme::S_20
+            + theme::icon()
+            + theme::s_6() * 3.
+            + text_width(text, theme::fs_14(), normal, window)
+            + theme::s_20()
             + chip
-            + theme::S_8
+            + theme::s_8()
     }
 
     /// The search box's width for `state` (`content`: what its text needs) in the title row as
@@ -139,7 +149,7 @@ impl Explorer {
         window: &Window,
     ) -> Pixels {
         let row = title.row.get().size.width;
-        let rest = (row * SEARCH_SHARE).clamp(SEARCH_REST_MIN, SEARCH_REST_MAX);
+        let rest = (row * SEARCH_SHARE).clamp(search_rest_min(), search_rest_max());
         let target = layout::search_width(title.middle.get().size.width, state, rest, content);
         let now = Instant::now();
         if let Some((last, drawn)) = self.top_row.last
@@ -176,18 +186,18 @@ impl Explorer {
         );
         let normal = gpui::FontWeight::NORMAL;
         // Padding and border, the magnifier and the gaps around the text, and the scope chip.
-        let chrome = theme::S_12
-            + theme::S_4
+        let chrome = theme::s_12()
+            + theme::s_4()
             + px(2.)
-            + theme::ICON
-            + theme::S_6 * 3.
-            + theme::S_6 * 2.
-            + theme::ICON_SM
-            + theme::S_4
-            + text_width(&self.scope_chip_label(), theme::FS_12, normal, window)
-            + theme::S_8;
+            + theme::icon()
+            + theme::s_6() * 3.
+            + theme::s_6() * 2.
+            + theme::icon_sm()
+            + theme::s_4()
+            + text_width(&self.scope_chip_label(), theme::fs_12(), normal, window)
+            + theme::s_8();
         let short =
-            width > px(0.) && chrome + text_width(&full, theme::FS_14, normal, window) > width;
+            width > px(0.) && chrome + text_width(&full, theme::fs_14(), normal, window) > width;
         let key = (folder, short);
         if self.top_row.placeholder_for.as_ref() == Some(&key) {
             return;
@@ -254,9 +264,9 @@ impl Explorer {
         // The window buttons and the space after them, which the bands above and below the
         // controls leave alone (maximized, the buttons reach up to the screen edge).
         let caption_w = if horizontal {
-            theme::S_8
+            theme::s_8()
         } else {
-            theme::H_CTL * 3. + theme::S_2 * 2. + theme::S_8
+            theme::h_ctl() * 3. + theme::s_2() * 2. + theme::s_8()
         };
         let mut bar = div()
             .id("title-row")
@@ -265,12 +275,12 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .h(theme::H_BAR)
+            .h(theme::h_bar())
             .child(measure(&title.row))
             .children(Self::title_drag_bands(caption_w, cx));
         for (i, control) in controls.into_iter().enumerate() {
             if i > 0 {
-                bar = bar.child(Self::title_drag(("title-gap", i), cx).w(theme::S_2));
+                bar = bar.child(Self::title_drag(("title-gap", i), cx).w(theme::s_2()));
             }
             bar = bar.child(control);
         }
@@ -278,11 +288,11 @@ impl Explorer {
             d.child(
                 Self::title_drag("caption-lead", cx)
                     .debug_selector(|| "caption-lead".to_owned())
-                    .w(theme::S_8),
+                    .w(theme::s_8()),
             )
             .child(super::view::caption_group(window))
         })
-        .child(Self::title_drag("title-end", cx).w(theme::S_8))
+        .child(Self::title_drag("title-end", cx).w(theme::s_8()))
         .into_any_element()
     }
 
@@ -337,7 +347,7 @@ impl Explorer {
     /// Empty title bar above and below the controls (they're shorter than the row), as drag
     /// areas. They stop `right` short of the row's end, where the window buttons sit.
     fn title_drag_bands(right: Pixels, cx: &mut Context<Self>) -> [AnyElement; 2] {
-        let band = (theme::H_BAR - theme::H_CTL) / 2.;
+        let band = (theme::h_bar() - theme::h_ctl()) / 2.;
         [
             Self::title_drag("title-band-top", cx)
                 .absolute()
@@ -371,7 +381,7 @@ impl Explorer {
             .is_some();
         // A narrow path bar (as laid out on the last frame) keeps only the current folder.
         let slot = self.path_slot.get();
-        let compact = slot > px(0.) && slot < PATH_COMPACT_BELOW;
+        let compact = slot > px(0.) && slot < path_compact_below();
         let info = if !self.search_mode && !self.selection.is_empty() {
             self.render_selection_actions(self.compact_bar(), cx)
         } else {
@@ -383,10 +393,10 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_4)
-            .h(theme::H_CTX)
-            .pl(theme::S_8)
-            .pr(theme::S_12)
+            .gap(theme::s_4())
+            .h(theme::h_ctx())
+            .pl(theme::s_8())
+            .pr(theme::s_12())
             .child(super::ghost_button(
                 "up",
                 Icon::ArrowUp,
@@ -398,7 +408,7 @@ impl Explorer {
                 div()
                     .flex()
                     .flex_1()
-                    .min_w(PATH_MIN)
+                    .min_w(path_min())
                     .h_full()
                     .child(self.render_path_slot(compact, window, cx)),
             )
@@ -424,20 +434,20 @@ impl Explorer {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_4)
-                .h(theme::S_24)
-                .max_w(FILTER_CHIP_MAX)
-                .pl(theme::S_6)
-                .pr(theme::S_2)
+                .gap(theme::s_4())
+                .h(theme::s_24())
+                .max_w(filter_chip_max())
+                .pl(theme::s_6())
+                .pr(theme::s_2())
                 .rounded(theme::R_FULL)
                 .bg(theme::signal_wash())
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .cursor_pointer()
                 .tooltip_below(query.clone())
                 .child(
                     svg()
                         .path(Icon::Search.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .flex_none()
                         .text_color(theme::signal()),
                 )
@@ -447,7 +457,7 @@ impl Explorer {
                         .id("filter-chip-clear")
                         .debug_selector(|| "filter-chip-clear".to_owned())
                         .a11y_button(t!("a11y.clear_filter"))
-                        .size(theme::S_20)
+                        .size(theme::s_20())
                         .flex()
                         .flex_none()
                         .items_center()
@@ -457,7 +467,7 @@ impl Explorer {
                         .child(
                             svg()
                                 .path(Icon::Close.path())
-                                .size(theme::ICON_SM)
+                                .size(theme::icon_sm())
                                 .text_color(theme::text_muted()),
                         )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -537,7 +547,7 @@ impl Explorer {
     ) {
         let text = self.filter_input.read(cx).text().to_owned();
         let left = self.top_row.summary_text.get().left();
-        let offset = text_offset(&text, at.x - left, theme::FS_14, window);
+        let offset = text_offset(&text, at.x - left, theme::fs_14(), window);
         self.panel_dismissed = false;
         self.filter_input.update(cx, |input, cx| {
             input.select_range(offset..offset, cx);

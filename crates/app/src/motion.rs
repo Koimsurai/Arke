@@ -152,9 +152,9 @@ pub(crate) fn fade_in<E: Styled>(el: E, t: f32) -> E {
 pub(crate) fn corner_card(card: impl IntoElement) -> AnyElement {
     gpui::div()
         .absolute()
-        .bottom(crate::theme::S_16)
-        .right(crate::theme::S_16)
-        .w(px(360.))
+        .bottom(crate::theme::s_16())
+        .right(crate::theme::s_16())
+        .w(crate::theme::scaled_px(360.))
         .child(card)
         .into_any_element()
 }

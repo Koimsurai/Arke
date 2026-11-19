@@ -95,6 +95,6 @@ pub(crate) fn slider(
             });
         },
     )
-    .h(px(24.))
+    .h(crate::theme::scaled_px(24.))
     .cursor_pointer()
 }

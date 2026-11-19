@@ -50,7 +50,7 @@ const BUTTON: f32 = 36.;
 
 /// Height of `n` buttons stacked with their gaps.
 fn buttons_h(n: f32) -> gpui::Pixels {
-    px(BUTTON) * n + theme::S_2 * (n - 1.).max(0.)
+    px(BUTTON) * n + theme::s_2() * (n - 1.).max(0.)
 }
 /// How long the pointer rests on the column before the full sidebar opens over the content (short
 /// enough to feel immediate, long enough that crossing the column to the window edge doesn't).
@@ -80,7 +80,7 @@ fn rail_button(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(selected, |d| d.bg(theme::selection()))
         .when(!selected, |d| d.hover(|s| s.bg(theme::wash())))
@@ -91,7 +91,7 @@ fn rail_button(
 fn icon(icon: Icon, selected: bool) -> AnyElement {
     svg()
         .path(icon.path())
-        .size(theme::ICON)
+        .size(theme::icon())
         .flex_none()
         .text_color(if selected {
             theme::text()
@@ -105,9 +105,9 @@ fn icon(icon: Icon, selected: bool) -> AnyElement {
 fn divider() -> AnyElement {
     div()
         .flex_none()
-        .w(px(24.))
+        .w(crate::theme::scaled_px(24.))
         .h(px(1.))
-        .my(theme::S_4)
+        .my(theme::s_4())
         .bg(theme::line())
         .into_any_element()
 }
@@ -167,12 +167,12 @@ impl Workspace {
             .id("sidebar-toggle")
             .a11y_button(label.clone())
             .aria_keyshortcuts("Ctrl+B")
-            .size(theme::H_CTL)
+            .size(theme::h_ctl())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(icon(Icon::Sidebar, false))
@@ -216,13 +216,13 @@ impl Workspace {
             .id("sidebar-rail")
             .debug_selector(|| "sidebar-rail".to_owned())
             .a11y(gpui::Role::Navigation, t!("a11y.sidebar"))
-            .w(theme::RAIL_W)
+            .w(theme::rail_w())
             .h_full()
             .flex()
             .flex_col()
             .items_center()
-            .gap(theme::S_2)
-            .pb(theme::S_8)
+            .gap(theme::s_2())
+            .pb(theme::s_8())
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.rail_hovered(*hovered, cx)))
             .on_mouse_down(
                 MouseButton::Right,
@@ -235,7 +235,7 @@ impl Workspace {
             .when(!horizontal, |d| {
                 d.child(
                     div()
-                        .h(theme::H_BAR)
+                        .h(theme::h_bar())
                         .flex_none()
                         .flex()
                         .items_center()
@@ -244,7 +244,7 @@ impl Workspace {
             })
             // Back and forward, which the full sidebar has in its title row.
             .when(!horizontal, |d| d.child(self.rail_nav(cx)))
-            .when(horizontal, |d| d.pt(theme::S_4))
+            .when(horizontal, |d| d.pt(theme::s_4()))
             .child(
                 rail_button(
                     "rail-home",
@@ -268,7 +268,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(theme::S_2),
+                    .gap(theme::s_2()),
                 places,
                 &self.sidebar_ui.rail_places_scroll,
                 div().w_full().flex_initial().min_h(buttons_h(2.)),
@@ -280,7 +280,7 @@ impl Workspace {
                     cx,
                 ))
             })
-            .child(div().flex_1().min_h(theme::S_8))
+            .child(div().flex_1().min_h(theme::s_8()))
             .child(Self::rail_settings(settings_open, cx))
     }
 
@@ -321,7 +321,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(theme::S_2),
+                    .gap(theme::s_2()),
                 tabs,
                 scroll,
                 div()
@@ -354,7 +354,7 @@ impl Workspace {
                 let here = current.as_deref() == Some(path.as_path());
                 let tint = crate::assets::tinted(
                     kf_icon,
-                    theme::ICON,
+                    theme::icon(),
                     if here {
                         theme::signal()
                     } else {
@@ -418,7 +418,7 @@ impl Workspace {
             let label = display_name(&path);
             out.push(Self::rail_folder(
                 ("rail-pin", ix),
-                kind_icon(FileKind::Folder, theme::ICON),
+                kind_icon(FileKind::Folder, theme::icon()),
                 &label,
                 path,
                 here,
@@ -466,15 +466,15 @@ impl Workspace {
                     .absolute()
                     .top(px(2.))
                     .right(px(1.))
-                    .min_w(px(14.))
-                    .h(px(14.))
-                    .px(px(3.))
+                    .min_w(crate::theme::scaled_px(14.))
+                    .h(crate::theme::scaled_px(14.))
+                    .px(crate::theme::scaled_px(3.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .rounded(theme::R_FULL)
                     .bg(theme::wash_strong())
-                    .text_size(theme::FS_11)
+                    .text_size(theme::fs_11())
                     .text_color(theme::text_muted())
                     .child(arke_core::format::format_count(held)),
             )
@@ -529,7 +529,7 @@ impl Workspace {
             .map(|(ix, place)| {
                 let here = current.as_deref() == Some(place.path.as_path());
                 let letter = div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(if here {
                         theme::text()
@@ -563,14 +563,14 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .when(enabled, |d| {
                     d.cursor_pointer().hover(|s| s.bg(theme::wash()))
                 })
                 .child(
                     svg()
                         .path(glyph.path())
-                        .size(theme::ICON)
+                        .size(theme::icon())
                         .text_color(if enabled {
                             theme::text_muted()
                         } else {
@@ -584,7 +584,7 @@ impl Workspace {
         div()
             .flex()
             .flex_col()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .child(
                 button(
                     "rail-back",
@@ -619,7 +619,7 @@ impl Workspace {
             Some((title, page_icon)) => (title, icon(page_icon, active)),
             None => (
                 tab.view().read(cx).tab_title().to_string(),
-                kind_icon(FileKind::Folder, theme::ICON),
+                kind_icon(FileKind::Folder, theme::icon()),
             ),
         };
         rail_button(("rail-tab", ix), icon_el, &title, active)
@@ -664,7 +664,7 @@ impl Workspace {
         if !self.rail_peek {
             return;
         }
-        let outside = e.position.x > theme::SIDEBAR_W;
+        let outside = e.position.x > theme::sidebar_full_width();
         if !outside {
             // Cancels a pending close.
             self.rail_hover += 1;
@@ -723,7 +723,7 @@ impl Workspace {
                 .top_0()
                 .left_0()
                 .h_full()
-                .w(theme::SIDEBAR_W)
+                .w(theme::sidebar_full_width())
         };
         if self.rail_peek {
             let body = self.peek_body(cx);
@@ -809,9 +809,9 @@ fn update_dot(cx: &App) -> Option<AnyElement> {
     crate::update::UpdateState::has_news(cx).then(|| {
         div()
             .absolute()
-            .top(px(6.))
-            .right(px(6.))
-            .size(px(7.))
+            .top(crate::theme::scaled_px(6.))
+            .right(crate::theme::scaled_px(6.))
+            .size(crate::theme::scaled_px(7.))
             .rounded(theme::R_FULL)
             .bg(theme::signal())
             .into_any_element()

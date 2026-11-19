@@ -339,9 +339,9 @@ impl Workspace {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(theme::S_2)
-                .px(theme::S_4)
-                .rounded(theme::R_8)
+                .gap(theme::s_2())
+                .px(theme::s_4())
+                .rounded(theme::r_8())
                 .border_1()
                 .border_dashed()
                 .border_color(if hot {
@@ -350,12 +350,12 @@ impl Workspace {
                     theme::signal_line()
                 })
                 .when(hot, |d| d.bg(theme::signal_wash()))
-                .text_size(theme::FS_11)
+                .text_size(theme::fs_11())
                 .text_color(theme::text())
                 .child(
                     svg()
                         .path(Icon::Plus.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(theme::signal()),
                 )
                 .child(
@@ -390,14 +390,14 @@ impl Workspace {
 pub(super) fn insertion_mark(vertical: bool, before: bool) -> AnyElement {
     let bar = div().absolute().rounded(theme::R_FULL).bg(theme::signal());
     let bar = if vertical {
-        let bar = bar.top(theme::S_4).bottom(theme::S_4).w(px(2.));
+        let bar = bar.top(theme::s_4()).bottom(theme::s_4()).w(px(2.));
         if before {
             bar.left(px(-3.))
         } else {
             bar.right(px(-3.))
         }
     } else {
-        let bar = bar.left(theme::S_4).right(theme::S_4).h(px(2.));
+        let bar = bar.left(theme::s_4()).right(theme::s_4()).h(px(2.));
         if before {
             bar.top(px(-2.))
         } else {

@@ -2507,7 +2507,7 @@ impl Explorer {
                 crate::popup::Anchor::Beside {
                     parent: Rc::downgrade(&menu.popups[parent].state),
                     row: Rc::new(move || geometry.upgrade()?.borrow().rows.get(&key).copied()),
-                    pad: theme::S_4,
+                    pad: theme::s_4(),
                 }
             }
         };
@@ -2609,17 +2609,17 @@ impl Explorer {
             .id(("context-menu", level))
             .role(gpui::Role::Menu)
             .occlude()
-            .min_w(px(240.))
-            .max_w(px(420.))
+            .min_w(crate::theme::scaled_px(240.))
+            .max_w(crate::theme::scaled_px(420.))
             .max_h(max_h)
             .overflow_y_scroll()
             .track_scroll(&menu.scroll(level))
-            .py(theme::S_4)
-            .rounded(theme::R_12)
+            .py(theme::s_4())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .relative()
             .child(
@@ -2642,9 +2642,9 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
-            .mx(theme::S_4)
+            .mx(theme::s_4())
             .flex()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .children(items.iter().enumerate().map(|(ix, item)| {
                 let command = item.command;
                 let enabled = item.enabled;
@@ -2653,13 +2653,13 @@ impl Explorer {
                     .debug_selector(move || format!("menu-action-{command:?}"))
                     .a11y_menu_item(item.label.clone(), enabled, false, false)
                     .flex_1()
-                    .py(theme::S_6)
+                    .py(theme::s_6())
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(theme::S_4)
-                    .rounded(theme::R_8)
-                    .text_size(theme::FS_12)
+                    .gap(theme::s_4())
+                    .rounded(theme::r_8())
+                    .text_size(theme::fs_12())
                     .when(enabled, |d| {
                         d.cursor_pointer()
                             .text_color(theme::text_muted())
@@ -2676,7 +2676,7 @@ impl Explorer {
                     .children(item.glyph.map(|glyph| {
                         svg()
                             .path(glyph.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(if enabled {
                                 theme::text()
                             } else {
@@ -2705,12 +2705,12 @@ impl Explorer {
                 t!("menu.pin_command")
             })
             .flex_none()
-            .size(px(22.))
-            .mr(-theme::S_4)
+            .size(crate::theme::scaled_px(22.))
+            .mr(-theme::s_4())
             .flex()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
             .when(!on, |d| d.invisible().group_hover(group.clone(), gpui::Styled::visible))
             .hover(|s| s.bg(theme::wash_strong()))
@@ -2719,7 +2719,7 @@ impl Explorer {
             } else {
                 t!("menu.pin_command")
             }))
-            .child(svg().path(Icon::Pin.path()).size(theme::ICON_SM).text_color(if on {
+            .child(svg().path(Icon::Pin.path()).size(theme::icon_sm()).text_color(if on {
                 theme::signal()
             } else {
                 theme::text_muted()
@@ -2769,8 +2769,8 @@ impl Explorer {
         else {
             return div()
                 .h(px(1.))
-                .my(theme::S_4)
-                .mx(theme::S_8)
+                .my(theme::s_4())
+                .mx(theme::s_8())
                 .bg(theme::line())
                 .into_any_element();
         };
@@ -2794,13 +2794,13 @@ impl Explorer {
             .when_some(shortcut, gpui::StatefulInteractiveElement::aria_keyshortcuts)
             .group(group)
             .relative()
-            .h(theme::H_CTL_SM + theme::S_4)
-            .mx(theme::S_4)
-            .px(theme::S_8)
+            .h(theme::h_ctl_sm() + theme::s_4())
+            .mx(theme::s_4())
+            .px(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .when(submenu, |d| {
                 d.child(
                     canvas(
@@ -2852,8 +2852,8 @@ impl Explorer {
             .children(shortcut.map(|s| {
                 div()
                     .flex_none()
-                    .pl(theme::S_16)
-                    .text_size(theme::FS_12)
+                    .pl(theme::s_16())
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(s)
             }))
@@ -2928,23 +2928,23 @@ impl RowParts {
 /// the space.
 fn row_mark(icon: Option<Arc<RenderImage>>, glyph: Option<Icon>, checked: bool) -> gpui::Div {
     div()
-        .size(theme::ICON)
+        .size(theme::icon())
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .children(icon.map(|image| img(image).size(theme::ICON)))
+        .children(icon.map(|image| img(image).size(theme::icon())))
         .children(glyph.filter(|_| !checked).map(|glyph| {
             svg()
                 .path(glyph.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_muted())
         }))
         .when(checked, |d| {
             d.child(
                 svg()
                     .path(Icon::Check.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .text_color(theme::text_muted()),
             )
         })
@@ -3085,7 +3085,7 @@ fn hide_entries(entries: Vec<MenuEntry>, hidden: &[String]) -> Vec<MenuEntry> {
 fn submenu_chevron(left: bool) -> impl IntoElement {
     svg()
         .path(Icon::ChevronRight.path())
-        .size(theme::ICON)
+        .size(theme::icon())
         .flex_none()
         .text_color(theme::text_subtle())
         .when(left, |svg| {

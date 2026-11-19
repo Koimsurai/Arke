@@ -920,7 +920,7 @@ impl Explorer {
 
     /// Width of the pane's preview frame (the pane minus its padding).
     fn pane_frame_w(&self) -> Pixels {
-        (self.preview_w() - theme::S_16 * 2.).max(px(1.))
+        (self.preview_w() - theme::s_16() * 2.).max(px(1.))
     }
 
     /// Width of the side preview this pane draws into: its own, or the split tab's shared one.
@@ -1072,7 +1072,7 @@ impl Explorer {
                     .w(fit.size.width)
                     .h(fit.size.height)
                     .flex_none()
-                    .rounded(theme::R_4)
+                    .rounded(theme::r_4())
                     .overflow_hidden()
                     .when(raised, |d| d.shadow(theme::elev_float()))
                     .when(!raised, |d| d.border_1().border_color(theme::line()))
@@ -1096,8 +1096,8 @@ impl Explorer {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap_x(theme::S_12)
-            .gap_y(theme::S_6)
+            .gap_x(theme::s_12())
+            .gap_y(theme::s_6())
             .child(
                 // Grows from the name's own width (not `flex_1`'s zero basis), so a name too wide
                 // to sit next to the actions pushes them to the next line.
@@ -1107,18 +1107,18 @@ impl Explorer {
                     .min_w_0()
                     .flex()
                     .items_start()
-                    .gap(theme::S_12)
+                    .gap(theme::s_12())
                     .child(
                         div()
                             .flex_none()
-                            .child(kind_icon(file_kind(&preview.entry), theme::ICON_LG)),
+                            .child(kind_icon(file_kind(&preview.entry), theme::icon_lg())),
                     )
                     .child(
                         div()
                             .debug_selector(|| "pane-name".into())
                             .min_w_0()
                             .font_weight(theme::FW_STRONG)
-                            .text_size(theme::FS_15)
+                            .text_size(theme::fs_15())
                             .child(SharedString::from(
                                 arke_core::tree::leaf(&preview.entry.name).to_owned(),
                             )),
@@ -1141,7 +1141,7 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .child(quiet_button(
                 "pane-open",
                 crate::assets::Icon::External,
@@ -1220,11 +1220,11 @@ impl Explorer {
         div()
             .flex()
             .flex_col()
-            .text_size(theme::FS_12)
-            .gap(theme::S_6)
+            .text_size(theme::fs_12())
+            .gap(theme::s_6())
             .child(
                 div()
-                    .pb(theme::S_2)
+                    .pb(theme::s_2())
                     .text_color(subtle)
                     .child(t!("preview.info").into_owned()),
             )
@@ -1249,7 +1249,7 @@ impl Explorer {
                         Some((short, Some(full))) => d
                             .flex()
                             .flex_wrap()
-                            .gap_x(theme::S_6)
+                            .gap_x(theme::s_6())
                             .child(short)
                             .child(div().text_color(subtle).child(full)),
                     });
@@ -1258,19 +1258,19 @@ impl Explorer {
                 div()
                     .flex()
                     .items_start()
-                    .gap(theme::S_12)
+                    .gap(theme::s_12())
                     .child(
                         div()
-                            .w(DETAIL_LABEL_W)
+                            .w(detail_label_w())
                             .flex_none()
                             .flex()
                             .items_center()
-                            .gap(theme::S_6)
+                            .gap(theme::s_6())
                             .text_color(subtle)
                             .children(icon.map(|icon| {
                                 gpui::svg()
                                     .path(icon.path())
-                                    .size(px(14.))
+                                    .size(crate::theme::scaled_px(14.))
                                     .flex_none()
                                     .text_color(subtle)
                             }))
@@ -1417,7 +1417,7 @@ impl Explorer {
                 .size_full()
                 .aspect_ratio(PANE_IMAGE_RATIO)
                 .object_fit(ObjectFit::Contain)
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .into_any_element(),
             PreviewBody::Pdf(view) => img(Arc::clone(&view.render.image))
                 .size_full()
@@ -1430,7 +1430,7 @@ impl Explorer {
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(scroll)
-                .p(theme::S_12)
+                .p(theme::s_12())
                 .map(theme::preview_sheet)
                 .child(super::markdown_view::markdown(text, false))
                 .into_any_element(),
@@ -1450,13 +1450,13 @@ impl Explorer {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(theme::S_8)
-                .text_size(theme::FS_12)
+                .gap(theme::s_8())
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(
                     gpui::svg()
                         .path(crate::assets::Icon::Cloud.path())
-                        .size(px(32.))
+                        .size(crate::theme::scaled_px(32.))
                         .text_color(theme::text_subtle()),
                 )
                 .child(t!("preview.cloud").to_string())
@@ -1467,11 +1467,14 @@ impl Explorer {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(theme::S_8)
-                .px(theme::S_12)
-                .text_size(theme::FS_12)
+                .gap(theme::s_8())
+                .px(theme::s_12())
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
-                .child(kind_icon(file_kind(&preview.entry), px(32.)))
+                .child(kind_icon(
+                    file_kind(&preview.entry),
+                    crate::theme::scaled_px(32.),
+                ))
                 .child(div().text_center().child(reason.clone()))
                 .into_any_element(),
             PreviewBody::Nothing => div()
@@ -1479,7 +1482,10 @@ impl Explorer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(kind_icon(file_kind(&preview.entry), px(64.)))
+                .child(kind_icon(
+                    file_kind(&preview.entry),
+                    crate::theme::scaled_px(64.),
+                ))
                 .into_any_element(),
         }
     }
@@ -1513,7 +1519,7 @@ impl Explorer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(t!("list.empty").into_owned())
                 .into_any_element();
@@ -1524,15 +1530,15 @@ impl Explorer {
             .map(|(ix, entry)| {
                 let row = div()
                     .id(("preview-row", ix))
-                    .h((theme::S_24 + theme::S_4) * scale)
-                    .px(theme::S_8)
+                    .h((theme::s_24() + theme::s_4()) * scale)
+                    .px(theme::s_8())
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_8)
-                    .rounded(theme::R_8)
+                    .gap(theme::s_8())
+                    .rounded(theme::r_8())
                     .when(entry.is_hidden(), |d| d.text_color(theme::text_subtle()))
-                    .child(kind_icon(file_kind(entry), theme::ICON * scale))
+                    .child(kind_icon(file_kind(entry), theme::icon() * scale))
                     .child(
                         div()
                             .flex_1()
@@ -1568,14 +1574,14 @@ impl Explorer {
             .flex_col()
             .overflow_y_scroll()
             .track_scroll(scroll)
-            .when_some(zoom, |d, zoom| d.text_size(theme::FS_14 * zoom))
+            .when_some(zoom, |d, zoom| d.text_size(theme::fs_14() * zoom))
             .children(rows)
             .when(more > 0, |d| {
                 d.child(
                     div()
-                        .px(theme::S_8 * scale)
-                        .py(theme::S_4 * scale)
-                        .text_size(theme::FS_12 * scale)
+                        .px(theme::s_8() * scale)
+                        .py(theme::s_4() * scale)
+                        .text_size(theme::fs_12() * scale)
                         .text_color(theme::text_subtle())
                         .child(
                             t!(
@@ -1624,13 +1630,13 @@ impl Explorer {
                 };
                 div()
                     .id(("archive-row", ix))
-                    .h((theme::S_24 + theme::S_4) * scale)
-                    .px(theme::S_8)
+                    .h((theme::s_24() + theme::s_4()) * scale)
+                    .px(theme::s_8())
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_8)
-                    .child(kind_icon(kind, theme::ICON * scale))
+                    .gap(theme::s_8())
+                    .child(kind_icon(kind, theme::icon() * scale))
                     .child(
                         div()
                             .flex_1()
@@ -1653,7 +1659,7 @@ impl Explorer {
                         d.child(
                             div()
                                 .flex_none()
-                                .text_size(theme::FS_12 * scale)
+                                .text_size(theme::fs_12() * scale)
                                 .text_color(theme::text_subtle())
                                 .child(format_size(item.size)),
                         )
@@ -1670,14 +1676,14 @@ impl Explorer {
             .flex_col()
             .overflow_y_scroll()
             .track_scroll(scroll)
-            .when_some(zoom, |d, zoom| d.text_size(theme::FS_14 * zoom))
+            .when_some(zoom, |d, zoom| d.text_size(theme::fs_14() * zoom))
             .children(rows)
             .when(more > 0 || !listing.complete, |d| {
                 d.child(
                     div()
-                        .px(theme::S_8 * scale)
-                        .py(theme::S_4 * scale)
-                        .text_size(theme::FS_12 * scale)
+                        .px(theme::s_8() * scale)
+                        .py(theme::s_4() * scale)
+                        .text_size(theme::fs_12() * scale)
                         .text_color(theme::text_subtle())
                         .child(if listing.complete {
                             t!(
@@ -1697,15 +1703,15 @@ impl Explorer {
         div()
             .flex()
             .flex_col()
-            .gap(theme::S_6)
+            .gap(theme::s_6())
             .children(rows.into_iter().map(|(k, v)| {
                 div()
                     .flex()
-                    .gap(theme::S_12)
-                    .text_size(theme::FS_12)
+                    .gap(theme::s_12())
+                    .text_size(theme::fs_12())
                     .child(
                         div()
-                            .w(px(64.))
+                            .w(crate::theme::scaled_px(64.))
                             .flex_none()
                             .text_color(theme::text_subtle())
                             .child(k),
@@ -1738,7 +1744,7 @@ impl Explorer {
             || self.view_column_resized == Some(crate::prefs::ViewColumn::Current))
             && cx.has_active_drag();
         let edge = DraggedPreviewEdge(cx.entity_id());
-        let gap = super::layout::SHARED_GAP;
+        let gap = super::layout::shared_gap();
         div()
             .id("preview-resize")
             .absolute()
@@ -1746,7 +1752,7 @@ impl Explorer {
             .bottom_0()
             // Starts on the border and covers the pane's padding: the list's scrollbar stops at
             // the border, so both stay easy to grab.
-            .when(!in_gap, |d| d.left_0().w(theme::S_8))
+            .when(!in_gap, |d| d.left_0().w(theme::s_8()))
             // The gap lies over the right pane's box: keep the press from reaching that pane,
             // which would make it the active side and hand the preview (and this drag) over.
             .when(in_gap, |d| d.left(-gap).w(gap).occlude())
@@ -1755,8 +1761,8 @@ impl Explorer {
             .child(
                 div()
                     .absolute()
-                    .top(if in_gap { theme::R_12 } else { px(0.) })
-                    .bottom(if in_gap { theme::R_12 } else { px(0.) })
+                    .top(if in_gap { theme::r_12() } else { px(0.) })
+                    .bottom(if in_gap { theme::r_12() } else { px(0.) })
                     .left(if in_gap { gap / 2. - px(1.) } else { px(0.) })
                     .w(px(2.))
                     .when(in_gap, |d| d.rounded(theme::R_FULL))
@@ -1818,7 +1824,7 @@ impl Explorer {
                 super::layout::preview_room(&self.fit_input(self.paper_width, self.screen.0.width))
             }
         };
-        let width = (start + from - e.event.position.x).clamp(super::layout::PREVIEW_MIN, room);
+        let width = (start + from - e.event.position.x).clamp(super::layout::preview_min(), room);
         crate::prefs::set_preview_width(Some(width));
         self.preview_resized = true;
         cx.notify();
@@ -1879,8 +1885,8 @@ impl Explorer {
             .h_full()
             .flex()
             .flex_col()
-            .gap(theme::S_12)
-            .p(theme::S_16)
+            .gap(theme::s_12())
+            .p(theme::s_16())
     }
 
     /// What the side preview shows in `pane` (from [`Self::preview_frame`]): the item, a
@@ -1898,7 +1904,7 @@ impl Explorer {
             return pane
                 .items_center()
                 .justify_center()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(t!("preview.nothing_selected").to_string())
                 .into_any_element();
@@ -1909,14 +1915,14 @@ impl Explorer {
                 .child(
                     div()
                         .font_weight(theme::FW_STRONG)
-                        .text_size(theme::FS_15)
+                        .text_size(theme::fs_15())
                         .child(SharedString::from(
                             arke_core::tree::leaf(&preview.entry.name).to_owned(),
                         )),
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(archive_summary(listing)),
                 )
@@ -1934,11 +1940,11 @@ impl Explorer {
                     div()
                         .flex()
                         .items_start()
-                        .gap(theme::S_8)
+                        .gap(theme::s_8())
                         .child(
                             div()
                                 .flex_none()
-                                .child(kind_icon(FileKind::Folder, px(20.))),
+                                .child(kind_icon(FileKind::Folder, crate::theme::scaled_px(20.))),
                         )
                         .child(
                             // Wraps like a file's name, so a narrow pane shows all of it.
@@ -1946,7 +1952,7 @@ impl Explorer {
                                 .flex_1()
                                 .min_w_0()
                                 .font_weight(theme::FW_STRONG)
-                                .text_size(theme::FS_15)
+                                .text_size(theme::fs_15())
                                 .child(SharedString::from(
                                     arke_core::tree::leaf(&preview.entry.name).to_owned(),
                                 )),
@@ -1954,7 +1960,7 @@ impl Explorer {
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(tn!("info.items", *total).into_owned()),
                 )
@@ -1990,13 +1996,13 @@ impl Explorer {
             frame_w,
             self.pane_frame_h
                 .get()
-                .map_or(frame_h, |h| h.clamp(PANE_FRAME_MIN_H, frame_h)),
+                .map_or(frame_h, |h| h.clamp(pane_frame_min_h(), frame_h)),
         );
         let measured = std::rc::Rc::clone(&self.pane_frame_h);
         let measure = gpui::canvas(
             move |bounds, _, _| measured.set(Some(bounds.size.height)),
             move |bounds, (), window, _| {
-                if bounds.size.height.clamp(PANE_FRAME_MIN_H, frame_h) != shown.height {
+                if bounds.size.height.clamp(pane_frame_min_h(), frame_h) != shown.height {
                     window.refresh();
                 }
             },
@@ -2009,7 +2015,7 @@ impl Explorer {
             div()
                 .relative()
                 .flex_1()
-                .min_h(PANE_FRAME_MIN_H)
+                .min_h(pane_frame_min_h())
                 .max_h(frame_h)
                 .overflow_hidden()
                 .child(measure)
@@ -2091,12 +2097,12 @@ impl Explorer {
             .h(size.height)
             .flex()
             .flex_col()
-            .rounded(theme::R_12)
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
             .overflow_hidden()
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(self.quick_look_header(preview, cx))
@@ -2194,8 +2200,8 @@ impl Explorer {
                     .id("ql-doc-zoom")
                     .debug_selector(|| "ql-doc-zoom".into())
                     .a11y_button(tip.clone())
-                    .h(theme::H_CTL)
-                    .px(theme::S_12)
+                    .h(theme::h_ctl())
+                    .px(theme::s_12())
                     .flex()
                     .items_center()
                     .rounded(theme::R_FULL)
@@ -2218,9 +2224,9 @@ impl Explorer {
         if self.doc_zoom() <= 1. {
             return div()
                 .size_full()
-                .pt(PDF_PAD)
-                .px(PDF_PAD)
-                .pb(PDF_PAD_BOTTOM)
+                .pt(pdf_pad())
+                .px(pdf_pad())
+                .pb(pdf_pad_bottom())
                 .child(Self::pdf_page_view(
                     &view.render,
                     self.look_pdf_area(),
@@ -2239,12 +2245,12 @@ impl Explorer {
             .w(page.width)
             .h(page.height)
             .flex_none()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .overflow_hidden()
             .shadow(theme::elev_float())
             .child(img(Arc::clone(&view.render.image)).size_full());
         // Sized explicitly: centered while narrower than the stage, scrolling sideways when wider.
-        let width = (page.width + PDF_PAD * 2.).max(self.look_area().width);
+        let width = (page.width + pdf_pad() * 2.).max(self.look_area().width);
         let scroller = div()
             .id("ql-pdf-scroll")
             .size_full()
@@ -2255,9 +2261,9 @@ impl Explorer {
                     .w(width)
                     .flex()
                     .justify_center()
-                    .pt(PDF_PAD)
-                    .px(PDF_PAD)
-                    .pb(PDF_PAD_BOTTOM)
+                    .pt(pdf_pad())
+                    .px(pdf_pad())
+                    .pb(pdf_pad_bottom())
                     .child(sheet),
             )
             .into_any_element();
@@ -2316,8 +2322,8 @@ impl Explorer {
                 ))
                 .child(
                     div()
-                        .min_w(px(96.))
-                        .px(theme::S_4)
+                        .min_w(crate::theme::scaled_px(96.))
+                        .px(theme::s_4())
                         .flex()
                         .justify_center()
                         .child(label),
@@ -2361,8 +2367,8 @@ impl Explorer {
                 div()
                     .id("ql-zoom")
                     .a11y_button(tip.clone())
-                    .h(theme::H_CTL)
-                    .px(theme::S_12)
+                    .h(theme::h_ctl())
+                    .px(theme::s_12())
                     .flex()
                     .items_center()
                     .rounded(theme::R_FULL)
@@ -2386,14 +2392,14 @@ impl Explorer {
         let name = SharedString::from(arke_core::tree::leaf(&preview.entry.name).to_owned());
         let is_dir = preview.entry.is_dir_like();
         div()
-            .h(theme::H_BAR)
+            .h(theme::h_bar())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_12)
-            .pl(theme::S_16)
-            .pr(theme::S_8)
-            .child(kind_icon(file_kind(&preview.entry), theme::ICON_LG))
+            .gap(theme::s_12())
+            .pl(theme::s_16())
+            .pr(theme::s_8())
+            .child(kind_icon(file_kind(&preview.entry), theme::icon_lg()))
             .child(
                 div()
                     .flex_1()
@@ -2411,7 +2417,7 @@ impl Explorer {
                     .child(
                         div()
                             .truncate()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle_raised())
                             .child(self.look_meta(preview)),
                     ),
@@ -2421,7 +2427,7 @@ impl Explorer {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .child(open_button(
                         "ql-open",
                         false,
@@ -2459,8 +2465,8 @@ impl Explorer {
                     .child(
                         div()
                             .w(px(1.))
-                            .h(theme::S_16)
-                            .mx(theme::S_4)
+                            .h(theme::s_16())
+                            .mx(theme::s_4())
                             .bg(theme::line()),
                     )
                     .child(super::ghost_button(
@@ -2535,22 +2541,22 @@ impl Explorer {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_4)
+                .gap(theme::s_4())
                 .children(keys.iter().copied().map(key_cap))
-                .child(div().ml(theme::S_2).child(label))
+                .child(div().ml(theme::s_2()).child(label))
         };
         let up = -std::f32::consts::FRAC_PI_2;
         div()
-            .h(theme::H_CTX)
+            .h(theme::h_ctx())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_16)
-            .pl(theme::S_16)
-            .pr(theme::S_8)
-            .text_size(theme::FS_12)
+            .gap(theme::s_16())
+            .pl(theme::s_16())
+            .pr(theme::s_8())
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle_raised())
-            .when(width >= LOOK_HINTS_MIN_W, |d| {
+            .when(width >= look_hints_min_w(), |d| {
                 d.child(hint(&["↑", "↓"], t!("preview.ql_key_move").into_owned()))
                     .when(pages, |d| {
                         d.child(hint(&["←", "→"], t!("preview.ql_key_pages").into_owned()))
@@ -2564,7 +2570,7 @@ impl Explorer {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_2)
+                    .gap(theme::s_2())
                     .child(super::view::ghost_button_turned(
                         "ql-prev-item",
                         crate::assets::Icon::ChevronRight,
@@ -2575,7 +2581,7 @@ impl Explorer {
                     ))
                     .child(
                         div()
-                            .min_w(px(56.))
+                            .min_w(crate::theme::scaled_px(56.))
                             .flex()
                             .justify_center()
                             .text_color(theme::text_muted())
@@ -2640,15 +2646,15 @@ impl Explorer {
 }
 
 /// Quick Look card size for a window: most of it, keeping a margin on every side, and no larger
-/// than [`theme::QL_MAX_W`] × [`theme::QL_MAX_H`] on big screens.
+/// than [`theme::ql_max_w()`] × [`theme::ql_max_h()`] on big screens.
 pub(crate) fn look_card(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let side = |total: Pixels, max: Pixels| {
-        let margin = (total * (1. - LOOK_SHARE) / 2.).max(theme::QL_MARGIN);
+        let margin = (total * (1. - LOOK_SHARE) / 2.).max(theme::ql_margin());
         (total - margin * 2.).min(max).max(px(1.))
     };
     gpui::size(
-        side(viewport.width, theme::QL_MAX_W),
-        side(viewport.height, theme::QL_MAX_H),
+        side(viewport.width, theme::ql_max_w()),
+        side(viewport.height, theme::ql_max_h()),
     )
 }
 
@@ -2657,12 +2663,14 @@ fn look_stage(viewport: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let card = look_card(viewport);
     gpui::size(
         card.width,
-        (card.height - theme::H_BAR - theme::H_CTX - px(2.)).max(px(1.)),
+        (card.height - theme::h_bar() - theme::h_ctx() - px(2.)).max(px(1.)),
     )
 }
 
 /// Width of the label column in the preview pane's Info list (the icon and the longest label).
-const DETAIL_LABEL_W: Pixels = px(96.);
+fn detail_label_w() -> gpui::Pixels {
+    crate::theme::scaled_px(96.)
+}
 
 /// A path that may wrap after each separator: the line breaker doesn't break after a backslash by
 /// itself, so a zero-width space after every one gives it the place to. Spaces inside names become
@@ -2716,12 +2724,12 @@ fn quiet_button(
         .group(id)
         .a11y_button(tip.clone())
         .a11y_disabled(!enabled)
-        .size(theme::H_CTL_SM)
+        .size(theme::h_ctl_sm())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .when(enabled, |d| {
             d.cursor_pointer()
                 .hover(|s| s.bg(theme::wash()))
@@ -2730,7 +2738,7 @@ fn quiet_button(
         .child(
             gpui::svg()
                 .path(icon.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_muted())
                 .when(enabled, |s| {
                     s.group_hover(id, |s| s.text_color(theme::text()))
@@ -2775,24 +2783,24 @@ fn media_loading(entry: &Entry) -> bool {
 fn floating(pill: gpui::Stateful<gpui::Div>, end: bool) -> AnyElement {
     div()
         .absolute()
-        .bottom(theme::S_12)
+        .bottom(theme::s_12())
         .left_0()
         .right_0()
-        .px(theme::S_12)
+        .px(theme::s_12())
         .flex()
         .when(end, gpui::Styled::justify_end)
         .when(!end, gpui::Styled::justify_center)
         .child(
             pill.occlude()
-                .h(theme::H_CTL + theme::S_4)
-                .p(theme::S_2)
+                .h(theme::h_ctl() + theme::s_4())
+                .p(theme::s_2())
                 .flex()
                 .items_center()
-                .gap(theme::S_2)
+                .gap(theme::s_2())
                 .rounded(theme::R_FULL)
                 .bg(theme::overlay())
                 .shadow(theme::elev_float())
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted()),
         )
         .into_any_element()
@@ -2811,17 +2819,25 @@ fn open_button(
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
         .h(if primary {
-            theme::H_CTL
+            theme::h_ctl()
         } else {
-            theme::H_CTL_SM
+            theme::h_ctl_sm()
         })
-        .px(if primary { theme::S_16 } else { theme::S_12 })
+        .px(if primary {
+            theme::s_16()
+        } else {
+            theme::s_12()
+        })
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
-        .text_size(if primary { theme::FS_14 } else { theme::FS_12 })
+        .text_size(if primary {
+            theme::fs_14()
+        } else {
+            theme::fs_12()
+        })
         .when(primary, |d| {
             d.bg(theme::signal())
                 .text_color(theme::on_signal())
@@ -2845,48 +2861,54 @@ fn look_empty(icon: AnyElement, detail: Option<SharedString>, open: AnyElement) 
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(theme::S_8)
-        .px(theme::S_24)
-        .child(div().mb(theme::S_8).child(icon))
+        .gap(theme::s_8())
+        .px(theme::s_24())
+        .child(div().mb(theme::s_8()).child(icon))
         .child(
             div()
-                .text_size(theme::FS_15)
+                .text_size(theme::fs_15())
                 .font_weight(theme::FW_STRONG)
                 .child(t!("preview.no_preview").into_owned()),
         )
         .children(detail.map(|detail| {
             div()
-                .max_w(theme::TOOLTIP_MAX_W)
+                .max_w(theme::tooltip_max_w())
                 .text_center()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle_raised())
                 .child(detail)
         }))
-        .child(div().mt(theme::S_12).child(open))
+        .child(div().mt(theme::s_12()).child(open))
         .into_any_element()
 }
 
 /// A key in Quick Look's hints, like the toolbar's shortcut badges but legible on the card.
 fn key_cap(key: &'static str) -> impl IntoElement {
     div()
-        .min_w(theme::S_16)
-        .px(theme::S_4)
+        .min_w(theme::s_16())
+        .px(theme::s_4())
         .flex()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .border_1()
         .border_color(theme::line_strong())
-        .text_size(theme::FS_11)
+        .text_size(theme::fs_11())
         .child(key)
 }
 
 /// Smallest card width that still shows the key hints next to the position.
-const LOOK_HINTS_MIN_W: Pixels = px(640.);
+fn look_hints_min_w() -> gpui::Pixels {
+    crate::theme::scaled_px(640.)
+}
 /// Share of the window Quick Look takes (before the margin and size caps).
 const LOOK_SHARE: f32 = 0.88;
 /// Room around a PDF page on the stage; below it the floating page control sits clear of the page.
-const PDF_PAD: Pixels = theme::S_24;
-const PDF_PAD_BOTTOM: Pixels = px(56.);
+fn pdf_pad() -> gpui::Pixels {
+    theme::s_24()
+}
+fn pdf_pad_bottom() -> gpui::Pixels {
+    crate::theme::scaled_px(56.)
+}
 
 /// Quick Look zoom: fit to window by default; the wheel zooms around the pointer, a click toggles
 /// actual size (one image pixel per screen pixel), and a drag pans. Everything else (text,
@@ -2947,7 +2969,9 @@ pub(crate) struct DraggedPreviewEdge(pub(super) gpui::EntityId);
 const PDF_FRAME_RATIO: f32 = 1.3;
 /// The least height the side preview's frame keeps when the window is short (it gives up the rest
 /// so the name and details stay on screen).
-const PANE_FRAME_MIN_H: Pixels = px(96.);
+fn pane_frame_min_h() -> gpui::Pixels {
+    crate::theme::scaled_px(96.)
+}
 /// Long side of the high-res image for "actual size" (4096² × 4 ≈ 64 MB)
 const ZOOM_SIDE: u32 = 4096;
 /// Zoom change per wheel notch
@@ -3177,8 +3201,8 @@ impl Explorer {
     fn look_page_area(&self) -> gpui::Size<Pixels> {
         let stage = self.look_area();
         gpui::size(
-            (stage.width - PDF_PAD * 2.).max(px(1.)),
-            (stage.height - PDF_PAD - PDF_PAD_BOTTOM).max(px(1.)),
+            (stage.width - pdf_pad() * 2.).max(px(1.)),
+            (stage.height - pdf_pad() - pdf_pad_bottom()).max(px(1.)),
         )
     }
 
@@ -3309,7 +3333,7 @@ impl Explorer {
                 return false;
             }
         }
-        let line = px(20.);
+        let line = crate::theme::scaled_px(20.);
         self.zoom.wheel += delta.y / (line * 3.);
         if self.zoom.wheel.abs() < 1. {
             return true;
@@ -3352,7 +3376,7 @@ impl Explorer {
                     if phase != DispatchPhase::Capture || !bounds.contains(&e.position) {
                         return;
                     }
-                    let line = px(20.);
+                    let line = crate::theme::scaled_px(20.);
                     let delta = e.delta.pixel_delta(line);
                     let scale = window.scale_factor();
                     let used = this.update(cx, |this, cx| {
@@ -3427,16 +3451,16 @@ impl Explorer {
                     .items_center()
                     .overflow_y_scroll()
                     .track_scroll(&self.look_scroll)
-                    .p(theme::S_24)
+                    .p(theme::s_24())
                     .child(
                         div()
                             .w_full()
                             // Zoomed text keeps as many words per line, up to the stage's width.
-                            .max_w(theme::READ_W * zoom)
-                            .px(theme::S_32)
-                            .py(theme::S_24)
+                            .max_w(theme::read_w() * zoom)
+                            .px(theme::s_32())
+                            .py(theme::s_24())
                             .map(theme::preview_sheet)
-                            .rounded(theme::R_12)
+                            .rounded(theme::r_12())
                             .child(super::markdown_view::markdown_at(text, true, zoom)),
                     )
                     .into_any_element();
@@ -3448,7 +3472,7 @@ impl Explorer {
                     detail = format!("{detail} · {}", format_size(preview.entry.size));
                 }
                 return look_empty(
-                    kind_icon(kind, theme::ICON_HERO),
+                    kind_icon(kind, theme::icon_hero()),
                     Some(detail.into()),
                     open(),
                 );
@@ -3457,7 +3481,7 @@ impl Explorer {
                 return look_empty(
                     gpui::svg()
                         .path(crate::assets::Icon::Cloud.path())
-                        .size(theme::ICON_HERO / 2.)
+                        .size(theme::icon_hero() / 2.)
                         .text_color(theme::text_subtle())
                         .into_any_element(),
                     Some(t!("preview.cloud").into_owned().into()),
@@ -3466,7 +3490,7 @@ impl Explorer {
             }
             PreviewBody::Unreadable(reason) => {
                 return look_empty(
-                    kind_icon(kind, theme::ICON_HERO),
+                    kind_icon(kind, theme::icon_hero()),
                     Some(reason.clone()),
                     open(),
                 );
@@ -3481,7 +3505,7 @@ impl Explorer {
             PreviewBody::Workbook(view) => {
                 return div()
                     .size_full()
-                    .p(theme::S_8)
+                    .p(theme::s_8())
                     .child(self.workbook_look(view, cx))
                     .into_any_element();
             }
@@ -3491,7 +3515,7 @@ impl Explorer {
             PreviewBody::Loading(since) if media_loading(&preview.entry) => {
                 return div()
                     .size_full()
-                    .p(theme::S_8)
+                    .p(theme::s_8())
                     .child(media_placeholder(*since, &preview.entry))
                     .into_any_element();
             }
@@ -3517,7 +3541,7 @@ impl Explorer {
                 };
                 return div()
                     .size_full()
-                    .p(theme::S_8)
+                    .p(theme::s_8())
                     .child(body)
                     .into_any_element();
             }
@@ -3585,7 +3609,7 @@ impl Explorer {
                         return;
                     };
                     let moved = e.position - start;
-                    if moved.x.abs() < px(4.) && moved.y.abs() < px(4.) {
+                    if moved.x.abs() < crate::theme::scaled_px(4.) && moved.y.abs() < crate::theme::scaled_px(4.) {
                         this.toggle_zoom(e.position, window.scale_factor(), cx);
                     }
                     cx.stop_propagation();
@@ -3595,7 +3619,7 @@ impl Explorer {
             // three lines by default, so three lines (or the same distance in touchpad pixels)
             // make one zoom step.
             .on_scroll(cx.listener(|this, e: &ScrollEvent, window, cx| {
-                let line = px(20.);
+                let line = crate::theme::scaled_px(20.);
                 let notches = e.delta.pixel_delta(line).y / (line * 3.);
                 this.wheel_zoom(e.position, notches, window.scale_factor(), cx);
                 cx.stop_propagation();
@@ -3626,14 +3650,14 @@ impl Explorer {
         let count = self.selection.len();
         let subtle = |text: String| {
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(text)
         };
         let pane = pane.child(
             div()
                 .font_weight(theme::FW_STRONG)
-                .text_size(theme::FS_15)
+                .text_size(theme::fs_15())
                 .child(tn!("preview.selected", count).into_owned()),
         );
         // The list on screen, so items in expanded tree folders count too.
@@ -3682,16 +3706,16 @@ impl Explorer {
             .child(Self::details_grid(rows))
             .child(
                 div()
-                    .mt(theme::S_8)
+                    .mt(theme::s_8())
                     .child(subtle(t!("preview.by_type").into_owned())),
             )
             .children(kinds.iter().take(KINDS_SHOWN).map(|(label, kind, n)| {
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
-                    .text_size(theme::FS_12)
-                    .child(kind_icon(*kind, theme::ICON))
+                    .gap(theme::s_8())
+                    .text_size(theme::fs_12())
+                    .child(kind_icon(*kind, theme::icon()))
                     .child(div().flex_1().min_w_0().truncate().child(label.clone()))
                     .child(
                         div()
@@ -3791,15 +3815,31 @@ mod zoom_tests {
 
     #[test]
     fn fit_and_clamp() {
-        let view = Bounds::new(point(px(10.), px(20.)), gpui::size(px(400.), px(300.)));
+        let view = Bounds::new(
+            point(crate::theme::scaled_px(10.), crate::theme::scaled_px(20.)),
+            gpui::size(crate::theme::scaled_px(400.), crate::theme::scaled_px(300.)),
+        );
         // Wide image: fills the width with space above and below.
         let fit = fit_rect(view, 800, 200);
-        assert_eq!(fit.size, gpui::size(px(400.), px(100.)));
-        assert_eq!(fit.origin, point(px(10.), px(120.)));
+        assert_eq!(
+            fit.size,
+            gpui::size(crate::theme::scaled_px(400.), crate::theme::scaled_px(100.))
+        );
+        assert_eq!(
+            fit.origin,
+            point(crate::theme::scaled_px(10.), crate::theme::scaled_px(120.))
+        );
         // Larger than the view: can't drag past the edges. Smaller: centered.
-        let content = gpui::size(px(1000.), px(200.));
-        let p = clamp_pan(point(px(50.), px(-80.)), content, view.size);
-        assert_eq!(p, point(px(0.), px(50.)));
+        let content = gpui::size(
+            crate::theme::scaled_px(1000.),
+            crate::theme::scaled_px(200.),
+        );
+        let p = clamp_pan(
+            point(crate::theme::scaled_px(50.), px(-80.)),
+            content,
+            view.size,
+        );
+        assert_eq!(p, point(px(0.), crate::theme::scaled_px(50.)));
         let p = clamp_pan(point(px(-900.), px(0.)), content, view.size);
         assert_eq!(p.x, px(-600.));
     }
@@ -3807,15 +3847,21 @@ mod zoom_tests {
     /// Fit mode shrinks large images but leaves small ones at actual size, centered.
     #[test]
     fn small_images_are_not_enlarged() {
-        let view = Bounds::new(point(px(10.), px(20.)), gpui::size(px(400.), px(300.)));
+        let view = Bounds::new(
+            point(crate::theme::scaled_px(10.), crate::theme::scaled_px(20.)),
+            gpui::size(crate::theme::scaled_px(400.), crate::theme::scaled_px(300.)),
+        );
         // 64 × 48 at 100 %: drawn 64 × 48 in the middle, not stretched to 400 × 300.
         let shown = shown_rect(view, 64, 48, 1.);
-        assert_eq!(shown.size, gpui::size(px(64.), px(48.)));
+        assert_eq!(
+            shown.size,
+            gpui::size(crate::theme::scaled_px(64.), crate::theme::scaled_px(48.))
+        );
         assert_eq!(shown.origin, point(px(10. + 168.), px(20. + 126.)));
         // At 200 % scaling its actual size is half that in logical pixels.
         assert_eq!(
             shown_rect(view, 64, 48, 2.).size,
-            gpui::size(px(32.), px(24.))
+            gpui::size(crate::theme::scaled_px(32.), crate::theme::scaled_px(24.))
         );
         // Larger than the view: same as fit.
         assert_eq!(shown_rect(view, 800, 200, 1.), fit_rect(view, 800, 200));
@@ -3825,22 +3871,46 @@ mod zoom_tests {
     /// big screens; the stage is what's left under the title bar and above the bottom bar.
     #[test]
     fn quick_look_card_follows_the_window() {
-        let card = look_card(gpui::size(px(1280.), px(800.)));
-        assert!(card.width > px(1100.) && card.width <= px(1280.) - theme::QL_MARGIN * 2.);
-        assert!(card.height > px(680.) && card.height <= px(800.) - theme::QL_MARGIN * 2.);
-        let small = look_card(gpui::size(px(300.), px(300.)));
-        assert_eq!(small, gpui::size(px(252.), px(252.)));
-        let huge = look_card(gpui::size(px(3840.), px(2160.)));
-        assert_eq!(huge, gpui::size(theme::QL_MAX_W, theme::QL_MAX_H));
-        let stage = look_stage(gpui::size(px(3840.), px(2160.)));
+        let card = look_card(gpui::size(
+            crate::theme::scaled_px(1280.),
+            crate::theme::scaled_px(800.),
+        ));
+        assert!(
+            card.width > crate::theme::scaled_px(1100.)
+                && card.width <= crate::theme::scaled_px(1280.) - theme::ql_margin() * 2.
+        );
+        assert!(
+            card.height > crate::theme::scaled_px(680.)
+                && card.height <= crate::theme::scaled_px(800.) - theme::ql_margin() * 2.
+        );
+        let small = look_card(gpui::size(
+            crate::theme::scaled_px(300.),
+            crate::theme::scaled_px(300.),
+        ));
+        assert_eq!(
+            small,
+            gpui::size(crate::theme::scaled_px(252.), crate::theme::scaled_px(252.))
+        );
+        let huge = look_card(gpui::size(
+            crate::theme::scaled_px(3840.),
+            crate::theme::scaled_px(2160.),
+        ));
+        assert_eq!(huge, gpui::size(theme::ql_max_w(), theme::ql_max_h()));
+        let stage = look_stage(gpui::size(
+            crate::theme::scaled_px(3840.),
+            crate::theme::scaled_px(2160.),
+        ));
         assert_eq!(
             stage.height,
-            theme::QL_MAX_H - theme::H_BAR - theme::H_CTX - px(2.)
+            theme::ql_max_h() - theme::h_bar() - theme::h_ctx() - px(2.)
         );
         // The stage takes the card's whole width.
-        assert_eq!(stage.width, theme::QL_MAX_W);
+        assert_eq!(stage.width, theme::ql_max_w());
         // A window too small for a card still gets a positive size.
-        let tiny = look_stage(gpui::size(px(10.), px(10.)));
+        let tiny = look_stage(gpui::size(
+            crate::theme::scaled_px(10.),
+            crate::theme::scaled_px(10.),
+        ));
         assert!(tiny.width > px(0.) && tiny.height > px(0.));
     }
 }
@@ -3890,22 +3960,22 @@ fn code_view_at(
                     .flex()
                     .child(
                         number
-                            .w(numbers + theme::S_16 + theme::S_12)
-                            .pl(theme::S_16)
-                            .pr(theme::S_12)
+                            .w(numbers + theme::s_16() + theme::s_12())
+                            .pl(theme::s_16())
+                            .pr(theme::s_12())
                             .border_r_1()
                             .border_color(theme::line()),
                     )
                     .child(
-                        text.pl(theme::S_16)
-                            .pr(theme::S_24)
+                        text.pl(theme::s_16())
+                            .pr(theme::s_24())
                             .text_color(theme::text()),
                     )
                     .into_any_element()
             } else {
                 div()
                     .flex()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(number.w(numbers))
                     .child(text.text_color(theme::text_muted()))
                     .into_any_element()
@@ -3919,14 +3989,14 @@ fn code_view_at(
         .track_scroll(scroll)
         .font_family("Cascadia Mono")
         .when(large, |d| {
-            d.py(theme::S_12)
-                .text_size(theme::FS_13 * zoom)
+            d.py(theme::s_12())
+                .text_size(theme::fs_13() * zoom)
                 .line_height(gpui::relative(1.6))
         })
         .when(!large, |d| {
-            d.p(theme::S_8)
+            d.p(theme::s_8())
                 .map(theme::preview_sheet)
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
         })
         .children(rows)
         .into_any_element()
@@ -4068,25 +4138,25 @@ fn loading_skeleton(since: std::time::Instant) -> AnyElement {
         .size_full()
         .flex()
         .flex_col()
-        .gap(theme::S_12)
-        .p(theme::S_8)
+        .gap(theme::s_12())
+        .p(theme::s_8())
         .children(WIDTHS.iter().map(|w| {
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(
                     div()
-                        .size(px(14.))
+                        .size(crate::theme::scaled_px(14.))
                         .flex_none()
-                        .rounded(theme::R_4)
+                        .rounded(theme::r_4())
                         .bg(theme::wash_strong()),
                 )
                 .child(
                     div()
-                        .h(px(10.))
+                        .h(crate::theme::scaled_px(10.))
                         .w(gpui::relative(*w))
-                        .rounded(theme::R_4)
+                        .rounded(theme::r_4())
                         .bg(theme::wash_strong()),
                 )
         }));
@@ -4112,7 +4182,7 @@ fn media_placeholder(since: std::time::Instant, entry: &Entry) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line())
         .bg(theme::wash())
@@ -4121,7 +4191,7 @@ fn media_placeholder(since: std::time::Instant, entry: &Entry) -> AnyElement {
                 .id("media-placeholder-icon")
                 .debug_selector(|| "media-placeholder-icon".into())
                 .opacity(0.45)
-                .child(kind_icon(kind, px(40.))),
+                .child(kind_icon(kind, crate::theme::scaled_px(40.))),
         );
     pulsing(frame, "media-placeholder-pulse")
 }

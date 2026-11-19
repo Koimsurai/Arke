@@ -405,11 +405,11 @@ impl Explorer {
                 .id("filter-clear-all")
                 .a11y_button(t!("filter.clear_all"))
                 .when(at, gpui::StatefulInteractiveElement::aria_active_descendant)
-                .h(theme::S_24)
-                .px(theme::S_8)
+                .h(theme::s_24())
+                .px(theme::s_8())
                 .flex()
                 .items_center()
-                .rounded(theme::R_4)
+                .rounded(theme::r_4())
                 .border_1()
                 .border_color(if at {
                     theme::signal_line()
@@ -417,7 +417,7 @@ impl Explorer {
                     theme::clear()
                 })
                 .cursor_pointer()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted())
                 .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
                 .child(t!("filter.clear_all").into_owned())
@@ -433,7 +433,7 @@ impl Explorer {
         div()
             .flex()
             .flex_col()
-            .gap(theme::S_8)
+            .gap(theme::s_8())
             .child(super::scope::panel_heading(t!("filter.section"), clear))
             .child(
                 div()
@@ -441,7 +441,7 @@ impl Explorer {
                     .a11y(gpui::Role::Group, t!("filter.section"))
                     .flex()
                     .flex_wrap()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .children(buttons),
             )
             .child(self.contents_row(cursor == Some(PanelItem::Contents), cx))
@@ -466,17 +466,17 @@ impl Explorer {
                     Facet::Date | Facet::Content => "filter-date-clear",
                 })
                 .a11y_button(label)
-                .size(theme::S_24)
+                .size(theme::s_24())
                 .flex()
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_4)
+                .rounded(theme::r_4())
                 .hover(|s| s.bg(theme::wash_strong()))
                 .child(
                     svg()
                         .path(Icon::Close.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(theme::text_muted()),
                 )
                 .tooltip(crate::workspace::tooltip(t!("filter.remove")))
@@ -495,16 +495,16 @@ impl Explorer {
             )
             .relative()
             .flex_none()
-            .h(theme::H_CTL_MD)
-            .pl(theme::S_12)
-            .pr(if set { theme::S_2 } else { theme::S_8 })
+            .h(theme::h_ctl_md())
+            .pl(theme::s_12())
+            .pr(if set { theme::s_2() } else { theme::s_8() })
             .flex()
             .items_center()
-            .gap(theme::S_6)
-            .rounded(theme::R_8)
+            .gap(theme::s_6())
+            .rounded(theme::r_8())
             .border_1()
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text())
             .whitespace_nowrap()
             .border_color(if at {
@@ -532,7 +532,7 @@ impl Explorer {
                 d.child(
                     div()
                         .min_w_0()
-                        .max_w(theme::FILTER_VALUE_MAX_W)
+                        .max_w(theme::filter_value_max_w())
                         .truncate()
                         .font_weight(theme::FW_STRONG)
                         .child(v),
@@ -568,15 +568,15 @@ impl Explorer {
                 gpui::StatefulInteractiveElement::aria_active_descendant,
             )
             .flex_none()
-            .h(theme::H_CTL_MD)
-            .pl(theme::S_8)
-            .pr(theme::S_16)
+            .h(theme::h_ctl_md())
+            .pl(theme::s_8())
+            .pr(theme::s_16())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_4)
+            .gap(theme::s_8())
+            .rounded(theme::r_4())
             .cursor_pointer()
-            .text_size(theme::FS_13)
+            .text_size(theme::fs_13())
             .text_color(theme::text())
             .whitespace_nowrap()
             .hover(|s| s.bg(theme::wash()))
@@ -585,7 +585,7 @@ impl Explorer {
                 svg()
                     .path(Icon::Check.path())
                     .flex_none()
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .text_color(if choice.selected {
                         theme::signal()
                     } else {
@@ -616,10 +616,10 @@ impl Explorer {
             let (panel, button) = (g.panel?, g.buttons[facet_slot(facet)]?);
             // Under the button, but not past the panel's right edge (the window edge may be
             // right there).
-            let room = (panel.size.width - theme::FILTER_MENU_W).max(gpui::px(0.));
+            let room = (panel.size.width - theme::filter_menu_w()).max(gpui::px(0.));
             (
                 (button.left() - panel.left()).min(room),
-                button.bottom() - panel.top() + theme::S_4,
+                button.bottom() - panel.top() + theme::s_4(),
             )
         };
         let choices = self.menu_choices(facet);
@@ -642,8 +642,8 @@ impl Explorer {
                     div()
                         .flex_none()
                         .h(px(1.))
-                        .my(theme::S_2)
-                        .mx(theme::S_8)
+                        .my(theme::s_2())
+                        .mx(theme::s_8())
                         .bg(theme::line())
                         .into_any_element(),
                 );
@@ -676,12 +676,12 @@ impl Explorer {
                                 }
                             })
                         })
-                        .min_w(theme::FILTER_MENU_W)
-                        .p(theme::S_4)
+                        .min_w(theme::filter_menu_w())
+                        .p(theme::s_4())
                         .flex()
                         .flex_col()
-                        .gap(theme::S_2)
-                        .rounded(theme::R_8)
+                        .gap(theme::s_2())
+                        .rounded(theme::r_8())
                         .border_1()
                         .border_color(theme::line())
                         .bg(theme::overlay())
@@ -713,15 +713,15 @@ impl Explorer {
             .aria_description(detail.clone())
             .a11y_disabled(!usable)
             .when(at, gpui::StatefulInteractiveElement::aria_active_descendant)
-            .min_h(theme::H_CTL)
+            .min_h(theme::h_ctl())
             // The text lines up with the rest of the panel; hover and focus reach past it.
-            .mx(-theme::S_8)
-            .px(theme::S_8)
-            .py(theme::S_4)
+            .mx(-theme::s_8())
+            .px(theme::s_8())
+            .py(theme::s_4())
             .flex()
             .items_center()
-            .gap(theme::S_12)
-            .rounded(theme::R_8)
+            .gap(theme::s_12())
+            .rounded(theme::r_8())
             .border_1()
             .border_color(if at {
                 theme::signal_line()
@@ -739,7 +739,7 @@ impl Explorer {
                     .flex_col()
                     .child(
                         div()
-                            .text_size(theme::FS_13)
+                            .text_size(theme::fs_13())
                             .text_color(if usable {
                                 theme::text()
                             } else {
@@ -749,7 +749,7 @@ impl Explorer {
                     )
                     .child(
                         div()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(detail),
                     ),
@@ -961,7 +961,7 @@ fn chevron() -> impl IntoElement {
     svg()
         .path(Icon::ChevronRight.path())
         .flex_none()
-        .size(theme::ICON_SM)
+        .size(theme::icon_sm())
         .text_color(theme::text_muted())
         .with_transformation(gpui::Transformation::rotate(gpui::radians(
             std::f32::consts::FRAC_PI_2,
@@ -972,11 +972,11 @@ fn chevron() -> impl IntoElement {
 fn switch_look(on: bool, usable: bool) -> impl IntoElement {
     div()
         .flex_none()
-        .w(px(40.))
-        .h(px(20.))
+        .w(crate::theme::scaled_px(40.))
+        .h(crate::theme::scaled_px(20.))
         .flex()
         .items_center()
-        .px(px(3.))
+        .px(crate::theme::scaled_px(3.))
         .rounded(theme::R_FULL)
         .border_1()
         .border_color(if on {
@@ -992,7 +992,7 @@ fn switch_look(on: bool, usable: bool) -> impl IntoElement {
         .when(!usable, |d| d.opacity(0.4))
         .child(
             div()
-                .size(px(14.))
+                .size(crate::theme::scaled_px(14.))
                 .rounded(theme::R_FULL)
                 .ml(px(if on { 18. } else { 0. }))
                 .bg(if on {

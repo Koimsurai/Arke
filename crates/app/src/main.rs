@@ -1779,7 +1779,7 @@ fn open_workspace_window(
             }),
             focus: start.focus,
             display_id: start.display,
-            window_min_size: Some(size(px(720.), px(480.))),
+            window_min_size: Some(size(theme::scaled_px(720.), theme::scaled_px(480.))),
             // Windows 11: Mica shows through the frame (sidebar, top bar); the list is a layer on
             // top.
             window_background: if theme::mica() {

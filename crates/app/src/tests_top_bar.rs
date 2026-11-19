@@ -339,7 +339,7 @@ fn a_narrow_window_keeps_everything_in_reach(cx: &mut TestAppContext) {
     let caption = bounds(cx, "caption-lead");
     assert!(search.size.width >= px(200.), "{search:?}");
     assert!(search.left() >= title.left() && search.right() <= caption.left() + px(0.5));
-    assert!(caption.right() + theme::H_CTL * 3. <= px(800.));
+    assert!(caption.right() + theme::h_ctl() * 3. <= px(800.));
     assert!(bounds(cx, "path-bar").size.width >= px(150.));
 }
 
@@ -375,7 +375,7 @@ fn horizontal_tabs_keep_the_title_row_below_the_tabs(cx: &mut TestAppContext) {
     settle(cx);
     let title = bounds(cx, "title-row");
     let search = bounds(cx, "filter-box");
-    assert!(title.top() >= theme::H_BAR, "below the tab strip");
+    assert!(title.top() >= theme::h_bar(), "below the tab strip");
     assert!(search.right() <= title.right());
     // The tab strip has the window buttons.
     assert!(cx.debug_bounds("caption-lead").is_none());

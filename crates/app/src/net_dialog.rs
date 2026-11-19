@@ -25,7 +25,7 @@ use arke_core::remote::{RemoteUrl, Scheme};
 use arke_remote::{HostKey, RemoteError, Remotes};
 use gpui::{
     AnimationExt, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyBinding, SharedString, Subscription, Window, actions, div, prelude::*, px,
+    KeyBinding, SharedString, Subscription, Window, actions, div, prelude::*,
 };
 use rust_i18n::t;
 
@@ -544,7 +544,7 @@ impl NetDialog {
 fn label(text: impl Into<SharedString>) -> impl IntoElement {
     let text = text.into();
     div()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         // Names the field below it for screen readers.
         .when(crate::a11y::active(), |d| {
@@ -557,11 +557,11 @@ fn label(text: impl Into<SharedString>) -> impl IntoElement {
 fn field(input: &Entity<TextInput>, window: &Window, cx: &App) -> gpui::Div {
     let focused = input.focus_handle(cx).is_focused(window);
     div()
-        .h(theme::H_CTL)
-        .px(theme::S_8)
+        .h(theme::h_ctl())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .when(focused, |d| {
             d.bg(theme::surface()).border_color(theme::signal_line())
@@ -577,7 +577,7 @@ fn labeled(text: impl Into<SharedString>, input: gpui::Div) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_4)
+        .gap(theme::s_4())
         .child(label(text))
         .child(input)
 }
@@ -591,11 +591,11 @@ fn button(
     div()
         .id(id)
         .a11y_button(text.clone())
-        .h(theme::H_CTL)
-        .px(theme::S_16)
+        .h(theme::h_ctl())
+        .px(theme::s_16())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(primary, |d| {
             d.bg(theme::signal()).text_color(theme::on_signal())
@@ -619,14 +619,14 @@ fn chip(
         .id(id)
         .a11y(gpui::Role::RadioButton, text.clone())
         .aria_toggled(crate::a11y::toggled(on))
-        .h(theme::S_24)
-        .px(theme::S_8)
+        .h(theme::s_24())
+        .px(theme::s_8())
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .when(on, |d| {
             d.bg(theme::signal())
                 .text_color(theme::on_signal())
@@ -675,7 +675,7 @@ impl NetDialog {
     }
 
     fn render_protocols(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        div().flex().gap(theme::S_4).children(
+        div().flex().gap(theme::s_4()).children(
             [
                 (Protocol::Smb, t!("net.proto_smb")),
                 (Protocol::Sftp, t!("net.proto_sftp")),
@@ -705,19 +705,19 @@ impl NetDialog {
         div()
             .flex()
             .flex_col()
-            .gap(theme::S_12)
+            .gap(theme::s_12())
             .when(is_map, |d| {
                 d.child(label(t!("net.folder").into_owned()))
                     .child(field(&self.folder, window, cx))
                     .child(label(t!("net.letter").into_owned()))
-                    .child(div().flex().flex_wrap().gap(theme::S_4).children(
+                    .child(div().flex().flex_wrap().gap(theme::s_4()).children(
                         letters.into_iter().enumerate().map(|(ix, letter)| {
                             chip(
                                 ("net-letter", ix),
                                 format!("{letter}:"),
                                 self.letter == Some(letter),
                             )
-                            .w(px(34.))
+                            .w(crate::theme::scaled_px(34.))
                             .on_click(cx.listener(
                                 move |this, _: &ClickEvent, _, cx| {
                                     this.letter = Some(letter);
@@ -744,19 +744,19 @@ impl NetDialog {
         div()
             .flex()
             .flex_col()
-            .gap(theme::S_12)
+            .gap(theme::s_12())
             .when(!login, |d| {
                 d.child(
                     div()
                         .flex()
-                        .gap(theme::S_8)
+                        .gap(theme::s_8())
                         .child(
                             labeled(t!("net.host").into_owned(), field(&self.host, window, cx))
                                 .flex_1(),
                         )
                         .child(
                             labeled(t!("net.port").into_owned(), field(&self.port, window, cx))
-                                .w(px(80.)),
+                                .w(crate::theme::scaled_px(80.)),
                         ),
                 )
                 .child(labeled(
@@ -777,10 +777,10 @@ impl NetDialog {
                     div()
                         .flex()
                         .items_center()
-                        .gap(theme::S_4)
+                        .gap(theme::s_4())
                         .child(
                             div()
-                                .mr(theme::S_4)
+                                .mr(theme::s_4())
                                 .child(label(t!("net.sign_in_with").into_owned())),
                         )
                         .child(
@@ -839,11 +839,11 @@ impl NetDialog {
         };
         Some(
             div()
-                .p(theme::S_12)
+                .p(theme::s_12())
                 .flex()
                 .flex_col()
-                .gap(theme::S_4)
-                .rounded(theme::R_8)
+                .gap(theme::s_4())
+                .rounded(theme::r_8())
                 .when(pending.changed, |d| d.bg(theme::danger_surface()))
                 .when(!pending.changed, |d| d.bg(theme::wash()))
                 .child(
@@ -854,13 +854,13 @@ impl NetDialog {
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_muted())
                         .child(body),
                 )
                 .child(
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .font_family("Cascadia Mono")
                         .child(format!(
                             "{} {}",
@@ -894,20 +894,20 @@ impl Render for NetDialog {
             .on_action(cx.listener(|this, _: &NetDialogCancel, _, cx| this.cancel(cx)))
             // Clicks on the panel don't close it.
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .w(px(440.))
-            .p(theme::S_20)
+            .w(crate::theme::scaled_px(440.))
+            .p(theme::s_20())
             .flex()
             .flex_col()
-            .gap(theme::S_12)
-            .rounded(theme::R_12)
+            .gap(theme::s_12())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .child(
                 div()
-                    .text_size(theme::FS_15)
+                    .text_size(theme::fs_15())
                     .font_weight(theme::FW_STRONG)
                     .child(title),
             )
@@ -925,21 +925,21 @@ impl Render for NetDialog {
                     .aria_toggled(crate::a11y::toggled(remember))
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .cursor_pointer()
                     .child(
                         div()
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(theme::R_4)
+                            .rounded(theme::r_4())
                             .border_1()
                             .when(remember, |d| {
                                 d.bg(theme::signal()).border_color(theme::signal()).child(
                                     gpui::svg()
                                         .path(crate::assets::Icon::Check.path())
-                                        .size(theme::ICON_SM)
+                                        .size(theme::icon_sm())
                                         .text_color(theme::on_signal()),
                                 )
                             })
@@ -954,22 +954,22 @@ impl Render for NetDialog {
             .children(self.render_host_key())
             .children(self.error.clone().map(|error| {
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::danger())
                     .child(error)
             }))
             .child(
                 div()
-                    .pt(theme::S_4)
+                    .pt(theme::s_4())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .when(is_map && !remote, |d| {
                         d.child(
                             div()
                                 .id("net-system-dialog")
                                 .a11y(gpui::Role::Link, t!("net.use_system"))
-                                .text_size(theme::FS_12)
+                                .text_size(theme::fs_12())
                                 .text_color(theme::text_subtle())
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(theme::text()))

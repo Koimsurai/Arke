@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use gpui::{
     AnimationExt, App, ClickEvent, Context, FocusHandle, KeyBinding, SharedString, Window, actions,
-    deferred, div, prelude::*, px,
+    deferred, div, prelude::*,
 };
 use rust_i18n::t;
 
@@ -316,21 +316,21 @@ impl Explorer {
                         .track_focus(&confirm.focus)
                         .on_action(cx.listener(Self::confirm_ok))
                         .on_action(cx.listener(Self::confirm_cancel))
-                        .w(px(420.))
-                        .p(theme::S_20)
+                        .w(crate::theme::scaled_px(420.))
+                        .p(theme::s_20())
                         .flex()
                         .flex_col()
-                        .gap(theme::S_12)
-                        .rounded(theme::R_12)
+                        .gap(theme::s_12())
+                        .rounded(theme::r_12())
                         .bg(theme::overlay())
                         .shadow(theme::elev_3())
                         .ui_font()
-                        .text_size(theme::FS_14)
+                        .text_size(theme::fs_14())
                         .text_color(theme::text())
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(
                             div()
-                                .text_size(theme::FS_15)
+                                .text_size(theme::fs_15())
                                 .font_weight(theme::FW_STRONG)
                                 .child(confirm.title.clone()),
                         )
@@ -341,10 +341,10 @@ impl Explorer {
                         )
                         .child(
                             div()
-                                .pt(theme::S_8)
+                                .pt(theme::s_8())
                                 .flex()
                                 .justify_end()
-                                .gap(theme::S_8)
+                                .gap(theme::s_8())
                                 .child(
                                     dialog_button(
                                         "confirm-cancel",
@@ -404,11 +404,11 @@ fn dialog_button(
     div()
         .id(id)
         .a11y_button(label.clone())
-        .h(theme::H_CTL)
-        .px(theme::S_16)
+        .h(theme::h_ctl())
+        .px(theme::s_16())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(primary && danger, |d| {
             d.bg(theme::danger()).text_color(theme::on_signal())

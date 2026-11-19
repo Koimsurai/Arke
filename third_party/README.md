@@ -71,3 +71,13 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   focus and the keyboard stay in the parent. It is all client area to hit testing, or
   `HTTRANSPARENT` after `set_popup_mouse_passthrough` (a closed menu fading out lets presses
   through to the window below). It takes no drops.
+- `src/events.rs` `handle_capture_changed_msg`, `button_bit`, `handle_mouse_down_msg`,
+  `handle_mouse_up_msg`, `handle_mouse_move_msg` and `src/window.rs` `pressed_buttons`: when
+  another program takes the mouse capture in the middle of a press, each button still down gets a
+  `MouseUp` at a point far outside the window with `click_count` 0. GPUI keeps a press armed (a
+  click, or a drag once the mouse moves) until it hears a mouse up, and upstream never sent one
+  when the release went to another window: after a double-click opened a file in a program that
+  came up under the cursor, the next move with no button down dragged the file and the next
+  click dropped it. Capture moving to a window of the same thread (menus, OLE drag and drop, the
+  move loop) is left alone. Arke's `crates/app/src/press_guard.rs` sends the same release when a
+  move or press shows a button is up, and treats `click_count` 0 as "cancelled".

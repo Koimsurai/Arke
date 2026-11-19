@@ -170,7 +170,12 @@ impl Workspace {
                         });
                     });
                     window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+                        // A cancelled press (`press_guard.rs`) is dispatched outside the window,
+                        // but it was released nowhere: the tab stays where it is.
+                        if phase != DispatchPhase::Bubble
+                            || e.button != MouseButton::Left
+                            || crate::press_guard::is_cancel(e)
+                        {
                             return;
                         }
                         let size = window.viewport_size();

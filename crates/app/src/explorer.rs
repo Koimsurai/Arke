@@ -697,6 +697,8 @@ pub(crate) struct Explorer {
     list_bounds: marquee::ListBounds,
     /// Folder dropdown opened from a breadcrumb chevron or the overflow button.
     path_popup: Option<path_bar::PathPopup>,
+    /// The folder dropdown a press outside it just closed.
+    path_popup_dismissed: Option<path_bar::Dismissed>,
     /// Autocomplete while typing a path.
     suggest: path_bar::Suggest,
     path_bounds: path_bar::PathBounds,
@@ -1047,6 +1049,7 @@ impl Explorer {
             row_pressed: false,
             list_bounds: marquee::ListBounds::default(),
             path_popup: None,
+            path_popup_dismissed: None,
             suggest: path_bar::Suggest::default(),
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),

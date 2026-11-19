@@ -427,6 +427,79 @@ fn a_settings_dropdown_opened_with_the_mouse_shows_no_keyboard_cursor(cx: &mut T
     );
 }
 
+/// The › menu in the path bar opens under the bar at the › pressed, and above the bar when there
+/// is no room below, not over it. Opened with the mouse, it lights no row (the current folder is
+/// in bold); an arrow key lights the next one.
+#[gpui::test]
+fn the_path_bar_folder_menu_opens_under_the_bar_or_above_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![dir("b"), dir("c"), dir("d")]);
+    fs.insert_dir(r"C:\a\b", vec![file("x.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\a\b");
+    wait_until(cx, &view, "load", loaded(r"C:\a\b"));
+    let scale = cx.update(|window, _| window.scale_factor());
+    let gap = (4. * scale).round() as i32;
+    let bar = view.update(cx, |v, _| v.path_bar_bounds_for_test());
+    let bar = cx.update(|window, _| crate::popup::rect_to_screen(window, bar));
+    let open = |cx: &mut VisualTestContext| {
+        view.update_in(cx, |v, window, cx| {
+            v.show_folders(
+                std::path::PathBuf::from(r"C:\a"),
+                Some(std::path::PathBuf::from(r"C:\a\b")),
+                px(200.),
+                false,
+                window,
+                cx,
+            );
+        });
+        wait_until(cx, &view, "listed", |v| {
+            v.path_popup_for_test()
+                .is_some_and(|(_, at, _)| at.is_some())
+        });
+        cx.run_until_parked();
+        view.update(cx, |v, _| v.path_popup_for_test()).unwrap()
+    };
+    // A monitor ending at `bottom`, with plenty of room above the bar.
+    let monitor = |bottom: i32| {
+        vec![Monitor {
+            bounds: ScreenRect::new(0, -4000, 8000, bottom + 4000),
+            work: ScreenRect::new(0, -4000, 8000, bottom + 4000),
+            scale,
+        }]
+    };
+
+    crate::popup::set_test_monitors(monitor(6000));
+    let (placed, at, lit) = open(cx);
+    let placed = placed.expect("placed");
+    assert_eq!(
+        placed.top,
+        bar.bottom + gap,
+        "under the bar: {bar:?} {placed:?}"
+    );
+    assert_eq!(at, Some(0), "the keyboard row starts on the current folder");
+    assert!(!lit, "but is not lit when opened with the mouse");
+    cx.simulate_keystrokes("down");
+    let (_, at, lit) = view.update(cx, |v, _| v.path_popup_for_test()).unwrap();
+    assert_eq!(
+        (at, lit),
+        (Some(1), true),
+        "an arrow key lights the next row"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(popups(cx).is_empty());
+
+    // The screen ends just under the bar: above it instead.
+    crate::popup::set_test_monitors(monitor(bar.bottom + 40));
+    let (placed, ..) = open(cx);
+    let placed = placed.expect("placed");
+    assert_eq!(
+        placed.bottom,
+        bar.top - gap,
+        "above the bar: {bar:?} {placed:?}"
+    );
+}
+
 /// A filter's menu opened with the mouse lights no row until an arrow key is used; opened with
 /// the keys, its keyboard row shows at once.
 #[gpui::test]
@@ -494,4 +567,29 @@ fn a_dropdown_across_two_monitors_takes_the_monitor_of_its_aligned_edge(cx: &mut
         placed.left >= seam,
         "on the right-hand monitor: {control:?} {placed:?}"
     );
+}
+
+/// Pressing the › that opened the path bar's folder menu again closes it, as a menu's button does,
+/// rather than closing it on the press and opening it again on the release.
+#[gpui::test]
+fn the_path_bar_folder_menu_closes_when_its_chevron_is_pressed_again(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![dir("b"), dir("c")]);
+    fs.insert_dir(r"C:\a\b", vec![file("x.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\a\b");
+    wait_until(cx, &view, "load", loaded(r"C:\a\b"));
+    // "C:", "a", "b": the › before "b" starts its crumb.
+    let crumb = cx.debug_bounds("crumb-2").expect("crumb drawn");
+    let chevron = gpui::point(crumb.left() + px(10.), crumb.center().y);
+    let open =
+        |cx: &mut VisualTestContext| view.update(cx, |v, _| v.path_popup_for_test().is_some());
+    cx.simulate_click(chevron, Modifiers::none());
+    cx.run_until_parked();
+    assert!(open(cx), "opens");
+    cx.simulate_click(chevron, Modifiers::none());
+    cx.run_until_parked();
+    assert!(!open(cx), "the same › closes it");
+    cx.simulate_click(chevron, Modifiers::none());
+    cx.run_until_parked();
+    assert!(open(cx), "and opens it again after that");
 }

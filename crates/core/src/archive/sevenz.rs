@@ -127,7 +127,7 @@ pub(super) fn extract(
             progress.done = progress.done.saturating_add(n);
             (opts.progress)(progress);
         };
-        match write_new_file(&target, data, &mut on_bytes, opts) {
+        match write_new_file(&target, data, None, &mut on_bytes, opts) {
             Ok(true) => {
                 summary.files += 1;
                 progress.files = summary.files;

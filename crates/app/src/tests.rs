@@ -50,6 +50,8 @@ mod preview_shelf;
 mod quick_look;
 #[path = "tests_remote.rs"]
 mod remote;
+#[path = "tests_tab_drag.rs"]
+mod tab_drag;
 #[path = "tests_tabs.rs"]
 mod tabs;
 #[path = "tests_columns.rs"]

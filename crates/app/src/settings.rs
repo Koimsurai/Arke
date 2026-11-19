@@ -845,6 +845,65 @@ impl Settings {
         self.pinned = list;
     }
 
+    /// Whether the folder is on the tiles (the favorites).
+    pub(crate) fn is_favorite(&self, path: &Path, places: &[crate::shell::Place]) -> bool {
+        self.tiles(places).iter().any(|p| p == path)
+    }
+
+    /// Puts a folder in at `slot`, an insertion point (a tile or list index, past the end means
+    /// last), whether or not it was pinned: one already on the tiles or in the list moves there.
+    /// On full tiles the last other tile makes room, going to the top of the list. Returns where
+    /// the folder ended up.
+    pub(crate) fn insert_pin(
+        &mut self,
+        path: &Path,
+        slot: PinSlot,
+        places: &[crate::shell::Place],
+    ) -> PinSlot {
+        let mut tiles = self.tiles(places);
+        let mut list = self.pinned.clone();
+        // Takes the folder out of `items`; `at` counted with it still there.
+        let take = |items: &mut Vec<PathBuf>, at: usize| -> usize {
+            match items.iter().position(|p| p == path) {
+                Some(from) => {
+                    items.remove(from);
+                    if from < at { at - 1 } else { at }
+                }
+                None => at,
+            }
+        };
+        let landed = match slot {
+            PinSlot::Tile(at) => {
+                let at = take(&mut tiles, at).min(tiles.len());
+                list.retain(|p| p != path);
+                tiles.insert(at, path.to_path_buf());
+                if tiles.len() > FAVORITES_MAX
+                    && let Some(last) = tiles.iter().rposition(|p| p != path)
+                {
+                    list.insert(0, tiles.remove(last));
+                }
+                PinSlot::Tile(tiles.iter().position(|p| p == path).unwrap_or(at))
+            }
+            PinSlot::List(at) => {
+                let at = take(&mut list, at).min(list.len());
+                tiles.retain(|p| p != path);
+                list.insert(at, path.to_path_buf());
+                PinSlot::List(at)
+            }
+        };
+        self.favorites = Some(tiles);
+        self.pinned = list;
+        landed
+    }
+
+    /// Takes a folder off the tiles (not off the list).
+    pub(crate) fn remove_favorite(&mut self, path: &Path, places: &[crate::shell::Place]) {
+        let tiles = self.tiles(places);
+        if tiles.iter().any(|p| p == path) {
+            self.favorites = Some(tiles.into_iter().filter(|p| p != path).collect());
+        }
+    }
+
     /// Unpins, from the tiles or the list.
     pub(crate) fn unpin(&mut self, path: &Path, places: &[crate::shell::Place]) {
         let tiles = self.tiles(places);
@@ -1637,6 +1696,47 @@ mod tests {
         assert_eq!(tiles.len(), FAVORITES_MAX);
         assert_eq!(tiles[3], p(51));
         assert_eq!(full.pinned, [p(50), p(3)]);
+    }
+
+    /// Folders dragged onto the sidebar go in at an insertion point, whether pinned before or not.
+    #[test]
+    fn inserting_pins_adds_or_moves_them_to_the_insertion_point() {
+        let p = |n: usize| PathBuf::from(format!(r"D:\p{n}"));
+        let mut s = Settings {
+            favorites: Some(vec![p(0), p(1), p(2)]),
+            pinned: vec![p(10)],
+            ..Settings::default()
+        };
+        // A new folder between the first two tiles.
+        assert_eq!(s.insert_pin(&p(5), PinSlot::Tile(1), &[]), PinSlot::Tile(1));
+        assert_eq!(s.favorites, Some(vec![p(0), p(5), p(1), p(2)]));
+        // A tile moved forward: the point is counted with it still there.
+        assert_eq!(s.insert_pin(&p(0), PinSlot::Tile(3), &[]), PinSlot::Tile(2));
+        assert_eq!(s.favorites, Some(vec![p(5), p(1), p(0), p(2)]));
+        // A list entry onto the tiles leaves the list; a tile into the list leaves the tiles.
+        s.insert_pin(&p(10), PinSlot::Tile(0), &[]);
+        assert_eq!(s.favorites, Some(vec![p(10), p(5), p(1), p(0), p(2)]));
+        assert!(s.pinned.is_empty());
+        s.insert_pin(&p(1), PinSlot::List(usize::MAX), &[]);
+        assert_eq!(s.pinned, [p(1)]);
+        assert!(!s.is_favorite(&p(1), &[]));
+        // Taken off the tiles: not unpinned from the list.
+        s.remove_favorite(&p(1), &[]);
+        assert_eq!(s.pinned, [p(1)]);
+        s.remove_favorite(&p(5), &[]);
+        assert_eq!(s.favorites, Some(vec![p(10), p(0), p(2)]));
+
+        // Full tiles: the last other tile makes room, to the top of the list.
+        let mut full = Settings {
+            favorites: Some((0..FAVORITES_MAX).map(p).collect()),
+            pinned: vec![p(50)],
+            ..Settings::default()
+        };
+        full.insert_pin(&p(99), PinSlot::Tile(usize::MAX), &[]);
+        let tiles = full.favorites.clone().unwrap();
+        assert_eq!(tiles.len(), FAVORITES_MAX);
+        assert_eq!(tiles.last(), Some(&p(99)));
+        assert_eq!(full.pinned, [p(FAVORITES_MAX - 1), p(50)]);
     }
 
     #[test]

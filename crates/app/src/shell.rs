@@ -786,6 +786,12 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = owner;
         false
     }
+    /// The top-level window under the cursor and where the cursor is in its client area
+    /// (physical pixels), for a tab dropped outside its window. `None` when unknown: the caller
+    /// then works it out from window bounds. UI thread, no file system access.
+    fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {
+        None
+    }
     /// How far (physical pixels at `owner`'s DPI, on either side of the press) the pointer moves
     /// with the button held before it counts as a drag. UI thread.
     fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {

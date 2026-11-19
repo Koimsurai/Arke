@@ -1679,6 +1679,35 @@ fn open_explorer_window(
     Some(handle)
 }
 
+/// A window for a tab dragged out of another one, at `bounds` (screen coordinates), whatever
+/// single window mode says: the drag asked for a window.
+pub(crate) fn open_moved_tab_window(
+    cx: &mut App,
+    services: &Services,
+    moved: workspace::MovedTab,
+    bounds: Bounds<gpui::Pixels>,
+) -> Option<gpui::WindowHandle<Workspace>> {
+    let path = moved.first_folder()?.to_path_buf();
+    let display = cx
+        .displays()
+        .iter()
+        .find(|d| d.bounds().contains(&bounds.center()))
+        .map(|d| d.id());
+    let start = WindowStart {
+        path,
+        default: false,
+        session: None,
+        bounds: Some(WindowBounds::Windowed(bounds)),
+        display,
+        focus: true,
+    };
+    let handle = open_workspace_window(cx, services, start, None, Instant::now(), None)?;
+    handle
+        .update(cx, |ws, window, cx| ws.adopt_first(moved, window, cx))
+        .ok()?;
+    Some(handle)
+}
+
 /// What a new window starts on, and where.
 struct WindowStart {
     path: PathBuf,

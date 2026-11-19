@@ -3717,6 +3717,14 @@ sidebar.unpin_tab_folder:
   en: Unpin folder from sidebar
   zh-TW: 從側邊欄取消釘選資料夾
   zh-CN: 从侧边栏取消固定文件夹
+sidebar.add_favorite:
+  en: Add to favorites
+  zh-TW: 加入最愛
+  zh-CN: 添加到收藏
+sidebar.remove_favorite:
+  en: Remove from favorites
+  zh-TW: 從最愛移除
+  zh-CN: 从收藏中移除
 sidebar.drop_to_pin_tab:
   en: Drop here to pin
   zh-TW: 放到這裡以釘選

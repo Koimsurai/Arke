@@ -45,6 +45,7 @@ mod brand;
 mod build_info;
 mod caption;
 mod cloud_places;
+mod commands;
 mod crashlog;
 mod explorer;
 mod folder_handler;
@@ -430,10 +431,6 @@ fn app_main(mut args: Args) {
         start_type_names(cx);
         motion::sync_app(cx);
         frame_probe::init();
-        text_input::bind_keys(cx);
-        explorer::bind_keys(cx);
-        workspace::bind_keys(cx);
-        palette::bind_keys(cx);
         // Settings load in the background; benchmarks neither read nor write, so test folders don't
         // land in Recent.
         let store = settings::SettingsStore::init(
@@ -444,6 +441,8 @@ fn app_main(mut args: Args) {
             },
             cx,
         );
+        // Keys, with the shortcuts changed in Settings
+        commands::init(&store, cx);
         // Per-folder views, next to the settings file; benchmarks keep them in memory only
         folder_views::FolderViewStore::init(
             if bench.is_some() {

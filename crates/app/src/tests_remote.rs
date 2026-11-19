@@ -24,10 +24,7 @@ fn setup_remote<'a>(
     rust_i18n::set_locale("en");
     cx.executor().allow_parking();
     cx.update(|cx| {
-        crate::text_input::bind_keys(cx);
-        crate::explorer::bind_keys(cx);
-        crate::workspace::bind_keys(cx);
-        crate::palette::bind_keys(cx);
+        crate::commands::init(&crate::settings::SettingsStore::global(cx), cx);
     });
     let remotes = crate::remote_shell::test_remotes();
     let services = Services {

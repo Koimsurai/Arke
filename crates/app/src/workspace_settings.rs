@@ -93,6 +93,8 @@ pub(super) struct SettingsPage {
     /// Path input for adding an "Open with" app.
     pub(super) app_input: Entity<TextInput>,
     _app_input: Subscription,
+    /// Keyboard shortcuts: search and the key being recorded.
+    pub(super) shortcuts: super::shortcuts::Page,
     pub(super) backup: Option<super::backup::BackupNote>,
     /// Open dropdown.
     dropdown: Option<Dropdown>,
@@ -233,7 +235,7 @@ fn accent_color(accent: Accent) -> u32 {
 }
 
 /// Index of the About category; the "Import Arke settings" context menu opens it directly.
-pub(super) const ABOUT: usize = 6;
+pub(super) const ABOUT: usize = 7;
 
 /// Changes a setting: applies now, saves in the background shortly after.
 pub(super) fn set(cx: &mut App, f: impl FnOnce(&mut Settings)) {
@@ -283,6 +285,7 @@ impl Workspace {
         let import_sub = cx.subscribe_in(&import_input, window, Self::on_import_input);
         let app_input = cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx));
         let app_sub = cx.subscribe_in(&app_input, window, Self::on_app_input);
+        let shortcuts = super::shortcuts::Page::new(window, cx);
         // List fonts in the background; there can be hundreds.
         let text_system = Arc::clone(cx.text_system());
         cx.spawn(async move |this, cx| {
@@ -324,6 +327,7 @@ impl Workspace {
             _import_input: import_sub,
             app_input,
             _app_input: app_sub,
+            shortcuts,
             backup: None,
             dropdown: None,
             list_scroll: UniformListScrollHandle::new(),
@@ -491,6 +495,7 @@ impl Workspace {
             t!("settings.startup"),
             t!("settings.search"),
             t!("settings.context_menu"),
+            t!("settings.shortcuts"),
             t!("settings.about"),
         ];
         let ix = titles
@@ -1521,6 +1526,11 @@ impl Workspace {
                 t!("settings.context_menu"),
                 Icon::Menu,
                 super::menuprefs::menu_section(s, &page.app_input, window, cx),
+            ),
+            (
+                t!("settings.shortcuts"),
+                Icon::Bolt,
+                super::shortcuts::section(&s.shortcuts, &page.shortcuts, window, cx),
             ),
             (t!("settings.about"), Icon::Info, about),
         ]

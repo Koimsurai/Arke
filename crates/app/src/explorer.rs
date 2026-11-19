@@ -62,7 +62,7 @@ mod marquee;
 #[path = "explorer_opcenter.rs"]
 mod op_view;
 #[path = "explorer_ops.rs"]
-mod ops;
+pub(crate) mod ops;
 #[path = "explorer_path.rs"]
 mod path_bar;
 #[path = "explorer_preview.rs"]

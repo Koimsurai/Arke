@@ -27,7 +27,7 @@ use crate::a11y::A11yExt as _;
 use crate::bench::Bench;
 use crate::explorer::{Explorer, ExplorerEvent, PaneInfo, Services, StartClock, kind_icon};
 use crate::net_dialog::{NetDialog, NetDialogEvent, NetDialogKind};
-use crate::palette::{Candidate, LocationPalette, PaletteEvent, Source, Target};
+use crate::palette::{Candidate, Command, LocationPalette, PaletteEvent, Source, Target};
 use crate::settings::{NewTabAction, SettingsStore, TabLayout};
 use crate::theme::{self, UiFont as _};
 
@@ -53,6 +53,8 @@ mod saved;
 mod settings_panel;
 #[path = "workspace_shelf.rs"]
 mod shelf_view;
+#[path = "workspace_shortcuts.rs"]
+mod shortcuts;
 #[path = "workspace_sidebar.rs"]
 mod sidebar;
 #[path = "workspace_tabdrag.rs"]
@@ -81,6 +83,8 @@ actions!(
     [
         NewTab,
         OpenPalette,
+        /// Ctrl+Shift+P: the same box, searching commands.
+        OpenCommandPalette,
         CloseTab,
         NextTab,
         PrevTab,
@@ -122,6 +126,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let ctx = Some("Workspace");
     cx.bind_keys([
         KeyBinding::new("ctrl-t", OpenPalette, ctx),
+        KeyBinding::new("ctrl-shift-p", OpenCommandPalette, ctx),
         KeyBinding::new("ctrl-w", CloseTab, ctx),
         KeyBinding::new("ctrl-shift-t", ReopenClosedTab, ctx),
         KeyBinding::new("ctrl-f4", CloseTab, ctx),
@@ -1920,13 +1925,42 @@ impl Workspace {
     /// or on the current folder, as set in settings (#90).
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
         match SettingsStore::global(cx).read(cx).settings.new_tab {
-            NewTabAction::GoToFolder => self.show_palette(window, cx),
+            NewTabAction::GoToFolder => self.show_palette(false, window, cx),
             NewTabAction::Home => self.open_home_tab(window, cx),
             NewTabAction::CurrentFolder => self.new_tab(&NewTab, window, cx),
         }
     }
 
-    fn show_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ctrl+Shift+P: the box for commands, or the open one switched to commands.
+    fn open_command_palette(
+        &mut self,
+        _: &OpenCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.palette {
+            Some((palette, _)) => palette.update(cx, LocationPalette::enter_commands),
+            None => self.show_palette(true, window, cx),
+        }
+    }
+
+    /// Runs a command from the palette: the box closes first, so it runs where focus returns to
+    /// (the active pane).
+    fn run_command(id: &str, window: &mut Window, cx: &mut App) {
+        let Some(command) = crate::commands::find(id) else {
+            return;
+        };
+        SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(
+                |s| crate::commands::remember(&mut s.recent_commands, id),
+                cx,
+            );
+        });
+        let action = command.action();
+        window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+    }
+
+    fn show_palette(&mut self, commands: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.is_some() {
             return;
         }
@@ -1991,7 +2025,23 @@ impl Workspace {
             );
         }
         let shell = Arc::clone(&self.services.shell);
-        let palette = cx.new(|cx| LocationPalette::new(current, candidates, shell, window, cx));
+        let settings = SettingsStore::global(cx).read(cx).settings.clone();
+        let command_rows = crate::commands::palette_order(&settings.recent_commands)
+            .into_iter()
+            .map(|c| Command {
+                id: c.id,
+                label: c.label(),
+                shortcut: crate::commands::shown_key(c, &settings.shortcuts),
+            })
+            .collect();
+        let palette = cx.new(|cx| {
+            let mut palette =
+                LocationPalette::new(current, candidates, command_rows, shell, window, cx);
+            if commands {
+                palette.enter_commands(cx);
+            }
+            palette
+        });
         let subscription = cx.subscribe_in(&palette, window, Self::on_palette_event);
         self.palette = Some((palette, subscription));
         cx.notify();
@@ -2040,6 +2090,10 @@ impl Workspace {
             Target::Path(path) => path.clone(),
             Target::Workspace(name) => {
                 self.open_saved_workspace(name, window, cx);
+                return;
+            }
+            Target::Command(id) => {
+                Self::run_command(id, window, cx);
                 return;
             }
         };
@@ -2455,6 +2509,7 @@ impl Render for Workspace {
                 this.peek_pointer_moved(e, cx);
             }))
             .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_active))
             .on_action(cx.listener(Self::reopen_closed_tab))

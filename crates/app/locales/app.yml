@@ -3049,9 +3049,9 @@ op.paste:
 
 # ─── Ctrl+T
 palette.placeholder:
-  en: Type a folder name or a path
-  zh-TW: 輸入資料夾名稱或路徑
-  zh-CN: 输入文件夹名称或路径
+  en: Type a folder or path, or > for commands
+  zh-TW: 輸入資料夾或路徑，輸入 > 搜尋命令
+  zh-CN: 输入文件夹或路径，输入 > 搜索命令
 palette.current:
   en: New tab here
   zh-TW: 在目前的資料夾開新分頁
@@ -4419,3 +4419,229 @@ report.refresh:
   en: "Refresh"
   zh-TW: "重新整理"
   zh-CN: "刷新"
+
+# ─── Command palette (Ctrl+Shift+P) and Settings > Keyboard shortcuts
+palette.hint_run:
+  en: Run
+  zh-TW: 執行
+  zh-CN: 运行
+settings.shortcuts:
+  en: Keyboard shortcuts
+  zh-TW: 鍵盤快速鍵
+  zh-CN: 键盘快捷键
+shortcuts.search:
+  en: Search commands or keys
+  zh-TW: 搜尋命令或按鍵
+  zh-CN: 搜索命令或按键
+shortcuts.press:
+  en: Press a key (Esc to cancel)
+  zh-TW: 請按下按鍵（Esc 取消）
+  zh-CN: 请按下按键（Esc 取消）
+shortcuts.none:
+  en: Not set
+  zh-TW: 未設定
+  zh-CN: 未设置
+shortcuts.taken:
+  en: "%{key} is already used by %{command}"
+  zh-TW: "%{key} 已被「%{command}」使用"
+  zh-CN: "%{key} 已被“%{command}”使用"
+shortcuts.swap:
+  en: Swap
+  zh-TW: 互換
+  zh-CN: 互换
+shortcuts.cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+shortcuts.reset:
+  en: Reset
+  zh-TW: 還原
+  zh-CN: 还原
+shortcuts.reset_all:
+  en: Reset all
+  zh-TW: 全部還原
+  zh-CN: 全部还原
+cmd.command_palette:
+  en: Show all commands
+  zh-TW: 顯示所有命令
+  zh-CN: 显示所有命令
+cmd.go_to_folder:
+  en: Go to folder
+  zh-TW: 前往資料夾
+  zh-CN: 前往文件夹
+cmd.new_tab:
+  en: New tab
+  zh-TW: 新增分頁
+  zh-CN: 新建标签页
+cmd.close_tab:
+  en: Close tab
+  zh-TW: 關閉分頁
+  zh-CN: 关闭标签页
+cmd.reopen_closed_tab:
+  en: Reopen closed tab
+  zh-TW: 重新開啟已關閉的分頁
+  zh-CN: 重新打开已关闭的标签页
+cmd.next_tab:
+  en: Next tab
+  zh-TW: 下一個分頁
+  zh-CN: 下一个标签页
+cmd.prev_tab:
+  en: Previous tab
+  zh-TW: 上一個分頁
+  zh-CN: 上一个标签页
+cmd.toggle_sync_browsing:
+  en: Synchronized browsing
+  zh-TW: 同步瀏覽
+  zh-CN: 同步浏览
+cmd.compare_folders:
+  en: Compare folders
+  zh-TW: 比較資料夾
+  zh-CN: 比较文件夹
+cmd.toggle_sidebar:
+  en: Collapse or expand the sidebar
+  zh-TW: 收合或展開側邊欄
+  zh-CN: 折叠或展开侧边栏
+cmd.open_workspaces:
+  en: Workspaces
+  zh-TW: 工作區
+  zh-CN: 工作区
+cmd.open_settings:
+  en: Settings
+  zh-TW: 設定
+  zh-CN: 设置
+cmd.go_up:
+  en: Up one level
+  zh-TW: 上一層
+  zh-CN: 上一级
+cmd.go_back:
+  en: Back
+  zh-TW: 上一頁
+  zh-CN: 后退
+cmd.go_forward:
+  en: Forward
+  zh-TW: 下一頁
+  zh-CN: 前进
+cmd.focus_path_bar:
+  en: Edit the path
+  zh-TW: 編輯路徑
+  zh-CN: 编辑路径
+cmd.focus_filter:
+  en: Filter this folder
+  zh-TW: 篩選此資料夾
+  zh-CN: 筛选此文件夹
+cmd.focus_search:
+  en: Search
+  zh-TW: 搜尋
+  zh-CN: 搜索
+cmd.focus_computer_search:
+  en: Search this PC
+  zh-TW: 搜尋這台電腦
+  zh-CN: 搜索这台电脑
+cmd.refresh:
+  en: Refresh
+  zh-TW: 重新整理
+  zh-CN: 刷新
+cmd.toggle_search_mode:
+  en: Switch search mode
+  zh-TW: 切換搜尋模式
+  zh-CN: 切换搜索模式
+cmd.toggle_hidden:
+  en: Show or hide hidden files
+  zh-TW: 顯示或隱藏隱藏檔案
+  zh-CN: 显示或隐藏隐藏文件
+cmd.copy_as_path:
+  en: Copy as path
+  zh-TW: 複製為路徑
+  zh-CN: 复制为路径
+cmd.add_to_shelf:
+  en: Add to shelf
+  zh-TW: 加到暫存架
+  zh-CN: 添加到暂存架
+cmd.copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+cmd.cut:
+  en: Cut
+  zh-TW: 剪下
+  zh-CN: 剪切
+cmd.paste:
+  en: Paste
+  zh-TW: 貼上
+  zh-CN: 粘贴
+cmd.delete:
+  en: Delete
+  zh-TW: 刪除
+  zh-CN: 删除
+cmd.delete_permanently:
+  en: Delete permanently
+  zh-TW: 永久刪除
+  zh-CN: 永久删除
+cmd.rename:
+  en: Rename
+  zh-TW: 重新命名
+  zh-CN: 重命名
+cmd.new_folder:
+  en: New folder
+  zh-TW: 新增資料夾
+  zh-CN: 新建文件夹
+cmd.undo:
+  en: Undo
+  zh-TW: 復原
+  zh-CN: 撤销
+cmd.redo:
+  en: Redo
+  zh-TW: 重做
+  zh-CN: 重做
+cmd.view_details:
+  en: Details view
+  zh-TW: 詳細資料檢視
+  zh-CN: 详细信息视图
+cmd.view_icons_extra_large:
+  en: Extra large icons view
+  zh-TW: 超大圖示檢視
+  zh-CN: 超大图标视图
+cmd.view_icons:
+  en: Large icons view
+  zh-TW: 大圖示檢視
+  zh-CN: 大图标视图
+cmd.view_icons_medium:
+  en: Medium icons view
+  zh-TW: 中圖示檢視
+  zh-CN: 中图标视图
+cmd.view_icons_small:
+  en: Small icons view
+  zh-TW: 小圖示檢視
+  zh-CN: 小图标视图
+cmd.view_columns:
+  en: Columns view
+  zh-TW: 欄位檢視
+  zh-CN: 分栏视图
+cmd.toggle_tree:
+  en: Expand folders in the list
+  zh-TW: 在清單中展開資料夾
+  zh-CN: 在列表中展开文件夹
+cmd.select_all:
+  en: Select all
+  zh-TW: 全選
+  zh-CN: 全选
+cmd.open_in_new_tab:
+  en: Open in new tab
+  zh-TW: 在新分頁開啟
+  zh-CN: 在新标签页中打开
+cmd.open_location:
+  en: Open file location
+  zh-TW: 開啟檔案位置
+  zh-CN: 打开文件位置
+cmd.focus_other_pane:
+  en: Switch to the other pane
+  zh-TW: 切換到另一側窗格
+  zh-CN: 切换到另一侧窗格
+cmd.copy_to_peer:
+  en: Copy to the other pane
+  zh-TW: 複製到另一側窗格
+  zh-CN: 复制到另一侧窗格
+cmd.move_to_peer:
+  en: Move to the other pane
+  zh-TW: 移動到另一側窗格
+  zh-CN: 移动到另一侧窗格

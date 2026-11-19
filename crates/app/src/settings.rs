@@ -588,6 +588,11 @@ pub(crate) struct Settings {
     /// Which extension (COM class) each pinned command comes from, learned from the menus seen;
     /// empty when none has it. Lets a pinned command show before the whole Windows menu is read.
     pub(crate) menu_pin_owners: std::collections::BTreeMap<String, String>,
+    /// Shortcuts changed in Settings: command id (`commands.rs`) to its keys, empty when the
+    /// command has none. Only changes are stored; a command that is absent keeps its defaults.
+    pub(crate) shortcuts: std::collections::BTreeMap<String, Vec<String>>,
+    /// Commands run from the command palette, newest first.
+    pub(crate) recent_commands: Vec<String>,
     /// Auto update: channel (`None` follows this build's channel), whether to check automatically,
     /// and the last check time (Unix seconds).
     pub(crate) update_channel_choice: Option<crate::build_info::Channel>,
@@ -698,6 +703,8 @@ impl Default for Settings {
             menu_hidden: Vec::new(),
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
+            shortcuts: std::collections::BTreeMap::new(),
+            recent_commands: Vec::new(),
             update_channel_choice: None,
             update_auto: true,
             update_checked: None,
@@ -1362,6 +1369,22 @@ mod tests {
         bytes.extend_from_slice(br#"{"global_search": true, "show_hidden": true}"#);
         let s = parse_settings(&bytes, Path::new("settings.json")).unwrap();
         assert!(s.global_search && s.show_hidden);
+    }
+
+    /// Changed shortcuts are written to the file and read back; files from before have none.
+    #[test]
+    fn changed_shortcuts_survive_a_save() {
+        let mut s = Settings::default();
+        s.shortcuts
+            .insert("go_up".to_owned(), vec!["ctrl-alt-u".to_owned()]);
+        s.shortcuts.insert("refresh".to_owned(), Vec::new());
+        s.recent_commands = vec!["refresh".to_owned()];
+        let bytes = serde_json::to_vec(&s).unwrap();
+        let back = parse_settings(&bytes, Path::new("settings.json")).unwrap();
+        assert_eq!(back.shortcuts, s.shortcuts);
+        assert_eq!(back.recent_commands, s.recent_commands);
+        let old = parse_settings(br#"{"show_hidden": true}"#, Path::new("settings.json")).unwrap();
+        assert!(old.shortcuts.is_empty() && old.recent_commands.is_empty());
     }
 
     /// Settings from before 0.5 get the new near-black dark theme; the gray one is a choice.

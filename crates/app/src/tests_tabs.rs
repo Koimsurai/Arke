@@ -2347,6 +2347,25 @@ fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppCont
     );
 }
 
+/// A key closes the open menu even with nothing focused (the key then never reaches the
+/// workspace's elements).
+#[gpui::test]
+fn a_key_closes_the_menu_with_nothing_focused(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    go(&view, cx, r"C:\b");
+    assert!(open_history_menu(&ws, &view, cx, true).is_some());
+    cx.update(gpui::Window::blur);
+    cx.simulate_keystrokes("x");
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test()),
+        None
+    );
+}
+
 /// Keys close the open menu (its rows name tabs and folders a key may move), and so does a tab
 /// opening or closing behind it: the tab menu's Close then can't hit another tab.
 #[gpui::test]

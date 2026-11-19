@@ -414,6 +414,8 @@ pub(crate) struct Workspace {
     _appearance: Subscription,
     /// Rechecks network folders when Arke regains focus.
     _activation: Subscription,
+    /// Any key in this window closes the sidebar, tab or history menu, wherever the focus is.
+    _menu_keys: Subscription,
     _settings: Subscription,
     /// Back and forward across tabs.
     nav: nav::NavState,
@@ -634,6 +636,22 @@ impl Workspace {
                 window.refresh();
                 cx.notify();
             });
+        // Any key closes the sidebar, tab or history menu first: what it does (Ctrl+W, Alt+Left,
+        // Backspace) may change the tabs or history the menu's rows point at. Taken before the key
+        // is dispatched, so it also works with the focus outside the workspace's elements.
+        let this_window = window.window_handle();
+        let weak = cx.entity().downgrade();
+        let menu_keys = cx.intercept_keystrokes(move |_, window, cx| {
+            if window.window_handle() != this_window {
+                return;
+            }
+            weak.update(cx, |this, cx| {
+                if this.sidebar_menu.take().is_some() {
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
         // On window activation, recheck visible network folders once. No polling; watchers cover the rest.
         let activation = cx.observe_window_activation(window, |this: &mut Self, window, cx| {
             if !window.is_window_active() {
@@ -727,6 +745,7 @@ impl Workspace {
             shared_preview: None,
             _appearance: appearance,
             _activation: activation,
+            _menu_keys: menu_keys,
             _settings: settings,
             nav: nav::NavState::default(),
             saved_session: None,
@@ -2669,13 +2688,6 @@ impl Render for Workspace {
                 this.open_workspaces(window, cx);
             }))
             .on_key_down(cx.listener(Self::on_key_down))
-            // Any key closes the sidebar, tab or history menu first: what it does (Ctrl+W,
-            // Alt+Left, Backspace) may change the tabs or history the menu's rows point at.
-            .capture_key_down(cx.listener(|this, _: &KeyDownEvent, _, cx| {
-                if this.sidebar_menu.take().is_some() {
-                    cx.notify();
-                }
-            }))
             .on_action(cx.listener(|this, a: &crate::explorer::FocusComputerSearch, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.focus_computer_search(a, window, cx));
             }))

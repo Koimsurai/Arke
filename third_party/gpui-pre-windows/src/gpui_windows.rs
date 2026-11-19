@@ -44,5 +44,7 @@ pub(crate) use wrapper::*;
 pub use platform::WindowsPlatform;
 // Arke: drops of virtual files (see `virtual_drop.rs`).
 pub use virtual_drop::{VIRTUAL_DROP_ROOT, drop_paths, is_virtual_drop, take_dropped_data_object};
+// Arke: menus in popup windows (see `WindowKind::AnchoredPopup` in `window.rs`).
+pub use window::set_popup_mouse_passthrough;
 
 pub(crate) use windows::Win32::Foundation::HWND;

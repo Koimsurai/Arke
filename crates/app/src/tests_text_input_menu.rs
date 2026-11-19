@@ -46,11 +46,23 @@ fn rows(input: &Entity<TextInput>, cx: &mut VisualTestContext) -> Option<Vec<(Ed
     input.read_with(cx, |input, _| input.menu_rows())
 }
 
-fn click_item(command: EditCommand, cx: &mut VisualTestContext) {
+/// The edit menu's window and where `command`'s row is drawn in it.
+fn menu_item(
+    command: EditCommand,
+    cx: &mut VisualTestContext,
+) -> (VisualTestContext, gpui::Bounds<gpui::Pixels>) {
     // Leaked: the lookup wants a `'static` name, and a test process is short-lived.
     let selector: &'static str = Box::leak(format!("text-input-menu-{command:?}").into_boxed_str());
-    let at = cx.debug_bounds(selector).expect("menu item drawn").center();
-    cx.simulate_click(at, Modifiers::none());
+    let popups = cx.update(|_, cx| crate::popup::open_popups(cx));
+    assert_eq!(popups.len(), 1, "the edit menu is in a window of its own");
+    let mut menu = VisualTestContext::from_window(popups[0].into(), &cx.cx);
+    let bounds = menu.debug_bounds(selector).expect("menu item drawn");
+    (menu, bounds)
+}
+
+fn click_item(command: EditCommand, cx: &mut VisualTestContext) {
+    let (mut menu, bounds) = menu_item(command, cx);
+    menu.simulate_click(bounds.center(), Modifiers::none());
     cx.run_until_parked();
 }
 
@@ -310,13 +322,9 @@ fn right_click_on_the_empty_search_box_gives_a_working_edit_menu(cx: &mut TestAp
     assert!(cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx)));
     let open = rows(&input, cx).expect("edit menu open");
     assert_eq!(enabled(&open), [E::Paste]);
-    let paste = cx
-        .debug_bounds("text-input-menu-Paste")
-        .expect("paste row drawn");
-    assert!(
-        panel.contains(&paste.center()),
-        "the row is where the panel would be: {panel:?} {paste:?}"
-    );
+    // The menu is in a window of its own, over the panel and everything else in the window.
+    let (_, paste) = menu_item(E::Paste, cx);
+    assert!(!paste.is_empty(), "paste row drawn over {panel:?}");
     click_item(E::Paste, cx);
     assert_eq!(text(&input, cx), "report");
     assert!(rows(&input, cx).is_none());

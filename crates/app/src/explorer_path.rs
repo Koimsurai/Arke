@@ -73,6 +73,8 @@ pub(crate) struct PathPopup {
     tail: bool,
     request: u64,
     focus: FocusHandle,
+    /// The window it is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
 
 /// Autocomplete while typing a path.
@@ -221,6 +223,7 @@ impl Explorer {
             tail,
             request,
             focus,
+            popup: crate::popup::Single::new(),
         });
         cx.notify();
         request
@@ -722,9 +725,13 @@ impl Explorer {
     }
 
     /// Overlays below the path bar: the › folder menu or autocomplete while typing.
-    pub(super) fn render_path_overlays(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if let Some(popup) = &self.path_popup {
-            return Some(Self::render_path_popup(popup, cx));
+    pub(super) fn render_path_overlays(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.path_popup.is_some() {
+            return self.render_path_popup(window, cx);
         }
         if self.editing_path && !self.suggest.items.is_empty() {
             return Some(self.render_suggestions(cx));
@@ -732,7 +739,49 @@ impl Explorer {
         None
     }
 
-    fn render_path_popup(popup: &PathPopup, cx: &mut Context<Self>) -> AnyElement {
+    /// The › folder menu is drawn in a window of its own (`popup.rs`); what stays here is its
+    /// keys and focus, and closing it on a press anywhere in the window.
+    fn render_path_popup(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let popup = self.path_popup.as_mut()?;
+        let at = crate::popup::to_screen(window, popup.position);
+        popup.popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.path_popup.as_mut().map(|p| &mut p.popup),
+            Self::path_popup_panel,
+            Self::close_path_popup,
+            window,
+            cx,
+        );
+        Some(
+            div()
+                .absolute()
+                .size_0()
+                .key_context("PathPopup")
+                .track_focus(&popup.focus)
+                .on_action(cx.listener(Self::path_up))
+                .on_action(cx.listener(Self::path_down))
+                .on_action(cx.listener(Self::path_accept))
+                .on_action(cx.listener(Self::path_close))
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.close_path_popup(window, cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The › folder menu's panel, drawn in its own window.
+    fn path_popup_panel(
+        &mut self,
+        _: Pixels,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let popup = self.path_popup.as_ref()?;
+        let owner = popup.popup.owner();
         let body: AnyElement = match &popup.items {
             None => note(t!("info.loading").into_owned()),
             Some(items) if items.is_empty() => note(t!("path.no_folders").into_owned()),
@@ -750,7 +799,9 @@ impl Explorer {
                         popup.highlighted == Some(ix),
                         current,
                     )
-                    .on_click(cx.listener(
+                    .on_click(crate::popup::listener_in(
+                        owner,
+                        cx,
                         move |this, _: &ClickEvent, window, cx| {
                             this.popup_go(ix, window, cx);
                         },
@@ -758,30 +809,12 @@ impl Explorer {
                 }))
                 .into_any_element(),
         };
-        deferred(
-            anchored()
-                .position(popup.position)
-                .snap_to_window_with_margin(theme::S_8)
-                .child(crate::motion::appear(
-                    menu_panel("path-popup")
-                        .key_context("PathPopup")
-                        .track_focus(&popup.focus)
-                        .on_action(cx.listener(Self::path_up))
-                        .on_action(cx.listener(Self::path_down))
-                        .on_action(cx.listener(Self::path_accept))
-                        .on_action(cx.listener(Self::path_close))
-                        .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                            this.close_path_popup(window, cx);
-                        }))
-                        .w(POPUP_W)
-                        .child(body),
-                    "path-popup-appear",
-                    0.,
-                    -crate::motion::NUDGE,
-                )),
-        )
-        .with_priority(1)
-        .into_any_element()
+        Some(crate::motion::appear(
+            menu_panel("path-popup").w(POPUP_W).child(body),
+            "path-popup-appear",
+            0.,
+            -crate::motion::NUDGE,
+        ))
     }
 
     fn render_suggestions(&self, cx: &mut Context<Self>) -> AnyElement {

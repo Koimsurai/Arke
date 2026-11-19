@@ -28,10 +28,10 @@ use arke_core::archive::{
     self, ExtractOptions, ExtractProgress, ExtractSummary, archive_kind, folder_name_for,
 };
 use gpui::{
-    Anchor, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, ElementId, FocusHandle,
-    InteractiveElement, IntoElement, KeyBinding, MouseDownEvent, ParentElement, Pixels, Point,
-    RenderImage, SharedString, StatefulInteractiveElement, Styled, Task, Window, actions, anchored,
-    canvas, deferred, div, img, point, prelude::FluentBuilder, px, svg,
+    AnimationExt, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Context, ElementId,
+    FocusHandle, InteractiveElement, IntoElement, KeyBinding, MouseDownEvent, ParentElement,
+    Pixels, Point, RenderImage, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity,
+    Window, actions, canvas, div, img, point, prelude::FluentBuilder, px, svg,
 };
 
 use super::ops::{CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RenameFile};
@@ -524,18 +524,35 @@ fn item_if(
     plain(label.into(), shortcut, command, enabled)
 }
 
-/// Positions known only after paint: bounds of every row and menu level in window coordinates.
-/// Used for submenu alignment and click-outside dismissal.
+/// Positions known only after paint: bounds of every row and menu level, each in the window of
+/// its own level. Submenus are placed beside their row.
 #[derive(Default)]
 struct MenuGeometry {
     rows: HashMap<usize, Bounds<Pixels>>,
     panels: HashMap<usize, Bounds<Pixels>>,
-    /// Levels whose submenu opens to the left (their chevron points left).
-    opens_left: std::collections::HashSet<usize>,
+}
+
+/// The window a menu level is drawn in (`popup.rs`), and the open submenus that lead to it.
+struct LevelPopup {
+    path: Vec<usize>,
+    state: Rc<crate::popup::PopupState>,
 }
 
 pub(crate) struct ContextMenu {
     position: Point<Pixels>,
+    /// The window the menu belongs to; its levels are popups owned by it.
+    owner: Option<AnyWindowHandle>,
+    /// `position` on the screen (physical pixels), where the top level opens.
+    at: (i32, i32),
+    /// The levels' windows, top level first.
+    popups: Vec<LevelPopup>,
+    group: crate::popup::Group,
+    /// Levels are being opened (after this update).
+    opening: bool,
+    /// A level's window could not be made: not tried again for this menu.
+    popup_failed: bool,
+    /// Closes the menu when its window stops being the active one, or moves.
+    watch: Vec<gpui::Subscription>,
     pub(crate) entries: Vec<MenuEntry>,
     /// Open submenus: the parent row index at each level.
     open: Vec<usize>,
@@ -578,6 +595,13 @@ impl ContextMenu {
         decorate(&mut entries);
         Self {
             position,
+            owner: None,
+            at: (0, 0),
+            popups: Vec::new(),
+            group: crate::popup::Group::default(),
+            opening: false,
+            popup_failed: false,
+            watch: Vec::new(),
             entries,
             open: Vec::new(),
             highlighted: None,
@@ -743,7 +767,7 @@ impl ContextMenu {
         )
     }
 
-    /// Test helper: where submenu row `ix` of `level` was drawn.
+    /// Test helper: where submenu row `ix` of `level` was drawn (in that level's window).
     #[cfg(test)]
     pub(crate) fn submenu_row_for_test(&self, level: usize, ix: usize) -> Option<Bounds<Pixels>> {
         self.geometry
@@ -751,6 +775,22 @@ impl ContextMenu {
             .rows
             .get(&(level * LEVEL_STRIDE + ix))
             .copied()
+    }
+
+    /// Test helper: whether `level` opened to the left of the level before it.
+    #[cfg(test)]
+    pub(crate) fn opens_left_for_test(&self, level: usize) -> bool {
+        self.popups.get(level).is_some_and(|p| p.state.opens_left())
+    }
+
+    /// Test helper: the window `level` is drawn in, and where its panel was placed on the screen.
+    #[cfg(test)]
+    pub(crate) fn popup_for_test(
+        &self,
+        level: usize,
+    ) -> Option<(AnyWindowHandle, Option<crate::popup::ScreenRect>)> {
+        let popup = self.popups.get(level)?;
+        Some((popup.state.window()?, popup.state.placed()))
     }
 }
 
@@ -951,6 +991,16 @@ impl Explorer {
                 self.request_menu_parts(&mut menu, request, cx);
             }
         }
+        self.show_menu(menu, window, cx);
+    }
+
+    /// Shows `menu`, opened in `window`: its levels open in windows of their own owned by it
+    /// (`render_context_menu`). Like a Windows menu, it closes when `window` stops being the active
+    /// window (a click in another program, on the taskbar, Alt+Tab) or moves.
+    fn show_menu(&mut self, mut menu: ContextMenu, window: &mut Window, cx: &mut Context<Self>) {
+        menu.owner = Some(window.window_handle());
+        menu.at = crate::popup::to_screen(window, menu.position);
+        menu.watch = crate::popup::close_with_window(window, cx, Self::close_menu);
         self.context_menu = Some(menu);
         cx.notify();
     }
@@ -1324,6 +1374,7 @@ impl Explorer {
         self.release_shell_menu();
         if let Some(mut menu) = self.context_menu.take() {
             menu.hover_task = None;
+            menu.watch.clear();
             crate::motion::Leaving::start(self, menu, |this| &mut this.closing_menu, cx);
             window.focus(&self.list_focus, cx);
             cx.notify();
@@ -1769,13 +1820,8 @@ impl Explorer {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.release_shell_menu();
-        self.context_menu = Some(ContextMenu::new(
-            position,
-            entries,
-            focus,
-            vec![(here, true)],
-        ));
-        cx.notify();
+        let menu = ContextMenu::new(position, entries, focus, vec![(here, true)]);
+        self.show_menu(menu, window, cx);
     }
 
     /// Whether the menu target `path` is a symlink or junction (from the listing, no I/O).
@@ -1823,8 +1869,8 @@ impl Explorer {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.release_shell_menu();
-        self.context_menu = Some(ContextMenu::new(position, entries, focus, Vec::new()));
-        cx.notify();
+        let menu = ContextMenu::new(position, entries, focus, Vec::new());
+        self.show_menu(menu, window, cx);
     }
 
     /// Alt-drop: asks at the cursor whether to move, copy or create shortcuts (what right-drag does
@@ -1861,9 +1907,9 @@ impl Explorer {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.release_shell_menu();
-        self.context_menu = Some(ContextMenu::new(position, entries, focus, Vec::new()));
+        let menu = ContextMenu::new(position, entries, focus, Vec::new());
+        self.show_menu(menu, window, cx);
         self.pending_drop = Some((sources, dest));
-        cx.notify();
     }
 
     /// Creates a shortcut in `dest` for each of `sources` in the background. The watcher updates
@@ -2349,50 +2395,16 @@ impl Explorer {
 
     // ───────────────────────── Rendering ─────────────────────────
 
-    pub(super) fn render_context_menu(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if let Some(menu) = self.context_menu.as_ref() {
-            return Some(Self::render_menu_levels(menu, false, window, cx));
-        }
-        // A dismissed menu fading out; a new menu replaces it at once.
-        let ghost = self.closing_menu.as_ref()?;
-        Some(Self::render_menu_levels(&ghost.value, true, window, cx))
-    }
-
-    /// Every open level of `menu`. `leaving`: the dismissed menu's ghost, drawn inert while it fades.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Positions and animation of the top level and each submenu are easier to follow side by side"
-    )]
-    fn render_menu_levels(
-        menu: &ContextMenu,
-        leaving: bool,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let geometry = Rc::clone(&menu.geometry);
-        let pinned = SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .menu_pinned
-            .clone();
-        let mut panels: Vec<AnyElement> = Vec::new();
-        // Top level sits at the right-click position; clicking outside every level closes it.
-        // A level never taller than the window: past that it scrolls (#114).
-        let max_h = window.viewport_size().height - theme::S_8 * 2.;
-        let outer = Self::render_menu_panel(menu, 0, &pinned, max_h, cx);
-        let outer = if leaving {
-            crate::motion::leave(
-                outer,
-                ElementId::Name(format!("menu-{}-leave", menu.serial).into()),
-                0.,
-                0.,
-            )
-        } else {
-            outer
+    /// While a menu is open, what stays in its own window: its keys and focus, and closing on a
+    /// press anywhere in the window. Its levels are drawn in windows of their own
+    /// (`render_menu_popup`), opened from here as levels open.
+    pub(super) fn render_context_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.sync_menu_popups(cx);
+        let menu = self.context_menu.as_ref()?;
+        Some(
+            div()
+                .absolute()
+                .size_0()
                 .key_context("ContextMenu")
                 .track_focus(&menu.focus)
                 .on_action(cx.listener(Self::menu_up))
@@ -2401,112 +2413,173 @@ impl Explorer {
                 .on_action(cx.listener(Self::menu_right))
                 .on_action(cx.listener(Self::menu_confirm))
                 .on_action(cx.listener(Self::menu_dismiss))
-                .on_mouse_down_out(cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                    let inside = geometry
-                        .borrow()
-                        .panels
-                        .iter()
-                        .any(|(&level, b)| level > 0 && b.contains(&e.position));
-                    if !inside {
-                        this.close_menu(window, cx);
-                    }
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.close_menu(window, cx);
                 }))
-                .with_animation(
-                    ElementId::Name(format!("menu-{}", menu.serial).into()),
-                    crate::motion::menu_enter(),
-                    crate::motion::fade_in,
-                )
-                .into_any_element()
+                .into_any_element(),
+        )
+    }
+
+    /// Opens the windows of the levels that aren't open yet. The windows of levels closed since
+    /// close themselves: their content is gone (`render_menu_popup`).
+    fn sync_menu_popups(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
         };
-        panels.push(
-            deferred(
-                anchored()
-                    .position(menu.position)
-                    .snap_to_window_with_margin(theme::S_8)
-                    .child(outer),
-            )
-            .with_priority(1)
-            .into_any_element(),
-        );
-        // Submenus sit next to the row that opened them and follow the parent's direction. If that
-        // doesn't
-        // fit, they go past all open menus on the other side rather than covering an ancestor (see
-        // `place_submenu`).
-        let viewport = window.viewport_size();
-        let mut going_right = true;
-        for level in 1..=menu.open.len() {
-            let geometry = menu.geometry.borrow();
-            let Some(row) = geometry
-                .rows
-                .get(&((level - 1) * LEVEL_STRIDE + menu.open[level - 1]))
-                .copied()
-            else {
-                break;
+        let open = &menu.open;
+        let still = menu
+            .popups
+            .iter()
+            .enumerate()
+            .take_while(|(level, popup)| *level <= open.len() && popup.path[..] == open[..*level])
+            .count();
+        menu.popups.truncate(still);
+        if menu.popups.len() > menu.open.len() || menu.opening || menu.popup_failed {
+            return;
+        }
+        menu.opening = true;
+        let this = cx.weak_entity();
+        // Not now: a popup draws its level as it opens, which reads this view.
+        App::defer(cx, move |cx| Self::open_menu_popups(&this, cx));
+    }
+
+    /// Opens the missing levels' windows, outer first: a submenu is placed beside its row in the
+    /// window of the level before it.
+    fn open_menu_popups(this: &WeakEntity<Self>, cx: &mut App) {
+        while let Ok(Some((serial, path, owner, anchor, group))) =
+            this.update(cx, |this, _| this.next_menu_popup())
+        {
+            let content: crate::popup::Content = {
+                let (this, path) = (this.clone(), path.clone());
+                Rc::new(move |max_h, window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.render_menu_popup(serial, &path, max_h, window, cx)
+                    })
+                    .ok()
+                    .flatten()
+                })
             };
-            let parent = geometry.panels.get(&(level - 1)).copied().unwrap_or(row);
-            let width = geometry
-                .panels
-                .get(&level)
-                .map_or(px(240.), |b| b.size.width);
-            let ancestors: Vec<(f32, f32)> = (0..level)
-                .filter_map(|l| geometry.panels.get(&l))
-                .map(|b| (f32::from(b.left()), f32::from(b.right())))
-                .collect();
-            drop(geometry);
-            let top = row.origin.y - theme::S_4;
-            let (left, right_side) = place_submenu(
-                (f32::from(parent.left()), f32::from(parent.right())),
-                &ancestors,
-                f32::from(width),
-                f32::from(viewport.width),
-                going_right,
-            );
-            going_right = right_side;
-            {
-                let mut geometry = menu.geometry.borrow_mut();
-                if right_side {
-                    geometry.opens_left.remove(&(level - 1));
-                } else {
-                    geometry.opens_left.insert(level - 1);
+            let dismiss: crate::popup::Dismiss = {
+                let this = this.clone();
+                Rc::new(move |cx| {
+                    let _ = owner.update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.close_menu(window, cx))
+                    });
+                })
+            };
+            let state = crate::popup::open(owner, anchor, &group, content, dismiss, true, cx);
+            let kept = this
+                .update(cx, |this, _| this.keep_menu_popup(serial, path, state))
+                .unwrap_or(false);
+            if !kept {
+                break;
+            }
+        }
+        let _ = this.update(cx, |this, _| {
+            if let Some(menu) = this.context_menu.as_mut() {
+                menu.opening = false;
+            }
+        });
+    }
+
+    /// The next level to open a window for: its menu, path, owner window, place and group.
+    #[allow(
+        clippy::type_complexity,
+        reason = "read once, right where it is taken apart"
+    )]
+    fn next_menu_popup(
+        &self,
+    ) -> Option<(
+        u64,
+        Vec<usize>,
+        AnyWindowHandle,
+        crate::popup::Anchor,
+        crate::popup::Group,
+    )> {
+        let menu = self.context_menu.as_ref()?;
+        let level = menu.popups.len();
+        let path = menu.open.get(..level)?.to_vec();
+        let anchor = match level.checked_sub(1) {
+            None => crate::popup::Anchor::At(menu.at.0, menu.at.1),
+            Some(parent) => {
+                let key = parent * LEVEL_STRIDE + path[parent];
+                let geometry = Rc::downgrade(&menu.geometry);
+                crate::popup::Anchor::Beside {
+                    parent: Rc::downgrade(&menu.popups[parent].state),
+                    row: Rc::new(move || geometry.upgrade()?.borrow().rows.get(&key).copied()),
+                    pad: theme::S_4,
                 }
             }
-            let (anchor, x) = (Anchor::TopLeft, px(left));
+        };
+        Some((menu.serial, path, menu.owner?, anchor, menu.group.clone()))
+    }
+
+    /// Keeps the window just opened for the level at `path`, if the menu still shows that level.
+    fn keep_menu_popup(
+        &mut self,
+        serial: u64,
+        path: Vec<usize>,
+        state: Option<Rc<crate::popup::PopupState>>,
+    ) -> bool {
+        let Some(menu) = self.context_menu.as_mut().filter(|m| m.serial == serial) else {
+            return false;
+        };
+        let Some(state) = state else {
+            menu.popup_failed = true;
+            return false;
+        };
+        if menu.popups.len() != path.len() || !menu.open.starts_with(&path) {
+            return false;
+        }
+        menu.popups.push(LevelPopup { path, state });
+        true
+    }
+
+    /// What the window of the level at `path` of menu `serial` draws: the level, or the level
+    /// fading out once the menu was dismissed. `None` once it is gone, and the window closes.
+    fn render_menu_popup(
+        &self,
+        serial: u64,
+        path: &[usize],
+        max_h: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let level = path.len();
+        let shows = |m: &&ContextMenu| m.serial == serial && m.open.starts_with(path);
+        let pinned = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .menu_pinned
+            .clone();
+        let id = path
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        if let Some(menu) = self.context_menu.as_ref().filter(shows) {
             // Fades in; replays when switching submenus.
-            let path = menu.open[..level]
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(".");
             let panel = Self::render_menu_panel(menu, level, &pinned, max_h, cx);
-            let panel = if leaving {
-                crate::motion::leave(
-                    panel,
-                    ElementId::Name(format!("menu-{}-{path}-leave", menu.serial).into()),
-                    0.,
-                    0.,
-                )
-            } else {
+            return Some(
                 panel
                     .with_animation(
-                        ElementId::Name(format!("menu-{}-{path}", menu.serial).into()),
+                        ElementId::Name(format!("menu-{serial}-{id}").into()),
                         crate::motion::menu_enter(),
                         crate::motion::fade_in,
                     )
-                    .into_any_element()
-            };
-            panels.push(
-                deferred(
-                    anchored()
-                        .anchor(anchor)
-                        .position(point(x, top))
-                        .snap_to_window_with_margin(theme::S_8)
-                        .child(panel),
-                )
-                .with_priority(1 + level)
-                .into_any_element(),
+                    .into_any_element(),
             );
         }
-        div().children(panels).into_any_element()
+        let ghost = self.closing_menu.as_ref().map(|g| &g.value).filter(shows)?;
+        // Dismissed: presses already go to what is below while it fades.
+        crate::popup::pass_mouse_through(window);
+        let panel = Self::render_menu_panel(ghost, level, &pinned, max_h, cx);
+        Some(crate::motion::leave(
+            panel,
+            ElementId::Name(format!("menu-{serial}-{id}-leave").into()),
+            0.,
+            0.,
+        ))
     }
 
     /// One menu level: frame and rows. Row and frame bounds are recorded in `geometry` after paint
@@ -2563,7 +2636,11 @@ impl Explorer {
     }
 
     /// Bottom row of icon buttons: icon above label, equal widths.
-    fn render_action_row(items: &[MenuItem], cx: &mut Context<Self>) -> AnyElement {
+    fn render_action_row(
+        menu: &ContextMenu,
+        items: &[MenuItem],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .mx(theme::S_4)
             .flex()
@@ -2573,6 +2650,7 @@ impl Explorer {
                 let enabled = item.enabled;
                 div()
                     .id(("menu-action", ix))
+                    .debug_selector(move || format!("menu-action-{command:?}"))
                     .a11y_menu_item(item.label.clone(), enabled, false, false)
                     .flex_1()
                     .py(theme::S_6)
@@ -2586,9 +2664,13 @@ impl Explorer {
                         d.cursor_pointer()
                             .text_color(theme::text_muted())
                             .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.run_menu_command(command, window, cx);
-                            }))
+                            .on_click(crate::popup::listener_in(
+                                menu.owner,
+                                cx,
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.run_menu_command(command, window, cx);
+                                },
+                            ))
                     })
                     .when(!enabled, |d| d.text_color(theme::text_disabled()))
                     .children(item.glyph.map(|glyph| {
@@ -2654,7 +2736,9 @@ impl Explorer {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "a row needs its menu, position, entry and highlight state"
+        clippy::too_many_lines,
+        reason = "a row needs its menu, position, entry and highlight state, and draws its parts \
+                  in order"
     )]
     fn render_menu_row(
         menu: &ContextMenu,
@@ -2667,7 +2751,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let MenuEntry::Actions(items) = entry {
-            return Self::render_action_row(items, cx);
+            return Self::render_action_row(menu, items, cx);
         }
         let Some(RowParts {
             label,
@@ -2692,7 +2776,15 @@ impl Explorer {
         };
         let key = level * LEVEL_STRIDE + ix;
         let geometry = Rc::clone(&menu.geometry);
+        let popups = menu.group.clone();
         let mark = marks.then(|| row_mark(icon, glyph, checked));
+        // Chevrons point left when this level's submenu opens to the left, and in a level that
+        // itself opened to the left.
+        let chevron_left = menu
+            .popups
+            .get(level + 1)
+            .or_else(|| menu.popups.get(level))
+            .is_some_and(|p| p.state.opens_left());
         let group: SharedString = format!("menu-row-{key}").into();
         let pin_button = pin.map(|pin| Self::pin_button(key, pin, pinned, group.clone(), cx));
         div()
@@ -2712,12 +2804,12 @@ impl Explorer {
             .when(submenu, |d| {
                 d.child(
                     canvas(
-                        move |bounds, window, _| {
+                        move |bounds, _, cx| {
                             // The row moved (e.g. "Show more options" shifted down after a pin):
-                            // redraw the submenu too.
+                            // its submenu moves along.
                             let old = geometry.borrow_mut().rows.insert(key, bounds);
                             if old != Some(bounds) {
-                                window.refresh();
+                                popups.refresh(cx);
                             }
                         },
                         |_, (), _, _| {},
@@ -2734,12 +2826,14 @@ impl Explorer {
                 d.cursor_pointer()
                     .when(highlighted, |d| d.bg(theme::wash_strong()))
                     .hover(|s| s.bg(theme::wash()))
-                    .on_click(
-                        cx.listener(move |this, _: &ClickEvent, window, cx| match command {
+                    .on_click(crate::popup::listener_in(
+                        menu.owner,
+                        cx,
+                        move |this, _: &ClickEvent, window, cx| match command {
                             Some(command) => this.run_menu_command(command, window, cx),
                             None => this.click_submenu(level, ix, cx),
-                        }),
-                    )
+                        },
+                    ))
             })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
@@ -2765,9 +2859,7 @@ impl Explorer {
             }))
             .children(pin_button)
             // Chevron points left when the submenu opens to the left.
-            .when(submenu, |d| {
-                d.child(submenu_chevron(menu.geometry.borrow().opens_left.contains(&level)))
-            })
+            .when(submenu, |d| d.child(submenu_chevron(chevron_left)))
             .into_any_element()
     }
 }
@@ -3003,38 +3095,6 @@ fn submenu_chevron(left: bool) -> impl IntoElement {
         })
 }
 
-/// Horizontal placement of a submenu: returns the left x and whether it opens to the right.
-/// Prefers the parent's direction, flush with the parent. If that doesn't fit, goes past all
-/// open menus on the other side. Only if neither fits, sits flush on the parent's other side,
-/// which may cover an ancestor.
-fn place_submenu(
-    parent: (f32, f32),
-    ancestors: &[(f32, f32)],
-    width: f32,
-    viewport: f32,
-    prefer_right: bool,
-) -> (f32, bool) {
-    const MARGIN: f32 = 8.;
-    const OVERLAP: f32 = 2.;
-    let fits = |left: f32| left >= MARGIN && left + width <= viewport - MARGIN;
-    let right_of_parent = parent.1 - OVERLAP;
-    let left_of_parent = parent.0 + OVERLAP - width;
-    let leftmost = ancestors.iter().map(|a| a.0).fold(parent.0, f32::min);
-    let rightmost = ancestors.iter().map(|a| a.1).fold(parent.1, f32::max);
-    let (same, beyond, back, right) = if prefer_right {
-        (right_of_parent, leftmost - width, left_of_parent, true)
-    } else {
-        (left_of_parent, rightmost, right_of_parent, false)
-    };
-    if fits(same) {
-        (same, right)
-    } else if fits(beyond) {
-        (beyond, !right)
-    } else {
-        (back, !right)
-    }
-}
-
 /// Pin key of a Windows menu item: enclosing submenu names and its own, joined with " › ".
 /// Quoted parts of a label (usually a file name, as in `Add to "photos.zip"`) become `…` so the
 /// key still matches for other files.
@@ -3180,8 +3240,6 @@ fn open_in_new_window(path: PathBuf) {
 
 #[cfg(test)]
 mod submenu_tests {
-    use super::place_submenu;
-
     #[test]
     fn pin_keys_ignore_quoted_file_names() {
         use super::pin_key;
@@ -3202,28 +3260,6 @@ mod submenu_tests {
         );
         assert_eq!(pin_key(&["添加到“photos.zip”"]), "添加到“…”");
         assert_eq!(pin_key(&["Send to", "Desktop"]), "Send to › Desktop");
-    }
-
-    #[test]
-    fn submenus_never_fold_back_over_the_menus_above() {
-        // Root menu spans 300..540, level 1 opens right at 538..778; window width 1000.
-        let root = (300., 540.);
-        assert_eq!(place_submenu(root, &[], 240., 1000., true), (538., true));
-        // Level 2 doesn't fit on the right. Flush left of level 1 would cover the root, so it goes
-        // left of all menus.
-        let level1 = (538., 778.);
-        assert_eq!(
-            place_submenu(level1, &[root, level1], 240., 1000., true),
-            (60., false)
-        );
-        // Doesn't fit on the left either: flush with the parent's left side.
-        let tight = place_submenu(level1, &[(100., 340.), level1], 240., 1000., true);
-        assert_eq!(tight, (300., false));
-        // A chain opening left keeps going left.
-        assert_eq!(
-            place_submenu((400., 640.), &[(640., 880.)], 240., 1000., false),
-            (162., false)
-        );
     }
 }
 

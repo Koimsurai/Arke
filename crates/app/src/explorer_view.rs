@@ -2962,8 +2962,8 @@ impl Explorer {
     /// Floating layers over the list: path bar menus, context menu, Quick Look.
     fn render_floating(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         [
-            self.render_path_overlays(cx),
-            self.render_context_menu(window, cx),
+            self.render_path_overlays(window, cx),
+            self.render_context_menu(cx),
             self.render_quick_look(window, cx),
             self.render_confirm(cx),
         ]

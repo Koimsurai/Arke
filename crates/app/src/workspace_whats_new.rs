@@ -143,8 +143,7 @@ impl WhatsNewPage {
     pub(crate) fn first_notes_for_test(&self) -> Vec<Block> {
         self.sections
             .first()
-            .map(|s| s.release.blocks.clone())
-            .unwrap_or_default()
+            .map_or_default(|s| s.release.blocks.clone())
     }
 
     #[cfg(test)]

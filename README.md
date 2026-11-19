@@ -28,7 +28,7 @@ files in seconds, and follows the change journal so the index is current the mom
 
 **It's built for working in many folders at once.** Tabs live in a vertical sidebar, can be
 pinned and saved as named workspaces. Any tab splits into two panes that browse in sync or compare
-their contents, and dragging a file onto a tab, a pinned folder or a path segment drops it right
+their contents, and dragging a file onto a tab, a favorite or a path segment drops it right
 there.
 
 **It's safe with your system.** Arke has no telemetry. Apart from the optional search service, which
@@ -66,6 +66,13 @@ If Arke is useful to you, a ⭐ on GitHub helps other people find it.
 - Each folder remembers its view and sort.
 - Tabs you can pin or save as workspaces. Split a tab into two panes with one shared preview,
   synchronized browsing and folder compare.
+- The search box sits in the middle of the title bar and searches the active pane. Each pane has
+  its own row with Up, its path and its view buttons, so in split view each side keeps its own
+  filter.
+- Drag a tab out to give it a window of its own, or drop files on a tab to copy or move them into
+  its folder.
+- Favorites at the top of the sidebar, as tiles and a list: add a folder or a tab from its menu, or
+  drag it there.
 - One window by default (since 0.7): folders from other apps, Win+E and starting Arke again add a
   tab to the window you used last. Turn off "Single window" in settings for a window each.
 - With "New windows open to: Last tabs", the windows open when you quit Arke (or Windows shuts
@@ -73,8 +80,11 @@ If Arke is useful to you, a ⭐ on GitHub helps other people find it.
 - Spring-loaded folders, a shelf for collecting files from different folders, and a Home page
   with recent files, drives and network locations.
 - Swipe with two fingers on a touchpad to go back and forward, like in a browser.
-- The sidebar collapses to a column of icons (Ctrl+B) and opens over the content when you rest the
-  pointer on it. Columns in the columns view can be resized.
+- The sidebar can be made wider by dragging its edge, collapses to a column of icons (Ctrl+B) and
+  opens over the content when you rest the pointer on it. Columns in the columns view can be
+  resized.
+- Interface scale from 80% to 150%, on top of Windows' own scale.
+- Command palette (Ctrl+Shift+P) for every command, and shortcuts you can change.
 
 **Preview**
 - A resizable preview pane and Quick Look (Space) for images, PDF, Word, Excel and PowerPoint,
@@ -94,10 +104,13 @@ If Arke is useful to you, a ⭐ on GitHub helps other people find it.
   (experimental).
 - Batch rename, "Move to new folder", and a move/copy/shortcut menu when you drag with the right
   mouse button or drop with Alt held.
+- A Properties window of its own (Alt+Enter): sizes, where a folder's space goes, attributes, the
+  app a file opens with, SHA-256 and unblocking downloaded files. Windows' own is one click away.
 
 **Places**
 - Network shares that fail fast when a server is offline and show the last known contents;
-  `\\server` lists its shares. SFTP and WebDAV locations (experimental).
+  `\\server` lists its shares. SFTP and WebDAV locations (experimental). Mapped drives and
+  network places can get names of their own, kept in Arke only.
 - OneDrive and other cloud folders with sync status. Previews never download online-only files.
 - Archives: preview and extract zip, 7z, tar (.gz, .xz, .bz2, .zst) and RAR, compress to zip.
   RAR and the xz / bzip2 / zstd tars use the libarchive built into Windows (best on Windows 11
@@ -109,6 +122,10 @@ If Arke is useful to you, a ⭐ on GitHub helps other people find it.
   anything it can't vouch for (network drives, OneDrive, files in use, policies) is left to Windows.
   It can be turned off in settings. Loose files take a few milliseconds each, still two to six times
   faster than Windows.
+- Updates download quietly in the background and install the next time Arke restarts, never while
+  files are being copied and never over a metered connection.
+- Menus open in windows of their own, like Windows menus, so near the edge they reach past Arke's
+  window instead of being squeezed.
 - Quiet when idle: nothing on screen changing means nothing redrawn, minimized included. Folder
   sizes, indexing and the search service run at low priority in Windows' efficiency mode, and with
   only the tray icon left Arke frees its caches.

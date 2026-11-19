@@ -1,8 +1,19 @@
 # Contributing
 
-Arke doesn't accept pull requests for now; they are closed automatically. Bug reports, ideas and
-feedback are very welcome as [issues](https://github.com/Koimsurai/Arke/issues). The notes below
-are for building Arke yourself or working on a fork.
+Bug reports, ideas and feedback are very welcome as
+[issues](https://github.com/Koimsurai/Arke/issues). The notes below are for building Arke yourself
+or working on a fork.
+
+## Pull requests
+
+I'm not accepting pull requests right now; they are closed automatically. Arke is a one-person
+project, and I want to be able to stand behind every line in it: understand it, test it on my own
+machine, and keep the same standard everywhere. Reviewing outside code properly takes me longer
+than writing it, and it's hard to tell whether a contributor understands the code they're sending.
+
+What helps most is an issue: a bug with the steps to reproduce it (Settings › About › Report a
+problem copies the version and the recent log for you), or an idea with what you are trying to do.
+If you have found the cause in the code, say where in the issue; that is often most of the fix.
 
 ## Development
 

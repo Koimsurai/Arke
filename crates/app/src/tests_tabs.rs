@@ -2485,7 +2485,7 @@ fn a_file_typed_in_a_pinned_tab_opens_without_a_duplicate_tab(cx: &mut TestAppCo
     cx.simulate_keystrokes("ctrl-l");
     cx.simulate_input(r"C:\p\notes.txt");
     cx.simulate_keystrokes("enter");
-    wait_shell("opened", || !shell.opened.lock().is_empty());
+    wait_shell_in(cx, "opened", || !shell.opened.lock().is_empty());
     wait_until(cx, &pinned, "selected", |e| {
         selected_name(e).as_deref() == Some("notes.txt")
     });
@@ -2495,7 +2495,7 @@ fn a_file_typed_in_a_pinned_tab_opens_without_a_duplicate_tab(cx: &mut TestAppCo
     cx.simulate_keystrokes("ctrl-l");
     cx.simulate_input(r"C:\q\y.txt");
     cx.simulate_keystrokes("enter");
-    wait_shell("opened", || shell.opened.lock().len() == 2);
+    wait_shell_in(cx, "opened", || shell.opened.lock().len() == 2);
     let deadline = Instant::now() + Duration::from_secs(20);
     while tab_count(&ws, cx) < 2 {
         assert!(Instant::now() < deadline, "no tab opened");

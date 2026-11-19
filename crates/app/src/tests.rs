@@ -2870,6 +2870,20 @@ fn wait_shell(what: &str, pred: impl Fn() -> bool) {
     }
 }
 
+/// Like [`wait_shell`] for shell calls the UI starts: keeps the UI going while it waits, since a
+/// busy machine may not have reached the call yet.
+fn wait_shell_in(cx: &mut VisualTestContext, what: &str, pred: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if pred() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// A folder listed a moment ago (a tree folder expanded to create in it) is watched from a
 /// thread of its own: give it a moment to start, as Windows' watcher would have, so the change
 /// isn't lost. Folders nobody watches just wait a little.

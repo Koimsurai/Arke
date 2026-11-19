@@ -788,14 +788,25 @@ impl Explorer {
 
     /// Small chip on the right of the box: shows the scope when it isn't "this folder", even
     /// without focus. Also shown while typing with the strip collapsed; click to reopen the strip.
-    /// The scope chip's text (none in a split pane, which shows only its icon). Searching one
-    /// folder: its name says where.
-    pub(super) fn scope_chip_label(&self) -> Option<String> {
+    /// The scope chip's text: the folder searched (this pane's, or the one searched with its
+    /// subfolders), or "This PC".
+    pub(super) fn scope_chip_label(&self) -> String {
         let scope = self.scope();
-        (!self.pane.split).then(|| {
-            self.search_in_name()
-                .filter(|_| scope == Scope::Subfolders)
-                .unwrap_or_else(|| scope.label().to_string())
+        let folder = match scope {
+            Scope::Here => self.folder_label(),
+            Scope::Subfolders => self.search_in_name(),
+            Scope::Computer => None,
+        };
+        folder.unwrap_or_else(|| scope.label().to_string())
+    }
+
+    /// The name of the folder this pane shows (a drive's full path).
+    pub(super) fn folder_label(&self) -> Option<String> {
+        self.display_path().map(|p| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
         })
     }
 
@@ -842,7 +853,7 @@ impl Explorer {
                             theme::signal()
                         }),
                 )
-                .when_some(self.scope_chip_label(), gpui::ParentElement::child)
+                .child(self.scope_chip_label())
                 // No tooltip while the strip it opens is showing: it would cover the strip.
                 .when(
                     !(focused && (self.query.is_empty() || self.scope_strip_open)),

@@ -344,6 +344,8 @@ pub(crate) struct Workspace {
     startup: Startup,
     /// Dragging the divider between the panes.
     resizing: bool,
+    /// Where the title row above the panes was laid out (the active pane draws it).
+    title_layout: crate::explorer::TitleLayout,
     /// Tab being dragged; dropping on the right half of the content area splits, like Arc.
     dragging_tab: Option<usize>,
     /// Animation and hit testing for tab and favorite tile reordering.
@@ -662,6 +664,7 @@ impl Workspace {
                 Startup::Done
             },
             resizing: false,
+            title_layout: crate::explorer::TitleLayout::default(),
             dragging_tab: None,
             tab_drag: tabdrag::TabDrag::default(),
             dragging_pin: false,
@@ -1834,9 +1837,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Before paint, gives each pane its layout info (split, active, caption buttons, the other side's folder).
+    /// Before paint, gives each pane its layout info (split, active, the other side's folder).
     fn sync_panes(&mut self, cx: &mut Context<Self>) {
-        let horizontal = Self::horizontal_tabs(cx);
         let tab = &self.tabs[self.active];
         let split = tab.is_split();
         // Split view shows one preview for the tab, at its right end, following the active side.
@@ -1863,10 +1865,6 @@ impl Workspace {
             let info = PaneInfo {
                 split,
                 active: i == tab.active_pane,
-                // With horizontal tabs the caption buttons live on the tab strip.
-                show_caption: i == last && !horizontal,
-                show_ops: i == last,
-                nav_in_sidebar: !horizontal,
                 peer: if split {
                     paths[1 - i.min(1)].clone()
                 } else {
@@ -2068,13 +2066,33 @@ impl Workspace {
 
     // --- Pane area ---
 
-    fn render_panes(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The title row (search box, window buttons) over the tab's panes. The active pane draws it,
+    /// with its own search box; it spans both panes of a split, so splitting doesn't move it.
+    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let view = self.active_view().clone();
+        let title = self.title_layout.clone();
+        let horizontal = Self::horizontal_tabs(cx);
+        let title_row = view.update(cx, |e, cx| {
+            e.render_title_row(&title, horizontal, window, cx)
+        });
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(title_row)
+            .child(self.render_pane_area(cx))
+            .into_any_element()
+    }
+
+    fn render_pane_area(&self, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[self.active];
         if !tab.is_split() {
             return div()
                 .flex_1()
-                .min_w_0()
-                .h_full()
+                .min_h_0()
+                .w_full()
                 .child(tab.panes[0].view.clone())
                 .into_any_element();
         }
@@ -2085,7 +2103,7 @@ impl Workspace {
                 .id("pane-gutter")
                 .group("pane-gutter")
                 .absolute()
-                .top(theme::H_BAR)
+                .top_0()
                 .bottom(theme::S_8)
                 .left(-theme::S_12 + px(2.))
                 .w(theme::S_12)
@@ -2121,7 +2139,7 @@ impl Workspace {
                 ),
         );
         // The divider's ratio applies to what the shared preview leaves. The right pane's box runs
-        // on under the preview (its top bar spans the tab), and the preview sits on top of it.
+        // on under the preview, and the preview sits on top of it.
         let reserve = self
             .shared_preview
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
@@ -2131,7 +2149,7 @@ impl Workspace {
             Some(
                 div()
                     .absolute()
-                    .top(theme::H_BAR)
+                    .top_0()
                     .bottom(theme::S_8)
                     .right(theme::S_8)
                     .w(shared.width)
@@ -2142,8 +2160,8 @@ impl Workspace {
             .relative()
             .flex()
             .flex_1()
-            .min_w_0()
-            .h_full()
+            .min_h_0()
+            .w_full()
             .child(
                 div()
                     .h_full()
@@ -2431,7 +2449,7 @@ impl Render for Workspace {
                                 page
                             } else {
                                 self.hand_start_clock(start_clock, cx);
-                                self.render_panes(cx)
+                                self.render_panes(window, cx)
                             }
                         }
                     },

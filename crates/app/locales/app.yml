@@ -134,6 +134,14 @@ filter.placeholder:
   en: Filter (Ctrl+F)
   zh-TW: 篩選（Ctrl+F）
   zh-CN: 筛选（Ctrl+F）
+filter.placeholder_in:
+  en: Search %{folder} or this PC (Ctrl+F)
+  zh-TW: 搜尋「%{folder}」或此電腦（Ctrl+F）
+  zh-CN: 搜索“%{folder}”或此电脑（Ctrl+F）
+filter.chip_tip:
+  en: Show this filter in the search box
+  zh-TW: 在搜尋框中顯示這個篩選
+  zh-CN: 在搜索框中显示这个筛选
 filter.search_placeholder:
   en: Search subfolders
   zh-TW: 搜尋子資料夾

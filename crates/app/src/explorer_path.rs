@@ -3,9 +3,9 @@
 //! - The bar sits in each pane's first row, between Up and the view buttons (see
 //!   `explorer_topbar.rs`).
 //! - A segment navigates; a click on the blank end of the bar starts editing (also Ctrl+L, Alt+D).
-//! - A › between segments lists the folders in the level to its left (current one highlighted) for
+//! - A › between segments lists the folders in the level to its left (current one in bold) for
 //!   jumping to siblings; the trailing › lists subfolders. The collapsed "…" lists the hidden
-//!   levels.
+//!   levels. The menu opens under the bar, or above it when there is no room below.
 //! - While typing, matching folders show below: Up/Down to pick, Tab to complete, Enter to go.
 //!
 //! Folder listing always runs on a background thread; results carry a request id and stale ones are
@@ -22,8 +22,7 @@ use arke_core::entry::Entry;
 use arke_core::filetype::FileKind;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, FocusHandle, KeyBinding, MouseDownEvent, Pixels,
-    Point, SharedString, Window, actions, anchored, canvas, deferred, div, point, prelude::*, px,
-    svg,
+    SharedString, Window, actions, anchored, canvas, deferred, div, point, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -68,18 +67,33 @@ pub(super) fn bind_keys(cx: &mut App) {
 
 /// Folder menu opened from › or "…".
 pub(crate) struct PathPopup {
-    position: Point<Pixels>,
+    /// What it opens under (logical pixels): the bar's height, from just left of the › pressed,
+    /// so it flips above the bar rather than over it when there is no room below.
+    control: Bounds<Pixels>,
     /// None while reading
     items: Option<Vec<(String, PathBuf)>>,
-    /// The entry on the current path (highlighted)
+    /// The entry on the current path (in bold)
     current: Option<PathBuf>,
+    /// The keyboard row, on the current entry until an arrow key moves it.
     highlighted: Option<usize>,
+    /// Whether the keyboard row is lit: once an arrow key moved it, or when opened with the keys.
+    /// Opened with the mouse, the row under the pointer is the only one lit.
+    keyboard: bool,
     /// Opened from the trailing › (that button draws as open)
     tail: bool,
     request: u64,
     focus: FocusHandle,
     /// The window it is drawn in (`popup.rs`).
     popup: crate::popup::Single,
+}
+
+/// The › or "…" menu a press outside it closed: which one (`tail`, `current`) and where the press
+/// was. The release of that press on the button that opened it would open it again; it stays
+/// closed instead, as a menu does when its button is pressed again.
+pub(crate) struct Dismissed {
+    tail: bool,
+    current: Option<PathBuf>,
+    at: gpui::Point<Pixels>,
 }
 
 /// Autocomplete while typing a path.
@@ -204,12 +218,17 @@ impl Explorer {
         });
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "what the menu lists, where it opens and how it was opened"
+    )]
     fn open_path_popup(
         &mut self,
         items: Option<Vec<(String, PathBuf)>>,
         current: Option<PathBuf>,
         tail: bool,
         at: Pixels,
+        keys: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> u64 {
@@ -221,10 +240,14 @@ impl Explorer {
             .as_ref()
             .and_then(|items| items.iter().position(|(_, p)| Some(p) == current.as_ref()));
         self.path_popup = Some(PathPopup {
-            position: point(at - theme::s_8(), bar.bottom() + theme::s_4()),
+            control: Bounds::from_corners(
+                point(at - theme::s_8(), bar.top()),
+                point(at + theme::s_8(), bar.bottom()),
+            ),
             items,
             current,
             highlighted,
+            keyboard: keys,
             tail,
             request,
             focus,
@@ -234,18 +257,31 @@ impl Explorer {
         request
     }
 
-    /// › clicked: list folders in `dir` with `current` highlighted.
-    fn show_folders(
+    /// › clicked (with the keys: `keys`): list folders in `dir` with `current` in bold.
+    pub(crate) fn show_folders(
         &mut self,
         dir: PathBuf,
         current: Option<PathBuf>,
         at: Pixels,
+        keys: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let tail = current.is_none();
-        let request = self.open_path_popup(None, current, tail, at, window, cx);
+        let request = self.open_path_popup(None, current, tail, at, keys, window, cx);
         self.list_folders(dir, request);
+    }
+
+    /// Whether click `e` on the button of the menu (`tail`, `current`) releases the press that just
+    /// closed that same menu: then it stays closed.
+    fn reopens_dismissed(&mut self, tail: bool, current: Option<&Path>, e: &ClickEvent) -> bool {
+        let dismissed = self.path_popup_dismissed.take();
+        match (dismissed, e) {
+            (Some(d), ClickEvent::Mouse(click)) => {
+                d.tail == tail && d.current.as_deref() == current && d.at == click.down.position
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn close_path_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -381,7 +417,10 @@ impl Explorer {
             (Some(i), false) => (i + len - 1) % len,
         };
         match self.path_popup.as_mut() {
-            Some(p) => p.highlighted = Some(next),
+            Some(p) => {
+                p.highlighted = Some(next);
+                p.keyboard = true;
+            }
             None => self.suggest.highlighted = Some(next),
         }
         cx.notify();
@@ -578,7 +617,11 @@ impl Explorer {
             },
             |_, (), _, _| {},
         )
+        // Pinned to the corner: without insets it starts inside the bar's padding, and the
+        // suggestions under the bar sat that far right of it.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full();
         let bar = div()
             .id("path-bar")
@@ -622,7 +665,17 @@ impl Explorer {
             chevron_button("crumb-tail", tail_open).on_click(cx.listener(
                 move |this, e: &ClickEvent, window, cx| {
                     cx.stop_propagation();
-                    this.show_folders(dir.clone(), None, e.position().x, window, cx);
+                    if this.reopens_dismissed(true, None, e) {
+                        return;
+                    }
+                    this.show_folders(
+                        dir.clone(),
+                        None,
+                        e.position().x,
+                        e.is_keyboard(),
+                        window,
+                        cx,
+                    );
                 },
             ))
         });
@@ -689,9 +742,17 @@ impl Explorer {
                         move |this, e: &ClickEvent, window, cx| {
                             cx.stop_propagation();
                             if let Some(here) = here.clone()
+                                && !this.reopens_dismissed(false, Some(&here), e)
                                 && let Some(parent) = here.parent().map(Path::to_path_buf)
                             {
-                                this.show_folders(parent, Some(here), e.position().x, window, cx);
+                                this.show_folders(
+                                    parent,
+                                    Some(here),
+                                    e.position().x,
+                                    e.is_keyboard(),
+                                    window,
+                                    cx,
+                                );
                             }
                         }
                     }))
@@ -745,9 +806,12 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let popup = self.path_popup.as_mut()?;
-        let at = crate::popup::to_screen(window, popup.position);
+        let control = crate::popup::rect_to_screen(window, popup.control);
         popup.popup.ensure(
-            || crate::popup::Anchor::At(at.0, at.1),
+            || crate::popup::Anchor::Below {
+                control,
+                align_right: false,
+            },
             |this: &mut Self| this.path_popup.as_mut().map(|p| &mut p.popup),
             Self::path_popup_panel,
             Self::close_path_popup,
@@ -764,7 +828,12 @@ impl Explorer {
                 .on_action(cx.listener(Self::path_down))
                 .on_action(cx.listener(Self::path_accept))
                 .on_action(cx.listener(Self::path_close))
-                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.path_popup_dismissed = this.path_popup.as_ref().map(|p| Dismissed {
+                        tail: p.tail,
+                        current: p.current.clone(),
+                        at: e.position,
+                    });
                     this.close_path_popup(window, cx);
                 }))
                 .into_any_element(),
@@ -794,7 +863,7 @@ impl Explorer {
                     folder_row(
                         ("path-popup-row", ix),
                         name.clone(),
-                        popup.highlighted == Some(ix),
+                        popup.keyboard && popup.highlighted == Some(ix),
                         current,
                     )
                     .on_click(crate::popup::listener_in(
@@ -871,11 +940,15 @@ fn more_piece(i: usize, hidden: Vec<(String, PathBuf)>, cx: &mut Context<Explore
         .child("…")
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             cx.stop_propagation();
+            if this.reopens_dismissed(false, None, e) {
+                return;
+            }
             this.open_path_popup(
                 Some(hidden.clone()),
                 None,
                 false,
                 e.position().x,
+                e.is_keyboard(),
                 window,
                 cx,
             );
@@ -1045,6 +1118,19 @@ fn note(text: String) -> AnyElement {
 
 #[cfg(test)]
 impl Explorer {
+    /// Tests: the open › menu's place on the screen, its keyboard row and whether that is lit.
+    pub(crate) fn path_popup_for_test(
+        &self,
+    ) -> Option<(Option<crate::popup::ScreenRect>, Option<usize>, bool)> {
+        let popup = self.path_popup.as_ref()?;
+        Some((popup.popup.placed(), popup.highlighted, popup.keyboard))
+    }
+
+    /// Tests: where the path bar was drawn.
+    pub(crate) fn path_bar_bounds_for_test(&self) -> Bounds<Pixels> {
+        self.path_bounds.get()
+    }
+
     /// Tests: current autocomplete entries.
     pub(crate) fn suggestion_names(&self) -> Vec<String> {
         self.suggest.items.iter().map(|(n, _)| n.clone()).collect()

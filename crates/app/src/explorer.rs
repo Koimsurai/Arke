@@ -697,6 +697,8 @@ pub(crate) struct Explorer {
     list_bounds: marquee::ListBounds,
     /// Folder dropdown opened from a breadcrumb chevron or the overflow button.
     path_popup: Option<path_bar::PathPopup>,
+    /// The folder dropdown a press outside it just closed.
+    path_popup_dismissed: Option<path_bar::Dismissed>,
     /// Autocomplete while typing a path.
     suggest: path_bar::Suggest,
     path_bounds: path_bar::PathBounds,
@@ -716,6 +718,9 @@ pub(crate) struct Explorer {
     filter_menu: Option<Facet>,
     /// Highlighted row of that menu.
     menu_cursor: usize,
+    /// Whether that row is lit: only once a key moved it or the menu was opened with the keys.
+    /// Opened with the mouse, the row under the pointer is the only one lit.
+    menu_keys: bool,
     /// Keyboard focus inside the search panel (Tab from the box). Mouse use keeps focus in the
     /// box so typing goes on there.
     panel_focus: FocusHandle,
@@ -1047,6 +1052,7 @@ impl Explorer {
             row_pressed: false,
             list_bounds: marquee::ListBounds::default(),
             path_popup: None,
+            path_popup_dismissed: None,
             suggest: path_bar::Suggest::default(),
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
@@ -1059,6 +1065,7 @@ impl Explorer {
             content_filter: None,
             filter_menu: None,
             menu_cursor: 0,
+            menu_keys: false,
             panel_focus: cx.focus_handle(),
             panel_cursor: scope::PanelItem::Scope(scope::Scope::Here),
             panel_geometry: std::rc::Rc::default(),

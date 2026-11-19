@@ -8269,8 +8269,7 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
 
     click(cx, type_button.center());
     assert_eq!(menu(cx), Some(Facet::Type));
-    // Blank space at the panel's top right corner. The measured box is the panel's content
-    // (inside its padding), so this stays inside the panel itself, not on the pane below it.
+    // Blank space at the panel's top right corner, in its padding.
     click(cx, point(panel.right() - px(24.), panel.top() + px(8.)));
     assert_eq!(menu(cx), None, "blank space in the panel");
     assert!(
@@ -8287,6 +8286,14 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
     assert_eq!(menu(cx), Some(Facet::Size), "another filter opens its menu");
     click(cx, size_button.center());
     assert_eq!(menu(cx), None, "its own button closes it");
+    // Also at the button's right end: the measured button is the button itself, not shifted by
+    // its padding (a press there left the menu open).
+    click(cx, type_button.center());
+    click(
+        cx,
+        point(type_button.right() - px(2.), type_button.center().y),
+    );
+    assert_eq!(menu(cx), None, "its own button's right end closes it");
 }
 
 /// #114: a menu taller than the screen stays inside its work area and scrolls; the keyboard brings

@@ -316,3 +316,280 @@ fn a_settings_dropdown_closes_on_a_press_beside_it(cx: &mut TestAppContext) {
         "a press beside it closes the list's window"
     );
 }
+
+/// Opens Settings › Appearance in a short window, scrolls it to the bottom (where Language is) and
+/// opens the Language dropdown. Returns the button and the list as placed, on the screen.
+fn open_language_dropdown_scrolled(
+    ws: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> (ScreenRect, ScreenRect) {
+    // A monitor around the window, at its scale, so the list has room under the button.
+    let scale = cx.update(|window, _| window.scale_factor());
+    crate::popup::set_test_monitors(vec![Monitor {
+        bounds: ScreenRect::new(0, 0, 8000, 6000),
+        work: ScreenRect::new(0, 0, 8000, 6000),
+        scale,
+    }]);
+    cx.simulate_resize(size(px(1200.), px(640.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    cx.simulate_event(gpui::ScrollEvent {
+        position: point(px(700.), px(400.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+        ..gpui::ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    let scrolled = ws
+        .update(cx, |ws, _| ws.settings_scroll_for_test())
+        .unwrap()
+        .0;
+    assert!(scrolled < px(-100.), "the page scrolled: {scrolled:?}");
+    let button = cx.debug_bounds("language").expect("Language drawn");
+    cx.simulate_click(button.center(), Modifiers::none());
+    cx.run_until_parked();
+    let control = cx.update(|window, _| crate::popup::rect_to_screen(window, button));
+    let placed = ws
+        .update(cx, |ws, _| ws.settings_dropdown_placed_for_test())
+        .expect("the list is placed");
+    (control, placed)
+}
+
+/// A settings dropdown on a scrolled page opens right under its button, its right edge lined up
+/// with the button's, not where the button would be without the scroll.
+#[gpui::test]
+fn a_settings_dropdown_on_a_scrolled_page_opens_under_its_button(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let (control, placed) = open_language_dropdown_scrolled(&ws, cx);
+    let gap = cx.update(|window, _| (4. * window.scale_factor()).round() as i32);
+    assert_eq!(placed.top, control.bottom + gap, "{control:?} {placed:?}");
+    assert_eq!(placed.right, control.right, "{control:?} {placed:?}");
+    assert!(placed.width() >= control.width(), "{control:?} {placed:?}");
+}
+
+/// A dropdown list that slides in comes to rest where it was placed: its window is fitted to the
+/// panel's resting place, not to the first frame of the slide (which left it a few pixels low).
+#[gpui::test]
+fn a_dropdown_that_slides_in_rests_where_it_was_placed(cx: &mut TestAppContext) {
+    crate::motion::force_for_test(true);
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let (control, placed) = open_language_dropdown_scrolled(&ws, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    let popup = popups(cx)[0];
+    // Draw the popup again at the end of its slide.
+    cx.update(|_, cx| {
+        let _ = popup.update(cx, |_, window, _| window.refresh());
+    });
+    cx.run_until_parked();
+    let drawn = ws
+        .update(cx, |ws, _| ws.settings_dropdown_drawn_for_test())
+        .expect("the list is drawn");
+    crate::motion::force_for_test(false);
+    assert_eq!(drawn, placed, "{control:?}");
+}
+
+/// Opened with the mouse, a settings dropdown lights no row but the hovered one (its own hover):
+/// the keyboard cursor shows once an arrow key moves it, from the current choice.
+#[gpui::test]
+fn a_settings_dropdown_opened_with_the_mouse_shows_no_keyboard_cursor(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let _ = open_language_dropdown_scrolled(&ws, cx);
+    let cursor = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, _| ws.settings_dropdown_cursor_for_test())
+            .expect("open")
+    };
+    // The current choice is "Follow system", the first row.
+    assert_eq!(cursor(cx), (0, false), "no keyboard cursor shown");
+    let popup = popups(cx)[0];
+    let mut popup_cx = VisualTestContext::from_window(popup, &cx.cx);
+    let row = popup_cx
+        .debug_bounds("language-2")
+        .expect("third row drawn in the list's window");
+    popup_cx.simulate_mouse_move(row.center(), None, Modifiers::none());
+    popup_cx.run_until_parked();
+    assert_eq!(
+        cursor(cx),
+        (0, false),
+        "hovering lights only the hovered row"
+    );
+    cx.simulate_keystrokes("down");
+    assert_eq!(
+        cursor(cx),
+        (1, true),
+        "arrow keys start from the current choice"
+    );
+}
+
+/// The › menu in the path bar opens under the bar at the › pressed, and above the bar when there
+/// is no room below, not over it. Opened with the mouse, it lights no row (the current folder is
+/// in bold); an arrow key lights the next one.
+#[gpui::test]
+fn the_path_bar_folder_menu_opens_under_the_bar_or_above_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![dir("b"), dir("c"), dir("d")]);
+    fs.insert_dir(r"C:\a\b", vec![file("x.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\a\b");
+    wait_until(cx, &view, "load", loaded(r"C:\a\b"));
+    let scale = cx.update(|window, _| window.scale_factor());
+    let gap = (4. * scale).round() as i32;
+    let bar = view.update(cx, |v, _| v.path_bar_bounds_for_test());
+    let bar = cx.update(|window, _| crate::popup::rect_to_screen(window, bar));
+    let open = |cx: &mut VisualTestContext| {
+        view.update_in(cx, |v, window, cx| {
+            v.show_folders(
+                std::path::PathBuf::from(r"C:\a"),
+                Some(std::path::PathBuf::from(r"C:\a\b")),
+                px(200.),
+                false,
+                window,
+                cx,
+            );
+        });
+        wait_until(cx, &view, "listed", |v| {
+            v.path_popup_for_test()
+                .is_some_and(|(_, at, _)| at.is_some())
+        });
+        cx.run_until_parked();
+        view.update(cx, |v, _| v.path_popup_for_test()).unwrap()
+    };
+    // A monitor ending at `bottom`, with plenty of room above the bar.
+    let monitor = |bottom: i32| {
+        vec![Monitor {
+            bounds: ScreenRect::new(0, -4000, 8000, bottom + 4000),
+            work: ScreenRect::new(0, -4000, 8000, bottom + 4000),
+            scale,
+        }]
+    };
+
+    crate::popup::set_test_monitors(monitor(6000));
+    let (placed, at, lit) = open(cx);
+    let placed = placed.expect("placed");
+    assert_eq!(
+        placed.top,
+        bar.bottom + gap,
+        "under the bar: {bar:?} {placed:?}"
+    );
+    assert_eq!(at, Some(0), "the keyboard row starts on the current folder");
+    assert!(!lit, "but is not lit when opened with the mouse");
+    cx.simulate_keystrokes("down");
+    let (_, at, lit) = view.update(cx, |v, _| v.path_popup_for_test()).unwrap();
+    assert_eq!(
+        (at, lit),
+        (Some(1), true),
+        "an arrow key lights the next row"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(popups(cx).is_empty());
+
+    // The screen ends just under the bar: above it instead.
+    crate::popup::set_test_monitors(monitor(bar.bottom + 40));
+    let (placed, ..) = open(cx);
+    let placed = placed.expect("placed");
+    assert_eq!(
+        placed.bottom,
+        bar.top - gap,
+        "above the bar: {bar:?} {placed:?}"
+    );
+}
+
+/// A filter's menu opened with the mouse lights no row until an arrow key is used; opened with
+/// the keys, its keyboard row shows at once.
+#[gpui::test]
+fn a_filter_menu_opened_with_the_mouse_lights_no_row(cx: &mut TestAppContext) {
+    use arke_core::index_query::Facet;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\k", vec![file("a.jpg", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\k");
+    wait_until(cx, &view, "load", loaded(r"C:\k"));
+    cx.dispatch_action(crate::explorer::FocusFilter);
+    cx.run_until_parked();
+    let (_, button) = view.update(cx, |v, _| v.panel_geometry_for_test(Facet::Size));
+    cx.simulate_click(button.expect("drawn").center(), Modifiers::none());
+    cx.run_until_parked();
+    let state = |cx: &mut VisualTestContext| {
+        let menu = cx
+            .update(|window, cx| view.update(cx, |v, _| v.panel_state_for_test(window).2))
+            .expect("menu open");
+        (
+            menu.1,
+            view.update(cx, |v, _| v.filter_menu_keys_for_test()),
+        )
+    };
+    assert_eq!(state(cx), (0, false), "on the current choice, not lit");
+    cx.simulate_keystrokes("down");
+    assert_eq!(state(cx), (1, true), "an arrow key lights the next row");
+    // Right opens the next filter's menu from the keys: lit at once.
+    cx.simulate_keystrokes("right");
+    assert!(state(cx).1);
+}
+
+/// A dropdown under a control across two monitors goes on the monitor of the edge it lines up
+/// with (a settings list's right edge), not the one its left edge is on.
+#[gpui::test]
+fn a_dropdown_across_two_monitors_takes_the_monitor_of_its_aligned_edge(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    let (control, _) = open_language_dropdown_scrolled(&ws, cx);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(popups(cx).is_empty());
+    let scale = cx.update(|window, _| window.scale_factor());
+    // The seam runs through the button, near its left edge.
+    let seam = control.left + 10;
+    crate::popup::set_test_monitors(vec![
+        Monitor {
+            bounds: ScreenRect::new(0, 0, seam, 6000),
+            work: ScreenRect::new(0, 0, seam, 6000),
+            scale,
+        },
+        Monitor {
+            bounds: ScreenRect::new(seam, 0, 8000, 6000),
+            work: ScreenRect::new(seam, 0, 8000, 6000),
+            scale,
+        },
+    ]);
+    let button = cx.debug_bounds("language").expect("Language drawn");
+    cx.simulate_click(button.center(), Modifiers::none());
+    cx.run_until_parked();
+    let placed = ws
+        .update(cx, |ws, _| ws.settings_dropdown_placed_for_test())
+        .expect("the list is placed");
+    assert!(
+        placed.left >= seam,
+        "on the right-hand monitor: {control:?} {placed:?}"
+    );
+}
+
+/// Pressing the › that opened the path bar's folder menu again closes it, as a menu's button does,
+/// rather than closing it on the press and opening it again on the release.
+#[gpui::test]
+fn the_path_bar_folder_menu_closes_when_its_chevron_is_pressed_again(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![dir("b"), dir("c")]);
+    fs.insert_dir(r"C:\a\b", vec![file("x.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\a\b");
+    wait_until(cx, &view, "load", loaded(r"C:\a\b"));
+    // "C:", "a", "b": the › before "b" starts its crumb.
+    let crumb = cx.debug_bounds("crumb-2").expect("crumb drawn");
+    let chevron = gpui::point(crumb.left() + px(10.), crumb.center().y);
+    let open =
+        |cx: &mut VisualTestContext| view.update(cx, |v, _| v.path_popup_for_test().is_some());
+    cx.simulate_click(chevron, Modifiers::none());
+    cx.run_until_parked();
+    assert!(open(cx), "opens");
+    cx.simulate_click(chevron, Modifiers::none());
+    cx.run_until_parked();
+    assert!(!open(cx), "the same › closes it");
+    cx.simulate_click(chevron, Modifiers::none());
+    cx.run_until_parked();
+    assert!(open(cx), "and opens it again after that");
+}

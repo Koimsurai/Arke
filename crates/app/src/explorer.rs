@@ -716,6 +716,9 @@ pub(crate) struct Explorer {
     filter_menu: Option<Facet>,
     /// Highlighted row of that menu.
     menu_cursor: usize,
+    /// Whether that row is lit: only once a key moved it or the menu was opened with the keys.
+    /// Opened with the mouse, the row under the pointer is the only one lit.
+    menu_keys: bool,
     /// Keyboard focus inside the search panel (Tab from the box). Mouse use keeps focus in the
     /// box so typing goes on there.
     panel_focus: FocusHandle,
@@ -1056,6 +1059,7 @@ impl Explorer {
             content_filter: None,
             filter_menu: None,
             menu_cursor: 0,
+            menu_keys: false,
             panel_focus: cx.focus_handle(),
             panel_cursor: scope::PanelItem::Scope(scope::Scope::Here),
             panel_geometry: std::rc::Rc::default(),

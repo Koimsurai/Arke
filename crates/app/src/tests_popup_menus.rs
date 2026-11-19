@@ -427,6 +427,37 @@ fn a_settings_dropdown_opened_with_the_mouse_shows_no_keyboard_cursor(cx: &mut T
     );
 }
 
+/// A filter's menu opened with the mouse lights no row until an arrow key is used; opened with
+/// the keys, its keyboard row shows at once.
+#[gpui::test]
+fn a_filter_menu_opened_with_the_mouse_lights_no_row(cx: &mut TestAppContext) {
+    use arke_core::index_query::Facet;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\k", vec![file("a.jpg", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\k");
+    wait_until(cx, &view, "load", loaded(r"C:\k"));
+    cx.dispatch_action(crate::explorer::FocusFilter);
+    cx.run_until_parked();
+    let (_, button) = view.update(cx, |v, _| v.panel_geometry_for_test(Facet::Size));
+    cx.simulate_click(button.expect("drawn").center(), Modifiers::none());
+    cx.run_until_parked();
+    let state = |cx: &mut VisualTestContext| {
+        let menu = cx
+            .update(|window, cx| view.update(cx, |v, _| v.panel_state_for_test(window).2))
+            .expect("menu open");
+        (
+            menu.1,
+            view.update(cx, |v, _| v.filter_menu_keys_for_test()),
+        )
+    };
+    assert_eq!(state(cx), (0, false), "on the current choice, not lit");
+    cx.simulate_keystrokes("down");
+    assert_eq!(state(cx), (1, true), "an arrow key lights the next row");
+    // Right opens the next filter's menu from the keys: lit at once.
+    cx.simulate_keystrokes("right");
+    assert!(state(cx).1);
+}
+
 /// A dropdown under a control across two monitors goes on the monitor of the edge it lines up
 /// with (a settings list's right edge), not the one its left edge is on.
 #[gpui::test]

@@ -395,6 +395,7 @@ impl Explorer {
     fn panel_move(&mut self, mv: Move, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(facet) = self.filter_menu {
             let count = self.menu_choices(facet).len().max(1);
+            self.menu_keys = true;
             match mv {
                 Move::Up => self.menu_cursor = (self.menu_cursor + count - 1) % count,
                 Move::Down => self.menu_cursor = (self.menu_cursor + 1) % count,
@@ -407,7 +408,7 @@ impl Explorer {
                         && next != facet
                     {
                         self.filter_menu = None;
-                        self.toggle_filter_menu(next, window, cx);
+                        self.toggle_filter_menu(next, true, window, cx);
                     }
                 }
                 Move::NextRow | Move::PrevRow => {
@@ -447,7 +448,7 @@ impl Explorer {
         let rows = self.panel_rows(cx);
         match self.panel_at(&rows) {
             PanelItem::Scope(scope) => self.set_scope(scope, cx),
-            PanelItem::Filter(facet) => self.toggle_filter_menu(facet, window, cx),
+            PanelItem::Filter(facet) => self.toggle_filter_menu(facet, true, window, cx),
             PanelItem::ClearFilters => {
                 self.clear_filters(window, cx);
                 self.panel_cursor = PanelItem::Filter(Facet::Type);
@@ -1103,6 +1104,11 @@ impl Explorer {
             self.panel_cursor,
             self.filter_menu.map(|f| (f, self.menu_cursor)),
         )
+    }
+
+    /// Whether the open filter menu's keyboard row is lit.
+    pub(crate) const fn filter_menu_keys_for_test(&self) -> bool {
+        self.menu_keys
     }
 
     pub(crate) const fn panel_dismissed_for_test(&self) -> bool {

@@ -50,8 +50,12 @@ actions!(
 
 const CONTEXT: &str = "RecycleBin";
 /// Hide the original location column below this window width
-const FROM_COLUMN_FROM: Pixels = px(980.);
-const MENU_W: Pixels = px(220.);
+fn from_column_from() -> gpui::Pixels {
+    crate::theme::scaled_px(980.)
+}
+fn menu_w() -> gpui::Pixels {
+    crate::theme::scaled_px(220.)
+}
 
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -142,7 +146,8 @@ pub(crate) struct RecycleBin {
     scroll: UniformListScrollHandle,
     scrollbar_drag: ScrollbarDrag,
     ask: Option<Ask>,
-    menu: Option<Point<Pixels>>,
+    /// The open context menu: where it was opened, and the window it is drawn in (`popup.rs`).
+    menu: Option<(Point<Pixels>, crate::popup::Single)>,
     notice: Option<SharedString>,
     /// Why the last restore or permanent delete failed (some items or all), until closed
     failure: Option<SharedString>,
@@ -337,7 +342,7 @@ impl RecycleBin {
             self.selected = BTreeSet::from([ix]);
             self.cursor = Some(ix);
         }
-        self.menu = Some(position);
+        self.menu = Some((position, crate::popup::Single::new()));
         self.notice = None;
         cx.notify();
     }
@@ -560,7 +565,7 @@ impl RecycleBin {
 
 impl Render for RecycleBin {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let wide = window.viewport_size().width >= FROM_COLUMN_FROM;
+        let wide = window.viewport_size().width >= from_column_from();
         let body = if let Some(error) = self.error.clone() {
             message(Icon::Trash, error, None)
         } else if !self.loaded {
@@ -580,7 +585,7 @@ impl Render for RecycleBin {
                 }),
             )
             .track_scroll(&self.scroll)
-            .pt(theme::S_4)
+            .pt(theme::s_4())
             .flex_1();
             div()
                 .relative()
@@ -677,12 +682,12 @@ impl RecycleBin {
         Some(
             div()
                 .absolute()
-                .right(theme::S_16)
-                .bottom(theme::S_16)
-                .w(px(360.))
+                .right(theme::s_16())
+                .bottom(theme::s_16())
+                .w(crate::theme::scaled_px(360.))
                 .flex()
                 .flex_col()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .children(toasts)
                 .into_any_element(),
         )
@@ -696,18 +701,18 @@ impl RecycleBin {
         let any = idle && !self.items.is_empty();
         div()
             .flex_none()
-            .h(theme::H_CTX)
-            .px(theme::S_12)
+            .h(theme::h_ctx())
+            .px(theme::s_12())
             .flex()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .border_b_1()
             .border_color(theme::line())
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .px(theme::S_8)
+                    .px(theme::s_8())
                     .truncate()
                     .text_color(theme::text_muted())
                     .child(status),
@@ -740,8 +745,8 @@ impl RecycleBin {
                 div()
                     .flex_none()
                     .w(px(1.))
-                    .h(theme::S_16)
-                    .mx(theme::S_4)
+                    .h(theme::s_16())
+                    .mx(theme::s_4())
                     .bg(theme::line()),
             )
             .child(
@@ -779,21 +784,21 @@ impl RecycleBin {
             .flex()
             .flex_none()
             .items_center()
-            .h(theme::H_HEADER)
-            .mx(theme::S_8)
-            .px(theme::S_12)
-            .gap(theme::S_12)
+            .h(theme::h_header())
+            .mx(theme::s_8())
+            .px(theme::s_12())
+            .gap(theme::s_12())
             .border_b_1()
             .border_color(theme::line())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
-            .child(div().w(theme::ICON).flex_none())
+            .child(div().w(theme::icon()).flex_none())
             .child(self.header_cell(t!("col.name"), Column::Name, None, cx))
             .when(wide, |d| {
                 d.child(self.header_cell(
                     t!("recycle.col_from"),
                     Column::From,
-                    Some(theme::COL_LOCATION),
+                    Some(theme::col_location()),
                     cx,
                 ))
             })
@@ -822,7 +827,7 @@ impl RecycleBin {
         let arrow = active.then(|| {
             svg()
                 .path(Icon::ChevronRight.path())
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .flex_none()
                 .text_color(theme::text_muted())
                 .with_transformation(gpui::Transformation::rotate(gpui::radians(
@@ -840,7 +845,7 @@ impl RecycleBin {
             .flex()
             .h_full()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .cursor_pointer()
             .hover(|s| s.text_color(theme::text()))
             .when(active, |d| {
@@ -900,15 +905,15 @@ impl RecycleBin {
                     .a11y_item(ix, selected, self.cursor == Some(ix), label)
                     .relative()
                     .w_full()
-                    .h(theme::H_ROW)
-                    .px(theme::S_12)
-                    .gap(theme::S_12)
+                    .h(theme::h_row())
+                    .px(theme::s_12())
+                    .gap(theme::s_12())
                     .flex()
                     .items_center()
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .when(selected, |d| d.bg(theme::selection()))
                     .when(!selected, |d| d.hover(|s| s.bg(theme::wash())))
-                    .child(kind_icon(kind, theme::ICON))
+                    .child(kind_icon(kind, theme::icon()))
                     .child(
                         div()
                             .flex_1()
@@ -919,7 +924,7 @@ impl RecycleBin {
                     .when(wide, |d| {
                         d.child(
                             div()
-                                .w(theme::COL_LOCATION)
+                                .w(theme::col_location())
                                 .flex_none()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
@@ -954,16 +959,34 @@ impl RecycleBin {
                             this.open_menu(ix, event.position, cx);
                         }),
                     );
-                Some(div().w_full().px(theme::S_8).child(row).into_any_element())
+                Some(
+                    div()
+                        .w_full()
+                        .px(theme::s_8())
+                        .child(row)
+                        .into_any_element(),
+                )
             })
             .collect()
     }
 
-    /// Context menu: restore, open original location (single selection), delete permanently.
-    fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let position = self.menu?;
+    /// Context menu: restore, open original location (single selection), delete permanently. It
+    /// is drawn in a window of its own (`popup.rs`); what stays here is the scrim that closes it.
+    fn render_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (position, popup) = self.menu.as_mut()?;
+        let at = crate::popup::to_screen(window, *position);
+        popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.menu.as_mut().map(|(_, popup)| popup),
+            |this, _, _, cx| Some(this.menu_panel(cx)),
+            |this, _, cx| {
+                this.menu = None;
+                cx.notify();
+            },
+            window,
+            cx,
+        );
         let viewport = window.viewport_size();
-        let one = self.selected.len() == 1;
         let scrim = deferred(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
@@ -990,16 +1013,22 @@ impl RecycleBin {
             ),
         )
         .with_priority(1);
-        let panel = div()
+        Some(scrim.into_any_element())
+    }
+
+    /// The context menu's rows, drawn in its own window.
+    fn menu_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let one = self.selected.len() == 1;
+        div()
             .id("recycle-menu")
             .role(gpui::Role::Menu)
             .occlude()
-            .w(MENU_W)
-            .p(theme::S_4)
+            .w(menu_w())
+            .p(theme::s_4())
             .flex()
             .flex_col()
-            .gap(theme::S_2)
-            .rounded(theme::R_8)
+            .gap(theme::s_2())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .child(
@@ -1025,8 +1054,8 @@ impl RecycleBin {
             .child(
                 div()
                     .h(px(1.))
-                    .mx(theme::S_4)
-                    .my(theme::S_2)
+                    .mx(theme::s_4())
+                    .my(theme::s_2())
                     .bg(theme::line()),
             )
             .child(
@@ -1037,15 +1066,8 @@ impl RecycleBin {
                 "recycle-menu-appear",
                 crate::motion::menu_enter(),
                 crate::motion::fade_in,
-            );
-        let menu = deferred(
-            anchored()
-                .position(position)
-                .snap_to_window_with_margin(theme::S_8)
-                .child(panel),
-        )
-        .with_priority(2);
-        Some(div().child(scrim).child(menu).into_any_element())
+            )
+            .into_any_element()
     }
 
     /// Confirmation dialog over the page: Enter confirms, Esc or clicking outside cancels.
@@ -1072,28 +1094,28 @@ impl RecycleBin {
                         div()
                             .id("recycle-ask")
                             .a11y(gpui::Role::AlertDialog, title.clone())
-                            .w(px(420.))
-                            .p(theme::S_20)
+                            .w(crate::theme::scaled_px(420.))
+                            .p(theme::s_20())
                             .flex()
                             .flex_col()
-                            .gap(theme::S_12)
-                            .rounded(theme::R_12)
+                            .gap(theme::s_12())
+                            .rounded(theme::r_12())
                             .bg(theme::overlay())
                             .shadow(theme::elev_3())
                             .on_click(|_, _, cx| cx.stop_propagation())
                             .child(
                                 div()
-                                    .text_size(theme::FS_15)
+                                    .text_size(theme::fs_15())
                                     .font_weight(theme::FW_STRONG)
                                     .child(title),
                             )
                             .child(div().text_color(theme::text_muted()).child(body))
                             .child(
                                 div()
-                                    .pt(theme::S_8)
+                                    .pt(theme::s_8())
                                     .flex()
                                     .justify_end()
-                                    .gap(theme::S_8)
+                                    .gap(theme::s_8())
                                     .child(
                                         dialog_button(
                                             "recycle-ask-cancel",
@@ -1141,22 +1163,22 @@ fn message(icon: Icon, title: SharedString, hint: Option<SharedString>) -> AnyEl
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .child(
             svg()
                 .path(icon.path())
-                .size(px(40.))
+                .size(crate::theme::scaled_px(40.))
                 .text_color(theme::text_disabled()),
         )
         .child(
             div()
-                .text_size(theme::FS_15)
+                .text_size(theme::fs_15())
                 .text_color(theme::text_muted())
                 .child(title),
         )
         .children(hint.map(|hint| {
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(hint)
         }))
@@ -1181,17 +1203,22 @@ fn command(
         .a11y_lazy(gpui::Role::Button, || label.to_string())
         .a11y_disabled(!enabled)
         .flex_none()
-        .h(theme::H_CTL)
-        .px(theme::S_8)
+        .h(theme::h_ctl())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .gap(theme::S_6)
-        .rounded(theme::R_8)
+        .gap(theme::s_6())
+        .rounded(theme::r_8())
         .text_color(color)
         .when(enabled, |d| {
             d.cursor_pointer().hover(|s| s.bg(theme::wash_strong()))
         })
-        .child(svg().path(icon.path()).size(theme::ICON).text_color(color))
+        .child(
+            svg()
+                .path(icon.path())
+                .size(theme::icon())
+                .text_color(color),
+        )
         .child(label.to_string())
 }
 
@@ -1209,19 +1236,19 @@ fn menu_row(
     div()
         .id(id)
         .a11y_lazy(gpui::Role::MenuItem, || label.to_string())
-        .h(theme::H_CTL)
-        .px(theme::S_8)
+        .h(theme::h_ctl())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .gap(theme::S_8)
-        .rounded(theme::R_4)
+        .gap(theme::s_8())
+        .rounded(theme::r_4())
         .cursor_pointer()
         .text_color(color)
         .hover(|s| s.bg(theme::wash_strong()))
         .child(
             svg()
                 .path(icon.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(if danger {
                     theme::danger()
                 } else {
@@ -1240,11 +1267,11 @@ fn dialog_button(
     div()
         .id(id)
         .a11y_button(label.clone())
-        .h(theme::H_CTL)
-        .px(theme::S_16)
+        .h(theme::h_ctl())
+        .px(theme::s_16())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(primary && danger, |d| {
             d.bg(theme::danger()).text_color(theme::on_signal())

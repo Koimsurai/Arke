@@ -16,15 +16,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnimationExt, AnyElement, Bounds, Context, DragMoveEvent, IntoElement, Pixels, Styled, Window,
-    div, prelude::*, px, svg,
+    AnimationExt, AnyElement, App, Bounds, Context, DragMoveEvent, ExternalPaths, IntoElement,
+    Pixels, Styled, Window, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
 use crate::assets::Icon;
+use crate::explorer::DraggedFiles;
 use crate::motion::Slide;
 use crate::theme;
 
+use super::pindrop::{self, PinArea, PinDrops as _};
 use super::sidebar::DraggedPin;
 use super::{DraggedTab, Workspace};
 
@@ -73,6 +75,11 @@ impl TabDrag {
     /// The pin drag ended (dropped or cancelled). Slides still running finish.
     pub(super) fn end_tile(&mut self) {
         self.tile = None;
+    }
+
+    /// A file drag ended: no tab is waiting to come forward.
+    pub(super) const fn end_spring(&mut self) {
+        self.spring = None;
     }
 }
 
@@ -140,12 +147,19 @@ impl Workspace {
         let horizontal = Self::horizontal_tabs(cx);
         let p = e.event.position;
         let b = e.bounds;
-        // The cursor must be on the tab strip (within this tab on the cross axis).
-        let inside = if horizontal {
-            p.y >= b.top() && p.y <= b.bottom()
-        } else {
-            p.x >= b.left() && p.x <= b.right()
-        };
+        // The cursor must be on the tab strip (within this tab on the cross axis), and among the
+        // tabs: on its way up to the favorites over the sidebar, the tab stays where it is.
+        let among_tabs = self
+            .tab_layout
+            .borrow()
+            .area()
+            .is_none_or(|area| area.contains(&p));
+        let inside = among_tabs
+            && if horizontal {
+                p.y >= b.top() && p.y <= b.bottom()
+            } else {
+                p.x >= b.left() && p.x <= b.right()
+            };
         let (pos, start, len) = if horizontal {
             (p.x, b.left(), b.size.width)
         } else {
@@ -223,6 +237,7 @@ impl Workspace {
         if !inside {
             if waiting == Some(id) {
                 self.tab_drag.spring = None;
+                cx.notify();
             }
             return;
         }
@@ -239,6 +254,7 @@ impl Workspace {
         self.tab_drag.serial += 1;
         let serial = self.tab_drag.serial;
         self.tab_drag.spring = Some((id, serial));
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SPRING_DELAY).await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -254,6 +270,65 @@ impl Workspace {
         .detach();
     }
 
+    /// The folder files dropped on tab `ix` go into: what its active side shows, unless a page
+    /// (Home, Settings, the Recycle Bin) covers it.
+    pub(super) fn tab_drop_folder(&self, ix: usize, cx: &App) -> Option<PathBuf> {
+        let view = self.tabs.get(ix)?.view();
+        if self.page_title(view.entity_id()).is_some() {
+            return None;
+        }
+        view.read(cx).current_path().map(Path::to_path_buf)
+    }
+
+    /// Files dragged onto tab `ix` (from Arke or from Windows) drop into `dest`, its folder, as on
+    /// a folder: highlighted, with the move or copy shown on the drag card and the same keys. The
+    /// tab comes forward after a short hover ([`Self::tab_drag_shell`]), so the list shows where
+    /// they go.
+    pub(super) fn with_tab_file_drop(
+        &self,
+        ix: usize,
+        dest: PathBuf,
+        row: gpui::Stateful<gpui::Div>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (check, hovered, external) = (dest.clone(), dest.clone(), dest.clone());
+        let view = self.tabs[ix].view().downgrade();
+        row.can_drop(move |value, _, cx| crate::explorer::accepts_drop(value, &check, cx))
+            .on_drag_move(move |e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                crate::explorer::report_drop_target(&hovered, e, cx);
+            })
+            .drag_over::<DraggedFiles>(|s, _, _, _| s.bg(theme::signal_wash()))
+            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(theme::signal_wash()))
+            .on_drop(move |dragged: &DraggedFiles, window, cx| {
+                crate::explorer::drop_into(dragged, dest.clone(), window, cx);
+            })
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                if let Some(view) = view.upgrade() {
+                    crate::explorer::drop_external_into(paths, external.clone(), &view, window, cx);
+                }
+            })
+    }
+
+    /// The bar filling under a tab while files hover over it, until it comes forward.
+    fn tab_spring_bar(&self, id: u64) -> Option<AnyElement> {
+        let (_, serial) = self.tab_drag.spring.filter(|(tab, _)| *tab == id)?;
+        Some(
+            div()
+                .absolute()
+                .left(theme::s_8())
+                .bottom_0()
+                .h(px(2.))
+                .rounded(theme::R_FULL)
+                .bg(theme::signal())
+                .debug_selector(|| "tab-spring-bar".to_owned())
+                .with_animation(
+                    ("tab-spring", serial),
+                    gpui::Animation::new(SPRING_DELAY),
+                    |el, t| el.w(gpui::relative(t * 0.9)),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// While an unpinned tab is being dragged: the drop zone that pins it. The caller places it.
     pub(super) fn pin_drop_zone(
         &self,
@@ -267,13 +342,13 @@ impl Workspace {
             div()
                 .id("tab-pin-drop")
                 .debug_selector(|| "tab-pin-drop".to_owned())
-                .h(theme::H_ROW)
+                .h(theme::h_row())
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_8)
-                .px(theme::S_8)
-                .rounded(theme::R_8)
+                .gap(theme::s_8())
+                .px(theme::s_8())
+                .rounded(theme::r_8())
                 .border_1()
                 .border_dashed()
                 .border_color(theme::signal_line())
@@ -282,7 +357,7 @@ impl Workspace {
                 .child(
                     svg()
                         .path(Icon::Pin.path())
-                        .size(theme::ICON)
+                        .size(theme::icon())
                         .flex_none()
                         .text_color(theme::signal()),
                 )
@@ -353,6 +428,8 @@ impl Workspace {
         };
         div()
             .id(("tab-slot", ix))
+            .relative()
+            .child(self.tab_slot_recorder(id))
             .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _: &mut Window, cx| {
                 this.on_tab_drag_move(id, e, cx);
             }))
@@ -364,6 +441,7 @@ impl Workspace {
                 this.spring_hover(id, e.bounds.contains(&e.event.position), window, cx);
             }))
             .child(inner)
+            .children(self.tab_spring_bar(id))
             .into_any_element()
     }
 }
@@ -463,15 +541,39 @@ impl Workspace {
             None => tile.into_any_element(),
         };
         let key = path.to_path_buf();
+        // A folder or tab over its edge (all of it, for a tab) goes in beside it
+        // (`workspace_pindrop.rs`).
+        let mark = self
+            .pin_mark
+            .filter(|m| self.pin_shown.is_some() && m.area == PinArea::Tiles && m.ix == ix)
+            .map(|m| pindrop::insertion_mark(true, m.before));
         div()
             .id(("tile-slot", ix))
             .debug_selector(move || format!("tile-slot-{ix}"))
+            .relative()
             .on_drag_move(cx.listener(
                 move |this, e: &DragMoveEvent<DraggedPin>, _: &mut Window, cx| {
                     this.on_tile_drag_move(&key, e, cx);
                 },
             ))
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.pin_hover(PinArea::Tiles, ix, e, cx);
+                }),
+            )
+            .on_drag_move(cx.listener(
+                move |this, e: &DragMoveEvent<crate::explorer::DraggedFiles>, _, cx| {
+                    this.pin_hover(PinArea::Tiles, ix, e, cx);
+                },
+            ))
+            .on_drag_move(cx.listener(
+                move |this, e: &DragMoveEvent<gpui::ExternalPaths>, _, cx| {
+                    this.pin_hover(PinArea::Tiles, ix, e, cx);
+                },
+            ))
+            .with_pin_drops(cx)
             .child(inner)
+            .children(mark)
             .into_any_element()
     }
 }

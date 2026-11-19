@@ -46,11 +46,23 @@ fn rows(input: &Entity<TextInput>, cx: &mut VisualTestContext) -> Option<Vec<(Ed
     input.read_with(cx, |input, _| input.menu_rows())
 }
 
-fn click_item(command: EditCommand, cx: &mut VisualTestContext) {
+/// The edit menu's window and where `command`'s row is drawn in it.
+fn menu_item(
+    command: EditCommand,
+    cx: &mut VisualTestContext,
+) -> (VisualTestContext, gpui::Bounds<gpui::Pixels>) {
     // Leaked: the lookup wants a `'static` name, and a test process is short-lived.
     let selector: &'static str = Box::leak(format!("text-input-menu-{command:?}").into_boxed_str());
-    let at = cx.debug_bounds(selector).expect("menu item drawn").center();
-    cx.simulate_click(at, Modifiers::none());
+    let popups = cx.update(|_, cx| crate::popup::open_popups(cx));
+    assert_eq!(popups.len(), 1, "the edit menu is in a window of its own");
+    let mut menu = VisualTestContext::from_window(popups[0].into(), &cx.cx);
+    let bounds = menu.debug_bounds(selector).expect("menu item drawn");
+    (menu, bounds)
+}
+
+fn click_item(command: EditCommand, cx: &mut VisualTestContext) {
+    let (mut menu, bounds) = menu_item(command, cx);
+    menu.simulate_click(bounds.center(), Modifiers::none());
     cx.run_until_parked();
 }
 
@@ -310,13 +322,9 @@ fn right_click_on_the_empty_search_box_gives_a_working_edit_menu(cx: &mut TestAp
     assert!(cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx)));
     let open = rows(&input, cx).expect("edit menu open");
     assert_eq!(enabled(&open), [E::Paste]);
-    let paste = cx
-        .debug_bounds("text-input-menu-Paste")
-        .expect("paste row drawn");
-    assert!(
-        panel.contains(&paste.center()),
-        "the row is where the panel would be: {panel:?} {paste:?}"
-    );
+    // The menu is in a window of its own, over the panel and everything else in the window.
+    let (_, paste) = menu_item(E::Paste, cx);
+    assert!(!paste.is_empty(), "paste row drawn over {panel:?}");
     click_item(E::Paste, cx);
     assert_eq!(text(&input, cx), "report");
     assert!(rows(&input, cx).is_none());
@@ -600,4 +608,56 @@ fn a_tab_completed_path_can_be_undone(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-z");
     assert_eq!(view.update(cx, |v, cx| v.path_text(cx)), r"C:\p\do");
     assert!(view.update(cx, |v, _| v.editing_path));
+}
+
+/// Ctrl with the arrows, Backspace and Delete works by word, as in a Windows edit box; in a path
+/// each folder name and each part of a file name is a word (#219).
+#[gpui::test]
+fn ctrl_moves_selects_and_erases_by_word(cx: &mut TestAppContext) {
+    let (view, cx) = rename_setup(cx);
+    cx.simulate_keystrokes("ctrl-l");
+    let input = path_input(&view, cx);
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input(r"C:\Users\me\report.final.docx");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("ctrl-backspace");
+    assert_eq!(text(&input, cx), r"C:\Users\me\report.final.");
+    cx.simulate_keystrokes("ctrl-backspace ctrl-backspace");
+    assert_eq!(text(&input, cx), r"C:\Users\me\");
+
+    // Ctrl+Right goes to the start of the next word; with Shift it selects up to there.
+    cx.simulate_keystrokes("home ctrl-right ctrl-shift-right");
+    cx.simulate_input(r"Docs\");
+    cx.run_until_parked();
+    assert_eq!(text(&input, cx), r"C:\Docs\me\");
+
+    cx.simulate_keystrokes("end ctrl-left ctrl-shift-left");
+    cx.simulate_input("x");
+    cx.run_until_parked();
+    assert_eq!(text(&input, cx), r"C:\xme\");
+
+    cx.simulate_keystrokes("home ctrl-delete");
+    assert_eq!(text(&input, cx), r"xme\");
+    cx.simulate_keystrokes("end shift-home backspace");
+    assert_eq!(text(&input, cx), "");
+    assert!(view.update(cx, |v, _| v.editing_path), "still editing");
+}
+
+#[test]
+fn word_boundaries() {
+    use crate::text_input::{next_word, previous_word};
+    let s = "hello  world";
+    assert_eq!(next_word(s, 0), 7);
+    assert_eq!(next_word(s, 3), 7);
+    assert_eq!(next_word(s, 7), s.len());
+    assert_eq!(previous_word(s, s.len()), 7);
+    assert_eq!(previous_word(s, 7), 0);
+    assert_eq!(previous_word(s, 6), 0);
+    assert_eq!(previous_word("", 0), 0);
+    assert_eq!(next_word("", 0), 0);
+    // A run of CJK is one word.
+    let cjk = "\u{8CC7}\u{6599}\u{593E} a";
+    assert_eq!(previous_word(cjk, 9), 0);
+    assert_eq!(next_word(cjk, 0), 10);
 }

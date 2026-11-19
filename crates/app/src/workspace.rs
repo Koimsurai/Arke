@@ -27,7 +27,7 @@ use crate::a11y::A11yExt as _;
 use crate::bench::Bench;
 use crate::explorer::{Explorer, ExplorerEvent, PaneInfo, Services, StartClock, kind_icon};
 use crate::net_dialog::{NetDialog, NetDialogEvent, NetDialogKind};
-use crate::palette::{Candidate, LocationPalette, PaletteEvent, Source, Target};
+use crate::palette::{Candidate, Command, LocationPalette, PaletteEvent, Source, Target};
 use crate::settings::{NewTabAction, SettingsStore, TabLayout};
 use crate::theme::{self, UiFont as _};
 
@@ -41,6 +41,10 @@ pub(crate) mod menuprefs;
 mod nav;
 #[path = "workspace_pages.rs"]
 mod pages;
+#[path = "workspace_pindrop.rs"]
+pub(crate) mod pindrop;
+#[path = "workspace_placename.rs"]
+mod place_rename;
 #[path = "workspace_rail.rs"]
 mod rail;
 #[path = "workspace_recycle.rs"]
@@ -53,10 +57,14 @@ mod saved;
 mod settings_panel;
 #[path = "workspace_shelf.rs"]
 mod shelf_view;
+#[path = "workspace_shortcuts.rs"]
+mod shortcuts;
 #[path = "workspace_sidebar.rs"]
 mod sidebar;
 #[path = "workspace_tabdrag.rs"]
 mod tabdrag;
+#[path = "workspace_tabmove.rs"]
+mod tabmove;
 #[path = "workspace_uninstall.rs"]
 mod uninstall_page;
 #[path = "workspace_update.rs"]
@@ -68,6 +76,7 @@ pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
 pub(crate) use sidebar::{leave_drive_everywhere, place_icon};
+pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
 /// window order on Windows (`window_stack` is `None` there), so each window records activation.
@@ -81,6 +90,8 @@ actions!(
     [
         NewTab,
         OpenPalette,
+        /// Ctrl+Shift+P: the same box, searching commands.
+        OpenCommandPalette,
         CloseTab,
         NextTab,
         PrevTab,
@@ -112,7 +123,9 @@ struct ClosedTab {
 }
 
 /// Minimum width of each side in dual pane.
-const PANE_MIN: gpui::Pixels = px(420.);
+fn pane_min() -> gpui::Pixels {
+    crate::theme::scaled_px(420.)
+}
 
 pub(crate) fn bind_keys(cx: &mut App) {
     settings_panel::bind_keys(cx);
@@ -122,6 +135,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let ctx = Some("Workspace");
     cx.bind_keys([
         KeyBinding::new("ctrl-t", OpenPalette, ctx),
+        KeyBinding::new("ctrl-shift-p", OpenCommandPalette, ctx),
         KeyBinding::new("ctrl-w", CloseTab, ctx),
         KeyBinding::new("ctrl-shift-t", ReopenClosedTab, ctx),
         KeyBinding::new("ctrl-f4", CloseTab, ctx),
@@ -272,21 +286,39 @@ struct DraggedTab {
 }
 
 impl Render for DraggedTab {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Over the favorites (the tiles or the list): what dropping there does.
+        let pin = pindrop::current(window, cx).map(|_| {
+            div()
+                .flex()
+                .items_center()
+                .gap(theme::s_4())
+                .pl(theme::s_4())
+                .text_size(theme::fs_12())
+                .text_color(theme::text_muted())
+                .child(
+                    gpui::svg()
+                        .path(crate::assets::Icon::Pin.path())
+                        .size(theme::icon_sm())
+                        .text_color(theme::signal()),
+                )
+                .child(pindrop::action_label())
+        });
         div()
-            .h(theme::H_ROW)
-            .px(theme::S_8)
+            .h(theme::h_row())
+            .px(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
-            .child(kind_icon(FileKind::Folder, theme::ICON))
+            .child(kind_icon(FileKind::Folder, theme::icon()))
             .child(self.title.clone())
+            .children(pin)
     }
 }
 
@@ -321,8 +353,12 @@ pub(crate) struct Workspace {
     /// Folders a background check found to have no subfolders (no chevron in the tree).
     tree_leaf: HashSet<PathBuf>,
     sidebar_menu: Option<sidebar::SidebarMenu>,
+    /// The window a settings dropdown's list was drawn in last frame, drawn again after this one.
+    dropdown_window: Option<gpui::AnyWindowHandle>,
     /// A tab that flashes once (its id, and a serial so each flash animates anew): the folder a
     /// middle click asked for is already open there.
+    /// Dragging the sidebar edge: the live width is kept in the theme and saved on release.
+    pub(crate) sidebar_resizing: bool,
     tab_flash: Option<(u64, u32)>,
     pub(crate) palette: Option<(Entity<LocationPalette>, Subscription)>,
     /// The dismissed palette fading out (see `motion::Leaving`).
@@ -344,12 +380,19 @@ pub(crate) struct Workspace {
     startup: Startup,
     /// Dragging the divider between the panes.
     resizing: bool,
+    /// Where the title row above the panes was laid out (the active pane draws it).
+    title_layout: crate::explorer::TitleLayout,
     /// Tab being dragged; dropping on the right half of the content area splits, like Arc.
     dragging_tab: Option<usize>,
     /// Animation and hit testing for tab and favorite tile reordering.
     tab_drag: tabdrag::TabDrag,
+    /// Where the tabs were drawn last, for a tab dropped here from another window.
+    tab_layout: Rc<std::cell::RefCell<tabmove::TabLayoutCache>>,
     /// Dragging a pinned folder; an empty list needs a drop target.
     dragging_pin: bool,
+    /// Where dragged folders would be added to the sidebar, as of this frame (`pindrop.rs`).
+    pin_shown: Option<crate::settings::PinSlot>,
+    pin_mark: Option<pindrop::Mark>,
     /// The shelf's items are shown in the sidebar.
     shelf_open: bool,
     /// The collapsed sidebar is open over the content (pointer resting on it, or the Shelf
@@ -371,6 +414,8 @@ pub(crate) struct Workspace {
     _appearance: Subscription,
     /// Rechecks network folders when Arke regains focus.
     _activation: Subscription,
+    /// Any key in this window closes the sidebar, tab or history menu, wherever the focus is.
+    _menu_keys: Subscription,
     _settings: Subscription,
     /// Back and forward across tabs.
     nav: nav::NavState,
@@ -504,7 +549,7 @@ pub(crate) fn chosen_accent(accent: crate::settings::Accent) -> Option<u32> {
 
 /// Applies light/dark mode and accent. Mode priority: ARKE_THEME, then settings, then system.
 /// With Mica the window frame follows too, so Mica picks up the same color.
-fn apply_theme(window: &mut Window, cx: &mut App) {
+pub(crate) fn apply_theme(window: &mut Window, cx: &mut App) {
     let forced = std::env::var("ARKE_THEME")
         .ok()
         .and_then(|v| match v.as_str() {
@@ -525,6 +570,8 @@ fn apply_theme(window: &mut Window, cx: &mut App) {
     });
     crate::prefs::apply(&look);
     theme::set_font(&look.font);
+    theme::set_scale(look.ui_scale);
+    theme::set_sidebar_base(look.sidebar_width);
     theme::set_backdrop(look.background_image.clone().map(|path| {
         (
             path,
@@ -589,6 +636,22 @@ impl Workspace {
                 window.refresh();
                 cx.notify();
             });
+        // Any key closes the sidebar, tab or history menu first: what it does (Ctrl+W, Alt+Left,
+        // Backspace) may change the tabs or history the menu's rows point at. Taken before the key
+        // is dispatched, so it also works with the focus outside the workspace's elements.
+        let this_window = window.window_handle();
+        let weak = cx.entity().downgrade();
+        let menu_keys = cx.intercept_keystrokes(move |_, window, cx| {
+            if window.window_handle() != this_window {
+                return;
+            }
+            weak.update(cx, |this, cx| {
+                if this.sidebar_menu.take().is_some() {
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
         // On window activation, recheck visible network folders once. No polling; watchers cover the rest.
         let activation = cx.observe_window_activation(window, |this: &mut Self, window, cx| {
             if !window.is_window_active() {
@@ -645,6 +708,7 @@ impl Workspace {
             tree_children: HashMap::new(),
             tree_leaf: HashSet::new(),
             sidebar_menu: None,
+            dropdown_window: None,
             tab_flash: None,
             palette: None,
             closing_palette: None,
@@ -661,21 +725,27 @@ impl Workspace {
             } else {
                 Startup::Done
             },
+            sidebar_resizing: false,
             resizing: false,
+            title_layout: crate::explorer::TitleLayout::default(),
             dragging_tab: None,
             tab_drag: tabdrag::TabDrag::default(),
+            tab_layout: Rc::default(),
             dragging_pin: false,
+            pin_shown: None,
+            pin_mark: None,
             shelf_open: false,
             rail_peek: false,
             rail_hover: 0,
             peek_closing: false,
             sidebar_ui: rail::SidebarUi::default(),
             _shelf: shelf,
-            last_viewport_width: px(1200.),
+            last_viewport_width: crate::theme::scaled_px(1200.),
             window_title: String::new(),
             shared_preview: None,
             _appearance: appearance,
             _activation: activation,
+            _menu_keys: menu_keys,
             _settings: settings,
             nav: nav::NavState::default(),
             saved_session: None,
@@ -892,7 +962,7 @@ impl Workspace {
         if startup == Startup::AroundAsked {
             // Opened on a folder before the settings were read: the last session comes back
             // around it, as when they are read in time (`open_explorer_window`).
-            if start != crate::settings::StartLocation::LastSession || cx.windows().len() > 1 {
+            if start != crate::settings::StartLocation::LastSession || other_explorer_windows(cx) {
                 return;
             }
             let mut others = store.settings.last_windows();
@@ -927,7 +997,7 @@ impl Workspace {
             crate::settings::StartLocation::LastSession => {
                 // The last tabs are already open in another window (restoring them again would
                 // duplicate them): a new window starts on Home instead (#178).
-                if cx.windows().len() > 1 {
+                if other_explorer_windows(cx) {
                     self.open_home_as(false, true, window, cx);
                     return;
                 }
@@ -1162,6 +1232,7 @@ impl Workspace {
                 self.pane_navigated(tab_ix, pane_ix, path, cx);
             }
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
+            ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::ToggleCompare => self.toggle_compare(tab_ix, cx),
             ExplorerEvent::SelectDifferences => self.select_differences(tab_ix, cx),
             ExplorerEvent::RemoteChanged(path) => {
@@ -1834,9 +1905,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Before paint, gives each pane its layout info (split, active, caption buttons, the other side's folder).
+    /// Before paint, gives each pane its layout info (split, active, the other side's folder).
     fn sync_panes(&mut self, cx: &mut Context<Self>) {
-        let horizontal = Self::horizontal_tabs(cx);
         let tab = &self.tabs[self.active];
         let split = tab.is_split();
         // Split view shows one preview for the tab, at its right end, following the active side.
@@ -1863,10 +1933,6 @@ impl Workspace {
             let info = PaneInfo {
                 split,
                 active: i == tab.active_pane,
-                // With horizontal tabs the caption buttons live on the tab strip.
-                show_caption: i == last && !horizontal,
-                show_ops: i == last,
-                nav_in_sidebar: !horizontal,
                 peer: if split {
                     paths[1 - i.min(1)].clone()
                 } else {
@@ -1889,12 +1955,78 @@ impl Workspace {
         self.shared_preview = shared;
     }
 
+    /// Saves the sidebar width the drag ended on.
+    pub(crate) fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_resizing = false;
+        let width = theme::sidebar_base();
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_width = width, cx));
+        cx.notify();
+    }
+
+    /// Double-click on the sidebar edge: back to the default width.
+    pub(crate) fn reset_sidebar_width(cx: &mut Context<Self>) {
+        theme::set_sidebar_base(0.);
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_width = 0., cx));
+        cx.notify();
+    }
+
+    /// Drag handle on the full sidebar's right edge (not drawn for the collapsed rail or while it
+    /// slides or peeks).
+    fn render_sidebar_edge(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if theme::sidebar_collapsed() || self.sidebar_ui.motion.is_some() {
+            return None;
+        }
+        let active = self.sidebar_resizing;
+        Some(
+            div()
+                .id("sidebar-edge")
+                .debug_selector(|| "sidebar-edge".to_owned())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(theme::sidebar_full_width() - px(4.))
+                .w(px(8.))
+                .cursor_col_resize()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        if event.click_count >= 2 {
+                            Self::reset_sidebar_width(cx);
+                        } else {
+                            this.sidebar_resizing = true;
+                        }
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(
+                    div()
+                        .h_full()
+                        .w(px(2.))
+                        .mx_auto()
+                        .when(active, |d| d.bg(theme::signal()))
+                        .hover(|s| s.bg(theme::signal_line())),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn on_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.sidebar_resizing {
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.finish_sidebar_drag(cx);
+                return;
+            }
+            let base = f32::from(event.position.x) * 100. / theme::scale_pct() as f32;
+            if theme::set_sidebar_base(base) {
+                cx.notify();
+            }
+            return;
+        }
         if !self.resizing {
             return;
         }
@@ -1908,8 +2040,8 @@ impl Workspace {
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
         let width = window.viewport_size().width - theme::sidebar_width() - reserve;
         let ratio = (event.position.x - theme::sidebar_width()) / width;
-        // Keep at least PANE_MIN per side so the top bar and columns do not get crushed.
-        let min = (PANE_MIN / width).min(0.5);
+        // Keep at least pane_min() per side so the top bar and columns do not get crushed.
+        let min = (pane_min() / width).min(0.5);
         self.tabs[self.active].ratio = ratio.clamp(min, 1. - min);
         cx.notify();
     }
@@ -1920,13 +2052,42 @@ impl Workspace {
     /// or on the current folder, as set in settings (#90).
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
         match SettingsStore::global(cx).read(cx).settings.new_tab {
-            NewTabAction::GoToFolder => self.show_palette(window, cx),
+            NewTabAction::GoToFolder => self.show_palette(false, window, cx),
             NewTabAction::Home => self.open_home_tab(window, cx),
             NewTabAction::CurrentFolder => self.new_tab(&NewTab, window, cx),
         }
     }
 
-    fn show_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ctrl+Shift+P: the box for commands, or the open one switched to commands.
+    fn open_command_palette(
+        &mut self,
+        _: &OpenCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.palette {
+            Some((palette, _)) => palette.update(cx, LocationPalette::enter_commands),
+            None => self.show_palette(true, window, cx),
+        }
+    }
+
+    /// Runs a command from the palette: the box closes first, so it runs where focus returns to
+    /// (the active pane).
+    fn run_command(id: &str, window: &mut Window, cx: &mut App) {
+        let Some(command) = crate::commands::find(id) else {
+            return;
+        };
+        SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(
+                |s| crate::commands::remember(&mut s.recent_commands, id),
+                cx,
+            );
+        });
+        let action = command.action();
+        window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+    }
+
+    fn show_palette(&mut self, commands: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.is_some() {
             return;
         }
@@ -1991,7 +2152,23 @@ impl Workspace {
             );
         }
         let shell = Arc::clone(&self.services.shell);
-        let palette = cx.new(|cx| LocationPalette::new(current, candidates, shell, window, cx));
+        let settings = SettingsStore::global(cx).read(cx).settings.clone();
+        let command_rows = crate::commands::palette_order(&settings.recent_commands)
+            .into_iter()
+            .map(|c| Command {
+                id: c.id,
+                label: c.label(),
+                shortcut: crate::commands::shown_key(c, &settings.shortcuts),
+            })
+            .collect();
+        let palette = cx.new(|cx| {
+            let mut palette =
+                LocationPalette::new(current, candidates, command_rows, shell, window, cx);
+            if commands {
+                palette.enter_commands(cx);
+            }
+            palette
+        });
         let subscription = cx.subscribe_in(&palette, window, Self::on_palette_event);
         self.palette = Some((palette, subscription));
         cx.notify();
@@ -2042,6 +2219,10 @@ impl Workspace {
                 self.open_saved_workspace(name, window, cx);
                 return;
             }
+            Target::Command(id) => {
+                Self::run_command(id, window, cx);
+                return;
+            }
         };
 
         if *split {
@@ -2068,13 +2249,33 @@ impl Workspace {
 
     // --- Pane area ---
 
-    fn render_panes(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The title row (search box, window buttons) over the tab's panes. The active pane draws it,
+    /// with its own search box; it spans both panes of a split, so splitting doesn't move it.
+    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let view = self.active_view().clone();
+        let title = self.title_layout.clone();
+        let horizontal = Self::horizontal_tabs(cx);
+        let title_row = view.update(cx, |e, cx| {
+            e.render_title_row(&title, horizontal, window, cx)
+        });
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(title_row)
+            .child(self.render_pane_area(cx))
+            .into_any_element()
+    }
+
+    fn render_pane_area(&self, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[self.active];
         if !tab.is_split() {
             return div()
                 .flex_1()
-                .min_w_0()
-                .h_full()
+                .min_h_0()
+                .w_full()
                 .child(tab.panes[0].view.clone())
                 .into_any_element();
         }
@@ -2085,10 +2286,10 @@ impl Workspace {
                 .id("pane-gutter")
                 .group("pane-gutter")
                 .absolute()
-                .top(theme::H_BAR)
-                .bottom(theme::S_8)
-                .left(-theme::S_12 + px(2.))
-                .w(theme::S_12)
+                .top_0()
+                .bottom(theme::s_8())
+                .left(-theme::s_12() + px(2.))
+                .w(theme::s_12())
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2109,8 +2310,8 @@ impl Workspace {
                 }))
                 .child(
                     div()
-                        .w(px(3.))
-                        .h(theme::S_32 + theme::S_8)
+                        .w(crate::theme::scaled_px(3.))
+                        .h(theme::s_32() + theme::s_8())
                         .rounded(theme::R_FULL)
                         .bg(if resizing {
                             theme::signal()
@@ -2121,7 +2322,7 @@ impl Workspace {
                 ),
         );
         // The divider's ratio applies to what the shared preview leaves. The right pane's box runs
-        // on under the preview (its top bar spans the tab), and the preview sits on top of it.
+        // on under the preview, and the preview sits on top of it.
         let reserve = self
             .shared_preview
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
@@ -2131,9 +2332,9 @@ impl Workspace {
             Some(
                 div()
                     .absolute()
-                    .top(theme::H_BAR)
-                    .bottom(theme::S_8)
-                    .right(theme::S_8)
+                    .top_0()
+                    .bottom(theme::s_8())
+                    .right(theme::s_8())
                     .w(shared.width)
                     .child(preview),
             )
@@ -2142,8 +2343,8 @@ impl Workspace {
             .relative()
             .flex()
             .flex_1()
-            .min_w_0()
-            .h_full()
+            .min_h_0()
+            .w_full()
             .child(
                 div()
                     .h_full()
@@ -2181,17 +2382,17 @@ impl Workspace {
                 .id("split-drop-zone")
                 .absolute()
                 .top(if Self::horizontal_tabs(cx) {
-                    theme::H_BAR + theme::H_BAR
+                    theme::h_bar() + theme::h_bar()
                 } else {
-                    theme::H_BAR
+                    theme::h_bar()
                 })
-                .bottom(theme::S_8)
-                .right(theme::S_8)
-                .w((self.panes_width_hint() - theme::S_8) / 2.)
+                .bottom(theme::s_8())
+                .right(theme::s_8())
+                .w((self.panes_width_hint() - theme::s_8()) / 2.)
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_12)
+                .rounded(theme::r_12())
                 .border_2()
                 .border_color(theme::signal_line())
                 .bg(theme::signal_wash())
@@ -2314,6 +2515,8 @@ impl Workspace {
             self.dragging_pin = false;
             self.dragging_tab = None;
             self.tab_drag.end_tile();
+            self.tab_drag.end_spring();
+            pindrop::clear(cx);
         }
     }
 }
@@ -2332,8 +2535,14 @@ impl Render for Workspace {
         self.sync_window_title(window, cx);
         self.drop_stale_menu();
         note_menu_open(window, self.sidebar_menu.is_some());
+        let sidebar_menu = self.render_sidebar_menu(window, cx);
+        // Opened and redrawn after this frame, with the list the settings page draws in it.
+        self.sync_dropdown_popup(window, cx);
         self.after_drag(cx);
         self.tab_drag.frame();
+        self.tab_layout.borrow_mut().clear();
+        self.pin_shown = pindrop::current(window, cx);
+        self.pin_mark = pindrop::current_mark(window, cx);
         self.sync_locks(cx);
         self.sync_panes(cx);
         self.settings_follow_navigation(cx);
@@ -2360,14 +2569,14 @@ impl Render for Workspace {
             // crossfade. Their icons sit in different places, so swapping one for the other at
             // the end would read as a jump.
             let (from, to) = if collapsing {
-                (theme::SIDEBAR_W, theme::RAIL_W)
+                (theme::sidebar_full_width(), theme::rail_w())
             } else {
-                (theme::RAIL_W, theme::SIDEBAR_W)
+                (theme::rail_w(), theme::sidebar_full_width())
             };
             let full = div()
                 .id("sidebar-slide-full")
                 .debug_selector(|| "sidebar-slide-full".to_owned())
-                .w(theme::SIDEBAR_W)
+                .w(theme::sidebar_full_width())
                 .flex_none()
                 .h_full()
                 .flex()
@@ -2382,7 +2591,7 @@ impl Render for Workspace {
                 .top_0()
                 .left_0()
                 .h_full()
-                .w(theme::RAIL_W)
+                .w(theme::rail_w())
                 .child(self.render_rail(cx));
             let fade = |el: gpui::Stateful<gpui::Div>, name: &'static str, going: bool| {
                 gpui::AnimationExt::with_animation(
@@ -2415,6 +2624,7 @@ impl Render for Workspace {
             .into_any_element()
         };
         let body = div()
+            .relative()
             .flex()
             .flex_1()
             .min_h_0()
@@ -2431,12 +2641,13 @@ impl Render for Workspace {
                                 page
                             } else {
                                 self.hand_start_clock(start_clock, cx);
-                                self.render_panes(cx)
+                                self.render_panes(window, cx)
                             }
                         }
                     },
                 },
-            });
+            })
+            .children(self.render_sidebar_edge(cx));
         div()
             .id("workspace")
             .key_context("Workspace")
@@ -2447,14 +2658,18 @@ impl Render for Workspace {
             .bg(theme::frame())
             .text_color(theme::text())
             .ui_font()
-            .text_size(theme::FS_14)
-            .when(self.resizing, gpui::Styled::cursor_col_resize)
+            .text_size(theme::fs_14())
+            .when(
+                self.resizing || self.sidebar_resizing,
+                gpui::Styled::cursor_col_resize,
+            )
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
                 this.peek_pointer_moved(e, cx);
             }))
             .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_active))
             .on_action(cx.listener(Self::reopen_closed_tab))
@@ -2473,13 +2688,6 @@ impl Render for Workspace {
                 this.open_workspaces(window, cx);
             }))
             .on_key_down(cx.listener(Self::on_key_down))
-            // Any key closes the sidebar, tab or history menu first: what it does (Ctrl+W,
-            // Alt+Left, Backspace) may change the tabs or history the menu's rows point at.
-            .capture_key_down(cx.listener(|this, _: &KeyDownEvent, _, cx| {
-                if this.sidebar_menu.take().is_some() {
-                    cx.notify();
-                }
-            }))
             .on_action(cx.listener(|this, a: &crate::explorer::FocusComputerSearch, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.focus_computer_search(a, window, cx));
             }))
@@ -2565,6 +2773,9 @@ impl Render for Workspace {
                         this.resizing = false;
                         cx.notify();
                     }
+                    if this.sidebar_resizing {
+                        this.finish_sidebar_drag(cx);
+                    }
                 }),
             )
             .when(horizontal, |d| d.child(self.render_tab_strip(window, cx)))
@@ -2579,17 +2790,18 @@ impl Render for Workspace {
                     div()
                         .occlude()
                         .absolute()
-                        .top(theme::H_BAR + theme::S_4)
-                        .left(theme::S_8)
-                        .w(theme::SIDEBAR_W - theme::S_16)
-                        .rounded(theme::R_8)
+                        .top(theme::h_bar() + theme::s_4())
+                        .left(theme::s_8())
+                        .w(theme::sidebar_full_width() - theme::s_16())
+                        .rounded(theme::r_8())
                         .bg(theme::overlay())
                         .shadow(theme::elev_float())
                         .child(zone)
                 }))
             })
             .children(self.render_drag_out_watch(cx))
-            .children(self.render_sidebar_menu(cx))
+            .children(self.render_tab_drop_watch(cx))
+            .children(sidebar_menu)
             .children(welcome::welcome_card(cx))
             .children(update_page::update_notice(cx))
             .children(self.net_dialog.as_ref().map(|slot| slot.dialog.clone()))
@@ -2603,7 +2815,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .pt(px(96.))
+                    .pt(crate::theme::scaled_px(96.))
                     // A light scrim over the whole window (sidebar and title bar too), like
                     // Quick Look; it occludes so the list underneath shows no hover.
                     .occlude()
@@ -2636,7 +2848,7 @@ impl Render for Workspace {
                                 .flex()
                                 .flex_col()
                                 .items_center()
-                                .pt(px(96.))
+                                .pt(crate::theme::scaled_px(96.))
                                 .bg(theme::scrim())
                                 .child(crate::motion::inert(div().child(ghost.value.clone()))),
                             ghost.id("palette-leave"),
@@ -2680,14 +2892,14 @@ impl Workspace {
             }
         };
         div()
-            .w(theme::SIDEBAR_W)
-            .h(theme::H_BAR)
+            .w(theme::sidebar_full_width())
+            .h(theme::h_bar())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             // Same left edge as the sidebar items below.
-            .pl(theme::S_12)
+            .pl(theme::s_12())
             .child(crate::brand::sidebar_mark())
             .child(if self.settings_open()
                 || self.recycle_open()
@@ -2746,7 +2958,7 @@ impl Workspace {
                 nav(|e, w, cx| e.refresh(&Refresh, w, cx)),
             ))
             .child(drag_area("brand", cx).h_full().flex_1().min_w_0())
-            .child(div().pr(theme::S_8).child(Self::sidebar_toggle(cx)))
+            .child(div().pr(theme::s_8()).child(Self::sidebar_toggle(cx)))
     }
 
     /// Horizontal tabs: tabs on the top row like a browser, caption buttons on the far right.
@@ -2756,43 +2968,49 @@ impl Workspace {
                 // Pinned tabs are narrow and don't shrink, like a browser's.
                 let pinned = self.tabs[ix].pinned;
                 div()
-                    .when(pinned, |d| d.w(px(132.)).flex_none())
-                    .when(!pinned, |d| d.w(px(200.)).min_w(px(96.)).flex_shrink(1.))
+                    .when(pinned, |d| d.w(crate::theme::scaled_px(132.)).flex_none())
+                    .when(!pinned, |d| {
+                        d.w(crate::theme::scaled_px(200.))
+                            .min_w(crate::theme::scaled_px(96.))
+                            .flex_shrink(1.)
+                    })
                     .child(self.render_tab(ix, cx))
                     .into_any_element()
             })
             .collect();
         div()
             .id("tab-strip")
+            .relative()
+            .child(self.tab_area_recorder(tabmove::AreaPart::Strip))
             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
             // Dropping a tab between tabs or on the empty space to the right moves it to the end.
             .on_drop(cx.listener(Self::drop_tab_at_end))
-            .h(theme::H_BAR)
-            .pr(theme::S_8)
+            .h(theme::h_bar())
+            .pr(theme::s_8())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             // Collapsed, the toggle is centred over the rail's icons.
             .map(|d| {
                 if theme::sidebar_collapsed() {
                     d.child(
                         div()
-                            .w(theme::RAIL_W)
+                            .w(theme::rail_w())
                             .flex_none()
                             .flex()
                             .justify_center()
                             .child(Self::sidebar_toggle(cx)),
                     )
                 } else {
-                    d.pl(theme::S_8).child(Self::sidebar_toggle(cx))
+                    d.pl(theme::s_8()).child(Self::sidebar_toggle(cx))
                 }
             })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .min_w_0()
                     .overflow_hidden()
                     .children(tabs),
@@ -2802,18 +3020,18 @@ impl Workspace {
                     .id("strip-new-tab")
                     .a11y_button(t!("sidebar.new_tab"))
                     .aria_keyshortcuts("Ctrl+T")
-                    .size(theme::H_CTL)
+                    .size(theme::h_ctl())
                     .flex()
                     .flex_none()
                     .items_center()
                     .justify_center()
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::wash_strong()))
                     .child(
                         gpui::svg()
                             .path(crate::assets::Icon::Plus.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(theme::text_muted()),
                     )
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -2823,7 +3041,7 @@ impl Workspace {
             .child(
                 drag_area("strip-drag", cx)
                     .flex_1()
-                    .min_w(theme::S_32)
+                    .min_w(theme::s_32())
                     .h_full(),
             )
             .child(Self::workspaces_button(cx))
@@ -2882,15 +3100,27 @@ fn note_menu_open(window: &Window, open: bool) {
     });
 }
 
+/// Whether another Arke window is open besides this one. Menus open in windows of their own
+/// (`popup.rs`), so not every window counts.
+fn other_explorer_windows(cx: &App) -> bool {
+    cx.windows()
+        .iter()
+        .filter(|w| w.downcast::<Workspace>().is_some())
+        .count()
+        > 1
+}
+
 pub(crate) fn tooltips_hidden(window: &Window) -> bool {
     let id = window.window_handle().window_id();
     MENU_OPEN.with_borrow(|set| set.contains(&id))
 }
 
 /// Space between a control and a tooltip placed below it.
-const TOOLTIP_GAP: gpui::Pixels = theme::S_8;
+fn tooltip_gap() -> gpui::Pixels {
+    theme::s_8()
+}
 
-/// Text tooltip that sits [`TOOLTIP_GAP`] below its control instead of at the mouse, so it never
+/// Text tooltip that sits [`tooltip_gap()`] below its control instead of at the mouse, so it never
 /// covers the neighbouring buttons in a toolbar. `pad` is the empty space above the card, from
 /// where gpui puts tooltips (just below the mouse) down to the control's bottom edge plus the gap.
 pub(crate) struct TooltipBelow {
@@ -2932,7 +3162,7 @@ pub(crate) trait TooltipBelowExt:
             let top = window.mouse_position().y + px(1.);
             let pad = anchor
                 .get()
-                .map_or(px(0.), |b| (b.bottom() + TOOLTIP_GAP - top).max(px(0.)));
+                .map_or(px(0.), |b| (b.bottom() + tooltip_gap() - top).max(px(0.)));
             let text = text.clone();
             cx.new(|_| TooltipBelow { text, pad }).into()
         })
@@ -2960,14 +3190,14 @@ fn tooltip_card(text: &SharedString) -> gpui::Div {
     // Tooltips lay out at minimum size (max_w has no effect), so long text gets an explicit width to wrap.
     let long = text.chars().count() > 48;
     div()
-        .px(theme::S_8)
-        .py(theme::S_4)
-        .when(long, |d| d.w(theme::TOOLTIP_MAX_W))
-        .rounded(theme::R_8)
+        .px(theme::s_8())
+        .py(theme::s_4())
+        .when(long, |d| d.w(theme::tooltip_max_w()))
+        .rounded(theme::r_8())
         .bg(theme::overlay())
         .shadow(theme::elev_tooltip())
         .ui_font()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text())
         .child(text.clone())
 }

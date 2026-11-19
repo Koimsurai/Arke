@@ -26,7 +26,7 @@ fn apply_prefs(cx: &mut VisualTestContext) {
 fn header_x(view: &Entity<Explorer>, cx: &mut VisualTestContext, col: Col) -> (Pixels, Pixels) {
     let columns = view.update(cx, |v, _| v.header_columns_for_test());
     let bounds = view.update(cx, |v, _| v.list_bounds_for_test());
-    let y = bounds.top() - crate::theme::H_HEADER / 2.;
+    let y = bounds.top() - crate::theme::h_header() / 2.;
     columns.iter().find(|(c, _, _)| *c == col).map_or_else(
         || panic!("{col:?} not in the header: {columns:?}"),
         |&(_, left, width)| (left + width / 2., y),
@@ -37,10 +37,10 @@ fn header_x(view: &Entity<Explorer>, cx: &mut VisualTestContext, col: Col) -> (P
 fn divider_x(view: &Entity<Explorer>, cx: &mut VisualTestContext, col: Col) -> (Pixels, Pixels) {
     let columns = view.update(cx, |v, _| v.header_columns_for_test());
     let bounds = view.update(cx, |v, _| v.list_bounds_for_test());
-    let y = bounds.top() - crate::theme::H_HEADER / 2.;
+    let y = bounds.top() - crate::theme::h_header() / 2.;
     columns.iter().find(|(c, _, _)| *c == col).map_or_else(
         || panic!("{col:?} not in the header: {columns:?}"),
-        |&(_, left, width)| (left + width + crate::theme::S_12 / 2., y),
+        |&(_, left, width)| (left + width + crate::theme::s_12() / 2., y),
     )
 }
 
@@ -331,7 +331,8 @@ fn double_clicking_a_divider_fits_the_column(cx: &mut TestAppContext) {
     // The test text system draws every character 0.6 em wide: the icon and its gap, the long
     // name at 14 px and a little air.
     let chars = f32::from(u16::try_from(long.len()).unwrap());
-    let want = (crate::theme::ICON + crate::theme::S_12 + px(chars * 14. * 0.6) + px(4.)).ceil();
+    let want =
+        (crate::theme::icon() + crate::theme::s_12() + px(chars * 14. * 0.6) + px(4.)).ceil();
     let name = columns(&view, cx)[0].2;
     assert_eq!(name, want);
     let saved = f32::from(want) as u16;
@@ -339,7 +340,7 @@ fn double_clicking_a_divider_fits_the_column(cx: &mut TestAppContext) {
     // Type fits its widest label ("TXT File" or the like), narrower than its default.
     double_click(&view, cx, Col::Type);
     let fitted = crate::prefs::width(Col::Type);
-    assert!(fitted < crate::theme::COL_TYPE, "{fitted:?}");
+    assert!(fitted < crate::theme::col_type(), "{fitted:?}");
     assert_eq!(
         saved_width(cx, Col::Type).map(|w| px(f32::from(w))),
         Some(fitted)
@@ -428,11 +429,11 @@ fn columns_fit_beside_the_preview_pane(cx: &mut TestAppContext) {
     let widths = [140., 149., 149., 115.].map(|w| Some(px(w)));
     assert_eq!(hand_sized(cx), widths);
     assert_eq!(saved_width(cx, Col::Size), Some(115));
-    assert_eq!(columns(&view, cx)[0].2, crate::theme::COL_NAME);
+    assert_eq!(columns(&view, cx)[0].2, crate::theme::col_name());
 
     // Wider still: Name stays at its minimum, and the list scrolls to its last column.
     drag_preview_edge(cx, px(-150.));
-    assert_eq!(columns(&view, cx)[0].2, crate::theme::COL_NAME);
+    assert_eq!(columns(&view, cx)[0].2, crate::theme::col_name());
     assert_eq!(hand_sized(cx), widths);
     assert!(scroll_max(cx) > px(0.), "too wide for the list: it scrolls");
     let list = view.update(cx, |v, _| v.list_bounds_for_test());

@@ -807,7 +807,21 @@ impl Platform for WindowsPlatform {
         if !self.is_windowed() {
             return Err(anyhow!("cannot open windows while headless"));
         }
-        let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
+        // Arke: a popup is owned by the window it is anchored to.
+        let popup_owner = match &options.kind {
+            WindowKind::AnchoredPopup(popup) => self
+                .raw_window_handles
+                .read()
+                .iter()
+                .map(TrackedWindow::as_raw)
+                .find(|&hwnd| {
+                    self.window_from_hwnd(hwnd)
+                        .is_some_and(|window| window.handle == popup.parent)
+                }),
+            _ => None,
+        };
+        let window =
+            WindowsWindow::new(handle, options, self.generate_creation_info(), popup_owner)?;
         let handle = window.get_raw_handle();
         self.raw_window_handles.write().push(TrackedWindow {
             handle: handle.into(),

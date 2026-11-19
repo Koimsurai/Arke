@@ -25,7 +25,7 @@ pub enum NavKind {
 }
 
 /// Back and forward stacks of visited directories (back keeps at most 256).
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct History {
     back: Vec<PathBuf>,
     forward: Vec<PathBuf>,

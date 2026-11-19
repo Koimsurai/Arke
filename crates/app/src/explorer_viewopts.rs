@@ -26,10 +26,14 @@ use crate::settings::{Density, Settings};
 use crate::theme;
 use crate::workspace::TooltipBelowExt as _;
 
-const PANEL_W: Pixels = px(300.);
+fn panel_w() -> gpui::Pixels {
+    crate::theme::scaled_px(300.)
+}
 
 /// Height of a segment in the view switcher (shared with its other segments).
-pub(super) const SEGMENT_H: Pixels = px(22.);
+pub(super) fn segment_h() -> gpui::Pixels {
+    crate::theme::scaled_px(22.)
+}
 
 impl Explorer {
     /// Opens or closes the flyout.
@@ -62,7 +66,7 @@ impl Explorer {
         let open = self.view_options_open;
         let chevron = svg()
             .path(Icon::ChevronRight.path())
-            .size(theme::ICON_SM)
+            .size(theme::icon_sm())
             .text_color(if open {
                 theme::text()
             } else {
@@ -80,19 +84,19 @@ impl Explorer {
             .flex_none()
             .items_center()
             .justify_center()
-            .gap(theme::S_2)
+            .gap(theme::s_2())
             .cursor_pointer()
             .when(in_switcher, |d| {
-                d.w(theme::S_20).h(SEGMENT_H).rounded(theme::R_4)
+                d.w(theme::s_20()).h(segment_h()).rounded(theme::r_4())
             })
             .when(!in_switcher, |d| {
-                d.h(theme::H_CTL_SM)
-                    .px(theme::S_6)
-                    .rounded(theme::R_8)
+                d.h(theme::h_ctl_sm())
+                    .px(theme::s_6())
+                    .rounded(theme::r_8())
                     .child(
                         svg()
                             .path(view_icon(self.view_mode).path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(theme::text_subtle()),
                     )
             })
@@ -151,13 +155,13 @@ impl Explorer {
     fn view_options_flyout(panel: AnyElement) -> impl IntoElement + use<> {
         div()
             .absolute()
-            .top(theme::H_CTL_SM + theme::S_6)
+            .top(theme::h_ctl_sm() + theme::s_6())
             .right_0()
             .child(
                 deferred(
                     anchored()
                         .anchor(gpui::Anchor::TopRight)
-                        .snap_to_window_with_margin(theme::S_8)
+                        .snap_to_window_with_margin(theme::s_8())
                         .child(panel),
                 )
                 .with_priority(2),
@@ -172,9 +176,9 @@ impl Explorer {
             .clone();
         let layouts = div()
             .flex()
-            .gap(theme::S_2)
-            .p(theme::S_2)
-            .rounded(theme::R_8)
+            .gap(theme::s_2())
+            .p(theme::s_2())
+            .rounded(theme::r_8())
             .bg(theme::segment_track())
             .child(layout_tile(
                 "vo-details",
@@ -244,20 +248,20 @@ impl Explorer {
             .id("view-options-panel")
             .a11y(gpui::Role::Dialog, t!("view.options"))
             .occlude()
-            .w(PANEL_W)
-            .p(theme::S_8)
+            .w(panel_w())
+            .p(theme::s_8())
             .flex()
             .flex_col()
-            .gap(theme::S_4)
-            .rounded(theme::R_12)
+            .gap(theme::s_4())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .child(section_label(t!("view.layout")))
             .child(layouts)
             .children(size_block)
-            .child(div().my(theme::S_4).h(px(1.)).bg(theme::line()))
+            .child(div().my(theme::s_4()).h(px(1.)).bg(theme::line()))
             .children(toggles)
     }
 
@@ -278,16 +282,16 @@ impl Explorer {
         div()
             .flex()
             .flex_col()
-            .pt(theme::S_8)
+            .pt(theme::s_8())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .px(theme::S_8)
+                    .px(theme::s_8())
                     .child(div().flex_1().child(t!("view.icon_size").into_owned()))
                     .child(
                         div()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_muted())
                             .child(self.icon_size.label().into_owned()),
                     ),
@@ -298,9 +302,9 @@ impl Explorer {
                     .a11y(gpui::Role::Slider, t!("view.icon_size"))
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
-                    .px(theme::S_8)
-                    .child(glyph(theme::ICON_SM))
+                    .gap(theme::s_8())
+                    .px(theme::s_8())
+                    .child(glyph(theme::icon_sm()))
                     .child(
                         crate::slider::slider(
                             self.icon_size.fraction(),
@@ -310,7 +314,7 @@ impl Explorer {
                         .flex_1()
                         .min_w_0(),
                     )
-                    .child(glyph(theme::ICON)),
+                    .child(glyph(theme::icon())),
             )
             .into_any_element()
     }
@@ -326,9 +330,9 @@ const fn view_icon(mode: ViewMode) -> Icon {
 
 fn section_label(text: impl Into<String>) -> impl IntoElement {
     div()
-        .px(theme::S_8)
-        .pt(theme::S_4)
-        .text_size(theme::FS_12)
+        .px(theme::s_8())
+        .pt(theme::s_4())
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(text.into())
 }
@@ -350,15 +354,15 @@ fn layout_tile(
         .aria_toggled(crate::a11y::toggled(active))
         .flex_1()
         .min_w_0()
-        .h(theme::S_32 + theme::S_20)
+        .h(theme::s_32() + theme::s_20())
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(theme::S_4)
-        .rounded(theme::R_4)
+        .gap(theme::s_4())
+        .rounded(theme::r_4())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .when(active, |d| {
             d.bg(theme::segment_thumb())
                 .shadow(theme::elev_thumb())
@@ -372,7 +376,7 @@ fn layout_tile(
         .child(
             svg()
                 .path(view_icon(mode).path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(if active {
                     theme::text()
                 } else {
@@ -393,13 +397,13 @@ fn density_block(density: Density) -> AnyElement {
             .aria_toggled(crate::a11y::toggled(active))
             .flex_1()
             .min_w_0()
-            .h(SEGMENT_H)
+            .h(segment_h())
             .flex()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .when(active, |d| {
                 d.bg(theme::segment_thumb())
                     .shadow(theme::elev_thumb())
@@ -415,16 +419,20 @@ fn density_block(density: Density) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_6)
-        .pt(theme::S_8)
-        .child(div().px(theme::S_8).child(t!("view.density").into_owned()))
+        .gap(theme::s_6())
+        .pt(theme::s_8())
         .child(
             div()
-                .mx(theme::S_8)
+                .px(theme::s_8())
+                .child(t!("view.density").into_owned()),
+        )
+        .child(
+            div()
+                .mx(theme::s_8())
                 .flex()
-                .gap(theme::S_2)
-                .p(theme::S_2)
-                .rounded(theme::R_8)
+                .gap(theme::s_2())
+                .p(theme::s_2())
+                .rounded(theme::r_8())
                 .bg(theme::segment_track())
                 .child(option(Density::Compact, t!("density.compact")))
                 .child(option(Density::Standard, t!("density.standard")))
@@ -445,10 +453,10 @@ fn toggle_row(
     div()
         .flex()
         .items_center()
-        .gap(theme::S_8)
-        .min_h(theme::H_CTL)
-        .px(theme::S_8)
-        .py(theme::S_4)
+        .gap(theme::s_8())
+        .min_h(theme::h_ctl())
+        .px(theme::s_8())
+        .py(theme::s_4())
         .child(
             div()
                 .flex_1()
@@ -458,7 +466,7 @@ fn toggle_row(
                 .child(label.into_owned())
                 .children(desc.map(|desc| {
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(desc.into_owned())
                 })),
@@ -466,7 +474,7 @@ fn toggle_row(
         .children(shortcut.map(|keys| {
             div()
                 .flex_none()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(keys)
         }))

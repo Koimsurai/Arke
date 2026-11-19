@@ -83,6 +83,14 @@ impl DraggedFiles {
             .map_or_default(|e| e.read(cx).drag_paths(self.ix))
     }
 
+    /// The dragged paths if they are all folders (they can go on the sidebar), else `None`.
+    pub(crate) fn folders(&self, cx: &App) -> Option<Vec<PathBuf>> {
+        if self.shelf.is_some() {
+            return None;
+        }
+        self.source.upgrade()?.read(cx).drag_folders(self.ix)
+    }
+
     /// Whether a drop moves: shelf items copy unless Shift is held; list items follow
     /// Explorer's rules ([`drop_is_move`]).
     pub(crate) fn moves(&self, modifiers: Modifiers, paths: &[PathBuf], dest: &Path) -> bool {
@@ -330,7 +338,15 @@ impl DragPreview {
             .and_then(|h| h.dest.as_ref().map(|(p, _)| p.clone()))
             .filter(|d| useful_drop(&self.paths, d));
         let modifiers = window.modifiers();
+        // Over the sidebar's favorites or pinned list, where folders are added rather than dropped
+        // into one (only reported for folders).
+        let pin = crate::workspace::pindrop::current(window, cx);
         let (icon, text, strong) = match dest {
+            _ if pin.is_some() => (
+                Icon::Pin,
+                crate::workspace::pindrop::action_label().to_string(),
+                true,
+            ),
             None => (Icon::Folder, t!("dnd.no_target").into_owned(), false),
             Some(_) if modifiers.alt || cx.has_global::<RightDrag>() => {
                 (Icon::Menu, t!("dnd.will_ask").into_owned(), true)
@@ -368,13 +384,13 @@ impl DragPreview {
         div()
             .flex()
             .items_center()
-            .gap(theme::S_6)
-            .text_size(theme::FS_12)
+            .gap(theme::s_6())
+            .text_size(theme::fs_12())
             .text_color(color)
             .child(
                 gpui::svg()
                     .path(icon.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(color),
             )
             .child(text)
@@ -423,40 +439,40 @@ impl Render for DragPreview {
         let card = div()
             .flex()
             .flex_col()
-            .gap(theme::S_2)
-            .px(theme::S_12)
-            .py(theme::S_6)
-            .rounded(theme::R_8)
+            .gap(theme::s_2())
+            .px(theme::s_12())
+            .py(theme::s_6())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(kind_icon(
                         if self.count > 1 {
                             FileKind::Other
                         } else {
                             self.kind
                         },
-                        theme::ICON,
+                        theme::icon(),
                     ))
                     .child(self.label.clone()),
             )
             .child(self.action_line(window, cx))
             .child(
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(t!("dnd.keys").to_string()),
             );
         div()
-            .pl(self.grab.x + theme::S_12)
-            .pt(self.grab.y + theme::S_12)
+            .pl(self.grab.x + theme::s_12())
+            .pt(self.grab.y + theme::s_12())
             .child(card)
     }
 }
@@ -732,6 +748,29 @@ impl Explorer {
         } else {
             self.path_at(ix).map(|(p, _)| p).into_iter().collect()
         }
+    }
+
+    /// [`Self::drag_paths`] if every one is a folder.
+    pub(crate) fn drag_folders(&self, ix: usize) -> Option<Vec<PathBuf>> {
+        if self.search_mode {
+            return self
+                .path_at(ix)
+                .filter(|(_, is_dir)| *is_dir)
+                .map(|(p, _)| vec![p]);
+        }
+        let (model, view) = (self.model.as_ref()?, self.view()?);
+        let at = view.get(ix)?;
+        let dragged: Vec<&arke_core::Entry> = if self.selection.contains(&at.name) {
+            view.iter()
+                .filter(|e| self.selection.contains(&e.name))
+                .collect()
+        } else {
+            vec![at]
+        };
+        dragged
+            .iter()
+            .all(|e| e.is_dir_like())
+            .then(|| dragged.iter().map(|e| model.path.join(&*e.name)).collect())
     }
 
     /// What to build the drag image from for item `ix`, the one under the cursor.

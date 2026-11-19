@@ -38,6 +38,14 @@ actions!(
         Right,
         SelectLeft,
         SelectRight,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordLeft,
+        DeleteWordRight,
+        SelectHome,
+        SelectEnd,
         SelectAll,
         Home,
         End,
@@ -63,6 +71,15 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, ctx),
         KeyBinding::new("shift-left", SelectLeft, ctx),
         KeyBinding::new("shift-right", SelectRight, ctx),
+        // By word, as in a Windows edit box (#219).
+        KeyBinding::new("ctrl-left", WordLeft, ctx),
+        KeyBinding::new("ctrl-right", WordRight, ctx),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
+        KeyBinding::new("shift-home", SelectHome, ctx),
+        KeyBinding::new("shift-end", SelectEnd, ctx),
         KeyBinding::new("ctrl-a", SelectAll, ctx),
         KeyBinding::new("ctrl-v", Paste, ctx),
         KeyBinding::new("ctrl-c", Copy, ctx),
@@ -134,6 +151,8 @@ struct EditMenu {
     can_paste: bool,
     /// Row chosen with the arrow keys (an index into [`MENU_ROWS`]); Enter runs it.
     highlighted: Option<usize>,
+    /// The window it is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
 
 /// The edit menu's rows, in Windows order.
@@ -266,6 +285,12 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Tests: the text shown while the input is empty.
+    #[cfg(test)]
+    pub(crate) fn placeholder_for_test(&self) -> String {
+        self.placeholder.to_string()
+    }
+
     pub(crate) fn set_placeholder(
         &mut self,
         placeholder: impl Into<SharedString>,
@@ -314,6 +339,74 @@ impl TextInput {
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.next_boundary(self.cursor_offset()), window, cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word(self.cursor_offset()), window, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word(self.cursor_offset()), window, cx);
+    }
+
+    fn select_word_left(
+        &mut self,
+        _: &SelectWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(self.previous_word(self.cursor_offset()), window, cx);
+    }
+
+    fn select_word_right(
+        &mut self,
+        _: &SelectWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(self.next_word(self.cursor_offset()), window, cx);
+    }
+
+    fn select_home(&mut self, _: &SelectHome, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, window, cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), window, cx);
+    }
+
+    /// Ctrl+Backspace: erases back to the start of the word (a selection is erased instead).
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let to = self.previous_word(self.cursor_offset());
+            if to == self.cursor_offset() {
+                return;
+            }
+            self.select_to(to, window, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    /// Ctrl+Delete: erases up to the start of the next word.
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let to = self.next_word(self.cursor_offset());
+            if to == self.cursor_offset() {
+                return;
+            }
+            self.select_to(to, window, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
@@ -550,6 +643,7 @@ impl TextInput {
             position,
             can_paste,
             highlighted: None,
+            popup: crate::popup::Single::new(),
         });
         cx.notify();
     }
@@ -736,6 +830,24 @@ impl TextInput {
             .rev()
             .find_map(|(idx, _)| (idx < offset).then_some(idx))
             .unwrap_or(0)
+    }
+
+    /// Start of the word before `offset`, skipping spaces and separators first (`\`, `.`, `-` and
+    /// the like end a word, so in a path it stops at each folder name). A password field has no
+    /// words: its start.
+    fn previous_word(&self, offset: usize) -> usize {
+        if self.masked {
+            return 0;
+        }
+        previous_word(&self.content, offset)
+    }
+
+    /// Start of the next word after `offset`, as Ctrl+Right in a Windows edit box.
+    fn next_word(&self, offset: usize) -> usize {
+        if self.masked {
+            return self.content.len();
+        }
+        next_word(&self.content, offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
@@ -932,12 +1044,14 @@ impl EntityInputHandler for TextInput {
     }
 }
 
-const CARET_WIDTH: Pixels = px(1.5);
+fn caret_width() -> gpui::Pixels {
+    crate::theme::scaled_px(1.5)
+}
 
 /// Scroll offset after a change: unchanged while the caret is visible, otherwise just enough to
 /// bring it back in, and never past the end of the text.
 fn follow_caret(scroll: Pixels, caret: Pixels, text_width: Pixels, field_width: Pixels) -> Pixels {
-    let view = (field_width - CARET_WIDTH).max(Pixels::ZERO);
+    let view = (field_width - caret_width()).max(Pixels::ZERO);
     let mut scroll = scroll;
     if caret - scroll > view {
         scroll = caret - view;
@@ -1078,7 +1192,7 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::new(
                         point(left + cursor_pos, bounds.top()),
-                        size(CARET_WIDTH, bounds.bottom() - bounds.top()),
+                        size(caret_width(), bounds.bottom() - bounds.top()),
                     ),
                     theme::signal(),
                 )),
@@ -1126,7 +1240,7 @@ impl Element for TextElement {
         // Text scrolled out of the field is clipped; the caret may sit on the right edge.
         let mask = Bounds::new(
             bounds.origin,
-            size(bounds.size.width + CARET_WIDTH, bounds.size.height),
+            size(bounds.size.width + caret_width(), bounds.size.height),
         );
         window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
             if let Some(selection) = prepaint.selection.take() {
@@ -1251,10 +1365,29 @@ impl TextInput {
     /// The edit menu over the page: Windows order (undo, cut, copy, paste, delete, select all),
     /// rows that don't apply greyed out. It never takes focus, so the box (and a rename or address
     /// edit that ends when focus leaves) stays as it is; the row chosen with the keyboard is
-    /// reported to screen readers as focused instead.
-    fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let menu = self.menu.as_ref()?;
-        let panel = self.menu_panel(cx);
+    /// reported to screen readers as focused instead. The menu is drawn in a window of its own
+    /// (`popup.rs`); what stays here is the scrim that closes it.
+    fn render_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.menu.as_mut()?;
+        let at = crate::popup::to_screen(window, menu.position);
+        menu.popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.menu.as_mut().map(|m| &mut m.popup),
+            |this, _, _, cx| {
+                Some(
+                    this.menu_panel(cx)
+                        .with_animation(
+                            "text-input-menu-appear",
+                            crate::motion::menu_enter(),
+                            crate::motion::fade_in,
+                        )
+                        .into_any_element(),
+                )
+            },
+            |this, _, cx| this.close_menu(cx),
+            window,
+            cx,
+        );
         let viewport = window.viewport_size();
         // A click anywhere else only closes the menu.
         let scrim = deferred(
@@ -1281,18 +1414,7 @@ impl TextInput {
             ),
         )
         .with_priority(MENU_PRIORITY);
-        let menu = deferred(
-            anchored()
-                .position(menu.position)
-                .snap_to_window_with_margin(theme::S_8)
-                .child(panel.with_animation(
-                    "text-input-menu-appear",
-                    crate::motion::menu_enter(),
-                    crate::motion::fade_in,
-                )),
-        )
-        .with_priority(MENU_PRIORITY + 1);
-        Some(div().child(scrim).child(menu).into_any_element())
+        Some(scrim.into_any_element())
     }
 
     /// The rows of the edit menu.
@@ -1338,15 +1460,16 @@ impl TextInput {
             .id("text-input-menu")
             .role(gpui::Role::Menu)
             .occlude()
-            .min_w(px(220.))
-            .py(theme::S_4)
-            .rounded(theme::R_12)
+            .min_w(crate::theme::scaled_px(220.))
+            .py(theme::s_4())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text());
         let chosen = self.menu.as_ref().and_then(|menu| menu.highlighted);
+        let owner = self.menu.as_ref().and_then(|menu| menu.popup.owner());
         for (ix, (command, label, shortcut, glyph)) in rows.into_iter().enumerate() {
             let enabled = self.can(command);
             let highlighted = chosen == Some(ix);
@@ -1355,8 +1478,8 @@ impl TextInput {
                 panel = panel.child(
                     div()
                         .h(px(1.))
-                        .my(theme::S_4)
-                        .mx(theme::S_8)
+                        .my(theme::s_4())
+                        .mx(theme::s_8())
                         .bg(theme::line()),
                 );
             }
@@ -1371,33 +1494,43 @@ impl TextInput {
                     .debug_selector(move || format!("text-input-menu-{command:?}"))
                     .a11y_menu_item(label.clone(), enabled, false, highlighted)
                     .aria_keyshortcuts(shortcut)
-                    .h(theme::H_CTL_SM + theme::S_4)
-                    .mx(theme::S_4)
-                    .px(theme::S_8)
+                    .h(theme::h_ctl_sm() + theme::s_4())
+                    .mx(theme::s_4())
+                    .px(theme::s_8())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
-                    .rounded(theme::R_8)
+                    .gap(theme::s_8())
+                    .rounded(theme::r_8())
                     .when(!enabled, |d| d.text_color(theme::text_disabled()))
                     .when(enabled, |d| {
                         d.cursor_pointer()
                             .when(highlighted, |d| d.bg(theme::wash_strong()))
                             .hover(|s| s.bg(theme::wash()))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.run_edit(command, window, cx);
-                            }))
+                            .on_click(crate::popup::listener_in(
+                                owner,
+                                cx,
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.run_edit(command, window, cx);
+                                },
+                            ))
                     })
-                    .child(div().size(theme::ICON).flex_none().children(
-                        glyph.map(|glyph| {
-                            svg().path(glyph.path()).size(theme::ICON).text_color(color)
-                        }),
-                    ))
+                    .child(
+                        div()
+                            .size(theme::icon())
+                            .flex_none()
+                            .children(glyph.map(|glyph| {
+                                svg()
+                                    .path(glyph.path())
+                                    .size(theme::icon())
+                                    .text_color(color)
+                            })),
+                    )
                     .child(div().flex_1().min_w_0().truncate().child(label))
                     .child(
                         div()
                             .flex_none()
-                            .pl(theme::S_16)
-                            .text_size(theme::FS_12)
+                            .pl(theme::s_16())
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(shortcut),
                     ),
@@ -1446,6 +1579,14 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
@@ -1506,23 +1647,36 @@ mod scroll_tests {
 
     #[test]
     fn long_text_scrolls_to_keep_the_caret_in_view() {
-        let (field, text) = (px(100.), px(300.));
-        let view = px(100.) - CARET_WIDTH;
+        let (field, text) = (crate::theme::scaled_px(100.), crate::theme::scaled_px(300.));
+        let view = crate::theme::scaled_px(100.) - caret_width();
         // Fits: never scrolls.
-        assert_eq!(follow_caret(px(0.), px(80.), px(80.), field), px(0.));
+        assert_eq!(
+            follow_caret(
+                px(0.),
+                crate::theme::scaled_px(80.),
+                crate::theme::scaled_px(80.),
+                field
+            ),
+            px(0.)
+        );
         // Caret past the right edge (typing or pasting at the end): just enough to show it.
         assert_eq!(follow_caret(px(0.), text, text, field), text - view);
         // Moving left inside the visible part leaves the scroll alone.
         assert_eq!(
-            follow_caret(text - view, px(250.), text, field),
+            follow_caret(text - view, crate::theme::scaled_px(250.), text, field),
             text - view
         );
         // Home: back to the start.
         assert_eq!(follow_caret(text - view, px(0.), text, field), px(0.));
         // Text got shorter (deleted at the end): no empty space after it.
         assert_eq!(
-            follow_caret(px(200.), px(120.), px(120.), field),
-            px(120.) - view
+            follow_caret(
+                crate::theme::scaled_px(200.),
+                crate::theme::scaled_px(120.),
+                crate::theme::scaled_px(120.),
+                field
+            ),
+            crate::theme::scaled_px(120.) - view
         );
     }
 }
@@ -1571,4 +1725,49 @@ mod stale_layout_tests {
             });
         }
     }
+}
+
+/// Whether a character (the first of a grapheme) belongs to a word: letters, digits and `_`.
+/// Everything else (spaces, `\`, `/`, `.`, `-`, ...) separates words, so in a path or a file
+/// name each part is a word of its own.
+fn is_word(grapheme: &str) -> bool {
+    grapheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Start of the word before `offset` in `text`: separators and spaces right before it are skipped.
+pub(crate) fn previous_word(text: &str, offset: usize) -> usize {
+    let mut seen_word = false;
+    let mut at = 0;
+    for (start, g) in text.grapheme_indices(true).rev() {
+        if start >= offset {
+            continue;
+        }
+        if is_word(g) {
+            at = start;
+            seen_word = true;
+        } else if seen_word {
+            return at;
+        }
+    }
+    if seen_word { at } else { 0 }
+}
+
+/// Start of the word after `offset` in `text` (the end when there is none), as Ctrl+Right in a
+/// Windows edit box.
+pub(crate) fn next_word(text: &str, offset: usize) -> usize {
+    let mut passed_separator = false;
+    for (start, g) in text.grapheme_indices(true) {
+        if start < offset {
+            continue;
+        }
+        if !is_word(g) {
+            passed_separator = true;
+        } else if passed_separator {
+            return start;
+        }
+    }
+    text.len()
 }

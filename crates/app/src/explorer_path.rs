@@ -1,9 +1,8 @@
 //! Path bar: breadcrumbs, the › and "…" folder menus, and autocomplete while typing a path.
 //!
-//! - The bar fills the title row up to the search box (see `explorer_topbar.rs`); the gaps around
-//!   it drag the window.
-//! - A segment navigates; a click on the blank end of the bar starts editing (also Ctrl+L, Alt+D),
-//!   a press there dragged past the system drag distance moves the window.
+//! - The bar sits in each pane's first row, between Up and the view buttons (see
+//!   `explorer_topbar.rs`).
+//! - A segment navigates; a click on the blank end of the bar starts editing (also Ctrl+L, Alt+D).
 //! - A › between segments lists the folders in the level to its left (current one highlighted) for
 //!   jumping to siblings; the trailing › lists subfolders. The collapsed "…" lists the hidden
 //!   levels.
@@ -37,15 +36,21 @@ actions!(explorer, [PathUp, PathDown, PathAccept, PathClose]);
 
 /// Empty space kept at the end of the path bar so there's always somewhere to click to edit the
 /// path (the breadcrumbs collapse before eating into it).
-const PATH_BLANK_MIN: Pixels = px(40.);
+fn path_blank_min() -> gpui::Pixels {
+    crate::theme::scaled_px(40.)
+}
 /// How much more readily the levels above the current folder shrink than the current folder
 /// itself, once collapsing levels into "…" isn't enough (a single very long name).
 const CRUMBS_GIVE_WAY: f32 = 1000.;
 /// Max autocomplete entries
 const MAX_SUGGESTIONS: usize = 8;
 /// Folder menu width
-const POPUP_W: Pixels = px(260.);
-const POPUP_MAX_H: Pixels = px(360.);
+fn popup_w() -> gpui::Pixels {
+    crate::theme::scaled_px(260.)
+}
+fn popup_max_h() -> gpui::Pixels {
+    crate::theme::scaled_px(360.)
+}
 
 pub(super) fn bind_keys(cx: &mut App) {
     let bar = Some("PathBar");
@@ -73,6 +78,8 @@ pub(crate) struct PathPopup {
     tail: bool,
     request: u64,
     focus: FocusHandle,
+    /// The window it is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
 
 /// Autocomplete while typing a path.
@@ -214,13 +221,14 @@ impl Explorer {
             .as_ref()
             .and_then(|items| items.iter().position(|(_, p)| Some(p) == current.as_ref()));
         self.path_popup = Some(PathPopup {
-            position: point(at - theme::S_8, bar.bottom() + theme::S_4),
+            position: point(at - theme::s_8(), bar.bottom() + theme::s_4()),
             items,
             current,
             highlighted,
             tail,
             request,
             focus,
+            popup: crate::popup::Single::new(),
         });
         cx.notify();
         request
@@ -430,10 +438,24 @@ impl Explorer {
         usize,
         Vec<(String, PathBuf)>,
     ) {
-        let crumbs = self
+        let mut crumbs = self
             .display_path()
             .map_or_default(arke_core::path::breadcrumbs);
+        // A renamed drive or network place shows its name.
+        for (label, path) in &mut crumbs {
+            if let Some(name) = crate::place_names::shown_name(&self.place_names, path) {
+                *label = name;
+            }
+        }
         let total = crumbs.len();
+        // Too narrow even for "… › current folder" (a split pane in a small window): just the
+        // current folder. Up still goes up.
+        let slot = self.path_slot.get();
+        if compact && total > 1 && slot > px(0.) && slot < theme::scaled_px(140.) {
+            let hidden = crumbs[..total - 1].to_vec();
+            let current = crumbs.into_iter().last();
+            return (vec![(total - 1, current)], total, hidden);
+        }
         let Some(hide) = self.crumbs_to_hide(&crumbs, compact, window) else {
             let shown = crumbs
                 .into_iter()
@@ -455,6 +477,16 @@ impl Explorer {
         (shown, total, hidden)
     }
 
+    /// Tests: the labels of the breadcrumbs as drawn.
+    #[cfg(test)]
+    pub(crate) fn crumb_labels_for_test(&self, window: &Window) -> Vec<String> {
+        let (shown, ..) = self.shown_crumbs(false, window);
+        shown
+            .into_iter()
+            .filter_map(|(_, crumb)| crumb.map(|(label, _)| label))
+            .collect()
+    }
+
     /// Levels to collapse so the breadcrumbs fit the path bar as laid out on the last frame
     /// (`None`: everything fits, or the bar hasn't been measured yet). `compact`: the bar is
     /// shrunk for the search box, so only the current folder shows.
@@ -473,11 +505,11 @@ impl Explorer {
             return Some(0..crumbs.len() - 1);
         }
         // The bar's padding, the trailing › and the blank area for clicking to edit.
-        let avail = slot - theme::S_4 * 2. - theme::S_20 - PATH_BLANK_MIN;
+        let avail = slot - theme::s_4() * 2. - theme::s_20() - path_blank_min();
         let text_w = |text: &str, size: Pixels, weight: gpui::FontWeight| {
             super::top_bar::text_width(text, size, weight, window)
         };
-        let pad = theme::S_6 * 2.;
+        let pad = theme::s_6() * 2.;
         let last = crumbs.len().saturating_sub(1);
         let widths: Vec<Pixels> = crumbs
             .iter()
@@ -485,20 +517,20 @@ impl Explorer {
             .map(|(i, (label, _))| {
                 // Same sizes as `crumb_piece`: the current folder is larger and semibold.
                 let (size, weight) = if i == last {
-                    (theme::FS_15, theme::FW_STRONG)
+                    (theme::fs_15(), theme::FW_STRONG)
                 } else {
-                    (theme::FS_14, gpui::FontWeight::NORMAL)
+                    (theme::fs_14(), gpui::FontWeight::NORMAL)
                 };
-                let chevron = if i > 0 { theme::S_20 } else { px(0.) };
+                let chevron = if i > 0 { theme::s_20() } else { px(0.) };
                 chevron + text_w(label, size, weight) + pad
             })
             .collect();
-        let more = theme::S_20 + text_w("…", theme::FS_14, gpui::FontWeight::NORMAL) + pad;
+        let more = theme::s_20() + text_w("…", theme::fs_14(), gpui::FontWeight::NORMAL) + pad;
         super::layout::collapse_crumbs(&widths, avail, more)
     }
 
-    /// The path bar's slot in the title row: the bar fills it. `compact`: the search box is
-    /// widened over it, so it shows only the current folder.
+    /// The path bar's slot in the pane row: the bar fills it. `compact`: the slot is narrow, so it
+    /// shows only the current folder.
     pub(super) fn render_path_slot(
         &mut self,
         compact: bool,
@@ -527,7 +559,6 @@ impl Explorer {
             .items_center()
             .child(capture)
             .child(self.render_path_bar(compact, window, cx))
-            .children(self.path_press_tracker(cx))
             .into_any_element()
     }
 
@@ -556,11 +587,11 @@ impl Explorer {
             .relative()
             .flex_1()
             .min_w_0()
-            .h(theme::H_CTL)
+            .h(theme::h_ctl())
             .flex()
             .items_center()
-            .px(theme::S_4)
-            .rounded(theme::R_8)
+            .px(theme::s_4())
+            .rounded(theme::r_8())
             .child(capture);
         if self.editing_path {
             return bar
@@ -576,10 +607,7 @@ impl Explorer {
                         this.stop_edit_path(window, cx);
                     }
                 }))
-                // The second click of a double click on the blank part: maximize, like the
-                // title bar.
-                .capture_any_mouse_down(cx.listener(Self::path_edit_pressed))
-                .px(theme::S_8)
+                .px(theme::s_8())
                 .bg(theme::paper())
                 .border_1()
                 .border_color(theme::signal_line())
@@ -598,17 +626,11 @@ impl Explorer {
                 },
             ))
         });
-        // The bar fills the row, so its highlight covers all of it.
+        // The bar fills its slot, so its highlight covers all of it.
         bar.cursor_text()
             .hover(|s| s.bg(theme::wash()))
-            .capture_any_mouse_down(cx.listener(|this, e: &MouseDownEvent, _, _| {
-                this.path_bar_pressed(e);
-            }))
-            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                if this.path_click_edits() {
-                    this.start_edit_path(window, cx);
-                    this.path_edit_clicked(e.position());
-                }
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.start_edit_path(window, cx);
             }))
             // Right click: copy address, copy path, edit address, clear history
             .on_mouse_down(
@@ -620,23 +642,16 @@ impl Explorer {
             )
             .child(div().flex().items_center().min_w_0().children(crumbs))
             .children(tail)
-            // The blank end: a click edits the path, a press dragged past the system drag distance
-            // moves the window. Tooltip only here, so it doesn't cover the menus from segments
-            // and ›.
+            // The blank end: a click edits the path. Tooltip only here, so it doesn't cover the
+            // menus from segments and ›.
             .child(
                 div()
                     .id("path-blank")
                     .debug_selector(|| "path-blank".to_owned())
                     .a11y_button(t!("path.edit_tip"))
                     .flex_1()
-                    .min_w(if compact { theme::S_8 } else { PATH_BLANK_MIN })
+                    .min_w(if compact { theme::s_8() } else { path_blank_min() })
                     .h_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                            this.path_blank_pressed(e, cx);
-                        }),
-                    )
                     .tooltip(|_, cx| {
                         cx.new(|_| crate::workspace::Tooltip(t!("path.edit_tip").into_owned().into()))
                             .into()
@@ -657,7 +672,8 @@ impl Explorer {
         let popup_parent = self.path_popup.as_ref().and_then(|p| p.current.clone());
         shown
             .into_iter()
-            .map(|(i, crumb)| {
+            .enumerate()
+            .map(|(pos, (i, crumb))| {
                 let is_last = i == last;
                 // The › before a segment lists the folders of the level to its left, with this one
                 // highlighted.
@@ -665,7 +681,8 @@ impl Explorer {
                     .as_ref()
                     .map(|(_, p)| p.clone())
                     .or_else(|| hidden.first().map(|(_, p)| p.clone()));
-                let chevron = (i > 0).then(|| {
+                // Not before the first piece shown (the root, "…", or the current folder alone).
+                let chevron = (pos > 0).then(|| {
                     let open = here.is_some() && popup_parent == here;
                     chevron_button(("crumb-sep", i), open).on_click(cx.listener({
                         let here = here.clone();
@@ -706,9 +723,13 @@ impl Explorer {
     }
 
     /// Overlays below the path bar: the › folder menu or autocomplete while typing.
-    pub(super) fn render_path_overlays(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if let Some(popup) = &self.path_popup {
-            return Some(Self::render_path_popup(popup, cx));
+    pub(super) fn render_path_overlays(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.path_popup.is_some() {
+            return self.render_path_popup(window, cx);
         }
         if self.editing_path && !self.suggest.items.is_empty() {
             return Some(self.render_suggestions(cx));
@@ -716,7 +737,49 @@ impl Explorer {
         None
     }
 
-    fn render_path_popup(popup: &PathPopup, cx: &mut Context<Self>) -> AnyElement {
+    /// The › folder menu is drawn in a window of its own (`popup.rs`); what stays here is its
+    /// keys and focus, and closing it on a press anywhere in the window.
+    fn render_path_popup(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let popup = self.path_popup.as_mut()?;
+        let at = crate::popup::to_screen(window, popup.position);
+        popup.popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.path_popup.as_mut().map(|p| &mut p.popup),
+            Self::path_popup_panel,
+            Self::close_path_popup,
+            window,
+            cx,
+        );
+        Some(
+            div()
+                .absolute()
+                .size_0()
+                .key_context("PathPopup")
+                .track_focus(&popup.focus)
+                .on_action(cx.listener(Self::path_up))
+                .on_action(cx.listener(Self::path_down))
+                .on_action(cx.listener(Self::path_accept))
+                .on_action(cx.listener(Self::path_close))
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.close_path_popup(window, cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The › folder menu's panel, drawn in its own window.
+    fn path_popup_panel(
+        &mut self,
+        _: Pixels,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let popup = self.path_popup.as_ref()?;
+        let owner = popup.popup.owner();
         let body: AnyElement = match &popup.items {
             None => note(t!("info.loading").into_owned()),
             Some(items) if items.is_empty() => note(t!("path.no_folders").into_owned()),
@@ -724,7 +787,7 @@ impl Explorer {
                 .id("path-popup-list")
                 .flex()
                 .flex_col()
-                .max_h(POPUP_MAX_H)
+                .max_h(popup_max_h())
                 .overflow_y_scroll()
                 .children(items.iter().enumerate().map(|(ix, (name, path))| {
                     let current = popup.current.as_ref() == Some(path);
@@ -734,7 +797,9 @@ impl Explorer {
                         popup.highlighted == Some(ix),
                         current,
                     )
-                    .on_click(cx.listener(
+                    .on_click(crate::popup::listener_in(
+                        owner,
+                        cx,
                         move |this, _: &ClickEvent, window, cx| {
                             this.popup_go(ix, window, cx);
                         },
@@ -742,30 +807,12 @@ impl Explorer {
                 }))
                 .into_any_element(),
         };
-        deferred(
-            anchored()
-                .position(popup.position)
-                .snap_to_window_with_margin(theme::S_8)
-                .child(crate::motion::appear(
-                    menu_panel("path-popup")
-                        .key_context("PathPopup")
-                        .track_focus(&popup.focus)
-                        .on_action(cx.listener(Self::path_up))
-                        .on_action(cx.listener(Self::path_down))
-                        .on_action(cx.listener(Self::path_accept))
-                        .on_action(cx.listener(Self::path_close))
-                        .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                            this.close_path_popup(window, cx);
-                        }))
-                        .w(POPUP_W)
-                        .child(body),
-                    "path-popup-appear",
-                    0.,
-                    -crate::motion::NUDGE,
-                )),
-        )
-        .with_priority(1)
-        .into_any_element()
+        Some(crate::motion::appear(
+            menu_panel("path-popup").w(popup_w()).child(body),
+            "path-popup-appear",
+            0.,
+            -crate::motion::NUDGE,
+        ))
     }
 
     fn render_suggestions(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -796,11 +843,11 @@ impl Explorer {
             });
         deferred(
             anchored()
-                .position(point(bar.left(), bar.bottom() + theme::S_4))
-                .snap_to_window_with_margin(theme::S_8)
+                .position(point(bar.left(), bar.bottom() + theme::s_4()))
+                .snap_to_window_with_margin(theme::s_8())
                 .child(
                     menu_panel("path-suggest-panel")
-                        .w(bar.size.width.max(POPUP_W))
+                        .w(bar.size.width.max(popup_w()))
                         .children(rows)
                         .child(note(t!("path.suggest_hint").into_owned())),
                 ),
@@ -816,8 +863,8 @@ fn more_piece(i: usize, hidden: Vec<(String, PathBuf)>, cx: &mut Context<Explore
         .id(("crumb-more", i))
         .a11y_button(t!("a11y.more_folders"))
         .flex_none()
-        .px(theme::S_6)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .rounded(theme::r_4())
         .cursor_pointer()
         .text_color(theme::text_subtle())
         .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
@@ -851,16 +898,16 @@ fn crumb_piece(
         .id(("crumb", i))
         .a11y_lazy(gpui::Role::Link, || label.clone())
         .relative()
-        .px(theme::S_6)
-        .py(theme::S_2)
-        .rounded(theme::R_4)
+        .px(theme::s_6())
+        .py(theme::s_2())
+        .rounded(theme::r_4())
         .cursor_pointer()
         .whitespace_nowrap()
         // When space runs out earlier segments truncate first; the current folder truncates last.
         .min_w_0()
         .truncate()
         .when(is_last, |d| {
-            d.text_size(theme::FS_15)
+            d.text_size(theme::fs_15())
                 .font_weight(theme::FW_STRONG)
                 .text_color(theme::text())
         })
@@ -910,18 +957,18 @@ fn chevron_button(id: impl Into<gpui::ElementId>, open: bool) -> gpui::Stateful<
         .a11y_button(t!("a11y.subfolders"))
         .aria_expanded(open)
         .flex_none()
-        .size(theme::S_20)
+        .size(theme::s_20())
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
         .when(open, |d| d.bg(theme::wash_strong()))
         .hover(|s| s.bg(theme::wash_strong()))
         .child(
             svg()
                 .path(Icon::ChevronRight.path())
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(if open {
                     theme::text()
                 } else {
@@ -942,12 +989,12 @@ fn menu_panel(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .occlude()
         .flex()
         .flex_col()
-        .py(theme::S_4)
-        .rounded(theme::R_12)
+        .py(theme::s_4())
+        .rounded(theme::r_12())
         .bg(theme::overlay())
         .shadow(theme::elev_float())
         .ui_font()
-        .text_size(theme::FS_14)
+        .text_size(theme::fs_14())
         .text_color(theme::text())
 }
 
@@ -964,18 +1011,18 @@ fn folder_row(
             highlighted,
             gpui::StatefulInteractiveElement::aria_active_descendant,
         )
-        .h(theme::S_32)
-        .mx(theme::S_4)
-        .px(theme::S_8)
+        .h(theme::s_32())
+        .mx(theme::s_4())
+        .px(theme::s_8())
         .flex()
         .flex_none()
         .items_center()
-        .gap(theme::S_8)
-        .rounded(theme::R_8)
+        .gap(theme::s_8())
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(highlighted, |d| d.bg(theme::wash_strong()))
         .when(!highlighted, |d| d.hover(|s| s.bg(theme::wash())))
-        .child(kind_icon(FileKind::Folder, theme::ICON))
+        .child(kind_icon(FileKind::Folder, theme::icon()))
         .child(
             div()
                 .flex_1()
@@ -988,9 +1035,9 @@ fn folder_row(
 
 fn note(text: String) -> AnyElement {
     div()
-        .px(theme::S_12)
-        .py(theme::S_6)
-        .text_size(theme::FS_12)
+        .px(theme::s_12())
+        .py(theme::s_6())
+        .text_size(theme::fs_12())
         .text_color(theme::text_subtle())
         .child(text)
         .into_any_element()

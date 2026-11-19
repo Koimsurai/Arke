@@ -61,14 +61,14 @@ impl Render for HeaderGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .ui_font()
-            .px(theme::S_8)
-            .py(theme::S_4)
-            .rounded(theme::R_8)
+            .px(theme::s_8())
+            .py(theme::s_4())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .border_1()
             .border_color(theme::line())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text())
             .child(self.0.clone())
     }
@@ -104,7 +104,7 @@ impl Explorer {
     pub(super) fn compute_columns(&self, held_name: Option<Pixels>) -> Option<layout::Columns> {
         let others: Vec<Pixels> = if self.search_mode {
             vec![
-                theme::COL_LOCATION,
+                theme::col_location(),
                 crate::prefs::modified_width(),
                 crate::prefs::size_width(),
             ]
@@ -114,7 +114,7 @@ impl Explorer {
             return None;
         };
         Some(layout::columns(
-            self.pane_width - layout::LIST_CHROME,
+            self.pane_width - layout::list_chrome(),
             crate::prefs::user_width(Col::Name).or(held_name),
             &others,
         ))
@@ -181,9 +181,9 @@ impl Explorer {
             .h_full()
             .items_center()
             .ml(scroll_x)
-            .pl(layout::ROW_PAD_L)
-            .pr(layout::ROW_PAD_R)
-            .gap(layout::COL_GAP);
+            .pl(layout::row_pad_l())
+            .pr(layout::row_pad_r())
+            .gap(layout::col_gap());
         let row = if self.search_mode {
             // Search results are sorted by relevance; no column sorting.
             row.child(
@@ -199,7 +199,7 @@ impl Explorer {
             )
             .child(
                 div()
-                    .w(theme::COL_LOCATION)
+                    .w(theme::col_location())
                     .flex_none()
                     .truncate()
                     .child(t!("col.location").to_string()),
@@ -244,13 +244,13 @@ impl Explorer {
             .id("details-header")
             .flex()
             .flex_none()
-            .h(theme::H_HEADER)
-            .mx(theme::S_8)
+            .h(theme::h_header())
+            .mx(theme::s_8())
             .overflow_hidden()
             // Thin line between header and list to give the columns structure.
             .border_b_1()
             .border_color(theme::line())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_muted())
             .child(row)
             // Right-click anywhere on the header, the blank part too: which columns to show.
@@ -277,7 +277,7 @@ impl Explorer {
                 .h_full()
                 .flex()
                 .items_center()
-                .gap(layout::COL_GAP)
+                .gap(layout::col_gap())
                 .when(self.show_checkboxes && !self.search_mode, |d| {
                     d.child(self.header_checkbox(cx))
                 })
@@ -299,7 +299,7 @@ impl Explorer {
         let arrow = key.map(|(_, ascending)| {
             svg()
                 .path(Icon::ChevronRight.path())
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .flex_none()
                 .text_color(theme::text_muted())
                 .with_transformation(gpui::Transformation::rotate(gpui::radians(if ascending {
@@ -311,7 +311,7 @@ impl Explorer {
         let place = key.filter(|_| several).map(|(ix, _)| {
             div()
                 .flex_none()
-                .text_size(theme::FS_11)
+                .text_size(theme::fs_11())
                 .text_color(theme::text_subtle())
                 .child((ix + 1).to_string())
         });
@@ -323,7 +323,7 @@ impl Explorer {
             .flex()
             .h_full()
             .items_center()
-            .gap(theme::S_4)
+            .gap(theme::s_4())
             .when(key.is_some(), |d| d.text_color(theme::text()))
             .when(primary, |d| d.font_weight(theme::FW_STRONG))
             .child(div().min_w_0().truncate().child(label.clone()))
@@ -432,25 +432,25 @@ impl Explorer {
         }
         // The header: its label (semibold, as the primary sort key draws it) with room for the
         // sort arrow and the key's place.
-        let mut header = measure(&col.label(), theme::FS_12, theme::FW_STRONG)
-            + (theme::S_4 + theme::ICON_SM) * 2.;
+        let mut header = measure(&col.label(), theme::fs_12(), theme::FW_STRONG)
+            + (theme::s_4() + theme::icon_sm()) * 2.;
         if col == Col::Name {
             header += self.name_lead(self.tree_active().then_some(0));
         }
         // A little air so subpixel rounding never truncates the widest text.
         let widest = widths.into_iter().fold(header, Ord::max);
-        Some((widest + theme::S_4).ceil())
+        Some((widest + theme::s_4()).ceil())
     }
 
     /// What comes before the name text in the Name column: the checkbox, the tree's indent and
     /// chevron at `depth`, and the icon, each with its gap.
     pub(super) fn name_lead(&self, depth: Option<u16>) -> Pixels {
-        let mut w = theme::ICON + layout::COL_GAP;
+        let mut w = theme::icon() + layout::col_gap();
         if self.show_checkboxes && !self.search_mode {
-            w += theme::ICON + layout::COL_GAP;
+            w += theme::icon() + layout::col_gap();
         }
         if let Some(depth) = depth {
-            w += theme::TREE_INDENT * f32::from(depth) + theme::TREE_CHEVRON + theme::S_4;
+            w += theme::tree_indent() * f32::from(depth) + theme::tree_chevron() + theme::s_4();
         }
         w
     }
@@ -490,8 +490,8 @@ impl Explorer {
                     // Room for a compare badge ("Only here", "Newer"…) after the name.
                     let badge = self
                         .compare_mark(&entry.name)
-                        .map_or(px(0.), |_| theme::S_12 + px(64.));
-                    self.name_lead(depth) + text_w(&name, theme::FS_14) + badge
+                        .map_or(px(0.), |_| theme::s_12() + crate::theme::scaled_px(64.));
+                    self.name_lead(depth) + text_w(&name, theme::fs_14()) + badge
                 }
                 Col::Modified | Col::Created => {
                     let time = if col == Col::Modified {
@@ -501,18 +501,18 @@ impl Explorer {
                     };
                     text_w(
                         &self.date_text(time, crate::prefs::full_dates()),
-                        theme::FS_12,
+                        theme::fs_12(),
                     )
                 }
                 Col::Size => {
                     let text = super::view::size_text(entry, self.folder_size(&entry.name)).0;
-                    text_w(&text, theme::FS_14)
+                    text_w(&text, theme::fs_14())
                 }
-                Col::Type => text_w(&arke_core::format::type_label(entry), theme::FS_12),
-                Col::Extension => text_w(&shown_extension(entry), theme::FS_12),
-                Col::Attributes => text_w(entry.attribute_letters(), theme::FS_12),
+                Col::Type => text_w(&arke_core::format::type_label(entry), theme::fs_12()),
+                Col::Extension => text_w(&shown_extension(entry), theme::fs_12()),
+                Col::Attributes => text_w(entry.attribute_letters(), theme::fs_12()),
                 Col::LinkTarget => match self.link_targets.targets.get(&entry.name) {
-                    Some(LinkState::Known(target)) => text_w(target, theme::FS_12),
+                    Some(LinkState::Known(target)) => text_w(target, theme::fs_12()),
                     _ => px(0.),
                 },
             });
@@ -534,10 +534,10 @@ impl Explorer {
             };
             let entry = &hit.entry;
             widths.push(match col {
-                Col::Name => self.name_lead(None) + text_w(&entry.name, theme::FS_14),
-                Col::Modified => text_w(&self.date_text(entry.modified, true), theme::FS_12),
+                Col::Name => self.name_lead(None) + text_w(&entry.name, theme::fs_14()),
+                Col::Modified => text_w(&self.date_text(entry.modified, true), theme::fs_12()),
                 Col::Size if !entry.is_dir_like() => {
-                    text_w(&arke_core::format::format_size(entry.size), theme::FS_14)
+                    text_w(&arke_core::format::format_size(entry.size), theme::fs_14())
                 }
                 _ => px(0.),
             });
@@ -598,7 +598,7 @@ impl Explorer {
             Some(LinkState::Reading) => div()
                 .w(crate::prefs::width(Col::LinkTarget))
                 .flex_none()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child("…")
                 .into_any_element(),
@@ -688,15 +688,15 @@ impl Explorer {
     #[cfg(test)]
     pub(crate) fn header_columns_for_test(&self) -> Vec<(Col, Pixels, Pixels)> {
         let mut left = self.list_bounds.get().left()
-            + theme::S_8
-            + layout::ROW_PAD_L
+            + theme::s_8()
+            + layout::row_pad_l()
             + self.header_x.get().unwrap_or_default();
         std::iter::once(Col::Name)
             .chain(self.detail_columns())
             .map(|col| {
                 let width = self.column_width(col);
                 let at = left;
-                left += width + layout::COL_GAP;
+                left += width + layout::col_gap();
                 (col, at, width)
             })
             .collect()
@@ -738,7 +738,7 @@ fn text_cell(col: Col, text: impl Into<SharedString>) -> AnyElement {
         .w(crate::prefs::width(col))
         .flex_none()
         .truncate()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(text.into())
         .into_any_element()
@@ -795,7 +795,7 @@ fn resizable<E: ParentElement + InteractiveElement + Styled>(
                 if dragged.0 == col && dragged.1 == cx.entity_id() {
                     // The column's left edge stays put; the divider (half a gap past the right
                     // edge) follows the cursor.
-                    let width = e.event.position.x - e.bounds.left() - layout::COL_GAP / 2.;
+                    let width = e.event.position.x - e.bounds.left() - layout::col_gap() / 2.;
                     crate::prefs::set_width(col, Some(width));
                     this.column_resized = true;
                     cx.notify();
@@ -814,7 +814,7 @@ fn column_resize_handle(col: Col, cx: &mut Context<Explorer>) -> impl IntoElemen
         .bottom_0()
         // Columns are 12 px apart: the divider sits in the middle, 8 px wide for an easy grab.
         .right(px(-10.))
-        .w(px(8.))
+        .w(crate::theme::scaled_px(8.))
         .flex()
         .justify_center()
         .cursor(gpui::CursorStyle::ResizeLeftRight)
@@ -822,7 +822,7 @@ fn column_resize_handle(col: Col, cx: &mut Context<Explorer>) -> impl IntoElemen
         .child(
             div()
                 .w(px(1.))
-                .h(px(14.))
+                .h(crate::theme::scaled_px(14.))
                 .my_auto()
                 .bg(theme::line())
                 .group_hover("col-resize", |s| s.bg(theme::text_subtle())),
@@ -841,7 +841,7 @@ fn column_resize_handle(col: Col, cx: &mut Context<Explorer>) -> impl IntoElemen
 /// Explorer's shortcut arrow for symlinks and junctions: a small framed arrow over the icon's
 /// bottom-left corner, `icon` being the icon's size.
 pub(crate) fn with_link_badge(visual: AnyElement, icon: Pixels) -> AnyElement {
-    let size = (icon * 0.4).max(px(9.));
+    let size = (icon * 0.4).max(crate::theme::scaled_px(9.));
     let layer = |path: Icon, color: gpui::Rgba| {
         svg()
             .absolute()

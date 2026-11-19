@@ -8,25 +8,30 @@ use std::sync::Arc;
 
 use arke_core::filetype::FileKind;
 use gpui::{
-    AnimationExt, AnyElement, App, ClickEvent, Context, Div, Entity, ExternalPaths, MouseButton,
-    MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window, anchored,
-    deferred, div, prelude::*, px, relative, svg,
+    AnimationExt, AnyElement, App, ClickEvent, Context, Div, DragMoveEvent, Entity, ExternalPaths,
+    MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Window, div,
+    prelude::*, px, relative, svg,
 };
 use rust_i18n::t;
 
+use super::pindrop::{self, PinArea, PinDrops as _};
 use super::{DraggedTab, Tab, Workspace};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, Explorer, drop_external_into, drop_into, kind_icon};
-use crate::settings::{FAVORITES_LARGE, FAVORITES_MAX, SettingsStore};
+use crate::settings::{FAVORITES_LARGE, FAVORITES_MAX, PinSlot, SettingsStore};
 use crate::shell::{KnownFolder, Place, PlaceKind};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
 
 /// One tree indent level.
-const INDENT: Pixels = px(16.);
+fn tree_indent() -> gpui::Pixels {
+    crate::theme::scaled_px(16.)
+}
 /// Drive usage bar: thin, under the label, inside the row (the row keeps its height).
-const USAGE_BAR_H: Pixels = px(3.);
+fn usage_bar_h() -> gpui::Pixels {
+    crate::theme::scaled_px(3.)
+}
 /// Used share above which the usage bar turns red.
 const USAGE_DANGER: f32 = 0.9;
 
@@ -79,6 +84,8 @@ pub(super) enum SidebarAction {
     DisconnectDrive(PathBuf),
     /// Eject a removable drive.
     EjectDrive(PathBuf),
+    /// Rename a mapped drive or network place in place (the name is Arke's own).
+    RenamePlace(PathBuf),
     /// Remove from the sidebar Network section.
     ForgetShare(PathBuf),
     /// Remove a saved SFTP/WebDAV location (and its saved password).
@@ -118,20 +125,20 @@ pub(super) struct DraggedPin {
 impl Render for DraggedPin {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(theme::H_ROW)
-            .px(theme::S_8)
+            .h(theme::h_row())
+            .px(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             .child(crate::assets::tinted(
                 self.icon,
-                theme::ICON,
+                theme::icon(),
                 theme::text_muted(),
             ))
             .child(self.label.clone())
@@ -159,6 +166,8 @@ pub(super) struct SidebarMenu {
     /// The tabs when it opened: rows name tabs by index, so a tab opened or closed meanwhile
     /// would make them act on the wrong one; the menu closes instead.
     tabs: Vec<u64>,
+    /// The window it is drawn in (`popup.rs`).
+    popup: crate::popup::Single,
 }
 
 /// Whether `dir` has at least one non-hidden subfolder. Stops at the first one.
@@ -261,14 +270,14 @@ fn section_label(text: impl Into<SharedString>) -> impl IntoElement {
     let text: SharedString = text.into();
     div()
         .flex_none()
-        .h(theme::H_ROW)
+        .h(theme::h_row())
         .flex()
         .items_end()
-        .px(theme::S_8)
-        .pb(theme::S_6)
+        .px(theme::s_8())
+        .pb(theme::s_6())
         // Section heading (like Files): item size, semibold and full ink, so the groups read as
         // headings rather than captions; the weight alone sets them apart from the items.
-        .text_size(theme::FS_14)
+        .text_size(theme::fs_14())
         .font_weight(theme::FW_STRONG)
         .text_color(theme::text())
         .child(text)
@@ -289,9 +298,9 @@ fn folder_menu(
         ),
         (
             if pinned {
-                t!("sidebar.unpin")
+                t!("sidebar.remove_favorite")
             } else {
-                t!("sidebar.pin")
+                t!("sidebar.add_favorite")
             }
             .to_string()
             .into(),
@@ -320,12 +329,12 @@ pub(super) fn tab_layout_button(
         } else {
             t!("sidebar.tabs_to_top")
         })
-        .size(theme::S_24)
+        .size(theme::s_24())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
         .hover(|s| s.bg(theme::wash_strong()))
         .child(
@@ -335,7 +344,7 @@ pub(super) fn tab_layout_button(
                 } else {
                     Icon::TabsTop.path()
                 })
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_subtle()),
         )
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
@@ -384,23 +393,48 @@ fn remote_label(url: &Path) -> String {
     }
 }
 
+/// What a place that can be renamed is called without a custom name: a mapped drive (its name
+/// without the letter), a recently opened share or a saved remote location. `None` for the rest.
+pub(super) fn place_default_name(
+    settings: &crate::settings::Settings,
+    places: &[Place],
+    path: &Path,
+) -> Option<String> {
+    use crate::place_names::{drive_default_name, key};
+    let same = |other: &Path| key(other) == key(path);
+    if let Some(drive) = places
+        .iter()
+        .find(|p| matches!(p.kind, PlaceKind::Drive { remote: true, .. }) && same(&p.path))
+    {
+        return Some(drive_default_name(drive));
+    }
+    if settings.net_places.iter().any(|p| same(p)) {
+        return Some(share_label(path));
+    }
+    settings
+        .remote_places
+        .iter()
+        .any(|p| same(&p.url))
+        .then(|| remote_label(path))
+}
+
 /// Button next to the Network header: opens Arke's "Add network location" dialog.
 fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
     div()
         .id("map-network-drive")
         .a11y_button(t!("sidebar.add_location"))
-        .size(theme::S_24)
+        .size(theme::s_24())
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .cursor_pointer()
         .hover(|s| s.bg(theme::wash_strong()))
         .child(
             svg()
                 .path(Icon::Plus.path())
-                .size(theme::ICON)
+                .size(theme::icon())
                 .text_color(theme::text_subtle()),
         )
         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -413,11 +447,11 @@ fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
 fn loading_row(indent: Pixels) -> AnyElement {
     div()
         .flex_none()
-        .h(theme::H_ROW)
+        .h(theme::h_row())
         .flex()
         .items_center()
         .pl(indent)
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_subtle())
         .child(t!("info.loading").to_string())
         .into_any_element()
@@ -437,31 +471,54 @@ impl FileDropTarget for gpui::Stateful<gpui::Div> {
         let spring_key = format!("side:{}", dest.display());
         let spring_bar = crate::spring::bar(&spring_key, cx);
         let workspace = cx.entity().downgrade();
+        // Near the edge of a favorite or pinned folder, dragged folders are added to the sidebar
+        // there instead (`workspace_pindrop.rs`), not dropped into this one. That is handled here:
+        // GPUI ends the drag at the first target of its kind, even one that turns it down.
         self.relative()
             .children(spring_bar)
-            .can_drop(move |value, _, cx| crate::explorer::accepts_drop(value, &check, cx))
+            .can_drop(move |value, window, cx| {
+                pindrop::inserting(window, cx) || crate::explorer::accepts_drop(value, &check, cx)
+            })
             .on_drag_move(move |e: &gpui::DragMoveEvent<DraggedFiles>, window, cx| {
-                crate::explorer::report_drop_target(&hovered, e, cx);
-                crate::spring::hover(
+                let inserting = pindrop::inserting(window, cx);
+                if !inserting {
+                    crate::explorer::report_drop_target(&hovered, e, cx);
+                }
+                crate::spring::hover_at(
                     spring_key.clone(),
                     crate::spring::Action::Open(hovered.clone()),
                     crate::spring::Target::Workspace(workspace.clone()),
-                    e,
+                    !inserting && e.bounds.contains(&e.event.position),
+                    e.event.position,
                     window,
                     cx,
                 );
             })
-            .drag_over::<DraggedFiles>(|s, _, _, _| {
+            .drag_over::<DraggedFiles>(|s, _, window, cx| {
+                if pindrop::inserting(window, cx) {
+                    return s;
+                }
                 s.bg(theme::signal_wash())
                     .border_color(theme::signal_line())
             })
-            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(theme::signal_wash()))
-            .on_drop(move |dragged: &DraggedFiles, window, cx| {
-                drop_into(dragged, dest.clone(), window, cx);
+            .drag_over::<ExternalPaths>(|s, _, window, cx| {
+                if pindrop::inserting(window, cx) {
+                    return s;
+                }
+                s.bg(theme::signal_wash())
             })
+            .on_drop(
+                cx.listener(move |this, dragged: &DraggedFiles, window, cx| {
+                    if !this.drop_files_to_pin(dragged, window, cx) {
+                        drop_into(dragged, dest.clone(), window, cx);
+                    }
+                }),
+            )
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                let target = this.active_view().clone();
-                drop_external_into(paths, external.clone(), &target, window, cx);
+                if !this.drop_external_to_pin(paths, window, cx) {
+                    let target = this.active_view().clone();
+                    drop_external_into(paths, external.clone(), &target, window, cx);
+                }
             }))
     }
 }
@@ -511,8 +568,15 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Pinned list row: draggable, flashes when just added.
-    fn pin_list_row(ix: usize, path: &Path, row: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+    /// Pinned list row: draggable, flashes when just added. A folder or tab dragged over its top or
+    /// bottom edge goes in above or below it (`workspace_pindrop.rs`).
+    fn pin_list_row(
+        &self,
+        ix: usize,
+        path: &Path,
+        row: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let workspace = cx.entity().downgrade();
         let dragged = DraggedPin {
             path: path.to_path_buf(),
@@ -520,10 +584,37 @@ impl Workspace {
             icon: Icon::Folder,
             from_tile: false,
         };
+        // Over this row, or over the "Pinned" heading (first in the list).
+        let mark = match (self.pin_shown, self.pin_mark) {
+            (Some(_), Some(m)) if m.area == PinArea::List && m.ix == ix => {
+                Some(pindrop::insertion_mark(false, m.before))
+            }
+            (Some(PinSlot::List(0)), None) if ix == 0 => Some(pindrop::insertion_mark(false, true)),
+            _ => None,
+        };
         let row = div()
             .id(SharedString::from(format!("pin-row-{}", path.display())))
-            .rounded(theme::R_8)
+            .debug_selector(move || format!("pin-row-{ix}"))
+            .relative()
+            .rounded(theme::r_8())
             .child(row)
+            .children(mark)
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.pin_hover(PinArea::List, ix, e, cx);
+                }),
+            )
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                    this.pin_hover(PinArea::List, ix, e, cx);
+                }),
+            )
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    this.pin_hover(PinArea::List, ix, e, cx);
+                }),
+            )
+            .with_pin_drops(cx)
             .on_drag(dragged, move |dragged, _, _, cx| {
                 start_pin_drag(&workspace, dragged, cx)
             })
@@ -556,11 +647,16 @@ impl Workspace {
                 None => Icon::Folder,
             }
         };
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
         let label_for = |path: &Path| {
-            places
-                .iter()
-                .find(|p| p.path == path)
-                .map_or_else(|| display_name(path), |p| p.label.clone())
+            places.iter().find(|p| p.path == path).map_or_else(
+                || display_name(path),
+                |p| crate::place_names::place_label(&names, p),
+            )
         };
         SettingsStore::global(cx)
             .read(cx)
@@ -575,6 +671,10 @@ impl Workspace {
     }
 
     /// Pins section: draggable tiles, the "Pinned" header, and the overflow list below.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the tiles, the heading and the list, each with its drops, read top to bottom"
+    )]
     fn render_pins(&self, current: Option<&Path>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let settings = &SettingsStore::global(cx).read(cx).settings;
         let pinned = settings.pinned.clone();
@@ -607,22 +707,22 @@ impl Workspace {
             );
             // The list row itself (not its expanded children) is draggable: reorder or drop onto tiles.
             let row = pinned_rows.remove(row_at);
-            pinned_rows.insert(row_at, Self::pin_list_row(ix, path, row, cx));
+            pinned_rows.insert(row_at, self.pin_list_row(ix, path, row, cx));
         }
         // With an empty list, a dragged tile still needs somewhere to drop.
         let list_drop = (pinned.is_empty() && self.dragging_pin).then(|| {
             div()
                 .id("pin-list-drop")
-                .h(theme::H_ROW)
-                .mx(theme::S_4)
+                .h(theme::h_row())
+                .mx(theme::s_4())
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .border_1()
                 .border_dashed()
                 .border_color(theme::line_strong())
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_muted())
                 .child(t!("sidebar.drop_to_list").into_owned())
                 .drag_over::<DraggedPin>(|s, _, _, _| {
@@ -633,13 +733,32 @@ impl Workspace {
                     this.place_pin(&dragged.path, crate::settings::PinSlot::List(0), cx);
                 }))
         });
+        // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
+        // the last one (`workspace_pindrop.rs`).
+        let add_slot = self.render_add_favorite_slot(tile_count, large, cx);
         let mut out = vec![
             div()
                 .id("pin-tiles")
+                .debug_selector(|| "pin-tiles".to_owned())
                 .grid()
                 .grid_cols(if large { 3 } else { 4 })
-                .gap(theme::S_4)
+                .gap(theme::s_4())
+                .rounded(theme::r_8())
+                .when(add_slot.is_some(), |d| d.bg(theme::signal_wash()))
                 .children(tiles)
+                .children(add_slot)
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.tiles_hover(e, cx);
+                }))
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                    this.tiles_hover(e, cx);
+                }))
+                .on_drag_move(
+                    cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                        this.tiles_hover(e, cx);
+                    }),
+                )
+                .with_pin_drops(cx)
                 .on_drop(cx.listener(move |this, dragged: &DraggedPin, _, cx| {
                     this.drop_pin_between_tiles(dragged, tile_count, cx);
                 }))
@@ -654,7 +773,26 @@ impl Workspace {
             out.push(
                 div()
                     .id("pin-list-label")
-                    .child(section_label(t!("sidebar.pinned")))
+                    .debug_selector(|| "pin-list-label".to_owned())
+                    .relative()
+                    .rounded(theme::r_8())
+                    .child(section_label(t!("sidebar.favorites")))
+                    // A folder or tab goes first in the list; with no folder pinned yet, the
+                    // heading itself shows it.
+                    .when(
+                        pinned.is_empty() && self.pin_shown == Some(PinSlot::List(0)),
+                        |d| d.child(pindrop::insertion_mark(false, false)),
+                    )
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                    }))
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                    }))
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                    }))
+                    .with_pin_drops(cx)
                     // Dropping on the "Pinned" header puts it first in the list.
                     .on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| {
                         this.place_pin(&dragged.path, crate::settings::PinSlot::List(0), cx);
@@ -724,7 +862,11 @@ impl Workspace {
         items.push(section_label(t!("sidebar.this_pc")).into_any_element());
         items.extend(devices);
         items.extend(network);
-        let places = div().id("sidebar-places").flex().flex_col().gap(theme::S_2);
+        let places = div()
+            .id("sidebar-places")
+            .flex()
+            .flex_col()
+            .gap(theme::s_2());
         let places_area = scrolling(
             places,
             items,
@@ -735,7 +877,7 @@ impl Workspace {
                 .when(horizontal, gpui::Styled::flex_1)
                 .when(!horizontal, gpui::Styled::flex_initial)
                 // At least two rows stay visible, so it's clear this part scrolls too.
-                .min_h(theme::H_ROW * 2.),
+                .min_h(theme::h_row() * 2.),
         );
         div()
             .id("sidebar")
@@ -744,17 +886,19 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .pl(theme::S_12)
-            .pr(theme::S_8)
-            .pb(theme::S_8)
-            .gap(theme::S_2)
+            .pl(theme::s_12())
+            .pr(theme::s_8())
+            .pb(theme::s_8())
+            .gap(theme::s_2())
             .child(places_area)
             .when(!horizontal, |d| {
                 d.child(
                         div()
+                            .relative()
                             .flex()
                             .flex_none()
                             .items_end()
+                            .child(self.tab_area_recorder(super::tabmove::AreaPart::ListHead))
                             .child(div().flex_1().child(section_label(t!("sidebar.tabs"))))
                             .child(Self::workspaces_button(cx))
                             .child(tab_layout_button(false, cx)),
@@ -773,7 +917,7 @@ impl Workspace {
                             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
                             .flex()
                             .flex_col()
-                            .gap(theme::S_2)
+                            .gap(theme::s_2())
                             // Dropping in the gaps between tabs moves the tab to the end.
                             .on_drop(cx.listener(Self::drop_tab_at_end)),
                         tabs,
@@ -789,8 +933,10 @@ impl Workspace {
                     .child(
                         div()
                             .id("tab-list-end")
+                            .relative()
+                            .child(self.tab_area_recorder(super::tabmove::AreaPart::ListEnd))
                             .flex_1()
-                            .min_h(theme::S_32)
+                            .min_h(theme::s_32())
                             .on_drop(cx.listener(Self::drop_tab_at_end)),
                     )
             })
@@ -805,7 +951,7 @@ impl Workspace {
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
     fn tab_list_min_height(tabs: usize) -> Pixels {
         let shown = tabs.min(3) as f32;
-        (theme::H_ROW + theme::S_2) * shown
+        (theme::h_row() + theme::s_2()) * shown
     }
 
     /// Drops a tab onto empty space in the tab strip or list: moves it to the end.
@@ -851,10 +997,15 @@ impl Workspace {
             .net_places
             .clone();
         shares.sort_by_cached_key(|s| s.to_string_lossy().to_lowercase());
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
         for share in &shares {
             self.render_tree(
                 share,
-                share_label(share),
+                crate::place_names::shown_name(&names, share).unwrap_or_else(|| share_label(share)),
                 None,
                 Some(Icon::NetDrive),
                 0,
@@ -874,7 +1025,7 @@ impl Workspace {
         for url in &remotes {
             self.render_tree(
                 url,
-                remote_label(url),
+                crate::place_names::shown_name(&names, url).unwrap_or_else(|| remote_label(url)),
                 None,
                 Some(Icon::NetDrive),
                 0,
@@ -909,6 +1060,12 @@ impl Workspace {
             .places
             .iter()
             .any(|p| p.path == path && matches!(p.kind, PlaceKind::Drive { remote: true, .. }));
+        if place_default_name(settings, &places, path).is_some() {
+            items.push((
+                t!("menu.rename").to_string().into(),
+                SidebarAction::RenamePlace(path.to_path_buf()),
+            ));
+        }
         if mapped {
             items.push((
                 t!("sidebar.disconnect_drive").to_string().into(),
@@ -965,20 +1122,20 @@ impl Workspace {
             .a11y_button(t!("sidebar.new_tab"))
             .aria_keyshortcuts("Ctrl+T")
             .group("new-tab")
-            .h(theme::H_ROW)
+            .h(theme::h_row())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .px(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .px(theme::s_8())
+            .rounded(theme::r_8())
             .cursor_pointer()
             .text_color(theme::text_subtle())
             .hover(|s| s.bg(theme::wash()).text_color(theme::text_muted()))
             .child(
                 svg()
                     .path(Icon::TabNew.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .text_color(theme::text_subtle()),
             )
             .child(div().flex_1().child(t!("sidebar.new_tab").to_string()))
@@ -987,11 +1144,11 @@ impl Workspace {
                 div()
                     .invisible()
                     .group_hover("new-tab", gpui::Styled::visible)
-                    .px(theme::S_4)
-                    .rounded(theme::R_4)
+                    .px(theme::s_4())
+                    .rounded(theme::r_4())
                     .border_1()
                     .border_color(theme::line_strong())
-                    .text_size(theme::FS_11)
+                    .text_size(theme::fs_11())
                     .child("Ctrl T"),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -1026,15 +1183,15 @@ impl Workspace {
             .id(SharedString::from(format!("tile-{}", path.display())))
             .a11y_lazy(gpui::Role::TreeItem, || label.clone())
             .aria_selected(here)
-            .h(if large { px(56.) } else { px(48.) })
+            .h(if large { crate::theme::scaled_px(56.) } else { crate::theme::scaled_px(48.) })
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(if large { theme::S_4 } else { theme::S_2 })
-            .rounded(theme::R_8)
+            .gap(if large { theme::s_4() } else { theme::s_2() })
+            .rounded(theme::r_8())
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .when(here, |d| {
                 d.relative().child(here_layer()).text_color(theme::text())
             })
@@ -1045,14 +1202,14 @@ impl Workspace {
             })
             .child(crate::assets::tinted(
                 icon,
-                if large { theme::S_20 } else { px(18.) },
+                if large { theme::s_20() } else { crate::theme::scaled_px(18.) },
                 if here {
                     theme::signal()
                 } else {
                     theme::text_muted()
                 },
             ))
-            .child(div().max_w_full().px(theme::S_4).truncate().child(label))
+            .child(div().max_w_full().px(theme::s_4()).truncate().child(label))
             .with_file_drop(path.to_path_buf(), cx)
             // Drag to reorder (live, see `tile_drag_shell`) or onto the list below.
             .on_drag(dragged, move |dragged, _, _, cx| {
@@ -1095,7 +1252,7 @@ impl Workspace {
                                 SidebarAction::MoveToList(p.clone()),
                             ),
                             (
-                                t!("sidebar.unpin").to_string().into(),
+                                t!("sidebar.remove_favorite").to_string().into(),
                                 SidebarAction::TogglePin(p),
                             ),
                         ],
@@ -1131,16 +1288,11 @@ impl Workspace {
                 used: used.clamp(0., 1.),
             }
         });
-        self.render_tree(
-            &place.path,
-            place.label.clone(),
-            space,
-            Some(icon),
-            0,
-            current,
-            out,
-            cx,
+        let label = crate::place_names::place_label(
+            &SettingsStore::global(cx).read(cx).settings.place_names,
+            place,
         );
+        self.render_tree(&place.path, label, space, Some(icon), 0, current, out, cx);
     }
 
     /// An expandable folder; renders subfolders recursively when open.
@@ -1173,7 +1325,8 @@ impl Workspace {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu = self.tree_menu(path, depth, cx);
-        let indent = INDENT * depth as f32;
+        let renaming = self.sidebar_rename_box(path);
+        let indent = tree_indent() * depth as f32;
         out.push(
             div()
                 .id(SharedString::from(format!(
@@ -1181,28 +1334,35 @@ impl Workspace {
                     path.display()
                 )))
                 .a11y_lazy(gpui::Role::TreeItem, || label.clone())
+                .debug_selector({
+                    let label = label.clone();
+                    move || format!("sidebar {label}")
+                })
                 .aria_level(depth)
                 .aria_selected(here)
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
-                .h(theme::H_ROW)
+                .h(theme::h_row())
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_4)
-                .pl(indent + theme::S_4)
-                .pr(theme::S_8)
-                .rounded(theme::R_8)
+                .gap(theme::s_4())
+                .pl(indent + theme::s_4())
+                .pr(theme::s_8())
+                .rounded(theme::r_8())
                 .cursor_pointer()
                 // Current location: neutral wash.
                 .when(here, |d| d.bg(theme::selection()))
                 .when(!here, |d| d.hover(|s| s.bg(theme::wash())))
                 .child(Self::tree_chevron(path, depth, expanded, leaf, cue, cx))
                 .child(match icon {
-                    Some(icon) => crate::assets::tinted(icon, theme::ICON, theme::text_muted()),
-                    None => kind_icon(FileKind::Folder, theme::ICON),
+                    Some(icon) => crate::assets::tinted(icon, theme::icon(), theme::text_muted()),
+                    None => kind_icon(FileKind::Folder, theme::icon()),
                 })
-                .child(tree_label(label, space))
+                .child(match renaming {
+                    Some(input) => crate::place_names::rename_box(input),
+                    None => tree_label(label, space).into_any_element(),
+                })
                 .with_file_drop(path.to_path_buf(), cx)
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.navigate_active(open.clone(), window, cx);
@@ -1240,7 +1400,7 @@ impl Workspace {
                     );
                 }
             }
-            _ => out.push(loading_row(indent + INDENT + theme::S_32)),
+            _ => out.push(loading_row(indent + tree_indent() + theme::s_32())),
         }
         // Just expanded: the new rows drop in under their parent.
         if let Some(serial) = cue {
@@ -1277,7 +1437,7 @@ impl Workspace {
         };
         let glyph = svg()
             .path(Icon::ChevronRight.path())
-            .size(theme::ICON_SM)
+            .size(theme::icon_sm())
             .text_color(theme::text_subtle());
         let glyph = match cue {
             Some(serial) => glyph
@@ -1294,12 +1454,12 @@ impl Workspace {
                 "chev-{depth}-{}",
                 path.display()
             )))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .when(!leaf, |d| {
                 d.hover(|s| s.bg(theme::wash_strong()))
                     .child(glyph)
@@ -1377,6 +1537,30 @@ impl Workspace {
 
     // --- Context menu ---
 
+    /// Tests: the entries of the menu a right click on the place's row opens.
+    #[cfg(test)]
+    pub(crate) fn place_menu_labels_for_test(
+        &self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        self.tree_menu(path, 0, cx)
+            .into_iter()
+            .map(|(label, _)| label.to_string())
+            .collect()
+    }
+
+    /// Tests: "Rename" picked from the place's menu.
+    #[cfg(test)]
+    pub(crate) fn rename_place_from_menu_for_test(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_sidebar_action(SidebarAction::RenamePlace(path.to_path_buf()), window, cx);
+    }
+
     #[cfg(test)]
     pub(super) fn sidebar_menu_labels_for_test(&self) -> Option<Vec<String>> {
         let menu = self.sidebar_menu.as_ref()?;
@@ -1416,6 +1600,7 @@ impl Workspace {
             position,
             items,
             tabs,
+            popup: crate::popup::Single::new(),
         });
         cx.stop_propagation();
         cx.notify();
@@ -1567,6 +1752,7 @@ impl Workspace {
             SidebarAction::ToggleSearchNetwork(path) => {
                 crate::global_search::toggle_network(path, cx);
             }
+            SidebarAction::RenamePlace(path) => self.start_place_rename(&path, window, cx),
             SidebarAction::ForgetShare(share) => {
                 SettingsStore::global(cx).update(cx, |s, cx| {
                     s.update(|st| st.forget_share(&share), cx);
@@ -1721,8 +1907,47 @@ impl Workspace {
         .detach();
     }
 
-    pub(super) fn render_sidebar_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// While the tab, sidebar or history menu is open, what stays in the window: closing it on a
+    /// press anywhere in the window. The menu is drawn in a window of its own (`popup.rs`).
+    pub(super) fn render_sidebar_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let menu = self.sidebar_menu.as_mut()?;
+        let at = crate::popup::to_screen(window, menu.position);
+        menu.popup.ensure(
+            || crate::popup::Anchor::At(at.0, at.1),
+            |this: &mut Self| this.sidebar_menu.as_mut().map(|m| &mut m.popup),
+            Self::sidebar_menu_panel,
+            |this, _, cx| {
+                this.sidebar_menu = None;
+                cx.notify();
+            },
+            window,
+            cx,
+        );
+        Some(
+            div()
+                .absolute()
+                .size_0()
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.sidebar_menu = None;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The tab, sidebar or history menu's panel, drawn in its own window.
+    fn sidebar_menu_panel(
+        &mut self,
+        max_h: Pixels,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let menu = self.sidebar_menu.as_ref()?;
+        let owner = menu.popup.owner();
         let rows: Vec<AnyElement> = menu
             .items
             .iter()
@@ -1737,16 +1962,16 @@ impl Workspace {
                 let detail = menu_detail(&action);
                 div()
                     .id(("sidebar-menu-item", ix))
-                    .h(theme::H_CTL_SM + theme::S_4)
-                    .mx(theme::S_4)
-                    .px(theme::S_8)
+                    .h(theme::h_ctl_sm() + theme::s_4())
+                    .mx(theme::s_4())
+                    .px(theme::s_8())
                     .flex()
                     .items_center()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .when(folder, |d| {
-                        d.child(kind_icon(FileKind::Folder, theme::ICON))
+                        d.child(kind_icon(FileKind::Folder, theme::icon()))
                     })
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::wash()))
                     .child(div().flex_none().child(label.clone()))
@@ -1754,59 +1979,49 @@ impl Workspace {
                         d.child(
                             div()
                                 .min_w_0()
-                                .max_w(px(320.))
+                                .max_w(crate::theme::scaled_px(320.))
                                 .truncate()
-                                .text_size(theme::FS_12)
+                                .text_size(theme::fs_12())
                                 .text_color(theme::text_muted())
                                 .child(detail),
                         )
                     })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.drop_stale_menu();
-                        if this.sidebar_menu.is_some() {
-                            this.run_sidebar_action(action.clone(), window, cx);
-                        }
-                        cx.notify();
-                    }))
+                    .on_click(crate::popup::listener_in(
+                        owner,
+                        cx,
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.drop_stale_menu();
+                            if this.sidebar_menu.is_some() {
+                                this.run_sidebar_action(action.clone(), window, cx);
+                            }
+                            cx.notify();
+                        },
+                    ))
                     .into_any_element()
             })
             .collect();
         Some(
-            deferred(
-                anchored()
-                    .position(menu.position)
-                    .snap_to_window_with_margin(theme::S_8)
-                    .child(
-                        div()
-                            .id("sidebar-menu")
-                            // Occlude items below; otherwise the covered item thinks it is hovered and its tooltip covers the menu.
-                            .occlude()
-                            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                                this.sidebar_menu = None;
-                                cx.notify();
-                            }))
-                            .min_w(px(200.))
-                            .py(theme::S_4)
-                            .rounded(theme::R_12)
-                            .bg(theme::overlay())
-                            .shadow(theme::elev_float())
-                            .ui_font()
-                            .text_size(theme::FS_14)
-                            .text_color(theme::text())
-                            .children(rows)
-                            // Like the list's context menu: fades in, again for each new
-                            // right-click position.
-                            .with_animation(
-                                gpui::ElementId::Name(
-                                    format!("sidebar-menu-{:?}", menu.position).into(),
-                                ),
-                                crate::motion::menu_enter(),
-                                crate::motion::fade_in,
-                            ),
-                    ),
-            )
-            .with_priority(1)
-            .into_any_element(),
+            div()
+                .id("sidebar-menu")
+                .occlude()
+                .min_w(crate::theme::scaled_px(200.))
+                .max_h(max_h)
+                .overflow_y_scroll()
+                .py(theme::s_4())
+                .rounded(theme::r_12())
+                .bg(theme::overlay())
+                .shadow(theme::elev_float())
+                .ui_font()
+                .text_size(theme::fs_14())
+                .text_color(theme::text())
+                .children(rows)
+                // Like the list's context menu: fades in, again for each new menu.
+                .with_animation(
+                    gpui::ElementId::Name(format!("sidebar-menu-{:?}", menu.position).into()),
+                    crate::motion::menu_enter(),
+                    crate::motion::fade_in,
+                )
+                .into_any_element(),
         )
     }
 
@@ -1845,7 +2060,8 @@ impl Workspace {
     pub(super) fn tab_menu(&self, ix: usize, cx: &App) -> Vec<(SharedString, SidebarAction)> {
         let pinned = self.tabs.get(ix).is_some_and(|t| t.pinned);
         let split = self.tabs.get(ix).is_some_and(Tab::is_split);
-        // The tab's folder can go on the sidebar's pinned list (the same pin as a folder's own menu).
+        // The tab's folder can go in the sidebar's favorites (the same as a folder's own menu:
+        // the tiles, then the list below once they are full).
         let folder = self
             .tabs
             .get(ix)
@@ -1854,13 +2070,13 @@ impl Workspace {
             .and_then(|view| view.read(cx).display_path().map(Path::to_path_buf))
             .map(|path| {
                 let places = &self.active_view().read(cx).places;
-                let on_sidebar = SettingsStore::try_global(cx)
+                let favorite = SettingsStore::try_global(cx)
                     .is_some_and(|s| s.read(cx).settings.is_pinned(&path, places));
                 (
-                    if on_sidebar {
-                        t!("sidebar.unpin_tab_folder")
+                    if favorite {
+                        t!("sidebar.remove_favorite")
                     } else {
-                        t!("sidebar.pin_tab_folder")
+                        t!("sidebar.add_favorite")
                     }
                     .to_string()
                     .into(),
@@ -1947,14 +2163,14 @@ impl Workspace {
                     .id(("tab-half", ix * 2 + pane))
                     .flex_1()
                     .min_w_0()
-                    .h(theme::H_CTL_SM)
-                    .px(theme::S_6)
+                    .h(theme::h_ctl_sm())
+                    .px(theme::s_6())
                     .flex()
                     .items_center()
-                    .gap(theme::S_6)
-                    .rounded(theme::R_4)
+                    .gap(theme::s_6())
+                    .rounded(theme::r_4())
                     .when(active_pane == Some(pane), |d| d.bg(theme::signal_wash()))
-                    .child(kind_icon(FileKind::Folder, theme::ICON))
+                    .child(kind_icon(FileKind::Folder, theme::icon()))
                     .child(div().min_w_0().truncate().child(title))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
@@ -1969,18 +2185,18 @@ impl Workspace {
         div()
             .id(("tab-pin", ix))
             .a11y_button(t!("sidebar.unpin_tab"))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(
                 svg()
                     .path(Icon::Pin.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(theme::text_subtle()),
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1996,18 +2212,18 @@ impl Workspace {
         div()
             .id(("tab-close", ix))
             .a11y_button(t!("sidebar.close_tab"))
-            .size(theme::S_20)
+            .size(theme::s_20())
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(theme::R_4)
+            .rounded(theme::r_4())
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(
                 svg()
                     .path(Icon::Close.path())
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(theme::text_subtle()),
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -2041,21 +2257,21 @@ impl Workspace {
             .debug_selector(|| format!("tab-{ix}"))
             .group(group.clone())
             .h(if split {
-                theme::H_ROW + theme::S_8
+                theme::h_row() + theme::s_8()
             } else if tab.pinned {
                 // Pinned tabs are a tighter group at the top.
-                theme::H_ROW_COMPACT
+                theme::h_row_compact()
             } else {
-                theme::H_ROW
+                theme::h_row()
             })
-            .when(tab.pinned, |d| d.text_size(theme::FS_13))
+            .when(tab.pinned, |d| d.text_size(theme::fs_13()))
             .flex()
             .flex_none()
             .items_center()
-            .gap(theme::S_4)
-            .pl(if split { theme::S_4 } else { theme::S_8 })
-            .pr(theme::S_6)
-            .rounded(theme::R_8)
+            .gap(theme::s_4())
+            .pl(if split { theme::s_4() } else { theme::s_8() })
+            .pr(theme::s_6())
+            .rounded(theme::r_8())
             .cursor_pointer()
             // Slides from the old position after a reorder (the offset is relative).
             .relative()
@@ -2067,7 +2283,7 @@ impl Workspace {
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(theme::R_8)
+                        .rounded(theme::r_8())
                         .with_animation(
                             ("tab-flash", serial as usize),
                             gpui::Animation::new(crate::motion::FLASH),
@@ -2080,11 +2296,10 @@ impl Workspace {
                     .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
             })
             // Dragging another tab over this one reorders live (workspace_tabdrag.rs); dropping on the right half
-            // of the content area opens it side by side. Files dropped on a tab go into its current folder.
-            .when_some(
-                tab.view().read(cx).current_path().map(Path::to_path_buf),
-                |d, dest| d.with_file_drop(dest, cx),
-            )
+            // of the content area opens it side by side. Files dropped on a tab go into its current folder (#32).
+            .when_some(self.tab_drop_folder(ix, cx), |d, dest| {
+                self.with_tab_file_drop(ix, dest, d)
+            })
             // Position was already updated during the drag.
             .on_drop(cx.listener(move |this, _: &DraggedTab, _, cx| {
                 this.dragging_tab = None;
@@ -2146,13 +2361,13 @@ impl Workspace {
             let icon = match self.page_title(tab.view().entity_id()) {
                 Some((_, icon)) => svg()
                     .path(icon.path())
-                    .size(theme::ICON)
+                    .size(theme::icon())
                     .flex_none()
                     .text_color(theme::text_muted())
                     .into_any_element(),
-                None => kind_icon(FileKind::Folder, theme::ICON),
+                None => kind_icon(FileKind::Folder, theme::icon()),
             };
-            row.gap(theme::S_8)
+            row.gap(theme::s_8())
                 .child(icon)
                 .child(div().flex_1().min_w_0().truncate().child(title))
         };
@@ -2177,13 +2392,13 @@ impl Workspace {
             div()
                 .flex()
                 .flex_col()
-                .gap(theme::S_2)
+                .gap(theme::s_2())
                 .child(shell)
                 .child(
                     div()
                         .h(px(1.))
-                        .mx(theme::S_8)
-                        .my(theme::S_2)
+                        .mx(theme::s_8())
+                        .my(theme::s_2())
                         .bg(theme::line()),
                 )
                 .into_any_element()
@@ -2231,7 +2446,16 @@ impl Workspace {
     /// Opens tab `ix`'s context menu, as a right click on the tab does.
     pub(crate) fn open_tab_menu_for_test(&mut self, ix: usize, cx: &mut Context<Self>) {
         let items = self.tab_menu(ix, cx);
-        self.open_sidebar_menu(gpui::point(px(100.), px(100.)), items, cx);
+        self.open_sidebar_menu(
+            gpui::point(crate::theme::scaled_px(100.), crate::theme::scaled_px(100.)),
+            items,
+            cx,
+        );
+    }
+
+    /// The window the open tab, sidebar or history menu is drawn in.
+    pub(crate) fn sidebar_menu_window_for_test(&self) -> Option<gpui::AnyWindowHandle> {
+        self.sidebar_menu.as_ref()?.popup.window()
     }
 
     pub(crate) fn tab_menu_labels_for_test(&self, ix: usize, cx: &App) -> Vec<String> {
@@ -2272,33 +2496,33 @@ fn tree_label(label: String, space: Option<DriveSpace>) -> impl IntoElement {
             .flex_1()
             .min_w_0()
             .truncate()
-            .pl(theme::S_4)
+            .pl(theme::s_4())
             .child(label);
     };
     div()
         .flex_1()
         .min_w_0()
-        .pl(theme::S_4)
+        .pl(theme::s_4())
         .flex()
         .flex_col()
-        .gap(theme::S_2)
+        .gap(theme::s_2())
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(div().flex_1().min_w_0().truncate().child(label))
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(space.free),
                 ),
         )
         .child(
             div()
-                .h(USAGE_BAR_H)
+                .h(usage_bar_h())
                 .rounded(theme::R_FULL)
                 .bg(theme::line())
                 .overflow_hidden()
@@ -2325,9 +2549,12 @@ fn here_layer() -> AnyElement {
         .top_0()
         .left_0()
         .size_full()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .bg(theme::paper())
-        .shadow(theme::elev_1())
+        // The outline goes inside: a shadow outside is cut off where a tile or a row touches the
+        // edge of the scrolling sidebar (#220).
+        .border_1()
+        .border_color(theme::line())
         .into_any_element()
 }
 

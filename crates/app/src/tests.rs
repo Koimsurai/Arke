@@ -42,18 +42,34 @@ mod live_recycle;
 mod menu_parts;
 #[path = "tests_motion.rs"]
 mod motion;
+#[path = "tests_place_names.rs"]
+mod place_names;
+#[path = "tests_popup_menus.rs"]
+mod popup_menus;
 #[path = "tests_preview_info.rs"]
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
+#[path = "tests_properties_card.rs"]
+mod properties_card;
+#[path = "tests_properties.rs"]
+mod properties_window;
 #[path = "tests_quick_look.rs"]
 mod quick_look;
+#[path = "tests_quiet_update.rs"]
+mod quiet_update;
 #[path = "tests_remote.rs"]
 mod remote;
+#[path = "tests_scale.rs"]
+mod scale;
+#[path = "tests_tab_drag.rs"]
+mod tab_drag;
 #[path = "tests_tabs.rs"]
 mod tabs;
 #[path = "tests_columns.rs"]
 mod tests_columns;
+#[path = "tests_commands.rs"]
+mod tests_commands;
 #[path = "tests_text_input_menu.rs"]
 mod text_input_menu;
 #[path = "tests_top_bar.rs"]
@@ -167,16 +183,17 @@ struct FakeShell {
     quicklook_runs: Mutex<Vec<(Option<PathBuf>, PathBuf)>>,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
-    /// System drag distance (physical pixels); `None` is Windows' default of 4.
-    drag_threshold: Mutex<Option<(i32, i32)>>,
-    /// Title bar drags handed to Windows (press point, physical client pixels).
-    window_moves: Mutex<Vec<(i32, i32)>>,
-    /// System double-click time and rectangle; `None` is 500 ms and 4x4.
-    double_click: Mutex<Option<(Duration, (i32, i32))>>,
-    /// Times the window was maximized or restored by a title bar double click.
-    maximize_toggles: AtomicU32,
-    /// Presses come from a touch screen.
-    touch: std::sync::atomic::AtomicBool,
+    /// Attribute changes asked for (paths, bits set, bits cleared); they fail while
+    /// `fail_attributes` is set.
+    attribute_calls: Mutex<Vec<(Vec<PathBuf>, u32, u32)>>,
+    fail_attributes: std::sync::atomic::AtomicBool,
+    /// The program every file opens with; Windows' "Choose another app" dialog makes it Paint.
+    app_name: Mutex<Option<String>>,
+    /// Files with the internet mark, and the ones it was removed from.
+    blocked: Mutex<Vec<PathBuf>>,
+    unblocked: Mutex<Vec<PathBuf>>,
+    /// Windows' own Properties window was asked for these items.
+    native_properties: Mutex<Vec<Vec<PathBuf>>>,
 }
 
 impl FakeShell {
@@ -380,28 +397,6 @@ impl Shell for FakeShell {
 
     fn covered_at_cursor(&self, _owner: Option<isize>) -> bool {
         self.covered.load(Ordering::Relaxed)
-    }
-
-    fn drag_threshold(&self, _owner: Option<isize>) -> (i32, i32) {
-        self.drag_threshold.lock().unwrap_or((4, 4))
-    }
-
-    fn press_from_touch(&self) -> bool {
-        self.touch.load(Ordering::Relaxed)
-    }
-
-    fn begin_window_move(&self, _owner: Option<isize>, at: (i32, i32)) {
-        self.window_moves.lock().push(at);
-    }
-
-    fn double_click_rule(&self, _owner: Option<isize>) -> (Duration, (i32, i32)) {
-        self.double_click
-            .lock()
-            .unwrap_or((Duration::from_millis(500), (4, 4)))
-    }
-
-    fn toggle_maximize(&self, _owner: Option<isize>) {
-        self.maximize_toggles.fetch_add(1, Ordering::Relaxed);
     }
 
     fn drag_image(
@@ -799,6 +794,64 @@ impl Shell for FakeShell {
             "choose_app called on the UI thread"
         );
         self.chose_app.lock().push(path.to_path_buf());
+        *self.app_name.lock() = Some("Paint".into());
+        Ok(())
+    }
+
+    fn file_details(&self, _: &Path) -> crate::shell::FileDetails {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "file details read on the UI thread"
+        );
+        crate::shell::FileDetails {
+            accessed: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            size_on_disk: Some(8192),
+        }
+    }
+
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "attributes set on the UI thread"
+        );
+        self.attribute_calls
+            .lock()
+            .push((paths.to_vec(), set, clear));
+        if self.fail_attributes.load(Ordering::Relaxed) {
+            return Err(ShellError::Host("access denied".into()));
+        }
+        Ok(())
+    }
+
+    fn is_blocked(&self, path: &Path) -> bool {
+        self.blocked.lock().iter().any(|p| p == path)
+    }
+
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        self.unblocked.lock().push(path.to_path_buf());
+        self.blocked.lock().retain(|p| p != path);
+        Ok(())
+    }
+
+    fn default_app(&self, _: &Path) -> Option<String> {
+        Some(
+            self.app_name
+                .lock()
+                .clone()
+                .unwrap_or_else(|| "Notepad".into()),
+        )
+    }
+
+    fn volume_info(&self, _: &Path) -> Option<crate::shell::VolumeInfo> {
+        Some(crate::shell::VolumeInfo {
+            label: "Data".into(),
+            file_system: "NTFS".into(),
+            cluster: 4096,
+        })
+    }
+
+    fn show_properties(&self, paths: &[PathBuf], _: Option<isize>) -> Result<(), ShellError> {
+        self.native_properties.lock().push(paths.to_vec());
         Ok(())
     }
 
@@ -954,9 +1007,42 @@ fn setup<'a>(
         remotes: crate::remote_shell::test_remotes(),
     };
     let start = PathBuf::from(start);
-    cx.add_window_view(move |window, cx| {
-        Explorer::new(services, start, None, Instant::now(), window, cx)
-    })
+    let (host, cx) = cx.add_window_view(move |window, cx| {
+        use gpui::AppContext as _;
+        let view = cx.new(|cx| Explorer::new(services, start, None, Instant::now(), window, cx));
+        PaneHost {
+            view,
+            title: crate::explorer::TitleLayout::default(),
+        }
+    });
+    let view = host.read_with(cx, |host, _| host.view.clone());
+    (view, cx)
+}
+
+/// One pane under the title row with its search box, as the window draws it.
+struct PaneHost {
+    view: Entity<Explorer>,
+    title: crate::explorer::TitleLayout,
+}
+
+impl gpui::Render for PaneHost {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        let title = self.title.clone();
+        let row = self
+            .view
+            .update(cx, |e, cx| e.render_title_row(&title, false, window, cx));
+        gpui::div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(row)
+            .child(gpui::div().flex_1().min_h_0().child(self.view.clone()))
+    }
 }
 
 fn wait_until(
@@ -1875,10 +1961,7 @@ fn setup_workspace_services(
     rust_i18n::set_locale("en");
     cx.executor().allow_parking();
     cx.update(|cx| {
-        crate::text_input::bind_keys(cx);
-        crate::explorer::bind_keys(cx);
-        crate::workspace::bind_keys(cx);
-        crate::palette::bind_keys(cx);
+        crate::commands::init(&crate::settings::SettingsStore::global(cx), cx);
     });
     cx.add_window_view(move |window, cx| {
         Workspace::new(
@@ -2782,6 +2865,20 @@ fn wait_watcher(fs: &FakeFs, dir: &Path) {
 fn wait_shell(what: &str, pred: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !pred() {
+        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Like [`wait_shell`] for shell calls the UI starts: keeps the UI going while it waits, since a
+/// busy machine may not have reached the call yet.
+fn wait_shell_in(cx: &mut VisualTestContext, what: &str, pred: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if pred() {
+            return;
+        }
         assert!(Instant::now() < deadline, "timed out waiting for: {what}");
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -4336,6 +4433,26 @@ fn size_order_follows_the_folder_being_shown(cx: &mut TestAppContext) {
     });
 }
 
+/// "Show in folder" of other programs only reaches Arke through the folder handler setting, so its
+/// description says so in every language (#215).
+#[test]
+fn takeover_setting_mentions_show_in_folder() {
+    for (locale, phrase) in [
+        ("en", "Show in folder"),
+        (
+            "zh-TW",
+            "\u{5728}\u{8CC7}\u{6599}\u{593E}\u{4E2D}\u{986F}\u{793A}",
+        ),
+        (
+            "zh-CN",
+            "\u{5728}\u{6587}\u{4EF6}\u{5939}\u{4E2D}\u{663E}\u{793A}",
+        ),
+    ] {
+        let text = rust_i18n::t!("settings.takeover_desc", locale = locale).into_owned();
+        assert!(text.contains(phrase), "{locale}: {text}");
+    }
+}
+
 /// Windows' type names arrive after the folder was sorted by type: the list is ordered again by
 /// the text the column shows then.
 #[gpui::test]
@@ -5544,29 +5661,33 @@ fn pin_folders_favorites_and_expand_the_tree(cx: &mut TestAppContext) {
     wait_until(cx, &view, "sidebar", |v| !v.places.is_empty());
     let b = PathBuf::from(r"C:\p\b");
 
-    // Folder context menu: pin to the sidebar.
+    // Folder context menu: add to the sidebar's favorites.
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).expect("menu should be open");
     assert!(
-        labels.contains(&t!("sidebar.pin").into_owned()),
+        labels.contains(&t!("sidebar.add_favorite").into_owned()),
         "{labels:?}"
     );
     run_command(&view, cx, MenuCommand::TogglePin);
-    // Only one "Pin" entry: goes to a free tile (one after the default Desktop), not the list.
-    assert!(
-        !labels.iter().any(|l| l.to_lowercase().contains("favorite")),
-        "no separate \"add to favorites\" item: {labels:?}"
+    // One entry: goes to a free tile (one after the default Desktop), not the list.
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|l| l.to_lowercase().contains("favorite"))
+            .count(),
+        1,
+        "a single \"Add to favorites\" item: {labels:?}"
     );
     assert_eq!(
         settings(cx).favorites,
         Some(vec![PathBuf::from(r"C:\home\Desktop"), b.clone()])
     );
     assert!(settings(cx).pinned.is_empty());
-    // Already pinned: the menu shows "Unpin", which removes it from the tiles.
+    // Already a favorite: the menu shows "Remove from favorites", which takes it off the tiles.
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).unwrap();
     assert!(
-        labels.contains(&t!("sidebar.unpin").into_owned()),
+        labels.contains(&t!("sidebar.remove_favorite").into_owned()),
         "{labels:?}"
     );
     run_command(&view, cx, MenuCommand::TogglePin);
@@ -6571,7 +6692,7 @@ fn item_checkboxes_add_to_the_selection(cx: &mut TestAppContext) {
     );
     assert_eq!(view.update(cx, |v, _| selected_names(v)).len(), 1);
     // Header box: select all, click again to clear.
-    let header = point(box_x, bounds.top() - crate::theme::H_HEADER / 2.);
+    let header = point(box_x, bounds.top() - crate::theme::h_header() / 2.);
     cx.simulate_click(header, Modifiers::none());
     assert_eq!(view.update(cx, |v, _| selected_names(v)).len(), 5);
     cx.simulate_click(header, Modifiers::none());
@@ -8123,12 +8244,17 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
 
     click(cx, type_button.center());
     assert_eq!(menu(cx), Some(Facet::Type));
-    // Blank space at the panel's top right corner.
-    click(cx, point(panel.right() - px(8.), panel.top() + px(8.)));
+    // Blank space at the panel's top right corner. The measured box is the panel's content
+    // (inside its padding), so this stays inside the panel itself, not on the pane below it.
+    click(cx, point(panel.right() - px(24.), panel.top() + px(8.)));
     assert_eq!(menu(cx), None, "blank space in the panel");
     assert!(
         !view.update(cx, |v, _| v.panel_dismissed_for_test()),
         "the panel stays"
+    );
+    assert!(
+        cx.update(|window, cx| view.update(cx, |v, _| v.panel_state_for_test(window).0)),
+        "it keeps the keyboard"
     );
 
     click(cx, type_button.center());
@@ -8138,16 +8264,23 @@ fn filter_menu_closes_on_a_press_outside(cx: &mut TestAppContext) {
     assert_eq!(menu(cx), None, "its own button closes it");
 }
 
-/// #114: a menu taller than the window stays inside it and scrolls; the keyboard brings the
-/// highlighted row into view.
+/// #114: a menu taller than the screen stays inside its work area and scrolls; the keyboard brings
+/// the highlighted row into view.
 #[gpui::test]
-fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
+fn a_menu_taller_than_the_screen_scrolls(cx: &mut TestAppContext) {
+    use crate::popup::{Monitor, ScreenRect};
     use gpui::{px, size};
+    let work = ScreenRect::new(0, 0, 1920, 260);
+    crate::popup::set_test_monitors(vec![Monitor {
+        bounds: work,
+        work,
+        scale: 1.,
+    }]);
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let (view, cx) = setup(cx, fs, Arc::default(), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
-    cx.simulate_resize(size(px(900.), px(260.)));
+    cx.simulate_resize(size(px(900.), px(600.)));
     cx.run_until_parked();
     right_click(&view, cx, Some(0));
     cx.run_until_parked();
@@ -8158,9 +8291,16 @@ fn a_menu_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
     };
     let (bounds, offset) = panel(cx);
     let bounds = bounds.expect("menu drawn");
+    assert!(bounds.size.height <= px(260.), "{bounds:?}");
+    let placed = view
+        .update(cx, |v, _| {
+            v.context_menu.as_ref().unwrap().popup_for_test(0)
+        })
+        .and_then(|(_, placed)| placed)
+        .expect("placed");
     assert!(
-        bounds.top() >= px(0.) && bounds.bottom() <= px(260.),
-        "{bounds:?}"
+        placed.top >= work.top && placed.bottom <= work.bottom,
+        "{placed:?}"
     );
     assert_eq!(offset, px(0.));
     // Up from nothing highlights the last row, at the bottom: the menu scrolls to it.

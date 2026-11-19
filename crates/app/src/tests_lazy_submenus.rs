@@ -281,9 +281,16 @@ fn hovering_fills_only_the_submenu_that_opens(cx: &mut TestAppContext) {
         .center()
     };
     let (over_give, over_nothing) = (row(&view, cx, give), row(&view, cx, nothing));
-    // Across "Give access to" on the way to "Nothing inside", without resting on it.
-    cx.simulate_mouse_move(over_give, None, Modifiers::none());
-    cx.simulate_mouse_move(over_nothing, None, Modifiers::none());
+    // Across "Give access to" on the way to "Nothing inside", without resting on it (in the
+    // window "Show more options" is drawn in).
+    let (more, _) = view
+        .update(cx, |v, _| {
+            v.context_menu.as_ref().unwrap().popup_for_test(1)
+        })
+        .expect("level 1 has a window");
+    let mut more = VisualTestContext::from_window(more, &cx.cx);
+    more.simulate_mouse_move(over_give, None, Modifiers::none());
+    more.simulate_mouse_move(over_nothing, None, Modifiers::none());
     cx.run_until_parked();
     std::thread::sleep(Duration::from_millis(50));
     assert!(

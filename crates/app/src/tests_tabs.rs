@@ -676,7 +676,7 @@ fn split_tab_shares_one_preview_that_follows_the_active_side(cx: &mut TestAppCon
     let (right_paper, right_bar) = right.update(cx, |v, _| v.widths_for_test());
     assert_eq!(left_paper, left_bar);
     assert_eq!(right_bar - right_paper, shared.reserve());
-    let content = px(1700.) - crate::theme::SIDEBAR_W;
+    let content = px(1700.) - crate::theme::sidebar_full_width();
     assert!(
         (f32::from(left_paper + right_paper + shared.reserve()) - f32::from(content)).abs() < 0.5,
         "{left_paper:?} + {right_paper:?} + {shared:?} fill {content:?}"
@@ -1349,7 +1349,7 @@ fn ctrl_b_collapses_the_sidebar(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-b");
     cx.run_until_parked();
     assert!(settings(cx).sidebar_collapsed);
-    assert_eq!(crate::theme::sidebar_width(), crate::theme::RAIL_W);
+    assert_eq!(crate::theme::sidebar_width(), crate::theme::rail_w());
     assert!(
         cx.debug_bounds("sidebar-rail").is_some(),
         "the column of icons shows"
@@ -1358,7 +1358,10 @@ fn ctrl_b_collapses_the_sidebar(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-b");
     cx.run_until_parked();
     assert!(!settings(cx).sidebar_collapsed);
-    assert_eq!(crate::theme::sidebar_width(), crate::theme::SIDEBAR_W);
+    assert_eq!(
+        crate::theme::sidebar_width(),
+        crate::theme::sidebar_full_width()
+    );
     assert!(cx.debug_bounds("sidebar-rail").is_none());
 }
 
@@ -1385,7 +1388,7 @@ fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
     assert!(settings(cx).sidebar_collapsed);
     let sliding = cx.debug_bounds("sidebar-column").unwrap();
     assert!(
-        sliding.size.width > crate::theme::RAIL_W,
+        sliding.size.width > crate::theme::rail_w(),
         "still wider than the column of icons: {sliding:?}"
     );
     assert_eq!(both(cx), (true, true), "crossfading");
@@ -1395,7 +1398,7 @@ fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
     assert_eq!(both(cx), (false, true), "slide over");
     assert_eq!(
         cx.debug_bounds("sidebar-column").unwrap().size.width,
-        crate::theme::RAIL_W
+        crate::theme::rail_w()
     );
 
     cx.simulate_keystrokes("ctrl-b");
@@ -1407,7 +1410,7 @@ fn ctrl_b_slides_the_sidebar(cx: &mut TestAppContext) {
     assert_eq!(both(cx), (false, false), "full sidebar only");
     assert_eq!(
         cx.debug_bounds("sidebar-column").unwrap().size.width,
-        crate::theme::SIDEBAR_W
+        crate::theme::sidebar_full_width()
     );
     crate::motion::force_for_test(false);
 }
@@ -1479,7 +1482,7 @@ fn the_collapsed_sidebar_opens_while_the_pointer_rests_on_it(cx: &mut TestAppCon
     change(cx, |st| st.sidebar_collapsed = true);
     let peek = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.peek_for_test());
     let rail = cx.debug_bounds("sidebar-rail").unwrap().center();
-    let content = gpui::point(crate::theme::SIDEBAR_W + gpui::px(200.), rail.y);
+    let content = gpui::point(crate::theme::sidebar_full_width() + gpui::px(200.), rail.y);
     let none = gpui::Modifiers::none();
 
     // Crossing the column without resting opens nothing.
@@ -1500,7 +1503,7 @@ fn the_collapsed_sidebar_opens_while_the_pointer_rests_on_it(cx: &mut TestAppCon
 
     // Moving within it keeps it; leaving closes it.
     cx.simulate_mouse_move(
-        gpui::point(crate::theme::SIDEBAR_W - gpui::px(20.), rail.y),
+        gpui::point(crate::theme::sidebar_full_width() - gpui::px(20.), rail.y),
         None,
         none,
     );
@@ -1511,7 +1514,7 @@ fn the_collapsed_sidebar_opens_while_the_pointer_rests_on_it(cx: &mut TestAppCon
     cx.simulate_mouse_move(content, None, none);
     cx.executor().advance_clock(Duration::from_millis(100));
     cx.simulate_mouse_move(
-        gpui::point(crate::theme::SIDEBAR_W - gpui::px(20.), rail.y),
+        gpui::point(crate::theme::sidebar_full_width() - gpui::px(20.), rail.y),
         None,
         none,
     );
@@ -1979,14 +1982,14 @@ fn opening_a_folder_already_in_a_tab_switches_to_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_tab_menu_pins_its_folder_to_the_sidebar(cx: &mut TestAppContext) {
+fn the_tab_menu_adds_its_folder_to_the_favorites(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_many(r"C:\work", 1);
     let (ws, cx) = setup_workspace(cx, fs, r"C:\work");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\work"));
-    let pin = t!("sidebar.pin_tab_folder").into_owned();
-    let unpin = t!("sidebar.unpin_tab_folder").into_owned();
+    let pin = t!("sidebar.add_favorite").into_owned();
+    let unpin = t!("sidebar.remove_favorite").into_owned();
     let on_sidebar = |cx: &mut VisualTestContext| {
         ws.update(cx, |ws, cx| {
             let places = ws.active_view().read(cx).places.clone();
@@ -2344,6 +2347,25 @@ fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppCont
     );
 }
 
+/// A key closes the open menu even with nothing focused (the key then never reaches the
+/// workspace's elements).
+#[gpui::test]
+fn a_key_closes_the_menu_with_nothing_focused(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    go(&view, cx, r"C:\b");
+    assert!(open_history_menu(&ws, &view, cx, true).is_some());
+    cx.update(gpui::Window::blur);
+    cx.simulate_keystrokes("x");
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test()),
+        None
+    );
+}
+
 /// Keys close the open menu (its rows name tabs and folders a key may move), and so does a tab
 /// opening or closing behind it: the tab menu's Close then can't hit another tab.
 #[gpui::test]
@@ -2482,7 +2504,7 @@ fn a_file_typed_in_a_pinned_tab_opens_without_a_duplicate_tab(cx: &mut TestAppCo
     cx.simulate_keystrokes("ctrl-l");
     cx.simulate_input(r"C:\p\notes.txt");
     cx.simulate_keystrokes("enter");
-    wait_shell("opened", || !shell.opened.lock().is_empty());
+    wait_shell_in(cx, "opened", || !shell.opened.lock().is_empty());
     wait_until(cx, &pinned, "selected", |e| {
         selected_name(e).as_deref() == Some("notes.txt")
     });
@@ -2492,7 +2514,7 @@ fn a_file_typed_in_a_pinned_tab_opens_without_a_duplicate_tab(cx: &mut TestAppCo
     cx.simulate_keystrokes("ctrl-l");
     cx.simulate_input(r"C:\q\y.txt");
     cx.simulate_keystrokes("enter");
-    wait_shell("opened", || shell.opened.lock().len() == 2);
+    wait_shell_in(cx, "opened", || shell.opened.lock().len() == 2);
     let deadline = Instant::now() + Duration::from_secs(20);
     while tab_count(&ws, cx) < 2 {
         assert!(Instant::now() < deadline, "no tab opened");

@@ -838,7 +838,11 @@ fn rename_box_shows_the_name_in_every_view(cx: &mut TestAppContext) {
             "{mode:?}: box {:?}, wanted at least {least:?}",
             shown.size
         );
-        assert_eq!(shown.size.height, crate::theme::S_24, "{mode:?}: one line");
+        assert_eq!(
+            shown.size.height,
+            crate::theme::s_24(),
+            "{mode:?}: one line"
+        );
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
     }

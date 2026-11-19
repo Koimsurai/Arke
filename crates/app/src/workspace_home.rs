@@ -160,6 +160,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Right click on a drive or network card: its menu, Home stays.
+        if let HomeEvent::PlaceMenu { path, position } = event {
+            self.open_place_menu(*position, path, cx);
+            return;
+        }
         // Middle click: a new tab in the background; Home stays.
         if let HomeEvent::OpenInNewTab(path) = event {
             self.open_in_background(path.clone(), window, cx);
@@ -182,7 +187,7 @@ impl Workspace {
                 });
             }
             HomeEvent::OpenRecycle => self.open_recycle(false, window, cx),
-            HomeEvent::OpenInNewTab(_) => {}
+            HomeEvent::OpenInNewTab(_) | HomeEvent::PlaceMenu { .. } => {}
             HomeEvent::Reveal(path) => {
                 let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                     return;
@@ -214,7 +219,9 @@ impl Workspace {
                 ),
                 _ => return false,
             },
-            HomeEvent::OpenRecycle | HomeEvent::OpenInNewTab(_) => return false,
+            HomeEvent::OpenRecycle | HomeEvent::OpenInNewTab(_) | HomeEvent::PlaceMenu { .. } => {
+                return false;
+            }
         };
         if self.active_pinned_elsewhere(&folder, cx) {
             let at = self.active + 1;
@@ -258,8 +265,42 @@ impl Workspace {
             .settings
             .net_places
             .clone();
-        page.view
-            .update(cx, |home, _| home.set_locations(places, shares));
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
+        let rename = self
+            .sidebar_ui
+            .place_rename
+            .as_ref()
+            .map(|r| (r.path.clone(), r.input.clone()));
+        page.view.update(cx, |home, _| {
+            home.set_locations(places, shares);
+            home.set_names(names, rename);
+        });
+    }
+
+    /// The menu of a drive or network card on Home: only places that can be renamed have one.
+    fn open_place_menu(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
+        let places = self.active_view().read(cx).places.clone();
+        let settings = &SettingsStore::global(cx).read(cx).settings;
+        if super::sidebar::place_default_name(settings, &places, path).is_none() {
+            return;
+        }
+        self.open_sidebar_menu(
+            position,
+            vec![(
+                t!("menu.rename").to_string().into(),
+                super::sidebar::SidebarAction::RenamePlace(path.to_path_buf()),
+            )],
+            cx,
+        );
     }
 
     /// Reloads on window activation; recent files may have changed.
@@ -283,21 +324,21 @@ impl Workspace {
             .a11y(gpui::Role::Link, t!("home.title"))
             .relative()
             .flex_none()
-            .h(theme::H_ROW)
-            .mx(theme::S_8)
-            .mb(theme::S_4)
-            .pl(theme::S_8)
+            .h(theme::h_row())
+            .mx(theme::s_8())
+            .mb(theme::s_4())
+            .pl(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_8)
+            .gap(theme::s_8())
+            .rounded(theme::r_8())
             .cursor_pointer()
             .when(open, |d| d.bg(theme::selection()).text_color(theme::text()))
             .when(!open, |d| {
                 d.text_color(theme::text_muted())
                     .hover(|s| s.bg(theme::wash()).text_color(theme::text()))
             })
-            .child(crate::assets::tinted(Icon::KfHome, theme::ICON, theme::text()))
+            .child(crate::assets::tinted(Icon::KfHome, theme::icon(), theme::text()))
             .child(t!("home.title").into_owned())
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if open {
@@ -324,12 +365,12 @@ impl Workspace {
         let page = self.home_page.as_ref().filter(|p| self.shows(&p.owner))?;
         let horizontal = Self::horizontal_tabs(cx);
         let top_bar = div()
-            .h(theme::H_BAR)
+            .h(theme::h_bar())
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme::S_2)
-            .pr(theme::S_8)
+            .gap(theme::s_2())
+            .pr(theme::s_8())
             .when(horizontal, |d| {
                 d.child(crate::explorer::ghost_button(
                     "home-back",
@@ -346,12 +387,12 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(theme::S_8)
-                    .px(theme::S_8)
+                    .gap(theme::s_8())
+                    .px(theme::s_8())
                     .child(
                         svg()
                             .path(Icon::KfHome.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .text_color(theme::text_muted()),
                     )
                     .child(
@@ -380,9 +421,9 @@ impl Workspace {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .mr(theme::S_8)
-                        .mb(theme::S_8)
-                        .rounded(theme::R_12)
+                        .mr(theme::s_8())
+                        .mb(theme::s_8())
+                        .rounded(theme::r_12())
                         .bg(theme::paper())
                         .shadow(theme::elev_2())
                         .overflow_hidden()

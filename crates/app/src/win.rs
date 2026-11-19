@@ -165,6 +165,36 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS: the content is in the cloud.
+const NOT_ON_DEVICE: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
+/// The attribute bits SetFileAttributes accepts; the rest (folder, reparse point, ...) are not
+/// ours to set.
+const SETTABLE: u32 = 0x1 | 0x2 | 0x4 | 0x20 | 0x100 | 0x1000 | 0x2000;
+/// `FILE_ATTRIBUTE_NORMAL`: what a file with no attribute set is given.
+const NORMAL: u32 = 0x80;
+
+/// The alternate data stream Windows puts on files from the internet.
+fn zone_stream(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(":Zone.Identifier");
+    PathBuf::from(name)
+}
+
+/// Bytes a file takes on disk (`GetCompressedFileSizeW`: asks the file system, opens no data).
+fn compressed_size(path: &Path) -> Option<u64> {
+    use windows::Win32::Foundation::{GetLastError, NO_ERROR};
+    use windows::Win32::Storage::FileSystem::GetCompressedFileSizeW;
+    let name = wide(path.as_os_str());
+    let mut high = 0u32;
+    // SAFETY: `name` is NUL-terminated; `high` is valid for the call.
+    let low = unsafe { GetCompressedFileSizeW(PCWSTR(name.as_ptr()), Some(&raw mut high)) };
+    // SAFETY: reads this thread's last error right after the call above.
+    if low == u32::MAX && unsafe { GetLastError() } != NO_ERROR {
+        return None;
+    }
+    Some((u64::from(high) << 32) | u64::from(low))
+}
+
 fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: id points to a valid GUID constant. KF_FLAG_DONT_VERIFY skips the existence check,
     // so a folder redirected to a network share doesn't hit the network. Freed with CoTaskMemFree.
@@ -346,56 +376,6 @@ pub(crate) fn double_click_time() -> std::time::Duration {
     // SAFETY: no arguments, no side effects.
     let ms = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
     std::time::Duration::from_millis(u64::from(if ms == 0 { 500 } else { ms }))
-}
-
-/// A pair of system metrics in physical pixels at `owner`'s DPI. Arke is per-monitor DPI aware,
-/// where `GetSystemMetrics` answers for the system DPI only: on a monitor with another scale its
-/// sizes would be off by the ratio of the two.
-fn metrics_for_window(
-    owner: Option<isize>,
-    (x, y): (
-        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
-        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
-    ),
-) -> (i32, i32) {
-    use windows::Win32::UI::HiDpi::GetDpiForWindow;
-    use windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
-    let dpi = owner.map_or(0, |h| {
-        // SAFETY: plain query; an invalid handle answers 0.
-        unsafe { GetDpiForWindow(windows::Win32::Foundation::HWND(h as *mut _)) }
-    });
-    if dpi == 0 {
-        // SAFETY: plain metric queries.
-        return unsafe { (GetSystemMetrics(x), GetSystemMetrics(y)) };
-    }
-    metrics_at_dpi(dpi, (x, y))
-}
-
-/// A pair of system metrics in physical pixels at `dpi`.
-fn metrics_at_dpi(
-    dpi: u32,
-    (x, y): (
-        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
-        windows::Win32::UI::WindowsAndMessaging::SYSTEM_METRICS_INDEX,
-    ),
-) -> (i32, i32) {
-    use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
-    // SAFETY: plain metric queries.
-    unsafe {
-        (
-            GetSystemMetricsForDpi(x, dpi),
-            GetSystemMetricsForDpi(y, dpi),
-        )
-    }
-}
-
-/// Whether a mouse message's extra info (`GetMessageExtraInfo`) marks it as made from touch or a
-/// pen: Windows tags those with the `MI_WP_SIGNATURE` in the upper 24 bits.
-const fn touch_extra_info(info: isize) -> bool {
-    const SIGNATURE: isize = 0xFF51_5700;
-    const MASK: isize = 0xFFFF_FF00;
-    // The tag is in the low 32 bits (sign-extended or not on 64-bit Windows).
-    info & MASK == SIGNATURE
 }
 
 /// Windows accent color as 0xRRGGBB. Asks DWM only (no registry); cheap enough for the UI thread.
@@ -883,50 +863,9 @@ impl Shell for WinShell {
         })
     }
 
-    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
-        use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
-        let (x, y) = metrics_for_window(owner, (SM_CXDRAG, SM_CYDRAG));
-        (x.max(1), y.max(1))
+    fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {
+        win_fileops::window_at_cursor()
     }
-
-    fn press_from_touch(&self) -> bool {
-        use windows::Win32::UI::WindowsAndMessaging::GetMessageExtraInfo;
-        // SAFETY: plain query about the message being handled on this thread.
-        touch_extra_info(unsafe { GetMessageExtraInfo() }.0)
-    }
-
-    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
-        if let Some(h) = owner {
-            begin_window_move(windows::Win32::Foundation::HWND(h as *mut _), at);
-        }
-    }
-
-    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
-        use windows::Win32::UI::WindowsAndMessaging::{SM_CXDOUBLECLK, SM_CYDOUBLECLK};
-        let (x, y) = metrics_for_window(owner, (SM_CXDOUBLECLK, SM_CYDOUBLECLK));
-        (double_click_time(), (x.max(1), y.max(1)))
-    }
-
-    fn toggle_maximize(&self, owner: Option<isize>) {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            IsZoomed, SW_MAXIMIZE, SW_RESTORE, ShowWindowAsync,
-        };
-        let Some(h) = owner else {
-            return;
-        };
-        let hwnd = HWND(h as *mut _);
-        // SAFETY: hwnd is Arke's own live window; `ShowWindowAsync` doesn't wait.
-        unsafe {
-            let show = if IsZoomed(hwnd).as_bool() {
-                SW_RESTORE
-            } else {
-                SW_MAXIMIZE
-            };
-            let _ = ShowWindowAsync(hwnd, show);
-        }
-    }
-
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,
@@ -1266,6 +1205,133 @@ impl Shell for WinShell {
         read_shortcut(path)
     }
 
+    fn file_details(&self, path: &Path) -> crate::shell::FileDetails {
+        use std::os::windows::fs::MetadataExt;
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return crate::shell::FileDetails::default();
+        };
+        let size_on_disk = if meta.is_dir() {
+            None
+        } else if meta.file_attributes() & NOT_ON_DEVICE != 0 {
+            Some(0)
+        } else {
+            compressed_size(path)
+        };
+        crate::shell::FileDetails {
+            accessed: meta.accessed().ok(),
+            size_on_disk,
+        }
+    }
+
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAGS_AND_ATTRIBUTES, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
+            SetFileAttributesW,
+        };
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        // The bits SetFileAttributes accepts; the rest (folder, reparse point, ...) are not ours.
+        for path in paths {
+            let name = wide(path.as_os_str());
+            // SAFETY: `name` is NUL-terminated and outlives both calls.
+            unsafe {
+                let current = GetFileAttributesW(PCWSTR(name.as_ptr()));
+                if current == INVALID_FILE_ATTRIBUTES {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                let old = current & SETTABLE;
+                let new = (old | set) & !clear;
+                if new == old {
+                    continue;
+                }
+                let new = if new == 0 { NORMAL } else { new };
+                SetFileAttributesW(PCWSTR(name.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(new))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_blocked(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        std::fs::metadata(zone_stream(path)).is_ok()
+    }
+
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        Ok(std::fs::remove_file(zone_stream(path))?)
+    }
+
+    fn default_app(&self, path: &Path) -> Option<String> {
+        use windows::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_FRIENDLYAPPNAME, AssocQueryStringW};
+        use windows::core::PWSTR;
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        let ext = path.extension()?;
+        let assoc = wide(&std::ffi::OsString::from(format!(
+            ".{}",
+            ext.to_string_lossy()
+        )));
+        let mut buffer = [0u16; 260];
+        let mut len = 260u32;
+        // SAFETY: `assoc` is NUL-terminated; the buffer holds `len` characters.
+        let asked = unsafe {
+            AssocQueryStringW(
+                ASSOCF_NONE,
+                ASSOCSTR_FRIENDLYAPPNAME,
+                PCWSTR(assoc.as_ptr()),
+                PCWSTR::null(),
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &raw mut len,
+            )
+        };
+        if asked.is_err() {
+            return None;
+        }
+        let end = (len as usize).saturating_sub(1).min(buffer.len());
+        let name = String::from_utf16_lossy(&buffer[..end]);
+        (!name.is_empty()).then_some(name)
+    }
+
+    fn volume_info(&self, root: &Path) -> Option<crate::shell::VolumeInfo> {
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceW;
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        let root = wide(root.as_os_str());
+        let mut label = [0u16; 261];
+        let mut system = [0u16; 261];
+        // SAFETY: `root` is a NUL-terminated wide string; the buffers are as large as stated.
+        unsafe {
+            GetVolumeInformationW(
+                PCWSTR(root.as_ptr()),
+                Some(&mut label),
+                None,
+                None,
+                None,
+                Some(&mut system),
+            )
+            .ok()?;
+        }
+        let text = |buffer: &[u16]| {
+            let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            String::from_utf16_lossy(&buffer[..len])
+        };
+        let (mut per_cluster, mut per_sector) = (0u32, 0u32);
+        // SAFETY: the out parameters are valid for the call.
+        let cluster = unsafe {
+            GetDiskFreeSpaceW(
+                PCWSTR(root.as_ptr()),
+                Some(&raw mut per_cluster),
+                Some(&raw mut per_sector),
+                None,
+                None,
+            )
+        }
+        .map_or(0, |()| u64::from(per_cluster) * u64::from(per_sector));
+        Some(crate::shell::VolumeInfo {
+            label: text(&label),
+            file_system: text(&system),
+            cluster,
+        })
+    }
+
     fn create_shortcuts(
         &self,
         sources: &[PathBuf],
@@ -1549,37 +1615,6 @@ pub(crate) fn restore_window(hwnd: isize) {
     use windows::Win32::UI::WindowsAndMessaging::{SW_RESTORE, ShowWindowAsync};
     // SAFETY: hwnd is Arke's own live window.
     let _ = unsafe { ShowWindowAsync(HWND(hwnd as *mut _), SW_RESTORE) };
-}
-
-/// Starts a title bar drag of `hwnd` from `at` (client area, physical pixels) while the left
-/// button is held: the system moves the window and offers Snap, as for a press on the title bar.
-///
-/// The press is posted, not sent: `DefWindowProc` runs the move loop inside the call, and that
-/// loop must not run while GPUI is still dispatching the event that started it.
-fn begin_window_move(hwnd: windows::Win32::Foundation::HWND, at: (i32, i32)) {
-    use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
-    use windows::Win32::Graphics::Gdi::ClientToScreen;
-    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-    use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN};
-    let mut point = POINT { x: at.0, y: at.1 };
-    // SAFETY: hwnd is Arke's own live window; plain window calls with valid pointers.
-    unsafe {
-        if !ClientToScreen(hwnd, &raw mut point).as_bool() {
-            return;
-        }
-        // GPUI captured the mouse on the press; the move loop needs it back.
-        let _ = ReleaseCapture();
-        // MAKELPARAM(x, y) of screen coordinates (16-bit signed each).
-        let packed = (point.x & 0xFFFF) as u32 | ((point.y & 0xFFFF) as u32) << 16;
-        if let Err(err) = PostMessageW(
-            Some(hwnd),
-            WM_NCLBUTTONDOWN,
-            WPARAM(HTCAPTION as usize),
-            LPARAM(isize::try_from(packed).unwrap_or_default()),
-        ) {
-            log::warn!("window move: {err}");
-        }
-    }
 }
 
 /// Starts `explorer.exe` with `target` (a path or `shell:::{CLSID}`) for something Arke can't show.
@@ -2394,35 +2429,5 @@ mod floppy_tests {
         let device = dos_device('C').expect("C: is mapped");
         assert!(device.starts_with(r"\Device\"), "{device}");
         assert!(!looks_like_floppy('C', Some(&device)));
-    }
-}
-
-#[cfg(test)]
-mod pointer_metric_tests {
-    use super::*;
-    use windows::Win32::UI::WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG};
-
-    /// Metrics are asked for at the DPI given (a sizing frame grows on a 200 % monitor), and the
-    /// drag distance answers too; without a window, the system's own answer.
-    #[test]
-    fn metrics_are_asked_at_the_window_dpi() {
-        use windows::Win32::UI::WindowsAndMessaging::SM_CXSIZEFRAME;
-        let frame = |dpi| metrics_at_dpi(dpi, (SM_CXSIZEFRAME, SM_CXSIZEFRAME)).0;
-        assert!(frame(192) > frame(96), "{} {}", frame(96), frame(192));
-        let drag = metrics_at_dpi(192, (SM_CXDRAG, SM_CYDRAG));
-        assert!(drag.0 > 0 && drag.1 > 0, "{drag:?}");
-        assert!(metrics_for_window(None, (SM_CXDRAG, SM_CYDRAG)).0 > 0);
-    }
-
-    #[test]
-    fn touch_and_pen_presses_are_told_by_their_tag() {
-        // Touch and pen presses, as 32-bit values and sign-extended.
-        for info in [0xFF51_5780_isize, 0xFF51_5700, -0x00AE_A880] {
-            assert!(touch_extra_info(info), "{info:#x}");
-        }
-        // A real mouse leaves it 0; other software may put anything else there.
-        for info in [0, 0x1234_5678, 0xFF51_0000] {
-            assert!(!touch_extra_info(info), "{info:#x}");
-        }
     }
 }

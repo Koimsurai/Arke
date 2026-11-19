@@ -1412,6 +1412,28 @@ pub(crate) fn other_window_at_cursor(home: HWND) -> bool {
     }
 }
 
+/// The top-level window under the cursor and the cursor in its client area (physical pixels).
+pub(crate) fn window_at_cursor() -> Option<(isize, (i32, i32))> {
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetCursorPos, WindowFromPoint,
+    };
+    // SAFETY: plain window queries with valid out pointers.
+    unsafe {
+        let mut cursor = POINT::default();
+        GetCursorPos(&raw mut cursor).ok()?;
+        let hit = WindowFromPoint(cursor);
+        if hit.is_invalid() {
+            return None;
+        }
+        let root = GetAncestor(hit, GA_ROOT);
+        if root.is_invalid() || !ScreenToClient(root, &raw mut cursor).as_bool() {
+            return None;
+        }
+        Some((root.0 as isize, (cursor.x, cursor.y)))
+    }
+}
+
 /// What the drop target did with dragged-out files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DragOutcome {

@@ -36,6 +36,9 @@ pub(crate) enum HttpError {
     /// The body is not UTF-8 text.
     #[error("{0}")]
     NotText(#[from] std::string::FromUtf8Error),
+    /// The caller stopped the download.
+    #[error("stopped")]
+    Stopped,
 }
 
 /// WinHTTP handle, closed on drop.
@@ -67,6 +70,13 @@ fn split_url(url: &str) -> Result<(&str, &str), HttpError> {
     })
 }
 
+/// Where a response goes: told the status and length first, then given the body chunk by chunk.
+trait Body {
+    /// The status and `Content-Length` are in; an error stops before the body is read.
+    fn start(&mut self, status: u32, length: Option<u64>) -> Result<(), HttpError>;
+    fn write(&mut self, chunk: &[u8]) -> Result<(), HttpError>;
+}
+
 /// GETs `url` into `out`, calling `progress(read, total)` after each chunk. Any status
 /// other than 200 is an error.
 pub(crate) fn get(
@@ -75,6 +85,112 @@ pub(crate) fn get(
     out: &mut dyn Write,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<(), HttpError> {
+    struct Plain<'a> {
+        out: &'a mut dyn Write,
+        progress: &'a mut dyn FnMut(u64, Option<u64>),
+        done: u64,
+        total: Option<u64>,
+    }
+    impl Body for Plain<'_> {
+        fn start(&mut self, status: u32, length: Option<u64>) -> Result<(), HttpError> {
+            if status != 200 {
+                return Err(HttpError::Status(status));
+            }
+            self.total = length;
+            Ok(())
+        }
+        fn write(&mut self, chunk: &[u8]) -> Result<(), HttpError> {
+            self.out.write_all(chunk).map_err(HttpError::Write)?;
+            self.done += chunk.len() as u64;
+            (self.progress)(self.done, self.total);
+            Ok(())
+        }
+    }
+    fetch(
+        url,
+        headers,
+        &mut Plain {
+            out,
+            progress,
+            done: 0,
+            total: None,
+        },
+    )
+}
+
+/// GETs `url` into `file`, continuing after what the file already holds (a download stopped
+/// earlier): asks for the rest and appends it when the server sends only that (206), starts the
+/// file over when it sends everything (200). `progress(done, total)` counts the whole file and
+/// returns `false` to stop ([`HttpError::Stopped`]).
+pub(crate) fn get_resumed(
+    url: &str,
+    file: &mut std::fs::File,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<(), HttpError> {
+    struct Resumed<'a> {
+        file: &'a mut std::fs::File,
+        progress: &'a mut dyn FnMut(u64, Option<u64>) -> bool,
+        done: u64,
+        total: Option<u64>,
+        /// The server had nothing more to send (416): its error text isn't part of the file.
+        complete: bool,
+    }
+    impl Body for Resumed<'_> {
+        fn start(&mut self, status: u32, length: Option<u64>) -> Result<(), HttpError> {
+            use std::io::{Seek, SeekFrom};
+            match status {
+                206 => {
+                    self.total = length.map(|rest| rest + self.done);
+                    self.file.seek(SeekFrom::End(0)).map_err(HttpError::Write)?;
+                }
+                200 => {
+                    self.done = 0;
+                    self.total = length;
+                    self.file.set_len(0).map_err(HttpError::Write)?;
+                    self.file
+                        .seek(SeekFrom::Start(0))
+                        .map_err(HttpError::Write)?;
+                }
+                // Nothing after what the file holds: it was complete already (the check of it
+                // didn't run last time). The checksum tells whether it is right.
+                416 if self.done > 0 => {
+                    self.total = Some(self.done);
+                    self.complete = true;
+                }
+                status => return Err(HttpError::Status(status)),
+            }
+            Ok(())
+        }
+        fn write(&mut self, chunk: &[u8]) -> Result<(), HttpError> {
+            if self.complete {
+                return Ok(());
+            }
+            self.file.write_all(chunk).map_err(HttpError::Write)?;
+            self.done += chunk.len() as u64;
+            if (self.progress)(self.done, self.total) {
+                Ok(())
+            } else {
+                Err(HttpError::Stopped)
+            }
+        }
+    }
+    let have = file.metadata().map_err(HttpError::Write)?.len();
+    let range = format!("Range: bytes={have}-");
+    let headers: &[&str] = if have > 0 { &[&range] } else { &[] };
+    fetch(
+        url,
+        headers,
+        &mut Resumed {
+            file,
+            progress,
+            done: have,
+            total: None,
+            complete: false,
+        },
+    )
+}
+
+fn fetch(url: &str, headers: &[&str], body: &mut dyn Body) -> Result<(), HttpError> {
     let (host, path) = split_url(url)?;
     let agent = wide(&format!("Arke/{}", crate::build_info::VERSION));
     let host_w = wide(host);
@@ -131,9 +247,6 @@ pub(crate) fn get(
             &raw mut size,
             std::ptr::null_mut(),
         )?;
-        if status != 200 {
-            return Err(HttpError::Status(status));
-        }
         // Content-Length, if present, for progress.
         let mut length = 0u32;
         let mut size = u32::try_from(size_of::<u32>()).unwrap_or(4);
@@ -148,8 +261,8 @@ pub(crate) fn get(
         )
         .ok()
         .map(|()| u64::from(length));
+        body.start(status, total)?;
         let mut buf = vec![0u8; 64 * 1024];
-        let mut done = 0u64;
         loop {
             let mut read = 0u32;
             WinHttpReadData(
@@ -161,10 +274,7 @@ pub(crate) fn get(
             if read == 0 {
                 break;
             }
-            out.write_all(&buf[..read as usize])
-                .map_err(HttpError::Write)?;
-            done += u64::from(read);
-            progress(done, total);
+            body.write(&buf[..read as usize])?;
         }
         Ok(())
     }

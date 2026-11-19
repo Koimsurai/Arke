@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use gpui::{
     AnimationExt as _, AnyElement, App, ClickEvent, Context, SharedString, Window, div, prelude::*,
-    px, svg,
+    svg,
 };
 use rust_i18n::t;
 
@@ -41,7 +41,7 @@ pub(super) fn update_card(
 ) -> AnyElement {
     let state = UpdateState::get(cx);
     let summary = div()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(if UpdateState::has_news(cx) {
             theme::signal()
         } else {
@@ -112,7 +112,7 @@ fn body(
     let mut out = div()
         .flex()
         .flex_col()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(row(
             t!("update.channel"),
             Some(t!("update.channel_desc")),
@@ -173,7 +173,7 @@ fn body(
             let notes = release.clone();
             let actions = div()
                 .flex()
-                .gap(theme::S_8)
+                .gap(theme::s_8())
                 .child(button(
                     "update-notes",
                     t!("update.notes"),
@@ -286,18 +286,18 @@ fn row(
     div()
         .flex()
         .items_center()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(theme::S_2)
-                .child(div().text_size(theme::FS_13).child(title.into_owned()))
+                .gap(theme::s_2())
+                .child(div().text_size(theme::fs_13()).child(title.into_owned()))
                 .children(desc.map(|d| {
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(d.into_owned())
                 })),
@@ -313,26 +313,26 @@ fn status_line(
     action: Option<AnyElement>,
 ) -> AnyElement {
     div()
-        .min_h(px(40.))
-        .px(theme::S_12)
-        .py(theme::S_8)
+        .min_h(crate::theme::scaled_px(40.))
+        .px(theme::s_12())
+        .py(theme::s_8())
         .flex()
         .items_center()
-        .gap(theme::S_8)
-        .rounded(theme::R_8)
+        .gap(theme::s_8())
+        .rounded(theme::r_8())
         .bg(theme::wash())
         .child(
             svg()
                 .path(icon.path())
                 .flex_none()
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(color),
         )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .child(SharedString::from(text)),
         )
         .children(action)
@@ -349,14 +349,14 @@ pub(super) fn button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_lazy(gpui::Role::Button, || label.to_string())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .flex_none()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .when(primary, |d| {
             d.bg(theme::signal())
                 .text_color(theme::on_signal())
@@ -372,30 +372,64 @@ pub(super) fn button(
         .into_any_element()
 }
 
-/// "Update available" badge next to the sidebar Settings entry.
+/// "Update available" badge next to the sidebar Settings entry. For an update downloaded in the
+/// background it is the one place that says so: "Restart to update", which restarts on click.
 pub(super) fn sidebar_badge(cx: &App) -> Option<AnyElement> {
-    UpdateState::has_news(cx).then(|| {
-        div()
-            .ml_auto()
-            .mr(theme::S_8)
-            .px(theme::S_6)
-            .h(theme::S_20)
-            .flex()
-            .items_center()
-            .rounded(theme::R_FULL)
-            .bg(theme::signal_wash())
-            .text_size(theme::FS_12)
-            .text_color(theme::text())
-            .child(t!("update.badge").to_string())
-            .into_any_element()
-    })
+    if !UpdateState::has_news(cx) {
+        return None;
+    }
+    let badge = div()
+        .ml_auto()
+        .mr(theme::s_8())
+        .px(theme::s_6())
+        .h(theme::s_20())
+        .flex()
+        .items_center()
+        .rounded(theme::R_FULL)
+        .bg(theme::signal_wash())
+        .text_size(theme::fs_12())
+        .text_color(theme::text());
+    if !crate::update_quiet::ready_quietly(cx) {
+        return Some(
+            badge
+                .child(t!("update.badge").to_string())
+                .into_any_element(),
+        );
+    }
+    let label = if crate::update_quiet::restart_waiting(cx) {
+        t!("update.restart_after_ops")
+    } else {
+        t!("update.ready_short")
+    };
+    Some(
+        badge
+            .id("update-badge-restart")
+            .debug_selector(|| "update-badge-restart".to_owned())
+            .a11y_lazy(gpui::Role::Button, {
+                let label = label.to_string();
+                move || label
+            })
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::signal()).text_color(theme::on_signal()))
+            .child(label.into_owned())
+            .on_click(|_, _, cx| {
+                cx.stop_propagation();
+                crate::update_quiet::restart_now(cx);
+            })
+            .into_any_element(),
+    )
 }
 
 /// Corner card for a new version found by the check (automatic or by hand), with What's new
 /// and Download; then the download's progress and Restart. Closing it hides it until a newer
 /// version comes (`update_dismissed`); the sidebar badge and Settings › About stay.
 pub(super) fn update_notice(cx: &mut Context<Workspace>) -> Option<AnyElement> {
-    if super::welcome::welcome_due(cx) || update::package_manager().is_some() {
+    // A background download says nothing while it runs, and once ready only the sidebar badge.
+    if super::welcome::welcome_due(cx)
+        || update::package_manager().is_some()
+        || crate::update_quiet::hidden(cx)
+        || crate::update_quiet::ready_quietly(cx)
+    {
         return None;
     }
     let state = UpdateState::get(cx);
@@ -474,17 +508,17 @@ fn notice_card(version: &str, body: String, actions: Vec<AnyElement>) -> AnyElem
         .debug_selector(|| "update-notice-close".to_owned())
         .a11y(gpui::Role::Button, t!("palette.hint_close"))
         .flex_none()
-        .size(theme::H_CTL_SM)
+        .size(theme::h_ctl_sm())
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .hover(|s| s.bg(theme::wash()))
         .child(
             svg()
                 .path(Icon::Close.path())
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(theme::text_muted()),
         )
         .on_click(move |_, _, cx| {
@@ -500,25 +534,25 @@ fn notice_card(version: &str, body: String, actions: Vec<AnyElement>) -> AnyElem
             .a11y(gpui::Role::Dialog, title.clone())
             .occlude()
             .w_full()
-            .p(theme::S_16)
+            .p(theme::s_16())
             .flex()
             .flex_col()
-            .gap(theme::S_12)
-            .rounded(theme::R_12)
+            .gap(theme::s_12())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_float())
-            .text_size(theme::FS_13)
+            .text_size(theme::fs_13())
             .child(
                 div()
                     .flex()
                     .items_start()
-                    .gap(theme::S_12)
+                    .gap(theme::s_12())
                     .child(
                         svg()
                             .path(Icon::Bolt.path())
                             .flex_none()
-                            .mt(theme::S_2)
-                            .size(theme::ICON)
+                            .mt(theme::s_2())
+                            .size(theme::icon())
                             .text_color(theme::signal()),
                     )
                     .child(
@@ -527,10 +561,10 @@ fn notice_card(version: &str, body: String, actions: Vec<AnyElement>) -> AnyElem
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(theme::S_4)
+                            .gap(theme::s_4())
                             .child(
                                 div()
-                                    .text_size(theme::FS_14)
+                                    .text_size(theme::fs_14())
                                     .font_weight(theme::FW_STRONG)
                                     .child(title),
                             )
@@ -539,7 +573,13 @@ fn notice_card(version: &str, body: String, actions: Vec<AnyElement>) -> AnyElem
                     .child(close),
             )
             .when(!actions.is_empty(), |d| {
-                d.child(div().flex().justify_end().gap(theme::S_8).children(actions))
+                d.child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(theme::s_8())
+                        .children(actions),
+                )
             })
             .with_animation("update-notice-appear", crate::motion::enter(), |el, t| {
                 crate::motion::slide_in(el, t, 0., crate::motion::SLIDE)

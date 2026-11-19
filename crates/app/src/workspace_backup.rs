@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, Focusable, SharedString, Window, div, prelude::*,
-    px, svg,
+    svg,
 };
 use rust_i18n::t;
 
@@ -253,7 +253,7 @@ impl Workspace {
 /// Summary text on the right side of the card.
 pub(super) fn backup_summary() -> AnyElement {
     div()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .text_color(theme::text_muted())
         .child(t!("backup.summary").to_string())
         .into_any_element()
@@ -270,11 +270,11 @@ pub(super) fn backup_body(
     let field = div()
         .flex_1()
         .min_w_0()
-        .h(theme::H_CTL)
-        .px(theme::S_8)
+        .h(theme::h_ctl())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .when(focused, |d| {
             d.bg(theme::surface()).border_color(theme::signal_line())
@@ -286,7 +286,7 @@ pub(super) fn backup_body(
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(section(
             t!("backup.export_title"),
             t!("backup.export_desc"),
@@ -303,7 +303,7 @@ pub(super) fn backup_body(
             div()
                 .flex()
                 .flex_col()
-                .gap(theme::S_6)
+                .gap(theme::s_6())
                 .child(section_text(
                     t!("backup.import_title"),
                     t!("backup.import_desc"),
@@ -312,7 +312,7 @@ pub(super) fn backup_body(
                     div()
                         .flex()
                         .items_center()
-                        .gap(theme::S_8)
+                        .gap(theme::s_8())
                         .child(field)
                         .child(button(
                             "backup-browse",
@@ -336,7 +336,7 @@ fn section(title: Cow<'static, str>, desc: Cow<'static, str>, control: AnyElemen
     div()
         .flex()
         .items_center()
-        .gap(theme::S_12)
+        .gap(theme::s_12())
         .child(div().flex_1().min_w_0().child(section_text(title, desc)))
         .child(div().flex_none().child(control))
         .into_any_element()
@@ -346,11 +346,11 @@ fn section_text(title: Cow<'static, str>, desc: Cow<'static, str>) -> AnyElement
     div()
         .flex()
         .flex_col()
-        .gap(theme::S_2)
-        .child(div().text_size(theme::FS_13).child(title.into_owned()))
+        .gap(theme::s_2())
+        .child(div().text_size(theme::fs_13()).child(title.into_owned()))
         .child(
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(desc.into_owned()),
         )
@@ -366,13 +366,13 @@ fn button(
     div()
         .id(id)
         .a11y_lazy(gpui::Role::Button, || label.to_string())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .when(primary, |d| {
             d.bg(theme::signal())
                 .text_color(theme::on_signal())
@@ -427,28 +427,28 @@ fn note_line(note: &BackupNote, cx: &mut Context<Workspace>) -> AnyElement {
         BackupNote::Failed(why) => (Icon::Close, theme::danger(), why.clone(), None),
     };
     div()
-        .px(theme::S_12)
-        .py(theme::S_8)
+        .px(theme::s_12())
+        .py(theme::s_8())
         .flex()
         .items_center()
-        .gap(theme::S_8)
-        .rounded(theme::R_8)
+        .gap(theme::s_8())
+        .rounded(theme::r_8())
         .bg(theme::wash())
         .child(
             svg()
                 .path(icon.path())
                 .flex_none()
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(color),
         )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .child(SharedString::from(text)),
         )
         .children(action)
-        .min_h(px(36.))
+        .min_h(crate::theme::scaled_px(36.))
         .into_any_element()
 }

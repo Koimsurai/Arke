@@ -248,6 +248,17 @@ impl SessionWindow {
     }
 }
 
+/// Where the Properties window was last, in logical pixels. The height is only kept when the user
+/// sized the window; otherwise it fits its content.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PropertiesPlace {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    #[serde(default)]
+    pub(crate) height: Option<f32>,
+}
+
 /// Last window position and size in logical pixels. When maximized this is the restored size.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WindowPlace {
@@ -475,6 +486,9 @@ pub(crate) struct Settings {
     /// Saved SFTP and WebDAV locations (sidebar Network section). Never holds a password: those
     /// stay in Windows Credential Manager.
     pub(crate) remote_places: Vec<RemotePlace>,
+    /// Names the user gave mapped drives, network places and saved remote locations, shown
+    /// instead of the default ones (`place_names.rs`). Windows' own labels are never changed.
+    pub(crate) place_names: crate::place_names::Names,
     pub(crate) theme: ThemeMode,
     /// Background of the dark theme.
     pub(crate) dark_shade: DarkShade,
@@ -491,6 +505,10 @@ pub(crate) struct Settings {
     pub(crate) background_image: Option<PathBuf>,
     /// Background image opacity in percent.
     pub(crate) background_opacity: u8,
+    /// Interface scale in percent (80..=150), on top of the Windows DPI scale.
+    pub(crate) ui_scale: u32,
+    /// Dragged sidebar width at 100% scale; 0 is the default width.
+    pub(crate) sidebar_width: f32,
     /// Show hidden items (Ctrl+H, applies to all tabs).
     pub(crate) show_hidden: bool,
     pub(crate) start_location: StartLocation,
@@ -588,6 +606,11 @@ pub(crate) struct Settings {
     /// Which extension (COM class) each pinned command comes from, learned from the menus seen;
     /// empty when none has it. Lets a pinned command show before the whole Windows menu is read.
     pub(crate) menu_pin_owners: std::collections::BTreeMap<String, String>,
+    /// Shortcuts changed in Settings: command id (`commands.rs`) to its keys, empty when the
+    /// command has none. Only changes are stored; a command that is absent keeps its defaults.
+    pub(crate) shortcuts: std::collections::BTreeMap<String, Vec<String>>,
+    /// Commands run from the command palette, newest first.
+    pub(crate) recent_commands: Vec<String>,
     /// Auto update: channel (`None` follows this build's channel), whether to check automatically,
     /// and the last check time (Unix seconds).
     pub(crate) update_channel_choice: Option<crate::build_info::Channel>,
@@ -618,6 +641,8 @@ pub(crate) struct Settings {
     pub(crate) session_windows: Vec<SessionWindow>,
     /// Last window position and size.
     pub(crate) window: Option<WindowPlace>,
+    /// Last position and size of the Properties window.
+    pub(crate) properties_window: Option<PropertiesPlace>,
 }
 
 impl Default for Settings {
@@ -643,6 +668,7 @@ impl Default for Settings {
             search_history: true,
             net_places: Vec::new(),
             remote_places: Vec::new(),
+            place_names: crate::place_names::Names::new(),
             theme: ThemeMode::default(),
             accent: Accent::default(),
             tint: Tint::default(),
@@ -653,6 +679,8 @@ impl Default for Settings {
             font: String::new(),
             background_image: None,
             background_opacity: 20,
+            ui_scale: 100,
+            sidebar_width: 0.,
             show_hidden: false,
             start_location: StartLocation::default(),
             show_extensions: true,
@@ -698,6 +726,8 @@ impl Default for Settings {
             menu_hidden: Vec::new(),
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
+            shortcuts: std::collections::BTreeMap::new(),
+            recent_commands: Vec::new(),
             update_channel_choice: None,
             update_auto: true,
             update_checked: None,
@@ -715,6 +745,7 @@ impl Default for Settings {
             session: Session::default(),
             session_windows: Vec::new(),
             window: None,
+            properties_window: None,
         }
     }
 }
@@ -761,6 +792,7 @@ impl Settings {
 
     pub(crate) fn forget_share(&mut self, share: &Path) {
         self.net_places.retain(|p| p != share);
+        self.place_names.remove(&crate::place_names::key(share));
     }
 
     /// Adds or updates a saved remote location (same URL replaces), newest first.
@@ -771,6 +803,7 @@ impl Settings {
 
     pub(crate) fn forget_remote_place(&mut self, url: &Path) {
         self.remote_places.retain(|p| p.url != url);
+        self.place_names.remove(&crate::place_names::key(url));
     }
 
     /// Folders on the tiles: the custom list, or the known folders (excluding the profile folder itself).
@@ -843,6 +876,52 @@ impl Settings {
         }
         self.favorites = Some(tiles);
         self.pinned = list;
+    }
+
+    /// Puts a folder in at `slot`, an insertion point (a tile or list index, past the end means
+    /// last), whether or not it was pinned: one already on the tiles or in the list moves there.
+    /// On full tiles the last other tile makes room, going to the top of the list. Returns where
+    /// the folder ended up.
+    pub(crate) fn insert_pin(
+        &mut self,
+        path: &Path,
+        slot: PinSlot,
+        places: &[crate::shell::Place],
+    ) -> PinSlot {
+        let mut tiles = self.tiles(places);
+        let mut list = self.pinned.clone();
+        // Takes the folder out of `items`; `at` counted with it still there.
+        let take = |items: &mut Vec<PathBuf>, at: usize| -> usize {
+            match items.iter().position(|p| p == path) {
+                Some(from) => {
+                    items.remove(from);
+                    if from < at { at - 1 } else { at }
+                }
+                None => at,
+            }
+        };
+        let landed = match slot {
+            PinSlot::Tile(at) => {
+                let at = take(&mut tiles, at).min(tiles.len());
+                list.retain(|p| p != path);
+                tiles.insert(at, path.to_path_buf());
+                if tiles.len() > FAVORITES_MAX
+                    && let Some(last) = tiles.iter().rposition(|p| p != path)
+                {
+                    list.insert(0, tiles.remove(last));
+                }
+                PinSlot::Tile(tiles.iter().position(|p| p == path).unwrap_or(at))
+            }
+            PinSlot::List(at) => {
+                let at = take(&mut list, at).min(list.len());
+                tiles.retain(|p| p != path);
+                list.insert(at, path.to_path_buf());
+                PinSlot::List(at)
+            }
+        };
+        self.favorites = Some(tiles);
+        self.pinned = list;
+        landed
     }
 
     /// Unpins, from the tiles or the list.
@@ -1364,6 +1443,22 @@ mod tests {
         assert!(s.global_search && s.show_hidden);
     }
 
+    /// Changed shortcuts are written to the file and read back; files from before have none.
+    #[test]
+    fn changed_shortcuts_survive_a_save() {
+        let mut s = Settings::default();
+        s.shortcuts
+            .insert("go_up".to_owned(), vec!["ctrl-alt-u".to_owned()]);
+        s.shortcuts.insert("refresh".to_owned(), Vec::new());
+        s.recent_commands = vec!["refresh".to_owned()];
+        let bytes = serde_json::to_vec(&s).unwrap();
+        let back = parse_settings(&bytes, Path::new("settings.json")).unwrap();
+        assert_eq!(back.shortcuts, s.shortcuts);
+        assert_eq!(back.recent_commands, s.recent_commands);
+        let old = parse_settings(br#"{"show_hidden": true}"#, Path::new("settings.json")).unwrap();
+        assert!(old.shortcuts.is_empty() && old.recent_commands.is_empty());
+    }
+
     /// Settings from before 0.5 get the new near-black dark theme; the gray one is a choice.
     #[test]
     fn dark_shade_defaults_to_black() {
@@ -1637,6 +1732,41 @@ mod tests {
         assert_eq!(tiles.len(), FAVORITES_MAX);
         assert_eq!(tiles[3], p(51));
         assert_eq!(full.pinned, [p(50), p(3)]);
+    }
+
+    /// Folders dragged onto the sidebar go in at an insertion point, whether pinned before or not.
+    #[test]
+    fn inserting_pins_adds_or_moves_them_to_the_insertion_point() {
+        let p = |n: usize| PathBuf::from(format!(r"D:\p{n}"));
+        let mut s = Settings {
+            favorites: Some(vec![p(0), p(1), p(2)]),
+            pinned: vec![p(10)],
+            ..Settings::default()
+        };
+        // A new folder between the first two tiles.
+        assert_eq!(s.insert_pin(&p(5), PinSlot::Tile(1), &[]), PinSlot::Tile(1));
+        assert_eq!(s.favorites, Some(vec![p(0), p(5), p(1), p(2)]));
+        // A tile moved forward: the point is counted with it still there.
+        assert_eq!(s.insert_pin(&p(0), PinSlot::Tile(3), &[]), PinSlot::Tile(2));
+        assert_eq!(s.favorites, Some(vec![p(5), p(1), p(0), p(2)]));
+        // A list entry onto the tiles leaves the list; a tile into the list leaves the tiles.
+        s.insert_pin(&p(10), PinSlot::Tile(0), &[]);
+        assert_eq!(s.favorites, Some(vec![p(10), p(5), p(1), p(0), p(2)]));
+        assert!(s.pinned.is_empty());
+        s.insert_pin(&p(1), PinSlot::List(usize::MAX), &[]);
+        assert_eq!(s.pinned, [p(1)]);
+
+        // Full tiles: the last other tile makes room, to the top of the list.
+        let mut full = Settings {
+            favorites: Some((0..FAVORITES_MAX).map(p).collect()),
+            pinned: vec![p(50)],
+            ..Settings::default()
+        };
+        full.insert_pin(&p(99), PinSlot::Tile(usize::MAX), &[]);
+        let tiles = full.favorites.clone().unwrap();
+        assert_eq!(tiles.len(), FAVORITES_MAX);
+        assert_eq!(tiles.last(), Some(&p(99)));
+        assert_eq!(full.pinned, [p(FAVORITES_MAX - 1), p(50)]);
     }
 
     #[test]

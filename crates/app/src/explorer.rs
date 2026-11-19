@@ -62,7 +62,7 @@ mod marquee;
 #[path = "explorer_opcenter.rs"]
 mod op_view;
 #[path = "explorer_ops.rs"]
-mod ops;
+pub(crate) mod ops;
 #[path = "explorer_path.rs"]
 mod path_bar;
 #[path = "explorer_preview.rs"]
@@ -93,13 +93,15 @@ pub(crate) use layout::{SharedPreview, shared_preview};
 pub(crate) use menu::{app_name, menu_open_with_found, open_with_list, set_open_with};
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
+pub(crate) use top_bar::TitleLayout;
 
+pub(crate) use ops::commit_problem;
 pub(crate) use ops::{
     CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RedoFileOp, RedoStack, RenameFile,
     UndoFileOp, UndoHistory,
 };
 #[cfg(test)]
-pub(crate) use ops::{changes_share_list, commit_problem, typing_problem};
+pub(crate) use ops::{changes_share_list, typing_problem};
 pub(crate) use view::{caption_buttons, error_toast, ghost_button, kind_icon, tooltip};
 
 use crate::bench::{Bench, BenchStep};
@@ -129,6 +131,8 @@ actions!(
         Escape,
         OpenSelected,
         OpenInNewTab,
+        /// Alt+Enter: the Properties window for the selection.
+        ShowProperties,
         OpenLocation,
         GoUp,
         GoBack,
@@ -172,6 +176,7 @@ actions!(
 
 pub(crate) fn bind_keys(cx: &mut App) {
     path_bar::bind_keys(cx);
+    crate::properties::bind_keys(cx);
     let list = Some("FileList");
     let root = Some("Explorer");
     let filter = Some("FilterBar");
@@ -193,6 +198,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Escape, list),
         KeyBinding::new("enter", OpenSelected, list),
         KeyBinding::new("ctrl-enter", OpenInNewTab, list),
+        KeyBinding::new("alt-enter", ShowProperties, list),
         KeyBinding::new("shift-enter", OpenLocation, list),
         KeyBinding::new("backspace", GoUp, list),
         // Grid view: move one cell left or right (no-op in details view).
@@ -457,6 +463,9 @@ pub(crate) enum ExplorerEvent {
     ToggleCompare,
     /// Dual pane: select what the comparison marked, in both panes.
     SelectDifferences,
+    /// F2 with nothing to rename in the list while a drive or network place is open: the
+    /// workspace renames that place if it can be renamed.
+    RenamePlace(PathBuf),
 }
 
 /// Where this `Explorer` sits in its tab. Set by `Workspace` before every render.
@@ -470,25 +479,16 @@ pub(crate) struct PaneInfo {
     pub(crate) split: bool,
     /// This is the active side.
     pub(crate) active: bool,
-    /// Window caption buttons go in this pane's top bar (the rightmost pane).
-    pub(crate) show_caption: bool,
-    /// The operation center button goes in this pane's top bar. It shows jobs from the whole app,
-    /// so a split tab draws it once (the rightmost pane), not once per side.
-    pub(crate) show_ops: bool,
     /// Current folder of the other pane (copy/move destination).
     pub(crate) peer: Option<PathBuf>,
     /// Share of the list area width.
     pub(crate) share: f32,
     /// Split tab: room at the tab's right end taken by the shared preview (both panes get it).
     pub(crate) reserve: Pixels,
-    /// Split tab: this pane's box runs on under the shared preview (the rightmost pane), so its
-    /// top bar spans the whole tab and keeps the caption buttons in the corner.
+    /// Split tab: this pane's box runs on under the shared preview (the rightmost pane).
     pub(crate) trailing: bool,
     /// Split tab: this is the active side and the tab's shared preview shows its item.
     pub(crate) preview_host: Option<SharedPreview>,
-    /// Back, forward and refresh are drawn in the sidebar header (vertical tabs); the top bar keeps
-    /// only up and the path.
-    pub(crate) nav_in_sidebar: bool,
     /// Dual pane: synchronized browsing is on for this tab.
     pub(crate) synced: bool,
     /// Dual pane: the folders are being compared.
@@ -503,14 +503,11 @@ impl Default for PaneInfo {
         Self {
             split: false,
             active: true,
-            show_caption: true,
-            show_ops: true,
             peer: None,
             share: 1.,
             reserve: px(0.),
             trailing: false,
             preview_host: None,
-            nav_in_sidebar: false,
             synced: false,
             comparing: false,
             pair_toggles: false,
@@ -675,6 +672,8 @@ pub(crate) struct Explorer {
     pub(crate) show_thumbnails: bool,
     /// Read images and exe icons on network locations too (settings, off by default).
     pub(crate) network_thumbnails: bool,
+    /// Names given to mapped drives and network places (settings), shown for their roots.
+    pub(crate) place_names: crate::place_names::Names,
     /// Language currently used for input placeholders.
     language: crate::settings::Language,
     sort_inflight: Option<SortJob>,
@@ -1033,6 +1032,7 @@ impl Explorer {
             group_cache: groups::GroupCache::default(),
             show_thumbnails: settings.read(cx).settings.show_thumbnails,
             network_thumbnails: settings.read(cx).settings.network_thumbnails,
+            place_names: settings.read(cx).settings.place_names.clone(),
             language: crate::settings::Language::System,
             sort_inflight: None,
             type_order: None,
@@ -1134,17 +1134,23 @@ impl Explorer {
             preview_gen: 0,
             zoom: preview::Zoom::default(),
             pdf_cache: preview::PdfCache::default(),
-            screen: (gpui::size(px(1280.), px(800.)), 1.),
+            screen: (
+                gpui::size(
+                    crate::theme::scaled_px(1280.),
+                    crate::theme::scaled_px(800.),
+                ),
+                1.,
+            ),
             cloud: cloud::CloudStates::default(),
             preview_task: None,
-            pane_width: px(1000.),
+            pane_width: crate::theme::scaled_px(1000.),
             fit: layout::Fit::default(),
             cols: None,
             header_x: std::cell::Cell::new(None),
             pane_frame_h: std::rc::Rc::default(),
             pane_info_scroll: Default::default(),
-            bar_width: px(1000.),
-            paper_width: px(1000.),
+            bar_width: crate::theme::scaled_px(1000.),
+            paper_width: crate::theme::scaled_px(1000.),
             show_loading: false,
             error: None,
             failed: None,
@@ -1249,10 +1255,13 @@ impl Explorer {
             .is_some_and(arke_core::remote::is_remote)
     }
 
-    /// Tab title: the folder name (`C:\` for drive roots, the share name for `\server\share`).
+    /// Tab title: the folder name (`C:\` for drive roots, the share name for `\server\share`), or the
+    /// name given to a mapped drive or network place.
     pub(crate) fn tab_title(&self) -> SharedString {
         match self.display_path() {
-            Some(p) => tab_title_for(p).into(),
+            Some(p) => crate::place_names::shown_name(&self.place_names, p)
+                .unwrap_or_else(|| tab_title_for(p))
+                .into(),
             None => "Arke".into(),
         }
     }
@@ -2901,7 +2910,7 @@ impl Explorer {
     /// Height taken outside the list: top bar, context bar, column header, bottom margin and list
     /// padding.
     fn list_chrome() -> Pixels {
-        theme::H_BAR + theme::H_CTX + theme::H_HEADER + theme::S_8 + theme::S_8
+        theme::h_bar() + theme::h_ctx() + theme::h_header() + theme::s_8() + theme::s_8()
     }
 
     fn on_path_event(
@@ -2938,6 +2947,7 @@ impl Explorer {
         self.group_rows = settings.group_rows;
         self.show_thumbnails = settings.show_thumbnails;
         self.network_thumbnails = settings.network_thumbnails;
+        self.place_names = settings.place_names.clone();
         self.tree_setting(settings.details_tree);
         if settings.language != self.language {
             self.language = settings.language;
@@ -2991,14 +3001,14 @@ impl Explorer {
     }
 
     /// Split panes are half width, so they use compact density.
-    pub(crate) const fn row_height(&self) -> Pixels {
+    pub(crate) fn row_height(&self) -> Pixels {
         if self.pane.split {
-            return theme::H_ROW_COMPACT;
+            return theme::h_row_compact();
         }
         match self.density {
-            Density::Compact => theme::H_ROW_COMPACT,
-            Density::Standard => theme::H_ROW,
-            Density::Comfortable => theme::H_ROW_COMFORTABLE,
+            Density::Compact => theme::h_row_compact(),
+            Density::Standard => theme::h_row(),
+            Density::Comfortable => theme::h_row_comfortable(),
         }
     }
 
@@ -3144,6 +3154,18 @@ impl Explorer {
                 activate: true,
             });
         }
+    }
+
+    /// Alt+Enter: the Properties window for the selection (the folder itself when nothing is
+    /// selected).
+    fn show_properties(&mut self, _: &ShowProperties, _: &mut Window, cx: &mut Context<Self>) {
+        let mut targets = self.menu_targets();
+        if targets.is_empty()
+            && let Some(path) = self.current_path()
+        {
+            targets.push((path.to_path_buf(), true));
+        }
+        self.open_properties(targets, cx);
     }
 
     /// Shift+Enter (search results): goes to the item's folder and selects it.

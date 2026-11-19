@@ -25,7 +25,7 @@ use arke_core::index_query::Facet;
 use arke_core::{Entry, EntryKind, SearchHit, SearchResults};
 use gpui::{
     AnyElement, App, ClickEvent, Context, Focusable, KeyBinding, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Window, actions, anchored, deferred, div, prelude::*, px, svg,
+    MouseDownEvent, SharedString, Window, actions, anchored, deferred, div, prelude::*, svg,
 };
 use rust_i18n::t;
 
@@ -140,11 +140,11 @@ pub(super) fn panel_heading(
         .flex()
         .items_center()
         .justify_between()
-        .gap(theme::S_8)
-        .min_h(theme::S_24)
+        .gap(theme::s_8())
+        .min_h(theme::s_24())
         .child(
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .font_weight(theme::FW_STRONG)
                 .text_color(theme::text_muted())
                 .child(label.into()),
@@ -294,6 +294,9 @@ impl Explorer {
             .filter(|rel| !rel.as_os_str().is_empty());
         Some(below.map_or_else(
             || {
+                if let Some(name) = crate::place_names::shown_name(&self.place_names, dir) {
+                    return name;
+                }
                 dir.file_name().map_or_else(
                     || dir.display().to_string(),
                     |n| n.to_string_lossy().into_owned(),
@@ -301,6 +304,12 @@ impl Explorer {
             },
             |rel| rel.display().to_string(),
         ))
+    }
+
+    /// Tests: search the folders below `dir`, so the chip names it.
+    #[cfg(test)]
+    pub(crate) fn search_in_for_test(&mut self, dir: PathBuf) {
+        self.search_in = Some(dir);
     }
 
     /// Keep focus in the box after a scope change (without selecting all, so typing doesn't
@@ -646,7 +655,7 @@ impl Explorer {
             return Some(Self::empty_state(
                 svg()
                     .path(Icon::Drive.path())
-                    .size(theme::S_32)
+                    .size(theme::s_32())
                     .text_color(theme::text_subtle())
                     .into_any_element(),
                 t!("scope.computer_prompt").into_owned(),
@@ -658,7 +667,7 @@ impl Explorer {
             return Some(Self::empty_state(
                 svg()
                     .path(Icon::Drive.path())
-                    .size(theme::S_32)
+                    .size(theme::s_32())
                     .text_color(theme::text_subtle())
                     .into_any_element(),
                 index_status_text(cx).unwrap_or_default(),
@@ -675,25 +684,25 @@ impl Explorer {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(theme::S_8)
+            .gap(theme::s_8())
             .child(
                 svg()
                     .path(Icon::Drive.path())
-                    .size(theme::S_32)
+                    .size(theme::s_32())
                     .text_color(theme::text_subtle())
                     .opacity(0.7),
             )
             .child(
                 div()
-                    .text_size(theme::FS_15)
+                    .text_size(theme::fs_15())
                     .text_color(theme::text_muted())
                     .child(t!("scope.computer_off").to_string()),
             )
             .child(
                 div()
-                    .max_w(px(420.))
+                    .max_w(crate::theme::scaled_px(420.))
                     .text_center()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(t!("search.index_enable_tip").to_string()),
             )
@@ -701,12 +710,12 @@ impl Explorer {
                 div()
                     .id("scope-enable-index")
                     .a11y_button(t!("scope.enable"))
-                    .mt(theme::S_8)
-                    .h(theme::H_CTL)
-                    .px(theme::S_16)
+                    .mt(theme::s_8())
+                    .h(theme::h_ctl())
+                    .px(theme::s_16())
                     .flex()
                     .items_center()
-                    .rounded(theme::R_8)
+                    .rounded(theme::r_8())
                     .cursor_pointer()
                     .bg(theme::signal())
                     .text_color(theme::on_signal())
@@ -751,29 +760,29 @@ impl Explorer {
             ],
             Scope::Computer => return None,
         };
-        let mut row = div().mt(theme::S_8).flex().gap(theme::S_8);
+        let mut row = div().mt(theme::s_8()).flex().gap(theme::s_8());
         for (target, id, label) in targets {
             let target = *target;
             row = row.child(
                 div()
                     .id(*id)
                     .a11y_lazy(gpui::Role::Button, || label.to_string())
-                    .h(theme::H_CTL)
-                    .px(theme::S_12)
+                    .h(theme::h_ctl())
+                    .px(theme::s_12())
                     .flex()
                     .items_center()
-                    .gap(theme::S_6)
-                    .rounded(theme::R_8)
+                    .gap(theme::s_6())
+                    .rounded(theme::r_8())
                     .border_1()
                     .border_color(theme::line_strong())
                     .cursor_pointer()
-                    .text_size(theme::FS_14)
+                    .text_size(theme::fs_14())
                     .text_color(theme::text())
                     .hover(|s| s.bg(theme::wash_strong()))
                     .child(
                         svg()
                             .path(target.icon().path())
-                            .size(theme::ICON_SM)
+                            .size(theme::icon_sm())
                             .text_color(theme::text_muted()),
                     )
                     .child(label.to_string())
@@ -788,14 +797,25 @@ impl Explorer {
 
     /// Small chip on the right of the box: shows the scope when it isn't "this folder", even
     /// without focus. Also shown while typing with the strip collapsed; click to reopen the strip.
-    /// The scope chip's text (none in a split pane, which shows only its icon). Searching one
-    /// folder: its name says where.
-    pub(super) fn scope_chip_label(&self) -> Option<String> {
+    /// The scope chip's text: the folder searched (this pane's, or the one searched with its
+    /// subfolders), or "This PC".
+    pub(super) fn scope_chip_label(&self) -> String {
         let scope = self.scope();
-        (!self.pane.split).then(|| {
-            self.search_in_name()
-                .filter(|_| scope == Scope::Subfolders)
-                .unwrap_or_else(|| scope.label().to_string())
+        let folder = match scope {
+            Scope::Here => self.folder_label(),
+            Scope::Subfolders => self.search_in_name(),
+            Scope::Computer => None,
+        };
+        folder.unwrap_or_else(|| scope.label().to_string())
+    }
+
+    /// The name of the folder this pane shows (a drive's full path).
+    pub(super) fn folder_label(&self) -> Option<String> {
+        self.display_path().map(|p| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
         })
     }
 
@@ -814,13 +834,13 @@ impl Explorer {
                 .id("scope-chip")
                 .a11y_button(t!("scope.chip_tip"))
                 .aria_description(scope.label().to_string())
-                .h(theme::S_20)
-                .px(theme::S_6)
+                .h(theme::s_20())
+                .px(theme::s_6())
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme::S_4)
-                .rounded(theme::R_4)
+                .gap(theme::s_4())
+                .rounded(theme::r_4())
                 .cursor_pointer()
                 .when(here, |d| {
                     d.text_color(theme::text_muted())
@@ -831,18 +851,18 @@ impl Explorer {
                         .text_color(theme::text())
                         .hover(|s| s.bg(theme::wash_strong()))
                 })
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .child(
                     svg()
                         .path(scope.icon().path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(if here {
                             theme::text_subtle()
                         } else {
                             theme::signal()
                         }),
                 )
-                .when_some(self.scope_chip_label(), gpui::ParentElement::child)
+                .child(self.scope_chip_label())
                 // No tooltip while the strip it opens is showing: it would cover the strip.
                 .when(
                     !(focused && (self.query.is_empty() || self.scope_strip_open)),
@@ -872,13 +892,13 @@ impl Explorer {
             .when(at, gpui::StatefulInteractiveElement::aria_active_descendant)
             .flex_1()
             .min_w_0()
-            .h(theme::H_CTL_MD)
-            .px(theme::S_8)
+            .h(theme::h_ctl_md())
+            .px(theme::s_8())
             .flex()
             .items_center()
             .justify_center()
-            .gap(theme::S_6)
-            .rounded(theme::R_4)
+            .gap(theme::s_6())
+            .rounded(theme::r_4())
             .border_1()
             .border_color(if at {
                 theme::signal_line()
@@ -886,7 +906,7 @@ impl Explorer {
                 theme::clear()
             })
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .whitespace_nowrap()
             // Same segmented style as the view switcher: raised pill on a recessed track.
             .when(on, |d| {
@@ -903,7 +923,7 @@ impl Explorer {
                 svg()
                     .path(scope.icon().path())
                     .flex_none()
-                    .size(theme::ICON_SM)
+                    .size(theme::icon_sm())
                     .text_color(if on {
                         theme::signal()
                     } else {
@@ -938,11 +958,11 @@ impl Explorer {
             )
         });
         let status = div()
-            .min_h(theme::S_24)
+            .min_h(theme::s_24())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .text_size(theme::FS_12)
+            .gap(theme::s_8())
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(div().flex_1().min_w_0().child(match current {
                 Scope::Here => t!("scope.here_hint").to_string(),
@@ -960,7 +980,7 @@ impl Explorer {
         let footer = div()
             .flex()
             .justify_end()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
             .child(if keyboard {
                 t!("scope.keys_hint").into_owned()
@@ -973,14 +993,14 @@ impl Explorer {
             .track_focus(&self.panel_focus)
             .a11y(gpui::Role::Group, t!("search.panel"))
             .relative()
-            .w(theme::SEARCH_PANEL_W)
-            .p(theme::S_16)
+            .w(theme::search_panel_w())
+            .p(theme::s_16())
             .flex()
             .flex_col()
             // Sections apart, their parts close: everything on one left edge.
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             // No border: GPUI draws it over the children, through an open filter menu.
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
             .ui_font()
@@ -994,16 +1014,16 @@ impl Explorer {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(panel_heading(t!("scope.section"), None))
                     .child(
                         div()
                             .id("scope-group")
                             .a11y(gpui::Role::RadioGroup, t!("scope.section"))
-                            .p(theme::S_2)
+                            .p(theme::s_2())
                             .flex()
-                            .gap(theme::S_2)
-                            .rounded(theme::R_8)
+                            .gap(theme::s_2())
+                            .rounded(theme::r_8())
                             .bg(theme::segment_track())
                             .children(segments),
                     )
@@ -1027,13 +1047,13 @@ impl Explorer {
 fn float_under_box(panel: AnyElement) -> AnyElement {
     div()
         .absolute()
-        .top(theme::H_CTL + theme::S_4)
+        .top(theme::h_ctl() + theme::s_4())
         .right_0()
         .child(
             deferred(
                 anchored()
                     .anchor(gpui::Anchor::TopRight)
-                    .snap_to_window_with_margin(theme::S_8)
+                    .snap_to_window_with_margin(theme::s_8())
                     .child(panel),
             )
             .with_priority(2),
@@ -1211,11 +1231,11 @@ fn icon_button(
         .a11y_disabled(busy)
         .when(at, gpui::StatefulInteractiveElement::aria_active_descendant)
         .flex_none()
-        .size(theme::S_24)
+        .size(theme::s_24())
         .flex()
         .items_center()
         .justify_center()
-        .rounded(theme::R_4)
+        .rounded(theme::r_4())
         .border_1()
         .border_color(if at {
             theme::signal_line()
@@ -1228,7 +1248,7 @@ fn icon_button(
         .child(
             svg()
                 .path(icon.path())
-                .size(theme::ICON_SM)
+                .size(theme::icon_sm())
                 .text_color(color),
         )
         .tooltip(crate::workspace::tooltip(tip))

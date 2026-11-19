@@ -8,7 +8,7 @@ use std::borrow::Cow;
 
 use gpui::{
     AnimationExt, App, ClickEvent, Context, FocusHandle, KeyBinding, SharedString, Window, actions,
-    div, prelude::*, px,
+    div, prelude::*,
 };
 use rust_i18n::t;
 
@@ -49,16 +49,16 @@ fn danger_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::danger())
         .text_color(theme::danger())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .hover(|s| s.bg(theme::danger_surface()))
         .child(label)
         .on_click(on_click)
@@ -90,11 +90,11 @@ fn dialog_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL)
-        .px(theme::S_16)
+        .h(theme::h_ctl())
+        .px(theme::s_16())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .cursor_pointer()
         .when(primary, |d| {
             d.bg(theme::danger())
@@ -183,7 +183,7 @@ impl Workspace {
         match uninstall::start_from_app(ask.keep_settings) {
             Ok(()) => {
                 log::info!("uninstall: handed over, quitting");
-                cx.quit();
+                crate::update_quiet::quit(crate::update_quiet::QuitReason::Other, cx);
             }
             Err(err) => {
                 ask.error =
@@ -230,11 +230,11 @@ impl Workspace {
                 );
                 div()
                     .flex()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         div()
                             .flex_none()
-                            .w(px(12.))
+                            .w(crate::theme::scaled_px(12.))
                             .text_color(theme::text_subtle())
                             .child(if kept { "–" } else { "•" }),
                     )
@@ -255,22 +255,22 @@ impl Workspace {
             .key_context(CONTEXT)
             .track_focus(&ask.focus)
             .on_action(cx.listener(Self::cancel_uninstall))
-            .w(px(520.))
+            .w(crate::theme::scaled_px(520.))
             .max_w_full()
-            .p(theme::S_20)
+            .p(theme::s_20())
             .flex()
             .flex_col()
-            .gap(theme::S_12)
-            .rounded(theme::R_12)
+            .gap(theme::s_12())
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
             .ui_font()
-            .text_size(theme::FS_13)
+            .text_size(theme::fs_13())
             .text_color(theme::text())
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .text_size(theme::FS_15)
+                    .text_size(theme::fs_15())
                     .font_weight(theme::FW_STRONG)
                     .child(t!("uninstall.confirm_title").into_owned()),
             )
@@ -279,13 +279,13 @@ impl Workspace {
                     .text_color(theme::text_muted())
                     .child(t!("uninstall.intro").into_owned()),
             )
-            .child(div().flex().flex_col().gap(theme::S_6).children(items))
+            .child(div().flex().flex_col().gap(theme::s_6()).children(items))
             .child(
                 div()
-                    .pt(theme::S_4)
+                    .pt(theme::s_4())
                     .flex()
                     .flex_col()
-                    .gap(theme::S_4)
+                    .gap(theme::s_4())
                     .child(super::report_page::check_row(
                         "uninstall-keep",
                         t!("uninstall.keep"),
@@ -299,15 +299,15 @@ impl Workspace {
                     ))
                     .child(
                         div()
-                            .pl(theme::ICON + theme::S_8)
-                            .text_size(theme::FS_12)
+                            .pl(theme::icon() + theme::s_8())
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(t!("uninstall.keep_desc").into_owned()),
                     ),
             )
             .child(
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_muted())
                     .when(has_service, |d| {
                         d.child(div().child(t!("uninstall.uac_note").into_owned()))
@@ -316,16 +316,16 @@ impl Workspace {
             )
             .children(ask.error.clone().map(|error| {
                 div()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::danger())
                     .child(error)
             }))
             .child(
                 div()
-                    .pt(theme::S_8)
+                    .pt(theme::s_8())
                     .flex()
                     .justify_end()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         dialog_button("uninstall-cancel", t!("confirm.cancel"), false).on_click(
                             cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -344,7 +344,7 @@ impl Workspace {
                 .id("uninstall-veil")
                 .absolute()
                 .inset_0()
-                .p(theme::S_16)
+                .p(theme::s_16())
                 .flex()
                 .items_center()
                 .justify_center()

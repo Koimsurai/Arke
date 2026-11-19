@@ -571,21 +571,6 @@ impl Shell for RemoteShell {
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         self.inner.covered_at_cursor(owner)
     }
-    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
-        self.inner.drag_threshold(owner)
-    }
-    fn press_from_touch(&self) -> bool {
-        self.inner.press_from_touch()
-    }
-    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
-        self.inner.begin_window_move(owner, at);
-    }
-    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
-        self.inner.double_click_rule(owner)
-    }
-    fn toggle_maximize(&self, owner: Option<isize>) {
-        self.inner.toggle_maximize(owner);
-    }
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,
@@ -746,6 +731,45 @@ impl Shell for RemoteShell {
             return Err(ShellError::NotOnRemote);
         }
         self.inner.reveal_in_explorer(path, select)
+    }
+    fn file_details(&self, path: &Path) -> crate::shell::FileDetails {
+        if remote(path).is_some() {
+            return crate::shell::FileDetails::default();
+        }
+        self.inner.file_details(path)
+    }
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.set_attributes(paths, set, clear)
+    }
+    fn is_blocked(&self, path: &Path) -> bool {
+        remote(path).is_none() && self.inner.is_blocked(path)
+    }
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        if remote(path).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.unblock(path)
+    }
+    fn default_app(&self, path: &Path) -> Option<String> {
+        if remote(path).is_some() {
+            return None;
+        }
+        self.inner.default_app(path)
+    }
+    fn volume_info(&self, root: &Path) -> Option<crate::shell::VolumeInfo> {
+        if remote(root).is_some() {
+            return None;
+        }
+        self.inner.volume_info(root)
+    }
+    fn show_properties(&self, paths: &[PathBuf], owner: Option<isize>) -> Result<(), ShellError> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.show_properties(paths, owner)
     }
     fn shortcut_target(&self, path: &Path) -> Option<(PathBuf, bool)> {
         if remote(path).is_some() {

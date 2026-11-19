@@ -724,7 +724,99 @@ pub(crate) struct DragImageRequest {
     pub(crate) badge: [u8; 3],
 }
 
+/// What a Properties window shows that a folder listing does not have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FileDetails {
+    /// Last access time.
+    pub(crate) accessed: Option<SystemTime>,
+    /// Space the file takes on disk (compressed or sparse files take less than their size, cloud
+    /// files that are not on this device none). `None` when unknown.
+    pub(crate) size_on_disk: Option<u64>,
+}
+
+/// A drive's label, file system and allocation unit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct VolumeInfo {
+    /// Volume label; empty when it has none.
+    pub(crate) label: String,
+    /// "NTFS", "exFAT", ...
+    pub(crate) file_system: String,
+    /// Bytes per cluster; 0 when unknown.
+    pub(crate) cluster: u64,
+}
+
+/// `FILE_ATTRIBUTE_READONLY`.
+pub(crate) const ATTR_READONLY: u32 = 0x1;
+/// `FILE_ATTRIBUTE_HIDDEN`.
+pub(crate) const ATTR_HIDDEN: u32 = 0x2;
+
+/// Runs the item with `verb` ("properties", ...) from the classic Windows menu of `paths`. The
+/// menu process reads the menu, finds the item (including in submenus) and runs it, so third-party
+/// code stays in that process. `Ok(false)` when the menu has no such item. Background thread.
+pub(crate) fn run_menu_verb(
+    shell: &(impl Shell + ?Sized),
+    paths: &[PathBuf],
+    verb: &str,
+    owner: Option<isize>,
+) -> Result<bool, ShellError> {
+    fn find(entries: &[ShellMenuEntry], verb: &str) -> Option<u32> {
+        entries.iter().find_map(|e| match e {
+            ShellMenuEntry::Item {
+                id, verb: Some(v), ..
+            } if v.eq_ignore_ascii_case(verb) => Some(*id),
+            ShellMenuEntry::Submenu { children, .. } => find(children, verb),
+            _ => None,
+        })
+    }
+    let menu = shell.shell_menu(paths, false)?;
+    let Some(id) = find(&menu.entries, verb) else {
+        shell.release_shell_menu(menu.session);
+        return Ok(false);
+    };
+    shell.invoke_shell_menu(menu.session, id, (0, 0), owner)?;
+    Ok(true)
+}
+
 pub(crate) trait Shell: Send + Sync + 'static {
+    /// Last access time and space on disk of an item. Reads attributes only: a cloud file that is
+    /// not on this device is never downloaded. Background thread.
+    fn file_details(&self, path: &Path) -> FileDetails {
+        let _ = path;
+        FileDetails::default()
+    }
+    /// Sets the attribute bits in `set` and clears those in `clear` on each of `paths`, leaving
+    /// every other bit alone. Stops at the first item that fails. Background thread.
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        let _ = (paths, set, clear);
+        Err(ShellError::Unsupported)
+    }
+    /// Friendly name of the program a file opens with ("Notepad"). Background thread.
+    fn default_app(&self, path: &Path) -> Option<String> {
+        let _ = path;
+        None
+    }
+    /// Label, file system and cluster size of the drive at `root`. Background thread.
+    fn volume_info(&self, root: &Path) -> Option<VolumeInfo> {
+        let _ = root;
+        None
+    }
+    /// Whether the file came from the internet and carries the mark Windows warns about
+    /// (`Zone.Identifier`). Only looks for the mark; never for a cloud file that is not on this
+    /// device. Background thread.
+    fn is_blocked(&self, path: &Path) -> bool {
+        let _ = path;
+        false
+    }
+    /// Removes the internet mark ("Unblock"). Background thread.
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        let _ = path;
+        Err(ShellError::Unsupported)
+    }
+    /// Windows' own Properties window for `paths`, with the pages only Windows has (security,
+    /// sharing, previous versions, ...). Background thread.
+    fn show_properties(&self, paths: &[PathBuf], owner: Option<isize>) -> Result<(), ShellError> {
+        run_menu_verb(self, paths, "properties", owner).map(|_| ())
+    }
     /// Known folders and drive letters. Background thread; must not probe network drives.
     fn load_places(&self) -> Vec<Place>;
     /// Requeries (free, total) bytes for these drives (sidebar usage bars). Only asks for volume info, reads no files;
@@ -786,32 +878,11 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = owner;
         false
     }
-    /// How far (physical pixels at `owner`'s DPI, on either side of the press) the pointer moves
-    /// with the button held before it counts as a drag. UI thread.
-    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
-        let _ = owner;
-        (4, 4)
-    }
-    /// Whether the mouse press being handled came from a touch screen or a pen (Windows turns
-    /// those into mouse messages too). Only meaningful while that press is handled. UI thread.
-    fn press_from_touch(&self) -> bool {
-        false
-    }
-    /// Hands a press that turned into a drag to Windows as a title bar drag, so the window moves
-    /// (with Snap) as if the press had been on the title bar. `at`: the press's point in the
-    /// window's client area, physical pixels. UI thread.
-    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
-        let _ = (owner, at);
-    }
-    /// The system's double-click time, and the size of the rectangle (physical pixels at
-    /// `owner`'s DPI, centered on the first click) the second click must land in. UI thread.
-    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
-        let _ = owner;
-        (std::time::Duration::from_millis(500), (4, 4))
-    }
-    /// Maximizes `owner`, or restores it if it's maximized (a title bar double click). UI thread.
-    fn toggle_maximize(&self, owner: Option<isize>) {
-        let _ = owner;
+    /// The top-level window under the cursor and where the cursor is in its client area
+    /// (physical pixels), for a tab dropped outside its window. `None` when unknown: the caller
+    /// then works it out from window bounds. UI thread, no file system access.
+    fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {
+        None
     }
     /// Builds the drag image. `base` is an existing thumbnail; falls back to the system icon. Background thread.
     fn drag_image(

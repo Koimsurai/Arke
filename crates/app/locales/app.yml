@@ -134,6 +134,18 @@ filter.placeholder:
   en: Filter (Ctrl+F)
   zh-TW: 篩選（Ctrl+F）
   zh-CN: 筛选（Ctrl+F）
+filter.placeholder_in:
+  en: Search %{folder} or this PC (Ctrl+F)
+  zh-TW: 搜尋「%{folder}」或此電腦（Ctrl+F）
+  zh-CN: 搜索“%{folder}”或此电脑（Ctrl+F）
+filter.placeholder_short:
+  en: Search (Ctrl+F)
+  zh-TW: 搜尋（Ctrl+F）
+  zh-CN: 搜索（Ctrl+F）
+filter.chip_tip:
+  en: Show this filter in the search box
+  zh-TW: 在搜尋框中顯示這個篩選
+  zh-CN: 在搜索框中显示这个筛选
 filter.search_placeholder:
   en: Search subfolders
   zh-TW: 搜尋子資料夾
@@ -460,6 +472,10 @@ sel.rename:
   en: Rename
   zh-TW: 重新命名
   zh-CN: 重命名
+sel.more:
+  en: More actions
+  zh-TW: 更多動作
+  zh-CN: 更多操作
 sel.delete:
   en: Delete
   zh-TW: 刪除
@@ -516,10 +532,6 @@ info.filtered:
   en: "%{shown} of %{total} items match"
   zh-TW: 符合 %{shown} 個，共 %{total} 個項目
   zh-CN: 匹配 %{shown} 个，共 %{total} 个项目
-info.query_in:
-  en: "In \"%{folder}\": \"%{query}\""
-  zh-TW: 「%{folder}」中的「%{query}」
-  zh-CN: “%{folder}”中的“%{query}”
 info.items_one:
   en: "1 item"
   zh-TW: "%{count} 個項目"
@@ -1077,13 +1089,13 @@ update.channel_desc:
   zh-TW: "正式版最穩定；RC 是下一版的候選；Nightly 每天更新"
   zh-CN: "正式版最稳定；RC 是下一版的候选；Nightly 每天更新"
 update.auto:
-  en: Check automatically
-  zh-TW: 自動檢查
-  zh-CN: 自动检查
+  en: Update automatically
+  zh-TW: 自動更新
+  zh-CN: 自动更新
 update.auto_desc:
-  en: "At most once a day; never installs on its own"
-  zh-TW: "一天最多檢查一次，不會自動安裝"
-  zh-CN: "每天最多检查一次，不会自动安装"
+  en: "Checks once a day and downloads in the background; installs the next time Arke restarts"
+  zh-TW: "一天檢查一次並在背景下載，下次 Arke 重新啟動時安裝"
+  zh-CN: "每天检查一次并在后台下载，下次 Arke 重启时安装"
 update.check:
   en: Check now
   zh-TW: "立即檢查"
@@ -1132,6 +1144,10 @@ update.restart:
   en: Restart now
   zh-TW: "立即重新啟動"
   zh-CN: 立即重启
+update.restart_after_ops:
+  en: Restarts when file tasks finish
+  zh-TW: 檔案作業完成後重新啟動
+  zh-CN: 文件操作完成后重启
 update.failed:
   en: "Couldn't update: %{error}"
   zh-TW: 無法更新：%{error}
@@ -1269,9 +1285,9 @@ backup.export_title:
   zh-TW: 匯出
   zh-CN: 导出
 backup.export_desc:
-  en: "All settings and pinned folders, not open tabs"
-  zh-TW: "所有設定與釘選的資料夾，不含開著的分頁"
-  zh-CN: "所有设置和固定的文件夹，不含打开的标签页"
+  en: "All settings and favorites, not open tabs"
+  zh-TW: "所有設定與最愛，不含開著的分頁"
+  zh-CN: "所有设置和收藏夹，不含打开的标签页"
 backup.export:
   en: Export to Downloads
   zh-TW: 匯出到「下載」
@@ -1353,9 +1369,9 @@ backup.broken:
   zh-TW: 備份的內容有問題（%{error}）
   zh-CN: 备份内容有问题（%{error}）
 settings.density:
-  en: List density
-  zh-TW: 清單密度
-  zh-CN: 列表密度
+  en: Density and scale
+  zh-TW: 密度與縮放
+  zh-CN: 密度与缩放
 settings.tabs:
   en: "Tab position"
   zh-TW: 分頁位置
@@ -1653,9 +1669,9 @@ settings.takeover:
   zh-TW: "用 Arke 開啟資料夾"
   zh-CN: "用 Arke 打开文件夹"
 settings.takeover_desc:
-  en: "Registers Arke as the folder handler for this Windows account. Turn it off to undo it"
-  zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，關閉即還原"
-  zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，关闭即还原"
+  en: "Registers Arke as the folder handler for this Windows account, so \"Show in folder\" in other apps opens Arke too. Turn it off to undo it"
+  zh-TW: "將 Arke 登錄為這個 Windows 帳戶的資料夾開啟程式，其他程式的「在資料夾中顯示」也會開 Arke，關閉即還原"
+  zh-CN: "将 Arke 注册为这个 Windows 账户的文件夹打开程序，其他程序的“在文件夹中显示”也会打开 Arke，关闭即还原"
 settings.single_window:
   en: "Single window"
   zh-TW: "單一視窗"
@@ -2974,6 +2990,226 @@ menu.properties:
   en: Properties
   zh-TW: 內容
   zh-CN: 属性
+props.items_one:
+  en: "%{count} item"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+props.items_other:
+  en: "%{count} items"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+props.n_files_one:
+  en: "%{count} file"
+  zh-TW: "%{count} 個檔案"
+  zh-CN: "%{count} 个文件"
+props.n_files_other:
+  en: "%{count} files"
+  zh-TW: "%{count} 個檔案"
+  zh-CN: "%{count} 个文件"
+props.n_folders_one:
+  en: "%{count} folder"
+  zh-TW: "%{count} 個資料夾"
+  zh-CN: "%{count} 个文件夹"
+props.n_folders_other:
+  en: "%{count} folders"
+  zh-TW: "%{count} 個資料夾"
+  zh-CN: "%{count} 个文件夹"
+props.contains:
+  en: "%{files}, %{folders}"
+  zh-TW: "%{files}、%{folders}"
+  zh-CN: "%{files}、%{folders}"
+props.contains_label:
+  en: Contains
+  zh-TW: 內含
+  zh-CN: 包含
+props.unreadable_one:
+  en: "%{count} item could not be read"
+  zh-TW: "無法讀取 %{count} 個項目"
+  zh-CN: "无法读取 %{count} 个项目"
+props.unreadable_other:
+  en: "%{count} items could not be read"
+  zh-TW: "無法讀取 %{count} 個項目"
+  zh-CN: "无法读取 %{count} 个项目"
+props.bytes:
+  en: "%{size} (%{bytes} bytes)"
+  zh-TW: "%{size}（%{bytes} 位元組）"
+  zh-CN: "%{size}（%{bytes} 字节）"
+props.bytes_only:
+  en: "%{bytes} bytes"
+  zh-TW: "%{bytes} 位元組"
+  zh-CN: "%{bytes} 字节"
+props.at_least:
+  en: "%{size}, at least"
+  zh-TW: "%{size}，至少"
+  zh-CN: "%{size}，至少"
+props.size_on_disk:
+  en: Size on disk
+  zh-TW: 磁碟大小
+  zh-CN: 磁盘大小
+props.accessed:
+  en: Date accessed
+  zh-TW: 存取日期
+  zh-CN: 访问日期
+props.calculating:
+  en: Calculating…
+  zh-TW: 計算中…
+  zh-CN: 正在计算…
+props.stop:
+  en: Stop
+  zh-TW: 停止
+  zh-CN: 停止
+props.read_only:
+  en: Read-only
+  zh-TW: 唯讀
+  zh-CN: 只读
+props.hidden:
+  en: Hidden
+  zh-TW: 隱藏
+  zh-CN: 隐藏
+props.attr_failed:
+  en: "Could not change the attribute: %{error}"
+  zh-TW: "無法變更屬性：%{error}"
+  zh-CN: "无法更改属性：%{error}"
+props.rename_failed:
+  en: "Could not rename: %{error}"
+  zh-TW: "無法重新命名：%{error}"
+  zh-CN: "无法重命名：%{error}"
+props.opens_with:
+  en: Opens with
+  zh-TW: 開啟方式
+  zh-CN: 打开方式
+props.no_app:
+  en: No program
+  zh-TW: 沒有程式
+  zh-CN: 没有程序
+props.change:
+  en: Change…
+  zh-TW: 變更…
+  zh-CN: 更改…
+props.shortcut_target:
+  en: Target
+  zh-TW: 目標
+  zh-CN: 目标
+props.used:
+  en: Used
+  zh-TW: 已使用
+  zh-CN: 已用
+props.free:
+  en: Free
+  zh-TW: 可用
+  zh-CN: 可用
+props.capacity:
+  en: Capacity
+  zh-TW: 容量
+  zh-CN: 容量
+props.file_system:
+  en: File system
+  zh-TW: 檔案系統
+  zh-CN: 文件系统
+props.windows_properties:
+  en: Windows properties…
+  zh-TW: Windows 內容…
+  zh-CN: Windows 属性…
+props.used_of:
+  en: "%{used} used of %{total}"
+  zh-TW: "已使用 %{used}，共 %{total}"
+  zh-CN: "已用 %{used}，共 %{total}"
+props.taken:
+  en: Date taken
+  zh-TW: 拍攝日期
+  zh-CN: 拍摄日期
+props.act_open:
+  en: Open
+  zh-TW: 開啟
+  zh-CN: 打开
+props.act_open_with:
+  en: Open with…
+  zh-TW: 開啟方式…
+  zh-CN: 打开方式…
+props.act_favorite:
+  en: Add to favorites
+  zh-TW: 加入最愛
+  zh-CN: 添加到收藏夹
+props.act_unfavorite:
+  en: Remove from favorites
+  zh-TW: 從最愛移除
+  zh-CN: 从收藏夹移除
+props.act_show:
+  en: Show in folder
+  zh-TW: 在資料夾中顯示
+  zh-CN: 在文件夹中显示
+props.general:
+  en: General
+  zh-TW: 一般
+  zh-CN: 常规
+props.times:
+  en: Time
+  zh-TW: 時間
+  zh-CN: 时间
+props.attributes:
+  en: Attributes and security
+  zh-TW: 屬性與安全性
+  zh-CN: 属性与安全
+props.apply_inside:
+  en: Apply to items inside
+  zh-TW: 套用到內含項目
+  zh-CN: 应用到包含的项目
+props.downloaded:
+  en: Downloaded from the internet
+  zh-TW: 來自網際網路
+  zh-CN: 来自互联网
+props.unblock:
+  en: Unblock
+  zh-TW: 解除封鎖
+  zh-CN: 解除锁定
+props.hash_calculate:
+  en: Calculate
+  zh-TW: 計算
+  zh-CN: 计算
+props.hash_copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+props.cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+props.space:
+  en: Where the space goes
+  zh-TW: 空間用在哪裡
+  zh-CN: 空间用在哪里
+props.cat_code:
+  en: Code and build
+  zh-TW: 程式碼與建置
+  zh-CN: 代码与构建
+props.cat_video:
+  en: Video
+  zh-TW: 影片
+  zh-CN: 视频
+props.cat_images:
+  en: Images
+  zh-TW: 圖片
+  zh-CN: 图片
+props.cat_documents:
+  en: Documents
+  zh-TW: 文件
+  zh-CN: 文档
+props.cat_audio:
+  en: Audio
+  zh-TW: 音訊
+  zh-CN: 音频
+props.cat_archives:
+  en: Archives
+  zh-TW: 壓縮檔
+  zh-CN: 压缩包
+props.cat_other:
+  en: Other
+  zh-TW: 其他
+  zh-CN: 其他
+props.close:
+  en: Close
+  zh-TW: 關閉
+  zh-CN: 关闭
 menu.open_with:
   en: "Open with %{name}"
   zh-TW: "以 %{name} 開啟"
@@ -3049,9 +3285,9 @@ op.paste:
 
 # ─── Ctrl+T
 palette.placeholder:
-  en: Type a folder name or a path
-  zh-TW: 輸入資料夾名稱或路徑
-  zh-CN: 输入文件夹名称或路径
+  en: Type a folder or path, or > for commands
+  zh-TW: 輸入資料夾或路徑，輸入 > 搜尋命令
+  zh-CN: 输入文件夹或路径，输入 > 搜索命令
 palette.current:
   en: New tab here
   zh-TW: 在目前的資料夾開新分頁
@@ -3100,22 +3336,18 @@ split.drop_here:
   zh-CN: "松开即可并排打开“%{name}”"
 
 # ─── Sidebar：釘選、最愛、右鍵選單
-sidebar.pinned:
-  en: Pinned
-  zh-TW: "已釘選"
-  zh-CN: 已固定
+sidebar.favorites:
+  en: Favorites
+  zh-TW: 最愛
+  zh-CN: 收藏夹
 sidebar.pinned_hint:
-  en: "Right-click a folder › Pin to sidebar"
-  zh-TW: 在資料夾上按右鍵 →「釘選到側邊欄」
-  zh-CN: 右键单击文件夹 →“固定到侧边栏”
+  en: "Right-click a folder › Add to favorites"
+  zh-TW: 在資料夾上按右鍵 →「加入最愛」
+  zh-CN: 右键单击文件夹 →“添加到收藏夹”
 sidebar.open_in_new_tab:
   en: Open in new tab
   zh-TW: 在新分頁開啟
   zh-CN: 在新标签页中打开
-sidebar.pin:
-  en: Pin to sidebar
-  zh-TW: 釘選到側邊欄
-  zh-CN: 固定到侧边栏
 sidebar.move_to_list:
   en: Move to the list below
   zh-TW: 移到下面的清單
@@ -3132,10 +3364,6 @@ sidebar.drop_to_list:
   en: "Drop here to add to the list"
   zh-TW: "放到這裡以加入清單"
   zh-CN: "放到这里以加入列表"
-sidebar.unpin:
-  en: Unpin
-  zh-TW: 取消釘選
-  zh-CN: 取消固定
 sidebar.duplicate_tab:
   en: Duplicate tab
   zh-TW: 複製分頁
@@ -3709,14 +3937,14 @@ sidebar.unpin_tab:
   en: Unpin tab
   zh-TW: 取消釘選分頁
   zh-CN: 取消固定标签页
-sidebar.pin_tab_folder:
-  en: Pin folder to sidebar
-  zh-TW: 將資料夾釘選到側邊欄
-  zh-CN: 将文件夹固定到侧边栏
-sidebar.unpin_tab_folder:
-  en: Unpin folder from sidebar
-  zh-TW: 從側邊欄取消釘選資料夾
-  zh-CN: 从侧边栏取消固定文件夹
+sidebar.add_favorite:
+  en: Add to favorites
+  zh-TW: 加入最愛
+  zh-CN: 添加到收藏夹
+sidebar.remove_favorite:
+  en: Remove from favorites
+  zh-TW: 從最愛移除
+  zh-CN: 从收藏夹中移除
 sidebar.drop_to_pin_tab:
   en: Drop here to pin
   zh-TW: 放到這裡以釘選
@@ -4282,9 +4510,9 @@ uninstall.keep:
   zh-TW: "保留我的設定"
   zh-CN: "保留我的设置"
 uninstall.keep_desc:
-  en: "Settings, pinned folders, workspaces and trusted hosts stay for a later reinstall"
-  zh-TW: "設定、釘選的資料夾、工作區和信任的主機都會留著，之後重新安裝可以接著用"
-  zh-CN: "设置、固定的文件夹、工作区和信任的主机会保留，之后重新安装可以继续使用"
+  en: "Settings, favorites, workspaces and trusted hosts stay for a later reinstall"
+  zh-TW: "設定、最愛、工作區和信任的主機都會留著，之後重新安裝可以接著用"
+  zh-CN: "设置、收藏夹、工作区和信任的主机会保留，之后重新安装可以继续使用"
 uninstall.uac_note:
   en: "Windows will ask for administrator approval to remove the search service."
   zh-TW: "移除搜尋服務時，Windows 會要求系統管理員核准。"
@@ -4334,9 +4562,9 @@ uninstall.step_data:
   zh-TW: "搜尋索引、記錄與下載的更新（%{path}）"
   zh-CN: "搜索索引、日志和下载的更新（%{path}）"
 uninstall.step_settings:
-  en: "Settings, pinned folders, workspaces and trusted hosts (%{path})"
-  zh-TW: "設定、釘選的資料夾、工作區與信任的主機（%{path}）"
-  zh-CN: "设置、固定的文件夹、工作区和信任的主机（%{path}）"
+  en: "Settings, favorites, workspaces and trusted hosts (%{path})"
+  zh-TW: "設定、最愛、工作區與信任的主機（%{path}）"
+  zh-CN: "设置、收藏夹、工作区和信任的主机（%{path}）"
 uninstall.step_keep_settings:
   en: "Your settings stay in %{path}"
   zh-TW: "你的設定會留在 %{path}"
@@ -4419,3 +4647,229 @@ report.refresh:
   en: "Refresh"
   zh-TW: "重新整理"
   zh-CN: "刷新"
+
+# ─── Command palette (Ctrl+Shift+P) and Settings > Keyboard shortcuts
+palette.hint_run:
+  en: Run
+  zh-TW: 執行
+  zh-CN: 运行
+settings.shortcuts:
+  en: Keyboard shortcuts
+  zh-TW: 鍵盤快速鍵
+  zh-CN: 键盘快捷键
+shortcuts.search:
+  en: Search commands or keys
+  zh-TW: 搜尋命令或按鍵
+  zh-CN: 搜索命令或按键
+shortcuts.press:
+  en: Press a key (Esc to cancel)
+  zh-TW: 請按下按鍵（Esc 取消）
+  zh-CN: 请按下按键（Esc 取消）
+shortcuts.none:
+  en: Not set
+  zh-TW: 未設定
+  zh-CN: 未设置
+shortcuts.taken:
+  en: "%{key} is already used by %{command}"
+  zh-TW: "%{key} 已被「%{command}」使用"
+  zh-CN: "%{key} 已被“%{command}”使用"
+shortcuts.swap:
+  en: Swap
+  zh-TW: 互換
+  zh-CN: 互换
+shortcuts.cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+shortcuts.reset:
+  en: Reset
+  zh-TW: 還原
+  zh-CN: 还原
+shortcuts.reset_all:
+  en: Reset all
+  zh-TW: 全部還原
+  zh-CN: 全部还原
+cmd.command_palette:
+  en: Show all commands
+  zh-TW: 顯示所有命令
+  zh-CN: 显示所有命令
+cmd.go_to_folder:
+  en: Go to folder
+  zh-TW: 前往資料夾
+  zh-CN: 前往文件夹
+cmd.new_tab:
+  en: New tab
+  zh-TW: 新增分頁
+  zh-CN: 新建标签页
+cmd.close_tab:
+  en: Close tab
+  zh-TW: 關閉分頁
+  zh-CN: 关闭标签页
+cmd.reopen_closed_tab:
+  en: Reopen closed tab
+  zh-TW: 重新開啟已關閉的分頁
+  zh-CN: 重新打开已关闭的标签页
+cmd.next_tab:
+  en: Next tab
+  zh-TW: 下一個分頁
+  zh-CN: 下一个标签页
+cmd.prev_tab:
+  en: Previous tab
+  zh-TW: 上一個分頁
+  zh-CN: 上一个标签页
+cmd.toggle_sync_browsing:
+  en: Synchronized browsing
+  zh-TW: 同步瀏覽
+  zh-CN: 同步浏览
+cmd.compare_folders:
+  en: Compare folders
+  zh-TW: 比較資料夾
+  zh-CN: 比较文件夹
+cmd.toggle_sidebar:
+  en: Collapse or expand the sidebar
+  zh-TW: 收合或展開側邊欄
+  zh-CN: 折叠或展开侧边栏
+cmd.open_workspaces:
+  en: Workspaces
+  zh-TW: 工作區
+  zh-CN: 工作区
+cmd.open_settings:
+  en: Settings
+  zh-TW: 設定
+  zh-CN: 设置
+cmd.go_up:
+  en: Up one level
+  zh-TW: 上一層
+  zh-CN: 上一级
+cmd.go_back:
+  en: Back
+  zh-TW: 上一頁
+  zh-CN: 后退
+cmd.go_forward:
+  en: Forward
+  zh-TW: 下一頁
+  zh-CN: 前进
+cmd.focus_path_bar:
+  en: Edit the path
+  zh-TW: 編輯路徑
+  zh-CN: 编辑路径
+cmd.focus_filter:
+  en: Filter this folder
+  zh-TW: 篩選此資料夾
+  zh-CN: 筛选此文件夹
+cmd.focus_search:
+  en: Search
+  zh-TW: 搜尋
+  zh-CN: 搜索
+cmd.focus_computer_search:
+  en: Search this PC
+  zh-TW: 搜尋這台電腦
+  zh-CN: 搜索这台电脑
+cmd.refresh:
+  en: Refresh
+  zh-TW: 重新整理
+  zh-CN: 刷新
+cmd.toggle_search_mode:
+  en: Switch search mode
+  zh-TW: 切換搜尋模式
+  zh-CN: 切换搜索模式
+cmd.toggle_hidden:
+  en: Show or hide hidden files
+  zh-TW: 顯示或隱藏隱藏檔案
+  zh-CN: 显示或隐藏隐藏文件
+cmd.copy_as_path:
+  en: Copy as path
+  zh-TW: 複製為路徑
+  zh-CN: 复制为路径
+cmd.add_to_shelf:
+  en: Add to shelf
+  zh-TW: 加到暫存架
+  zh-CN: 添加到暂存架
+cmd.copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+cmd.cut:
+  en: Cut
+  zh-TW: 剪下
+  zh-CN: 剪切
+cmd.paste:
+  en: Paste
+  zh-TW: 貼上
+  zh-CN: 粘贴
+cmd.delete:
+  en: Delete
+  zh-TW: 刪除
+  zh-CN: 删除
+cmd.delete_permanently:
+  en: Delete permanently
+  zh-TW: 永久刪除
+  zh-CN: 永久删除
+cmd.rename:
+  en: Rename
+  zh-TW: 重新命名
+  zh-CN: 重命名
+cmd.new_folder:
+  en: New folder
+  zh-TW: 新增資料夾
+  zh-CN: 新建文件夹
+cmd.undo:
+  en: Undo
+  zh-TW: 復原
+  zh-CN: 撤销
+cmd.redo:
+  en: Redo
+  zh-TW: 重做
+  zh-CN: 重做
+cmd.view_details:
+  en: Details view
+  zh-TW: 詳細資料檢視
+  zh-CN: 详细信息视图
+cmd.view_icons_extra_large:
+  en: Extra large icons view
+  zh-TW: 超大圖示檢視
+  zh-CN: 超大图标视图
+cmd.view_icons:
+  en: Large icons view
+  zh-TW: 大圖示檢視
+  zh-CN: 大图标视图
+cmd.view_icons_medium:
+  en: Medium icons view
+  zh-TW: 中圖示檢視
+  zh-CN: 中图标视图
+cmd.view_icons_small:
+  en: Small icons view
+  zh-TW: 小圖示檢視
+  zh-CN: 小图标视图
+cmd.view_columns:
+  en: Columns view
+  zh-TW: 欄位檢視
+  zh-CN: 分栏视图
+cmd.toggle_tree:
+  en: Expand folders in the list
+  zh-TW: 在清單中展開資料夾
+  zh-CN: 在列表中展开文件夹
+cmd.select_all:
+  en: Select all
+  zh-TW: 全選
+  zh-CN: 全选
+cmd.open_in_new_tab:
+  en: Open in new tab
+  zh-TW: 在新分頁開啟
+  zh-CN: 在新标签页中打开
+cmd.open_location:
+  en: Open file location
+  zh-TW: 開啟檔案位置
+  zh-CN: 打开文件位置
+cmd.focus_other_pane:
+  en: Switch to the other pane
+  zh-TW: 切換到另一側窗格
+  zh-CN: 切换到另一侧窗格
+cmd.copy_to_peer:
+  en: Copy to the other pane
+  zh-TW: 複製到另一側窗格
+  zh-CN: 复制到另一侧窗格
+cmd.move_to_peer:
+  en: Move to the other pane
+  zh-TW: 移動到另一側窗格
+  zh-CN: 移动到另一侧窗格

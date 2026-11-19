@@ -44,6 +44,8 @@ features = [
     "Data_Pdf",
     # Cloud sync roots (StorageProviderSyncRootManager)
     "Foundation_Collections",
+    # Skip background update downloads on a metered connection (ConnectionCost)
+    "Networking_Connectivity",
     "Storage",
     "Storage_Provider",
     "Storage_Streams",
@@ -104,8 +106,6 @@ features = [
     "Wdk_System_SystemServices",
     # System image list (IImageList) for drag images
     "Win32_UI_Controls",
-    # Drag and double-click distances at the window's monitor DPI (GetSystemMetricsForDpi)
-    "Win32_UI_HiDpi",
     # Re-enable Arke's window if the file dialog process dies while modal (EnableWindow)
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

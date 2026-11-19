@@ -116,6 +116,11 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
     pub(crate) platform_window_handle: HWND,
     pub(crate) parent_hwnd: Option<HWND>,
+    /// Arke: a `WindowKind::AnchoredPopup` (a menu level). It is owned by its parent window,
+    /// never activated, and never takes focus.
+    pub(crate) popup: bool,
+    /// Arke: mouse input goes to the window below this popup (see `set_popup_mouse_passthrough`).
+    pub(crate) mouse_passthrough: Cell<bool>,
 }
 
 impl WindowsWindowState {
@@ -311,6 +316,8 @@ impl WindowsWindowInner {
             platform_window_handle: context.platform_window_handle,
             system_settings: WindowsSystemSettings::new(),
             parent_hwnd: context.parent_hwnd,
+            popup: context.popup,
+            mouse_passthrough: Cell::new(false),
         }))
     }
 
@@ -446,19 +453,28 @@ struct WindowCreateContext {
     draw_coordinator: Rc<DrawCoordinator>,
     vsync_wake: Arc<VSyncWake>,
     parent_hwnd: Option<HWND>,
+    popup: bool,
 }
 
 impl WindowsWindow {
+    /// `popup_owner`: for a `WindowKind::AnchoredPopup`, the window of `PopupOptions::parent`.
     pub(crate) fn new(
         handle: AnyWindowHandle,
         params: WindowParams,
         creation_info: WindowCreationInfo,
+        popup_owner: Option<HWND>,
     ) -> Result<Self> {
-        // Native popups are not implemented on Windows yet. Rejecting lets callers fall back to
-        // gpui's in-window popovers.
-        if let WindowKind::AnchoredPopup(_) = params.kind {
-            return Err(popup::PopupNotSupportedError.into());
-        }
+        // Arke: a popup is an owned, non-activating `WS_POPUP` placed at its anchor (see
+        // `popup_rect`). Upstream rejects popups on Windows.
+        let popup = match (&params.kind, popup_owner) {
+            (WindowKind::AnchoredPopup(options), Some(owner)) => {
+                Some((owner, popup_rect(owner, options, params.bounds.size)))
+            }
+            (WindowKind::AnchoredPopup(_), None) => {
+                return Err(popup::PopupNotSupportedError.into());
+            }
+            _ => None,
+        };
 
         let WindowCreationInfo {
             icon,
@@ -504,7 +520,11 @@ impl WindowsWindow {
                 .unwrap_or(""),
         );
 
-        let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
+        let (mut dwexstyle, dwstyle) = if popup.is_some() {
+            // Owned by its parent, so it stays above it without being topmost over other
+            // programs; no taskbar button or Alt+Tab entry; never activated.
+            (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, WS_POPUP)
+        } else if params.kind == WindowKind::PopUp {
             (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WINDOW_STYLE(0x0))
         } else {
             let mut dwstyle = WS_SYSMENU;
@@ -530,7 +550,15 @@ impl WindowsWindow {
         }
 
         let hinstance = get_module_handle();
-        let display = if let Some(display_id) = params.display_id {
+        let popup_display = popup.map(|(_, rect)| {
+            let corner = POINT {
+                x: rect.left,
+                y: rect.top,
+            };
+            let monitor = unsafe { MonitorFromPoint(corner, MONITOR_DEFAULTTONEAREST) };
+            WindowsDisplay::display_id_for_monitor(monitor)
+        });
+        let display = if let Some(display_id) = popup_display.or(params.display_id) {
             WindowsDisplay::new(display_id)
         } else {
             None
@@ -543,9 +571,9 @@ impl WindowsWindow {
             handle,
             hide_title_bar,
             display,
-            is_movable: params.is_movable,
-            is_resizable: params.is_resizable,
-            is_minimizable: params.is_minimizable,
+            is_movable: params.is_movable && popup.is_none(),
+            is_resizable: params.is_resizable && popup.is_none(),
+            is_minimizable: params.is_minimizable && popup.is_none(),
             min_size: params.window_min_size,
             executor,
             current_cursor,
@@ -561,18 +589,30 @@ impl WindowsWindow {
             draw_coordinator,
             vsync_wake,
             parent_hwnd,
+            popup: popup.is_some(),
         };
+        // A popup is made at its place, so it gets that monitor's DPI from the start.
+        let (x, y, width, height) = match popup {
+            Some((_, rect)) => (
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ),
+            None => (CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT),
+        };
+        let owner = popup.map(|(owner, _)| owner).or(parent_hwnd);
         let creation_result = unsafe {
             CreateWindowExW(
                 dwexstyle,
                 WINDOW_CLASS_NAME,
                 &window_name,
                 dwstyle,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                parent_hwnd,
+                x,
+                y,
+                width,
+                height,
+                owner,
                 None,
                 Some(hinstance.into()),
                 Some(&context as *const _ as *const _),
@@ -584,6 +624,17 @@ impl WindowsWindow {
         let this = context.inner.take().transpose()?;
         let hwnd = creation_result?;
         let this = this.unwrap();
+
+        if popup.is_some() {
+            set_non_rude_hwnd(hwnd, true);
+            configure_dwm_dark_mode(hwnd, appearance);
+            this.state.border_offset.update(hwnd)?;
+            if params.show {
+                // Returns whether it was visible before, not an error.
+                let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+            }
+            return Ok(Self(this));
+        }
 
         register_drag_drop(&this)?;
         set_non_rude_hwnd(hwnd, true);
@@ -639,7 +690,10 @@ impl Drop for WindowsWindow {
                 this.dialog_owner.when_idle().await;
                 let handle = this.hwnd;
                 unsafe {
-                    RevokeDragDrop(handle).log_err();
+                    // Arke: popups take no drops (see `WindowsWindow::new`).
+                    if !this.popup {
+                        RevokeDragDrop(handle).log_err();
+                    }
                     DestroyWindow(handle).log_err();
                 }
             })
@@ -830,6 +884,11 @@ impl PlatformWindow for WindowsWindow {
 
     fn activate(&self) {
         let hwnd = self.0.hwnd;
+        if self.0.popup {
+            // Arke: a popup is shown, never activated; focus stays in its parent.
+            unsafe { ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE).ok().log_err() };
+            return;
+        }
         let this = self.0.clone();
         self.0
             .executor
@@ -1563,6 +1622,17 @@ unsafe extern "system" fn window_procedure(
     result
 }
 
+/// Arke: lets mouse input through a popup (`WindowKind::AnchoredPopup`) to the window below it in
+/// this thread, as while a closed menu fades out, or stops letting it through. `hwnd` is the
+/// popup's window handle; other windows are left alone.
+pub fn set_popup_mouse_passthrough(hwnd: isize, passthrough: bool) {
+    if let Some(window) = window_from_hwnd(HWND(hwnd as _))
+        && window.popup
+    {
+        window.mouse_passthrough.set(passthrough);
+    }
+}
+
 pub(crate) fn window_from_hwnd(hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {
     if hwnd.is_invalid() {
         return None;
@@ -1647,6 +1717,56 @@ fn calculate_client_rect(
     Bounds {
         origin: logical_point(left as f32, top as f32, scale_factor),
         size: physical_size.to_pixels(scale_factor),
+    }
+}
+
+/// Arke: where a popup is made, in physical screen pixels: the `anchor` point of `anchor_rect`
+/// (in the owner's client area, logical pixels) plus `offset`, extending toward `gravity`. `size`
+/// is in logical pixels of the monitor at that point. `constraint_adjustment` is not applied:
+/// Arke places its menus itself against the monitor's work area and moves them there with
+/// `SetWindowPos`.
+fn popup_rect(owner: HWND, options: &popup::PopupOptions, size: Size<Pixels>) -> RECT {
+    use popup::{PopupAnchor as A, PopupGravity as G};
+    let owner_scale = unsafe { GetDpiForWindow(owner) } as f32 / USER_DEFAULT_SCREEN_DPI as f32;
+    let mut origin = POINT::default();
+    unsafe { ClientToScreen(owner, &mut origin).ok().log_err() };
+    let rect = options.anchor_rect;
+    let center = rect.center();
+    let (ax, ay) = match options.anchor {
+        A::Center => (center.x, center.y),
+        A::Top => (center.x, rect.top()),
+        A::Bottom => (center.x, rect.bottom()),
+        A::Left => (rect.left(), center.y),
+        A::Right => (rect.right(), center.y),
+        A::TopLeft => (rect.left(), rect.top()),
+        A::BottomLeft => (rect.left(), rect.bottom()),
+        A::TopRight => (rect.right(), rect.top()),
+        A::BottomRight => (rect.right(), rect.bottom()),
+    };
+    let x = origin.x + ((ax + options.offset.x).as_f32() * owner_scale).round() as i32;
+    let y = origin.y + ((ay + options.offset.y).as_f32() * owner_scale).round() as i32;
+    let monitor = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
+    let (mut dpi_x, mut dpi_y) = (USER_DEFAULT_SCREEN_DPI, USER_DEFAULT_SCREEN_DPI);
+    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.log_err();
+    let scale = dpi_x as f32 / USER_DEFAULT_SCREEN_DPI as f32;
+    let width = (size.width.as_f32() * scale).round() as i32;
+    let height = (size.height.as_f32() * scale).round() as i32;
+    let (left, top) = match options.gravity {
+        G::Center => (x - width / 2, y - height / 2),
+        G::Top => (x - width / 2, y - height),
+        G::Bottom => (x - width / 2, y),
+        G::Left => (x - width, y - height / 2),
+        G::Right => (x, y - height / 2),
+        G::TopLeft => (x - width, y - height),
+        G::BottomLeft => (x - width, y),
+        G::TopRight => (x, y - height),
+        G::BottomRight => (x, y),
+    };
+    RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
     }
 }
 

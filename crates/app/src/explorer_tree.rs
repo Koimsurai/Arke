@@ -159,9 +159,9 @@ impl Explorer {
     /// Width of the space before the Name text taken by the chevron and the icon, for the header.
     pub(super) fn name_lead_width(&self) -> gpui::Pixels {
         if self.tree_active() {
-            theme::TREE_CHEVRON + theme::S_4 + theme::ICON
+            theme::tree_chevron() + theme::s_4() + theme::icon()
         } else {
-            theme::ICON
+            theme::icon()
         }
     }
 
@@ -185,11 +185,11 @@ impl Explorer {
                     "tree-chevron".into(),
                     u64::try_from(ix).unwrap_or_default(),
                 ))
-                .size(theme::TREE_CHEVRON)
+                .size(theme::tree_chevron())
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::R_4)
+                .rounded(theme::r_4())
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::wash_strong()))
                 // Toggles without selecting the row or starting a drag.
@@ -204,7 +204,7 @@ impl Explorer {
                 .child(
                     svg()
                         .path(Icon::ChevronRight.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(if row.loading {
                             theme::text_disabled()
                         } else {
@@ -223,14 +223,14 @@ impl Explorer {
             .flex()
             .flex_none()
             .items_center()
-            .pl(theme::TREE_INDENT * f32::from(row.depth))
+            .pl(theme::tree_indent() * f32::from(row.depth))
             .child(
                 div()
-                    .size(theme::TREE_CHEVRON)
+                    .size(theme::tree_chevron())
                     .flex_none()
                     .children(chevron),
             )
-            .child(div().w(theme::S_4).flex_none())
+            .child(div().w(theme::s_4()).flex_none())
             .child(visual)
             .into_any_element()
     }

@@ -196,12 +196,12 @@ fn toggle(key: &'static str) -> impl Fn(&mut Settings) + 'static {
 fn pref_row(ix: usize, pref: &'static MenuPref, s: &Settings) -> AnyElement {
     let on = !hidden(s, pref.key);
     div()
-        .min_h(super::settings_panel::CARD_MIN_H)
-        .px(theme::S_16)
-        .py(theme::S_12)
+        .min_h(super::settings_panel::card_min_h())
+        .px(theme::s_16())
+        .py(theme::s_12())
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .when(ix > 0, |d| d.border_t_1().border_color(theme::line()))
         .child(super::settings_panel::row_icon(
             pref.icon,
@@ -217,7 +217,7 @@ fn pref_row(ix: usize, pref: &'static MenuPref, s: &Settings) -> AnyElement {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(theme::S_2)
+                .gap(theme::s_2())
                 .child(
                     div()
                         .when(!on, |d| d.text_color(theme::text_muted()))
@@ -225,7 +225,7 @@ fn pref_row(ix: usize, pref: &'static MenuPref, s: &Settings) -> AnyElement {
                 )
                 .children(pref.note.map(|note| {
                     div()
-                        .text_size(theme::FS_12)
+                        .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
                         .child(t!(note).into_owned())
                 })),
@@ -243,15 +243,15 @@ fn reset_button() -> AnyElement {
     div()
         .id("menu-pref-reset")
         .a11y_button(t!("menupref.reset"))
-        .h(theme::H_CTL_SM)
-        .px(theme::S_12)
+        .h(theme::h_ctl_sm())
+        .px(theme::s_12())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .border_color(theme::line_strong())
         .cursor_pointer()
-        .text_size(theme::FS_12)
+        .text_size(theme::fs_12())
         .hover(|s| s.bg(theme::wash()))
         .child(t!("menupref.reset").to_string())
         .on_click(|_, _, cx| {
@@ -275,10 +275,10 @@ pub(super) fn menu_section(
         .collect();
     let list = div()
         .flex_1()
-        .min_w(px(300.))
+        .min_w(crate::theme::scaled_px(300.))
         .flex()
         .flex_col()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .bg(theme::card())
         .border_1()
         .border_color(theme::line())
@@ -286,13 +286,13 @@ pub(super) fn menu_section(
         .children(rows);
     let preview = div()
         .flex_none()
-        .w(px(260.))
+        .w(crate::theme::scaled_px(260.))
         .flex()
         .flex_col()
-        .gap(theme::S_8)
+        .gap(theme::s_8())
         .child(
             div()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .text_color(theme::text_subtle())
                 .child(t!("menupref.preview").to_string()),
         )
@@ -302,11 +302,11 @@ pub(super) fn menu_section(
         div()
             .flex()
             .items_center()
-            .gap(theme::S_12)
+            .gap(theme::s_12())
             .child(
                 div()
                     .flex_1()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(t!("menupref.intro").to_string()),
             )
@@ -316,7 +316,7 @@ pub(super) fn menu_section(
             .flex()
             .flex_wrap()
             .items_start()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .child(list)
             .child(preview)
             .into_any_element(),
@@ -336,15 +336,15 @@ fn pinned_card(s: &Settings) -> AnyElement {
             let remove = key.clone();
             let button = div()
                 .id(("menu-pinned-remove", ix))
-                .h(theme::H_CTL_SM)
-                .px(theme::S_12)
+                .h(theme::h_ctl_sm())
+                .px(theme::s_12())
                 .flex()
                 .items_center()
-                .rounded(theme::R_8)
+                .rounded(theme::r_8())
                 .border_1()
                 .border_color(theme::line_strong())
                 .cursor_pointer()
-                .text_size(theme::FS_12)
+                .text_size(theme::fs_12())
                 .hover(|s| s.bg(theme::wash()))
                 .child(t!("openwith.remove").to_string())
                 .on_click(move |_: &ClickEvent, _, cx: &mut App| {
@@ -407,15 +407,15 @@ fn open_with_card(
         let remove = exe.clone();
         let button = div()
             .id(EXTRA_IDS[ix])
-            .h(theme::H_CTL_SM)
-            .px(theme::S_12)
+            .h(theme::h_ctl_sm())
+            .px(theme::s_12())
             .flex()
             .items_center()
-            .rounded(theme::R_8)
+            .rounded(theme::r_8())
             .border_1()
             .border_color(theme::line_strong())
             .cursor_pointer()
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .hover(|s| s.bg(theme::wash()))
             .child(t!("openwith.remove").to_string())
             .on_click(move |_: &ClickEvent, _, cx: &mut App| {
@@ -434,12 +434,12 @@ fn open_with_card(
     }
     let focused = input.focus_handle(cx).is_focused(window);
     let field = div()
-        .mt(theme::S_4)
-        .h(theme::H_CTL)
-        .px(theme::S_8)
+        .mt(theme::s_4())
+        .h(theme::h_ctl())
+        .px(theme::s_8())
         .flex()
         .items_center()
-        .rounded(theme::R_8)
+        .rounded(theme::r_8())
         .border_1()
         .when(focused, |d| {
             d.bg(theme::surface()).border_color(theme::signal_line())
@@ -452,12 +452,12 @@ fn open_with_card(
     // Last row: paste a path, or browse for the program.
     rows.push(
         div()
-            .min_h(super::settings_panel::CARD_MIN_H)
-            .px(theme::S_16)
-            .py(theme::S_12)
+            .min_h(super::settings_panel::card_min_h())
+            .px(theme::s_16())
+            .py(theme::s_12())
             .flex()
             .items_center()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .child(super::settings_panel::row_icon(
                 Icon::Plus,
                 theme::text_muted(),
@@ -488,27 +488,27 @@ fn app_row(
 ) -> AnyElement {
     let icon = match icon {
         Some(image) => div()
-            .w(super::settings_panel::ICON_COL)
+            .w(super::settings_panel::icon_col())
             .flex_none()
             .flex()
             .justify_center()
-            .child(img(image).size(theme::ICON).flex_none()),
+            .child(img(image).size(theme::icon()).flex_none()),
         None => super::settings_panel::row_icon(Icon::OpenWith, theme::text_muted()),
     };
     div()
-        .min_h(super::settings_panel::CARD_MIN_H)
-        .px(theme::S_16)
-        .py(theme::S_12)
+        .min_h(super::settings_panel::card_min_h())
+        .px(theme::s_16())
+        .py(theme::s_12())
         .flex()
         .items_center()
-        .gap(theme::S_16)
+        .gap(theme::s_16())
         .child(icon)
         .child(super::settings_panel::row_text(
             name.into(),
             path.map(|p| {
                 div()
                     .truncate()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(p)
                     .into_any_element()
@@ -593,7 +593,11 @@ fn preview_menu(s: &Settings) -> AnyElement {
             t!("menu.search_in_folder").into_owned(),
         ),
         (None, None, String::new()),
-        (Some("pin"), Some(Icon::Pin), t!("sidebar.pin").into_owned()),
+        (
+            Some("pin"),
+            Some(Icon::Pin),
+            t!("sidebar.add_favorite").into_owned(),
+        ),
         (
             Some("terminal"),
             Some(Icon::Terminal),
@@ -670,31 +674,36 @@ fn preview_menu(s: &Settings) -> AnyElement {
     let items = kept.into_iter().map(|((icon, image), text, separator)| {
         if separator {
             return div()
-                .my(theme::S_4)
-                .mx(theme::S_8)
+                .my(theme::s_4())
+                .mx(theme::s_8())
                 .h(px(1.))
                 .bg(theme::line())
                 .into_any_element();
         }
         let is_more = more && text == t!("menu.more_options");
         div()
-            .h(px(30.))
-            .mx(theme::S_4)
-            .px(theme::S_8)
+            .h(crate::theme::scaled_px(30.))
+            .mx(theme::s_4())
+            .px(theme::s_8())
             .flex()
             .items_center()
-            .gap(theme::S_8)
-            .rounded(theme::R_4)
-            .text_size(theme::FS_12)
-            .child(div().size(theme::ICON_SM).flex_none().map(|d| match image {
-                Some(image) => d.child(img(image).size(theme::ICON_SM)),
-                None => d.children(icon.map(|i| {
-                    svg()
-                        .path(i.path())
-                        .size(theme::ICON_SM)
-                        .text_color(theme::text_muted())
-                })),
-            }))
+            .gap(theme::s_8())
+            .rounded(theme::r_4())
+            .text_size(theme::fs_12())
+            .child(
+                div()
+                    .size(theme::icon_sm())
+                    .flex_none()
+                    .map(|d| match image {
+                        Some(image) => d.child(img(image).size(theme::icon_sm())),
+                        None => d.children(icon.map(|i| {
+                            svg()
+                                .path(i.path())
+                                .size(theme::icon_sm())
+                                .text_color(theme::text_muted())
+                        })),
+                    }),
+            )
             .child(
                 div()
                     .flex_1()
@@ -706,7 +715,7 @@ fn preview_menu(s: &Settings) -> AnyElement {
                 d.child(
                     svg()
                         .path(Icon::ChevronRight.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(theme::text_subtle()),
                 )
             })
@@ -714,29 +723,29 @@ fn preview_menu(s: &Settings) -> AnyElement {
     });
     // The icon button row at the bottom (cut, copy, rename, delete) is always shown.
     let actions = div()
-        .mt(theme::S_4)
-        .mx(theme::S_4)
-        .pt(theme::S_4)
+        .mt(theme::s_4())
+        .mx(theme::s_4())
+        .pt(theme::s_4())
         .border_t_1()
         .border_color(theme::line())
         .flex()
         .justify_around()
         .children([Icon::Cut, Icon::Copy, Icon::Rename, Icon::Trash].map(|i| {
             div()
-                .size(px(28.))
+                .size(crate::theme::scaled_px(28.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .child(
                     svg()
                         .path(i.path())
-                        .size(theme::ICON_SM)
+                        .size(theme::icon_sm())
                         .text_color(theme::text_muted()),
                 )
         }));
     div()
-        .py(theme::S_4)
-        .rounded(theme::R_12)
+        .py(theme::s_4())
+        .rounded(theme::r_12())
         .bg(theme::overlay())
         .shadow(theme::elev_2())
         .border_1()

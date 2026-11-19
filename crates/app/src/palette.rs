@@ -10,6 +10,9 @@
 //!
 //! Finding files (including this PC) is the search box's job (`explorer_scope.rs`); this is
 //! locations only.
+//!
+//! Ctrl+Shift+P opens the same box with ">" typed, which makes it search commands (`commands.rs`)
+//! instead; Enter runs the highlighted one. Deleting the ">" goes back to folders.
 
 use rust_i18n::t;
 use std::path::PathBuf;
@@ -18,7 +21,7 @@ use std::sync::Arc;
 use arke_core::filter::rank_paths;
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
-    KeyBinding, SharedString, StyledText, Subscription, Window, actions, div, prelude::*, px, svg,
+    KeyBinding, SharedString, StyledText, Subscription, Window, actions, div, prelude::*, svg,
 };
 
 use crate::a11y::A11yExt as _;
@@ -32,6 +35,8 @@ actions!(palette, [PaletteUp, PaletteDown, PaletteSplit]);
 const CONTEXT: &str = "LocationPalette";
 /// Max rows
 const MAX_ROWS: usize = 8;
+/// Max rows when searching commands
+const COMMAND_ROWS: usize = 10;
 
 pub(crate) fn bind_keys(cx: &mut App) {
     let ctx = Some(CONTEXT);
@@ -49,6 +54,8 @@ pub(crate) enum Target {
     Tab(usize),
     /// Open a saved workspace by name
     Workspace(String),
+    /// Run a command (`commands.rs` id)
+    Command(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +66,16 @@ pub(crate) enum Source {
     Recent,
     Place,
     Workspace,
+    Command,
+}
+
+/// A command the palette can run, in the order to list them (recent first).
+#[derive(Clone, Debug)]
+pub(crate) struct Command {
+    pub(crate) id: &'static str,
+    pub(crate) label: String,
+    /// Its key, as shown
+    pub(crate) shortcut: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,12 +99,17 @@ impl EventEmitter<PaletteEvent> for LocationPalette {}
 struct Row {
     candidate: Candidate,
     highlights: Vec<std::ops::Range<usize>>,
+    /// Commands: the key that runs it
+    shortcut: Option<String>,
 }
 
 pub(crate) struct LocationPalette {
     input: Entity<TextInput>,
     current: PathBuf,
     candidates: Vec<Candidate>,
+    commands: Vec<Command>,
+    /// The text starts with ">": rows are commands.
+    command_mode: bool,
     shell: Arc<dyn Shell>,
     rows: Vec<Row>,
     pub(crate) highlighted: usize,
@@ -98,6 +120,7 @@ impl LocationPalette {
     pub(crate) fn new(
         current: PathBuf,
         candidates: Vec<Candidate>,
+        commands: Vec<Command>,
         shell: Arc<dyn Shell>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -115,6 +138,8 @@ impl LocationPalette {
             input,
             current,
             candidates,
+            commands,
+            command_mode: false,
             shell,
             rows: Vec::new(),
             highlighted: 0,
@@ -132,9 +157,55 @@ impl LocationPalette {
             .collect()
     }
 
+    /// Switches to commands: ">" in the box, as if it were typed.
+    pub(crate) fn enter_commands(&mut self, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.set_text(">", cx));
+        self.refresh(cx);
+    }
+
+    /// Tests: the key shown on each row.
+    #[cfg(test)]
+    pub(crate) fn row_shortcuts(&self) -> Vec<Option<String>> {
+        self.rows.iter().map(|r| r.shortcut.clone()).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_commands(&self) -> bool {
+        self.command_mode
+    }
+
+    /// Rows for the text after ">": commands matching it, the ones run lately first.
+    fn refresh_commands(&mut self, query: &str, cx: &mut Context<Self>) {
+        let labels: Vec<String> = self.commands.iter().map(|c| c.label.clone()).collect();
+        self.rows = rank_paths(&labels, query)
+            .into_iter()
+            .take(COMMAND_ROWS)
+            .map(|m| {
+                let command = &self.commands[m.index];
+                Row {
+                    candidate: Candidate {
+                        label: command.label.clone(),
+                        icon: None,
+                        target: Target::Command(command.id),
+                        source: Source::Command,
+                    },
+                    highlights: m.highlights,
+                    shortcut: command.shortcut.clone(),
+                }
+            })
+            .collect();
+        self.highlighted = 0;
+        cx.notify();
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let query = self.input.read(cx).committed_text();
         let query = query.trim();
+        self.command_mode = query.starts_with('>');
+        if let Some(rest) = query.strip_prefix('>') {
+            self.refresh_commands(rest.trim(), cx);
+            return;
+        }
         let mut rows = Vec::new();
         if query.is_empty() {
             rows.push(Row {
@@ -145,6 +216,7 @@ impl LocationPalette {
                     source: Source::Current,
                 },
                 highlights: Vec::new(),
+                shortcut: None,
             });
         } else if looks_like_path(query) {
             let expanded = self.shell.expand_env(query);
@@ -157,6 +229,7 @@ impl LocationPalette {
                         source: Source::Typed,
                     },
                     highlights: Vec::new(),
+                    shortcut: None,
                 });
             }
         }
@@ -167,6 +240,7 @@ impl LocationPalette {
                 .map(|m| Row {
                     candidate: self.candidates[m.index].clone(),
                     highlights: m.highlights,
+                    shortcut: None,
                 })
                 .take(MAX_ROWS.saturating_sub(rows.len())),
         );
@@ -207,10 +281,16 @@ impl LocationPalette {
             Source::Recent => (Icon::Refresh, t!("palette.recent")),
             Source::Place => (Icon::Drive, t!("palette.place")),
             Source::Workspace => (Icon::Workspaces, t!("palette.workspace")),
+            Source::Command => (Icon::Menu, std::borrow::Cow::Borrowed("")),
+        };
+        // Commands show their key where the others show what kind of place they are.
+        let tag = match &row.shortcut {
+            Some(key) => std::borrow::Cow::Owned(key.clone()),
+            None => tag,
         };
         let icon = crate::assets::tinted(
             row.candidate.icon.unwrap_or(icon),
-            theme::ICON,
+            theme::icon(),
             theme::text_muted(),
         );
         let mark = HighlightStyle {
@@ -219,7 +299,7 @@ impl LocationPalette {
             ..HighlightStyle::default()
         };
         let (name, parent) = row_text(row, mark);
-        let height = theme::S_32 + theme::S_4;
+        let height = theme::s_32() + theme::s_4();
         div()
             .id(("palette-row", ix))
             .a11y_lazy(gpui::Role::ListBoxOption, || {
@@ -229,12 +309,12 @@ impl LocationPalette {
             .aria_position_in_set(ix)
             .relative()
             .h(height)
-            .mx(theme::S_4)
-            .px(theme::S_12)
+            .mx(theme::s_4())
+            .px(theme::s_12())
             .flex()
             .items_center()
-            .gap(theme::S_12)
-            .rounded(theme::R_8)
+            .gap(theme::s_12())
+            .rounded(theme::r_8())
             .cursor_pointer()
             // The panel owns the keyboard, so the highlighted row looks like a focused list's
             // selection: the accent wash.
@@ -247,7 +327,7 @@ impl LocationPalette {
                     .min_w_0()
                     .flex()
                     .items_baseline()
-                    .gap(theme::S_8)
+                    .gap(theme::s_8())
                     .child(
                         div()
                             .flex_shrink(1.)
@@ -265,7 +345,7 @@ impl LocationPalette {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis_start()
-                            .text_size(theme::FS_12)
+                            .text_size(theme::fs_12())
                             .text_color(theme::text_subtle())
                             .child(parent)
                     })),
@@ -273,7 +353,7 @@ impl LocationPalette {
             .child(
                 div()
                     .flex_none()
-                    .text_size(theme::FS_12)
+                    .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(tag.to_string()),
             )
@@ -286,17 +366,17 @@ impl LocationPalette {
 
 impl LocationPalette {
     /// Footer: key hints, plus a pointer to where file search lives.
-    fn render_footer() -> impl IntoElement {
+    fn render_footer(commands: bool) -> impl IntoElement {
         let hint = |key: &'static str, text: String| {
             div()
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(theme::S_6)
+                .gap(theme::s_6())
                 .child(
                     div()
-                        .px(theme::S_4)
-                        .rounded(theme::R_4)
+                        .px(theme::s_4())
+                        .rounded(theme::r_4())
                         .border_1()
                         .border_color(theme::line_strong())
                         .child(key),
@@ -304,27 +384,39 @@ impl LocationPalette {
                 .child(text)
         };
         div()
-            .h(theme::S_32 + theme::S_4)
-            .px(theme::S_16)
+            .h(theme::s_32() + theme::s_4())
+            .px(theme::s_16())
             .flex()
             .items_center()
-            .gap(theme::S_16)
+            .gap(theme::s_16())
             .border_t_1()
             .border_color(theme::line())
-            .text_size(theme::FS_12)
+            .text_size(theme::fs_12())
             .text_color(theme::text_subtle())
-            .child(hint("Enter", t!("palette.hint_open").to_string()))
-            .child(hint("Shift Enter", t!("palette.hint_split").to_string()))
+            .child(hint(
+                "Enter",
+                if commands {
+                    t!("palette.hint_run")
+                } else {
+                    t!("palette.hint_open")
+                }
+                .to_string(),
+            ))
+            .when(!commands, |d| {
+                d.child(hint("Shift Enter", t!("palette.hint_split").to_string()))
+            })
             .child(hint("Esc", t!("palette.hint_close").to_string()))
             // File search is in the search box at the top right.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_right()
-                    .child(t!("palette.find_files_hint").to_string()),
-            )
+            .when(!commands, |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_right()
+                        .child(t!("palette.find_files_hint").to_string()),
+                )
+            })
     }
 }
 
@@ -332,6 +424,9 @@ impl LocationPalette {
 /// without scanning a long path.
 fn row_text(row: &Row, mark: HighlightStyle) -> (StyledText, Option<StyledText>) {
     let label = &row.candidate.label;
+    if row.candidate.source == Source::Command {
+        return (styled(label, 0..label.len(), &row.highlights, mark), None);
+    }
     let (name_at, parent_end) = split_label(label);
     let parent = (parent_end > 0).then(|| {
         let mut text = label[..parent_end].to_owned();
@@ -423,32 +518,32 @@ impl Render for LocationPalette {
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::split))
-            .w(px(640.))
+            .w(crate::theme::scaled_px(640.))
             .flex()
             .flex_col()
-            .rounded(theme::R_12)
+            .rounded(theme::r_12())
             .bg(theme::overlay())
             .shadow(theme::elev_3())
             .overflow_hidden()
             .ui_font()
-            .text_size(theme::FS_14)
+            .text_size(theme::fs_14())
             .text_color(theme::text())
             // Clicks on the panel don't close it (only the backdrop does).
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .h(px(52.))
-                    .px(theme::S_16)
+                    .h(crate::theme::scaled_px(52.))
+                    .px(theme::s_16())
                     .flex()
                     .items_center()
-                    .gap(theme::S_12)
-                    .text_size(theme::FS_15)
+                    .gap(theme::s_12())
+                    .text_size(theme::fs_15())
                     .border_b_1()
                     .border_color(theme::line())
                     .child(
                         svg()
                             .path(Icon::Search.path())
-                            .size(theme::ICON)
+                            .size(theme::icon())
                             .flex_none()
                             .text_color(theme::text_subtle()),
                     )
@@ -459,14 +554,14 @@ impl Render for LocationPalette {
                     .id("palette-results")
                     .role(gpui::Role::ListBox)
                     .aria_size_of_set(count)
-                    .py(theme::S_4)
+                    .py(theme::s_4())
                     .flex()
                     .flex_col()
                     .when(rows.is_empty(), |d| {
                         d.child(
                             div()
-                                .h(theme::S_32 + theme::S_4)
-                                .px(theme::S_16)
+                                .h(theme::s_32() + theme::s_4())
+                                .px(theme::s_16())
                                 .flex()
                                 .items_center()
                                 .text_color(theme::text_subtle())
@@ -475,7 +570,7 @@ impl Render for LocationPalette {
                     })
                     .children(rows),
             )
-            .child(Self::render_footer())
+            .child(Self::render_footer(self.command_mode))
     }
 }
 

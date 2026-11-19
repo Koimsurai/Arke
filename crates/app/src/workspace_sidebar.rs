@@ -79,6 +79,8 @@ pub(super) enum SidebarAction {
     DisconnectDrive(PathBuf),
     /// Eject a removable drive.
     EjectDrive(PathBuf),
+    /// Rename a mapped drive or network place in place (the name is Arke's own).
+    RenamePlace(PathBuf),
     /// Remove from the sidebar Network section.
     ForgetShare(PathBuf),
     /// Remove a saved SFTP/WebDAV location (and its saved password).
@@ -384,6 +386,31 @@ fn remote_label(url: &Path) -> String {
     }
 }
 
+/// What a place that can be renamed is called without a custom name: a mapped drive (its name
+/// without the letter), a recently opened share or a saved remote location. `None` for the rest.
+pub(super) fn place_default_name(
+    settings: &crate::settings::Settings,
+    places: &[Place],
+    path: &Path,
+) -> Option<String> {
+    use crate::place_names::{drive_default_name, key};
+    let same = |other: &Path| key(other) == key(path);
+    if let Some(drive) = places
+        .iter()
+        .find(|p| matches!(p.kind, PlaceKind::Drive { remote: true, .. }) && same(&p.path))
+    {
+        return Some(drive_default_name(drive));
+    }
+    if settings.net_places.iter().any(|p| same(p)) {
+        return Some(share_label(path));
+    }
+    settings
+        .remote_places
+        .iter()
+        .any(|p| same(&p.url))
+        .then(|| remote_label(path))
+}
+
 /// Button next to the Network header: opens Arke's "Add network location" dialog.
 fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
     div()
@@ -556,11 +583,16 @@ impl Workspace {
                 None => Icon::Folder,
             }
         };
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
         let label_for = |path: &Path| {
-            places
-                .iter()
-                .find(|p| p.path == path)
-                .map_or_else(|| display_name(path), |p| p.label.clone())
+            places.iter().find(|p| p.path == path).map_or_else(
+                || display_name(path),
+                |p| crate::place_names::place_label(&names, p),
+            )
         };
         SettingsStore::global(cx)
             .read(cx)
@@ -851,10 +883,15 @@ impl Workspace {
             .net_places
             .clone();
         shares.sort_by_cached_key(|s| s.to_string_lossy().to_lowercase());
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
         for share in &shares {
             self.render_tree(
                 share,
-                share_label(share),
+                crate::place_names::shown_name(&names, share).unwrap_or_else(|| share_label(share)),
                 None,
                 Some(Icon::NetDrive),
                 0,
@@ -874,7 +911,7 @@ impl Workspace {
         for url in &remotes {
             self.render_tree(
                 url,
-                remote_label(url),
+                crate::place_names::shown_name(&names, url).unwrap_or_else(|| remote_label(url)),
                 None,
                 Some(Icon::NetDrive),
                 0,
@@ -909,6 +946,12 @@ impl Workspace {
             .places
             .iter()
             .any(|p| p.path == path && matches!(p.kind, PlaceKind::Drive { remote: true, .. }));
+        if place_default_name(settings, &places, path).is_some() {
+            items.push((
+                t!("menu.rename").to_string().into(),
+                SidebarAction::RenamePlace(path.to_path_buf()),
+            ));
+        }
         if mapped {
             items.push((
                 t!("sidebar.disconnect_drive").to_string().into(),
@@ -1131,16 +1174,11 @@ impl Workspace {
                 used: used.clamp(0., 1.),
             }
         });
-        self.render_tree(
-            &place.path,
-            place.label.clone(),
-            space,
-            Some(icon),
-            0,
-            current,
-            out,
-            cx,
+        let label = crate::place_names::place_label(
+            &SettingsStore::global(cx).read(cx).settings.place_names,
+            place,
         );
+        self.render_tree(&place.path, label, space, Some(icon), 0, current, out, cx);
     }
 
     /// An expandable folder; renders subfolders recursively when open.
@@ -1173,6 +1211,7 @@ impl Workspace {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu = self.tree_menu(path, depth, cx);
+        let renaming = self.sidebar_rename_box(path);
         let indent = INDENT * depth as f32;
         out.push(
             div()
@@ -1181,6 +1220,10 @@ impl Workspace {
                     path.display()
                 )))
                 .a11y_lazy(gpui::Role::TreeItem, || label.clone())
+                .debug_selector({
+                    let label = label.clone();
+                    move || format!("sidebar {label}")
+                })
                 .aria_level(depth)
                 .aria_selected(here)
                 .when(!leaf, |d| d.aria_expanded(expanded))
@@ -1202,7 +1245,10 @@ impl Workspace {
                     Some(icon) => crate::assets::tinted(icon, theme::ICON, theme::text_muted()),
                     None => kind_icon(FileKind::Folder, theme::ICON),
                 })
-                .child(tree_label(label, space))
+                .child(match renaming {
+                    Some(input) => crate::place_names::rename_box(input),
+                    None => tree_label(label, space).into_any_element(),
+                })
                 .with_file_drop(path.to_path_buf(), cx)
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.navigate_active(open.clone(), window, cx);
@@ -1376,6 +1422,30 @@ impl Workspace {
     }
 
     // --- Context menu ---
+
+    /// Tests: the entries of the menu a right click on the place's row opens.
+    #[cfg(test)]
+    pub(crate) fn place_menu_labels_for_test(
+        &self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        self.tree_menu(path, 0, cx)
+            .into_iter()
+            .map(|(label, _)| label.to_string())
+            .collect()
+    }
+
+    /// Tests: "Rename" picked from the place's menu.
+    #[cfg(test)]
+    pub(crate) fn rename_place_from_menu_for_test(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_sidebar_action(SidebarAction::RenamePlace(path.to_path_buf()), window, cx);
+    }
 
     #[cfg(test)]
     pub(super) fn sidebar_menu_labels_for_test(&self) -> Option<Vec<String>> {
@@ -1567,6 +1637,7 @@ impl Workspace {
             SidebarAction::ToggleSearchNetwork(path) => {
                 crate::global_search::toggle_network(path, cx);
             }
+            SidebarAction::RenamePlace(path) => self.start_place_rename(&path, window, cx),
             SidebarAction::ForgetShare(share) => {
                 SettingsStore::global(cx).update(cx, |s, cx| {
                     s.update(|st| st.forget_share(&share), cx);

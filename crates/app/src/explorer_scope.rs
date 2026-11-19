@@ -294,6 +294,9 @@ impl Explorer {
             .filter(|rel| !rel.as_os_str().is_empty());
         Some(below.map_or_else(
             || {
+                if let Some(name) = crate::place_names::shown_name(&self.place_names, dir) {
+                    return name;
+                }
                 dir.file_name().map_or_else(
                     || dir.display().to_string(),
                     |n| n.to_string_lossy().into_owned(),
@@ -301,6 +304,12 @@ impl Explorer {
             },
             |rel| rel.display().to_string(),
         ))
+    }
+
+    /// Tests: search the folders below `dir`, so the chip names it.
+    #[cfg(test)]
+    pub(crate) fn search_in_for_test(&mut self, dir: PathBuf) {
+        self.search_in = Some(dir);
     }
 
     /// Keep focus in the box after a scope change (without selecting all, so typing doesn't

@@ -34,6 +34,8 @@ pub(super) struct SidebarUi {
     /// The open-over-the-content sidebar just closed and fades out (serial, for the animation id).
     peek_ghost: Option<u64>,
     peek_ghost_task: Option<gpui::Task<()>>,
+    /// The mapped drive or network place being renamed in place.
+    pub(super) place_rename: Option<super::place_rename::PlaceRename>,
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -515,6 +517,11 @@ impl Workspace {
     fn rail_drives(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let current = self.rail_here(cx);
         let places = self.active_view().read(cx).places.clone();
+        let names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
         places
             .into_iter()
             .filter(|p| matches!(p.kind, PlaceKind::Drive { .. }))
@@ -534,7 +541,7 @@ impl Workspace {
                 Self::rail_folder(
                     ("rail-drive", ix),
                     letter,
-                    &place.label,
+                    &crate::place_names::place_label(&names, &place),
                     place.path,
                     here,
                     cx,

@@ -430,9 +430,15 @@ impl Explorer {
         usize,
         Vec<(String, PathBuf)>,
     ) {
-        let crumbs = self
+        let mut crumbs = self
             .display_path()
             .map_or_default(arke_core::path::breadcrumbs);
+        // A renamed drive or network place shows its name.
+        for (label, path) in &mut crumbs {
+            if let Some(name) = crate::place_names::shown_name(&self.place_names, path) {
+                *label = name;
+            }
+        }
         let total = crumbs.len();
         let Some(hide) = self.crumbs_to_hide(&crumbs, compact, window) else {
             let shown = crumbs
@@ -453,6 +459,16 @@ impl Explorer {
             }
         }
         (shown, total, hidden)
+    }
+
+    /// Tests: the labels of the breadcrumbs as drawn.
+    #[cfg(test)]
+    pub(crate) fn crumb_labels_for_test(&self, window: &Window) -> Vec<String> {
+        let (shown, ..) = self.shown_crumbs(false, window);
+        shown
+            .into_iter()
+            .filter_map(|(_, crumb)| crumb.map(|(label, _)| label))
+            .collect()
     }
 
     /// Levels to collapse so the breadcrumbs fit the path bar as laid out on the last frame

@@ -59,6 +59,7 @@ mod net_dialog;
 mod op_center;
 mod op_queue;
 mod palette;
+mod place_names;
 mod prefs;
 mod quicklook;
 mod recycle_bin;

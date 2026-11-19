@@ -1081,6 +1081,11 @@ impl Explorer {
             .cursor
             .and_then(|ix| self.view()?.get(ix).map(|e| Arc::clone(&e.name)));
         let Some(name) = name else {
+            // Nothing in the list to rename: a mapped drive or network place open here is the
+            // one to rename (the workspace checks it can be).
+            if let Some(path) = self.current_path() {
+                cx.emit(super::ExplorerEvent::RenamePlace(path.to_path_buf()));
+            }
             return;
         };
         // Multiple selected with the cursor inside: edit the cursor item, then rename all selected

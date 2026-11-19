@@ -883,8 +883,11 @@ pub(crate) struct Explorer {
     /// Where the progress ring is drawn now (eases toward the real progress), and its next frame.
     pub(crate) ring: std::rc::Rc<op_view::RingState>,
     pub(crate) preview_scrollbar: crate::scrollbar::ScrollbarDrag,
+    /// Sideways scrollbars of the same two, for previews wider than their frame (sheets, CSV).
+    pub(crate) preview_hscrollbar: crate::scrollbar::ScrollbarDrag,
     pub(crate) look_scroll: gpui::ScrollHandle,
     pub(crate) look_scrollbar: crate::scrollbar::ScrollbarDrag,
+    pub(crate) look_hscrollbar: crate::scrollbar::ScrollbarDrag,
     /// Error banner button (server unreachable: retry; login needed: log in).
     pub(crate) error_action: Option<ErrorAction>,
     /// Showing the last cached contents of a network folder (fresh listing pending, or the server
@@ -1152,8 +1155,10 @@ impl Explorer {
             preview_scroll: gpui::ScrollHandle::new(),
             ring: std::rc::Rc::default(),
             preview_scrollbar: crate::scrollbar::ScrollbarDrag::default(),
+            preview_hscrollbar: crate::scrollbar::ScrollbarDrag::default(),
             look_scroll: gpui::ScrollHandle::new(),
             look_scrollbar: crate::scrollbar::ScrollbarDrag::default(),
+            look_hscrollbar: crate::scrollbar::ScrollbarDrag::default(),
             error_action: None,
             showing_cached: false,
             retry_token: 0,

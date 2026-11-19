@@ -36,9 +36,13 @@ use windows::Win32::System::Com::{
     IStream, STGC_DEFAULT, STGM_CREATE, STGM_READWRITE, STGM_SHARE_EXCLUSIVE, STREAM_SEEK_SET,
     TYMED, TYMED_HGLOBAL, TYMED_ISTORAGE, TYMED_ISTREAM,
 };
+use windows::Win32::System::DataExchange::IsClipboardFormatAvailable;
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
-use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_NONE, ReleaseStgMedium};
+use windows::Win32::System::Ole::{
+    DROPEFFECT_COPY, DROPEFFECT_NONE, OleGetClipboard, OleInitialize, OleUninitialize,
+    ReleaseStgMedium,
+};
 use windows::Win32::UI::Shell::{
     FD_ACCESSTIME, FD_ATTRIBUTES, FD_CREATETIME, FD_FILESIZE, FD_WRITESTIME, FILEDESCRIPTORA,
     FILEDESCRIPTORW, IDataObjectAsyncCapability,
@@ -57,6 +61,30 @@ pub(crate) fn dropped_data() -> Option<IDataObject> {
         return Some(data);
     }
     gpui_windows::take_dropped_data_object()
+}
+
+/// Whether the clipboard offers virtual files (a Remote Desktop copy, an Outlook attachment,
+/// a file inside a zip folder): described by a descriptor, with no `CF_HDROP` list on disk.
+/// Only checks the format, so it is cheap and never opens the clipboard.
+pub(crate) fn clipboard_has_virtual_files() -> bool {
+    // SAFETY: only checks format availability; the clipboard isn't opened.
+    unsafe {
+        IsClipboardFormatAvailable(u32::from(registered(w!("FileGroupDescriptorW")))).is_ok()
+            || IsClipboardFormatAvailable(u32::from(registered(w!("FileGroupDescriptor")))).is_ok()
+    }
+}
+
+/// Reads the virtual files on the clipboard, `None` if it has none (#221). Pasting reads them
+/// like a drop, but from the clipboard's data object. Background thread with OLE
+/// ([`ComThread::ole`]), which must stay alive until the files are written: the data object may
+/// be a proxy to the program that copied them (Remote Desktop's clipboard).
+pub(crate) fn clipboard_virtual_files() -> Result<Option<VirtualDrop>, ShellError> {
+    if !clipboard_has_virtual_files() {
+        return Ok(None);
+    }
+    // SAFETY: plain call; OLE is initialized on this thread by the caller.
+    let data = unsafe { OleGetClipboard() }.map_err(ShellError::from)?;
+    VirtualDrop::take(&data).map(Some)
 }
 
 /// Whether dropped paths stand for virtual files (see the module docs).
@@ -820,21 +848,47 @@ impl Drop for AsyncOperation {
     }
 }
 
-/// COM for a worker thread (multithreaded), undone when dropped.
-pub(crate) struct ComThread(bool);
+/// COM for a worker thread, undone when dropped.
+pub(crate) struct ComThread {
+    initialized: bool,
+    /// Set up with OLE (single-threaded), as the clipboard needs.
+    ole: bool,
+}
 
 impl ComThread {
+    /// Multithreaded.
     pub(crate) fn init() -> Self {
         // SAFETY: initializes COM on this thread; paired with CoUninitialize on drop.
-        Self(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok())
+        let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        Self {
+            initialized,
+            ole: false,
+        }
+    }
+
+    /// With OLE, for reading the clipboard's data object. Single-threaded, so everything made
+    /// from that object has to be used on this thread until this is dropped.
+    pub(crate) fn ole() -> Self {
+        // SAFETY: initializes OLE on this thread; paired with OleUninitialize on drop.
+        let initialized = unsafe { OleInitialize(None) }.is_ok();
+        Self {
+            initialized,
+            ole: true,
+        }
     }
 }
 
 impl Drop for ComThread {
     fn drop(&mut self) {
-        if self.0 {
-            // SAFETY: pairs with the successful CoInitializeEx in `init`.
-            unsafe { CoUninitialize() };
+        if self.initialized {
+            // SAFETY: pairs with the successful initialization in `init` or `ole`.
+            unsafe {
+                if self.ole {
+                    OleUninitialize();
+                } else {
+                    CoUninitialize();
+                }
+            }
         }
     }
 }

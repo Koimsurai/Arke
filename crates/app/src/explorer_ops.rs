@@ -437,6 +437,29 @@ impl JobEnv {
     }
 }
 
+/// Writes virtual files to a folder of Arke's own, then moves them into `dest`: what a drop and
+/// a paste of virtual files (#206, #221) share. Background thread with COM.
+fn stage_and_move_virtual(
+    drop: crate::win_virtual_drop::VirtualDrop,
+    dest: PathBuf,
+    env: &JobEnv,
+    progress: &Arc<OpProgress>,
+    follow: &mut OpFollowUp,
+) -> Result<OpOutcome, ShellError> {
+    match super::new_drop_folder() {
+        Err(e) => Err(e.into()),
+        Ok(stage) => {
+            let result = move_virtual_drop(drop, &stage, dest, env, progress, follow);
+            // What the move left (skipped in a conflict, or cancelled) goes too, unless
+            // TeraCopy still has to move it.
+            if !follow.handed_off {
+                let _ = std::fs::remove_dir_all(&stage);
+            }
+            result
+        }
+    }
+}
+
 /// Writes a drop of virtual files into `stage`, then moves what was written into `dest`.
 /// Background thread with COM.
 fn move_virtual_drop(
@@ -798,7 +821,22 @@ impl Explorer {
             let mut verb = "op.paste";
             let result = match shell.clipboard_files() {
                 Err(e) => Err(e),
-                Ok(None) => Err(crate::shell::ShellError::ClipboardEmpty),
+                // No files on disk: it may still hold virtual ones (a Remote Desktop copy, an
+                // Outlook attachment), which are saved here like a drop (#221).
+                Ok(None) => {
+                    // The clipboard's data object may be a proxy to the program that copied
+                    // the files, so OLE stays up on this thread until they are written.
+                    let _ole = crate::win_virtual_drop::ComThread::ole();
+                    match shell.clipboard_virtual_files() {
+                        Err(e) => Err(e),
+                        Ok(None) => Err(crate::shell::ShellError::ClipboardEmpty),
+                        Ok(Some(drop)) => {
+                            verb = "op.copy";
+                            follow.subject = drop.subject();
+                            stage_and_move_virtual(drop, dest, &env, &progress, &mut follow)
+                        }
+                    }
+                }
                 // Cut and pasted back into the same folder: nothing to do.
                 Ok(Some((files, _)))
                     if files.cut && files.paths.iter().all(|p| p.parent() == Some(&*dest)) =>
@@ -962,19 +1000,7 @@ impl Explorer {
                 touched: Some(dest.clone()),
                 ..OpFollowUp::default()
             };
-            let result = match super::new_drop_folder() {
-                Err(e) => Err(e.into()),
-                Ok(stage) => {
-                    let result =
-                        move_virtual_drop(drop, &stage, dest, &env, &progress, &mut follow);
-                    // What the move left (skipped in a conflict, or cancelled) goes too, unless
-                    // TeraCopy still has to move it.
-                    if !follow.handed_off {
-                        let _ = std::fs::remove_dir_all(&stage);
-                    }
-                    result
-                }
-            };
+            let result = stage_and_move_virtual(drop, dest, &env, &progress, &mut follow);
             let _ = tx.send(AppEvent::OpFinished {
                 verb: "op.copy",
                 result,

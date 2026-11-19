@@ -191,6 +191,10 @@ type OptionFont = std::rc::Rc<dyn Fn(usize) -> Option<SharedString>>;
 struct Dropdown {
     id: &'static str,
     cursor: usize,
+    /// Whether the cursor is shown: only once an arrow key moved it. Opened with the mouse, the
+    /// row under the pointer is the only one lit, as in a Windows combo box; the current row lit
+    /// next to the hovered one read as two selections.
+    keyboard: bool,
     options: Vec<Applier>,
     /// The window its list is drawn in (`popup.rs`).
     popup: crate::popup::Single,
@@ -240,8 +244,8 @@ fn font_list_w() -> gpui::Pixels {
 /// Context for drawing controls: the open dropdown, who to update, and the viewport size
 /// (the outside layer has to cover it).
 pub(super) struct Ui {
-    /// Open dropdown and the keyboard cursor in it.
-    open: Option<(&'static str, usize)>,
+    /// Open dropdown and the keyboard cursor in it, while shown.
+    open: Option<(&'static str, Option<usize>)>,
     workspace: WeakEntity<Workspace>,
     viewport: gpui::Size<gpui::Pixels>,
     list_scroll: UniformListScrollHandle,
@@ -569,6 +573,35 @@ impl Workspace {
             .map(|p| (p.scroll.offset().y, p.report_scroll.offset().y))
     }
 
+    /// The open dropdown's list as placed on the screen (physical pixels), once placed.
+    #[cfg(test)]
+    pub(crate) fn settings_dropdown_placed_for_test(&self) -> Option<crate::popup::ScreenRect> {
+        self.settings_panel
+            .as_ref()?
+            .dropdown
+            .as_ref()?
+            .popup
+            .placed()
+    }
+
+    /// The open dropdown's list as last drawn on the screen (physical pixels).
+    #[cfg(test)]
+    pub(crate) fn settings_dropdown_drawn_for_test(&self) -> Option<crate::popup::ScreenRect> {
+        self.settings_panel
+            .as_ref()?
+            .dropdown
+            .as_ref()?
+            .popup
+            .drawn_on_screen()
+    }
+
+    /// The open dropdown's keyboard cursor and whether it is shown.
+    #[cfg(test)]
+    pub(crate) fn settings_dropdown_cursor_for_test(&self) -> Option<(usize, bool)> {
+        let dropdown = self.settings_panel.as_ref()?.dropdown.as_ref()?;
+        Some((dropdown.cursor, dropdown.keyboard))
+    }
+
     /// Presses Browse on the background image card (`image`) or the Open-with card.
     #[cfg(test)]
     pub(crate) fn browse_for_test(
@@ -732,6 +765,7 @@ impl Workspace {
             return;
         };
         let last = dropdown.options.len().saturating_sub(1);
+        dropdown.keyboard = true;
         dropdown.cursor = if down {
             (dropdown.cursor + 1).min(last)
         } else {
@@ -1065,7 +1099,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Vec<(Cow<'static, str>, Icon, Vec<AnyElement>)> {
         let ui = Ui {
-            open: page.dropdown.as_ref().map(|d| (d.id, d.cursor)),
+            open: page
+                .dropdown
+                .as_ref()
+                .map(|d| (d.id, d.keyboard.then_some(d.cursor))),
             workspace: cx.entity().downgrade(),
             viewport: window.viewport_size(),
             list_scroll: page.list_scroll.clone(),
@@ -2147,11 +2184,10 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     fonts: Option<OptionFont>,
     ui: &Ui,
 ) -> AnyElement {
-    let cursor = ui
-        .open
-        .filter(|(open, _)| *open == id)
-        .map(|(_, cursor)| cursor);
-    let open = cursor.is_some();
+    let (open, cursor) = match ui.open {
+        Some((open, cursor)) if open == id => (true, cursor),
+        _ => (false, None),
+    };
     let at = options
         .iter()
         .position(|(value, _)| *value == current)
@@ -2220,6 +2256,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                     Some(Dropdown {
                         id,
                         cursor: at,
+                        keyboard: false,
                         options: appliers.clone(),
                         popup: crate::popup::Single::new(),
                     }),
@@ -2236,7 +2273,11 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
             },
             |_, (), _, _| {},
         )
+        // Pinned to the corner: without insets an absolute child sits where it would flow, here
+        // below the button, and the list opened a button's height too low.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full(),
     );
     if !open {
@@ -2311,6 +2352,13 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let count = options.len();
     let row = std::rc::Rc::new(row);
     let list_scroll = ui.list_scroll.clone();
+    // At least as wide as its button, like a Windows combo box, so the edges it is lined up with
+    // match.
+    let min_w = ui
+        .buttons
+        .borrow()
+        .get(id)
+        .map_or_else(dropdown_min_w, |b| b.size.width.max(dropdown_min_w()));
     // The list is drawn in a window of its own (`popup.rs`), under the button and past the
     // window's edge when it has to be; `Workspace::sync_dropdown_popup` opens it.
     *ui.panel.borrow_mut() = Some(std::rc::Rc::new(move |_: &mut Window, _: &mut App| {
@@ -2343,7 +2391,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
             .occlude()
             .max_h(dropdown_max_h())
             .when(!long, gpui::StatefulInteractiveElement::overflow_y_scroll)
-            .min_w(dropdown_min_w())
+            .min_w(min_w)
             .p(theme::s_4())
             .rounded(theme::r_8())
             .bg(theme::overlay())

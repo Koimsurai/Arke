@@ -863,7 +863,7 @@ impl Explorer {
         )
     }
 
-    fn menu_targets(&self) -> Vec<(PathBuf, bool)> {
+    pub(super) fn menu_targets(&self) -> Vec<(PathBuf, bool)> {
         if self.search_mode {
             return self
                 .search_hit(self.search_cursor)
@@ -1181,7 +1181,7 @@ impl Explorer {
         }
         entries.extend([
             item(t!("menu.reveal_in_explorer"), None, C::RevealInExplorer),
-            item(t!("menu.properties"), None, C::Properties),
+            item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
             MenuEntry::Separator,
             more_options(),
             MenuEntry::Separator,
@@ -1534,7 +1534,7 @@ impl Explorer {
                     });
                 }
             }
-            C::Properties => self.run_shell_verb(&targets, "properties", window),
+            C::Properties => self.open_properties(targets, cx),
             // Windows' "Choose another app" dialog, with "Always", as Explorer opens it.
             C::ChooseApp => {
                 if let Some((path, false)) = targets.first().cloned() {
@@ -2047,41 +2047,12 @@ impl Explorer {
         self.fill_lazy_for_pins(cx);
     }
 
-    /// Runs the item with `verb` (e.g. "properties", "openas") from the classic Windows menu. The
-    /// menu
-    /// process reads the menu, finds the item (including in submenus) and runs it, so third-party
-    /// code
-    /// stays in that process.
-    pub(super) fn run_shell_verb(
-        &self,
-        targets: &[(PathBuf, bool)],
-        verb: &'static str,
-        window: &Window,
-    ) {
-        fn find(entries: &[crate::shell::ShellMenuEntry], verb: &str) -> Option<u32> {
-            entries.iter().find_map(|e| match e {
-                crate::shell::ShellMenuEntry::Item {
-                    id, verb: Some(v), ..
-                } if v.eq_ignore_ascii_case(verb) => Some(*id),
-                crate::shell::ShellMenuEntry::Submenu { children, .. } => find(children, verb),
-                _ => None,
-            })
-        }
-        let paths: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
-        let shell = Arc::clone(&self.services.shell);
-        let owner = Self::owner_from(window);
-        crate::explorer::spawn_thread("shell-verb", move || {
-            let result = shell.shell_menu(&paths, false).and_then(|menu| {
-                let Some(id) = find(&menu.entries, verb) else {
-                    shell.release_shell_menu(menu.session);
-                    log::warn!("failed to run Windows menu verb {verb}: no {verb} item");
-                    return Ok(());
-                };
-                shell.invoke_shell_menu(menu.session, id, (0, 0), owner)
-            });
-            if let Err(err) = result {
-                log::warn!("failed to run Windows menu verb {verb}: {err}");
-            }
+    /// Arke's own Properties window for `targets` (full path, whether it is a folder).
+    pub(crate) fn open_properties(&self, targets: Vec<(PathBuf, bool)>, cx: &mut Context<Self>) {
+        let services = self.services.clone();
+        // Opened once the menu or key press that asked for it is done with this window.
+        cx.defer(move |cx| {
+            crate::properties::open(services, targets, cx);
         });
     }
 

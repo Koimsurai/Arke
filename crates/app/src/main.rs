@@ -62,6 +62,7 @@ mod op_queue;
 mod palette;
 mod place_names;
 mod prefs;
+mod properties;
 mod quicklook;
 mod recycle_bin;
 mod remote_shell;

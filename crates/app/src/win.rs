@@ -165,6 +165,36 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS: the content is in the cloud.
+const NOT_ON_DEVICE: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
+/// The attribute bits SetFileAttributes accepts; the rest (folder, reparse point, ...) are not
+/// ours to set.
+const SETTABLE: u32 = 0x1 | 0x2 | 0x4 | 0x20 | 0x100 | 0x1000 | 0x2000;
+/// `FILE_ATTRIBUTE_NORMAL`: what a file with no attribute set is given.
+const NORMAL: u32 = 0x80;
+
+/// The alternate data stream Windows puts on files from the internet.
+fn zone_stream(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(":Zone.Identifier");
+    PathBuf::from(name)
+}
+
+/// Bytes a file takes on disk (`GetCompressedFileSizeW`: asks the file system, opens no data).
+fn compressed_size(path: &Path) -> Option<u64> {
+    use windows::Win32::Foundation::{GetLastError, NO_ERROR};
+    use windows::Win32::Storage::FileSystem::GetCompressedFileSizeW;
+    let name = wide(path.as_os_str());
+    let mut high = 0u32;
+    // SAFETY: `name` is NUL-terminated; `high` is valid for the call.
+    let low = unsafe { GetCompressedFileSizeW(PCWSTR(name.as_ptr()), Some(&raw mut high)) };
+    // SAFETY: reads this thread's last error right after the call above.
+    if low == u32::MAX && unsafe { GetLastError() } != NO_ERROR {
+        return None;
+    }
+    Some((u64::from(high) << 32) | u64::from(low))
+}
+
 fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: id points to a valid GUID constant. KF_FLAG_DONT_VERIFY skips the existence check,
     // so a folder redirected to a network share doesn't hit the network. Freed with CoTaskMemFree.
@@ -1264,6 +1294,133 @@ impl Shell for WinShell {
     fn shortcut_target(&self, path: &Path) -> Option<(PathBuf, bool)> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         read_shortcut(path)
+    }
+
+    fn file_details(&self, path: &Path) -> crate::shell::FileDetails {
+        use std::os::windows::fs::MetadataExt;
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return crate::shell::FileDetails::default();
+        };
+        let size_on_disk = if meta.is_dir() {
+            None
+        } else if meta.file_attributes() & NOT_ON_DEVICE != 0 {
+            Some(0)
+        } else {
+            compressed_size(path)
+        };
+        crate::shell::FileDetails {
+            accessed: meta.accessed().ok(),
+            size_on_disk,
+        }
+    }
+
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAGS_AND_ATTRIBUTES, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
+            SetFileAttributesW,
+        };
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        // The bits SetFileAttributes accepts; the rest (folder, reparse point, ...) are not ours.
+        for path in paths {
+            let name = wide(path.as_os_str());
+            // SAFETY: `name` is NUL-terminated and outlives both calls.
+            unsafe {
+                let current = GetFileAttributesW(PCWSTR(name.as_ptr()));
+                if current == INVALID_FILE_ATTRIBUTES {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                let old = current & SETTABLE;
+                let new = (old | set) & !clear;
+                if new == old {
+                    continue;
+                }
+                let new = if new == 0 { NORMAL } else { new };
+                SetFileAttributesW(PCWSTR(name.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(new))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_blocked(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        std::fs::metadata(zone_stream(path)).is_ok()
+    }
+
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        Ok(std::fs::remove_file(zone_stream(path))?)
+    }
+
+    fn default_app(&self, path: &Path) -> Option<String> {
+        use windows::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_FRIENDLYAPPNAME, AssocQueryStringW};
+        use windows::core::PWSTR;
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        let ext = path.extension()?;
+        let assoc = wide(&std::ffi::OsString::from(format!(
+            ".{}",
+            ext.to_string_lossy()
+        )));
+        let mut buffer = [0u16; 260];
+        let mut len = 260u32;
+        // SAFETY: `assoc` is NUL-terminated; the buffer holds `len` characters.
+        let asked = unsafe {
+            AssocQueryStringW(
+                ASSOCF_NONE,
+                ASSOCSTR_FRIENDLYAPPNAME,
+                PCWSTR(assoc.as_ptr()),
+                PCWSTR::null(),
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &raw mut len,
+            )
+        };
+        if asked.is_err() {
+            return None;
+        }
+        let end = (len as usize).saturating_sub(1).min(buffer.len());
+        let name = String::from_utf16_lossy(&buffer[..end]);
+        (!name.is_empty()).then_some(name)
+    }
+
+    fn volume_info(&self, root: &Path) -> Option<crate::shell::VolumeInfo> {
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceW;
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        let root = wide(root.as_os_str());
+        let mut label = [0u16; 261];
+        let mut system = [0u16; 261];
+        // SAFETY: `root` is a NUL-terminated wide string; the buffers are as large as stated.
+        unsafe {
+            GetVolumeInformationW(
+                PCWSTR(root.as_ptr()),
+                Some(&mut label),
+                None,
+                None,
+                None,
+                Some(&mut system),
+            )
+            .ok()?;
+        }
+        let text = |buffer: &[u16]| {
+            let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            String::from_utf16_lossy(&buffer[..len])
+        };
+        let (mut per_cluster, mut per_sector) = (0u32, 0u32);
+        // SAFETY: the out parameters are valid for the call.
+        let cluster = unsafe {
+            GetDiskFreeSpaceW(
+                PCWSTR(root.as_ptr()),
+                Some(&raw mut per_cluster),
+                Some(&raw mut per_sector),
+                None,
+                None,
+            )
+        }
+        .map_or(0, |()| u64::from(per_cluster) * u64::from(per_sector));
+        Some(crate::shell::VolumeInfo {
+            label: text(&label),
+            file_system: text(&system),
+            cluster,
+        })
     }
 
     fn create_shortcuts(

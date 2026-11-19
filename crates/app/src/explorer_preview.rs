@@ -1191,13 +1191,9 @@ impl Explorer {
                 crate::assets::Icon::Info,
                 true,
                 t!("menu.properties"),
-                cx.listener(|this, _: &ClickEvent, window, _| {
+                cx.listener(|this, _: &ClickEvent, _, cx| {
                     if let Some(p) = this.preview.as_ref() {
-                        this.run_shell_verb(
-                            &[(p.path.clone(), p.entry.is_dir_like())],
-                            "properties",
-                            window,
-                        );
+                        this.open_properties(vec![(p.path.clone(), p.entry.is_dir_like())], cx);
                     }
                 }),
             ))

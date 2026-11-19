@@ -48,6 +48,10 @@ mod place_names;
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
+#[path = "tests_properties_card.rs"]
+mod properties_card;
+#[path = "tests_properties.rs"]
+mod properties_window;
 #[path = "tests_quick_look.rs"]
 mod quick_look;
 #[path = "tests_quiet_update.rs"]
@@ -183,6 +187,17 @@ struct FakeShell {
     maximize_toggles: AtomicU32,
     /// Presses come from a touch screen.
     touch: std::sync::atomic::AtomicBool,
+    /// Attribute changes asked for (paths, bits set, bits cleared); they fail while
+    /// `fail_attributes` is set.
+    attribute_calls: Mutex<Vec<(Vec<PathBuf>, u32, u32)>>,
+    fail_attributes: std::sync::atomic::AtomicBool,
+    /// The program every file opens with; Windows' "Choose another app" dialog makes it Paint.
+    app_name: Mutex<Option<String>>,
+    /// Files with the internet mark, and the ones it was removed from.
+    blocked: Mutex<Vec<PathBuf>>,
+    unblocked: Mutex<Vec<PathBuf>>,
+    /// Windows' own Properties window was asked for these items.
+    native_properties: Mutex<Vec<Vec<PathBuf>>>,
 }
 
 impl FakeShell {
@@ -805,6 +820,64 @@ impl Shell for FakeShell {
             "choose_app called on the UI thread"
         );
         self.chose_app.lock().push(path.to_path_buf());
+        *self.app_name.lock() = Some("Paint".into());
+        Ok(())
+    }
+
+    fn file_details(&self, _: &Path) -> crate::shell::FileDetails {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "file details read on the UI thread"
+        );
+        crate::shell::FileDetails {
+            accessed: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            size_on_disk: Some(8192),
+        }
+    }
+
+    fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "attributes set on the UI thread"
+        );
+        self.attribute_calls
+            .lock()
+            .push((paths.to_vec(), set, clear));
+        if self.fail_attributes.load(Ordering::Relaxed) {
+            return Err(ShellError::Host("access denied".into()));
+        }
+        Ok(())
+    }
+
+    fn is_blocked(&self, path: &Path) -> bool {
+        self.blocked.lock().iter().any(|p| p == path)
+    }
+
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        self.unblocked.lock().push(path.to_path_buf());
+        self.blocked.lock().retain(|p| p != path);
+        Ok(())
+    }
+
+    fn default_app(&self, _: &Path) -> Option<String> {
+        Some(
+            self.app_name
+                .lock()
+                .clone()
+                .unwrap_or_else(|| "Notepad".into()),
+        )
+    }
+
+    fn volume_info(&self, _: &Path) -> Option<crate::shell::VolumeInfo> {
+        Some(crate::shell::VolumeInfo {
+            label: "Data".into(),
+            file_system: "NTFS".into(),
+            cluster: 4096,
+        })
+    }
+
+    fn show_properties(&self, paths: &[PathBuf], _: Option<isize>) -> Result<(), ShellError> {
+        self.native_properties.lock().push(paths.to_vec());
         Ok(())
     }
 

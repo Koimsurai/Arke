@@ -511,7 +511,7 @@ pub(crate) fn chosen_accent(accent: crate::settings::Accent) -> Option<u32> {
 
 /// Applies light/dark mode and accent. Mode priority: ARKE_THEME, then settings, then system.
 /// With Mica the window frame follows too, so Mica picks up the same color.
-fn apply_theme(window: &mut Window, cx: &mut App) {
+pub(crate) fn apply_theme(window: &mut Window, cx: &mut App) {
     let forced = std::env::var("ARKE_THEME")
         .ok()
         .and_then(|v| match v.as_str() {

@@ -2978,6 +2978,226 @@ menu.properties:
   en: Properties
   zh-TW: 內容
   zh-CN: 属性
+props.items_one:
+  en: "%{count} item"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+props.items_other:
+  en: "%{count} items"
+  zh-TW: "%{count} 個項目"
+  zh-CN: "%{count} 个项目"
+props.n_files_one:
+  en: "%{count} file"
+  zh-TW: "%{count} 個檔案"
+  zh-CN: "%{count} 个文件"
+props.n_files_other:
+  en: "%{count} files"
+  zh-TW: "%{count} 個檔案"
+  zh-CN: "%{count} 个文件"
+props.n_folders_one:
+  en: "%{count} folder"
+  zh-TW: "%{count} 個資料夾"
+  zh-CN: "%{count} 个文件夹"
+props.n_folders_other:
+  en: "%{count} folders"
+  zh-TW: "%{count} 個資料夾"
+  zh-CN: "%{count} 个文件夹"
+props.contains:
+  en: "%{files}, %{folders}"
+  zh-TW: "%{files}、%{folders}"
+  zh-CN: "%{files}、%{folders}"
+props.contains_label:
+  en: Contains
+  zh-TW: 內含
+  zh-CN: 包含
+props.unreadable_one:
+  en: "%{count} item could not be read"
+  zh-TW: "無法讀取 %{count} 個項目"
+  zh-CN: "无法读取 %{count} 个项目"
+props.unreadable_other:
+  en: "%{count} items could not be read"
+  zh-TW: "無法讀取 %{count} 個項目"
+  zh-CN: "无法读取 %{count} 个项目"
+props.bytes:
+  en: "%{size} (%{bytes} bytes)"
+  zh-TW: "%{size}（%{bytes} 位元組）"
+  zh-CN: "%{size}（%{bytes} 字节）"
+props.bytes_only:
+  en: "%{bytes} bytes"
+  zh-TW: "%{bytes} 位元組"
+  zh-CN: "%{bytes} 字节"
+props.at_least:
+  en: "%{size}, at least"
+  zh-TW: "%{size}，至少"
+  zh-CN: "%{size}，至少"
+props.size_on_disk:
+  en: Size on disk
+  zh-TW: 磁碟大小
+  zh-CN: 磁盘大小
+props.accessed:
+  en: Date accessed
+  zh-TW: 存取日期
+  zh-CN: 访问日期
+props.calculating:
+  en: Calculating…
+  zh-TW: 計算中…
+  zh-CN: 正在计算…
+props.stop:
+  en: Stop
+  zh-TW: 停止
+  zh-CN: 停止
+props.read_only:
+  en: Read-only
+  zh-TW: 唯讀
+  zh-CN: 只读
+props.hidden:
+  en: Hidden
+  zh-TW: 隱藏
+  zh-CN: 隐藏
+props.attr_failed:
+  en: "Could not change the attribute: %{error}"
+  zh-TW: "無法變更屬性：%{error}"
+  zh-CN: "无法更改属性：%{error}"
+props.rename_failed:
+  en: "Could not rename: %{error}"
+  zh-TW: "無法重新命名：%{error}"
+  zh-CN: "无法重命名：%{error}"
+props.opens_with:
+  en: Opens with
+  zh-TW: 開啟方式
+  zh-CN: 打开方式
+props.no_app:
+  en: No program
+  zh-TW: 沒有程式
+  zh-CN: 没有程序
+props.change:
+  en: Change…
+  zh-TW: 變更…
+  zh-CN: 更改…
+props.shortcut_target:
+  en: Target
+  zh-TW: 目標
+  zh-CN: 目标
+props.used:
+  en: Used
+  zh-TW: 已使用
+  zh-CN: 已用
+props.free:
+  en: Free
+  zh-TW: 可用
+  zh-CN: 可用
+props.capacity:
+  en: Capacity
+  zh-TW: 容量
+  zh-CN: 容量
+props.file_system:
+  en: File system
+  zh-TW: 檔案系統
+  zh-CN: 文件系统
+props.windows_properties:
+  en: Windows properties…
+  zh-TW: Windows 內容…
+  zh-CN: Windows 属性…
+props.used_of:
+  en: "%{used} used of %{total}"
+  zh-TW: "已使用 %{used}，共 %{total}"
+  zh-CN: "已用 %{used}，共 %{total}"
+props.taken:
+  en: Date taken
+  zh-TW: 拍攝日期
+  zh-CN: 拍摄日期
+props.act_open:
+  en: Open
+  zh-TW: 開啟
+  zh-CN: 打开
+props.act_open_with:
+  en: Open with…
+  zh-TW: 開啟方式…
+  zh-CN: 打开方式…
+props.act_favorite:
+  en: Add to favorites
+  zh-TW: 加入我的最愛
+  zh-CN: 添加到收藏夹
+props.act_unfavorite:
+  en: Remove from favorites
+  zh-TW: 從我的最愛移除
+  zh-CN: 从收藏夹移除
+props.act_show:
+  en: Show in folder
+  zh-TW: 在資料夾中顯示
+  zh-CN: 在文件夹中显示
+props.general:
+  en: General
+  zh-TW: 一般
+  zh-CN: 常规
+props.times:
+  en: Time
+  zh-TW: 時間
+  zh-CN: 时间
+props.attributes:
+  en: Attributes and security
+  zh-TW: 屬性與安全性
+  zh-CN: 属性与安全
+props.apply_inside:
+  en: Apply to items inside
+  zh-TW: 套用到內含項目
+  zh-CN: 应用到包含的项目
+props.downloaded:
+  en: Downloaded from the internet
+  zh-TW: 來自網際網路
+  zh-CN: 来自互联网
+props.unblock:
+  en: Unblock
+  zh-TW: 解除封鎖
+  zh-CN: 解除锁定
+props.hash_calculate:
+  en: Calculate
+  zh-TW: 計算
+  zh-CN: 计算
+props.hash_copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+props.cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+props.space:
+  en: Where the space goes
+  zh-TW: 空間用在哪裡
+  zh-CN: 空间用在哪里
+props.cat_code:
+  en: Code and build
+  zh-TW: 程式碼與建置
+  zh-CN: 代码与构建
+props.cat_video:
+  en: Video
+  zh-TW: 影片
+  zh-CN: 视频
+props.cat_images:
+  en: Images
+  zh-TW: 圖片
+  zh-CN: 图片
+props.cat_documents:
+  en: Documents
+  zh-TW: 文件
+  zh-CN: 文档
+props.cat_audio:
+  en: Audio
+  zh-TW: 音訊
+  zh-CN: 音频
+props.cat_archives:
+  en: Archives
+  zh-TW: 壓縮檔
+  zh-CN: 压缩包
+props.cat_other:
+  en: Other
+  zh-TW: 其他
+  zh-CN: 其他
+props.close:
+  en: Close
+  zh-TW: 關閉
+  zh-CN: 关闭
 menu.open_with:
   en: "Open with %{name}"
   zh-TW: "以 %{name} 開啟"

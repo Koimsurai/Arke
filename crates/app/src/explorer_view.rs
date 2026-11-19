@@ -1750,6 +1750,7 @@ impl Explorer {
             .on_action(cx.listener(Self::escape))
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::open_in_new_tab))
+            .on_action(cx.listener(Self::show_properties))
             .on_action(cx.listener(Self::open_location))
             .on_action(cx.listener(Self::move_left))
             .on_action(cx.listener(Self::move_right))

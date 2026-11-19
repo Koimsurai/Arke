@@ -94,12 +94,13 @@ pub(crate) use menu::{app_name, menu_open_with_found, open_with_list, set_open_w
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
 
+pub(crate) use ops::commit_problem;
 pub(crate) use ops::{
     CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RedoFileOp, RedoStack, RenameFile,
     UndoFileOp, UndoHistory,
 };
 #[cfg(test)]
-pub(crate) use ops::{changes_share_list, commit_problem, typing_problem};
+pub(crate) use ops::{changes_share_list, typing_problem};
 pub(crate) use view::{caption_buttons, error_toast, ghost_button, kind_icon, tooltip};
 
 use crate::bench::{Bench, BenchStep};
@@ -129,6 +130,8 @@ actions!(
         Escape,
         OpenSelected,
         OpenInNewTab,
+        /// Alt+Enter: the Properties window for the selection.
+        ShowProperties,
         OpenLocation,
         GoUp,
         GoBack,
@@ -172,6 +175,7 @@ actions!(
 
 pub(crate) fn bind_keys(cx: &mut App) {
     path_bar::bind_keys(cx);
+    crate::properties::bind_keys(cx);
     let list = Some("FileList");
     let root = Some("Explorer");
     let filter = Some("FilterBar");
@@ -193,6 +197,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Escape, list),
         KeyBinding::new("enter", OpenSelected, list),
         KeyBinding::new("ctrl-enter", OpenInNewTab, list),
+        KeyBinding::new("alt-enter", ShowProperties, list),
         KeyBinding::new("shift-enter", OpenLocation, list),
         KeyBinding::new("backspace", GoUp, list),
         // Grid view: move one cell left or right (no-op in details view).
@@ -3154,6 +3159,18 @@ impl Explorer {
                 activate: true,
             });
         }
+    }
+
+    /// Alt+Enter: the Properties window for the selection (the folder itself when nothing is
+    /// selected).
+    fn show_properties(&mut self, _: &ShowProperties, _: &mut Window, cx: &mut Context<Self>) {
+        let mut targets = self.menu_targets();
+        if targets.is_empty()
+            && let Some(path) = self.current_path()
+        {
+            targets.push((path.to_path_buf(), true));
+        }
+        self.open_properties(targets, cx);
     }
 
     /// Shift+Enter (search results): goes to the item's folder and selects it.

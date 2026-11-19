@@ -1475,13 +1475,16 @@ fn hero_of(services: &Services, row: &Row) -> (Option<Arc<RenderImage>>, bool, O
 
 /// What one file takes on disk: Windows' own number when it gave one, else estimated from the
 /// cluster size. A cloud file that is not on this device takes nothing, whatever was asked.
-fn on_disk_of(entry: &Entry, details: FileDetails, cluster: u64) -> u64 {
+pub(crate) fn on_disk_of(entry: &Entry, details: FileDetails, cluster: u64) -> u64 {
     if entry.is_cloud_placeholder() {
         return 0;
     }
-    details
-        .size_on_disk
-        .unwrap_or_else(|| dirsize::file_on_disk(entry, cluster))
+    // Windows gives the bytes stored (the file's own size unless it is compressed or sparse);
+    // they take whole clusters, as File Explorer shows.
+    details.size_on_disk.map_or_else(
+        || dirsize::file_on_disk(entry, cluster),
+        |bytes| dirsize::round_to_clusters(bytes, cluster),
+    )
 }
 
 /// Counts the files and folders under the items and reports as it goes. Background thread.

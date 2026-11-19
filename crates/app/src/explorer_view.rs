@@ -423,7 +423,6 @@ impl Explorer {
             .debug_selector(|| "selection-actions".to_owned())
             .flex()
             .min_w_0()
-            .overflow_hidden()
             .items_center()
             .gap(theme::s_4())
             .overflow_hidden()

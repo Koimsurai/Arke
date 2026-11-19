@@ -97,6 +97,27 @@ fn only_folders_and_several_items_get_a_space_card(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("props-space-bar").is_none());
 }
 
+/// Windows gives an uncompressed file's own size as what it stores: on disk it takes whole
+/// clusters, as File Explorer shows (2,402 bytes take 4 KB); a compressed file its stored bytes,
+/// rounded the same way.
+#[test]
+fn size_on_disk_counts_whole_clusters() {
+    let on_disk = |size, stored| {
+        crate::properties::on_disk_of(
+            &file("a.txt", size),
+            crate::shell::FileDetails {
+                accessed: None,
+                size_on_disk: stored,
+            },
+            4096,
+        )
+    };
+    assert_eq!(on_disk(2402, Some(2402)), 4096);
+    assert_eq!(on_disk(100_000, Some(5000)), 8192);
+    assert_eq!(on_disk(8192, Some(8192)), 8192);
+    assert_eq!(on_disk(2402, None), 4096);
+}
+
 /// An empty folder, once counted, has nothing to break down: no space card, rather than an empty
 /// bar that looks as if it were still loading.
 #[gpui::test]

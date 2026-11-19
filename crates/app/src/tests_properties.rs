@@ -221,7 +221,7 @@ fn several_items_share_attributes(cx: &mut TestAppContext) {
 
     click(cx, "props-hidden");
     wait_for(cx, &view, "the change back", |v| {
-        v.attribute(ATTR_HIDDEN) == Tri::Off
+        v.attribute(ATTR_HIDDEN) == Tri::Off && shell.attribute_calls.lock().len() == 2
     });
     assert_eq!(
         shell.attribute_calls.lock().last().map(|c| (c.1, c.2)),
@@ -229,6 +229,9 @@ fn several_items_share_attributes(cx: &mut TestAppContext) {
     );
     click(cx, "props-readonly");
     assert_eq!(view.update(cx, |v, _| v.attribute(ATTR_READONLY)), Tri::On);
+    wait_for(cx, &view, "the read-only change", |_| {
+        shell.attribute_calls.lock().len() == 3
+    });
     assert_eq!(
         shell.attribute_calls.lock().last().map(|c| (c.1, c.2)),
         Some((ATTR_READONLY, 0))

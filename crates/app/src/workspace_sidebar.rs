@@ -2551,7 +2551,10 @@ fn here_layer() -> AnyElement {
         .size_full()
         .rounded(theme::r_8())
         .bg(theme::paper())
-        .shadow(theme::elev_1())
+        // The outline goes inside: a shadow outside is cut off where a tile or a row touches the
+        // edge of the scrolling sidebar (#220).
+        .border_1()
+        .border_color(theme::line())
         .into_any_element()
 }
 

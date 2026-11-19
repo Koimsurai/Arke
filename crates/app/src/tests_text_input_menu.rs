@@ -609,3 +609,55 @@ fn a_tab_completed_path_can_be_undone(cx: &mut TestAppContext) {
     assert_eq!(view.update(cx, |v, cx| v.path_text(cx)), r"C:\p\do");
     assert!(view.update(cx, |v, _| v.editing_path));
 }
+
+/// Ctrl with the arrows, Backspace and Delete works by word, as in a Windows edit box; in a path
+/// each folder name and each part of a file name is a word (#219).
+#[gpui::test]
+fn ctrl_moves_selects_and_erases_by_word(cx: &mut TestAppContext) {
+    let (view, cx) = rename_setup(cx);
+    cx.simulate_keystrokes("ctrl-l");
+    let input = path_input(&view, cx);
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input(r"C:\Users\me\report.final.docx");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("ctrl-backspace");
+    assert_eq!(text(&input, cx), r"C:\Users\me\report.final.");
+    cx.simulate_keystrokes("ctrl-backspace ctrl-backspace");
+    assert_eq!(text(&input, cx), r"C:\Users\me\");
+
+    // Ctrl+Right goes to the start of the next word; with Shift it selects up to there.
+    cx.simulate_keystrokes("home ctrl-right ctrl-shift-right");
+    cx.simulate_input(r"Docs\");
+    cx.run_until_parked();
+    assert_eq!(text(&input, cx), r"C:\Docs\me\");
+
+    cx.simulate_keystrokes("end ctrl-left ctrl-shift-left");
+    cx.simulate_input("x");
+    cx.run_until_parked();
+    assert_eq!(text(&input, cx), r"C:\xme\");
+
+    cx.simulate_keystrokes("home ctrl-delete");
+    assert_eq!(text(&input, cx), r"xme\");
+    cx.simulate_keystrokes("end shift-home backspace");
+    assert_eq!(text(&input, cx), "");
+    assert!(view.update(cx, |v, _| v.editing_path), "still editing");
+}
+
+#[test]
+fn word_boundaries() {
+    use crate::text_input::{next_word, previous_word};
+    let s = "hello  world";
+    assert_eq!(next_word(s, 0), 7);
+    assert_eq!(next_word(s, 3), 7);
+    assert_eq!(next_word(s, 7), s.len());
+    assert_eq!(previous_word(s, s.len()), 7);
+    assert_eq!(previous_word(s, 7), 0);
+    assert_eq!(previous_word(s, 6), 0);
+    assert_eq!(previous_word("", 0), 0);
+    assert_eq!(next_word("", 0), 0);
+    // A run of CJK is one word.
+    let cjk = "\u{8CC7}\u{6599}\u{593E} a";
+    assert_eq!(previous_word(cjk, 9), 0);
+    assert_eq!(next_word(cjk, 0), 10);
+}

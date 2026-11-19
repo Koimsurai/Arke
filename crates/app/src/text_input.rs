@@ -38,6 +38,14 @@ actions!(
         Right,
         SelectLeft,
         SelectRight,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordLeft,
+        DeleteWordRight,
+        SelectHome,
+        SelectEnd,
         SelectAll,
         Home,
         End,
@@ -63,6 +71,15 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, ctx),
         KeyBinding::new("shift-left", SelectLeft, ctx),
         KeyBinding::new("shift-right", SelectRight, ctx),
+        // By word, as in a Windows edit box (#219).
+        KeyBinding::new("ctrl-left", WordLeft, ctx),
+        KeyBinding::new("ctrl-right", WordRight, ctx),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
+        KeyBinding::new("shift-home", SelectHome, ctx),
+        KeyBinding::new("shift-end", SelectEnd, ctx),
         KeyBinding::new("ctrl-a", SelectAll, ctx),
         KeyBinding::new("ctrl-v", Paste, ctx),
         KeyBinding::new("ctrl-c", Copy, ctx),
@@ -322,6 +339,64 @@ impl TextInput {
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.next_boundary(self.cursor_offset()), window, cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word(self.cursor_offset()), window, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word(self.cursor_offset()), window, cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word(self.cursor_offset()), window, cx);
+    }
+
+    fn select_word_right(
+        &mut self,
+        _: &SelectWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(self.next_word(self.cursor_offset()), window, cx);
+    }
+
+    fn select_home(&mut self, _: &SelectHome, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, window, cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), window, cx);
+    }
+
+    /// Ctrl+Backspace: erases back to the start of the word (a selection is erased instead).
+    fn delete_word_left(&mut self, _: &DeleteWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            let to = self.previous_word(self.cursor_offset());
+            if to == self.cursor_offset() {
+                return;
+            }
+            self.select_to(to, window, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    /// Ctrl+Delete: erases up to the start of the next word.
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let to = self.next_word(self.cursor_offset());
+            if to == self.cursor_offset() {
+                return;
+            }
+            self.select_to(to, window, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
@@ -745,6 +820,24 @@ impl TextInput {
             .rev()
             .find_map(|(idx, _)| (idx < offset).then_some(idx))
             .unwrap_or(0)
+    }
+
+    /// Start of the word before `offset`, skipping spaces and separators first (`\`, `.`, `-` and
+    /// the like end a word, so in a path it stops at each folder name). A password field has no
+    /// words: its start.
+    fn previous_word(&self, offset: usize) -> usize {
+        if self.masked {
+            return 0;
+        }
+        previous_word(&self.content, offset)
+    }
+
+    /// Start of the next word after `offset`, as Ctrl+Right in a Windows edit box.
+    fn next_word(&self, offset: usize) -> usize {
+        if self.masked {
+            return self.content.len();
+        }
+        next_word(&self.content, offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
@@ -1476,6 +1569,14 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
@@ -1614,4 +1715,49 @@ mod stale_layout_tests {
             });
         }
     }
+}
+
+/// Whether a character (the first of a grapheme) belongs to a word: letters, digits and `_`.
+/// Everything else (spaces, `\`, `/`, `.`, `-`, ...) separates words, so in a path or a file
+/// name each part is a word of its own.
+fn is_word(grapheme: &str) -> bool {
+    grapheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Start of the word before `offset` in `text`: separators and spaces right before it are skipped.
+pub(crate) fn previous_word(text: &str, offset: usize) -> usize {
+    let mut seen_word = false;
+    let mut at = 0;
+    for (start, g) in text.grapheme_indices(true).rev() {
+        if start >= offset {
+            continue;
+        }
+        if is_word(g) {
+            at = start;
+            seen_word = true;
+        } else if seen_word {
+            return at;
+        }
+    }
+    if seen_word { at } else { 0 }
+}
+
+/// Start of the word after `offset` in `text` (the end when there is none), as Ctrl+Right in a
+/// Windows edit box.
+pub(crate) fn next_word(text: &str, offset: usize) -> usize {
+    let mut passed_separator = false;
+    for (start, g) in text.grapheme_indices(true) {
+        if start < offset {
+            continue;
+        }
+        if !is_word(g) {
+            passed_separator = true;
+        } else if passed_separator {
+            return start;
+        }
+    }
+    text.len()
 }

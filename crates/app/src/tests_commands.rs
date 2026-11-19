@@ -137,7 +137,7 @@ fn ctrl_shift_p_searches_commands_and_enter_runs_one(cx: &mut TestAppContext) {
     assert_eq!(labels(&ws, cx).len(), 10, "all commands, the first page");
 
     // Fuzzy search by name, with each command's key.
-    cx.simulate_input("clos tab");
+    cx.simulate_input("clse tab");
     cx.run_until_parked();
     assert_eq!(
         labels(&ws, cx).first(),

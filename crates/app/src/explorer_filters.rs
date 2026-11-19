@@ -106,7 +106,11 @@ fn measure(geometry: &Rc<RefCell<PanelGeometry>>, what: Measured) -> impl IntoEl
         },
         |_, (), _, _| {},
     )
+    // Pinned to the corner: without insets an absolute child starts inside its parent's padding,
+    // which put a filter's menu and the press that closes it off its button.
     .absolute()
+    .top_0()
+    .left_0()
     .size_full()
 }
 

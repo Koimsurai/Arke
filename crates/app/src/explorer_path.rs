@@ -578,7 +578,11 @@ impl Explorer {
             },
             |_, (), _, _| {},
         )
+        // Pinned to the corner: without insets it starts inside the bar's padding, and the
+        // suggestions under the bar sat that far right of it.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full();
         let bar = div()
             .id("path-bar")

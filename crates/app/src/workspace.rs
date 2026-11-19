@@ -3172,7 +3172,11 @@ pub(crate) trait TooltipBelowExt:
                 move |bounds, _, _| probe.set(Some(bounds)),
                 |_, (), _, _| {},
             )
+            // Pinned to the corner: without insets an absolute child sits where it would flow
+            // (after the control's content, or inside its padding).
             .absolute()
+            .top_0()
+            .left_0()
             .size_full(),
         )
         .tooltip(move |window, cx| {

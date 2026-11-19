@@ -5,7 +5,8 @@
 # Each issue gets one comment for the first RC that has its fix and one for the stable release; a
 # hidden marker in the comment keeps later RCs and reruns from repeating it. The stable release also
 # closes the issue and drops the "fixed in next release" label; an issue reopened after that (the
-# marker is there) is left alone.
+# marker is there) is left alone. An issue labeled "needs testing" (a fix only the reporter's own
+# setup can confirm) is asked to try it instead, and stays open.
 #
 #   TAG=v0.4.1 GH_REPO=owner/name bash .github/release-notice.sh [--dry-run]
 set -euo pipefail
@@ -23,6 +24,7 @@ if [ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" = true ]
 else
   marker="<!-- release-notice:stable -->"
   text="The fix is out in [Arke $version]($url). Arke updates itself, or you can get it from the release page. If it still happens for you, please say so here."
+  ask="A fix is out in [Arke $version]($url). Arke updates itself, or you can get it from the release page. Could you try it and say here whether it works for you? This issue stays open until then."
 fi
 
 numbers="$( (grep -oE '\(#[0-9]+\)' <<<"$body" || true) | tr -dc '0-9\n' | sort -nu)"
@@ -32,7 +34,8 @@ if [ -z "$numbers" ]; then
 fi
 
 for n in $numbers; do
-  read -r is_pr state < <(gh api "repos/$GH_REPO/issues/$n" --jq '"\(has("pull_request")) \(.state)"')
+  read -r is_pr state testing < <(gh api "repos/$GH_REPO/issues/$n" \
+    --jq '"\(has("pull_request")) \(.state) \(any(.labels[]; .name == "needs testing"))"')
   if [ "$is_pr" = true ]; then
     echo "#$n: pull request, skipped"
     continue
@@ -43,14 +46,24 @@ for n in $numbers; do
   fi
   stable=false
   [[ "$marker" == *stable* ]] && stable=true
+  say="$text"
+  keep=false
+  if $stable && [ "$testing" = true ]; then
+    say="$ask"
+    keep=true
+  fi
   if $dry_run; then
-    echo "#$n ($state): would comment: $text"
-    if $stable && [ "$state" = open ]; then
+    echo "#$n ($state): would comment: $say"
+    if $stable && ! $keep && [ "$state" = open ]; then
       echo "#$n: would close"
     fi
     continue
   fi
-  gh issue comment "$n" --body "$text"$'\n\n'"$marker"
+  gh issue comment "$n" --body "$say"$'\n\n'"$marker"
+  if $keep; then
+    echo "#$n: asked to try it, left open"
+    continue
+  fi
   if $stable; then
     gh issue edit "$n" --remove-label "fixed in next release" >/dev/null 2>&1 || true
     if [ "$state" = open ]; then

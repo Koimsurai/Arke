@@ -173,6 +173,13 @@ const SETTABLE: u32 = 0x1 | 0x2 | 0x4 | 0x20 | 0x100 | 0x1000 | 0x2000;
 /// `FILE_ATTRIBUTE_NORMAL`: what a file with no attribute set is given.
 const NORMAL: u32 = 0x80;
 
+/// The alternate data stream Windows puts on files from the internet.
+fn zone_stream(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(":Zone.Identifier");
+    PathBuf::from(name)
+}
+
 /// Bytes a file takes on disk (`GetCompressedFileSizeW`: asks the file system, opens no data).
 fn compressed_size(path: &Path) -> Option<u64> {
     use windows::Win32::Foundation::{GetLastError, NO_ERROR};
@@ -1333,6 +1340,16 @@ impl Shell for WinShell {
             }
         }
         Ok(())
+    }
+
+    fn is_blocked(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        std::fs::metadata(zone_stream(path)).is_ok()
+    }
+
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        Ok(std::fs::remove_file(zone_stream(path))?)
     }
 
     fn default_app(&self, path: &Path) -> Option<String> {

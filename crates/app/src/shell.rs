@@ -800,6 +800,18 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = root;
         None
     }
+    /// Whether the file came from the internet and carries the mark Windows warns about
+    /// (`Zone.Identifier`). Only looks for the mark; never for a cloud file that is not on this
+    /// device. Background thread.
+    fn is_blocked(&self, path: &Path) -> bool {
+        let _ = path;
+        false
+    }
+    /// Removes the internet mark ("Unblock"). Background thread.
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        let _ = path;
+        Err(ShellError::Unsupported)
+    }
     /// Windows' own Properties window for `paths`, with the pages only Windows has (security,
     /// sharing, previous versions, ...). Background thread.
     fn show_properties(&self, paths: &[PathBuf], owner: Option<isize>) -> Result<(), ShellError> {

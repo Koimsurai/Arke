@@ -7,13 +7,13 @@ use super::*;
 use crate::properties::{Properties, Tri};
 use crate::shell::{ATTR_HIDDEN, ATTR_READONLY};
 
-const PLACEHOLDER: u32 = 0x40_0000;
+pub(super) const PLACEHOLDER: u32 = 0x40_0000;
 
-fn at(secs: u64) -> SystemTime {
+pub(super) fn at(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
 }
 
-fn services(fs: &Arc<FakeFs>, shell: &Arc<FakeShell>) -> Services {
+pub(super) fn services(fs: &Arc<FakeFs>, shell: &Arc<FakeShell>) -> Services {
     Services {
         fs: Arc::clone(fs) as Arc<dyn arke_core::fs::Fs>,
         shell: Arc::clone(shell) as Arc<dyn Shell>,
@@ -22,7 +22,7 @@ fn services(fs: &Arc<FakeFs>, shell: &Arc<FakeShell>) -> Services {
 }
 
 /// A Properties window for `targets` (path, is a folder).
-fn props<'a>(
+pub(super) fn props<'a>(
     cx: &'a mut TestAppContext,
     fs: &Arc<FakeFs>,
     shell: &Arc<FakeShell>,
@@ -43,7 +43,7 @@ fn props<'a>(
     cx.add_window_view(move |window, cx| Properties::new(services, targets, window, cx))
 }
 
-fn wait_for(
+pub(super) fn wait_for(
     cx: &mut VisualTestContext,
     view: &Entity<Properties>,
     what: &str,
@@ -60,7 +60,7 @@ fn wait_for(
     }
 }
 
-fn ready(cx: &mut VisualTestContext, view: &Entity<Properties>) {
+pub(super) fn ready(cx: &mut VisualTestContext, view: &Entity<Properties>) {
     wait_for(
         cx,
         view,
@@ -69,7 +69,7 @@ fn ready(cx: &mut VisualTestContext, view: &Entity<Properties>) {
     );
 }
 
-fn click(cx: &mut VisualTestContext, id: &'static str) {
+pub(super) fn click(cx: &mut VisualTestContext, id: &'static str) {
     let bounds = cx
         .debug_bounds(id)
         .unwrap_or_else(|| panic!("{id} should be drawn"));
@@ -77,7 +77,11 @@ fn click(cx: &mut VisualTestContext, id: &'static str) {
     cx.run_until_parked();
 }
 
-fn info(cx: &mut VisualTestContext, view: &Entity<Properties>, id: &str) -> Option<String> {
+pub(super) fn info(
+    cx: &mut VisualTestContext,
+    view: &Entity<Properties>,
+    id: &str,
+) -> Option<String> {
     view.update(cx, |v, _| {
         v.info_for_test()
             .into_iter()
@@ -86,7 +90,7 @@ fn info(cx: &mut VisualTestContext, view: &Entity<Properties>, id: &str) -> Opti
     })
 }
 
-fn errors(cx: &mut VisualTestContext, view: &Entity<Properties>) -> Vec<String> {
+pub(super) fn errors(cx: &mut VisualTestContext, view: &Entity<Properties>) -> Vec<String> {
     view.update(cx, |v, _| {
         v.errors_for_test()
             .into_iter()
@@ -96,7 +100,7 @@ fn errors(cx: &mut VisualTestContext, view: &Entity<Properties>) -> Vec<String> 
     })
 }
 
-fn file_fs() -> Arc<FakeFs> {
+pub(super) fn file_fs() -> Arc<FakeFs> {
     let fs = FakeFs::new();
     fs.insert_dir(
         r"C:\p",

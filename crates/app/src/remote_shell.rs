@@ -759,6 +759,15 @@ impl Shell for RemoteShell {
         }
         self.inner.set_attributes(paths, set, clear)
     }
+    fn is_blocked(&self, path: &Path) -> bool {
+        remote(path).is_none() && self.inner.is_blocked(path)
+    }
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        if remote(path).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.unblock(path)
+    }
     fn default_app(&self, path: &Path) -> Option<String> {
         if remote(path).is_some() {
             return None;

@@ -46,6 +46,8 @@ mod motion;
 mod preview_info;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
+#[path = "tests_properties_card.rs"]
+mod properties_card;
 #[path = "tests_properties.rs"]
 mod properties_window;
 #[path = "tests_quick_look.rs"]
@@ -185,6 +187,9 @@ struct FakeShell {
     fail_attributes: std::sync::atomic::AtomicBool,
     /// The program every file opens with; Windows' "Choose another app" dialog makes it Paint.
     app_name: Mutex<Option<String>>,
+    /// Files with the internet mark, and the ones it was removed from.
+    blocked: Mutex<Vec<PathBuf>>,
+    unblocked: Mutex<Vec<PathBuf>>,
     /// Windows' own Properties window was asked for these items.
     native_properties: Mutex<Vec<Vec<PathBuf>>>,
 }
@@ -835,6 +840,16 @@ impl Shell for FakeShell {
         if self.fail_attributes.load(Ordering::Relaxed) {
             return Err(ShellError::Host("access denied".into()));
         }
+        Ok(())
+    }
+
+    fn is_blocked(&self, path: &Path) -> bool {
+        self.blocked.lock().iter().any(|p| p == path)
+    }
+
+    fn unblock(&self, path: &Path) -> Result<(), ShellError> {
+        self.unblocked.lock().push(path.to_path_buf());
+        self.blocked.lock().retain(|p| p != path);
         Ok(())
     }
 

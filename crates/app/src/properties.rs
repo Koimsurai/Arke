@@ -1,36 +1,47 @@
 //! Arke's own Properties window (Alt+Enter, "Properties" in the menus).
 //!
-//! One scrolling page of sections, in a window of its own (several can be open). Everything
-//! applies the moment it is changed: a name on Enter or when the box loses focus, an attribute on
-//! click. Nothing is written that the user did not change, and a failure shows under the thing
-//! that failed. The pages only Windows has (security, sharing, previous versions, ...) are one
-//! button away ("Windows properties...").
+//! One scrolling page in a window of its own (several can be open), built like the main window:
+//! the same material and title bar, cards like the settings page. From the top: what the item is
+//! (a picture or icon, the name, a line or two about it), quick actions, then cards for the
+//! general facts, the times, attributes and security, and, for folders, drives and several items,
+//! where the space goes. Everything applies the moment it is changed, nothing is written that the
+//! user did not change, and a failure shows under the thing that failed. The pages only Windows
+//! has (security, sharing, previous versions, ...) are one button away.
 //!
-//! Nothing here reads file contents: sizes, times and attributes come from listings and from
-//! `GetCompressedFileSize`, so a cloud file that is not on this device is never downloaded.
+//! Nothing here reads file contents unasked: sizes, times and attributes come from listings and
+//! `GetCompressedFileSize`, so a cloud file that is not on this device is never downloaded. The
+//! only reads are the picture of an image or video (never of a cloud file) and a checksum the
+//! user asks for.
 
+use std::cell::Cell;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use arke_core::dirsize::{self, Usage};
-use arke_core::filetype::{FileKind, file_kind, wants_system_icon, wants_type_icon};
+use arke_core::dirsize::{self, Category, Space, Usage};
+use arke_core::exif::PhotoInfo;
+use arke_core::filetype::{
+    FileKind, can_thumbnail, can_video_thumbnail, file_kind, wants_system_icon, wants_type_icon,
+};
 use arke_core::format::{format_count, format_size, type_label};
 use arke_core::takeover::Target;
 use arke_core::{Entry, EntryKind};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
-    KeyBinding, MouseButton, ParentElement, Render, RenderImage, SharedString, Styled,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, actions, div,
-    img, prelude::*, px, size, svg,
+    KeyBinding, MouseButton, ObjectFit, ParentElement, Render, RenderImage, SharedString, Styled,
+    Subscription, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowHandle,
+    WindowOptions, actions, div, img, prelude::*, px, relative, size, svg,
 };
 use rust_i18n::t;
+use sha2::{Digest, Sha256};
 
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
-use crate::explorer::{Explorer, Services, kind_icon, spawn_thread};
-use crate::shell::{ATTR_HIDDEN, ATTR_READONLY, FileDetails, FileOp, OpOutcome};
+use crate::explorer::{Explorer, Services, caption_buttons, kind_icon, spawn_thread};
+use crate::settings::{PropertiesPlace, SettingsStore};
+use crate::shell::{ATTR_HIDDEN, ATTR_READONLY, FileDetails, FileOp, OpOutcome, Place};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
 
@@ -38,19 +49,38 @@ actions!(properties, [CloseProperties]);
 
 const CONTEXT: &str = "Properties";
 
-/// Window size when it opens.
-const WIDTH: f32 = 460.;
-const HEIGHT: f32 = 640.;
+/// Window width and the height it starts with (it then fits what is shown).
+const WIDTH: f32 = 500.;
+const START_HEIGHT: f32 = 600.;
+/// The window is never shorter than this, and keeps this much of the screen free.
+const MIN_HEIGHT: f32 = 320.;
+const SCREEN_MARGIN: f32 = 72.;
 /// Longest wait between two updates of a folder size that is still being counted.
 const PROGRESS_EVERY: Duration = Duration::from_millis(120);
-/// Width of the labels in the info rows.
-const LABEL_W: gpui::Pixels = px(116.);
+/// Width of the labels in the rows.
+const LABEL_W: gpui::Pixels = px(112.);
+/// Picture or icon of the item at the top.
+const HERO: gpui::Pixels = px(96.);
+/// The picture is decoded this big (device pixels).
+const HERO_DECODE: u32 = 320;
+/// How much of a file a checksum reads at a time.
+const HASH_CHUNK: usize = 256 * 1024;
+/// Estimated heights, to size the window to its content.
+const EST_TITLE: f32 = 44.;
+const EST_FOOTER: f32 = 56.;
+const EST_HERO: f32 = HERO_H + 16.;
+const HERO_H: f32 = 96.;
+const EST_ACTIONS: f32 = 44.;
+const EST_HEADING: f32 = 34.;
+const EST_GAP: f32 = 14.;
+/// How long after the window resized itself a size change is still its own.
+const OWN_RESIZE: Duration = Duration::from_millis(500);
 
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseProperties, Some(CONTEXT))]);
 }
 
-/// The item a window shows, and what it is called there.
+/// The item a window shows.
 #[derive(Clone, Debug)]
 struct Row {
     path: PathBuf,
@@ -66,6 +96,13 @@ struct Drive {
     total: u64,
 }
 
+/// What a photo says about itself.
+struct PhotoMeta {
+    width: u32,
+    height: u32,
+    info: Option<PhotoInfo>,
+}
+
 /// What the first read of the items brings.
 struct Loaded {
     rows: Vec<Row>,
@@ -76,6 +113,12 @@ struct Loaded {
     drive: Option<Drive>,
     cluster: u64,
     icon: Option<Arc<RenderImage>>,
+    /// The picture is of the content (a photo, a frame of a video), not an icon.
+    picture: bool,
+    photo: Option<PhotoMeta>,
+    /// The file came from the internet (`Zone.Identifier`).
+    blocked: bool,
+    places: Vec<Place>,
 }
 
 /// Where counting a folder stands.
@@ -94,10 +137,20 @@ pub(crate) enum Tri {
     On,
 }
 
+/// A checksum, asked for with a click.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HashState {
+    Idle,
+    /// Percent read so far.
+    Running(u8),
+    Done(String),
+    Failed(String),
+}
+
 /// What background work reports back.
 enum Msg {
     Loaded(Box<Loaded>),
-    Usage(Usage, Counting),
+    Space(Space, Counting),
     Attribute {
         /// The attributes the items had before, to put back when it failed.
         before: Vec<u32>,
@@ -110,6 +163,10 @@ enum Msg {
     },
     App(Result<Option<String>, String>),
     Native(Result<(), String>),
+    Hash(HashState),
+    Unblocked(Result<(), String>),
+    /// An action from the quick row that failed.
+    Action(Result<(), String>),
 }
 
 pub(crate) struct Properties {
@@ -121,21 +178,34 @@ pub(crate) struct Properties {
     name_input: Entity<TextInput>,
     /// The name as it is on disk (what the box goes back to on Esc).
     name: String,
-    usage: Option<Usage>,
+    space: Option<Space>,
     counting: Counting,
     cancel: Arc<AtomicBool>,
+    hash: HashState,
+    hash_cancel: Arc<AtomicBool>,
+    /// Attribute changes on a folder reach what is inside too.
+    recursive: bool,
     tx: flume::Sender<Msg>,
     name_error: Option<String>,
     attr_error: Option<String>,
     app_error: Option<String>,
     native_error: Option<String>,
+    action_error: Option<String>,
+    unblock_error: Option<String>,
+    /// The height the window last sized itself to, when and whether the user took over.
+    fit_height: f32,
+    fit_at: Instant,
+    user_sized: bool,
+    /// Height of what is drawn, as worked out while drawing.
+    estimate: Cell<f32>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Drop for Properties {
     fn drop(&mut self) {
-        // A folder still being counted stops with the window.
+        // A folder still being counted, or a checksum under way, stops with the window.
         self.cancel.store(true, Ordering::Relaxed);
+        self.hash_cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -149,16 +219,23 @@ pub(crate) fn open(
         return None;
     }
     let title = window_title(&targets);
-    let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
+    let bounds = start_bounds(cx);
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // Like the main window: the title bar is drawn by us.
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
+                appears_transparent: true,
                 ..Default::default()
             }),
             focus: true,
-            window_min_size: Some(size(px(360.), px(320.))),
+            window_min_size: Some(size(px(400.), px(MIN_HEIGHT))),
+            window_background: if theme::mica() {
+                gpui::WindowBackgroundAppearance::MicaBackdrop
+            } else {
+                gpui::WindowBackgroundAppearance::Opaque
+            },
             ..Default::default()
         },
         move |window, cx| cx.new(|cx| Properties::new(services, targets, window, cx)),
@@ -169,6 +246,28 @@ pub(crate) fn open(
             log::error!("cannot open the Properties window: {err:#}");
             None
         }
+    }
+}
+
+/// Where a new window goes: where the last one was if that is still on a screen, else centered.
+pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
+    let saved = SettingsStore::global(cx)
+        .read(cx)
+        .settings
+        .properties_window;
+    let height = saved.and_then(|p| p.height).unwrap_or(START_HEIGHT);
+    let width = saved.map_or(WIDTH, |p| p.width.clamp(400., 1200.));
+    let fresh = Bounds::centered(None, size(px(width), px(height)), cx);
+    let Some(place) = saved else {
+        return fresh;
+    };
+    let origin = gpui::point(px(place.x), px(place.y));
+    // A corner of the title bar must be on some screen (a monitor may have been unplugged).
+    let grab = origin + gpui::point(px(40.), px(20.));
+    if cx.displays().iter().any(|d| d.bounds().contains(&grab)) {
+        Bounds::new(origin, size(px(width), px(height)))
+    } else {
+        fresh
     }
 }
 
@@ -204,6 +303,10 @@ fn is_drive_root(path: &Path) -> bool {
     path.parent().is_none() && root_of(path).is_some_and(|r| r == path)
 }
 
+fn count_usize(n: u64) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
+}
+
 impl Properties {
     pub(crate) fn new(
         services: Services,
@@ -211,6 +314,8 @@ impl Properties {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Light or dark, the accent and the material, as the main window has them.
+        crate::workspace::apply_theme(window, cx);
         let (tx, rx) = flume::unbounded::<Msg>();
         let name = match targets.as_slice() {
             [(path, _)] => leaf(path),
@@ -224,6 +329,11 @@ impl Properties {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let input_focus = name_input.read(cx).focus_handle(cx);
+        let user_sized = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .properties_window
+            .is_some_and(|p| p.height.is_some());
         let subscriptions = vec![
             cx.subscribe_in(
                 &name_input,
@@ -240,6 +350,11 @@ impl Properties {
             ),
             // Clicking elsewhere applies the name, like pressing Enter.
             cx.on_blur(&input_focus, window, |this, _, cx| this.commit_name(cx)),
+            cx.observe_window_appearance(window, |_, window, cx| {
+                crate::workspace::apply_theme(window, cx);
+                window.refresh();
+            }),
+            cx.observe_window_bounds(window, |this, window, cx| this.bounds_changed(window, cx)),
         ];
         let this = Self {
             services,
@@ -248,14 +363,23 @@ impl Properties {
             loaded: None,
             name_input,
             name,
-            usage: None,
+            space: None,
             counting: Counting::Running,
             cancel: Arc::new(AtomicBool::new(false)),
+            hash: HashState::Idle,
+            hash_cancel: Arc::new(AtomicBool::new(false)),
+            recursive: false,
             tx,
             name_error: None,
             attr_error: None,
             app_error: None,
             native_error: None,
+            action_error: None,
+            unblock_error: None,
+            fit_height: 0.,
+            fit_at: Instant::now(),
+            user_sized,
+            estimate: Cell::new(0.),
             _subscriptions: subscriptions,
         };
         cx.spawn(async move |this, cx| {
@@ -270,6 +394,51 @@ impl Properties {
         this
     }
 
+    // ───────────────────────────── Window ─────────────────────────────
+
+    /// The window moved or changed size: remember where it is, and whether the user sized it
+    /// (a change the window did not make itself).
+    fn bounds_changed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.fit_at.elapsed() < OWN_RESIZE {
+            return;
+        }
+        let bounds = window.bounds();
+        let height = f32::from(bounds.size.height);
+        if self.fit_height > 0. && (height - self.fit_height).abs() > 3. {
+            self.user_sized = true;
+        }
+        let place = PropertiesPlace {
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            width: f32::from(bounds.size.width),
+            height: self.user_sized.then_some(height),
+        };
+        SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(|s| s.properties_window = Some(place), cx);
+        });
+    }
+
+    /// Sizes the window to what is drawn, unless the user sized it.
+    fn fit_window(&mut self, window: &mut Window, cx: &App) {
+        if self.user_sized || self.loaded.is_none() {
+            return;
+        }
+        let screen = cx
+            .primary_display()
+            .map_or(1000., |d| f32::from(d.visible_bounds().size.height));
+        let want = self
+            .estimate
+            .get()
+            .clamp(MIN_HEIGHT, (screen - SCREEN_MARGIN).max(MIN_HEIGHT));
+        if (want - self.fit_height).abs() <= 6. {
+            return;
+        }
+        self.fit_height = want;
+        self.fit_at = Instant::now();
+        let width = window.bounds().size.width;
+        window.resize(size(width, px(want)));
+    }
+
     // ───────────────────────────── Reading ─────────────────────────────
 
     fn start_loading(&self) {
@@ -282,11 +451,8 @@ impl Properties {
             let cluster = loaded.cluster;
             let rows: Vec<Row> = loaded.rows.clone();
             let details = loaded.details;
-            let drive = loaded.drive.is_some();
             let _ = tx.send(Msg::Loaded(Box::new(loaded)));
-            if !drive {
-                count_usage(&services, &rows, details, cluster, &cancel, &tx);
-            }
+            count_space(&services, &rows, details, cluster, &cancel, &tx);
         });
     }
 
@@ -295,12 +461,12 @@ impl Properties {
             Msg::Loaded(loaded) => {
                 self.loaded = Some(*loaded);
             }
-            Msg::Usage(usage, counting) => {
+            Msg::Space(space, counting) => {
                 // Stopped by the user: what comes in late is dropped.
                 if self.counting == Counting::Stopped {
                     return;
                 }
-                self.usage = Some(usage);
+                self.space = Some(space);
                 self.counting = counting;
             }
             Msg::Attribute { before, result } => match result {
@@ -339,9 +505,23 @@ impl Properties {
                 }
                 Err(error) => self.app_error = Some(error),
             },
-            Msg::Native(result) => {
-                self.native_error = result.err();
+            Msg::Native(result) => self.native_error = result.err(),
+            Msg::Hash(state) => {
+                // Cancelled meanwhile: what arrives late is dropped.
+                if matches!(self.hash, HashState::Running(_)) {
+                    self.hash = state;
+                }
             }
+            Msg::Unblocked(result) => match result {
+                Ok(()) => {
+                    self.unblock_error = None;
+                    if let Some(loaded) = self.loaded.as_mut() {
+                        loaded.blocked = false;
+                    }
+                }
+                Err(error) => self.unblock_error = Some(error),
+            },
+            Msg::Action(result) => self.action_error = result.err(),
         }
         cx.notify();
     }
@@ -428,14 +608,20 @@ impl Properties {
         }
     }
 
-    /// A click on a check box: on for all unless it is on for all already.
+    /// A click on a check box: on for all unless it is on for all already. With "apply to items
+    /// inside" on, folders pass it on to everything in them.
     fn toggle_attribute(&mut self, bit: u32, cx: &mut Context<Self>) {
         let on = self.attribute(bit) != Tri::On;
+        let recursive = self.recursive;
         let Some(loaded) = self.loaded.as_mut() else {
             return;
         };
         let before: Vec<u32> = loaded.rows.iter().map(|r| r.entry.attributes).collect();
-        let paths: Vec<PathBuf> = loaded.rows.iter().map(|r| r.path.clone()).collect();
+        let roots: Vec<(PathBuf, bool)> = loaded
+            .rows
+            .iter()
+            .map(|r| (r.path.clone(), r.entry.is_dir_like()))
+            .collect();
         for row in &mut loaded.rows {
             if on {
                 row.entry.attributes |= bit;
@@ -446,8 +632,17 @@ impl Properties {
         self.attr_error = None;
         let (set, clear) = if on { (bit, 0) } else { (0, bit) };
         let shell = Arc::clone(&self.services.shell);
+        let fs = Arc::clone(&self.services.fs);
         let tx = self.tx.clone();
         spawn_thread("properties-attributes", move || {
+            let mut paths: Vec<PathBuf> = roots.iter().map(|(p, _)| p.clone()).collect();
+            if recursive {
+                for (path, is_dir) in &roots {
+                    if *is_dir {
+                        paths.extend(descendants(&*fs, path));
+                    }
+                }
+            }
             let result = shell
                 .set_attributes(&paths, set, clear)
                 .map_err(|e| e.to_string());
@@ -504,7 +699,137 @@ impl Properties {
             ),
             _ => (path.to_path_buf(), Vec::new()),
         };
-        cx.defer(move |cx| show_in_arke(folder, select, cx));
+        cx.defer(move |cx| show_in_arke(folder, select, false, cx));
+    }
+
+    /// "Open": a file with its program, a folder or drive in Arke.
+    pub(crate) fn open_item(&self, cx: &mut Context<Self>) {
+        let Some(row) = self.single() else {
+            return;
+        };
+        let path = row.path.clone();
+        if row.entry.is_dir_like() {
+            cx.defer(move |cx| show_in_arke(path, Vec::new(), false, cx));
+            return;
+        }
+        let shell = Arc::clone(&self.services.shell);
+        let tx = self.tx.clone();
+        spawn_thread("properties-open", move || {
+            let result = shell.open(&path, None).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Action(result));
+        });
+    }
+
+    /// "Open in new tab": the folder, in a tab of the window used last.
+    pub(crate) fn open_in_new_tab(&self, cx: &mut Context<Self>) {
+        if let Some(row) = self.single() {
+            let path = row.path.clone();
+            cx.defer(move |cx| show_in_arke(path, Vec::new(), true, cx));
+        }
+    }
+
+    /// "Copy path": quoted, one per line, as the menu does.
+    pub(crate) fn copy_path(&self) {
+        let text = self
+            .targets
+            .iter()
+            .map(|(p, _)| format!("\"{}\"", p.display()))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        self.copy_text(text);
+    }
+
+    fn copy_text(&self, text: String) {
+        let shell = Arc::clone(&self.services.shell);
+        let tx = self.tx.clone();
+        spawn_thread("properties-copy", move || {
+            let result = shell.set_clipboard_text(&text).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Action(result));
+        });
+    }
+
+    /// Pins the folder (or drive) to the favorites, or takes it off them.
+    pub(crate) fn toggle_favorite(&self, cx: &mut Context<Self>) {
+        let (Some(row), Some(loaded)) = (self.single(), self.loaded.as_ref()) else {
+            return;
+        };
+        let path = row.path.clone();
+        let places = loaded.places.clone();
+        SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(
+                |s| {
+                    s.toggle_pin(&path, &places);
+                },
+                cx,
+            );
+        });
+    }
+
+    fn is_favorite(&self, cx: &mut App) -> bool {
+        let (Some(row), Some(loaded)) = (self.single(), self.loaded.as_ref()) else {
+            return false;
+        };
+        SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .is_pinned(&row.path, &loaded.places)
+    }
+
+    /// Removes the internet mark.
+    pub(crate) fn unblock(&mut self, cx: &mut Context<Self>) {
+        let Some(row) = self.single() else {
+            return;
+        };
+        let path = row.path.clone();
+        let shell = Arc::clone(&self.services.shell);
+        let tx = self.tx.clone();
+        self.unblock_error = None;
+        spawn_thread("properties-unblock", move || {
+            let result = shell.unblock(&path).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Unblocked(result));
+        });
+        cx.notify();
+    }
+
+    /// Starts the SHA-256 of the file. Reads it in pieces, so it can be cancelled.
+    pub(crate) fn start_hash(&mut self, cx: &mut Context<Self>) {
+        let Some(row) = self
+            .single()
+            .filter(|r| !r.entry.is_dir_like() && !r.entry.is_cloud_placeholder())
+        else {
+            return;
+        };
+        if matches!(self.hash, HashState::Running(_)) {
+            return;
+        }
+        let path = row.path.clone();
+        let total = row.entry.size;
+        let fs = Arc::clone(&self.services.fs);
+        let tx = self.tx.clone();
+        self.hash_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.hash_cancel = Arc::clone(&cancel);
+        self.hash = HashState::Running(0);
+        spawn_thread("properties-hash", move || {
+            let state = match hash_file(&*fs, &path, total, &cancel, &mut |percent| {
+                let _ = tx.send(Msg::Hash(HashState::Running(percent)));
+            }) {
+                Ok(Some(hex)) => HashState::Done(hex),
+                // Cancelled: the window already knows.
+                Ok(None) => return,
+                Err(err) => HashState::Failed(err.to_string()),
+            };
+            let _ = tx.send(Msg::Hash(state));
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_hash(&mut self, cx: &mut Context<Self>) {
+        self.hash_cancel.store(true, Ordering::Relaxed);
+        if matches!(self.hash, HashState::Running(_)) {
+            self.hash = HashState::Idle;
+        }
+        cx.notify();
     }
 
     fn close(&mut self, _: &CloseProperties, window: &mut Window, _: &mut Context<Self>) {
@@ -514,6 +839,7 @@ impl Properties {
     /// Closes the window; a folder still being counted stops with it.
     fn close_window(&self, window: &mut Window) {
         self.cancel.store(true, Ordering::Relaxed);
+        self.hash_cancel.store(true, Ordering::Relaxed);
         window.remove_window();
     }
 
@@ -523,8 +849,21 @@ impl Properties {
         self.loaded.as_ref().map_or(&[], |l| l.rows.as_slice())
     }
 
-    fn folders_only(&self) -> bool {
-        !self.rows().is_empty() && self.rows().iter().all(|r| r.entry.is_dir_like())
+    fn any_folder(&self) -> bool {
+        self.rows().iter().any(|r| r.entry.is_dir_like())
+    }
+
+    fn usage(&self) -> Option<&Usage> {
+        self.space.as_ref().map(|s| &s.usage)
+    }
+
+    fn is_drive(&self) -> bool {
+        self.loaded.as_ref().is_some_and(|l| l.drive.is_some())
+    }
+
+    /// Whether the items are still being walked (only folders take a while).
+    fn walking(&self) -> bool {
+        self.counting == Counting::Running && self.any_folder()
     }
 
     /// The size text: counted so far while a folder is still being walked.
@@ -535,7 +874,7 @@ impl Properties {
             t!(
                 "props.bytes",
                 size = format_size(bytes),
-                bytes = format_count(usize::try_from(bytes).unwrap_or(usize::MAX))
+                bytes = format_count(count_usize(bytes))
             )
             .into_owned()
         }
@@ -544,19 +883,74 @@ impl Properties {
     fn contains_text(usage: &Usage) -> String {
         t!(
             "props.contains",
-            files = tn!(
-                "props.n_files",
-                usize::try_from(usage.files).unwrap_or(usize::MAX)
-            ),
-            folders = tn!(
-                "props.n_folders",
-                usize::try_from(usage.folders).unwrap_or(usize::MAX)
-            )
+            files = tn!("props.n_files", count_usize(usage.files)),
+            folders = tn!("props.n_folders", count_usize(usage.folders))
         )
         .into_owned()
     }
 
-    /// The label / value pairs of the info section, in order.
+    /// Bytes of the single file, or of everything counted so far.
+    fn size_bytes(&self) -> Option<u64> {
+        match self.single() {
+            Some(row) if !row.entry.is_dir_like() => Some(row.entry.size),
+            _ => self.usage().map(|u| u.bytes),
+        }
+    }
+
+    /// The lines under the name: what it is, how big, and what is worth knowing at a glance.
+    fn summary(&self) -> Vec<String> {
+        let Some(loaded) = self.loaded.as_ref() else {
+            return Vec::new();
+        };
+        let dot = " · ";
+        let mut lines = Vec::new();
+        if let Some(drive) = loaded.drive.as_ref() {
+            let mut parts = Vec::new();
+            if !drive.file_system.is_empty() {
+                parts.push(drive.file_system.clone());
+            }
+            if drive.total > 0 {
+                parts.push(
+                    t!(
+                        "props.used_of",
+                        used = format_size(drive.total.saturating_sub(drive.free)),
+                        total = format_size(drive.total)
+                    )
+                    .into_owned(),
+                );
+            }
+            lines.push(parts.join(dot));
+            return lines;
+        }
+        let size = self.size_bytes().map(format_size);
+        let more = if self.walking() { " …" } else { "" };
+        if let Some(row) = self.single() {
+            let mut parts = vec![type_label(&row.entry)];
+            parts.extend(size.map(|s| format!("{s}{more}")));
+            if let Some(photo) = loaded.photo.as_ref() {
+                parts.push(format!("{} × {}", photo.width, photo.height));
+                if let Some(camera) = photo.info.as_ref().and_then(|i| i.camera.clone()) {
+                    parts.push(camera);
+                }
+            }
+            if row.entry.is_dir_like()
+                && let Some(usage) = self.usage()
+            {
+                parts.push(Self::contains_text(usage));
+            }
+            lines.push(parts.join(dot));
+        } else {
+            let mut parts = vec![tn!("props.items", self.targets.len()).into_owned()];
+            parts.extend(size.map(|s| format!("{s}{more}")));
+            lines.push(parts.join(dot));
+            if let Some(usage) = self.usage().filter(|_| self.any_folder()) {
+                lines.push(Self::contains_text(usage));
+            }
+        }
+        lines
+    }
+
+    /// The facts of the General card, then the Time card, in order.
     fn info_rows(&self) -> Vec<InfoRow> {
         let Some(loaded) = self.loaded.as_ref() else {
             return Vec::new();
@@ -564,13 +958,6 @@ impl Properties {
         let shell = &self.services.shell;
         let mut out = Vec::new();
         let single = self.single();
-        if let Some(row) = single.filter(|_| loaded.drive.is_none()) {
-            out.push(InfoRow::plain(
-                "props-type",
-                t!("col.type"),
-                type_label(&row.entry),
-            ));
-        }
         // Where: the shared folder of the items.
         let parents: Vec<&Path> = loaded.rows.iter().filter_map(|r| r.path.parent()).collect();
         if let Some(first) = parents.first()
@@ -581,68 +968,69 @@ impl Properties {
                 "props-location",
                 t!("col.location"),
                 first.display().to_string(),
-                Some(row_target(single, first)),
+                Some(single.map_or_else(|| first.to_path_buf(), |r| r.path.clone())),
             ));
         }
-        // Only folders take a while to count.
-        let counting = self.counting == Counting::Running
-            && loaded.drive.is_none()
-            && self.rows().iter().any(|r| r.entry.is_dir_like());
         let calculating = t!("props.calculating").into_owned();
-        // Size: a file's own size is known at once, folders count up as they are walked.
-        let (size, on_disk) = match (&self.usage, single) {
-            (_, Some(row)) if !row.entry.is_dir_like() => (
-                Some(row.entry.size),
-                Some(on_disk_of(&row.entry, loaded.details, loaded.cluster)),
-            ),
-            (Some(usage), _) => (Some(usage.bytes), Some(usage.on_disk)),
-            _ => (None, None),
-        };
         if loaded.drive.is_none() {
+            let walking = self.walking();
+            let on_disk = match single {
+                Some(row) if !row.entry.is_dir_like() => {
+                    Some(on_disk_of(&row.entry, loaded.details, loaded.cluster))
+                }
+                _ => self.usage().map(|u| u.on_disk),
+            };
             let mut size_row = InfoRow::plain(
                 "props-size",
                 t!("col.size"),
-                size.map_or_else(
+                self.size_bytes().map_or_else(
                     || calculating.clone(),
                     |b| {
                         let mut text = Self::size_text(b);
-                        if counting {
+                        if walking {
                             text.push_str(" …");
                         }
-                        if self.usage.is_some_and(|u| u.partial) && !counting {
+                        if self.usage().is_some_and(|u| u.partial) && !walking {
                             text = t!("props.at_least", size = text).into_owned();
                         }
                         text
                     },
                 ),
             );
-            size_row.stoppable = counting;
+            size_row.stoppable = walking;
             out.push(size_row);
             out.push(InfoRow::plain(
                 "props-ondisk",
                 t!("props.size_on_disk"),
                 on_disk.map_or(calculating, Self::size_text),
             ));
-        }
-        if self.rows().iter().any(|r| r.entry.is_dir_like()) && loaded.drive.is_none() {
-            out.push(InfoRow::plain(
-                "props-contains",
-                t!("props.contains_label"),
-                self.usage
-                    .as_ref()
-                    .map_or_else(|| t!("props.calculating").into_owned(), Self::contains_text),
-            ));
+            if self.any_folder() {
+                out.push(InfoRow::plain(
+                    "props-contains",
+                    t!("props.contains_label"),
+                    self.usage()
+                        .map_or_else(|| t!("props.calculating").into_owned(), Self::contains_text),
+                ));
+            }
         }
         if let Some(row) = single {
             let time = |t: Option<std::time::SystemTime>| t.map(|t| shell.format_time(t));
+            if let Some(photo) = loaded
+                .photo
+                .as_ref()
+                .and_then(|p| p.info.as_ref())
+                .and_then(|i| i.taken.clone())
+            {
+                out.push(InfoRow::time("props-taken", t!("props.taken"), photo));
+            }
             if let Some(text) = time(row.entry.created) {
-                out.push(InfoRow::plain("props-created", t!("col.created"), text));
+                out.push(InfoRow::time("props-created", t!("col.created"), text));
             }
             if let Some(text) = time(row.entry.modified) {
-                out.push(InfoRow::plain("props-modified", t!("col.modified"), text));
+                out.push(InfoRow::time("props-modified", t!("col.modified"), text));
             }
             if let Some(text) = time(loaded.details.accessed) {
-                out.push(InfoRow::plain("props-accessed", t!("props.accessed"), text));
+                out.push(InfoRow::time("props-accessed", t!("props.accessed"), text));
             }
         }
         if loaded.unreadable > 0 {
@@ -655,6 +1043,30 @@ impl Properties {
         out
     }
 
+    /// Where the space goes: bytes per category (biggest first, none left out when empty), the
+    /// biggest folders inside, and the total they are measured against.
+    pub(crate) fn space_view(&self) -> Option<SpaceView> {
+        let space = self.space.as_ref()?;
+        if !self.any_folder() {
+            return None;
+        }
+        let mut categories: Vec<(Category, u64)> = Category::ALL
+            .into_iter()
+            .map(|c| (c, space.usage.categories[c.index()]))
+            .filter(|(_, bytes)| *bytes > 0)
+            .collect();
+        categories.sort_by_key(|c| std::cmp::Reverse(c.1));
+        Some(SpaceView {
+            total: space.usage.bytes,
+            categories,
+            largest: space
+                .largest(3)
+                .into_iter()
+                .map(|(path, bytes)| (leaf(&path), bytes))
+                .collect(),
+        })
+    }
+
     /// The info rows as (id, label, value), for tests.
     #[cfg(test)]
     pub(crate) fn info_for_test(&self) -> Vec<(&'static str, String, String)> {
@@ -665,8 +1077,18 @@ impl Properties {
     }
 
     #[cfg(test)]
-    pub(crate) const fn usage_for_test(&self) -> Option<Usage> {
-        self.usage
+    pub(crate) fn summary_for_test(&self) -> Vec<String> {
+        self.summary()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn hash_for_test(&self) -> &HashState {
+        &self.hash
+    }
+
+    #[cfg(test)]
+    pub(crate) fn usage_for_test(&self) -> Option<Usage> {
+        self.usage().copied()
     }
 
     #[cfg(test)]
@@ -685,12 +1107,14 @@ impl Properties {
     }
 
     #[cfg(test)]
-    pub(crate) fn errors_for_test(&self) -> [Option<&str>; 4] {
+    pub(crate) fn errors_for_test(&self) -> [Option<&str>; 6] {
         [
             self.name_error.as_deref(),
             self.attr_error.as_deref(),
             self.app_error.as_deref(),
             self.native_error.as_deref(),
+            self.action_error.as_deref(),
+            self.unblock_error.as_deref(),
         ]
     }
 
@@ -702,6 +1126,18 @@ impl Properties {
     #[cfg(test)]
     pub(crate) fn target_for_test(&self) -> Option<PathBuf> {
         self.loaded.as_ref().and_then(|l| l.target.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn blocked_for_test(&self) -> bool {
+        self.loaded.as_ref().is_some_and(|l| l.blocked)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn picture_for_test(&self) -> (bool, bool) {
+        self.loaded
+            .as_ref()
+            .map_or((false, false), |l| (l.icon.is_some(), l.picture))
     }
 
     #[cfg(test)]
@@ -726,9 +1162,23 @@ impl Properties {
     pub(crate) fn path_for_test(&self) -> Option<PathBuf> {
         self.targets.first().map(|t| t.0.clone())
     }
+
+    #[cfg(test)]
+    pub(crate) const fn height_for_test(&self) -> (f32, bool) {
+        (self.fit_height, self.user_sized)
+    }
 }
 
-/// One line of the info section.
+/// What the "where the space goes" card draws.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SpaceView {
+    pub(crate) total: u64,
+    pub(crate) categories: Vec<(Category, u64)>,
+    /// Name and size of the biggest folders inside, biggest first.
+    pub(crate) largest: Vec<(String, u64)>,
+}
+
+/// One line of the General or Time card.
 struct InfoRow {
     id: &'static str,
     label: String,
@@ -737,6 +1187,8 @@ struct InfoRow {
     link: Option<PathBuf>,
     /// A "Stop" link follows while it is still being counted.
     stoppable: bool,
+    /// Belongs in the Time card.
+    time: bool,
 }
 
 impl InfoRow {
@@ -747,6 +1199,14 @@ impl InfoRow {
             value,
             link: None,
             stoppable: false,
+            time: false,
+        }
+    }
+
+    fn time(id: &'static str, label: impl std::fmt::Display, value: String) -> Self {
+        Self {
+            time: true,
+            ..Self::plain(id, label, value)
         }
     }
 
@@ -763,13 +1223,9 @@ impl InfoRow {
     }
 }
 
-/// What clicking the location shows: the item itself when there is one, else the folder.
-fn row_target(single: Option<&Row>, folder: &Path) -> PathBuf {
-    single.map_or_else(|| folder.to_path_buf(), |r| r.path.clone())
-}
-
-/// Brings Arke's window used last to the front on `folder`, with `select` selected.
-fn show_in_arke(folder: PathBuf, select: Vec<Arc<str>>, cx: &mut App) {
+/// Brings Arke's window used last to the front on `folder`, with `select` selected; `new_tab`
+/// opens it in a tab of its own.
+fn show_in_arke(folder: PathBuf, select: Vec<Arc<str>>, new_tab: bool, cx: &mut App) {
     let last = cx
         .try_global::<crate::workspace::LastActiveWindow>()
         .and_then(|l| l.0)
@@ -784,12 +1240,79 @@ fn show_in_arke(folder: PathBuf, select: Vec<Arc<str>>, cx: &mut App) {
         return;
     };
     let _ = window.update(cx, |workspace, window, cx| {
-        workspace.open_external(Target::Folder(folder), select, window, cx);
+        if new_tab {
+            workspace.open_tab(folder, usize::MAX, true, window, cx);
+        } else {
+            workspace.open_external(Target::Folder(folder), select, window, cx);
+        }
         window.activate_window();
     });
 }
 
 // ───────────────────────────── Background reads ─────────────────────────────
+
+/// Every file and folder below `root`, links not followed. Background thread.
+fn descendants(fs: &dyn arke_core::Fs, root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs.read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = dir.join(&*entry.name);
+            match entry.kind {
+                EntryKind::Dir => {
+                    stack.push(path.clone());
+                    found.push(path);
+                }
+                EntryKind::File => found.push(path),
+                EntryKind::Link { .. } => {}
+            }
+        }
+    }
+    found
+}
+
+/// SHA-256 of a file, in lowercase hex; `Ok(None)` when cancelled. `progress` gets the percent
+/// read whenever it changes. Background thread.
+fn hash_file(
+    fs: &dyn arke_core::Fs,
+    path: &Path,
+    total: u64,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u8),
+) -> std::io::Result<Option<String>> {
+    use std::io::Read as _;
+    let mut file = fs.open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; HASH_CHUNK];
+    let (mut read, mut shown) = (0u64, 0u8);
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+        read += n as u64;
+        let percent =
+            u8::try_from((read * 100).checked_div(total).unwrap_or(0).min(99)).unwrap_or(99);
+        if percent != shown {
+            shown = percent;
+            progress(percent);
+        }
+    }
+    Ok(Some(hasher.finalize().iter().fold(
+        String::new(),
+        |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        },
+    )))
+}
 
 /// Reads what the window shows about `targets`. Background thread.
 fn read_items(services: &Services, targets: &[(PathBuf, bool)]) -> Loaded {
@@ -842,7 +1365,16 @@ fn read_items(services: &Services, targets: &[(PathBuf, bool)]) -> Loaded {
             total,
         }
     });
-    let icon = single.and_then(|r| icon_of(shell.as_ref(), r));
+    let (icon, picture, photo) = single.map_or((None, false, None), |r| hero_of(services, r));
+    // The mark is looked for on files that are here; a cloud file that is not is left alone.
+    let blocked = single
+        .filter(|r| !r.entry.is_dir_like() && !r.entry.is_cloud_placeholder())
+        .is_some_and(|r| shell.is_blocked(&r.path));
+    let places = if single.is_some_and(|r| r.entry.is_dir_like()) {
+        shell.load_places()
+    } else {
+        Vec::new()
+    };
     Loaded {
         rows,
         unreadable,
@@ -852,20 +1384,51 @@ fn read_items(services: &Services, targets: &[(PathBuf, bool)]) -> Loaded {
         drive,
         cluster,
         icon,
+        picture,
+        photo,
+        blocked,
+        places,
     }
 }
 
-/// The icon Windows has for the item, for the kinds the list asks it for too. Never opens a cloud
-/// file that is not on this device (`wants_system_icon` leaves those out).
-fn icon_of(shell: &dyn crate::shell::Shell, row: &Row) -> Option<Arc<RenderImage>> {
-    let thumb = if wants_system_icon(&row.entry) {
-        shell.file_icon(&row.path, crate::media::SYSTEM_ICON_SIZE)
-    } else if wants_type_icon(&row.entry) {
-        shell.type_icon(row.entry.extension())
+/// The big picture at the top: a photo or a frame of a video where there is one, else the icon
+/// Windows has for the item. A cloud file that is not on this device is never opened for it
+/// (`can_thumbnail` and `wants_system_icon` leave those out), so it gets the kind icon.
+fn hero_of(services: &Services, row: &Row) -> (Option<Arc<RenderImage>>, bool, Option<PhotoMeta>) {
+    let entry = &row.entry;
+    if can_thumbnail(entry)
+        && let Ok(bytes) = services
+            .fs
+            .read(&row.path, arke_core::filetype::MAX_THUMBNAIL_SOURCE)
+        && let Ok(photo) = arke_core::thumbs::decode_photo(&bytes, HERO_DECODE)
+    {
+        let image = crate::media::to_render_image(photo.image);
+        return (
+            image.clone(),
+            image.is_some(),
+            Some(PhotoMeta {
+                width: photo.width,
+                height: photo.height,
+                info: photo.info,
+            }),
+        );
+    }
+    if can_video_thumbnail(entry)
+        && let Ok(Some(frame)) = services.shell.video_thumbnail(&row.path, HERO_DECODE)
+    {
+        let image = crate::media::to_render_image(frame);
+        return (image.clone(), image.is_some(), None);
+    }
+    let thumb = if wants_system_icon(entry) {
+        services
+            .shell
+            .file_icon(&row.path, crate::media::SYSTEM_ICON_SIZE)
+    } else if wants_type_icon(entry) {
+        services.shell.type_icon(entry.extension())
     } else {
         None
     };
-    thumb.and_then(crate::media::to_render_image)
+    (thumb.and_then(crate::media::to_render_image), false, None)
 }
 
 /// What one file takes on disk: Windows' own number when it gave one, else estimated from the
@@ -880,7 +1443,7 @@ fn on_disk_of(entry: &Entry, details: FileDetails, cluster: u64) -> u64 {
 }
 
 /// Counts the files and folders under the items and reports as it goes. Background thread.
-fn count_usage(
+fn count_space(
     services: &Services,
     rows: &[Row],
     details: FileDetails,
@@ -892,33 +1455,46 @@ fn count_usage(
     // Files in the selection itself are known from the listing.
     let mut base = Usage::default();
     for row in rows.iter().filter(|r| !r.entry.is_dir_like()) {
-        base.bytes += row.entry.size;
-        base.on_disk += if single {
-            on_disk_of(&row.entry, details, cluster)
-        } else {
-            dirsize::file_on_disk(&row.entry, cluster)
-        };
-        base.files += 1;
+        let before = base.on_disk;
+        dirsize::count_file(&mut base, &row.entry, cluster);
+        if single {
+            base.on_disk = before + on_disk_of(&row.entry, details, cluster);
+        }
     }
-    let mut done = base;
+    let mut done = Space {
+        usage: base,
+        children: Vec::new(),
+    };
     let mut last_sent: Option<Instant> = None;
     for row in rows.iter().filter(|r| r.entry.is_dir_like()) {
-        let before = done;
+        let before = done.clone();
         let walked = dirsize::usage(&*services.fs, &row.path, cluster, cancel, &mut |so_far| {
-            let mut shown = before;
-            shown += *so_far;
             if last_sent.is_none_or(|at| at.elapsed() >= PROGRESS_EVERY) {
                 last_sent = Some(Instant::now());
-                let _ = tx.send(Msg::Usage(shown, Counting::Running));
+                let mut shown = before.clone();
+                shown.usage += so_far.usage;
+                if single {
+                    shown.children.clone_from(&so_far.children);
+                } else {
+                    shown.children.push((row.path.clone(), so_far.usage.bytes));
+                }
+                let _ = tx.send(Msg::Space(shown, Counting::Running));
             }
         });
         match walked {
-            Some(usage) => done += usage,
+            Some(space) => {
+                done.usage += space.usage;
+                if single {
+                    done.children = space.children;
+                } else {
+                    done.children.push((row.path.clone(), space.usage.bytes));
+                }
+            }
             // Stopped: the window already knows.
             None => return,
         }
     }
-    let _ = tx.send(Msg::Usage(done, Counting::Done));
+    let _ = tx.send(Msg::Space(done, Counting::Done));
 }
 
 // ───────────────────────────── Drawing ─────────────────────────────
@@ -929,38 +1505,130 @@ impl Focusable for Properties {
     }
 }
 
-fn card() -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(theme::S_8)
-        .p(theme::S_12)
-        .rounded(theme::R_12)
-        .bg(theme::card())
-        .border_1()
-        .border_color(theme::line())
+/// A row of a card, with the height it is drawn at (to size the window).
+struct CardRow {
+    element: AnyElement,
+    height: f32,
 }
 
-fn label_text(text: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .w(LABEL_W)
-        .flex_none()
-        .text_size(theme::FS_13)
-        .text_color(theme::text_muted())
-        .child(text.into())
+const ROW_H: f32 = 42.;
+
+/// The row layout of every card: label on the left, the value (and what goes with it) after it.
+fn field(label: String, value: AnyElement, height: f32) -> CardRow {
+    CardRow {
+        element: div()
+            .min_h(px(ROW_H))
+            .px(theme::S_16)
+            .py(theme::S_8)
+            .flex()
+            .items_center()
+            .gap(theme::S_16)
+            .child(
+                div()
+                    .w(LABEL_W)
+                    .flex_none()
+                    .text_size(theme::FS_13)
+                    .text_color(theme::text_muted())
+                    .child(label),
+            )
+            .child(div().flex_1().min_w_0().child(value))
+            .into_any_element(),
+        height: height.max(ROW_H),
+    }
 }
 
-fn problem_text(id: &'static str, text: &str) -> AnyElement {
+/// A row with a single control (a check box), no label column.
+fn wide(element: AnyElement, height: f32) -> CardRow {
+    CardRow {
+        element: div()
+            .min_h(px(ROW_H))
+            .px(theme::S_16)
+            .py(theme::S_8)
+            .flex()
+            .items_center()
+            .child(element)
+            .into_any_element(),
+        height: height.max(ROW_H),
+    }
+}
+
+fn text_value(id: &'static str, text: impl Into<SharedString>) -> AnyElement {
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .a11y_live(gpui::Role::Alert, text.to_owned())
-        .text_size(theme::FS_12)
-        .text_color(theme::danger())
-        .child(text.to_owned())
+        .min_w_0()
+        .text_size(theme::FS_13)
+        .text_color(theme::text())
+        .child(text.into())
         .into_any_element()
 }
 
+fn problem_text(id: &'static str, text: &str) -> CardRow {
+    CardRow {
+        element: div()
+            .id(id)
+            .debug_selector(move || id.to_owned())
+            .a11y_live(gpui::Role::Alert, text.to_owned())
+            .px(theme::S_16)
+            .py(theme::S_8)
+            .text_size(theme::FS_12)
+            .text_color(theme::danger())
+            .child(text.to_owned())
+            .into_any_element(),
+        height: 32.,
+    }
+}
+
+/// A card like the settings page's: icon and title above, a box of rows below, a line between
+/// the rows. Returns the card and its height.
+fn card(icon: Icon, title: String, rows: Vec<CardRow>) -> (AnyElement, f32) {
+    let height = EST_HEADING + rows.iter().map(|r| r.height).sum::<f32>() + EST_GAP;
+    let element = div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .pt(theme::S_4)
+                .pb(theme::S_8)
+                .px(theme::S_4)
+                .flex()
+                .items_center()
+                .gap(theme::S_8)
+                .child(
+                    svg()
+                        .path(icon.path())
+                        .flex_none()
+                        .size(theme::ICON)
+                        .text_color(theme::text_muted()),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FS_13)
+                        .font_weight(theme::FW_STRONG)
+                        .text_color(theme::text_muted())
+                        .child(title),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .rounded(theme::R_8)
+                .bg(theme::card())
+                .border_1()
+                .border_color(theme::line())
+                .overflow_hidden()
+                .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                    div()
+                        .when(ix > 0, |d| d.border_t_1().border_color(theme::line()))
+                        .child(row.element)
+                })),
+        )
+        .into_any_element();
+    (element, height)
+}
+
+/// A text button, like the settings page's.
 fn button(
     id: &'static str,
     label: impl std::fmt::Display,
@@ -984,6 +1652,65 @@ fn button(
         .text_color(theme::text())
         .hover(|s| s.bg(theme::wash()))
         .child(label)
+        .on_click(on_click)
+        .into_any_element()
+}
+
+/// A small action under the name: icon and label.
+fn action(
+    id: &'static str,
+    icon: Icon,
+    label: impl std::fmt::Display,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let label = SharedString::from(label.to_string());
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .a11y_button(label.clone())
+        .h(theme::H_CTL_SM)
+        .px(theme::S_8)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(theme::S_6)
+        .rounded(theme::R_8)
+        .bg(theme::card())
+        .border_1()
+        .border_color(theme::line())
+        .cursor_pointer()
+        .text_size(theme::FS_12)
+        .text_color(theme::text())
+        .hover(|s| s.bg(theme::wash()))
+        .child(
+            svg()
+                .path(icon.path())
+                .size(px(14.))
+                .flex_none()
+                .text_color(theme::text_muted()),
+        )
+        .child(label)
+        .on_click(on_click)
+        .into_any_element()
+}
+
+/// A link-like click target (accent text).
+fn link(
+    id: &'static str,
+    text: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let text: SharedString = text.into();
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .a11y_button(text.clone())
+        .flex_none()
+        .cursor_pointer()
+        .text_size(theme::FS_12)
+        .text_color(theme::signal())
+        .hover(gpui::Styled::underline)
+        .child(text)
         .on_click(on_click)
         .into_any_element()
 }
@@ -1022,34 +1749,86 @@ fn check_box(state: Tri) -> gpui::Div {
         })
 }
 
+/// The color of a category in the space bar: the color its kind of file has in the list.
+fn category_color(category: Category) -> gpui::Rgba {
+    let kind = match category {
+        Category::Code => FileKind::Code,
+        Category::Video => FileKind::Video,
+        Category::Images => FileKind::Image,
+        Category::Documents => FileKind::Document,
+        Category::Audio => FileKind::Audio,
+        Category::Archives => FileKind::Archive,
+        Category::Other => return theme::text_subtle(),
+    };
+    theme::file_glyph(kind).map_or_else(theme::text_subtle, |(_, color)| color)
+}
+
+fn category_name(category: Category) -> String {
+    match category {
+        Category::Code => t!("props.cat_code"),
+        Category::Video => t!("props.cat_video"),
+        Category::Images => t!("props.cat_images"),
+        Category::Documents => t!("props.cat_documents"),
+        Category::Audio => t!("props.cat_audio"),
+        Category::Archives => t!("props.cat_archives"),
+        Category::Other => t!("props.cat_other"),
+    }
+    .into_owned()
+}
+
 impl Properties {
-    fn header(&self) -> AnyElement {
+    /// The picture or icon, the name and what is worth knowing about the item.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one layout: picture, name and summary"
+    )]
+    fn hero(&self) -> (AnyElement, f32) {
         let loaded = self.loaded.as_ref();
         let single = self.single();
-        let icon: AnyElement = match (loaded.and_then(|l| l.icon.clone()), single) {
-            (Some(image), _) => img(image).size(theme::ICON_HERO / 2.).into_any_element(),
-            (None, Some(_)) if loaded.is_some_and(|l| l.drive.is_some()) => svg()
+        let drive = self.is_drive();
+        let picture = loaded.is_some_and(|l| l.picture);
+        let inner: AnyElement = match (loaded.and_then(|l| l.icon.clone()), single) {
+            (Some(image), _) if picture => img(image)
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .into_any_element(),
+            (Some(image), _) => img(image).size(px(56.)).into_any_element(),
+            (None, Some(_)) if drive => svg()
                 .path(Icon::Drive.path())
-                .size(theme::ICON_HERO / 2.)
+                .size(px(56.))
                 .text_color(theme::text_muted())
                 .into_any_element(),
-            (None, Some(row)) => kind_icon(file_kind(&row.entry), theme::ICON_HERO / 2.),
+            (None, Some(row)) => kind_icon(file_kind(&row.entry), px(60.)),
             (None, None) => kind_icon(
-                if self.folders_only() {
+                if !self.rows().is_empty() && self.rows().iter().all(|r| r.entry.is_dir_like()) {
                     FileKind::Folder
                 } else {
                     FileKind::Other
                 },
-                theme::ICON_HERO / 2.,
+                px(60.),
             ),
         };
+        let thumb = div()
+            .id("props-hero")
+            .debug_selector(|| "props-hero".to_owned())
+            .size(HERO)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .rounded(theme::R_12)
+            .bg(theme::card())
+            .border_1()
+            .border_color(theme::line())
+            .when(picture, |d| d.shadow(theme::elev_1()))
+            .child(inner);
         let editable = single.is_some_and(|r| !is_drive_root(&r.path));
         let title: AnyElement = if editable {
-            let problem = self.name_error.is_some();
             div()
                 .id("props-name")
                 .debug_selector(|| "props-name".to_owned())
-                .flex_1()
+                .w_full()
                 .min_w_0()
                 .h(theme::H_CTL)
                 .px(theme::S_8)
@@ -1058,7 +1837,7 @@ impl Properties {
                 .rounded(theme::R_8)
                 .bg(theme::surface())
                 .border_1()
-                .border_color(if problem {
+                .border_color(if self.name_error.is_some() {
                     theme::danger()
                 } else {
                     theme::line_strong()
@@ -1068,104 +1847,293 @@ impl Properties {
                 .into_any_element()
         } else {
             let text = match (single, loaded.and_then(|l| l.drive.as_ref())) {
-                (_, Some(drive)) if !drive.label.is_empty() => {
-                    format!("{} ({})", drive.label, self.name)
-                }
+                (_, Some(d)) if !d.label.is_empty() => format!("{} ({})", d.label, self.name),
                 (Some(_), _) => self.name.clone(),
                 _ => tn!("props.items", self.targets.len()).into_owned(),
             };
             div()
-                .flex_1()
+                .w_full()
                 .min_w_0()
-                .text_size(theme::FS_15)
+                .text_size(theme::FS_20)
+                .font_weight(theme::FW_STRONG)
                 .text_color(theme::text())
                 .truncate()
                 .child(text)
                 .into_any_element()
         };
-        div()
+        let lines = self.summary();
+        let element = div()
             .flex()
-            .flex_col()
-            .gap(theme::S_6)
+            .items_center()
+            .gap(theme::S_16)
+            .child(thumb)
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap(theme::S_12)
-                    .child(div().flex_none().child(icon))
-                    .child(title),
+                    .flex_col()
+                    .gap(theme::S_6)
+                    .child(title)
+                    .when_some(self.name_error.as_ref(), |d, e| {
+                        d.child(
+                            div()
+                                .id("props-name-error")
+                                .debug_selector(|| "props-name-error".to_owned())
+                                .a11y_live(gpui::Role::Alert, e.clone())
+                                .text_size(theme::FS_12)
+                                .text_color(theme::danger())
+                                .child(e.clone()),
+                        )
+                    })
+                    .children(lines.into_iter().map(|line| {
+                        div()
+                            .text_size(theme::FS_13)
+                            .text_color(theme::text_muted())
+                            .child(line)
+                    })),
             )
-            .when_some(self.name_error.as_ref(), |d, e| {
-                d.child(problem_text("props-name-error", e))
-            })
-            .into_any_element()
+            .into_any_element();
+        (element, EST_HERO.max(HERO_H + 40.))
     }
 
-    fn info_section(&self, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.info_rows();
-        let mut section = card();
-        for row in rows {
-            let id = row.id;
-            let value: AnyElement = match row.link {
+    /// Open, Copy path, ... for what is shown.
+    fn actions(&self, cx: &mut Context<Self>) -> Option<(AnyElement, f32)> {
+        self.loaded.as_ref()?;
+        let single = self.single();
+        let mut row = div().flex().flex_wrap().gap(theme::S_8);
+        if let Some(item) = single {
+            row = row.child(action(
+                "props-act-open",
+                Icon::Open,
+                t!("props.act_open"),
+                cx.listener(|this, _: &ClickEvent, _, cx| this.open_item(cx)),
+            ));
+            if item.entry.is_dir_like() && !self.is_drive() {
+                row = row.child(action(
+                    "props-act-tab",
+                    Icon::TabOpen,
+                    t!("menu.open_in_new_tab"),
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.open_in_new_tab(cx)),
+                ));
+            } else if !item.entry.is_dir_like() {
+                row = row.child(action(
+                    "props-act-with",
+                    Icon::OpenWith,
+                    t!("props.act_open_with"),
+                    cx.listener(|this, _: &ClickEvent, window, _| this.change_app(window)),
+                ));
+            }
+        }
+        row = row.child(action(
+            "props-act-copy",
+            Icon::CopyPath,
+            t!("menu.copy_path"),
+            cx.listener(|this, _: &ClickEvent, _, _| this.copy_path()),
+        ));
+        if let Some(item) = single {
+            if item.entry.is_dir_like() && !self.is_drive() {
+                let pinned = self.is_favorite(cx);
+                row = row.child(action(
+                    "props-act-fav",
+                    Icon::Pin,
+                    if pinned {
+                        t!("props.act_unfavorite")
+                    } else {
+                        t!("props.act_favorite")
+                    },
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_favorite(cx)),
+                ));
+            } else if !item.entry.is_dir_like() {
+                let path = item.path.clone();
+                row = row.child(action(
+                    "props-act-show",
+                    Icon::External,
+                    t!("props.act_show"),
+                    cx.listener(move |_, _: &ClickEvent, _, cx| Self::reveal(&path, cx)),
+                ));
+            }
+        }
+        let error = self.action_error.as_ref().map(|e| {
+            div()
+                .id("props-action-error")
+                .debug_selector(|| "props-action-error".to_owned())
+                .text_size(theme::FS_12)
+                .text_color(theme::danger())
+                .child(e.clone())
+        });
+        let height = EST_ACTIONS + if error.is_some() { 20. } else { 0. };
+        Some((
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::S_6)
+                .child(row)
+                .children(error)
+                .into_any_element(),
+            height,
+        ))
+    }
+
+    fn general_card(&self, cx: &mut Context<Self>) -> (AnyElement, f32) {
+        let mut rows = Vec::new();
+        for info in self.info_rows().into_iter().filter(|r| !r.time) {
+            let id = info.id;
+            let stoppable = info.stoppable;
+            let value: AnyElement = match info.link {
                 Some(path) => div()
                     .id(id)
                     .debug_selector(move || id.to_owned())
-                    .a11y_button(row.value.clone())
+                    .a11y_button(info.value.clone())
                     .min_w_0()
                     .truncate()
                     .cursor_pointer()
                     .text_size(theme::FS_13)
                     .text_color(theme::signal())
                     .hover(gpui::Styled::underline)
-                    .child(row.value)
+                    .child(info.value)
                     .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                         Self::reveal(&path, cx);
                     }))
                     .into_any_element(),
-                None => div()
-                    .id(id)
-                    .debug_selector(move || id.to_owned())
-                    .min_w_0()
-                    .text_size(theme::FS_13)
-                    .text_color(theme::text())
-                    .child(row.value)
-                    .into_any_element(),
+                None => text_value(id, info.value),
             };
-            section = section.child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(theme::S_8)
-                    .child(label_text(row.label))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(theme::S_8)
-                            .child(value)
-                            .when(row.stoppable, |d| {
-                                d.child(
-                                    div()
-                                        .id("props-stop")
-                                        .debug_selector(|| "props-stop".to_owned())
-                                        .a11y_button(t!("props.stop").to_string())
-                                        .flex_none()
-                                        .cursor_pointer()
-                                        .text_size(theme::FS_12)
-                                        .text_color(theme::signal())
-                                        .hover(gpui::Styled::underline)
-                                        .child(t!("props.stop").to_string())
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.stop_counting(cx);
-                                        })),
-                                )
-                            }),
-                    ),
-            );
+            let value = div()
+                .flex()
+                .items_center()
+                .gap(theme::S_8)
+                .child(value)
+                .when(stoppable, |d| {
+                    d.child(link(
+                        "props-stop",
+                        t!("props.stop").to_string(),
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.stop_counting(cx)),
+                    ))
+                })
+                .into_any_element();
+            rows.push(field(info.label, value, ROW_H));
         }
-        section.into_any_element()
+        if let Some(drive) = self.loaded.as_ref().and_then(|l| l.drive.clone()) {
+            rows.extend(Self::drive_rows(&drive));
+        }
+        if let Some(row) = self.opens_with_row(cx) {
+            rows.push(row);
+            if let Some(e) = self.app_error.as_ref() {
+                rows.push(problem_text("props-app-error", e));
+            }
+        }
+        if let Some(target) = self.loaded.as_ref().and_then(|l| l.target.clone()) {
+            let shown = target.display().to_string();
+            rows.push(field(
+                t!("props.shortcut_target").to_string(),
+                div()
+                    .id("props-target")
+                    .debug_selector(|| "props-target".to_owned())
+                    .a11y_button(shown.clone())
+                    .cursor_pointer()
+                    .text_size(theme::FS_13)
+                    .text_color(theme::signal())
+                    .hover(gpui::Styled::underline)
+                    .child(shown)
+                    .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        Self::reveal(&target, cx);
+                    }))
+                    .into_any_element(),
+                ROW_H + 8.,
+            ));
+        }
+        card(Icon::Info, t!("props.general").into_owned(), rows)
+    }
+
+    fn drive_rows(drive: &Drive) -> Vec<CardRow> {
+        let used = drive.total.saturating_sub(drive.free);
+        let fraction = if drive.total == 0 {
+            0.
+        } else {
+            (used as f32 / drive.total as f32).clamp(0., 1.)
+        };
+        let bar = div()
+            .id("props-capacity")
+            .debug_selector(|| "props-capacity".to_owned())
+            .h(px(10.))
+            .w_full()
+            .rounded(theme::R_FULL)
+            .bg(theme::wash_strong())
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("props-capacity-used")
+                    .debug_selector(|| "props-capacity-used".to_owned())
+                    .h_full()
+                    .w(relative(fraction))
+                    .rounded(theme::R_FULL)
+                    .bg(theme::signal()),
+            )
+            .into_any_element();
+        let mut rows = vec![wide(bar, ROW_H)];
+        for (label, bytes) in [
+            (t!("props.used"), used),
+            (t!("props.free"), drive.free),
+            (t!("props.capacity"), drive.total),
+        ] {
+            rows.push(field(
+                label.into_owned(),
+                text_value("props-drive-stat", Self::size_text(bytes)),
+                ROW_H,
+            ));
+        }
+        if !drive.file_system.is_empty() {
+            rows.push(field(
+                t!("props.file_system").into_owned(),
+                text_value("props-file-system", drive.file_system.clone()),
+                ROW_H,
+            ));
+        }
+        rows
+    }
+
+    fn opens_with_row(&self, cx: &mut Context<Self>) -> Option<CardRow> {
+        self.single().filter(|r| !r.entry.is_dir_like())?;
+        let app = self
+            .loaded
+            .as_ref()
+            .and_then(|l| l.app.clone())
+            .unwrap_or_else(|| t!("props.no_app").into_owned());
+        Some(field(
+            t!("props.opens_with").into_owned(),
+            div()
+                .flex()
+                .items_center()
+                .gap(theme::S_8)
+                .child(
+                    div()
+                        .id("props-app")
+                        .debug_selector(|| "props-app".to_owned())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(theme::FS_13)
+                        .text_color(theme::text())
+                        .child(app),
+                )
+                .child(button(
+                    "props-change-app",
+                    t!("props.change"),
+                    cx.listener(|this, _: &ClickEvent, window, _| this.change_app(window)),
+                ))
+                .into_any_element(),
+            ROW_H + 4.,
+        ))
+    }
+
+    fn time_card(&self) -> Option<(AnyElement, f32)> {
+        let rows: Vec<CardRow> = self
+            .info_rows()
+            .into_iter()
+            .filter(|r| r.time)
+            .map(|r| field(r.label, text_value(r.id, r.value), ROW_H))
+            .collect();
+        (!rows.is_empty()).then(|| card(Icon::Clock, t!("props.times").into_owned(), rows))
     }
 
     fn attribute_row(
@@ -1174,199 +2142,330 @@ impl Properties {
         label: String,
         bit: u32,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> CardRow {
         let state = self.attribute(bit);
-        div()
-            .id(id)
-            .debug_selector(move || id.to_owned())
-            .a11y_toggle(label.clone(), state == Tri::On)
-            .flex()
-            .items_center()
-            .gap(theme::S_8)
-            .h(theme::H_ROW_COMPACT)
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.toggle_attribute(bit, cx);
-                }),
-            )
-            .child(check_box(state))
-            .child(
-                div()
-                    .text_size(theme::FS_13)
-                    .text_color(theme::text())
-                    .child(label),
-            )
-            .into_any_element()
-    }
-
-    fn attributes_section(&self, cx: &mut Context<Self>) -> AnyElement {
-        card()
-            .child(self.attribute_row(
-                "props-readonly",
-                t!("props.read_only").into_owned(),
-                ATTR_READONLY,
-                cx,
-            ))
-            .child(self.attribute_row(
-                "props-hidden",
-                t!("props.hidden").into_owned(),
-                ATTR_HIDDEN,
-                cx,
-            ))
-            .when_some(self.attr_error.as_ref(), |d, e| {
-                d.child(problem_text("props-attr-error", e))
-            })
-            .into_any_element()
-    }
-
-    fn opens_with_section(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.single().filter(|r| !r.entry.is_dir_like())?;
-        let app = self
-            .loaded
-            .as_ref()
-            .and_then(|l| l.app.clone())
-            .unwrap_or_else(|| t!("props.no_app").into_owned());
-        Some(
-            card()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(theme::S_8)
-                        .child(label_text(t!("props.opens_with").to_string()))
-                        .child(
-                            div()
-                                .id("props-app")
-                                .debug_selector(|| "props-app".to_owned())
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(theme::FS_13)
-                                .text_color(theme::text())
-                                .child(app),
-                        )
-                        .child(button(
-                            "props-change-app",
-                            t!("props.change"),
-                            cx.listener(|this, _: &ClickEvent, window, _| {
-                                this.change_app(window);
-                            }),
-                        )),
-                )
-                .when_some(self.app_error.as_ref(), |d, e| {
-                    d.child(problem_text("props-app-error", e))
-                })
-                .into_any_element(),
-        )
-    }
-
-    fn shortcut_section(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let target = self.loaded.as_ref()?.target.clone()?;
-        let shown = target.display().to_string();
-        Some(
-            card()
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(theme::S_8)
-                        .child(label_text(t!("props.shortcut_target").to_string()))
-                        .child(
-                            div()
-                                .id("props-target")
-                                .debug_selector(|| "props-target".to_owned())
-                                .a11y_button(shown.clone())
-                                .flex_1()
-                                .min_w_0()
-                                .cursor_pointer()
-                                .text_size(theme::FS_13)
-                                .text_color(theme::signal())
-                                .hover(gpui::Styled::underline)
-                                .child(shown)
-                                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                    Self::reveal(&target, cx);
-                                })),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn drive_section(&self) -> Option<AnyElement> {
-        let drive = self.loaded.as_ref()?.drive.clone()?;
-        let used = drive.total.saturating_sub(drive.free);
-        let fraction = if drive.total == 0 {
-            0.
-        } else {
-            (used as f32 / drive.total as f32).clamp(0., 1.)
-        };
-        let stat = |label: String, bytes: u64| {
+        wide(
             div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .a11y_toggle(label.clone(), state == Tri::On)
                 .flex()
                 .items_center()
                 .gap(theme::S_8)
-                .child(label_text(label))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| this.toggle_attribute(bit, cx)),
+                )
+                .child(check_box(state))
                 .child(
                     div()
                         .text_size(theme::FS_13)
                         .text_color(theme::text())
-                        .child(Self::size_text(bytes)),
+                        .child(label),
                 )
+                .into_any_element(),
+            ROW_H,
+        )
+    }
+
+    fn checksum_row(&self, cx: &mut Context<Self>) -> Option<CardRow> {
+        self.single()
+            .filter(|r| !r.entry.is_dir_like() && !r.entry.is_cloud_placeholder())?;
+        let value: AnyElement = match &self.hash {
+            HashState::Idle => button(
+                "props-hash",
+                t!("props.hash_calculate"),
+                cx.listener(|this, _: &ClickEvent, _, cx| this.start_hash(cx)),
+            ),
+            HashState::Running(percent) => div()
+                .flex()
+                .items_center()
+                .gap(theme::S_12)
+                .child(text_value("props-hash-progress", format!("{percent}%")))
+                .child(link(
+                    "props-hash-cancel",
+                    t!("props.cancel").to_string(),
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_hash(cx)),
+                ))
+                .into_any_element(),
+            HashState::Done(hex) => {
+                let copy = hex.clone();
+                let (a, b) = hex.split_at(hex.len() / 2);
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::S_8)
+                    .child(
+                        div()
+                            .id("props-hash-value")
+                            .debug_selector(|| "props-hash-value".to_owned())
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(theme::FS_12)
+                            .text_color(theme::text())
+                            .child(format!("{a}\n{b}")),
+                    )
+                    .child(button(
+                        "props-hash-copy",
+                        t!("props.hash_copy"),
+                        cx.listener(move |this, _: &ClickEvent, _, _| {
+                            this.copy_text(copy.clone());
+                        }),
+                    ))
+                    .into_any_element()
+            }
+            HashState::Failed(error) => text_value("props-hash-error", error.clone()),
         };
-        Some(
-            card()
-                .child(
-                    div()
-                        .id("props-capacity")
-                        .debug_selector(|| "props-capacity".to_owned())
-                        .h(px(10.))
-                        .w_full()
-                        .rounded(theme::R_FULL)
-                        .bg(theme::wash_strong())
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .id("props-capacity-used")
-                                .debug_selector(|| "props-capacity-used".to_owned())
-                                .h_full()
-                                .w(gpui::relative(fraction))
-                                .rounded(theme::R_FULL)
-                                .bg(theme::signal()),
-                        ),
-                )
-                .child(stat(t!("props.used").into_owned(), used))
-                .child(stat(t!("props.free").into_owned(), drive.free))
-                .child(stat(t!("props.capacity").into_owned(), drive.total))
-                .when(!drive.file_system.is_empty(), |d| {
-                    d.child(
+        let height = if matches!(self.hash, HashState::Done(_)) {
+            ROW_H + 24.
+        } else {
+            ROW_H
+        };
+        Some(field("SHA-256".to_owned(), value, height))
+    }
+
+    fn security_card(&self, cx: &mut Context<Self>) -> (AnyElement, f32) {
+        let mut rows = vec![
+            self.attribute_row(
+                "props-readonly",
+                t!("props.read_only").into_owned(),
+                ATTR_READONLY,
+                cx,
+            ),
+            self.attribute_row(
+                "props-hidden",
+                t!("props.hidden").into_owned(),
+                ATTR_HIDDEN,
+                cx,
+            ),
+        ];
+        if self.any_folder() && !self.is_drive() {
+            let state = if self.recursive { Tri::On } else { Tri::Off };
+            rows.push(wide(
+                div()
+                    .id("props-recursive")
+                    .debug_selector(|| "props-recursive".to_owned())
+                    .a11y_toggle(t!("props.apply_inside").to_string(), self.recursive)
+                    .flex()
+                    .items_center()
+                    .gap(theme::S_8)
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.recursive = !this.recursive;
+                            cx.notify();
+                        }),
+                    )
+                    .child(check_box(state))
+                    .child(
+                        div()
+                            .text_size(theme::FS_13)
+                            .text_color(theme::text())
+                            .child(t!("props.apply_inside").to_string()),
+                    )
+                    .into_any_element(),
+                ROW_H,
+            ));
+        }
+        if let Some(e) = self.attr_error.as_ref() {
+            rows.push(problem_text("props-attr-error", e));
+        }
+        if self.loaded.as_ref().is_some_and(|l| l.blocked) {
+            rows.push(field(
+                t!("props.downloaded").into_owned(),
+                button(
+                    "props-unblock",
+                    t!("props.unblock"),
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.unblock(cx)),
+                ),
+                ROW_H,
+            ));
+        }
+        if let Some(e) = self.unblock_error.as_ref() {
+            rows.push(problem_text("props-unblock-error", e));
+        }
+        rows.extend(self.checksum_row(cx));
+        card(Icon::Settings, t!("props.attributes").into_owned(), rows)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one card: bar, legend and folder rows"
+    )]
+    fn space_card(&self) -> Option<(AnyElement, f32)> {
+        let view = self.space_view()?;
+        let total = view.total.max(1) as f32;
+        let mut bar = div()
+            .id("props-space-bar")
+            .debug_selector(|| "props-space-bar".to_owned())
+            .flex()
+            .h(px(12.))
+            .w_full()
+            .rounded(theme::R_FULL)
+            .bg(theme::wash_strong())
+            .overflow_hidden();
+        for (category, bytes) in &view.categories {
+            bar = bar.child(
+                div()
+                    .h_full()
+                    .w(relative(*bytes as f32 / total))
+                    .bg(category_color(*category)),
+            );
+        }
+        let mut legend = div()
+            .flex()
+            .flex_wrap()
+            .gap_x(theme::S_16)
+            .gap_y(theme::S_4);
+        for (category, bytes) in &view.categories {
+            legend = legend.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::S_6)
+                    .text_size(theme::FS_12)
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .flex_none()
+                            .rounded(theme::R_FULL)
+                            .bg(category_color(*category)),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme::text_muted())
+                            .child(category_name(*category)),
+                    )
+                    .child(div().text_color(theme::text()).child(format_size(*bytes))),
+            );
+        }
+        let lines = view.categories.len().div_ceil(2).max(1) as f32;
+        let mut rows = vec![CardRow {
+            element: div()
+                .px(theme::S_16)
+                .py(theme::S_12)
+                .flex()
+                .flex_col()
+                .gap(theme::S_8)
+                .child(bar)
+                .child(legend)
+                .into_any_element(),
+            height: 40. + lines * 20.,
+        }];
+        let biggest = view.largest.first().map_or(1, |(_, b)| (*b).max(1)) as f32;
+        for (name, bytes) in &view.largest {
+            rows.push(CardRow {
+                element: div()
+                    .px(theme::S_16)
+                    .py(theme::S_8)
+                    .flex()
+                    .flex_col()
+                    .gap(theme::S_4)
+                    .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(theme::S_8)
-                            .child(label_text(t!("props.file_system").to_string()))
+                            .text_size(theme::FS_13)
+                            .child(
+                                svg()
+                                    .path(Icon::Folder.path())
+                                    .size(px(14.))
+                                    .flex_none()
+                                    .text_color(theme::text_muted()),
+                            )
                             .child(
                                 div()
-                                    .id("props-file-system")
-                                    .debug_selector(|| "props-file-system".to_owned())
-                                    .text_size(theme::FS_13)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_color(theme::text())
-                                    .child(drive.file_system.clone()),
+                                    .child(name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme::text_muted())
+                                    .child(format_size(*bytes)),
                             ),
                     )
-                })
-                .into_any_element(),
-        )
+                    .child(
+                        div()
+                            .h(px(3.))
+                            .w_full()
+                            .rounded(theme::R_FULL)
+                            .bg(theme::wash())
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(*bytes as f32 / biggest))
+                                    .rounded(theme::R_FULL)
+                                    .bg(theme::signal()),
+                            ),
+                    )
+                    .into_any_element(),
+                height: 44.,
+            });
+        }
+        Some(card(Icon::Sort, t!("props.space").into_owned(), rows))
+    }
+
+    fn title_bar(&self, window: &Window) -> AnyElement {
+        let title = window_title(&self.targets);
+        div()
+            .flex_none()
+            .h(px(EST_TITLE))
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id("props-titlebar")
+                    .window_control_area(WindowControlArea::Drag)
+                    .flex_1()
+                    .h_full()
+                    .px(theme::S_16)
+                    .flex()
+                    .items_center()
+                    .gap(theme::S_8)
+                    .child(
+                        svg()
+                            .path(Icon::Info.path())
+                            .size(theme::ICON)
+                            .flex_none()
+                            .text_color(theme::text_muted()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(theme::FS_13)
+                            .text_color(theme::text_muted())
+                            .child(title),
+                    ),
+            )
+            .child(div().pr(theme::S_8).child(caption_buttons(window)))
+            .into_any_element()
     }
 
     fn footer(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
+            .flex_none()
+            .px(theme::S_16)
+            .py(theme::S_12)
             .flex()
             .flex_col()
             .gap(theme::S_6)
             .when_some(self.native_error.as_ref(), |d, e| {
-                d.child(problem_text("props-native-error", e))
+                d.child(
+                    div()
+                        .id("props-native-error")
+                        .debug_selector(|| "props-native-error".to_owned())
+                        .text_size(theme::FS_12)
+                        .text_color(theme::danger())
+                        .child(e.clone()),
+                )
             })
             .child(
                 div()
@@ -1383,9 +2482,7 @@ impl Properties {
                     .child(button(
                         "props-close",
                         t!("props.close"),
-                        cx.listener(|this, _: &ClickEvent, window, _| {
-                            this.close_window(window);
-                        }),
+                        cx.listener(|this, _: &ClickEvent, window, _| this.close_window(window)),
                     )),
             )
             .into_any_element()
@@ -1393,28 +2490,40 @@ impl Properties {
 }
 
 impl Render for Properties {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut estimate = EST_TITLE + EST_FOOTER + 8. + 32.;
         let body = if self.loaded.is_some() {
-            let drive = self.drive_section();
-            let is_drive = drive.is_some();
+            let mut cards: Vec<(AnyElement, f32)> = Vec::new();
+            let (hero, hero_h) = self.hero();
+            estimate += hero_h + EST_GAP;
+            let actions = self.actions(cx);
+            estimate += actions.as_ref().map_or(0., |(_, h)| h + EST_GAP);
+            cards.push(self.general_card(cx));
+            cards.extend(self.time_card());
+            // A drive has no attributes to set here.
+            if !self.is_drive() {
+                cards.push(self.security_card(cx));
+            }
+            cards.extend(self.space_card());
+            estimate += cards.iter().map(|(_, h)| h).sum::<f32>();
             div()
                 .flex()
                 .flex_col()
                 .gap(theme::S_12)
-                .child(self.header())
-                .child(self.info_section(cx))
-                .children(drive)
-                .when(!is_drive, |d| d.child(self.attributes_section(cx)))
-                .children(self.opens_with_section(cx))
-                .children(self.shortcut_section(cx))
+                .child(hero)
+                .children(actions.map(|(a, _)| a))
+                .children(cards.into_iter().map(|(c, _)| c))
                 .into_any_element()
         } else {
+            estimate += 120.;
             div()
                 .text_size(theme::FS_13)
                 .text_color(theme::text_muted())
                 .child(t!("props.calculating").to_string())
                 .into_any_element()
         };
+        self.estimate.set(estimate);
+        self.fit_window(window, cx);
         div()
             .id("properties")
             .key_context(CONTEXT)
@@ -1423,27 +2532,28 @@ impl Render for Properties {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::frame_solid())
+            .bg(theme::frame())
             .ui_font()
             .text_size(theme::FS_13)
             .text_color(theme::text())
+            .child(self.title_bar(window))
             .child(
                 div()
-                    .id("props-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .p(theme::S_16)
-                    .child(body),
+                    .mx(theme::S_8)
+                    .rounded(theme::R_12)
+                    .bg(theme::paper())
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("props-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .p(theme::S_16)
+                            .child(body),
+                    ),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(theme::S_16)
-                    .py(theme::S_12)
-                    .border_t_1()
-                    .border_color(theme::line())
-                    .child(self.footer(cx)),
-            )
+            .child(self.footer(cx))
     }
 }

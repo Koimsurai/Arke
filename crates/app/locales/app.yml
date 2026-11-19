@@ -3094,6 +3094,102 @@ props.windows_properties:
   en: Windows properties…
   zh-TW: Windows 內容…
   zh-CN: Windows 属性…
+props.used_of:
+  en: "%{used} used of %{total}"
+  zh-TW: "已使用 %{used}，共 %{total}"
+  zh-CN: "已用 %{used}，共 %{total}"
+props.taken:
+  en: Date taken
+  zh-TW: 拍攝日期
+  zh-CN: 拍摄日期
+props.act_open:
+  en: Open
+  zh-TW: 開啟
+  zh-CN: 打开
+props.act_open_with:
+  en: Open with…
+  zh-TW: 開啟方式…
+  zh-CN: 打开方式…
+props.act_favorite:
+  en: Add to favorites
+  zh-TW: 加入我的最愛
+  zh-CN: 添加到收藏夹
+props.act_unfavorite:
+  en: Remove from favorites
+  zh-TW: 從我的最愛移除
+  zh-CN: 从收藏夹移除
+props.act_show:
+  en: Show in folder
+  zh-TW: 在資料夾中顯示
+  zh-CN: 在文件夹中显示
+props.general:
+  en: General
+  zh-TW: 一般
+  zh-CN: 常规
+props.times:
+  en: Time
+  zh-TW: 時間
+  zh-CN: 时间
+props.attributes:
+  en: Attributes and security
+  zh-TW: 屬性與安全性
+  zh-CN: 属性与安全
+props.apply_inside:
+  en: Apply to items inside
+  zh-TW: 套用到內含項目
+  zh-CN: 应用到包含的项目
+props.downloaded:
+  en: Downloaded from the internet
+  zh-TW: 來自網際網路
+  zh-CN: 来自互联网
+props.unblock:
+  en: Unblock
+  zh-TW: 解除封鎖
+  zh-CN: 解除锁定
+props.hash_calculate:
+  en: Calculate
+  zh-TW: 計算
+  zh-CN: 计算
+props.hash_copy:
+  en: Copy
+  zh-TW: 複製
+  zh-CN: 复制
+props.cancel:
+  en: Cancel
+  zh-TW: 取消
+  zh-CN: 取消
+props.space:
+  en: Where the space goes
+  zh-TW: 空間用在哪裡
+  zh-CN: 空间用在哪里
+props.cat_code:
+  en: Code and build
+  zh-TW: 程式碼與建置
+  zh-CN: 代码与构建
+props.cat_video:
+  en: Video
+  zh-TW: 影片
+  zh-CN: 视频
+props.cat_images:
+  en: Images
+  zh-TW: 圖片
+  zh-CN: 图片
+props.cat_documents:
+  en: Documents
+  zh-TW: 文件
+  zh-CN: 文档
+props.cat_audio:
+  en: Audio
+  zh-TW: 音訊
+  zh-CN: 音频
+props.cat_archives:
+  en: Archives
+  zh-TW: 壓縮檔
+  zh-CN: 压缩包
+props.cat_other:
+  en: Other
+  zh-TW: 其他
+  zh-CN: 其他
 props.close:
   en: Close
   zh-TW: 關閉

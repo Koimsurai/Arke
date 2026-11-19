@@ -248,6 +248,17 @@ impl SessionWindow {
     }
 }
 
+/// Where the Properties window was last, in logical pixels. The height is only kept when the user
+/// sized the window; otherwise it fits its content.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PropertiesPlace {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    #[serde(default)]
+    pub(crate) height: Option<f32>,
+}
+
 /// Last window position and size in logical pixels. When maximized this is the restored size.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WindowPlace {
@@ -618,6 +629,8 @@ pub(crate) struct Settings {
     pub(crate) session_windows: Vec<SessionWindow>,
     /// Last window position and size.
     pub(crate) window: Option<WindowPlace>,
+    /// Last position and size of the Properties window.
+    pub(crate) properties_window: Option<PropertiesPlace>,
 }
 
 impl Default for Settings {
@@ -715,6 +728,7 @@ impl Default for Settings {
             session: Session::default(),
             session_windows: Vec::new(),
             window: None,
+            properties_window: None,
         }
     }
 }

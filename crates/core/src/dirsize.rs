@@ -132,6 +132,8 @@ pub struct Usage {
     pub folders: u64,
     /// Something could not be read, so the numbers are an undercount.
     pub partial: bool,
+    /// Bytes per [`Category`], in [`Category::ALL`] order.
+    pub categories: [u64; CATEGORY_COUNT],
 }
 
 impl AddAssign for Usage {
@@ -141,6 +143,9 @@ impl AddAssign for Usage {
         self.files += other.files;
         self.folders += other.folders;
         self.partial |= other.partial;
+        for (mine, theirs) in self.categories.iter_mut().zip(other.categories) {
+            *mine += theirs;
+        }
     }
 }
 
@@ -162,6 +167,127 @@ pub const fn file_on_disk(entry: &Entry, cluster: u64) -> u64 {
     }
 }
 
+/// Where the space goes: what kind of thing a file is, by its extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    /// Source code, project files and build output.
+    Code,
+    /// Video.
+    Video,
+    /// Pictures.
+    Images,
+    /// Documents, spreadsheets, slides, text.
+    Documents,
+    /// Audio.
+    Audio,
+    /// Archives and disk images.
+    Archives,
+    /// Everything else.
+    Other,
+}
+
+/// Number of [`Category`] values.
+pub const CATEGORY_COUNT: usize = 7;
+
+impl Category {
+    /// Every category, in the order [`Usage::categories`] lists them.
+    pub const ALL: [Self; CATEGORY_COUNT] = [
+        Self::Code,
+        Self::Video,
+        Self::Images,
+        Self::Documents,
+        Self::Audio,
+        Self::Archives,
+        Self::Other,
+    ];
+
+    /// Position in [`Category::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The category of a file with this extension (lowercase, no dot).
+    pub fn of_extension(ext: &str) -> Self {
+        use crate::filetype::{FileKind, kind_for_extension};
+        // Build output and project files the file kinds do not know.
+        if matches!(
+            ext,
+            "obj"
+                | "o"
+                | "pdb"
+                | "class"
+                | "jar"
+                | "rlib"
+                | "rmeta"
+                | "lib"
+                | "a"
+                | "pyc"
+                | "map"
+                | "lock"
+                | "ilk"
+                | "exp"
+                | "idb"
+                | "d"
+                | "gcno"
+                | "gcda"
+                | "wasm"
+        ) {
+            return Self::Code;
+        }
+        match kind_for_extension(ext) {
+            FileKind::Code | FileKind::Executable => Self::Code,
+            FileKind::Video => Self::Video,
+            FileKind::Image => Self::Images,
+            FileKind::Document
+            | FileKind::Pdf
+            | FileKind::Spreadsheet
+            | FileKind::Presentation
+            | FileKind::Text => Self::Documents,
+            FileKind::Audio => Self::Audio,
+            FileKind::Archive | FileKind::DiskImage => Self::Archives,
+            _ => Self::Other,
+        }
+    }
+
+    /// The category of a listed file.
+    pub fn of(entry: &Entry) -> Self {
+        Self::of_extension(entry.extension())
+    }
+}
+
+/// What is known about a folder so far: the totals, and how much each folder directly inside it
+/// holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Space {
+    /// Totals, with the split by category.
+    pub usage: Usage,
+    /// The folders directly inside the one walked and what is in each, in listing order.
+    pub children: Vec<(PathBuf, u64)>,
+}
+
+impl Space {
+    /// The `n` biggest folders directly inside, biggest first; empty ones are left out.
+    pub fn largest(&self, n: usize) -> Vec<(PathBuf, u64)> {
+        let mut all: Vec<(PathBuf, u64)> = self
+            .children
+            .iter()
+            .filter(|(_, bytes)| *bytes > 0)
+            .cloned()
+            .collect();
+        all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        all.truncate(n);
+        all
+    }
+}
+
+/// Counts one listed file into `total`.
+pub fn count_file(total: &mut Usage, entry: &Entry, cluster: u64) {
+    total.bytes += entry.size;
+    total.on_disk += file_on_disk(entry, cluster);
+    total.files += 1;
+    total.categories[Category::of(entry).index()] += entry.size;
+}
+
 /// Walks everything below the folder `root` and counts it, calling `progress` after each folder
 /// with what is known so far. Only lists folders (names, sizes, attributes), so files are never
 /// opened and cloud placeholders are not downloaded. Links are not followed. `None` when
@@ -171,12 +297,13 @@ pub fn usage(
     root: &Path,
     cluster: u64,
     cancel: &AtomicBool,
-    progress: &mut dyn FnMut(&Usage),
-) -> Option<Usage> {
+    progress: &mut dyn FnMut(&Space),
+) -> Option<Space> {
     crate::fs::debug_assert_not_ui_thread("usage", root);
-    let mut total = Usage::default();
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut space = Space::default();
+    // Each folder waits with the index of the folder directly inside `root` it is part of.
+    let mut stack: Vec<(PathBuf, Option<usize>)> = vec![(root.to_path_buf(), None)];
+    while let Some((dir, child)) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
@@ -186,25 +313,31 @@ pub fn usage(
                     match entry {
                         Ok(e) => match e.kind {
                             EntryKind::File => {
-                                total.bytes += e.size;
-                                total.on_disk += file_on_disk(&e, cluster);
-                                total.files += 1;
+                                count_file(&mut space.usage, &e, cluster);
+                                if let Some(ix) = child {
+                                    space.children[ix].1 += e.size;
+                                }
                             }
                             EntryKind::Dir => {
-                                total.folders += 1;
-                                stack.push(dir.join(&*e.name));
+                                space.usage.folders += 1;
+                                let path = dir.join(&*e.name);
+                                let ix = child.unwrap_or_else(|| {
+                                    space.children.push((path.clone(), 0));
+                                    space.children.len() - 1
+                                });
+                                stack.push((path, Some(ix)));
                             }
                             EntryKind::Link { .. } => {}
                         },
-                        Err(_) => total.partial = true,
+                        Err(_) => space.usage.partial = true,
                     }
                 }
             }
-            Err(_) => total.partial = true,
+            Err(_) => space.usage.partial = true,
         }
-        progress(&total);
+        progress(&space);
     }
-    Some(total)
+    Some(space)
 }
 
 #[cfg(test)]
@@ -231,7 +364,9 @@ mod tests {
         );
         let cancel = AtomicBool::new(false);
         let mut steps = 0;
-        let got = usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| steps += 1).unwrap();
+        let got = usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| steps += 1)
+            .unwrap()
+            .usage;
         assert_eq!(got.bytes, 1 + 9000 + 4096 + 4097);
         // 1 -> 4096, placeholder -> 0, 4096 -> 4096, 4097 -> 8192
         assert_eq!(got.on_disk, 4096 + 4096 + 8192);
@@ -243,6 +378,69 @@ mod tests {
             usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| {}),
             None
         );
+    }
+
+    #[test]
+    fn files_are_sorted_into_categories_by_extension() {
+        let of = Category::of_extension;
+        assert_eq!(of("rs"), Category::Code);
+        assert_eq!(of("exe"), Category::Code);
+        assert_eq!(of("pdb"), Category::Code, "build output counts as code");
+        assert_eq!(of("mp4"), Category::Video);
+        assert_eq!(of("jpg"), Category::Images);
+        assert_eq!(of("docx"), Category::Documents);
+        assert_eq!(of("pdf"), Category::Documents);
+        assert_eq!(of("txt"), Category::Documents);
+        assert_eq!(of("flac"), Category::Audio);
+        assert_eq!(of("zip"), Category::Archives);
+        assert_eq!(of("iso"), Category::Archives);
+        assert_eq!(of("xyz"), Category::Other);
+        assert_eq!(of(""), Category::Other);
+        for (ix, category) in Category::ALL.into_iter().enumerate() {
+            assert_eq!(category.index(), ix);
+        }
+    }
+
+    /// The space bar's data: bytes per category, and the folders directly inside with everything
+    /// below each (files directly in the root belong to none of them); the walk reports as it
+    /// goes.
+    #[test]
+    fn space_splits_by_category_and_by_folder() {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\s",
+            vec![dir("big"), dir("small"), dir("empty"), file("loose.txt", 7)],
+        );
+        fs.insert_dir(r"C:\s\big", vec![dir("deep"), file("a.mp4", 1000)]);
+        fs.insert_dir(r"C:\s\big\deep", vec![file("b.jpg", 500), file("c.rs", 20)]);
+        fs.insert_dir(r"C:\s\small", vec![file("d.zip", 30)]);
+        fs.insert_dir(r"C:\s\empty", vec![]);
+        let cancel = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        let space = usage(&*fs, Path::new(r"C:\s"), 0, &cancel, &mut |s| {
+            seen.push(s.usage.bytes);
+        })
+        .unwrap();
+        let cat = |c: Category| space.usage.categories[c.index()];
+        assert_eq!(cat(Category::Video), 1000);
+        assert_eq!(cat(Category::Images), 500);
+        assert_eq!(cat(Category::Code), 20);
+        assert_eq!(cat(Category::Archives), 30);
+        assert_eq!(cat(Category::Documents), 7);
+        assert_eq!(
+            space.usage.categories.iter().sum::<u64>(),
+            space.usage.bytes
+        );
+        assert_eq!(
+            space.largest(3),
+            vec![
+                (PathBuf::from(r"C:\s\big"), 1520),
+                (PathBuf::from(r"C:\s\small"), 30),
+            ],
+            "folders with nothing in them are left out"
+        );
+        assert_eq!(space.largest(1).len(), 1);
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]) && seen.len() == 5);
     }
 
     #[test]

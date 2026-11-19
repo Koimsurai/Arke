@@ -311,7 +311,7 @@ dependencies = [
  "rust-i18n",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "unicode-segmentation",
  "windows 0.62.2",
@@ -373,7 +373,7 @@ dependencies = [
  "russh",
  "russh-sftp",
  "rust-i18n",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "windows 0.62.2",
@@ -8442,7 +8442,7 @@ version = "0.6.2"
 dependencies = [
  "anyhow",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
 ]
 
 [[package]]

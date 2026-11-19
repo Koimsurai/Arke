@@ -9,6 +9,8 @@
 //!   (`--after-update <old pid>`, which waits for this process to exit before taking over
 //!   residency) and exit; `.old` is deleted on next start.
 //! - Network and file work run on background threads; the UI only reads [`UpdateState`].
+//! - With automatic updates on, a found version downloads in the background and goes in at the
+//!   next restart (`update_quiet.rs`); this file is the manual flow and the pieces both share.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -122,6 +124,9 @@ pub(crate) enum UpdateError {
     /// The running exe could not be swapped for the new one.
     #[error("{}", t!("update.cannot_replace", error = .0))]
     Replace(#[source] std::io::Error),
+    /// The new exe didn't start, so the running version went back in place.
+    #[error("{}", t!("update.rolled_back", error = .0))]
+    NotStarted(#[source] std::io::Error),
 }
 
 /// A newer release on GitHub.
@@ -160,12 +165,7 @@ const SETUP_SUFFIX: &str = "-setup";
 /// with an exe for this architecture: the installer when the installer put this copy here (it
 /// keeps Settings > Apps up to date and can write to Program Files), else the single exe.
 pub(crate) fn pick(json: &str, channel: Channel, current: &Version) -> Option<Release> {
-    let suffix = if installed_by_setup() {
-        format!("{ARCH_SUFFIX}{SETUP_SUFFIX}")
-    } else {
-        ARCH_SUFFIX.to_owned()
-    };
-    pick_for(json, channel, current, &suffix)
+    pick_for(json, channel, current, &asset_suffix())
 }
 
 /// Whether the installer put the running exe where it is (its uninstaller sits next to it).
@@ -184,7 +184,7 @@ pub(crate) fn setup_install_at(exe: &Path) -> bool {
 pub(crate) const SETUP_UNINSTALLER: &str = "unins000.exe";
 
 /// Whether a downloaded update is the installer rather than the exe itself.
-fn is_setup(path: &Path) -> bool {
+pub(crate) fn is_setup(path: &Path) -> bool {
     path.file_stem()
         .is_some_and(|stem| stem.to_string_lossy().ends_with(SETUP_SUFFIX))
 }
@@ -271,12 +271,7 @@ pub(crate) fn check(channel: Channel) -> Result<Option<Release>, UpdateError> {
 /// limit doesn't apply. It lists the newest releases, prereleases too, without their files; the
 /// files' addresses follow from the tag and the names `cargo xtask build` gives them.
 fn pick_from_feed(feed: &str, repo: &str, channel: Channel, current: &Version) -> Option<Release> {
-    let suffix = if installed_by_setup() {
-        format!("{ARCH_SUFFIX}{SETUP_SUFFIX}")
-    } else {
-        ARCH_SUFFIX.to_owned()
-    };
-    pick_from_feed_for(feed, repo, channel, current, &suffix)
+    pick_from_feed_for(feed, repo, channel, current, &asset_suffix())
 }
 
 fn pick_from_feed_for(
@@ -379,7 +374,7 @@ fn notes_from_feed(content: &str) -> String {
     notes
 }
 
-fn updates_dir() -> Option<PathBuf> {
+pub(crate) fn updates_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Arke").join("updates"))
 }
 
@@ -389,12 +384,36 @@ pub(crate) fn download(
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, UpdateError> {
     let dir = updates_dir().ok_or(UpdateError::NoUpdatesDir)?;
-    std::fs::create_dir_all(&dir)?;
+    download_to(&dir, release, &mut |done, total| {
+        progress(done, total);
+        true
+    })
+}
+
+/// [`download`] into `dir`, continuing the partial download (`.part`) an earlier try left;
+/// partial downloads of other versions are stale and go. `progress` returns `false` to stop.
+pub(crate) fn download_to(
+    dir: &Path,
+    release: &Release,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<PathBuf, UpdateError> {
+    std::fs::create_dir_all(dir)?;
     let target = dir.join(&release.exe_name);
     let part = target.with_extension("part");
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "part") && path != part {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     {
-        let mut file = std::fs::File::create(&part)?;
-        crate::win_http::get(&release.exe_url, &[], &mut file, progress)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&part)?;
+        crate::win_http::get_resumed(&release.exe_url, &mut file, progress)?;
     }
     if let Some(sha_url) = &release.sha_url {
         let expected = crate::win_http::get_text(sha_url, &[])?;
@@ -429,16 +448,32 @@ pub(crate) fn install(new_exe: &Path) -> Result<PathBuf, UpdateError> {
         return Ok(new_exe.to_path_buf());
     }
     let me = std::env::current_exe()?;
-    let old = old_path(&me);
+    swap_in(new_exe, &me)?;
+    Ok(me)
+}
+
+/// Puts `new_exe` where `exe` is, keeping the old one as `.old`. The slow copy goes to a file next
+/// to it first, so what's left between the two renames is a moment, not the copy: this also runs
+/// while Windows shuts down, which may end Arke at any point.
+fn swap_in(new_exe: &Path, exe: &Path) -> Result<(), UpdateError> {
+    let mut staged = exe.as_os_str().to_owned();
+    staged.push(".new");
+    let staged = PathBuf::from(staged);
+    std::fs::copy(new_exe, &staged).map_err(UpdateError::Replace)?;
+    let old = old_path(exe);
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&me, &old).map_err(UpdateError::Replace)?;
-    if let Err(e) = std::fs::copy(new_exe, &me) {
+    if let Err(e) = std::fs::rename(exe, &old) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(UpdateError::Replace(e));
+    }
+    if let Err(e) = std::fs::rename(&staged, exe) {
         // Couldn't place it: rename back and leave things as they were.
-        let _ = std::fs::rename(&old, &me);
+        let _ = std::fs::rename(&old, exe);
+        let _ = std::fs::remove_file(&staged);
         return Err(UpdateError::Replace(e));
     }
     let _ = std::fs::remove_file(new_exe);
-    Ok(me)
+    Ok(())
 }
 
 fn old_path(exe: &Path) -> PathBuf {
@@ -447,18 +482,76 @@ fn old_path(exe: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// At startup: delete `arke.exe.old` and installers left by the last update (background thread).
-pub(crate) fn clean_up_old() {
+/// At startup (background thread): delete `arke.exe.old` and what the updates folder holds for
+/// this version or older (the update that ran, or one overtaken). Returns a download for a newer
+/// version, waiting to be installed (downloaded in the background before a restart).
+pub(crate) fn clean_up_old() -> Option<PathBuf> {
     if let Ok(me) = std::env::current_exe() {
         let _ = std::fs::remove_file(old_path(&me));
     }
-    if let Some(Ok(entries)) = updates_dir().map(std::fs::read_dir) {
-        for entry in entries.flatten() {
-            if is_setup(&entry.path()) {
-                let _ = std::fs::remove_file(entry.path());
-            }
+    let current = Version::parse(build_info::VERSION)?;
+    keep_pending(&updates_dir()?, &current, &asset_suffix())
+}
+
+/// The asset name suffix this copy updates from: the installer's when the installer put it here.
+pub(crate) fn asset_suffix() -> String {
+    if installed_by_setup() {
+        format!("{ARCH_SUFFIX}{SETUP_SUFFIX}")
+    } else {
+        ARCH_SUFFIX.to_owned()
+    }
+}
+
+/// The version a finished download in the updates folder is for, if it is one for this copy
+/// (`arke-<version><suffix>.exe`).
+pub(crate) fn downloaded_version(name: &str, suffix: &str) -> Option<Version> {
+    downloaded_number(name, suffix).and_then(Version::parse)
+}
+
+/// [`downloaded_version`] as written in the name (`0.4.0-rc.2`).
+pub(crate) fn downloaded_number<'a>(name: &'a str, suffix: &str) -> Option<&'a str> {
+    let version = name
+        .strip_prefix("arke-")?
+        .strip_suffix(".exe")?
+        .strip_suffix(suffix)?;
+    // `arke-0.4.0-setup.exe` is no single exe of a version `0.4.0-setup`.
+    if version.ends_with(SETUP_SUFFIX) || version.ends_with("-arm64") {
+        return None;
+    }
+    Some(version)
+}
+
+/// [`clean_up_old`] in `dir`: keeps the newest finished download newer than `current` and its
+/// partial download, and deletes the rest.
+fn keep_pending(dir: &Path, current: &Version, suffix: &str) -> Option<PathBuf> {
+    let entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    let newest = entries
+        .iter()
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?;
+            downloaded_version(name, suffix)
+                .filter(|v| v > current)
+                .map(|v| (v, p))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, p)| p.clone());
+    for path in &entries {
+        // A partial download of a newer version is continued by the next try.
+        let partial_newer = path.extension().is_some_and(|e| e == "part")
+            && path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| downloaded_version(&format!("{s}.exe"), suffix))
+                .is_some_and(|v| v > *current);
+        if newest.as_ref() != Some(path) && !partial_newer {
+            let _ = std::fs::remove_file(path);
         }
     }
+    newest
 }
 
 /// This process is the new version the updater just started.
@@ -603,7 +696,7 @@ impl UpdateState {
         cx.try_global::<Self>().cloned().unwrap_or_default()
     }
 
-    fn set(cx: &mut App, state: Self) {
+    pub(crate) fn set(cx: &mut App, state: Self) {
         cx.set_global(state);
         cx.refresh_windows();
     }
@@ -613,12 +706,13 @@ impl UpdateState {
         Self::set(cx, state);
     }
 
-    /// A new version is available (whether the sidebar shows a hint).
+    /// A new version is available (whether the sidebar shows a hint). Not while it downloads in
+    /// the background: nothing to do until it is ready.
     pub(crate) fn has_news(cx: &App) -> bool {
         matches!(
             Self::get(cx),
             Self::Available(_) | Self::Downloading(..) | Self::Ready(..) | Self::Canceled(..)
-        )
+        ) && !crate::update_quiet::hidden(cx)
     }
 }
 
@@ -627,7 +721,8 @@ pub(crate) fn start_check(channel: Channel, cx: &mut App) {
     if matches!(
         UpdateState::get(cx),
         UpdateState::Checking | UpdateState::Downloading(..)
-    ) {
+    ) || crate::update_quiet::downloading(cx)
+    {
         return;
     }
     UpdateState::set(cx, UpdateState::Checking);
@@ -639,34 +734,51 @@ pub(crate) fn start_check(channel: Channel, cx: &mut App) {
         let Ok(result) = rx.recv_async().await else {
             return;
         };
-        cx.update(|cx| {
-            // The channel changed while this was running: its answer is for the old one.
-            let now = crate::settings::SettingsStore::global(cx)
-                .read(cx)
-                .settings
-                .update_channel();
-            if now != channel {
-                UpdateState::set(cx, UpdateState::Idle);
-                start_check(now, cx);
-                return;
-            }
-            let state = match result {
-                Ok(Some(release)) => UpdateState::Available(release),
-                Ok(None) => UpdateState::UpToDate,
-                Err(e) => UpdateState::Failed(e.to_string()),
-            };
-            UpdateState::set(cx, state);
-            crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
-                s.update(|st| st.update_checked = Some(unix_now()), cx);
-            });
-        });
+        cx.update(|cx| checked(channel, result, cx));
     })
     .detach();
+}
+
+/// A check for `channel` came back.
+pub(crate) fn checked(
+    channel: Channel,
+    result: Result<Option<Release>, UpdateError>,
+    cx: &mut App,
+) {
+    // The channel changed while this was running: its answer is for the old one.
+    let now = crate::settings::SettingsStore::global(cx)
+        .read(cx)
+        .settings
+        .update_channel();
+    if now != channel {
+        UpdateState::set(cx, UpdateState::Idle);
+        start_check(now, cx);
+        return;
+    }
+    match result {
+        // With automatic updates on, it downloads in the background (`update_quiet.rs`).
+        Ok(Some(release)) => crate::update_quiet::found(release, cx),
+        Ok(None) => {
+            // A download waiting for a restart whose release was taken back goes too.
+            crate::update_quiet::forget(cx);
+            UpdateState::set(cx, UpdateState::UpToDate);
+        }
+        Err(e) => {
+            if !crate::update_quiet::show_ready(cx) {
+                UpdateState::set(cx, UpdateState::Failed(e.to_string()));
+            }
+        }
+    }
+    crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+        s.update(|st| st.update_checked = Some(unix_now()), cx);
+    });
 }
 
 /// Download and swap in the new version in the background; progress and result go to
 /// [`UpdateState`].
 pub(crate) fn start_download(release: Release, cx: &mut App) {
+    // Chosen by hand: a background download or its next try stops.
+    crate::update_quiet::stop(cx);
     UpdateState::set(
         cx,
         UpdateState::Downloading(release.clone(), 0, release.size),
@@ -710,8 +822,12 @@ pub(crate) fn start_download(release: Release, cx: &mut App) {
 }
 
 /// Restart into the new version: launch the new exe (it waits for this process to exit), then quit.
-/// An installer is handled by [`run_setup`].
+/// An installer is handled by [`run_setup`], a background download by `update_quiet.rs`.
 pub(crate) fn restart(exe: &Path, cx: &mut App) {
+    if crate::update_quiet::owns(exe, cx) {
+        crate::update_quiet::restart_now(cx);
+        return;
+    }
     if is_setup(exe) {
         run_setup(exe, cx);
         return;
@@ -721,7 +837,7 @@ pub(crate) fn restart(exe: &Path, cx: &mut App) {
         .arg(std::process::id().to_string())
         .spawn();
     match spawned {
-        Ok(_) => cx.quit(),
+        Ok(_) => crate::update_quiet::quit(crate::update_quiet::QuitReason::Update, cx),
         // The exe was already swapped: put the old one back, or Arke's next start (or the next
         // folder opened) would run what can't start.
         Err(e) => {
@@ -739,6 +855,16 @@ pub(crate) fn restart(exe: &Path, cx: &mut App) {
 /// start another.
 static SETUP_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Marks an installer as running; `false` if one already is.
+pub(crate) fn claim_setup() -> bool {
+    !SETUP_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The installer [`claim_setup`] was for didn't start.
+pub(crate) fn release_setup() {
+    SETUP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Run the installer without its wizard. Arke stays open: the installer closes it once it starts
 /// installing (`arke --quit`, then Windows) and starts the new version when done. Windows first
 /// asks for approval when Arke is installed for all users; if that's declined the installer exits
@@ -750,7 +876,8 @@ fn run_setup(exe: &Path, cx: &mut App) {
         return;
     }
     match std::process::Command::new(exe)
-        .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LAUNCH"])
+        .args(SETUP_SILENT)
+        .arg(SETUP_LAUNCH)
         .spawn()
     {
         Ok(child) => watch_setup(child, cx),
@@ -761,13 +888,33 @@ fn run_setup(exe: &Path, cx: &mut App) {
     }
 }
 
-/// Waits for the installer [`run_setup`] started. Normally this copy is closed before it exits.
-pub(crate) fn watch_setup(mut child: std::process::Child, cx: &mut App) {
-    use std::sync::atomic::Ordering;
+/// The installer's flags for an update: no wizard, no questions (`installer/arke.iss`).
+pub(crate) const SETUP_SILENT: [&str; 3] = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"];
+/// The installer starts Arke again when it is done, with the tabs that were open.
+pub(crate) const SETUP_LAUNCH: &str = "/LAUNCH";
+/// With [`SETUP_LAUNCH`]: in the background instead, no window (`--background`).
+pub(crate) const SETUP_BACKGROUND: &str = "/BACKGROUND";
+
+/// An installer's exit code once it ends, from a background thread.
+pub(crate) type SetupExit = flume::Receiver<std::io::Result<Option<i32>>>;
+
+/// Waits for `child` on a background thread.
+pub(crate) fn wait_for_setup(mut child: std::process::Child) -> SetupExit {
     let (tx, rx) = flume::bounded(1);
     crate::explorer::spawn_thread("update-setup", move || {
         let _ = tx.send(child.wait().map(|status| status.code()));
     });
+    rx
+}
+
+/// Waits for the installer [`run_setup`] started. Normally this copy is closed before it exits.
+pub(crate) fn watch_setup(child: std::process::Child, cx: &mut App) {
+    watch_installer(wait_for_setup(child), cx);
+}
+
+/// [`watch_setup`] for an installer that reports on `rx`.
+pub(crate) fn watch_installer(rx: SetupExit, cx: &mut App) {
+    use std::sync::atomic::Ordering;
     cx.spawn(async move |cx| {
         let Ok(result) = rx.recv_async().await else {
             return;
@@ -776,7 +923,9 @@ pub(crate) fn watch_setup(mut child: std::process::Child, cx: &mut App) {
             SETUP_RUNNING.store(false, Ordering::SeqCst);
             match result {
                 // Installed, but this copy wasn't closed: the new version is already starting.
-                Ok(Some(0)) => cx.quit(),
+                Ok(Some(0)) => {
+                    crate::update_quiet::quit(crate::update_quiet::QuitReason::Update, cx);
+                }
                 Ok(code) => {
                     log::warn!("update: the installer exited with {code:?} before installing");
                     // Keep the downloaded installer, the notice and the badge, so the user sees
@@ -798,7 +947,7 @@ pub(crate) fn watch_setup(mut child: std::process::Child, cx: &mut App) {
 
 /// Undoes [`install`] when the new exe can't be started (antivirus software often blocks a new,
 /// unsigned exe): the running version's file goes back to `exe`, the new one is dropped.
-fn roll_back(exe: &Path) -> std::io::Result<()> {
+pub(crate) fn roll_back(exe: &Path) -> std::io::Result<()> {
     let old = old_path(exe);
     if !old.is_file() {
         return Err(std::io::Error::new(
@@ -839,6 +988,13 @@ pub(crate) fn channel_changed(channel: Channel, cx: &mut App) {
         .settings
         .update_auto;
     let can_check = auto && !build_info::RELEASES_REPO.is_empty() && package_manager().is_none();
+    // A background download the new channel doesn't offer is dropped; one it does stays.
+    if crate::update_quiet::channel_changed(channel, cx) {
+        if can_check {
+            start_check(channel, cx);
+        }
+        return;
+    }
     match on_channel_change(&UpdateState::get(cx), can_check) {
         OnChannelChange::Keep => {}
         OnChannelChange::Forget => UpdateState::set(cx, UpdateState::Idle),
@@ -863,6 +1019,9 @@ pub(crate) fn auto_check(cx: &mut App) {
         .is_none_or(|at| unix_now().saturating_sub(at) > 20 * 3600);
     if due {
         start_check(settings.update_channel(), cx);
+    } else {
+        // Found on a metered connection: download it once the connection allows.
+        crate::update_quiet::resume(cx);
     }
 }
 
@@ -1175,6 +1334,74 @@ mod tests {
         std::fs::write(&exe, b"new").unwrap();
         assert!(roll_back(&exe).is_err());
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_the_version_of_a_finished_download() {
+        let at = |name: &str, suffix: &str| downloaded_version(name, suffix).map(|v| v.core);
+        assert_eq!(at("arke-0.4.0.exe", ""), Some((0, 4, 0)));
+        assert_eq!(
+            at("arke-0.4.0-rc.2-arm64-setup.exe", "-arm64-setup"),
+            Some((0, 4, 0))
+        );
+        assert_eq!(
+            downloaded_version("arke-0.4.0-rc.2.exe", "").map(|v| v.channel()),
+            Some(Channel::Rc)
+        );
+        // Another copy's kind of download isn't this one's.
+        assert_eq!(at("arke-0.4.0-setup.exe", ""), None);
+        assert_eq!(at("arke-0.4.0-arm64.exe", ""), None);
+        assert_eq!(at("arke-0.4.0.exe", "-setup"), None);
+        assert_eq!(at("arke-0.4.0.part", ""), None);
+        assert_eq!(at("notes.txt", ""), None);
+    }
+
+    /// At startup the newest download newer than this version stays for the next restart (and a
+    /// newer partial one for the next try); what went in already or was overtaken goes.
+    #[test]
+    fn startup_keeps_only_a_newer_download() {
+        let dir = std::env::temp_dir().join(format!("arke-test-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "arke-0.3.0.exe",
+            "arke-0.4.0.exe",
+            "arke-0.5.0.exe",
+            "arke-0.6.0.exe",
+            "arke-0.7.0.part",
+            "arke-0.2.0.part",
+            "arke-0.6.0-setup.exe",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let kept = keep_pending(&dir, &v("0.4.0"), "");
+        assert_eq!(kept, Some(dir.join("arke-0.6.0.exe")));
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["arke-0.6.0.exe", "arke-0.7.0.part"]);
+        assert_eq!(keep_pending(&dir, &v("0.7.0"), ""), None, "all went in");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The new exe goes in by two renames after the copy, the old one stays as `.old`.
+    #[test]
+    fn swaps_the_exe_keeping_the_old_one() {
+        let dir = std::env::temp_dir().join(format!("arke-test-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("arke.exe");
+        let new = dir.join("arke-0.5.0.exe");
+        std::fs::write(&exe, b"old").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        swap_in(&new, &exe).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert_eq!(std::fs::read(old_path(&exe)).unwrap(), b"old");
+        assert!(!new.exists() && !dir.join("arke.exe.new").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

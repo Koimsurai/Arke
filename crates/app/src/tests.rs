@@ -50,6 +50,8 @@ mod preview_info;
 mod preview_shelf;
 #[path = "tests_quick_look.rs"]
 mod quick_look;
+#[path = "tests_quiet_update.rs"]
+mod quiet_update;
 #[path = "tests_remote.rs"]
 mod remote;
 #[path = "tests_tabs.rs"]

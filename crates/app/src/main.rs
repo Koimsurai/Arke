@@ -82,6 +82,7 @@ mod thumb_host;
 mod tray;
 mod uninstall;
 mod update;
+mod update_quiet;
 mod whats_new;
 mod win;
 mod win_cloud;
@@ -208,6 +209,11 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             _ if arg.is_empty() => {}
             _ => args.path = Some(path_arg(&arg)),
         }
+    }
+    // Updated in the background with no window open: the next window opens where the settings
+    // say, as after any background start; there were no tabs to bring back.
+    if args.background {
+        update::start_handled();
     }
     args
 }
@@ -542,12 +548,35 @@ fn app_main(mut args: Args) {
         // Auto-update: delete the old binary left from last time; check a bit after startup so it
         // doesn't compete, then every hour while Arke keeps running (it can stay in the
         // notification area for days). `auto_check` only checks when 20 hours have passed.
+        // A download that is waiting (from before Windows restarted) waits again; with
+        // automatic updates on it goes in when Arke quits (`update_quiet.rs`).
         if bench.is_none() {
-            explorer::spawn_thread("update-cleanup", update::clean_up_old);
-            cx.spawn(async |cx| {
+            let (pending_tx, pending_rx) = flume::bounded(1);
+            explorer::spawn_thread("update-cleanup", move || {
+                let _ = pending_tx.send(update::clean_up_old());
+            });
+            update_quiet::mark_resident(resident, background);
+            cx.on_app_quit(|cx| {
+                update_quiet::on_quit(cx);
+                async {}
+            })
+            .detach();
+            if !resident {
+                // gpui quits by itself when the last window closes here.
+                cx.on_window_closed(|cx, _| {
+                    if cx.windows().is_empty() {
+                        update_quiet::note_quit(update_quiet::QuitReason::User);
+                    }
+                })
+                .detach();
+            }
+            cx.spawn(async move |cx| {
                 cx.background_executor()
                     .timer(Duration::from_secs(15))
                     .await;
+                if let Ok(Some(file)) = pending_rx.recv_async().await {
+                    cx.update(|cx| update_quiet::restore(file, cx));
+                }
                 loop {
                     cx.update(update::auto_check);
                     cx.background_executor()
@@ -1205,7 +1234,7 @@ fn quit_with_last_window_unless_resident(cx: &mut App) {
             .keep_running;
         if !keep && cx.windows().is_empty() {
             log::info!("background residency off: last window closed, quitting");
-            cx.quit();
+            update_quiet::quit(update_quiet::QuitReason::User, cx);
         }
     })
     .detach();
@@ -1410,7 +1439,7 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
         while let Ok((request, received, ack)) = rx.recv_async().await {
             let handled = cx.update(|cx| match request {
                 Request::Quit => {
-                    cx.quit();
+                    update_quiet::quit(update_quiet::QuitReason::Other, cx);
                     true
                 }
                 Request::Select { folder, items } => select_items(cx, &services, &folder, &items),
@@ -1480,7 +1509,7 @@ fn install_tray(cx: &mut App, services: &Services, store: &gpui::Entity<settings
                 }
                 tray::TrayCommand::Quit => {
                     tray::remove();
-                    cx.quit();
+                    update_quiet::quit(update_quiet::QuitReason::User, cx);
                 }
                 tray::TrayCommand::Update => {
                     // The window used last (or a new one) shows the update's notes, with Download.
@@ -1513,7 +1542,7 @@ fn install_tray(cx: &mut App, services: &Services, store: &gpui::Entity<settings
     // The menu offers an update that was found (and not yet installed).
     cx.observe_global::<update::UpdateState>(|cx| {
         tray::set_update(match update::UpdateState::get(cx) {
-            update::UpdateState::Available(r) => Some(r.version),
+            update::UpdateState::Available(r) if !update_quiet::hidden(cx) => Some(r.version),
             _ => None,
         });
     })

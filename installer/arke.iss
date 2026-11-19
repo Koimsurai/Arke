@@ -7,8 +7,9 @@
 ; "all users" (Program Files). Besides the files it only writes the uninstall entry Windows lists
 ; under Settings > Apps.
 ;
-; Arke's own updater runs a newer setup with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LAUNCH;
-; /LAUNCH starts Arke again when it is done.
+; Arke's own updater runs a newer setup with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART, and /LAUNCH
+; to start Arke again when it is done (with /BACKGROUND: in the background, no window). Without
+; /LAUNCH (Arke was quit) nothing starts; the next start is the new version.
 ; Uninstalling runs `arke.exe --uninstall --quiet` first, which undoes what Arke changed itself
 ; (the search service, "Open folders in Arke", saved passwords, its data folders). Settings are
 ; kept or removed as asked; /KEEPSETTINGS or /REMOVESETTINGS answer for the in-app "Remove Arke".
@@ -118,6 +119,8 @@ Filename: "{app}\arke.exe"; Description: "{cm:LaunchProgram,Arke}"; Flags: nowai
 ; After an update Arke reopens the tabs that were open (`--after-update`; 0: the old process is
 ; already gone, there is nothing to wait for).
 Filename: "{app}\arke.exe"; Parameters: "--after-update 0"; Check: LaunchAfterUpdate; Flags: nowait runasoriginaluser
+; Updated while Arke ran in the background with no window open: back in the background.
+Filename: "{app}\arke.exe"; Parameters: "--background"; Check: LaunchInBackground; Flags: nowait runasoriginaluser
 
 [Code]
 var
@@ -131,7 +134,13 @@ end;
 { Arke's updater passes /LAUNCH so the new version starts when the silent update is done. }
 function LaunchAfterUpdate: Boolean;
 begin
-  Result := WizardSilent and HasParam('/LAUNCH');
+  Result := WizardSilent and HasParam('/LAUNCH') and not HasParam('/BACKGROUND');
+end;
+
+{ /LAUNCH /BACKGROUND: Arke ran in the background with no window, and goes back to that. }
+function LaunchInBackground: Boolean;
+begin
+  Result := WizardSilent and HasParam('/LAUNCH') and HasParam('/BACKGROUND');
 end;
 
 { Without the Ready page, the page before it starts the install: say so on its button. }

@@ -44,6 +44,8 @@ features = [
     "Data_Pdf",
     # Cloud sync roots (StorageProviderSyncRootManager)
     "Foundation_Collections",
+    # Skip background update downloads on a metered connection (ConnectionCost)
+    "Networking_Connectivity",
     "Storage",
     "Storage_Provider",
     "Storage_Streams",

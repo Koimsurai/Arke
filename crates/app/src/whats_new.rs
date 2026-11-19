@@ -83,6 +83,51 @@ pub(crate) fn available(version: &str, notes_md: &str) -> Release {
     }
 }
 
+/// The new version's notes in `lang` from that language's changelog as it is in the release
+/// (`localized`, fetched by [`fetch_localized_changelog`]), so they read the same before the
+/// update as What's new does after it. `None` when the text is missing, doesn't have the version
+/// or has nothing under it: the caller keeps the English release notes.
+pub(crate) fn available_in(version: &str, localized: Option<&str>) -> Option<Release> {
+    let release = notes::parse_changelog(localized?)
+        .into_iter()
+        .find(|r| r.version == version)?;
+    (!release.blocks.is_empty()).then_some(release)
+}
+
+/// URL of the changelog in `lang` at release tag `v<version>`. `None` for English, whose notes
+/// are the release body already.
+fn localized_changelog_url(repo: &str, lang: &str, version: &str) -> Option<String> {
+    (lang != "en").then(|| {
+        format!(
+            "https://raw.githubusercontent.com/{repo}/v{version}/{}",
+            changelog_file(lang)
+        )
+    })
+}
+
+/// Fetches the changelog in `lang` at the tag of `version` from GitHub. `None` for English or
+/// when anything goes wrong (offline, no such tag). Blocks on the network: background thread.
+#[cfg(not(test))]
+pub(crate) fn fetch_localized_changelog(lang: &str, version: &str) -> Option<String> {
+    let url = localized_changelog_url(build_info::RELEASES_REPO, lang, version)?;
+    crate::win_http::get_text(&url, &[]).ok()
+}
+
+/// Tests have no network: they get what [`set_localized_changelog_for_test`] put in.
+#[cfg(test)]
+pub(crate) fn fetch_localized_changelog(lang: &str, version: &str) -> Option<String> {
+    localized_changelog_url("Koimsurai/Arke", lang, version)?;
+    TEST_CHANGELOG.lock().clone()
+}
+
+#[cfg(test)]
+static TEST_CHANGELOG: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn set_localized_changelog_for_test(text: Option<&str>) {
+    *TEST_CHANGELOG.lock() = text.map(str::to_owned);
+}
+
 /// The changelog file in `lang` (for its link on GitHub).
 pub(crate) fn changelog_file(lang: &str) -> &'static str {
     notes::changelog_file(lang)
@@ -288,6 +333,47 @@ mod tests {
                 Block::Item("A fix".into()),
             ]
         );
+    }
+
+    const ZH: &str = "# 變更記錄\n\n## 0.7.1 (2026-11-20)\n\n### 修正\n\n- 修好圖示\n\n## 0.7.0 (2026-11-10)\n\n### 新功能\n\n- 首頁\n";
+
+    #[test]
+    fn the_new_versions_notes_come_from_the_localized_changelog() {
+        let r = available_in("0.7.1", Some(ZH)).expect("section");
+        assert_eq!(r.version, "0.7.1");
+        assert_eq!(
+            r.blocks,
+            [
+                Block::Heading("修正".into()),
+                Block::Item("修好圖示".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_or_unusable_localized_notes_fall_back_to_english() {
+        // Fetch failed, the tag has no such version (an RC), or the section is empty.
+        assert_eq!(available_in("0.7.1", None), None);
+        assert_eq!(available_in("0.7.2-rc.1", Some(ZH)), None);
+        assert_eq!(
+            available_in("0.7.1", Some("## 0.7.1 (2026-11-20)\n\n")),
+            None
+        );
+        assert_eq!(available_in("0.7.1", Some("not a changelog")), None);
+    }
+
+    #[test]
+    fn the_changelog_is_fetched_from_the_release_tag_only_for_translated_languages() {
+        let url = |lang| localized_changelog_url("Koimsurai/Arke", lang, "0.7.1");
+        assert_eq!(
+            url("zh-TW").as_deref(),
+            Some("https://raw.githubusercontent.com/Koimsurai/Arke/v0.7.1/CHANGELOG.zh-TW.md")
+        );
+        assert_eq!(
+            url("zh-CN").as_deref(),
+            Some("https://raw.githubusercontent.com/Koimsurai/Arke/v0.7.1/CHANGELOG.zh-CN.md")
+        );
+        assert_eq!(url("en"), None);
     }
 
     #[test]

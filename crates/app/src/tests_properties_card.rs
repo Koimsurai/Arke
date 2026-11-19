@@ -2,6 +2,7 @@
 //! the quick actions, the picture at the top, and the window's size and place.
 
 use arke_core::dirsize::Category;
+use gpui::{px, size};
 
 use super::properties_window::{PLACEHOLDER, at, click, file_fs, props, ready, services, wait_for};
 use super::*;
@@ -522,7 +523,7 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
     ready(cx, &view);
     cx.run_until_parked();
     let (height, user) = view.update(cx, |v, _| v.height_for_test());
-    assert!((320.0..1200.0).contains(&height), "fits: {height}");
+    assert!((440.0..=520.0).contains(&height), "fits: {height}");
     assert!(!user);
 
     cx.update(|_, cx| {
@@ -532,7 +533,7 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
                     s.properties_window = Some(PropertiesPlace {
                         x: 100.,
                         y: 80.,
-                        width: 520.,
+                        width: 800.,
                         height: None,
                     });
                 },
@@ -547,8 +548,27 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
             f32::from(bounds.origin.y),
             f32::from(bounds.size.width)
         ),
-        (100., 80., 520.)
+        (100., 80., 800.)
     );
+    // A width from the old, narrow window would give a single column: the new default is used.
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(
+                |s| {
+                    s.properties_window = Some(PropertiesPlace {
+                        x: 100.,
+                        y: 80.,
+                        width: 500.,
+                        height: None,
+                    });
+                },
+                cx,
+            );
+        });
+    });
+    let bounds = cx.update(|_, cx| crate::properties::start_bounds(cx));
+    assert_eq!(f32::from(bounds.size.width), 760.);
+    assert_eq!(f32::from(bounds.size.height), 520.);
     // A place that is on no screen any more is not used.
     cx.update(|_, cx| {
         SettingsStore::global(cx).update(cx, |store, cx| {
@@ -557,7 +577,7 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
                     s.properties_window = Some(PropertiesPlace {
                         x: 90_000.,
                         y: 90_000.,
-                        width: 520.,
+                        width: 800.,
                         height: Some(700.),
                     });
                 },
@@ -572,4 +592,59 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
         700.,
         "a height the user chose is kept"
     );
+}
+
+/// A wide window puts the cards in two columns side by side, a narrow one in a single column.
+#[gpui::test]
+fn wide_windows_use_two_columns_and_narrow_ones_one(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\w", vec![file("a.txt", 5)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = props(cx, &fs, &shell, &[(r"C:\w", true)]);
+    ready(cx, &view);
+    wait_for(cx, &view, "the count", |v| !v.is_counting_for_test());
+
+    cx.simulate_resize(size(px(760.), px(520.)));
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |v, _| v.columns_for_test()), 2);
+    let left = cx.debug_bounds("props-col-left").expect("left column");
+    let right = cx.debug_bounds("props-col-right").expect("right column");
+    assert!(left.right() <= right.left(), "side by side");
+    assert_eq!(left.top(), right.top(), "cards start at a common top");
+    assert!(
+        (left.size.width - right.size.width).abs() < px(1.),
+        "equal columns"
+    );
+
+    cx.simulate_resize(size(px(640.), px(520.)));
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |v, _| v.columns_for_test()), 1);
+    let left = cx.debug_bounds("props-col-left").expect("left column");
+    assert!(cx.debug_bounds("props-col-right").is_none());
+    assert!(
+        left.size.width > px(500.),
+        "one column takes the width: {:?}",
+        left.size.width
+    );
+    // The quick actions are part of the hero, not a row of their own below it.
+    let hero = cx.debug_bounds("props-hero").expect("hero");
+    let open = cx.debug_bounds("props-act-open").expect("open action");
+    assert!(open.left() >= hero.right(), "next to the picture");
+    assert!(open.top() < hero.bottom() + px(40.));
+}
+
+/// Without a space card (a file) the attributes sit under the times, so the columns stay level.
+#[gpui::test]
+fn the_attributes_sit_under_the_times_when_there_is_no_space_card(cx: &mut TestAppContext) {
+    let fs = file_fs();
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = props(cx, &fs, &shell, &[(r"C:\p\a.txt", false)]);
+    ready(cx, &view);
+    cx.simulate_resize(size(px(760.), px(520.)));
+    cx.run_until_parked();
+    let right = cx.debug_bounds("props-col-right").expect("right column");
+    let modified = cx.debug_bounds("props-modified").expect("times");
+    let readonly = cx.debug_bounds("props-readonly").expect("attributes");
+    assert!(readonly.left() >= right.left(), "on the right");
+    assert!(readonly.top() > modified.top(), "under the times");
 }

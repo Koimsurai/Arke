@@ -49,16 +49,20 @@ actions!(properties, [CloseProperties]);
 
 const CONTEXT: &str = "Properties";
 
-/// Window width and the height it starts with (it then fits what is shown).
-const WIDTH: f32 = 500.;
-const START_HEIGHT: f32 = 600.;
-/// The window is never shorter than this, and keeps this much of the screen free.
-const MIN_HEIGHT: f32 = 320.;
+/// Window width and the height it starts with (it then fits what is shown, up to this height;
+/// what does not fit scrolls).
+const WIDTH: f32 = 760.;
+const START_HEIGHT: f32 = 520.;
+/// The window is never smaller than this, and keeps this much of the screen free.
+const MIN_WIDTH: f32 = 620.;
+const MIN_HEIGHT: f32 = 440.;
+/// From this width on the cards sit in two columns, below it in one.
+const TWO_COLUMNS_FROM: f32 = 680.;
 const SCREEN_MARGIN: f32 = 72.;
 /// Longest wait between two updates of a folder size that is still being counted.
 const PROGRESS_EVERY: Duration = Duration::from_millis(120);
 /// Width of the labels in the rows.
-const LABEL_W: gpui::Pixels = px(112.);
+const LABEL_W: gpui::Pixels = px(100.);
 /// Picture or icon of the item at the top.
 const HERO: gpui::Pixels = px(96.);
 /// The picture is decoded this big (device pixels).
@@ -68,7 +72,8 @@ const HASH_CHUNK: usize = 256 * 1024;
 /// Estimated heights, to size the window to its content.
 const EST_TITLE: f32 = 44.;
 const EST_FOOTER: f32 = 56.;
-const EST_HERO: f32 = HERO_H + 16.;
+const EST_NAME: f32 = 40.;
+const EST_LINE: f32 = 20.;
 const HERO_H: f32 = 96.;
 const EST_ACTIONS: f32 = 44.;
 const EST_HEADING: f32 = 34.;
@@ -198,6 +203,8 @@ pub(crate) struct Properties {
     user_sized: bool,
     /// Height of what is drawn, as worked out while drawing.
     estimate: Cell<f32>,
+    /// How many columns the cards were last laid out in.
+    columns: Cell<u8>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -230,7 +237,7 @@ pub(crate) fn open(
                 ..Default::default()
             }),
             focus: true,
-            window_min_size: Some(size(px(400.), px(MIN_HEIGHT))),
+            window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
             window_background: if theme::mica() {
                 gpui::WindowBackgroundAppearance::MicaBackdrop
             } else {
@@ -256,7 +263,10 @@ pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
         .settings
         .properties_window;
     let height = saved.and_then(|p| p.height).unwrap_or(START_HEIGHT);
-    let width = saved.map_or(WIDTH, |p| p.width.clamp(400., 1200.));
+    // A width saved by the old, narrow window would only give a single column: start afresh.
+    let width = saved
+        .filter(|p| p.width >= MIN_WIDTH)
+        .map_or(WIDTH, |p| p.width.min(1200.));
     let fresh = Bounds::centered(None, size(px(width), px(height)), cx);
     let Some(place) = saved else {
         return fresh;
@@ -380,6 +390,7 @@ impl Properties {
             fit_at: Instant::now(),
             user_sized,
             estimate: Cell::new(0.),
+            columns: Cell::new(0),
             _subscriptions: subscriptions,
         };
         cx.spawn(async move |this, cx| {
@@ -426,10 +437,10 @@ impl Properties {
         let screen = cx
             .primary_display()
             .map_or(1000., |d| f32::from(d.visible_bounds().size.height));
-        let want = self
-            .estimate
-            .get()
-            .clamp(MIN_HEIGHT, (screen - SCREEN_MARGIN).max(MIN_HEIGHT));
+        let want = self.estimate.get().clamp(
+            MIN_HEIGHT,
+            START_HEIGHT.min(screen - SCREEN_MARGIN).max(MIN_HEIGHT),
+        );
         if (want - self.fit_height).abs() <= 6. {
             return;
         }
@@ -1164,6 +1175,11 @@ impl Properties {
     }
 
     #[cfg(test)]
+    pub(crate) const fn columns_for_test(&self) -> u8 {
+        self.columns.get()
+    }
+
+    #[cfg(test)]
     pub(crate) const fn height_for_test(&self) -> (f32, bool) {
         (self.fit_height, self.user_sized)
     }
@@ -1777,12 +1793,12 @@ fn category_name(category: Category) -> String {
 }
 
 impl Properties {
-    /// The picture or icon, the name and what is worth knowing about the item.
+    /// The picture or icon, the name, what is worth knowing about the item and the quick actions.
     #[allow(
         clippy::too_many_lines,
         reason = "one layout: picture, name and summary"
     )]
-    fn hero(&self) -> (AnyElement, f32) {
+    fn hero(&self, cx: &mut Context<Self>) -> (AnyElement, f32) {
         let loaded = self.loaded.as_ref();
         let single = self.single();
         let drive = self.is_drive();
@@ -1862,9 +1878,14 @@ impl Properties {
                 .into_any_element()
         };
         let lines = self.summary();
+        let actions = self.actions(cx);
+        let height = (EST_NAME
+            + lines.len() as f32 * EST_LINE
+            + actions.as_ref().map_or(0., |(_, h)| h + 8.))
+        .max(HERO_H);
         let element = div()
             .flex()
-            .items_center()
+            .items_start()
             .gap(theme::S_16)
             .child(thumb)
             .child(
@@ -1891,10 +1912,11 @@ impl Properties {
                             .text_size(theme::FS_13)
                             .text_color(theme::text_muted())
                             .child(line)
-                    })),
+                    }))
+                    .children(actions.map(|(a, _)| div().pt(theme::S_4).child(a))),
             )
             .into_any_element();
-        (element, EST_HERO.max(HERO_H + 40.))
+        (element, height)
     }
 
     /// Open, Copy path, ... for what is shown.
@@ -2490,29 +2512,80 @@ impl Properties {
 }
 
 impl Render for Properties {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one layout: hero, the two columns of cards, footer"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = f32::from(window.bounds().size.width) >= TWO_COLUMNS_FROM;
+        self.columns.set(if columns { 2 } else { 1 });
         let mut estimate = EST_TITLE + EST_FOOTER + 8. + 32.;
         let body = if self.loaded.is_some() {
-            let mut cards: Vec<(AnyElement, f32)> = Vec::new();
-            let (hero, hero_h) = self.hero();
+            let (hero, hero_h) = self.hero(cx);
             estimate += hero_h + EST_GAP;
-            let actions = self.actions(cx);
-            estimate += actions.as_ref().map_or(0., |(_, h)| h + EST_GAP);
-            cards.push(self.general_card(cx));
-            cards.extend(self.time_card());
+            let mut left: Vec<(AnyElement, f32)> = vec![self.general_card(cx)];
+            let mut right: Vec<(AnyElement, f32)> = Vec::new();
+            right.extend(self.time_card());
             // A drive has no attributes to set here.
-            if !self.is_drive() {
-                cards.push(self.security_card(cx));
+            let security = (!self.is_drive()).then(|| self.security_card(cx));
+            let space = self.space_card();
+            if columns && space.is_none() {
+                // No space card: the attributes go under the times, so the two sides stay level.
+                right.extend(security);
+            } else {
+                left.extend(security);
+                right.extend(space);
             }
-            cards.extend(self.space_card());
-            estimate += cards.iter().map(|(_, h)| h).sum::<f32>();
+            let stack = |cards: Vec<(AnyElement, f32)>| {
+                let height = cards.iter().map(|(_, h)| h).sum::<f32>();
+                let element = div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::S_12)
+                    .children(cards.into_iter().map(|(c, _)| c));
+                (element, height)
+            };
+            let (left, left_h) = stack(left);
+            let (right, right_h) = stack(right);
+            let grid = if columns {
+                estimate += left_h.max(right_h);
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(theme::S_16)
+                    .child(
+                        left.id("props-col-left")
+                            .debug_selector(|| "props-col-left".to_owned())
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .when(right_h > 0., |d| {
+                        d.child(
+                            right
+                                .id("props-col-right")
+                                .debug_selector(|| "props-col-right".to_owned())
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                    })
+            } else {
+                estimate += left_h + right_h + if right_h > 0. { EST_GAP } else { 0. };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::S_12)
+                    .child(
+                        left.id("props-col-left")
+                            .debug_selector(|| "props-col-left".to_owned()),
+                    )
+                    .when(right_h > 0., |d| d.child(right))
+            };
             div()
                 .flex()
                 .flex_col()
                 .gap(theme::S_12)
                 .child(hero)
-                .children(actions.map(|(a, _)| a))
-                .children(cards.into_iter().map(|(c, _)| c))
+                .child(grid)
                 .into_any_element()
         } else {
             estimate += 120.;

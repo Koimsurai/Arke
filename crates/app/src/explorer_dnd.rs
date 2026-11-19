@@ -344,9 +344,7 @@ impl DragPreview {
         let (icon, text, strong) = match dest {
             _ if pin.is_some() => (
                 Icon::Pin,
-                pin.map_or_default(|slot| {
-                    crate::workspace::pindrop::action_label(slot).to_string()
-                }),
+                crate::workspace::pindrop::action_label().to_string(),
                 true,
             ),
             None => (Icon::Folder, t!("dnd.no_target").into_owned(), false),

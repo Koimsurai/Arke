@@ -593,7 +593,11 @@ fn preview_menu(s: &Settings) -> AnyElement {
             t!("menu.search_in_folder").into_owned(),
         ),
         (None, None, String::new()),
-        (Some("pin"), Some(Icon::Pin), t!("sidebar.pin").into_owned()),
+        (
+            Some("pin"),
+            Some(Icon::Pin),
+            t!("sidebar.add_favorite").into_owned(),
+        ),
         (
             Some("terminal"),
             Some(Icon::Terminal),

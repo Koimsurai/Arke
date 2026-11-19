@@ -134,14 +134,9 @@ fn over_tiles(cx: &App) -> bool {
     cx.try_global::<PinDrop>().is_some_and(|s| s.over_tiles)
 }
 
-/// The drag card's line over the sidebar's pin areas: what dropping there does.
-pub(crate) fn action_label(slot: PinSlot) -> SharedString {
-    match slot {
-        PinSlot::Tile(_) => t!("sidebar.add_favorite"),
-        PinSlot::List(_) => t!("sidebar.pin"),
-    }
-    .into_owned()
-    .into()
+/// The drag card's line over the favorites (the tiles or the list): what dropping there does.
+pub(crate) fn action_label() -> SharedString {
+    t!("sidebar.add_favorite").into_owned().into()
 }
 
 /// What can be added from a drag: `None` when it carries none (files, a tab showing a page);

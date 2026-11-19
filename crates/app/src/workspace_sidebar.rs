@@ -50,9 +50,6 @@ pub(super) enum SidebarAction {
     MoveToList(PathBuf),
     /// Move a pinned list entry up to the tiles.
     MoveToTiles(PathBuf),
-    /// Put a folder on the favorite tiles (the last one), or take it off them.
-    AddFavorite(PathBuf),
-    RemoveFavorite(PathBuf),
     /// A folder picked in the back or forward button's menu: `steps` down that pane's history,
     /// where `path` was when the menu opened.
     HistoryJump {
@@ -293,9 +290,9 @@ fn folder_menu(
         ),
         (
             if pinned {
-                t!("sidebar.unpin")
+                t!("sidebar.remove_favorite")
             } else {
-                t!("sidebar.pin")
+                t!("sidebar.add_favorite")
             }
             .to_string()
             .into(),
@@ -741,7 +738,7 @@ impl Workspace {
                     .debug_selector(|| "pin-list-label".to_owned())
                     .relative()
                     .rounded(theme::R_8)
-                    .child(section_label(t!("sidebar.pinned")))
+                    .child(section_label(t!("sidebar.favorites")))
                     // A folder or tab goes first in the list; with no folder pinned yet, the
                     // heading itself shows it.
                     .when(
@@ -1203,7 +1200,7 @@ impl Workspace {
                             ),
                             (
                                 t!("sidebar.remove_favorite").to_string().into(),
-                                SidebarAction::RemoveFavorite(p),
+                                SidebarAction::TogglePin(p),
                             ),
                         ],
                         cx,
@@ -1615,27 +1612,6 @@ impl Workspace {
                     s.update(|st| st.move_to_list(&path, &places), cx);
                 });
             }
-            SidebarAction::AddFavorite(path) => {
-                let places = self.active_view().read(cx).places.clone();
-                SettingsStore::global(cx).update(cx, |s, cx| {
-                    s.update(
-                        |st| {
-                            st.insert_pin(
-                                &path,
-                                crate::settings::PinSlot::Tile(usize::MAX),
-                                &places,
-                            );
-                        },
-                        cx,
-                    );
-                });
-            }
-            SidebarAction::RemoveFavorite(path) => {
-                let places = self.active_view().read(cx).places.clone();
-                SettingsStore::global(cx).update(cx, |s, cx| {
-                    s.update(|st| st.remove_favorite(&path, &places), cx);
-                });
-            }
             SidebarAction::MoveToTiles(path) => {
                 let places = self.active_view().read(cx).places.clone();
                 SettingsStore::global(cx).update(cx, |s, cx| {
@@ -1973,8 +1949,8 @@ impl Workspace {
     pub(super) fn tab_menu(&self, ix: usize, cx: &App) -> Vec<(SharedString, SidebarAction)> {
         let pinned = self.tabs.get(ix).is_some_and(|t| t.pinned);
         let split = self.tabs.get(ix).is_some_and(Tab::is_split);
-        // The tab's folder can go on the sidebar's pinned list (the same pin as a folder's own menu).
-        // And on the favorite tiles.
+        // The tab's folder can go in the sidebar's favorites (the same as a folder's own menu:
+        // the tiles, then the list below once they are full).
         let folder = self
             .tabs
             .get(ix)
@@ -1983,33 +1959,18 @@ impl Workspace {
             .and_then(|view| view.read(cx).display_path().map(Path::to_path_buf))
             .map(|path| {
                 let places = &self.active_view().read(cx).places;
-                let (on_sidebar, favorite) = SettingsStore::try_global(cx).map_or_default(|s| {
-                    let s = &s.read(cx).settings;
-                    (s.is_pinned(&path, places), s.is_favorite(&path, places))
-                });
-                [
-                    (
-                        if on_sidebar {
-                            t!("sidebar.unpin_tab_folder")
-                        } else {
-                            t!("sidebar.pin_tab_folder")
-                        }
-                        .to_string()
-                        .into(),
-                        SidebarAction::TogglePin(path.clone()),
-                    ),
+                let favorite = SettingsStore::try_global(cx)
+                    .is_some_and(|s| s.read(cx).settings.is_pinned(&path, places));
+                (
                     if favorite {
-                        (
-                            t!("sidebar.remove_favorite").to_string().into(),
-                            SidebarAction::RemoveFavorite(path),
-                        )
+                        t!("sidebar.remove_favorite")
                     } else {
-                        (
-                            t!("sidebar.add_favorite").to_string().into(),
-                            SidebarAction::AddFavorite(path),
-                        )
-                    },
-                ]
+                        t!("sidebar.add_favorite")
+                    }
+                    .to_string()
+                    .into(),
+                    SidebarAction::TogglePin(path),
+                )
             });
         let mut items = vec![
             (
@@ -2027,7 +1988,7 @@ impl Workspace {
                 SidebarAction::DuplicateTab(ix),
             ),
         ];
-        items.extend(folder.into_iter().flatten());
+        items.extend(folder);
         items.push((
             // Ctrl+W closes the tab only when it isn't split (else the active side).
             if split {

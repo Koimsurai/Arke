@@ -278,8 +278,8 @@ struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Over the favorites or the pinned list: what dropping there does.
-        let pin = pindrop::current(window, cx).map(|slot| {
+        // Over the favorites (the tiles or the list): what dropping there does.
+        let pin = pindrop::current(window, cx).map(|_| {
             div()
                 .flex()
                 .items_center()
@@ -293,7 +293,7 @@ impl Render for DraggedTab {
                         .size(theme::ICON_SM)
                         .text_color(theme::signal()),
                 )
-                .child(pindrop::action_label(slot))
+                .child(pindrop::action_label())
         });
         div()
             .h(theme::H_ROW)

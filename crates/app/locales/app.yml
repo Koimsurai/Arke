@@ -1269,9 +1269,9 @@ backup.export_title:
   zh-TW: 匯出
   zh-CN: 导出
 backup.export_desc:
-  en: "All settings and pinned folders, not open tabs"
-  zh-TW: "所有設定與釘選的資料夾，不含開著的分頁"
-  zh-CN: "所有设置和固定的文件夹，不含打开的标签页"
+  en: "All settings and favorites, not open tabs"
+  zh-TW: "所有設定與最愛，不含開著的分頁"
+  zh-CN: "所有设置和收藏夹，不含打开的标签页"
 backup.export:
   en: Export to Downloads
   zh-TW: 匯出到「下載」
@@ -3100,22 +3100,18 @@ split.drop_here:
   zh-CN: "松开即可并排打开“%{name}”"
 
 # ─── Sidebar：釘選、最愛、右鍵選單
-sidebar.pinned:
-  en: Pinned
-  zh-TW: "已釘選"
-  zh-CN: 已固定
+sidebar.favorites:
+  en: Favorites
+  zh-TW: 最愛
+  zh-CN: 收藏夹
 sidebar.pinned_hint:
-  en: "Right-click a folder › Pin to sidebar"
-  zh-TW: 在資料夾上按右鍵 →「釘選到側邊欄」
-  zh-CN: 右键单击文件夹 →“固定到侧边栏”
+  en: "Right-click a folder › Add to favorites"
+  zh-TW: 在資料夾上按右鍵 →「加入最愛」
+  zh-CN: 右键单击文件夹 →“添加到收藏夹”
 sidebar.open_in_new_tab:
   en: Open in new tab
   zh-TW: 在新分頁開啟
   zh-CN: 在新标签页中打开
-sidebar.pin:
-  en: Pin to sidebar
-  zh-TW: 釘選到側邊欄
-  zh-CN: 固定到侧边栏
 sidebar.move_to_list:
   en: Move to the list below
   zh-TW: 移到下面的清單
@@ -3132,10 +3128,6 @@ sidebar.drop_to_list:
   en: "Drop here to add to the list"
   zh-TW: "放到這裡以加入清單"
   zh-CN: "放到这里以加入列表"
-sidebar.unpin:
-  en: Unpin
-  zh-TW: 取消釘選
-  zh-CN: 取消固定
 sidebar.duplicate_tab:
   en: Duplicate tab
   zh-TW: 複製分頁
@@ -3709,22 +3701,14 @@ sidebar.unpin_tab:
   en: Unpin tab
   zh-TW: 取消釘選分頁
   zh-CN: 取消固定标签页
-sidebar.pin_tab_folder:
-  en: Pin folder to sidebar
-  zh-TW: 將資料夾釘選到側邊欄
-  zh-CN: 将文件夹固定到侧边栏
-sidebar.unpin_tab_folder:
-  en: Unpin folder from sidebar
-  zh-TW: 從側邊欄取消釘選資料夾
-  zh-CN: 从侧边栏取消固定文件夹
 sidebar.add_favorite:
   en: Add to favorites
   zh-TW: 加入最愛
-  zh-CN: 添加到收藏
+  zh-CN: 添加到收藏夹
 sidebar.remove_favorite:
   en: Remove from favorites
   zh-TW: 從最愛移除
-  zh-CN: 从收藏中移除
+  zh-CN: 从收藏夹中移除
 sidebar.drop_to_pin_tab:
   en: Drop here to pin
   zh-TW: 放到這裡以釘選
@@ -4290,9 +4274,9 @@ uninstall.keep:
   zh-TW: "保留我的設定"
   zh-CN: "保留我的设置"
 uninstall.keep_desc:
-  en: "Settings, pinned folders, workspaces and trusted hosts stay for a later reinstall"
-  zh-TW: "設定、釘選的資料夾、工作區和信任的主機都會留著，之後重新安裝可以接著用"
-  zh-CN: "设置、固定的文件夹、工作区和信任的主机会保留，之后重新安装可以继续使用"
+  en: "Settings, favorites, workspaces and trusted hosts stay for a later reinstall"
+  zh-TW: "設定、最愛、工作區和信任的主機都會留著，之後重新安裝可以接著用"
+  zh-CN: "设置、收藏夹、工作区和信任的主机会保留，之后重新安装可以继续使用"
 uninstall.uac_note:
   en: "Windows will ask for administrator approval to remove the search service."
   zh-TW: "移除搜尋服務時，Windows 會要求系統管理員核准。"
@@ -4342,9 +4326,9 @@ uninstall.step_data:
   zh-TW: "搜尋索引、記錄與下載的更新（%{path}）"
   zh-CN: "搜索索引、日志和下载的更新（%{path}）"
 uninstall.step_settings:
-  en: "Settings, pinned folders, workspaces and trusted hosts (%{path})"
-  zh-TW: "設定、釘選的資料夾、工作區與信任的主機（%{path}）"
-  zh-CN: "设置、固定的文件夹、工作区和信任的主机（%{path}）"
+  en: "Settings, favorites, workspaces and trusted hosts (%{path})"
+  zh-TW: "設定、最愛、工作區與信任的主機（%{path}）"
+  zh-CN: "设置、收藏夹、工作区和信任的主机（%{path}）"
 uninstall.step_keep_settings:
   en: "Your settings stay in %{path}"
   zh-TW: "你的設定會留在 %{path}"

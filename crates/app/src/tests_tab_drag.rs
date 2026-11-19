@@ -288,7 +288,8 @@ fn favorites(cx: &mut VisualTestContext) -> Option<Vec<PathBuf>> {
     })
 }
 
-/// The tab menu adds the tab's folder to the favorites (at the end) and takes it off again.
+/// The tab menu adds the tab's folder to the favorites (the tiles while there is room, then the
+/// list below) and takes it off again. "Pin" is only about the tab itself.
 #[gpui::test]
 fn the_tab_menu_adds_and_removes_a_favorite(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
@@ -303,11 +304,12 @@ fn the_tab_menu_adds_and_removes_a_favorite(cx: &mut TestAppContext) {
     let remove = t!("sidebar.remove_favorite").into_owned();
 
     let labels = ws.update(cx, |ws, cx| ws.tab_menu_labels_for_test(0, cx));
-    let pin = labels
+    assert!(labels.contains(&add), "{labels:?}");
+    let pins: Vec<&String> = labels
         .iter()
-        .position(|l| *l == t!("sidebar.pin_tab_folder"))
-        .expect("the pin item");
-    assert_eq!(labels.get(pin + 1), Some(&add), "next to it: {labels:?}");
+        .filter(|l| l.to_lowercase().contains("pin"))
+        .collect();
+    assert_eq!(pins, [&t!("sidebar.pin_tab").into_owned()], "{labels:?}");
     ws.update_in(cx, |ws, window, cx| {
         ws.run_tab_menu_for_test(0, &add, window, cx);
     });
@@ -329,6 +331,21 @@ fn the_tab_menu_adds_and_removes_a_favorite(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(favorites(cx), Some(vec![p(r"C:\a"), p(r"C:\b")]));
+
+    // Full tiles: the list below takes it, and the menu still says it is a favorite.
+    let full: Vec<PathBuf> = (0..crate::settings::FAVORITES_MAX)
+        .map(|n| p(&format!(r"C:\t{n}")))
+        .collect();
+    with_settings(cx, |s| s.favorites = Some(full.clone()));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_tab_menu_for_test(0, &add, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(favorites(cx), Some(full));
+    let pinned = cx.update(|_, cx| SettingsStore::global(cx).read(cx).settings.pinned.clone());
+    assert_eq!(pinned, [p(r"C:\w")]);
+    let labels = ws.update(cx, |ws, cx| ws.tab_menu_labels_for_test(0, cx));
+    assert!(labels.contains(&remove), "{labels:?}");
 }
 
 /// The left quarter of a tile: where a folder dragged there goes in before it.

@@ -845,11 +845,6 @@ impl Settings {
         self.pinned = list;
     }
 
-    /// Whether the folder is on the tiles (the favorites).
-    pub(crate) fn is_favorite(&self, path: &Path, places: &[crate::shell::Place]) -> bool {
-        self.tiles(places).iter().any(|p| p == path)
-    }
-
     /// Puts a folder in at `slot`, an insertion point (a tile or list index, past the end means
     /// last), whether or not it was pinned: one already on the tiles or in the list moves there.
     /// On full tiles the last other tile makes room, going to the top of the list. Returns where
@@ -894,14 +889,6 @@ impl Settings {
         self.favorites = Some(tiles);
         self.pinned = list;
         landed
-    }
-
-    /// Takes a folder off the tiles (not off the list).
-    pub(crate) fn remove_favorite(&mut self, path: &Path, places: &[crate::shell::Place]) {
-        let tiles = self.tiles(places);
-        if tiles.iter().any(|p| p == path) {
-            self.favorites = Some(tiles.into_iter().filter(|p| p != path).collect());
-        }
     }
 
     /// Unpins, from the tiles or the list.
@@ -1719,12 +1706,6 @@ mod tests {
         assert!(s.pinned.is_empty());
         s.insert_pin(&p(1), PinSlot::List(usize::MAX), &[]);
         assert_eq!(s.pinned, [p(1)]);
-        assert!(!s.is_favorite(&p(1), &[]));
-        // Taken off the tiles: not unpinned from the list.
-        s.remove_favorite(&p(1), &[]);
-        assert_eq!(s.pinned, [p(1)]);
-        s.remove_favorite(&p(5), &[]);
-        assert_eq!(s.favorites, Some(vec![p(10), p(0), p(2)]));
 
         // Full tiles: the last other tile makes room, to the top of the list.
         let mut full = Settings {

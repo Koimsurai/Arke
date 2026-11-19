@@ -550,12 +550,16 @@ impl Single {
                 reads_owner,
                 cx,
             );
-            let _ = this.update(cx, |owner, _| {
+            let _ = this.update(cx, |owner, cx| {
                 if let Some(single) = slot(owner).filter(|single| single.serial == serial) {
                     single.opening = false;
                     single.failed = state.is_none();
                     single.state = state;
                 }
+                // The owner draws again and learns the popup's window: closing the menu later
+                // redraws that window so it goes, even if nothing else made the owner draw in
+                // between (a settings dropdown stayed open after a click beside it).
+                cx.notify();
             });
         });
     }

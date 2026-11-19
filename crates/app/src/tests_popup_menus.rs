@@ -289,3 +289,30 @@ fn the_tab_menu_opens_in_a_window_of_its_own(cx: &mut TestAppContext) {
     press(cx, point(px(600.), px(400.)));
     assert!(popups(cx).is_empty(), "a press outside closes it");
 }
+
+/// A settings dropdown's list closes on a press beside it, even when nothing else made the
+/// window draw after the list opened (it stayed open on screen).
+#[gpui::test]
+fn a_settings_dropdown_closes_on_a_press_beside_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(size(px(1400.), px(3000.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+    });
+    cx.run_until_parked();
+    for id in ["update", "update-channel"] {
+        let at = cx.debug_bounds(id).expect(id).center();
+        cx.simulate_click(at, Modifiers::none());
+        cx.run_until_parked();
+    }
+    assert_eq!(popups(cx).len(), 1, "the list is open in its own window");
+    press(cx, point(px(40.), px(2900.)));
+    assert!(
+        popups(cx).is_empty(),
+        "a press beside it closes the list's window"
+    );
+}

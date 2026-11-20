@@ -4248,9 +4248,9 @@ preview.gzip_name:
   zh-TW: 內含檔案
   zh-CN: 内含文件
 preview.gzip_size:
-  en: Uncompressed size
-  zh-TW: 解壓縮後大小
-  zh-CN: 解压缩后大小
+  en: Original size
+  zh-TW: 原始大小
+  zh-CN: 原始大小
 preview.page_of:
   en: "Page %{page} of %{pages}"
   zh-TW: "第 %{page} 頁，共 %{pages} 頁"

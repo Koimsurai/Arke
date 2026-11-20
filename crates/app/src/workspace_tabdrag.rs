@@ -66,6 +66,14 @@ pub(super) struct TabDrag {
     tile_cells: HashMap<usize, Bounds<Pixels>>,
     /// Tiles currently sliding back to 0 from their starting offset (x, y).
     tile_shift: HashMap<PathBuf, Slide<(f32, f32)>>,
+    /// Bumped each time the dragged favorite turns from a list entry into a tile or back: its copy
+    /// under the pointer changes shape then.
+    morph: u64,
+    /// A tile cell's size, for drawing a list entry that became a tile.
+    tile_size: Option<gpui::Size<Pixels>>,
+    /// Where the dragged favorite was when the drag started: let go where nothing takes it, it
+    /// goes back there, and removed, Undo puts it back there.
+    pub(super) origin: Option<crate::settings::PinSlot>,
 }
 
 /// Hover time before switching to a tab while dragging files, like Explorer's spring-loaded folders.
@@ -99,6 +107,40 @@ impl TabDrag {
     /// A favorite from the list is being dragged (not yet a tile).
     pub(super) const fn pin_from_list(&self) -> bool {
         self.pin.is_some() && self.tile.is_none()
+    }
+
+    /// The dragged favorite is a tile now (the tiles leave its cell empty), or a list entry
+    /// (`None`, its row left empty).
+    pub(super) fn set_tile(&mut self, tile: Option<PathBuf>) {
+        if self.tile.is_some() != tile.is_some() {
+            self.morph += 1;
+        }
+        self.tile = tile;
+    }
+
+    /// The dragged favorite is a tile at the moment.
+    pub(super) const fn is_tile_now(&self) -> bool {
+        self.tile.is_some()
+    }
+
+    /// Changes each time the dragged favorite changes shape.
+    pub(super) const fn morph(&self) -> u64 {
+        self.morph
+    }
+
+    /// A tile cell's size, as last reported.
+    pub(super) const fn tile_size(&self) -> Option<gpui::Size<Pixels>> {
+        self.tile_size
+    }
+
+    /// Whether something already moved on this mouse move.
+    pub(super) const fn moved_now(&self) -> bool {
+        self.moved
+    }
+
+    /// Something moved: no other move until the next frame.
+    pub(super) const fn mark_moved(&mut self) {
+        self.moved = true;
     }
 
     /// The favorite being dragged, if any.
@@ -485,6 +527,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.tab_drag.tile_cells.insert(cell, e.bounds);
+        self.tab_drag.tile_size = Some(e.bounds.size);
         let dragged = e.drag(cx).path.clone();
         if dragged == path || self.tab_drag.moved || !e.bounds.contains(&e.event.position) {
             return;
@@ -500,9 +543,7 @@ impl Workspace {
         self.move_pin(&dragged, crate::settings::PinSlot::Tile(to), cx);
         self.tab_drag.moved = true;
         // From the list: it is a tile now, drawn as the gap where it would land.
-        if self.tab_drag.tile.is_none() {
-            self.tab_drag.tile = Some(dragged.clone());
-        }
+        self.tab_drag.set_tile(Some(dragged.clone()));
         if let Some(slots) = slots {
             let new_tiles = self.tile_favorites(cx);
             self.slide_tiles(&slots, &old_tiles, &new_tiles);

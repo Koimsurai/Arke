@@ -338,7 +338,7 @@ impl Workspace {
             self.pin_shown.is_some() && self.pin_mark.is_some_and(|m| m.area == PinArea::Tiles);
         // A favorite dragged from the list: the tiles show it can go up there from the start of
         // the drag, not only once it is over them (it becomes a tile on entering one).
-        let from_list = self.dragging_pin && self.tab_drag.pin_from_list();
+        let from_list = self.dragging_pin && cx.has_active_drag() && self.tab_drag.pin_from_list();
         if !(over_tiles(cx) || from_list) || marked {
             return None;
         }

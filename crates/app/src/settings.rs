@@ -743,7 +743,7 @@ impl Default for Settings {
             material: Material::default(),
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
-            sidebar_peek: true,
+            sidebar_peek: false,
             collapsed_sections: Vec::new(),
             font: String::new(),
             background_image: None,

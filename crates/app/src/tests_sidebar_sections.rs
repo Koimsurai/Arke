@@ -118,7 +118,9 @@ fn favorites_collapse_and_still_take_a_drop(cx: &mut TestAppContext) {
     let at = heading + point(px(1.), px(0.));
     cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::none());
     refresh(cx);
-    assert!(drawn(cx, "pin-insertion-mark"), "under the heading");
+    // Over the heading it went into the list at once, first; no line to say where.
+    assert_eq!(current(cx).pinned, vec![p("a"), p("c")]);
+    assert!(!drawn(cx, "pin-insertion-mark"));
     cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     let settings = current(cx);

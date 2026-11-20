@@ -3392,6 +3392,10 @@ sidebar.reopen_closed_tab:
   en: Reopen closed tab (Ctrl+Shift+T)
   zh-TW: 重新開啟關閉的分頁（Ctrl+Shift+T）
   zh-CN: 重新打开关闭的标签页（Ctrl+Shift+T）
+sidebar.drop_to_list:
+  en: "Drop here to add to the list"
+  zh-TW: "放到這裡以加入清單"
+  zh-CN: "放到这里以加入列表"
 sidebar.eject:
   en: Eject
   zh-TW: 退出

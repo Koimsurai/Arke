@@ -579,3 +579,140 @@ fn the_tiles_invite_a_list_entry_being_dragged(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(!drawn(cx, "tile-add-favorite"), "gone with the drag");
 }
+
+/// A tile dragged down: the list shows a block where it can go; over a list row it becomes a list
+/// entry at once (its row the gap, no insertion line), and back over the tiles a tile again, the
+/// tiles inviting it once more whenever it is a list entry.
+#[gpui::test]
+fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b"), p("c")]);
+        st.pinned = vec![p("d")];
+    });
+    refresh(cx);
+    let first = bounds(cx, "tile-slot-0");
+    pick_up(cx, first);
+    assert!(drawn(cx, "pin-list-drop"), "the list shows it can go there");
+    assert!(
+        !drawn(cx, "tile-add-favorite"),
+        "a tile needs no invitation to the tiles"
+    );
+
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_move(row.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).pinned, vec![p("a"), p("d")], "a list entry now");
+    assert_eq!(current(cx).favorites, Some(vec![p("b"), p("c")]));
+    assert!(drawn(cx, "pin-row-gap"), "its row is the gap");
+    assert!(!drawn(cx, "pin-insertion-mark"), "no line");
+    assert!(!drawn(cx, "pin-list-drop"), "the block made way for it");
+    assert!(drawn(cx, "tile-add-favorite"), "the tiles invite it back");
+
+    let tile = bounds(cx, "tile-slot-0");
+    cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b"), p("c")]));
+    assert_eq!(current(cx).pinned, vec![p("d")]);
+    assert!(!drawn(cx, "tile-add-favorite"));
+    assert!(drawn(cx, "pin-list-drop"), "and the list invites it again");
+
+    cx.simulate_mouse_up(tile.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert!(!drawn(cx, "pin-list-drop"), "nothing left behind");
+    assert!(!drawn(cx, "tile-add-favorite"));
+}
+
+/// Let go over the sidebar where nothing takes it (This PC), a list entry stays where the drag
+/// left it and nothing the drag showed stays behind.
+#[gpui::test]
+fn a_pin_drag_let_go_elsewhere_in_the_sidebar_leaves_nothing_behind(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        row.center() + point(px(6.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    refresh(cx);
+    assert!(drawn(cx, "tile-add-favorite"));
+    let below = row.center() + point(px(0.), px(200.));
+    cx.simulate_mouse_move(below, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert!(
+        !drawn(cx, "tile-add-favorite"),
+        "the invitation went with the drag"
+    );
+    assert_eq!(current(cx).pinned, vec![p("c")]);
+    // A new drag starts clean and is invited again.
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        row.center() + point(px(6.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    refresh(cx);
+    assert!(drawn(cx, "tile-add-favorite"));
+    cx.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// A tile that turned into a list entry on its way out of the sidebar is put back on the tiles by
+/// Undo, where the drag started; one let go where nothing takes it goes back there too.
+#[gpui::test]
+fn a_favorite_goes_back_where_its_drag_started(cx: &mut TestAppContext) {
+    let (_ws, _shell, cx) = window_and_shell(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let tile = bounds(cx, "tile-slot-0");
+    pick_up(cx, tile);
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_move(row.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(
+        current(cx).pinned,
+        vec![p("a"), p("c")],
+        "a list entry on the way"
+    );
+    drop_outside(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("b")]));
+    assert_eq!(current(cx).pinned, vec![p("c")]);
+    let at = bounds(cx, "toast-notice-action-0").center();
+    click(cx, at);
+    assert_eq!(
+        current(cx).favorites,
+        Some(vec![p("a"), p("b")]),
+        "back on the tiles"
+    );
+    assert_eq!(current(cx).pinned, vec![p("c")]);
+
+    // Over the list, then let go below it (This PC): back on the tiles.
+    refresh(cx);
+    let tile = bounds(cx, "tile-slot-0");
+    pick_up(cx, tile);
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_move(row.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    let below = row.center() + point(px(0.), px(240.));
+    cx.simulate_mouse_move(below, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b")]));
+    assert_eq!(current(cx).pinned, vec![p("c")]);
+}

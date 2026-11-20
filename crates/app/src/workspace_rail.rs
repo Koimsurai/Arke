@@ -81,9 +81,10 @@ const BUTTON: f32 = 36.;
 fn buttons_h(n: f32) -> gpui::Pixels {
     px(BUTTON) * n + theme::s_2() * (n - 1.).max(0.)
 }
-/// How long the pointer rests on the column before the full sidebar opens over the content (short
-/// enough to feel immediate, long enough that crossing the column to the window edge doesn't).
-const PEEK_OPEN: Duration = Duration::from_millis(300);
+/// How long the pointer must rest, still, on the column before the full sidebar opens over the
+/// content. Moving restarts it and a click cancels it: someone heading for a drive or a tab gets
+/// there and clicks without the sidebar opening under the pointer.
+const PEEK_OPEN: Duration = Duration::from_millis(500);
 /// How long the pointer can be outside the open sidebar before it closes (a slip past its edge
 /// doesn't close it).
 const PEEK_CLOSE: Duration = Duration::from_millis(200);
@@ -266,6 +267,14 @@ impl Workspace {
             .gap(theme::s_2())
             .pb(theme::s_8())
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.rail_hovered(*hovered, cx)))
+            // The rest starts over with every move; a press is a pick, not a rest.
+            .on_mouse_move(cx.listener(|this, _: &gpui::MouseMoveEvent, _, cx| {
+                this.rail_hovered(true, cx);
+            }))
+            // Heard before the button under the pointer takes the press.
+            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, _| {
+                this.rail_hover += 1;
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, e: &MouseDownEvent, _, cx| {
@@ -681,8 +690,9 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The pointer entered or left the column: open the full sidebar over the content after a
-    /// short rest (when that is on). Leaving before then cancels it.
+    /// The pointer entered, moved over or left the column: open the full sidebar over the content
+    /// once it has rested there, still, for a moment (when that is on). Moving again, clicking or
+    /// leaving before then cancels it.
     fn rail_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
         self.rail_hover += 1;
         if !hovered || self.rail_peek || !SettingsStore::global(cx).read(cx).settings.sidebar_peek {

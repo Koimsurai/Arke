@@ -278,13 +278,50 @@ fn remove_badge() -> AnyElement {
 }
 
 impl Render for PinPreview {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the row and the tile, each with the change of shape into it"
+    )]
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let out = self
-            .workspace
-            .upgrade()
-            .is_some_and(|ws| ws.read(cx).tab_drag.pin_out());
+        let (out, tile_now, morph, cell) =
+            self.workspace
+                .upgrade()
+                .map_or((false, self.pin.from_tile, 0, None), |ws| {
+                    let drag = &ws.read(cx).tab_drag;
+                    (
+                        drag.pin_out(),
+                        drag.is_tile_now(),
+                        drag.morph(),
+                        drag.tile_size(),
+                    )
+                });
         let pin = &self.pin;
-        let Some(look) = pin.look else {
+        // The favorite is a tile while over the tiles, a row elsewhere: its copy takes that shape
+        // (#278 follow-up). A list entry over the tiles takes a tile cell's size.
+        let look = if tile_now {
+            pin.look.or_else(|| {
+                cell.map(|size| TileLook {
+                    size,
+                    large: size.height >= tile_height(true) - px(1.),
+                    here: false,
+                })
+            })
+        } else {
+            None
+        };
+        // Changed shape since it was taken: grows into the new one (a shape it starts in shows
+        // at once).
+        let grows = morph > 0 && crate::motion::enabled();
+        let Some(look) = look else {
+            // Taken as a tile: the row is placed with the pointer on its icon.
+            let (left, top) = if pin.from_tile {
+                (
+                    self.grab.x - theme::s_16(),
+                    self.grab.y - theme::h_row() / 2.,
+                )
+            } else {
+                (px(0.), px(0.))
+            };
             let chip = div()
                 .h(theme::h_row())
                 .px(theme::s_8())
@@ -304,11 +341,25 @@ impl Render for PinPreview {
                 ))
                 .child(pin.label.clone())
                 .when(out, |d| d.opacity(PIN_OUT_OPACITY));
-            return div()
-                .relative()
+            let row = div()
+                .absolute()
+                .left(left)
+                .top(top)
+                .debug_selector(|| "pin-chip".to_owned())
                 .child(chip)
-                .children(out.then(remove_badge))
-                .into_any_element();
+                .children(out.then(remove_badge));
+            return if grows {
+                div()
+                    .relative()
+                    .child(row.with_animation(
+                        ("pin-morph", usize::try_from(morph).unwrap_or_default()),
+                        gpui::Animation::new(MORPH).with_easing(crate::motion::ease_out),
+                        gpui::Styled::opacity,
+                    ))
+                    .into_any_element()
+            } else {
+                div().relative().child(row).into_any_element()
+            };
         };
         let lift = TILE_LIFT;
         let (gap, icon) = if look.large {
@@ -360,17 +411,46 @@ impl Render for PinPreview {
                     .child(pin.label.clone()),
             )
             .when(out, |d| d.opacity(PIN_OUT_OPACITY));
+        let (w, h) = (look.size.width * lift, look.size.height * lift);
+        // Taken as a tile: placed as it was taken hold of, the bigger copy growing around the
+        // grab point. A row turned tile: centered on the pointer.
+        let (x0, y0) = if pin.from_tile {
+            (-(self.grab.x * (lift - 1.)), -(self.grab.y * (lift - 1.)))
+        } else {
+            (self.grab.x - w / 2., self.grab.y - h / 2.)
+        };
         let card = div()
             .absolute()
-            .left(-(self.grab.x * (lift - 1.)))
-            .top(-(self.grab.y * (lift - 1.)))
-            .w(look.size.width * lift)
-            .h(look.size.height * lift)
+            .left(x0)
+            .top(y0)
+            .w(w)
+            .h(h)
             .child(body)
             .children(out.then(remove_badge));
-        div().relative().child(card).into_any_element()
+        if !grows {
+            return div().relative().child(card).into_any_element();
+        }
+        // From a row into a tile: it grows from the row's height to the tile, around its center.
+        div()
+            .relative()
+            .child(card.with_animation(
+                ("pin-morph", usize::try_from(morph).unwrap_or_default()),
+                gpui::Animation::new(MORPH).with_easing(crate::motion::ease_out),
+                move |el, t| {
+                    let k = 0.6 + 0.4 * t;
+                    el.left(x0 + w * (1. - k) / 2.)
+                        .top(y0 + h * (1. - k) / 2.)
+                        .w(w * k)
+                        .h(h * k)
+                        .opacity(0.4 + 0.6 * t)
+                },
+            ))
+            .into_any_element()
     }
 }
+
+/// How long a dragged favorite takes to change shape between a row and a tile.
+const MORPH: std::time::Duration = std::time::Duration::from_millis(160);
 
 /// Starts a pin drag, taken hold of at `grab`: records it (an empty list needs a drop target, and
 /// the sidebar watches for it leaving) and returns the drag preview.
@@ -384,6 +464,20 @@ fn start_pin_drag(
         ws.dragging_pin = true;
         ws.tab_drag
             .start_tile(dragged.path.clone(), dragged.from_tile, grab);
+        let places = ws.active_view().read(cx).places.clone();
+        let settings = &SettingsStore::global(cx).read(cx).settings;
+        ws.tab_drag.origin = settings
+            .tiles(&places)
+            .iter()
+            .position(|p| *p == dragged.path)
+            .map(PinSlot::Tile)
+            .or_else(|| {
+                settings
+                    .pinned
+                    .iter()
+                    .position(|p| *p == dragged.path)
+                    .map(PinSlot::List)
+            });
         cx.notify();
     });
     cx.new(|_| PinPreview {
@@ -1003,6 +1097,16 @@ impl Workspace {
         self.dragging_pin = false;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
+        // Moved into the list on the way (`pin_over_list`): it is where it was let go.
+        if SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .pinned
+            .contains(&dragged.path)
+        {
+            cx.notify();
+            return;
+        }
         let places = self.active_view().read(cx).places.clone();
         SettingsStore::global(cx).update(cx, |s, cx| {
             s.update(
@@ -1055,12 +1159,22 @@ impl Workspace {
             (Some(PinSlot::List(0)), None) if ix == 0 => Some(pindrop::insertion_mark(false, true)),
             _ => None,
         };
+        // The favorite being dragged, a list entry now: its row is the gap where it would land.
+        let gap = self.dragging_pin
+            && cx.has_active_drag()
+            && !self.tab_drag.is_tile_now()
+            && self.tab_drag.dragged_pin() == Some(path);
         let row = div()
             .id(SharedString::from(format!("pin-row-{}", path.display())))
             .debug_selector(move || format!("pin-row-{ix}"))
             .relative()
             .rounded(theme::r_8())
-            .child(row)
+            .when(gap, |d| d.debug_selector(|| "pin-row-gap".to_owned()))
+            .child(if gap {
+                div().invisible().child(row).into_any_element()
+            } else {
+                row
+            })
             .children(mark)
             .on_drag_move(
                 cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _, cx| {
@@ -1078,10 +1192,10 @@ impl Workspace {
                 }),
             )
             // A favorite dragged over the list (a tile taken out of the grid, or another entry)
-            // gets the insertion mark too.
+            // takes this row's place at once, the rows making room: no insertion line.
             .on_drag_move(
                 cx.listener(move |this, e: &DragMoveEvent<DraggedPin>, _, cx| {
-                    this.pin_hover(PinArea::List, ix, e, cx);
+                    this.pin_over_list(ix, e, cx);
                 }),
             )
             .with_pin_drops(cx)
@@ -1176,10 +1290,10 @@ impl Workspace {
             let row = pinned_rows.remove(row_at);
             pinned_rows.insert(row_at, self.pin_list_row(ix, path, label, row, cx));
         }
-        // With an empty list, a dragged tile still needs somewhere to drop: the heading (shown for
-        // the drag), and the Recycle Bin row under it. No extra drop bar: the insertion mark under
-        // the heading says it, as for a longer list.
-        let wants_list_drop = pinned.is_empty() && self.dragging_pin;
+        // A tile being dragged: the list shows it can go down there (a block under the heading,
+        // the heading shown for it even with nothing listed). Over the list it becomes a row.
+        let tile_dragged = self.dragging_pin && cx.has_active_drag() && self.tab_drag.is_tile_now();
+        let wants_list_drop = tile_dragged;
         // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
         // the last one (`workspace_pindrop.rs`).
         let add_slot = self.render_add_favorite_slot(tile_count, large, cx);
@@ -1224,7 +1338,7 @@ impl Workspace {
                     .when(marked, |d| d.child(pindrop::insertion_mark(false, true)))
                     .on_drag_move(
                         cx.listener(move |this, e: &DragMoveEvent<DraggedPin>, _, cx| {
-                            this.pin_hover_at(PinSlot::List(end), e, cx);
+                            this.pin_over_list(end, e, cx);
                         }),
                     )
                     .on_drag_move(
@@ -1272,7 +1386,7 @@ impl Workspace {
                         this.pin_hover_at(PinSlot::List(0), e, cx);
                     }))
                     .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedPin>, _, cx| {
-                        this.pin_hover_at(PinSlot::List(0), e, cx);
+                        this.pin_over_list(0, e, cx);
                     }))
                     .with_pin_drops(cx)
                     // Dropping on the heading puts it first in the list.
@@ -1281,6 +1395,9 @@ impl Workspace {
                     }))
                     .into_any_element(),
             );
+        }
+        if tile_dragged {
+            out.push(Self::list_drop_block(cx));
         }
         // Collapsed to its heading: the list goes, the Shelf under it too (the tiles stay, they
         // belong to Home).
@@ -1401,7 +1518,14 @@ impl Workspace {
             .on_drag(dragged, move |dragged, grab, _, cx| {
                 start_pin_drag(&workspace, dragged, grab, cx)
             })
-            .drag_over::<DraggedPin>(|s, _, _, _| s.bg(theme::signal_wash()))
+            .on_drag_move(cx.listener({
+                let path = path.to_path_buf();
+                move |this, e: &DragMoveEvent<DraggedPin>, _, cx| {
+                    if e.drag(cx).path != path {
+                        this.pin_over_list(0, e, cx);
+                    }
+                }
+            }))
             .on_drop(cx.listener(move |this, dragged: &DraggedPin, window, cx| {
                 this.drop_pin_in_list(dragged, 0, window, cx);
             }))
@@ -1481,6 +1605,7 @@ impl Workspace {
                     // past its edge arrive here too. Heard in the capture phase, before anything
                     // under the pointer could keep the event to itself.
                     let mover = workspace.clone();
+                    let ender = workspace.clone();
                     window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                         if phase != DispatchPhase::Capture {
                             return;
@@ -1503,6 +1628,18 @@ impl Workspace {
                         }
                         let _ = workspace.update(cx, Self::drop_pin_outside);
                     });
+                    // Let go anywhere else (in the sidebar, not on a place that takes it): once
+                    // the drops have run, the favorite goes back where it was and nothing the drag
+                    // showed stays behind.
+                    window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+                        if phase != DispatchPhase::Capture || e.button != MouseButton::Left {
+                            return;
+                        }
+                        let ender = ender.clone();
+                        cx.defer(move |cx| {
+                            let _ = ender.update(cx, Self::end_pin_drag_nowhere);
+                        });
+                    });
                 },
             )
             .absolute()
@@ -1513,6 +1650,54 @@ impl Workspace {
         )
     }
 
+    /// A favorite dragged over the list at slot `at` (a row's place, the heading's first slot, the
+    /// Recycle Bin's last): it goes there at once and its row is the gap where it would land, the
+    /// rows making room, as tiles do among the tiles. A tile turns into a list entry on the way,
+    /// its copy under the pointer turning into a row.
+    fn pin_over_list(&mut self, at: usize, e: &DragMoveEvent<DraggedPin>, cx: &mut Context<Self>) {
+        if !e.bounds.contains(&e.event.position) || self.tab_drag.moved_now() {
+            return;
+        }
+        let path = e.drag(cx).path.clone();
+        let pinned = &SettingsStore::global(cx).read(cx).settings.pinned;
+        let already =
+            pinned.get(at) == Some(&path) || (at >= pinned.len() && pinned.last() == Some(&path));
+        if already {
+            return;
+        }
+        self.move_pin(&path, PinSlot::List(at), cx);
+        self.tab_drag.mark_moved();
+        self.tab_drag.set_tile(None);
+        pindrop::clear(cx);
+    }
+
+    /// While a tile is dragged: a block under the Favorites heading, where it goes into the list.
+    fn list_drop_block(cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("pin-list-drop")
+            .debug_selector(|| "pin-list-drop".to_owned())
+            .h(theme::h_row())
+            .mx(theme::s_4())
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::r_8())
+            .border_1()
+            .border_dashed()
+            .border_color(theme::signal_line())
+            .bg(theme::signal_wash())
+            .text_size(theme::fs_12())
+            .text_color(theme::text())
+            .child(t!("sidebar.drop_to_list").into_owned())
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedPin>, _, cx| {
+                this.pin_over_list(0, e, cx);
+            }))
+            .on_drop(cx.listener(|this, dragged: &DraggedPin, window, cx| {
+                this.drop_pin_in_list(dragged, 0, window, cx);
+            }))
+            .into_any_element()
+    }
+
     /// The dragged favorite was let go outside the sidebar: it leaves the favorites.
     fn drop_pin_outside(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.tab_drag.dragged_pin().map(Path::to_path_buf) else {
@@ -1521,7 +1706,28 @@ impl Workspace {
         self.dragging_pin = false;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
+        // It may have become a list entry or a tile on its way out: Undo puts it back where the
+        // drag started.
+        if let Some(origin) = self.tab_drag.origin.take() {
+            self.move_pin(&path, origin, cx);
+        }
         self.remove_favorite(&path, cx);
+    }
+
+    /// The drag ended where nothing took it (This PC, the tabs): the favorite goes back where it
+    /// was when the drag started.
+    fn end_pin_drag_nowhere(&mut self, cx: &mut Context<Self>) {
+        if !self.dragging_pin {
+            return;
+        }
+        let path = self.tab_drag.dragged_pin().map(Path::to_path_buf);
+        self.dragging_pin = false;
+        self.tab_drag.end_tile();
+        pindrop::clear(cx);
+        if let (Some(path), Some(origin)) = (path, self.tab_drag.origin.take()) {
+            self.move_pin(&path, origin, cx);
+        }
+        cx.notify();
     }
 
     /// Takes `path` off the favorites (tiles or list) and offers Undo on a toast for a while.

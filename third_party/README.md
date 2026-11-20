@@ -35,6 +35,12 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
     recovery doesn't wait for the next frame.
 
   Worth offering upstream (Zed has the same loop).
+- Touchpad gestures over an idle window (`src/events.rs` `handle_dm_pointer_hit_test` and
+  `draw_window`, `src/direct_manipulation.rs` `interacting`): Direct Manipulation's updates are
+  only read in `draw_window`, and an idle window doesn't draw (see Idle vsync above). A touchpad
+  contact now wakes the window, and the window keeps drawing while the gesture runs or glides
+  on (`RUNNING`, `INERTIA`). Before, a two-finger scroll over a window that hadn't been clicked
+  read one update and stopped until a click woke the window. (#258)
 - `src/window.rs` `impl Drop for WindowsWindow`: a window closed from its title bar has already
   been destroyed by Windows when GPUI drops it, so hiding it, revoking its drop target and
   destroying it again each failed and logged an "invalid window handle" error (four per closed

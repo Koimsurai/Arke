@@ -69,6 +69,49 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// Resolves `host` with `GetAddrInfoW`. The standard library's resolver hands the name to the
+/// ANSI `getaddrinfo`, which reads it in the system code page: a computer named in Chinese never
+/// resolved, and its shares were reported unreachable while Windows reached them fine (#262).
+pub(crate) fn resolve_wide(host: &str) -> std::io::Result<Vec<std::net::IpAddr>> {
+    use windows::Win32::Networking::WinSock::{
+        ADDRINFOW, AF_INET, AF_INET6, FreeAddrInfoW, GetAddrInfoW, SOCKADDR_IN, SOCKADDR_IN6,
+        WSADATA, WSAStartup,
+    };
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let mut data = WSADATA::default();
+        // SAFETY: data is a valid out pointer. WinSock stays started for the process.
+        let _ = unsafe { WSAStartup(0x0202, &raw mut data) };
+    });
+    let name = wide(std::ffi::OsStr::new(host));
+    let mut found: *mut ADDRINFOW = std::ptr::null_mut();
+    // SAFETY: name is NUL-terminated; found receives a list freed below.
+    let status =
+        unsafe { GetAddrInfoW(PCWSTR(name.as_ptr()), PCWSTR::null(), None, &raw mut found) };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status));
+    }
+    let mut ips = Vec::new();
+    let mut at = found;
+    // SAFETY: walks the list GetAddrInfoW returned; each ai_addr matches its ai_family.
+    unsafe {
+        while let Some(info) = at.as_ref() {
+            if info.ai_family == i32::from(AF_INET.0) && !info.ai_addr.is_null() {
+                let addr = info.ai_addr.cast::<SOCKADDR_IN>().read_unaligned();
+                ips.push(std::net::IpAddr::from(
+                    addr.sin_addr.S_un.S_addr.to_ne_bytes(),
+                ));
+            } else if info.ai_family == i32::from(AF_INET6.0) && !info.ai_addr.is_null() {
+                let addr = info.ai_addr.cast::<SOCKADDR_IN6>().read_unaligned();
+                ips.push(std::net::IpAddr::from(addr.sin6_addr.u.Byte));
+            }
+            at = info.ai_next;
+        }
+        FreeAddrInfoW(Some(found));
+    }
+    Ok(ips)
+}
+
 pub(crate) struct WinNetProbe;
 
 impl NetProbe for WinNetProbe {
@@ -85,7 +128,7 @@ impl NetProbe for WinNetProbe {
     }
 
     fn reach(&self, server: &str) -> Reach {
-        arke_core::net::tcp_reach(server, RESOLVE_BUDGET, CONNECT_TIMEOUT)
+        arke_core::net::tcp_reach_with(server, resolve_wide, RESOLVE_BUDGET, CONNECT_TIMEOUT)
     }
 
     fn shares(&self, server: &str) -> std::io::Result<Vec<Share>> {
@@ -460,6 +503,21 @@ pub(crate) fn drive_dialog(owner: Option<isize>, map: bool) -> Result<bool, NetE
 
 #[cfg(test)]
 mod tests {
+    /// The wide-character resolver finds this computer by name, including one that isn't
+    /// ASCII the way the probe would see it (#262).
+    #[test]
+    fn resolves_names_with_the_wide_api() {
+        let local = super::resolve_wide("localhost").expect("localhost resolves");
+        assert!(local.iter().any(std::net::IpAddr::is_loopback), "{local:?}");
+        let me = std::env::var("COMPUTERNAME").expect("computer name");
+        assert!(
+            !super::resolve_wide(&me)
+                .expect("this computer resolves")
+                .is_empty()
+        );
+        assert!(super::resolve_wide("arke-test.invalid").is_err());
+    }
+
     use super::*;
 
     #[test]

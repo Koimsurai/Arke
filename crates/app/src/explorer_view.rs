@@ -572,14 +572,20 @@ impl Explorer {
         )
     }
 
-    /// Item `ix` is a drop target if it's a folder.
-    fn drop_dir(&self, ix: usize) -> Option<PathBuf> {
+    /// Where a drop on item `ix` goes, and whether the item itself is that target (drawn as
+    /// one). A folder takes drops itself. A file inside a folder expanded in the list passes them
+    /// to that folder, which is where it sits (#260): dropped on the folder's own file, a file
+    /// stays put instead of moving up a level. Other files take none (the list's folder does).
+    pub(super) fn drop_dir(&self, ix: usize) -> Option<(PathBuf, bool)> {
         if self.search_mode {
             return None;
         }
         let model = self.model.as_ref()?;
         let entry = self.view()?.get(ix)?.clone();
-        entry.is_dir_like().then(|| model.path.join(&*entry.name))
+        if entry.is_dir_like() {
+            return Some((model.path.join(&*entry.name), true));
+        }
+        arke_core::tree::parent(&entry.name).map(|parent| (model.path.join(parent), false))
     }
 
     /// Total size of the selection (folders excluded). Skipped when too many are selected.
@@ -743,7 +749,7 @@ impl Explorer {
         is_selected: bool,
         is_cursor: bool,
         focused: bool,
-        drop_dir: Option<PathBuf>,
+        drop_dir: Option<(PathBuf, bool)>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let source = cx.entity().downgrade();
@@ -772,18 +778,20 @@ impl Explorer {
                     }
                 }
             }))
-            // Drop: folders
-            .when_some(drop_dir, move |d, dir| {
+            // Drop: folders, and files inside an expanded folder (into that folder).
+            .when_some(drop_dir, move |d, (dir, own)| {
                 let external = dir.clone();
                 let check = dir.clone();
                 d.can_drop(move |value, _, cx| super::accepts_drop(value, &check, cx))
-                    .drag_over::<DraggedFiles>(|s, _, _, _| {
-                    s.bg(theme::signal_wash()).border_color(theme::signal_line())
-                })
-                .drag_over::<ExternalPaths>(|s, _, _, _| {
-                    s.bg(theme::signal_wash()).border_color(theme::signal_line())
-                })
-                .on_drag_move({
+                    .when(own, |d| {
+                        d.drag_over::<DraggedFiles>(|s, _, _, _| {
+                            s.bg(theme::signal_wash()).border_color(theme::signal_line())
+                        })
+                        .drag_over::<ExternalPaths>(|s, _, _, _| {
+                            s.bg(theme::signal_wash()).border_color(theme::signal_line())
+                        })
+                    })
+                    .on_drag_move({
                     let dir = dir.clone();
                     move |e: &gpui::DragMoveEvent<DraggedFiles>, _, cx| {
                         super::report_drop_target(&dir, e, cx);

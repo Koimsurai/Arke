@@ -126,6 +126,20 @@ pub fn can_video_thumbnail(entry: &Entry) -> bool {
         && kind_for_extension(entry.extension()) == FileKind::Video
 }
 
+/// Largest PDF whose first page is rendered as a thumbnail. Windows' renderer reads the page tree
+/// and the first page only, but a huge scan still takes long to open, so it keeps its type icon.
+pub const MAX_PDF_THUMBNAIL_SOURCE: u64 = 256 * 1024 * 1024;
+
+/// PDFs get their first page as the thumbnail, rendered by Windows. Not cloud placeholders:
+/// rendering reads the file, which would download it.
+pub fn can_pdf_thumbnail(entry: &Entry) -> bool {
+    entry.kind == EntryKind::File
+        && !entry.is_cloud_placeholder()
+        && entry.size > 0
+        && entry.size <= MAX_PDF_THUMBNAIL_SOURCE
+        && entry.extension() == "pdf"
+}
+
 /// Formats we can decode in Rust for thumbnails (`.ico` uses the system icon).
 pub fn can_thumbnail(entry: &Entry) -> bool {
     entry.kind == EntryKind::File
@@ -188,6 +202,22 @@ mod tests {
         assert!(!can_video_thumbnail(&online_only));
         let dir = Entry::new("clips.mp4", EntryKind::Dir, 0, None, 0);
         assert!(!can_video_thumbnail(&dir));
+    }
+
+    /// PDFs with content get a first-page thumbnail, unless online-only or huge.
+    #[test]
+    fn pdfs_get_a_page_unless_online_only_or_huge() {
+        assert!(can_pdf_thumbnail(&file("Report.PDF", 1000)));
+        assert!(!can_pdf_thumbnail(&file("report.pdf", 0)));
+        assert!(!can_pdf_thumbnail(&file(
+            "report.pdf",
+            MAX_PDF_THUMBNAIL_SOURCE + 1
+        )));
+        assert!(!can_pdf_thumbnail(&file("report.docx", 1000)));
+        let online_only = Entry::new("report.pdf", EntryKind::File, 1000, None, 0x40_0000);
+        assert!(!can_pdf_thumbnail(&online_only));
+        let dir = Entry::new("reports.pdf", EntryKind::Dir, 0, None, 0);
+        assert!(!can_pdf_thumbnail(&dir));
     }
 
     #[test]

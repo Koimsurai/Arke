@@ -106,6 +106,7 @@ pub mod folder_handler;
 pub mod format;
 pub mod frecency;
 pub mod fs;
+pub mod gzip;
 pub mod highlight;
 pub mod history;
 pub mod index;

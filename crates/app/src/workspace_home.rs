@@ -316,6 +316,18 @@ impl Workspace {
         self.home_page.as_ref()?.view.read(cx).recent_for_test()
     }
 
+    /// Whether Home draws its recent files section (tests).
+    #[cfg(test)]
+    pub(crate) fn home_recent_shown_for_test(&self, cx: &App) -> Option<bool> {
+        Some(
+            self.home_page
+                .as_ref()?
+                .view
+                .read(cx)
+                .recent_shown_for_test(),
+        )
+    }
+
     /// Sidebar Home button. Shows as selected while open; clicking again closes it.
     pub(super) fn render_home_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let open = self.home_open();

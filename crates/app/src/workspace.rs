@@ -1482,8 +1482,20 @@ impl Workspace {
             return;
         }
         if self.tabs.len() == 1 {
-            // The last tab closes the window, like File Explorer and browsers (#98). The session
-            // keeps it, Home included, for the next start.
+            // By default the last tab closes the window, like File Explorer and browsers (#98).
+            // The session keeps it, Home included, for the next start. The setting can keep the
+            // window and show Home instead (#253, #255).
+            if SettingsStore::global(cx).read(cx).settings.last_tab
+                == crate::settings::LastTabAction::Home
+            {
+                // Already on Home: there is nothing left to close.
+                if !self.home_open() {
+                    self.remember_closed(ix, cx);
+                    self.home_page = None;
+                    self.open_home_as(false, true, window, cx);
+                }
+                return;
+            }
             window.remove_window();
             return;
         }

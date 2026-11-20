@@ -40,6 +40,23 @@ pub(super) struct SidebarUi {
     peek_ghost_task: Option<gpui::Task<()>>,
     /// The mapped drive or network place being renamed in place.
     pub(super) place_rename: Option<super::place_rename::PlaceRename>,
+    /// The favorite being renamed in place (#259).
+    pub(super) favorite_rename: Option<super::sidebar::FavoriteRename>,
+    /// Folders the tree expanded by itself to show the current folder (#241). They collapse again
+    /// once the current folder moves elsewhere; folders the user expands are never in here.
+    pub(super) tree_auto: std::collections::HashSet<PathBuf>,
+    /// The folder the tree last followed, and how many places This PC had then.
+    pub(super) followed: Option<(PathBuf, usize)>,
+    /// A follow is already scheduled for after this frame (the sidebar draws from `&self`).
+    pub(super) follow_pending: std::cell::Cell<bool>,
+    /// Set to stop the previous follow's listing when the current folder changes again.
+    pub(super) follow_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The current folder's row is to be scrolled into view the next time it is drawn.
+    pub(super) reveal: std::cell::Cell<bool>,
+    /// Index among the places of the current folder's row under This PC, while drawing it.
+    pub(super) here_row: std::cell::Cell<Option<usize>>,
+    /// This PC's chevron just turned.
+    pub(super) this_pc_cue: crate::motion::Cue,
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -413,11 +430,16 @@ impl Workspace {
     fn rail_pins(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let settings = &SettingsStore::global(cx).read(cx).settings;
         let (pinned, recycle_pinned) = (settings.pinned.clone(), settings.recycle_pinned);
+        // A favorite's own name (#259) shows here too.
+        let names = settings.favorite_names.clone();
         let current = self.rail_here(cx);
         let mut out = vec![divider()];
         for (ix, path) in pinned.into_iter().enumerate() {
             let here = current.as_deref() == Some(path.as_path());
-            let label = display_name(&path);
+            let label = names
+                .get(&crate::place_names::key(&path))
+                .cloned()
+                .unwrap_or_else(|| display_name(&path));
             out.push(Self::rail_folder(
                 ("rail-pin", ix),
                 kind_icon(FileKind::Folder, theme::icon()),

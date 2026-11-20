@@ -72,6 +72,17 @@ pub(crate) enum NewTabAction {
     CurrentFolder,
 }
 
+/// What closing the last tab does (#253, #255).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LastTabAction {
+    /// The window closes, as in File Explorer and browsers (#98).
+    #[default]
+    CloseWindow,
+    /// The tab stays and shows Home.
+    Home,
+}
+
 /// Dark, light, or follow the system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -458,6 +469,8 @@ pub(crate) struct Settings {
     pub(crate) one_tab_per_folder: bool,
     /// What Ctrl+T does (#90).
     pub(crate) new_tab: NewTabAction,
+    /// What closing the last tab does (#253, #255).
+    pub(crate) last_tab: LastTabAction,
     pub(crate) density: Density,
     /// Preview pane on the right.
     pub(crate) preview_pane: bool,
@@ -486,9 +499,14 @@ pub(crate) struct Settings {
     /// Saved SFTP and WebDAV locations (sidebar Network section). Never holds a password: those
     /// stay in Windows Credential Manager.
     pub(crate) remote_places: Vec<RemotePlace>,
+    /// Origins (`http://user@host:port`) the user allowed to sign in over plain http, where the
+    /// password crosses the network unencrypted. Per location and per user, never per network.
+    pub(crate) insecure_http: Vec<String>,
     /// Names the user gave mapped drives, network places and saved remote locations, shown
     /// instead of the default ones (`place_names.rs`). Windows' own labels are never changed.
     pub(crate) place_names: crate::place_names::Names,
+    /// Names the user gave favorites (#259), shown on their tile or row in the sidebar only.
+    pub(crate) favorite_names: crate::place_names::Names,
     pub(crate) theme: ThemeMode,
     /// Background of the dark theme.
     pub(crate) dark_shade: DarkShade,
@@ -496,6 +514,8 @@ pub(crate) struct Settings {
     pub(crate) sidebar_collapsed: bool,
     /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
     pub(crate) sidebar_peek: bool,
+    /// The sidebar's This PC section is collapsed to its heading.
+    pub(crate) this_pc_collapsed: bool,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -583,6 +603,9 @@ pub(crate) struct Settings {
     pub(crate) column_widths: ColumnWidths,
     /// Width the preview pane was dragged to, app-wide (`None`: follows the window).
     pub(crate) preview_width: Option<u16>,
+    /// Share of the preview pane's height the dragged preview content takes above its details, in
+    /// thousandths (`None`: automatic, from the content's shape).
+    pub(crate) preview_split: Option<u16>,
     /// Column view: the parent and current folder columns' widths.
     pub(crate) column_view_widths: ColumnViewWidths,
     pub(crate) show_type: bool,
@@ -646,6 +669,7 @@ pub(crate) struct Settings {
 }
 
 impl Default for Settings {
+    #[allow(clippy::too_many_lines, reason = "one line per setting")]
     fn default() -> Self {
         Self {
             pinned: Vec::new(),
@@ -655,6 +679,7 @@ impl Default for Settings {
             tab_layout: TabLayout::default(),
             one_tab_per_folder: true,
             new_tab: NewTabAction::default(),
+            last_tab: LastTabAction::default(),
             density: Density::default(),
             preview_pane: false,
             space_quicklook: false,
@@ -668,7 +693,9 @@ impl Default for Settings {
             search_history: true,
             net_places: Vec::new(),
             remote_places: Vec::new(),
+            insecure_http: Vec::new(),
             place_names: crate::place_names::Names::new(),
+            favorite_names: crate::place_names::Names::new(),
             theme: ThemeMode::default(),
             accent: Accent::default(),
             tint: Tint::default(),
@@ -676,6 +703,7 @@ impl Default for Settings {
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
             sidebar_peek: true,
+            this_pc_collapsed: false,
             font: String::new(),
             background_image: None,
             background_opacity: 20,
@@ -714,6 +742,7 @@ impl Default for Settings {
             show_created: false,
             column_widths: ColumnWidths::default(),
             preview_width: None,
+            preview_split: None,
             column_view_widths: ColumnViewWidths::default(),
             show_type: true,
             show_size: true,
@@ -804,6 +833,14 @@ impl Settings {
     pub(crate) fn forget_remote_place(&mut self, url: &Path) {
         self.remote_places.retain(|p| p.url != url);
         self.place_names.remove(&crate::place_names::key(url));
+    }
+
+    /// Allows or takes back plain-http sign-in for a server (`origin`, see `RemoteUrl::origin`).
+    pub(crate) fn set_insecure_http(&mut self, origin: &str, allowed: bool) {
+        self.insecure_http.retain(|o| o != origin);
+        if allowed {
+            self.insecure_http.push(origin.to_owned());
+        }
     }
 
     /// Folders on the tiles: the custom list, or the known folders (excluding the profile folder itself).
@@ -924,13 +961,14 @@ impl Settings {
         landed
     }
 
-    /// Unpins, from the tiles or the list.
+    /// Unpins, from the tiles or the list. The name the user gave it goes with it.
     pub(crate) fn unpin(&mut self, path: &Path, places: &[crate::shell::Place]) {
         let tiles = self.tiles(places);
         if tiles.iter().any(|p| p == path) {
             self.favorites = Some(tiles.into_iter().filter(|p| p != path).collect());
         }
         self.pinned.retain(|p| p != path);
+        self.favorite_names.remove(&crate::place_names::key(path));
     }
 
     /// Pins or unpins. Returns where the pin went, or `None` when unpinned.
@@ -1846,6 +1884,20 @@ mod tests {
         std::fs::write(&path, b"{not json").unwrap();
         assert_eq!(load(&path), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn plain_http_allowances_are_per_origin_and_persist() {
+        let mut s = Settings::default();
+        assert!(s.insecure_http.is_empty(), "nothing is allowed by default");
+        s.set_insecure_http("http://u@nas", true);
+        s.set_insecure_http("http://u@nas", true);
+        s.set_insecure_http("http://u@other", true);
+        assert_eq!(s.insecure_http, ["http://u@nas", "http://u@other"]);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.insecure_http, s.insecure_http);
+        s.set_insecure_http("http://u@nas", false);
+        assert_eq!(s.insecure_http, ["http://u@other"]);
     }
 
     #[test]

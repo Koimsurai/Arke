@@ -118,6 +118,8 @@ pub(crate) struct HomePage {
     shell: Arc<dyn Shell>,
     /// `None` while loading
     recent: Option<Vec<RecentFile>>,
+    /// File Explorer's "Show recently used files" is on; off hides the recent section.
+    show_recent: bool,
     places: Vec<Place>,
     /// Recently opened shares (`\\server\share`)
     shares: Vec<PathBuf>,
@@ -231,6 +233,7 @@ impl HomePage {
         let mut this = Self {
             shell,
             recent: None,
+            show_recent: true,
             places,
             shares,
             names: crate::place_names::Names::new(),
@@ -245,14 +248,22 @@ impl HomePage {
     /// Reload recent files (when the home page opens or Arke regains focus).
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let shell = Arc::clone(&self.shell);
-        let (tx, rx) = flume::bounded::<Vec<RecentFile>>(1);
+        let (tx, rx) = flume::bounded::<(bool, Vec<RecentFile>)>(1);
         spawn_thread("home-recent", move || {
-            let _ = tx.send(shell.recent_files(RECENT_MAX));
+            // Off in Windows: the list isn't even read.
+            let enabled = shell.recent_files_enabled();
+            let files = if enabled {
+                shell.recent_files(RECENT_MAX)
+            } else {
+                Vec::new()
+            };
+            let _ = tx.send((enabled, files));
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(mut recent) = rx.recv_async().await {
+            if let Ok((enabled, mut recent)) = rx.recv_async().await {
                 recent.truncate(RECENT_MAX);
                 let _ = this.update(cx, |this, cx| {
+                    this.show_recent = enabled;
                     this.recent = Some(recent);
                     cx.notify();
                 });
@@ -298,6 +309,12 @@ impl HomePage {
             }
             _ => CardName::Text(label),
         }
+    }
+
+    /// Whether the recent files section is drawn.
+    #[cfg(test)]
+    pub(crate) const fn recent_shown_for_test(&self) -> bool {
+        self.show_recent
     }
 
     #[cfg(test)]
@@ -771,8 +788,10 @@ impl Render for HomePage {
                             .when(has_net, |d| {
                                 d.child(Self::section(t!("home.network"))).child(cards(net))
                             })
-                            .child(Self::section(t!("home.recent")))
-                            .child(self.render_recent(cx)),
+                            .when(self.show_recent, |d| {
+                                d.child(Self::section(t!("home.recent")))
+                                    .child(self.render_recent(cx))
+                            }),
                     ),
             )
     }

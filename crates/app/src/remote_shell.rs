@@ -261,7 +261,31 @@ pub(crate) fn start(
             remotes.set_key_file(&url, place.key_file.clone());
         }
     }
+    for origin in &store.read(cx).settings.insecure_http {
+        if let Some(url) = remote(Path::new(origin)) {
+            remotes.set_insecure_allowed(&url, true);
+        }
+    }
     remotes
+}
+
+/// Whether the user allowed sending the password over plain http to the server of `path`.
+/// Menus use this to offer [`revoke_insecure_http`] only where it applies.
+pub(crate) fn insecure_http_allowed(remotes: &Remotes, path: &Path) -> bool {
+    remote(path).is_some_and(|url| remotes.insecure_allowed(&url))
+}
+
+/// Takes back the plain-http allowance for the server of `path` (a saved location's menu
+/// entry "Require a secure connection"). The next sign-in over http asks again.
+pub(crate) fn revoke_insecure_http(remotes: &Remotes, path: &Path, cx: &mut gpui::App) {
+    let Some(url) = remote(path) else {
+        return;
+    };
+    remotes.set_insecure_allowed(&url, false);
+    let origin = url.origin();
+    crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+        s.update(|st| st.set_insecure_http(&origin, false), cx);
+    });
 }
 
 /// A hub for tests: keys in memory, nothing remembered, no HTTP.

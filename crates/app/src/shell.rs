@@ -1071,6 +1071,12 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (sources, dest);
         Err(ShellError::Unsupported)
     }
+    /// Whether File Explorer's "Show recently used files" is on (not `ShowRecent` = 0 and not
+    /// turned off by the "no recent documents history" policy). Home hides its recent files
+    /// when it is off. Reads the registry only. Background thread.
+    fn recent_files_enabled(&self) -> bool {
+        true
+    }
     /// Recent files from the Windows recent list, newest first, at most `limit`; folders excluded.
     /// Reads the stored link targets without touching them, so network files do not hang. Background thread.
     fn recent_files(&self, limit: usize) -> Vec<crate::home::RecentFile> {

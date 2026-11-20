@@ -26,6 +26,8 @@ static SINGLE_CLICK: AtomicBool = AtomicBool::new(false);
 static WIDTHS: [AtomicU32; Col::ALL.len()] = [const { AtomicU32::new(0) }; Col::ALL.len()];
 /// Dragged preview pane width (px, 0 = automatic).
 static PREVIEW_W: AtomicU32 = AtomicU32::new(0);
+/// Dragged share of the preview pane's height for its content (thousandths, 0 = automatic).
+static PREVIEW_SPLIT: AtomicU32 = AtomicU32::new(0);
 /// Column view widths (px, 0 = default), in [`ViewColumn`] order.
 static VIEW_COLUMN_W: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
 /// The columns after Name, left to right.
@@ -240,6 +242,37 @@ pub(crate) fn set_preview_width(width: Option<Pixels>) {
     }
 }
 
+/// Smallest and largest share (thousandths) of the preview pane's height the content may take
+/// when dragged: the name and details below keep room, and the content stays big enough to drag
+/// back.
+pub(crate) const PREVIEW_SPLIT_RANGE: (u32, u32) = (150, 800);
+
+/// Share of the preview pane's height the preview content takes (`None`: automatic).
+pub(crate) fn preview_split() -> Option<f32> {
+    match PREVIEW_SPLIT.load(Ordering::Relaxed) {
+        0 => None,
+        v => Some(v as f32 / 1000.),
+    }
+}
+
+/// Sets the share (0 to 1) while dragging, kept within [`PREVIEW_SPLIT_RANGE`] (`None` goes back
+/// to automatic); redraws all windows on change. Saved on release by the caller.
+pub(crate) fn set_preview_split(share: Option<f32>) {
+    let value = share.map_or(0, |s| {
+        ((s * 1000.).round().max(0.) as u32).clamp(PREVIEW_SPLIT_RANGE.0, PREVIEW_SPLIT_RANGE.1)
+    });
+    if PREVIEW_SPLIT.swap(value, Ordering::Relaxed) != value {
+        theme::touch();
+    }
+}
+
+/// Current share for saving (`None` if automatic).
+pub(crate) fn stored_preview_split() -> Option<u16> {
+    u16::try_from(PREVIEW_SPLIT.load(Ordering::Relaxed))
+        .ok()
+        .filter(|&v| v != 0)
+}
+
 /// Current preview pane width for saving (`None` if automatic).
 pub(crate) fn stored_preview_width() -> Option<u16> {
     u16::try_from(PREVIEW_W.load(Ordering::Relaxed))
@@ -367,6 +400,8 @@ pub(crate) fn apply(settings: &Settings) {
     }
     let preview = settings.preview_width.map_or(0, u32::from);
     changed |= PREVIEW_W.swap(preview, Ordering::Relaxed) != preview;
+    let split = settings.preview_split.map_or(0, u32::from);
+    changed |= PREVIEW_SPLIT.swap(split, Ordering::Relaxed) != split;
     let view_columns = settings.column_view_widths;
     for (col, width) in [
         (ViewColumn::Parent, view_columns.parent),

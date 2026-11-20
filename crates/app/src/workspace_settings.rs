@@ -29,8 +29,8 @@ use crate::assets::Icon;
 use crate::explorer::ViewMode;
 use crate::scrollbar::ScrollbarDrag;
 use crate::settings::{
-    Accent, DarkShade, Density, FolderOrder, Language, Material, NavScope, NewTabAction, Settings,
-    SettingsStore, SortBy, StartLocation, TabLayout, ThemeMode, Tint,
+    Accent, DarkShade, Density, FolderOrder, Language, LastTabAction, Material, NavScope,
+    NewTabAction, Settings, SettingsStore, SortBy, StartLocation, TabLayout, ThemeMode, Tint,
 };
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
@@ -1809,6 +1809,19 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
                 ],
                 s.new_tab,
                 |st, v| st.new_tab = v,
+                ui,
+            ),
+        ))
+        .child(sub_row(
+            t!("settings.last_tab"),
+            choice(
+                "last-tab",
+                &[
+                    (LastTabAction::CloseWindow, t!("settings.last_tab_close")),
+                    (LastTabAction::Home, t!("settings.last_tab_home")),
+                ],
+                s.last_tab,
+                |st, v| st.last_tab = v,
                 ui,
             ),
         ))

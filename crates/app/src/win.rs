@@ -378,6 +378,30 @@ pub(crate) fn double_click_time() -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(if ms == 0 { 500 } else { ms }))
 }
 
+/// How long the pointer must rest on an item to select it in single-click mode (Settings >
+/// Mouse; `SPI_GETMOUSEHOVERTIME`, 400 ms by default). Reads one system parameter, fine on the
+/// UI thread.
+pub(crate) fn mouse_hover_time() -> std::time::Duration {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETMOUSEHOVERTIME, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    let mut ms = 0u32;
+    // SAFETY: ms is a correctly sized out param.
+    let asked = unsafe {
+        SystemParametersInfoW(
+            SPI_GETMOUSEHOVERTIME,
+            0,
+            Some((&raw mut ms).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    std::time::Duration::from_millis(if asked.is_err() || ms == 0 {
+        400
+    } else {
+        u64::from(ms)
+    })
+}
+
 /// Windows accent color as 0xRRGGBB. Asks DWM only (no registry); cheap enough for the UI thread.
 pub(crate) fn system_accent() -> Option<u32> {
     use windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
@@ -1066,6 +1090,26 @@ impl Shell for WinShell {
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         let t = local_time(time)?;
         Some([t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond])
+    }
+
+    fn recent_files_enabled(&self) -> bool {
+        use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        const EXPLORER: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer";
+        const POLICIES: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+        debug_assert!(
+            !arke_core::fs::is_ui_thread(),
+            "recent_files_enabled must not run on the UI thread"
+        );
+        // File Explorer's own switch (Folder Options > Privacy), absent means on.
+        if read_reg_dword(HKEY_CURRENT_USER, EXPLORER, "ShowRecent") == Some(0) {
+            return false;
+        }
+        // The group policy "Do not keep history of recently opened documents".
+        ![HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+            .into_iter()
+            .any(|hive| {
+                read_reg_dword(hive, POLICIES, "NoRecentDocsHistory").is_some_and(|v| v != 0)
+            })
     }
 
     fn recent_files(&self, limit: usize) -> Vec<crate::home::RecentFile> {

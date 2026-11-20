@@ -1408,6 +1408,18 @@ settings.new_tab_here:
   en: New tab here
   zh-TW: 在目前的資料夾開新分頁
   zh-CN: 在当前文件夹打开新标签页
+settings.last_tab:
+  en: When the last tab is closed
+  zh-TW: 關閉最後一個分頁時
+  zh-CN: 关闭最后一个标签页时
+settings.last_tab_close:
+  en: Close the window
+  zh-TW: 關閉視窗
+  zh-CN: 关闭窗口
+settings.last_tab_home:
+  en: Open Home
+  zh-TW: 開啟首頁
+  zh-CN: 打开主页
 settings.list:
   en: List
   zh-TW: 清單
@@ -2586,6 +2598,18 @@ net.key_replace:
   en: Replace key and connect
   zh-TW: 取代金鑰並連線
   zh-CN: 替换密钥并连接
+net.insecure_title:
+  en: This connection is not encrypted
+  zh-TW: 這個連線沒有加密
+  zh-CN: 此连接没有加密
+net.insecure_body:
+  en: "The password would be sent as plain text. Anyone on the network could read it. Allow this only for a server on a network you trust."
+  zh-TW: 密碼會以明文傳送，同一個網路上的人都有可能看到。只在你信任的網路上的伺服器才允許。
+  zh-CN: 密码会以明文发送，同一网络上的人都有可能看到。只在你信任的网络上的服务器才允许。
+net.insecure_allow:
+  en: Allow for this location
+  zh-TW: 允許這個位置
+  zh-CN: 允许此位置
 sidebar.add_location:
   en: Add network location…
   zh-TW: 新增網路位置…
@@ -3368,6 +3392,14 @@ sidebar.drop_to_list:
   en: "Drop here to add to the list"
   zh-TW: "放到這裡以加入清單"
   zh-CN: "放到这里以加入列表"
+sidebar.drop_to_remove:
+  en: "Drop here to remove from favorites"
+  zh-TW: "放到這裡以從最愛移除"
+  zh-CN: "放到这里以从收藏夹中移除"
+sidebar.recycle_on_home:
+  en: "The Recycle Bin is on the Home page now, next to the drives."
+  zh-TW: "資源回收筒現在在首頁，就在磁碟旁邊。"
+  zh-CN: "回收站现在在主页上，就在驱动器旁边。"
 sidebar.duplicate_tab:
   en: Duplicate tab
   zh-TW: 複製分頁
@@ -3697,6 +3729,10 @@ sidebar.disconnect_drive:
   en: Disconnect network drive…
   zh-TW: "中斷網路磁碟機連線…"
   zh-CN: 断开网络驱动器…
+sidebar.require_secure:
+  en: "Require a secure connection"
+  zh-TW: "改回只用加密連線"
+  zh-CN: "改回只用加密连接"
 sidebar.forget_share:
   en: Remove from this list
   zh-TW: 從清單移除
@@ -4207,6 +4243,14 @@ preview.pages:
   en: Pages
   zh-TW: 頁數
   zh-CN: 页数
+preview.gzip_name:
+  en: Contains
+  zh-TW: 內含檔案
+  zh-CN: 内含文件
+preview.gzip_size:
+  en: Uncompressed size
+  zh-TW: 解壓縮後大小
+  zh-CN: 解压缩后大小
 preview.page_of:
   en: "Page %{page} of %{pages}"
   zh-TW: "第 %{page} 頁，共 %{pages} 頁"

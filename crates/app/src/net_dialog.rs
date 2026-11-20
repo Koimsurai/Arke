@@ -104,6 +104,8 @@ pub(crate) struct NetDialog {
     busy: bool,
     error: Option<SharedString>,
     pending_key: Option<PendingKey>,
+    /// Origin of a WebDAV server over plain http waiting for the user to allow it.
+    pending_insecure: Option<String>,
     _inputs: Vec<Subscription>,
 }
 
@@ -190,6 +192,7 @@ impl NetDialog {
             busy: false,
             error: None,
             pending_key: None,
+            pending_insecure: None,
             _inputs: inputs,
         }
     }
@@ -391,6 +394,10 @@ impl NetDialog {
 
     /// SFTP or WebDAV: trusts a confirmed host key, signs in and checks the folder opens, all in
     /// the background.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flow: host key, plain-http consent, sign-in and the folder check in order"
+    )]
     fn submit_remote(&mut self, cx: &mut Context<Self>) {
         let url = match self.remote_url(cx) {
             Ok(url) => url,
@@ -422,6 +429,16 @@ impl NetDialog {
             .take()
             .filter(|p| p.key.host == arke_remote::known_hosts::host_pattern(&url.host, url.port))
             .map(|p| p.key);
+        // The user said "Allow for this location" for exactly this server (editing the address
+        // in the meantime asks again).
+        let was_allowed = self.remotes.insecure_allowed(&url);
+        let newly_allowed = self
+            .pending_insecure
+            .take()
+            .is_some_and(|origin| origin == url.origin());
+        if newly_allowed {
+            self.remotes.set_insecure_allowed(&url, true);
+        }
         let remember = self.remember;
         self.busy = true;
         self.error = None;
@@ -451,6 +468,13 @@ impl NetDialog {
                 match result {
                     Ok(entry) => {
                         this.clear_password(cx);
+                        // Remember the consent only once it led to a working sign-in.
+                        if url.scheme == Scheme::Dav && this.remotes.insecure_allowed(&url) {
+                            let origin = url.origin();
+                            crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+                                s.update(|st| st.set_insecure_http(&origin, true), cx);
+                            });
+                        }
                         // A file was named: open the folder it's in.
                         let folder = if entry.is_dir_like() {
                             url.clone()
@@ -474,7 +498,16 @@ impl NetDialog {
                     Err(RemoteError::HostKeyChanged(key)) => {
                         this.pending_key = Some(PendingKey { key, changed: true });
                     }
-                    Err(err) => this.error = Some(err.to_string().into()),
+                    Err(RemoteError::Insecure) => {
+                        this.pending_insecure = Some(url.origin());
+                    }
+                    Err(err) => {
+                        if newly_allowed && !was_allowed {
+                            // Not used: the consent was for a sign-in that did not happen.
+                            this.remotes.set_insecure_allowed(&url, false);
+                        }
+                        this.error = Some(err.to_string().into());
+                    }
                 }
                 cx.notify();
             });
@@ -530,6 +563,12 @@ impl NetDialog {
     #[cfg(test)]
     pub(crate) fn error_for_test(&self) -> Option<String> {
         self.error.as_ref().map(ToString::to_string)
+    }
+
+    /// Whether the plain-http warning is waiting for the user's decision.
+    #[cfg(test)]
+    pub(crate) const fn pending_insecure_for_test(&self) -> bool {
+        self.pending_insecure.is_some()
     }
 
     /// Fingerprint waiting for confirmation and whether it changed.
@@ -823,6 +862,32 @@ impl NetDialog {
             ))
     }
 
+    /// Plain http with a password: say what that means before the user allows it.
+    fn render_insecure(&self) -> Option<gpui::Div> {
+        self.pending_insecure.as_ref()?;
+        Some(
+            div()
+                .p(theme::s_12())
+                .flex()
+                .flex_col()
+                .gap(theme::s_4())
+                .rounded(theme::r_8())
+                .bg(theme::danger_surface())
+                .child(
+                    div()
+                        .font_weight(theme::FW_STRONG)
+                        .text_color(theme::danger())
+                        .child(t!("net.insecure_title").into_owned()),
+                )
+                .child(
+                    div()
+                        .text_size(theme::fs_12())
+                        .text_color(theme::text_muted())
+                        .child(t!("net.insecure_body").into_owned()),
+                ),
+        )
+    }
+
     /// First connection or changed key: the fingerprint to check.
     fn render_host_key(&self) -> Option<gpui::Div> {
         let pending = self.pending_key.as_ref()?;
@@ -884,6 +949,9 @@ impl Render for NetDialog {
         let (ok, ok_danger) = match &self.pending_key {
             Some(p) if p.changed => (t!("net.key_replace").into_owned(), true),
             Some(_) => (t!("net.key_trust").into_owned(), false),
+            None if self.pending_insecure.is_some() => {
+                (t!("net.insecure_allow").into_owned(), true)
+            }
             None => (ok, false),
         };
         let panel = div()
@@ -952,6 +1020,7 @@ impl Render for NetDialog {
                     })),
             )
             .children(self.render_host_key())
+            .children(self.render_insecure())
             .children(self.error.clone().map(|error| {
                 div()
                     .text_size(theme::fs_12())

@@ -29,6 +29,8 @@ use crate::workspace::{CloseTab, NewTab, Workspace};
 
 #[path = "tests_column_view.rs"]
 mod column_view;
+#[path = "tests_favorites.rs"]
+mod favorites;
 #[path = "tests_folder_views.rs"]
 mod folder_views;
 #[path = "tests_idle.rs"]
@@ -48,6 +50,8 @@ mod place_names;
 mod popup_menus;
 #[path = "tests_preview_info.rs"]
 mod preview_info;
+#[path = "tests_preview_media.rs"]
+mod preview_media;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
 #[path = "tests_properties_card.rs"]
@@ -64,6 +68,8 @@ mod remote;
 mod scale;
 #[path = "tests_sidebar_tree.rs"]
 mod sidebar_tree;
+#[path = "tests_small_behaviors.rs"]
+mod small_behaviors;
 #[path = "tests_stuck_drag.rs"]
 mod stuck_drag;
 #[path = "tests_tab_drag.rs"]
@@ -180,6 +186,8 @@ struct FakeShell {
     /// Windows' recent files list, newest first, and the limit Arke asked for.
     recent: Mutex<Vec<crate::home::RecentFile>>,
     recent_limit: Mutex<Option<usize>>,
+    /// Windows' "Show recently used files" is off.
+    recent_off: std::sync::atomic::AtomicBool,
     /// What the next file dialogs return (`None` is Cancel), and the requests they got.
     picks: Mutex<Vec<Option<PathBuf>>>,
     pick_requests: Mutex<Vec<crate::shell::PickRequest>>,
@@ -920,6 +928,14 @@ impl Shell for FakeShell {
             .lock()
             .push((dir.to_path_buf(), items.to_vec()));
         self.cloud.lock().clone()
+    }
+
+    fn recent_files_enabled(&self) -> bool {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "recent files setting read on the UI thread"
+        );
+        !self.recent_off.load(Ordering::Relaxed)
     }
 
     /// Returns the whole fake list, ignoring `limit`, so the page's own cap is tested too.

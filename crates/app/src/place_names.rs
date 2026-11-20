@@ -1,4 +1,5 @@
-//! Custom names for mapped network drives, network places and saved remote locations.
+//! Custom names for mapped network drives, network places and saved remote locations, and the
+//! names given to favorites (#259).
 //!
 //! Kept in Arke's settings only: Windows' own drive label, its registry and `MountPoints2` are never
 //! touched. An empty name (or the default one) removes the entry and brings the default name back.
@@ -118,19 +119,37 @@ impl Settings {
 
     /// Gives a place a name. Empty, or the default name, brings the default back.
     pub(crate) fn rename_place(&mut self, path: &Path, name: &str, default: &str) {
-        let name: String = name
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect::<String>()
-            .trim()
-            .chars()
-            .take(NAME_MAX)
-            .collect();
-        if name.is_empty() || name == default {
-            self.place_names.remove(&key(path));
-        } else {
-            self.place_names.insert(key(path), name);
-        }
+        set_name(&mut self.place_names, path, name, default);
+    }
+
+    /// The name the user gave a favorite (#259), shown only where the favorite is: its tile or
+    /// row in the sidebar. Kept apart from [`Self::place_names`], which also renames the folder in
+    /// tab titles and the path bar.
+    pub(crate) fn favorite_name(&self, path: &Path) -> Option<&str> {
+        self.favorite_names.get(&key(path)).map(String::as_str)
+    }
+
+    /// Gives a favorite a name. Empty, or the default name, brings the default back.
+    pub(crate) fn rename_favorite(&mut self, path: &Path, name: &str, default: &str) {
+        set_name(&mut self.favorite_names, path, name, default);
+    }
+}
+
+/// Stores `name` for `path` in `names`, cleaned up (no control characters, trimmed, at most
+/// [`NAME_MAX`] characters); empty or `default` removes the entry instead.
+fn set_name(names: &mut Names, path: &Path, name: &str, default: &str) {
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(NAME_MAX)
+        .collect();
+    if name.is_empty() || name == default {
+        names.remove(&key(path));
+    } else {
+        names.insert(key(path), name);
     }
 }
 
@@ -172,6 +191,23 @@ mod tests {
             s.place_names.is_empty(),
             "typing the default name restores it"
         );
+    }
+
+    #[test]
+    fn a_favorite_name_is_kept_apart_from_place_names() {
+        let mut s = Settings::default();
+        let folder = PathBuf::from(r"C:\Work\Reports");
+        s.rename_favorite(&folder, " Q4 ", "Reports");
+        assert_eq!(s.favorite_name(Path::new(r"c:\work\reports\")), Some("Q4"));
+        assert!(
+            s.place_names.is_empty(),
+            "tab titles and the path bar keep the folder's name"
+        );
+        s.rename_favorite(&folder, "Reports", "Reports");
+        assert!(s.favorite_names.is_empty(), "the default name restores it");
+        s.rename_favorite(&folder, "Q4", "Reports");
+        s.rename_favorite(&folder, "", "Reports");
+        assert_eq!(s.favorite_name(&folder), None, "an empty name restores it");
     }
 
     #[test]

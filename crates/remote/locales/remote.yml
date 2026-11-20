@@ -33,9 +33,9 @@ remote.host_changed:
   zh-TW: "%{host} 的金鑰變了，可能有人在攔截連線，Arke 沒有連線"
   zh-CN: "%{host} 的密钥变了，可能有人在拦截连接，Arke 没有连接"
 remote.insecure:
-  en: "Sign-in over plain http would send the password unencrypted; use https"
-  zh-TW: "透過 http 登入會以明文傳送密碼，請改用 https"
-  zh-CN: "通过 http 登录会以明文发送密码，请改用 https"
+  en: "Sign-in over plain http would send the password unencrypted; use https, or allow it for this location"
+  zh-TW: "透過 http 登入會以明文傳送密碼，請改用 https，或只對這個位置允許"
+  zh-CN: "通过 http 登录会以明文发送密码，请改用 https，或只对此位置允许"
 remote.bad_key:
   en: "Can't use the key file: %{reason}"
   zh-TW: "無法使用金鑰檔：%{reason}"

@@ -836,6 +836,13 @@ impl Explorer {
                 if this.right_press.is_some() {
                     this.right_press_moved(event, window, cx);
                 }
+                // Single-click mode: resting on the item selects it (#46).
+                this.on_row_pointer_move(ix, event, window, cx);
+            }))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, _| {
+                if !*hovered {
+                    this.on_row_pointer_left(ix);
+                }
             }))
             // Released on the item before the window-wide listener exists (a quick tap).
             .on_mouse_up(

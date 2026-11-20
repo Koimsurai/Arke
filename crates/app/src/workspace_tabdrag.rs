@@ -466,6 +466,7 @@ impl Workspace {
             return;
         }
         let dragged = dragged.path.clone();
+        // The saved order counts every favorite, tiles and the ones listed as rows (#174).
         let old: Vec<PathBuf> = self.favorites(cx).into_iter().map(|(p, ..)| p).collect();
         let Some(to) = old.iter().position(|p| p == path) else {
             return;
@@ -473,8 +474,10 @@ impl Workspace {
         if !old.contains(&dragged) {
             return;
         }
-        // Slot positions before the move. Only animate when every tile has reported.
-        let slots: Option<Vec<(f32, f32)>> = old
+        // The grid only holds the favorites drawn as tiles: their slot positions before the move.
+        // Only animate when every one of them has reported.
+        let old_tiles = self.tile_favorites(cx);
+        let slots: Option<Vec<(f32, f32)>> = old_tiles
             .iter()
             .map(|p| {
                 self.tab_drag
@@ -486,9 +489,9 @@ impl Workspace {
         self.move_pin(&dragged, crate::settings::PinSlot::Tile(to), cx);
         self.tab_drag.moved = true;
         if let Some(slots) = slots.filter(|_| crate::motion::enabled()) {
-            let new: Vec<PathBuf> = self.favorites(cx).into_iter().map(|(p, ..)| p).collect();
+            let new_tiles = self.tile_favorites(cx);
             let now = std::time::Instant::now();
-            for (p, (dx, dy)) in grid_offsets(&slots, &old, &new) {
+            for (p, (dx, dy)) in grid_offsets(&slots, &old_tiles, &new_tiles) {
                 // A tile still sliding from the last move continues from where it is drawn.
                 let (lx, ly) = self
                     .tab_drag
@@ -589,6 +592,20 @@ impl Workspace {
     ) {
         let id = self.tabs[ix].id;
         self.spring_hover(id, inside, window, cx);
+    }
+
+    /// The favorite tiles sliding from their old slots after a reorder, sorted.
+    pub(crate) fn tiles_sliding_for_test(&self) -> Vec<PathBuf> {
+        let now = std::time::Instant::now();
+        let mut sliding: Vec<PathBuf> = self
+            .tab_drag
+            .tile_shift
+            .iter()
+            .filter(|(_, slide)| slide.live(now))
+            .map(|(path, _)| path.clone())
+            .collect();
+        sliding.sort();
+        sliding
     }
 }
 

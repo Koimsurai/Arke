@@ -1590,7 +1590,9 @@ impl Workspace {
                 text_button(
                     "reveal-settings",
                     t!("settings.open_folder"),
-                    cx.listener(|this, _: &ClickEvent, _, cx| this.reveal_settings_file(cx)),
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.reveal_settings_file(window, cx);
+                    }),
                 ),
             ),
             update,
@@ -1707,13 +1709,20 @@ impl Workspace {
         .detach();
     }
 
-    fn reveal_settings_file(&self, cx: &mut Context<Self>) {
+    /// Closes Settings and shows the settings file, selected, in the active tab (not in File
+    /// Explorer: someone who opens folders in Arke expects Arke here too).
+    fn reveal_settings_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = crate::settings::default_path() else {
             return;
         };
-        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
-        crate::explorer::spawn_thread("reveal-settings", move || {
-            let _ = shell.reveal_in_explorer(&path, true);
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        self.close_settings(&super::settings_panel::CloseSettings, window, cx);
+        let name = Arc::from(name.to_string_lossy().as_ref());
+        let dir = dir.to_path_buf();
+        self.active_view().clone().update(cx, |v, cx| {
+            v.navigate_selecting(dir, arke_core::NavKind::New, Some(name), cx);
         });
     }
 }

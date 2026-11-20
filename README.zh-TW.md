@@ -24,6 +24,9 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 **什麼都找得到，而且馬上。** Arke 替本機磁碟維護一份檔名索引。裝了選用的背景服務後，它直接讀 NTFS
 主檔案表，幾秒就能建好幾百萬個檔案的索引，並持續跟著變更記錄，打開時索引就是最新的。
 
+**檔案操作不用等。** 兩萬個檔案的資料夾丟進資源回收筒只要 0.2 秒，檔案總管要 47 秒，還原也照常。
+複製、移動會顯示進度，同一顆磁碟上的工作會排隊，可以暫停，也能復原。
+
 **同時開很多資料夾也順手。** 分頁放在直式側邊欄，可以固定，也能整組存成工作區。任何分頁都能分成
 左右兩個窗格，同步瀏覽或比對兩邊的內容；把檔案拖到分頁、最愛的資料夾或路徑欄的某一層，就直接放進那裡。
 
@@ -37,19 +40,27 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 
 <table>
   <tr>
-    <td width="50%"><img src=".github/assets/icons-light.png" alt="淺色主題的圖示檢視"></td>
+    <td width="50%"><img src=".github/assets/split-view.png" alt="分成左右兩個窗格的分頁，左邊詳細資料、右邊圖示"></td>
     <td width="50%"><img src=".github/assets/context-menu.png" alt="Arke 的右鍵選單"></td>
   </tr>
   <tr>
-    <td>詳細資料、圖示、欄位三種檢視，大部分檔案都能在預覽窗格直接看。</td>
+    <td>任何分頁都能分成左右兩個窗格，同步瀏覽或比對兩邊的內容。</td>
     <td>Arke 自己的右鍵選單，速度快；完整的 Windows 選單也只差一下。</td>
   </tr>
   <tr>
     <td width="50%"><img src=".github/assets/quick-look.png" alt="快速預覽 Markdown 檔案"></td>
-    <td width="50%"><img src=".github/assets/themes.png" alt="主題與強調色設定"></td>
+    <td width="50%"><img src=".github/assets/properties.png" alt="Arke 的資料夾內容視窗"></td>
   </tr>
   <tr>
     <td>快速預覽（空白鍵）像 GitHub 一樣顯示 Markdown，也能看圖片、PDF、Office 檔和程式碼。</td>
+    <td>Arke 自己的內容視窗（Alt+Enter），看得到資料夾的空間用在哪裡。</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/icons-light.png" alt="淺色主題的圖示檢視"></td>
+    <td width="50%"><img src=".github/assets/themes.png" alt="主題與強調色設定"></td>
+  </tr>
+  <tr>
+    <td>詳細資料、圖示、欄位三種檢視，大部分檔案都能在預覽窗格直接看。</td>
     <td>淺色、深色、深灰三種主題，可換強調色、背景色調或背景圖片。</td>
   </tr>
 </table>

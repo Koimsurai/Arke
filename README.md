@@ -26,6 +26,10 @@ stop you from scrolling, typing or switching tabs.
 optional background service it reads the NTFS master file table directly, indexing millions of
 files in seconds, and follows the change journal so the index is current the moment you open it.
 
+**File operations don't keep you waiting.** A folder of 20,000 files goes to the Recycle Bin in
+0.2 s instead of 47 s in File Explorer, and restores as usual. Copies and moves show their progress,
+queue up on the same drive, can be paused, and can be undone.
+
 **It's built for working in many folders at once.** Tabs live in a vertical sidebar, can be
 pinned and saved as named workspaces. Any tab splits into two panes that browse in sync or compare
 their contents, and dragging a file onto a tab, a favorite or a path segment drops it right
@@ -43,19 +47,27 @@ If Arke is useful to you, a ⭐ on GitHub helps other people find it.
 
 <table>
   <tr>
-    <td width="50%"><img src=".github/assets/icons-light.png" alt="Icons view in the light theme"></td>
+    <td width="50%"><img src=".github/assets/split-view.png" alt="A tab split into two panes, details on the left and icons on the right"></td>
     <td width="50%"><img src=".github/assets/context-menu.png" alt="Arke's context menu"></td>
   </tr>
   <tr>
-    <td>Details, icons and columns views, with a preview pane for most kinds of files.</td>
+    <td>Split any tab into two panes that browse in sync or compare their contents.</td>
     <td>A fast context menu of its own, with the full Windows menu one click away.</td>
   </tr>
   <tr>
     <td width="50%"><img src=".github/assets/quick-look.png" alt="Quick Look showing a Markdown file"></td>
-    <td width="50%"><img src=".github/assets/themes.png" alt="Theme and accent color settings"></td>
+    <td width="50%"><img src=".github/assets/properties.png" alt="Arke's Properties window for a folder"></td>
   </tr>
   <tr>
     <td>Quick Look (Space) shows Markdown the way GitHub does, and images, PDF, Office files and code.</td>
+    <td>A Properties window of its own (Alt+Enter) that shows where a folder's space goes.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src=".github/assets/icons-light.png" alt="Icons view in the light theme"></td>
+    <td width="50%"><img src=".github/assets/themes.png" alt="Theme and accent color settings"></td>
+  </tr>
+  <tr>
+    <td>Details, icons and columns views, with a preview pane for most kinds of files.</td>
     <td>Light, dark and dark gray themes, accent colors, and a background tint or image.</td>
   </tr>
 </table>

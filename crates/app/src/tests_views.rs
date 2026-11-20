@@ -282,6 +282,22 @@ fn tree_expands_and_collapses_with_arrows(cx: &mut TestAppContext) {
     assert!(view.update(cx, |v, _| v.tree_expanded().is_empty()));
 }
 
+/// #260: a file inside an expanded folder passes drops to that folder (where it sits), not to the
+/// folder shown; only folders draw themselves as the target. A file of the folder shown takes no
+/// drop of its own (the list's folder does).
+#[gpui::test]
+fn files_in_an_expanded_folder_drop_into_it(cx: &mut TestAppContext) {
+    let (view, cx) = setup_tree(cx, tree_fs(), Arc::default());
+    cx.simulate_keystrokes("home right");
+    wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
+    // alpha, alpha\inner, alpha\a1.txt, beta, top.txt
+    let mut drop = |ix| view.update(cx, |v, _| v.drop_dir_for_test(ix));
+    assert_eq!(drop(0), Some((PathBuf::from(r"C:\t\alpha"), true)));
+    assert_eq!(drop(1), Some((PathBuf::from(r"C:\t\alpha\inner"), true)));
+    assert_eq!(drop(2), Some((PathBuf::from(r"C:\t\alpha"), false)));
+    assert_eq!(drop(4), None);
+}
+
 /// Expanded folders follow the sort and stay current through their own watcher; a folder that
 /// disappears takes its expansion with it.
 #[gpui::test]

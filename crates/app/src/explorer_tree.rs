@@ -656,6 +656,12 @@ impl Explorer {
         self.collapse(&Arc::from(name), true, cx);
     }
 
+    /// Where a drop on the row `ix` goes, and whether that row is drawn as the target (tests).
+    #[cfg(test)]
+    pub(crate) fn drop_dir_for_test(&self, ix: usize) -> Option<(std::path::PathBuf, bool)> {
+        self.drop_dir(ix)
+    }
+
     /// Clicks the chevron of the folder row `name` (tests).
     #[cfg(test)]
     pub(crate) fn click_chevron_for_test(&mut self, name: &str, cx: &mut Context<Self>) {

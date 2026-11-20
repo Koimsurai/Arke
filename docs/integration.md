@@ -242,15 +242,15 @@ ArkeAsk(WinExist("ahk_class ArkeWindow")
 
 ### PowerShell
 
-Windows PowerShell 5.1 (and PowerShell 7 before 7.3) drops the double quotes inside an argument
-it passes to a program, so write them as `\"` there (7.3 and later take them as they are). It
-also doesn't pass piped input to a windowed program, so `--api -` doesn't help in PowerShell.
+Write the JSON as it is, in Windows PowerShell 5.1 and PowerShell 7 alike. (5.1 drops the
+quotes inside an argument it passes to a program; Arke then reads the request from its raw
+command line, where it is intact.)
 
 The folders of every tab:
 
 ```powershell
 [Console]::OutputEncoding = [Text.Encoding]::UTF8   # non-ASCII paths
-$state = arke.exe --api '{\"v\":1,\"cmd\":\"state\"}' | ConvertFrom-Json
+$state = arke.exe --api '{"v":1,"cmd":"state"}' | ConvertFrom-Json
 $state.windows.tabs.panes.location | Where-Object kind -eq 'folder' | Select-Object -ExpandProperty path
 ```
 
@@ -258,6 +258,5 @@ Build requests with `ConvertTo-Json` to get paths escaped right:
 
 ```powershell
 $request = @{ v = 1; cmd = 'open'; path = 'D:\Work'; new_tab = $true } | ConvertTo-Json -Compress
-arke.exe --api $request.Replace('"', '\"')     # Windows PowerShell 5.1
-arke.exe --api $request                        # PowerShell 7.3 and later
+arke.exe --api $request
 ```

@@ -292,7 +292,13 @@ fn main() -> std::process::ExitCode {
                 }
                 api::stdin_text(&bytes)
             }
-            other => other.unwrap_or_default().to_owned(),
+            other => {
+                // SAFETY: GetCommandLineW returns this process's command line, valid for its life.
+                let raw =
+                    unsafe { windows::Win32::System::Environment::GetCommandLineW().to_string() }
+                        .unwrap_or_default();
+                api::command_line_request(other.unwrap_or_default(), &raw)
+            }
         };
         return run_api_cli(json.trim());
     }

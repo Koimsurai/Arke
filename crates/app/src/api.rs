@@ -26,6 +26,35 @@ use crate::explorer::scope::Scope;
 /// `arke.exe --api <json>`.
 pub(crate) const ARG: &str = "--api";
 
+/// The request given as `arke.exe --api <json>`: the parsed argument `arg`, or, when that isn't
+/// JSON, what follows `--api` on the raw command line `raw` (`GetCommandLineW`).
+pub(crate) fn command_line_request(arg: &str, raw: &str) -> String {
+    if serde_json::from_str::<serde_json::Value>(arg).is_ok() {
+        return arg.to_owned();
+    }
+    // Windows PowerShell 5.1 passes the JSON without escaping its quotes, and wraps it in one more
+    // pair when it holds a space: the parsed argument lost them, the raw command line still has
+    // the request as written.
+    let Some(at) = raw
+        .match_indices(ARG)
+        .find(|&(i, _)| i == 0 || raw[..i].ends_with([' ', '\t', '"']))
+        .map(|(i, _)| i + ARG.len())
+    else {
+        return arg.to_owned();
+    };
+    let rest = raw[at..].trim();
+    let unwrapped = rest
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .filter(|inner| inner.trim_start().starts_with('{'))
+        .unwrap_or(rest);
+    if serde_json::from_str::<serde_json::Value>(unwrapped).is_ok() {
+        unwrapped.to_owned()
+    } else {
+        arg.to_owned()
+    }
+}
+
 /// A request piped to `arke.exe --api -` as text: UTF-8 with or without a byte order mark, or
 /// UTF-16 with one (PowerShell pipes what its `$OutputEncoding` says, which varies).
 pub(crate) fn stdin_text(bytes: &[u8]) -> String {
@@ -876,6 +905,26 @@ pub(crate) fn print_reply(reply: &[u8]) -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_request_mangled_by_windows_powershell_is_read_from_the_raw_command_line() {
+        // PowerShell 7.3+ and cmd: the argument is the JSON.
+        let json = r#"{"v":1,"cmd":"state"}"#;
+        assert_eq!(command_line_request(json, "ignored"), json);
+        // Windows PowerShell 5.1: the quotes are gone from the argument, not from the line.
+        let raw = r#""C:\Program Files\Arke\arke.exe" --api {"v":1,"cmd":"state"}"#;
+        assert_eq!(command_line_request("{v:1,cmd:state}", raw), json);
+        // ... and with a space in it, the whole request is wrapped in one more pair.
+        let open = r#"{"v":1,"cmd":"open","path":"S:\\Studio\\Client work","new_tab":true}"#;
+        let raw = format!(r#"arke.exe --api "{open}""#);
+        assert_eq!(command_line_request("{v:1,cmd:open,path:S:", &raw), open);
+        // Not JSON either way: the argument as given, for the bad_request reply.
+        assert_eq!(
+            command_line_request("state", "arke.exe --api state"),
+            "state"
+        );
+        assert_eq!(command_line_request("", "arke.exe --api"), "");
+    }
 
     #[test]
     fn piped_requests_are_read_in_any_encoding_powershell_uses() {

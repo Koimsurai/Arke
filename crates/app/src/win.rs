@@ -420,7 +420,7 @@ pub(crate) fn windows_version() -> Option<(u32, u32, u32)> {
         .then_some((info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber))
 }
 
-/// Mica needs Windows 11 (build 22000+). RtlGetVersion ignores the compatibility manifest.
+/// Windows 11 (build 22000+), which Mica needs. RtlGetVersion ignores the compatibility manifest.
 pub(crate) fn supports_mica() -> bool {
     use windows::Wdk::System::SystemServices::RtlGetVersion;
     use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
@@ -1128,13 +1128,19 @@ impl Shell for WinShell {
         // SAFETY: initializes STA on this dedicated background thread; ShellExecuteEx needs COM.
         let com =
             unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
-        let result = open_as(path, owner).or_else(|e| {
-            log::warn!(
-                "openas failed for {}, falling back to SHOpenWithDialog: {e:?}",
-                path.display()
-            );
+        // Windows 10 treats the Unknown class's openas as a file nobody can open and shows its old
+        // "No program is associated" dialog instead (#239): it gets SHOpenWithDialog, as up to 0.6.
+        let result = if supports_mica() {
+            open_as(path, owner).or_else(|e| {
+                log::warn!(
+                    "openas failed for {}, falling back to SHOpenWithDialog: {e:?}",
+                    path.display()
+                );
+                open_with_dialog(path, owner)
+            })
+        } else {
             open_with_dialog(path, owner)
-        });
+        };
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };

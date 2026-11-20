@@ -1,8 +1,8 @@
 //! GPUI tests for the favorites at the top of the sidebar (`workspace_sidebar.rs`): a tile dragged
 //! like an app icon (lifted under the pointer, an empty slot the others slide around, settling
-//! back when dropped), the remove target the footer turns into while one is dragged, long names
-//! listed as rows instead of cut off (#174), names of their own (#259), and where the Recycle Bin
-//! goes when it leaves the sidebar (#31).
+//! back when dropped), removal by dragging one out of the sidebar (with Undo), long names listed
+//! as rows instead of cut off (#174), names of their own (#259), and where the Recycle Bin goes
+//! when it leaves the sidebar (#31).
 
 use gpui::{Bounds, Modifiers, MouseButton, Pixels, Point, point, px};
 
@@ -37,20 +37,59 @@ fn drawn(cx: &mut VisualTestContext, selector: &str) -> bool {
     cx.debug_bounds(id).is_some()
 }
 
-/// A window on `C:\w`, whose folders `a` to `d` and [`LONG`] can be favorites.
-fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+/// A window on `C:\w`, whose folders `a` to `d` and [`LONG`] can be favorites, and the shell that
+/// would run any file operation.
+fn window_and_shell(
+    cx: &mut TestAppContext,
+) -> (Entity<Workspace>, Arc<FakeShell>, &mut VisualTestContext) {
     let fs = FakeFs::new();
     let names = ["a", "b", "c", "d", LONG];
     fs.insert_dir(r"C:\w", names.iter().map(|n| dir(n)).collect());
     for name in names {
         fs.insert_dir(p(name), Vec::new());
     }
-    let (ws, cx) = setup_workspace(cx, fs, r"C:\w");
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\w");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\w"));
     cx.simulate_resize(gpui::size(px(1200.), px(900.)));
     refresh(cx);
+    (ws, shell, cx)
+}
+
+/// A window on `C:\w`, whose folders `a` to `d` and [`LONG`] can be favorites.
+fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+    let (ws, _, cx) = window_and_shell(cx);
     (ws, cx)
+}
+
+/// Over the file list, outside the sidebar.
+fn over_the_content() -> Point<Pixels> {
+    point(px(700.), px(160.))
+}
+
+fn click(cx: &mut VisualTestContext, at: Point<Pixels>) {
+    cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+}
+
+/// Drags what was picked up out over the content and lets go there: it shows it would be removed
+/// first.
+fn drop_outside(cx: &mut VisualTestContext) {
+    assert!(
+        !drawn(cx, "pin-remove-cue"),
+        "over the sidebar: nothing yet"
+    );
+    let out = over_the_content();
+    cx.simulate_mouse_move(out, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert!(drawn(cx, "pin-remove-cue"), "outside: it shows it would go");
+    cx.simulate_mouse_up(out, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    cx.update(|_, cx| assert!(!cx.has_active_drag()));
 }
 
 fn bounds(cx: &mut VisualTestContext, selector: &str) -> Bounds<Pixels> {
@@ -101,41 +140,99 @@ fn rename(ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: &Path, name:
     refresh(cx);
 }
 
-/// While a favorite is dragged, the sidebar's bottom row (Settings) turns into the remove target,
-/// below the places and the tabs, so it covers nothing; dropping the favorite there takes it off
-/// the favorites, and Settings comes back with the drag's end.
+/// Like an app dragged off the macOS Dock: a tile dragged out of the sidebar and let go there
+/// leaves the favorites (its name with it), and nothing else happens to the folder. The toast's
+/// Undo puts it back in its slot, name and all.
 #[gpui::test]
-fn dropping_a_favorite_on_the_footer_removes_it(cx: &mut TestAppContext) {
-    let (_ws, cx) = window(cx);
+fn a_tile_dropped_outside_the_sidebar_is_removed_until_undone(cx: &mut TestAppContext) {
+    let (_ws, shell, cx) = window_and_shell(cx);
     change(cx, |st| {
         st.favorites = Some(vec![p("a"), p("b"), p("c"), p("d")]);
+        st.favorite_names
+            .insert(crate::place_names::key(&p("b")), "Bee".to_owned());
     });
     refresh(cx);
-    assert!(!drawn(cx, "favorite-remove"), "only while dragging");
+    let at = bounds(cx, "tile-slot-1");
+    pick_up(cx, at);
+    drop_outside(cx);
+    let settings = current(cx);
+    assert_eq!(settings.favorites, Some(vec![p("a"), p("c"), p("d")]));
+    assert!(settings.favorite_names.is_empty());
+    assert!(
+        shell.ops().is_empty(),
+        "nothing moved or copied into the list's folder"
+    );
+    assert!(drawn(cx, "toast-notice-action-0"), "a toast says so");
 
+    let at = bounds(cx, "toast-notice-action-0").center();
+
+    click(cx, at);
+    let settings = current(cx);
+    assert_eq!(
+        settings.favorites,
+        Some(vec![p("a"), p("b"), p("c"), p("d")]),
+        "back in its slot"
+    );
+    assert_eq!(settings.favorite_name(&p("b")), Some("Bee"));
+    assert!(!drawn(cx, "toast-notice-action-0"));
+}
+
+/// The same for an entry of the Favorites list.
+#[gpui::test]
+fn a_list_entry_dropped_outside_the_sidebar_is_removed_until_undone(cx: &mut TestAppContext) {
+    let (_ws, shell, cx) = window_and_shell(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("c"), p("d")];
+    });
+    refresh(cx);
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        row.center() + point(px(6.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    refresh(cx);
+    cx.update(|_, cx| assert!(cx.has_active_drag()));
+    drop_outside(cx);
+    assert_eq!(current(cx).pinned, vec![p("d")]);
+    assert!(shell.ops().is_empty(), "nothing moved or copied");
+    let at = bounds(cx, "toast-notice-action-0").center();
+    click(cx, at);
+    assert_eq!(
+        current(cx).pinned,
+        vec![p("c"), p("d")],
+        "back in its place"
+    );
+}
+
+/// Dragged out and back over the sidebar, a favorite stops showing it would go and stays.
+#[gpui::test]
+fn a_favorite_dragged_out_and_back_stays(cx: &mut TestAppContext) {
+    let (_ws, shell, cx) = window_and_shell(cx);
+    change(cx, |st| st.favorites = Some(vec![p("a"), p("b"), p("c")]));
+    refresh(cx);
     let first = bounds(cx, "tile-slot-0");
     pick_up(cx, first);
-    let target = bounds(cx, "favorite-remove");
-    assert!(
-        target.top() >= bounds(cx, "sidebar-places-frame").bottom(),
-        "it doesn't cover the places: {target:?}"
+    cx.simulate_mouse_move(
+        over_the_content(),
+        Some(MouseButton::Left),
+        Modifiers::none(),
     );
-    assert!(
-        target.top() >= bounds(cx, "sidebar-tabs-frame").bottom(),
-        "nor the tabs: {target:?}"
-    );
-    assert!(
-        near(target.size.height, crate::theme::h_row()),
-        "a row tall"
-    );
-    cx.simulate_mouse_move(target.center(), Some(MouseButton::Left), Modifiers::none());
     refresh(cx);
-    cx.simulate_mouse_up(target.center(), MouseButton::Left, Modifiers::none());
+    assert!(drawn(cx, "pin-remove-cue"));
+    // Back over its own (empty) slot.
+    let back = first.center() + point(px(8.), px(4.));
+    cx.simulate_mouse_move(back, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert!(!drawn(cx, "pin-remove-cue"), "back over the sidebar");
+    cx.simulate_mouse_up(back, MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
-    cx.update(|_, cx| assert!(!cx.has_active_drag()));
-    assert_eq!(current(cx).favorites, Some(vec![p("b"), p("c"), p("d")]));
     refresh(cx);
-    assert!(!drawn(cx, "favorite-remove"), "Settings is back");
+    assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b"), p("c")]));
+    assert!(!drawn(cx, "toast-notice-action-0"), "nothing was removed");
+    assert!(shell.ops().is_empty());
 }
 
 /// A dragged tile is lifted under the pointer, a little bigger, held where it was taken; its slot

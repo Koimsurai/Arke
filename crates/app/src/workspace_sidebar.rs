@@ -4,8 +4,9 @@
 //! The tree under This PC follows the active pane's folder (#241): the folders down to it expand
 //! by themselves and close again once it moves elsewhere.
 //! Favorites, This PC, Network and Tabs each collapse to their heading (remembered); Home and its
-//! tiles don't. Tiles drag like app icons on a phone (`workspace_tabdrag.rs`), and while a favorite
-//! is dragged the Settings row at the bottom turns into the place to drop it to remove it.
+//! tiles don't. Tiles drag like app icons on a phone (`workspace_tabdrag.rs`). A favorite (tile
+//! or list entry) dragged out of the sidebar and let go there leaves the favorites, like an app
+//! dragged off the macOS Dock, with Undo on a toast.
 //! The context menu is the sidebar's own small menu (open in new tab, pin, favorites, ...).
 
 use std::path::{Path, PathBuf};
@@ -14,9 +15,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use arke_core::filetype::FileKind;
 use gpui::{
-    AnimationExt, AnyElement, App, ClickEvent, Context, Div, DragMoveEvent, Entity, ExternalPaths,
-    Focusable as _, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString,
-    Stateful, Subscription, Window, div, prelude::*, px, relative, svg,
+    AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, DragMoveEvent,
+    Entity, ExternalPaths, Focusable as _, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, Subscription, Window,
+    canvas, div, prelude::*, px, relative, svg,
 };
 use rust_i18n::t;
 
@@ -155,17 +157,50 @@ pub(super) struct DraggedPin {
 /// What follows the pointer while a favorite is dragged. A tile is lifted off the grid like an app
 /// icon on a phone: the tile itself, a little bigger, on the hover surface with a soft shadow,
 /// held where it was taken hold of so it doesn't jump. A list entry is a chip with its name.
+/// Outside the sidebar, where letting go removes it, it fades a little and wears a trash badge.
 struct PinPreview {
     pin: DraggedPin,
     /// Where the pointer took hold of it, from its top left corner.
     grab: Point<Pixels>,
+    workspace: gpui::WeakEntity<Workspace>,
+}
+
+/// How opaque a dragged favorite is drawn outside the sidebar, where letting go removes it.
+const PIN_OUT_OPACITY: f32 = 0.6;
+
+/// The trash badge on the corner of a dragged favorite that would be removed if let go.
+fn remove_badge() -> AnyElement {
+    div()
+        .debug_selector(|| "pin-remove-cue".to_owned())
+        .absolute()
+        .top(-theme::s_6())
+        .right(-theme::s_6())
+        .size(theme::s_20())
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme::R_FULL)
+        .bg(theme::overlay())
+        .border_1()
+        .border_color(theme::danger())
+        .shadow(theme::elev_tooltip())
+        .child(crate::assets::tinted(
+            Icon::Trash,
+            theme::icon_sm(),
+            theme::danger(),
+        ))
+        .into_any_element()
 }
 
 impl Render for PinPreview {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let out = self
+            .workspace
+            .upgrade()
+            .is_some_and(|ws| ws.read(cx).tab_drag.pin_out());
         let pin = &self.pin;
         let Some(look) = pin.look else {
-            return div()
+            let chip = div()
                 .h(theme::h_row())
                 .px(theme::s_8())
                 .flex()
@@ -183,6 +218,11 @@ impl Render for PinPreview {
                     theme::text_muted(),
                 ))
                 .child(pin.label.clone())
+                .when(out, |d| d.opacity(PIN_OUT_OPACITY));
+            return div()
+                .relative()
+                .child(chip)
+                .children(out.then(remove_badge))
                 .into_any_element();
         };
         let lift = TILE_LIFT;
@@ -193,12 +233,8 @@ impl Render for PinPreview {
         };
         // The preview is placed at the tile's top left corner as it was taken hold of; the
         // bigger copy grows around the grab point, which stays under the pointer.
-        let card = div()
-            .absolute()
-            .left(-(self.grab.x * (lift - 1.)))
-            .top(-(self.grab.y * (lift - 1.)))
-            .w(look.size.width * lift)
-            .h(look.size.height * lift)
+        let body = div()
+            .size_full()
             .flex()
             .flex_col()
             .items_center()
@@ -237,13 +273,22 @@ impl Render for PinPreview {
                     .px(theme::s_4() * lift)
                     .truncate()
                     .child(pin.label.clone()),
-            );
+            )
+            .when(out, |d| d.opacity(PIN_OUT_OPACITY));
+        let card = div()
+            .absolute()
+            .left(-(self.grab.x * (lift - 1.)))
+            .top(-(self.grab.y * (lift - 1.)))
+            .w(look.size.width * lift)
+            .h(look.size.height * lift)
+            .child(body)
+            .children(out.then(remove_badge));
         div().relative().child(card).into_any_element()
     }
 }
 
-/// Starts a pin drag, taken hold of at `grab`: records it (an empty list needs a drop target, the
-/// footer turns into the remove target) and returns the drag preview.
+/// Starts a pin drag, taken hold of at `grab`: records it (an empty list needs a drop target, and
+/// the sidebar watches for it leaving) and returns the drag preview.
 fn start_pin_drag(
     workspace: &gpui::WeakEntity<Workspace>,
     dragged: &DraggedPin,
@@ -253,13 +298,30 @@ fn start_pin_drag(
     let _ = workspace.update(cx, |ws, cx| {
         ws.dragging_pin = true;
         ws.tab_drag
-            .start_tile(dragged.from_tile.then(|| dragged.path.clone()), grab);
+            .start_tile(dragged.path.clone(), dragged.from_tile, grab);
         cx.notify();
     });
     cx.new(|_| PinPreview {
         pin: dragged.clone(),
         grab,
+        workspace: workspace.clone(),
     })
+}
+
+/// Whether a dragged favorite at `at` is outside the sidebar drawn at `sidebar` (left or right of
+/// its column, or out of the window), where letting go removes it.
+fn pin_outside(sidebar: Bounds<Pixels>, at: Point<Pixels>, window: gpui::Size<Pixels>) -> bool {
+    at.x < sidebar.left() || at.x > sidebar.right() || at.y < px(0.) || at.y > window.height
+}
+
+/// A favorite dragged out of the sidebar and let go: what Undo puts back.
+#[derive(Clone)]
+pub(super) struct RemovedFavorite {
+    path: PathBuf,
+    /// Its slot on the tiles or in the list.
+    slot: PinSlot,
+    /// The name the user gave it (#259), which removing forgets.
+    name: Option<String>,
 }
 
 pub(super) struct SidebarMenu {
@@ -1292,64 +1354,140 @@ impl Workspace {
         items
     }
 
-    /// The sidebar's bottom row: Settings or, while a favorite is dragged, the place to drop it to
-    /// take it off the favorites, like a phone's home screen. Same height and place, so it covers
-    /// nothing and nothing moves; Settings comes back with the drag's end.
+    /// The sidebar's bottom row, Settings, and the "Removed from favorites" toast beside the
+    /// sidebar's bottom while it shows.
     pub(super) fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.dragging_pin || !cx.has_active_drag() {
-            return self.render_settings_button(cx).into_any_element();
-        }
-        let target = div()
-            .id("favorite-remove")
-            .debug_selector(|| "favorite-remove".to_owned())
-            .a11y_button(t!("sidebar.drop_to_remove"))
+        div()
             .relative()
             .flex_none()
-            .h(theme::h_row())
-            .mx(theme::s_8())
-            .mb(theme::s_8())
-            // The icon lines up with Settings' inside the dashed edge.
-            .pl(theme::s_8() - px(1.))
-            .pr(theme::s_8())
             .flex()
-            .items_center()
-            .gap(theme::s_8())
-            .rounded(theme::r_8())
-            .border_1()
-            .border_dashed()
-            .border_color(theme::line_strong())
-            .text_color(theme::text_muted())
-            .child(crate::assets::tinted(
-                Icon::Trash,
-                theme::icon(),
-                theme::danger(),
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(t!("sidebar.remove_favorite").into_owned()),
-            )
-            .drag_over::<DraggedPin>(|s, _, _, _| {
-                s.bg(theme::danger_surface())
-                    .border_color(theme::danger())
-                    .text_color(theme::text())
-            })
-            .on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| {
-                this.unpin_dragged(dragged, cx);
-            }));
-        crate::motion::appear(target, "favorite-remove-in", 0., crate::motion::NUDGE)
+            .flex_col()
+            .child(self.render_settings_button(cx))
+            .into_any_element()
     }
 
-    /// A favorite dropped on the remove target: it leaves the favorites.
-    fn unpin_dragged(&mut self, dragged: &DraggedPin, cx: &mut Context<Self>) {
+    /// While a favorite is dragged: watches the pointer anywhere in the window. Outside the
+    /// sidebar (`bounds`, this element's) the dragged copy shows it would be removed, and letting
+    /// go there removes it. Nothing else takes a dragged favorite, so that is all a drop outside
+    /// does.
+    fn pin_out_watch(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.dragging_pin || !cx.has_active_drag() {
+            return None;
+        }
+        let workspace = cx.entity().downgrade();
+        Some(
+            canvas(
+                |_, _, _| (),
+                move |sidebar, (), window, _| {
+                    // The mouse stays captured by the window during a drag: moves and the release
+                    // past its edge arrive here too. Heard in the capture phase, before anything
+                    // under the pointer could keep the event to itself.
+                    let mover = workspace.clone();
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Capture {
+                            return;
+                        }
+                        let out = pin_outside(sidebar, e.position, window.viewport_size());
+                        let _ = mover.update(cx, |ws, cx| {
+                            if ws.tab_drag.set_pin_out(out) {
+                                cx.notify();
+                            }
+                        });
+                    });
+                    window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
+                        // A cancelled press (`press_guard.rs`) was released nowhere.
+                        if phase != DispatchPhase::Capture
+                            || e.button != MouseButton::Left
+                            || crate::press_guard::is_cancel(e)
+                            || !pin_outside(sidebar, e.position, window.viewport_size())
+                        {
+                            return;
+                        }
+                        let _ = workspace.update(cx, Self::drop_pin_outside);
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .into_any_element(),
+        )
+    }
+
+    /// The dragged favorite was let go outside the sidebar: it leaves the favorites.
+    fn drop_pin_outside(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.tab_drag.dragged_pin().map(Path::to_path_buf) else {
+            return;
+        };
         self.dragging_pin = false;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
+        self.remove_favorite(&path, cx);
+    }
+
+    /// Takes `path` off the favorites (tiles or list) and offers Undo on a toast for a while.
+    fn remove_favorite(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let places = self.active_view().read(cx).places.clone();
+        let (slot, name) = {
+            let settings = &SettingsStore::global(cx).read(cx).settings;
+            let slot = settings
+                .tiles(&places)
+                .iter()
+                .position(|p| p == path)
+                .map(PinSlot::Tile)
+                .or_else(|| {
+                    settings
+                        .pinned
+                        .iter()
+                        .position(|p| p == path)
+                        .map(PinSlot::List)
+                });
+            let name = settings.favorite_name(path).map(str::to_owned);
+            (slot, name)
+        };
+        let Some(slot) = slot else {
+            return;
+        };
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.unpin(path, &places), cx);
+        });
+        // The toast shows where all the others do, with Undo (the file list's notice).
+        let removed = RemovedFavorite {
+            path: path.to_path_buf(),
+            slot,
+            name,
+        };
+        let workspace = cx.entity().downgrade();
+        let text = t!("sidebar.favorite_removed").into_owned();
+        self.active_view().update(cx, |view, cx| {
+            view.notice = Some(text.clone());
+            view.notice_action = Some(crate::explorer::NoticeAction {
+                text,
+                label: t!("toast.undo").into_owned().into(),
+                run: std::rc::Rc::new(move |cx| {
+                    let _ = workspace.update(cx, |ws, cx| ws.undo_favorite_removal(&removed, cx));
+                }),
+            });
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// Undo on the toast: the favorite goes back to its slot, with its name.
+    fn undo_favorite_removal(&mut self, removed: &RemovedFavorite, cx: &mut Context<Self>) {
         let places = self.active_view().read(cx).places.clone();
         SettingsStore::global(cx).update(cx, |s, cx| {
-            s.update(|st| st.unpin(&dragged.path, &places), cx);
+            s.update(
+                |st| {
+                    st.insert_pin(&removed.path, removed.slot, &places);
+                    if let Some(name) = removed.name.clone() {
+                        st.favorite_names
+                            .insert(crate::place_names::key(&removed.path), name);
+                    }
+                },
+                cx,
+            );
         });
         cx.notify();
     }
@@ -1477,6 +1615,8 @@ impl Workspace {
         let sidebar = div()
             .id("sidebar")
             .a11y(gpui::Role::Tree, t!("a11y.sidebar"))
+            .relative()
+            .children(self.pin_out_watch(cx))
             .flex()
             .flex_col()
             .flex_1()
@@ -2072,18 +2212,11 @@ impl Workspace {
             _ => out.push(loading_row(indent + tree_indent() + theme::s_32())),
         }
         // Just expanded: the new rows drop in under their parent.
-        if let Some(serial) = cue {
+        if self.tree_cue.0.as_deref() == Some(path)
+            && let Some(t) = self.cue_progress(&self.tree_cue.1)
+        {
             let rows: Vec<AnyElement> = out.drain(start..).collect();
-            out.extend(rows.into_iter().enumerate().map(|(ix, row)| {
-                div()
-                    .child(row)
-                    .with_animation(
-                        gpui::ElementId::Name(format!("tree-in-{serial}-{ix}").into()),
-                        crate::motion::enter(),
-                        |el, t| crate::motion::slide_in(el, t, 0., -crate::motion::NUDGE),
-                    )
-                    .into_any_element()
-            }));
+            out.extend(crate::motion::drop_in(rows, t));
         }
     }
 
@@ -2386,21 +2519,14 @@ impl Workspace {
     /// like a folder's in the tree.
     fn drop_in(&self, section: SidebarSection, items: &mut Vec<AnyElement>, start: usize) {
         let (cued, cue) = &self.sidebar_ui.section_cue;
-        if *cued != Some(section) || !cue.live_at(std::time::Instant::now()) {
+        if *cued != Some(section) {
             return;
         }
-        let serial = cue.serial();
+        let Some(t) = self.cue_progress(cue) else {
+            return;
+        };
         let rows: Vec<AnyElement> = items.drain(start..).collect();
-        items.extend(rows.into_iter().enumerate().map(|(ix, row)| {
-            div()
-                .child(row)
-                .with_animation(
-                    gpui::ElementId::Name(format!("section-in-{serial}-{ix}").into()),
-                    crate::motion::enter(),
-                    |el, t| crate::motion::slide_in(el, t, 0., -crate::motion::NUDGE),
-                )
-                .into_any_element()
-        }));
+        items.extend(crate::motion::drop_in(rows, t));
     }
 
     // --- Renaming favorites (#259) ---
@@ -3646,6 +3772,33 @@ mod tests {
             "network drives are under Network"
         );
         assert!(follow_chain(&places, Path::new(r"\nas\docs\a")).is_empty());
+    }
+
+    #[test]
+    fn a_favorite_is_out_once_past_the_sidebars_column() {
+        let sidebar = Bounds::new(gpui::point(px(0.), px(80.)), gpui::size(px(240.), px(700.)));
+        let window = gpui::size(px(1200.), px(900.));
+        let at = |x: f32, y: f32| gpui::point(px(x), px(y));
+        assert!(
+            !pin_outside(sidebar, at(120., 400.), window),
+            "over the sidebar"
+        );
+        assert!(
+            !pin_outside(sidebar, at(120., 20.), window),
+            "over the rows above it (Home), in its column"
+        );
+        assert!(
+            pin_outside(sidebar, at(241., 400.), window),
+            "over the content"
+        );
+        assert!(
+            pin_outside(sidebar, at(-5., 400.), window),
+            "left of the window"
+        );
+        assert!(
+            pin_outside(sidebar, at(120., 910.), window),
+            "below the window"
+        );
     }
 
     #[test]

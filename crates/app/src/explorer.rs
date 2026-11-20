@@ -796,6 +796,8 @@ pub(crate) struct Explorer {
     pub(crate) op_progress: Option<(Arc<crate::shell::OpProgress>, &'static str)>,
     /// Progress center dropdown in the top bar is open.
     pub(crate) ops_open: bool,
+    /// It was just dismissed and is fading out (see `motion::Leaving`).
+    pub(crate) closing_ops: Option<crate::motion::Leaving<()>>,
     /// Status bar message, e.g. "Copied 3 items".
     pub(crate) notice: Option<String>,
     /// Notice counting down to auto-dismiss.
@@ -807,6 +809,9 @@ pub(crate) struct Explorer {
     /// Undo offered on the notice: the notice text it belongs to and the undo id. Ignored once
     /// the notice shows something else.
     pub(crate) notice_undo: Option<(String, u64)>,
+    /// Another action offered on the notice (e.g. the sidebar's Undo for a removed favorite):
+    /// ignored once the notice shows something else.
+    pub(crate) notice_action: Option<NoticeAction>,
     pub(crate) places: Vec<Place>,
     pub(crate) pane: PaneInfo,
     /// Dual pane folder compare: how this pane's items differ from the other side's, by name.
@@ -938,6 +943,14 @@ struct DeltaMerge {
     /// Changes that arrived since, applied after the merge.
     backlog: Vec<arke_core::Delta>,
     _task: Task<()>,
+}
+
+/// A button on the notice toast that isn't a file operation's Undo: the notice text it belongs
+/// to, its label and what it does.
+pub(crate) struct NoticeAction {
+    pub(crate) text: String,
+    pub(crate) label: SharedString,
+    pub(crate) run: std::rc::Rc<dyn Fn(&mut App)>,
 }
 
 pub(crate) fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
@@ -1120,11 +1133,13 @@ impl Explorer {
             ops_running: 0,
             op_progress: None,
             ops_open: false,
+            closing_ops: None,
             notice: None,
             notice_timer: None,
             notice_shown: None,
             closing_notice: None,
             notice_undo: None,
+            notice_action: None,
             places: Vec::new(),
             pane: PaneInfo::default(),
             compare: None,

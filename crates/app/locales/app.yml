@@ -3368,10 +3368,10 @@ sidebar.drop_to_list:
   en: "Drop here to add to the list"
   zh-TW: "放到這裡以加入清單"
   zh-CN: "放到这里以加入列表"
-sidebar.drop_to_remove:
-  en: "Drop here to remove from favorites"
-  zh-TW: "放到這裡以從最愛移除"
-  zh-CN: "放到这里以从收藏夹中移除"
+sidebar.favorite_removed:
+  en: "Removed from favorites"
+  zh-TW: "已從最愛移除"
+  zh-CN: "已从收藏夹中移除"
 sidebar.recycle_on_home:
   en: "The Recycle Bin is on the Home page now, next to the drives."
   zh-TW: "資源回收筒現在在首頁，就在磁碟旁邊。"

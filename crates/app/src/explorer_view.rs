@@ -1769,6 +1769,10 @@ impl Explorer {
             .notice_undo
             .as_ref()
             .is_some_and(|(text, _)| *text == notice)
+            || self
+                .notice_action
+                .as_ref()
+                .is_some_and(|a| a.text == notice)
         {
             NOTICE_UNDO_TTL
         } else {
@@ -1876,6 +1880,20 @@ impl Explorer {
                 Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.notice = None;
                     this.undo_op(id, cx);
+                })),
+            ));
+        }
+        if let Some(action) = self.notice_action.as_ref().filter(|a| a.text == notice) {
+            let run = std::rc::Rc::clone(&action.run);
+            actions.push((
+                std::borrow::Cow::Owned(action.label.to_string()),
+                Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.notice = None;
+                    this.notice_action = None;
+                    // After this view's update: the action may read it (the sidebar does).
+                    let run = std::rc::Rc::clone(&run);
+                    cx.defer(move |cx| run(cx));
+                    cx.notify();
                 })),
             ));
         }
@@ -2004,7 +2022,11 @@ impl Explorer {
         let undo = self
             .notice_undo
             .as_ref()
-            .is_some_and(|(text, id)| text == notice && super::UndoHistory::has(cx, *id));
+            .is_some_and(|(text, id)| text == notice && super::UndoHistory::has(cx, *id))
+            || self
+                .notice_action
+                .as_ref()
+                .is_some_and(|a| &a.text == notice);
         Some((notice.clone(), undo))
     }
 
@@ -3124,7 +3146,7 @@ impl Render for Explorer {
                                     )
                                     .child(self.render_list_appearing(window, cx)),
                             )
-                            .children(self.render_preview_appearing(cx)),
+                            .children(self.render_preview_appearing(window, cx)),
                     )
                     .children((self.pane.split && self.pane.active).then(active_outline))
                     .children(searching.then(search_outline))
@@ -3252,14 +3274,19 @@ impl Explorer {
     /// Preview pane slides in from the right when it is turned on (not when a tab showing it is
     /// drawn again). Turning it off is instant: the list takes the room back at once, and animating
     /// the width would relayout every row on every frame.
-    fn render_preview_appearing(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_preview_appearing(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let pane = self.render_preview_pane(cx)?;
         let description = crate::a11y::active()
             .then(|| self.preview_a11y_description())
             .flatten();
         Some(
-            self.preview_cue.wrap(
-                div()
+            self.preview_cue
+                .slide(
+                    div()
                 .id("preview-pane")
                 .debug_selector(|| "preview-pane".to_owned())
                 // A click here leaves the search box (and the path being edited), as one on the
@@ -3287,16 +3314,22 @@ impl Explorer {
                     accept_drops_into(d, here, cx)
                 })
                 .on_drag_move(cx.listener(Self::drag_preview_edge)),
-                "preview-pane-appear",
-                crate::motion::SLIDE_LG,
-                0.,
-            ),
+                    window,
+                    crate::motion::ease_out,
+                    crate::motion::SLIDE_LG,
+                    0.,
+                )
+                .into_any_element(),
         )
     }
 
     /// Split tab: the tab's one preview, drawn by the workspace at the tab's right end, showing
     /// this pane's item (the active side). `None` when this pane isn't the one it follows.
-    pub(crate) fn render_shared_preview(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_shared_preview(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let shared = self.pane.preview_host?;
         // The workspace draws this before the pane renders: catch up with the cursor now, so
         // switching sides never shows the other side's item for a frame.
@@ -3323,8 +3356,9 @@ impl Explorer {
             .then(|| self.preview_a11y_description())
             .flatten();
         Some(
-            self.preview_cue.wrap(
-                div()
+            self.preview_cue
+                .slide(
+                    div()
                 .id("shared-preview")
                 .debug_selector(|| "shared-preview".to_owned())
                 // A click here leaves the search box, as one in the single-pane preview does.
@@ -3354,10 +3388,12 @@ impl Explorer {
                     accept_drops_into(d, here, cx)
                 })
                 .on_drag_move(cx.listener(Self::drag_preview_edge)),
-                "shared-preview-appear",
-                crate::motion::SLIDE_LG,
-                0.,
-            ),
+                    window,
+                    crate::motion::ease_out,
+                    crate::motion::SLIDE_LG,
+                    0.,
+                )
+                .into_any_element(),
         )
     }
 
@@ -3372,16 +3408,14 @@ impl Explorer {
             .flex_1()
             .min_h_0()
             .child(self.render_list(window, cx));
-        if !self.view_cue.live_at(std::time::Instant::now()) {
+        // Styled in place from the cue's clock: the list is never wrapped, so a click made while
+        // it brightens still lands.
+        let Some(t) = self.view_cue.progress() else {
             return list.into_any_element();
-        }
-        gpui::AnimationExt::with_animation(
-            list,
-            ("list-view-switch", self.view_cue.serial()),
-            crate::motion::enter(),
-            |el, t| el.opacity(FLOOR + (1. - FLOOR) * t),
-        )
-        .into_any_element()
+        };
+        window.request_animation_frame();
+        list.opacity(FLOOR + (1. - FLOOR) * crate::motion::ease_out(t))
+            .into_any_element()
     }
 }
 

@@ -53,6 +53,11 @@ pub(super) struct TabDrag {
     spring: Option<(u64, usize)>,
     /// Favorite tile being dragged (its slot is left empty).
     tile: Option<PathBuf>,
+    /// Favorite being dragged, from the tiles or the list: dropped outside the sidebar, it leaves
+    /// the favorites (`workspace_sidebar.rs`).
+    pin: Option<PathBuf>,
+    /// That favorite is outside the sidebar now: its copy under the pointer shows it would go.
+    pin_out: bool,
     /// Where the pointer took hold of the dragged tile, from the tile's top left corner.
     grab: Point<Pixels>,
     /// Last reported bounds of each cell of the tile grid, in grid order (outer, without the
@@ -72,9 +77,12 @@ impl TabDrag {
         self.moved = false;
     }
 
-    /// A pin drag starts; `tile` is set when it comes from the tiles, taken hold of at `grab`.
-    pub(super) fn start_tile(&mut self, tile: Option<PathBuf>, grab: Point<Pixels>) {
-        self.tile = tile;
+    /// A drag of the favorite at `path` starts, from the tiles (`tile`) or the list, taken hold of
+    /// at `grab`.
+    pub(super) fn start_tile(&mut self, path: PathBuf, tile: bool, grab: Point<Pixels>) {
+        self.tile = tile.then(|| path.clone());
+        self.pin = Some(path);
+        self.pin_out = false;
         self.grab = grab;
         self.tile_shift.clear();
         // The grid may have moved since the last drag (a wider sidebar): every cell reports again.
@@ -84,6 +92,27 @@ impl TabDrag {
     /// The pin drag ended (dropped or cancelled). Slides still running finish.
     pub(super) fn end_tile(&mut self) {
         self.tile = None;
+        self.pin = None;
+        self.pin_out = false;
+    }
+
+    /// The favorite being dragged, if any.
+    pub(super) fn dragged_pin(&self) -> Option<&Path> {
+        self.pin.as_deref()
+    }
+
+    /// Whether the dragged favorite is outside the sidebar, where letting go removes it.
+    pub(super) const fn pin_out(&self) -> bool {
+        self.pin_out
+    }
+
+    /// The pointer went outside the sidebar or back over it; returns whether that changed.
+    pub(super) const fn set_pin_out(&mut self, out: bool) -> bool {
+        let changed = self.pin.is_some() && self.pin_out != out;
+        if changed {
+            self.pin_out = out;
+        }
+        changed
     }
 
     /// A file drag ended: no tab is waiting to come forward.
@@ -226,13 +255,11 @@ impl Workspace {
             for (id, delta) in flip_offsets(&old, &order) {
                 // A tab still sliding from the last swap continues from where it is drawn.
                 let left = self.tab_drag.shift.get(&id).map_or(0., |s| s.left(now));
-                self.tab_drag.serial += 1;
                 self.tab_drag.shift.insert(
                     id,
                     Slide {
                         from: delta + left,
                         started: now,
-                        serial: self.tab_drag.serial,
                     },
                 );
             }
@@ -405,35 +432,21 @@ impl Workspace {
         let id = self.tabs[ix].id;
         let dragged = self.dragging_tab == Some(ix);
         let row = row.opacity(if dragged { 0.4 } else { 1. });
+        // Sliding from its old place: the offset is styled on the row itself, from the slide's
+        // clock, so the row is the same element while it slides and afterwards (a click across
+        // the end of the slide still lands).
         let now = std::time::Instant::now();
-        let inner = match self
-            .tab_drag
-            .shift
-            .get(&id)
-            .copied()
-            .filter(|s| s.live(now))
-        {
-            Some(Slide {
-                from: delta,
-                serial,
-                ..
-            }) => {
-                let horizontal = Self::horizontal_tabs(cx);
-                row.with_animation(
-                    ("tab-shift", serial),
-                    crate::motion::enter(),
-                    move |el, t| {
-                        let off = px(delta * (1. - t));
-                        if horizontal {
-                            el.left(off)
-                        } else {
-                            el.top(off)
-                        }
-                    },
-                )
-                .into_any_element()
+        let inner = match self.tab_drag.shift.get(&id).filter(|s| s.live(now)) {
+            Some(slide) => {
+                self.sidebar_ui.frame_wanted.set(true);
+                let off = px(slide.left(now));
+                if Self::horizontal_tabs(cx) {
+                    row.left(off)
+                } else {
+                    row.top(off)
+                }
             }
-            None => row.into_any_element(),
+            None => row,
         };
         div()
             .id(("tab-slot", ix))
@@ -521,13 +534,11 @@ impl Workspace {
                 .get(&p)
                 .filter(|s| s.live(now))
                 .map_or((0., 0.), |s| s.left(now));
-            self.tab_drag.serial += 1;
             self.tab_drag.tile_shift.insert(
                 p,
                 Slide {
                     from: (dx + lx, dy + ly),
                     started: now,
-                    serial: self.tab_drag.serial,
                 },
             );
         }
@@ -557,13 +568,11 @@ impl Workspace {
             return;
         };
         let (dx, dy) = settle_offset(window.mouse_position(), grab, *home);
-        self.tab_drag.serial += 1;
         self.tab_drag.tile_shift.insert(
             path.to_path_buf(),
             Slide {
                 from: (dx, dy),
                 started: std::time::Instant::now(),
-                serial: self.tab_drag.serial,
             },
         );
     }
@@ -584,26 +593,15 @@ impl Workspace {
     ) -> AnyElement {
         let dragged = self.tab_drag.tile.as_deref() == Some(path) && cx.has_active_drag();
         let tile = if dragged { tile.invisible() } else { tile };
+        // Sliding from its old slot: styled in place, like a tab's slide.
         let now = std::time::Instant::now();
-        let inner = match self
-            .tab_drag
-            .tile_shift
-            .get(path)
-            .copied()
-            .filter(|s| s.live(now))
-        {
-            Some(Slide {
-                from: (dx, dy),
-                serial,
-                ..
-            }) => tile
-                .with_animation(
-                    ("tile-shift", serial),
-                    crate::motion::enter(),
-                    move |el, t| el.left(px(dx * (1. - t))).top(px(dy * (1. - t))),
-                )
-                .into_any_element(),
-            None => tile.into_any_element(),
+        let inner = match self.tab_drag.tile_shift.get(path).filter(|s| s.live(now)) {
+            Some(slide) => {
+                self.sidebar_ui.frame_wanted.set(true);
+                let (dx, dy) = slide.left(now);
+                tile.left(px(dx)).top(px(dy))
+            }
+            None => tile,
         };
         let key = path.to_path_buf();
         // A folder or tab over its edge (all of it, for a tab) goes in beside it

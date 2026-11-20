@@ -22,9 +22,9 @@ use super::{OpenPalette, ToggleSidebar, TooltipBelowExt as _, Workspace};
 /// Sidebar state that isn't a setting.
 #[derive(Default)]
 pub(super) struct SidebarUi {
-    /// Ctrl+B: the width sliding (collapsing?, serial); see `Workspace::slide_sidebar`.
-    pub(super) motion: Option<(bool, u64)>,
-    motion_task: Option<gpui::Task<()>>,
+    /// Ctrl+B or the button just expanded the sidebar: it slides out from the column of icons
+    /// (see `Workspace::render_full_sidebar`).
+    pub(super) expand_cue: crate::motion::Cue,
     /// The lists that scroll on their own: places (pins, This PC, Network) and tabs, in the full
     /// sidebar and in the column of icons.
     pub(super) places_scroll: gpui::ScrollHandle,
@@ -57,6 +57,11 @@ pub(super) struct SidebarUi {
     pub(super) here_row: std::cell::Cell<Option<usize>>,
     /// A section heading was just clicked: its chevron turns and, expanding, its rows drop in.
     pub(super) section_cue: (Option<crate::settings::SidebarSection>, crate::motion::Cue),
+    /// The Shelf row was just clicked: the same for its items.
+    pub(super) shelf_cue: crate::motion::Cue,
+    /// A cue drawn in the sidebar is still playing: `Workspace::render` asks for the next frame
+    /// (the sidebar's drawing code has no `Window`; see `Workspace::cue_progress`).
+    pub(super) frame_wanted: std::cell::Cell<bool>,
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -147,33 +152,44 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.rail_peek = false;
+        let peeking = std::mem::take(&mut self.rail_peek);
         let collapsing = !theme::sidebar_collapsed();
         SettingsStore::global(cx).update(cx, |s, cx| {
             s.update(|st| st.sidebar_collapsed = collapsing, cx);
         });
-        self.slide_sidebar(collapsing, cx);
+        self.slide_sidebar(collapsing, peeking, cx);
     }
 
-    /// The sidebar's width slides between full and the column of icons for `motion::BASE`
-    /// (instant with Windows animations off).
-    fn slide_sidebar(&mut self, collapsing: bool, cx: &mut Context<Self>) {
-        if !crate::motion::enabled() {
-            self.sidebar_ui.motion = None;
-            return;
+    /// The column takes its new width at once, so the panes beside it are laid out once, in their
+    /// final size, and nothing waits on the motion. Only the full sidebar moves: collapsing, it
+    /// slides back into the column of icons as it fades (drawn over the content, inert, for
+    /// `motion::EXIT`); expanding, it slides out from there (`motion::ease_out_soft` over
+    /// `motion::BASE`, styled in place, so it takes clicks throughout). Expanding the
+    /// sidebar that was already open over the content leaves it where it is. Instant with Windows
+    /// animations off.
+    fn slide_sidebar(&mut self, collapsing: bool, peeking: bool, cx: &mut Context<Self>) {
+        if collapsing {
+            self.fade_out_peek(cx);
+        } else if !peeking {
+            self.sidebar_ui.expand_cue.fire();
         }
-        let serial = self.sidebar_ui.motion.map_or(0, |(_, n)| n) + 1;
-        self.sidebar_ui.motion = Some((collapsing, serial));
-        self.sidebar_ui.motion_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(crate::motion::BASE).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.sidebar_ui.motion.is_some_and(|(_, n)| n == serial) {
-                    this.sidebar_ui.motion = None;
-                    cx.notify();
-                }
-            });
-        }));
         cx.notify();
+    }
+
+    /// Linear progress of `cue` for the sidebar's drawing code, which has no `Window`: while it
+    /// plays, the frame being drawn asks for the next one (see `Workspace::render`).
+    pub(super) fn cue_progress(&self, cue: &crate::motion::Cue) -> Option<f32> {
+        let t = cue.progress();
+        if t.is_some() {
+            self.sidebar_ui.frame_wanted.set(true);
+        }
+        t
+    }
+
+    /// How far the full sidebar travels sliding into or out of the column of icons: from its own
+    /// right edge to the column's.
+    pub(super) fn drawer_travel() -> f32 {
+        f32::from(theme::sidebar_full_width() - theme::rail_w())
     }
 
     /// The button that collapses or expands the sidebar.
@@ -714,7 +730,9 @@ impl Workspace {
         .detach();
     }
 
-    /// The open sidebar closed because the pointer left: draw it fading out for `motion::EXIT`.
+    /// The full sidebar went away (the pointer left the one open over the content, or Ctrl+B
+    /// collapsed it): draw it sliding back into the column of icons as it fades, for
+    /// `motion::EXIT`.
     fn fade_out_peek(&mut self, cx: &mut Context<Self>) {
         if !crate::motion::enabled() {
             return;
@@ -735,8 +753,8 @@ impl Workspace {
     }
 
     /// The full sidebar over the content while the collapsed one is open (painted after the panes,
-    /// so it covers them). It slides in from the column's edge and fades out when the pointer
-    /// leaves, like the other panels over the content.
+    /// so it covers them). It slides out from behind the column and back into it when the pointer
+    /// leaves (or the sidebar was just collapsed), fading like the other panels over the content.
     pub(super) fn render_peek(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !theme::sidebar_collapsed() {
             return None;
@@ -762,12 +780,7 @@ impl Workspace {
                         .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                             this.peek_pointer_moved(e, cx);
                         }))
-                        .child(crate::motion::appear(
-                            body,
-                            "sidebar-peek-in",
-                            -crate::motion::SLIDE,
-                            0.,
-                        )),
+                        .child(Self::peek_entering(body)),
                 )
                 .with_priority(1)
                 .into_any_element(),
@@ -775,14 +788,16 @@ impl Workspace {
         }
         let serial = self.sidebar_ui.peek_ghost?;
         let body = self.peek_body(cx);
+        let travel = Self::drawer_travel();
         Some(
             deferred(
                 frame()
+                    .debug_selector(|| "sidebar-leaving".to_owned())
                     .child(gpui::AnimationExt::with_animation(
                         body,
                         ElementId::NamedInteger("sidebar-peek-out".into(), serial),
                         crate::motion::exit(),
-                        |el, t| crate::motion::slide_out(el, t, -crate::motion::SLIDE, 0.),
+                        move |el, t| crate::motion::slide_out(el, t, -travel, 0.),
                     ))
                     // Inert while it fades: a cover takes the pointer.
                     .child(
@@ -798,6 +813,22 @@ impl Workspace {
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    /// The open-over-the-content sidebar sliding out from behind the column of icons, its right
+    /// edge starting at the column's ([`motion::drawer`](crate::motion::drawer)).
+    fn peek_entering(body: gpui::Div) -> AnyElement {
+        if !crate::motion::enabled() {
+            return body.into_any_element();
+        }
+        let travel = Self::drawer_travel();
+        gpui::AnimationExt::with_animation(
+            body,
+            "sidebar-peek-in",
+            crate::motion::drawer(),
+            move |el, t| crate::motion::slide_in(el, t, -travel, 0.),
+        )
+        .into_any_element()
     }
 
     fn peek_body(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -824,6 +855,18 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) const fn peek_for_test(&self) -> bool {
         self.rail_peek
+    }
+
+    /// The cue of the sidebar section heading last clicked (tests).
+    #[cfg(test)]
+    pub(crate) const fn section_cue_for_test(&mut self) -> &mut crate::motion::Cue {
+        &mut self.sidebar_ui.section_cue.1
+    }
+
+    /// Changes each time expanding the sidebar plays its slide (tests).
+    #[cfg(test)]
+    pub(crate) const fn sidebar_expand_serial_for_test(&self) -> u64 {
+        self.sidebar_ui.expand_cue.serial()
     }
 }
 

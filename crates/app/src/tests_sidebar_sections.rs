@@ -196,6 +196,66 @@ fn sections_collapse_independently(cx: &mut TestAppContext) {
     );
 }
 
+/// A row dropping in under a heading that was just expanded takes a click made during the
+/// transition, even when the press comes while it plays and the release after it ended: the rows
+/// are styled in place, never wrapped in an animation that is taken away again (that mounted them
+/// anew, and the release found no press).
+#[gpui::test]
+fn a_click_during_the_drop_in_still_lands(cx: &mut TestAppContext) {
+    crate::motion::force_for_test(true);
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\w", 1);
+    let shell = Arc::new(FakeShell::default());
+    shell.extra_places.lock().push(crate::shell::Place {
+        label: "Local Disk (C:)".into(),
+        path: PathBuf::from(r"C:\"),
+        kind: crate::shell::PlaceKind::Drive {
+            remote: false,
+            space: None,
+        },
+    });
+    let (ws, cx) = setup_workspace_with(cx, fs, shell, r"C:\w");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\w"));
+    cx.simulate_resize(gpui::size(px(1200.), px(900.)));
+    change(cx, |st| st.toggle_collapsed(SidebarSection::ThisPc));
+    refresh(cx);
+    let drive = "sidebar Local Disk (C:)";
+    assert!(!drawn(cx, drive), "This PC starts collapsed");
+
+    let at = bounds(cx, "this-pc-header").center();
+    click(cx, at);
+    assert!(!collapsed(cx, SidebarSection::ThisPc));
+    // Drawn mid-transition (the cue's clock is real time, so it is set going again here).
+    ws.update(cx, |ws, _| {
+        ws.section_cue_for_test().set_playing_for_test(true);
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let row = bounds(cx, drive).center();
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: row,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    // Over before the release, and drawn so.
+    ws.update(cx, |ws, _| {
+        ws.section_cue_for_test().set_playing_for_test(false);
+    });
+    refresh(cx);
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: row,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+    wait_until(cx, &view, "the drive opens", loaded(r"C:\"));
+    crate::motion::force_for_test(false);
+}
+
 /// The shadow under the Home row shows only while the places are scrolled down.
 #[gpui::test]
 fn the_home_row_casts_a_shadow_only_when_scrolled(cx: &mut TestAppContext) {

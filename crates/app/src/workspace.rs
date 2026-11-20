@@ -356,6 +356,8 @@ pub(crate) struct Workspace {
     expanded: HashSet<PathBuf>,
     /// The tree node just expanded or collapsed: its chevron turns and its children fade in.
     tree_cue: (Option<PathBuf>, crate::motion::Cue),
+    /// A tab was just split: the new right pane (its view) slides in from the right as it fades in.
+    split_cue: (Option<gpui::EntityId>, crate::motion::Cue),
     tree_children: HashMap<PathBuf, sidebar::TreeChildren>,
     /// Folders a background check found to have no subfolders (no chevron in the tree).
     tree_leaf: HashSet<PathBuf>,
@@ -727,6 +729,7 @@ impl Workspace {
             active: 0,
             expanded: HashSet::new(),
             tree_cue: (None, crate::motion::Cue::default()),
+            split_cue: (None, crate::motion::Cue::default()),
             tree_children: HashMap::new(),
             tree_leaf: HashSet::new(),
             sidebar_menu: None,
@@ -1938,6 +1941,8 @@ impl Workspace {
             return;
         }
         let pane = self.make_pane(path, None, Instant::now(), window, cx);
+        self.split_cue.0 = Some(pane.view.entity_id());
+        self.split_cue.1.fire();
         let tab = &mut self.tabs[tab_ix];
         tab.panes.push(pane);
         tab.active_pane = 1;
@@ -2104,9 +2109,9 @@ impl Workspace {
     }
 
     /// Drag handle on the full sidebar's right edge (not drawn for the collapsed rail or while it
-    /// slides or peeks).
+    /// peeks).
     fn render_sidebar_edge(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if theme::sidebar_collapsed() || self.sidebar_ui.motion.is_some() {
+        if theme::sidebar_collapsed() {
             return None;
         }
         let active = self.sidebar_resizing;
@@ -2396,11 +2401,11 @@ impl Workspace {
             .h_full()
             .child(title_row)
             .children(self.tab_strip_under_bar(window, cx))
-            .child(self.render_pane_area(cx))
+            .child(self.render_pane_area(window, cx))
             .into_any_element()
     }
 
-    fn render_pane_area(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane_area(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[self.active];
         if !tab.is_split() {
             return div()
@@ -2459,7 +2464,7 @@ impl Workspace {
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
         let shared = self.shared_preview.and_then(|shared| {
             let host = tab.view().clone();
-            let preview = host.update(cx, Explorer::render_shared_preview)?;
+            let preview = host.update(cx, |e, cx| e.render_shared_preview(window, cx))?;
             Some(
                 div()
                     .absolute()
@@ -2484,15 +2489,26 @@ impl Workspace {
                     .child(tab.panes[0].view.clone()),
             )
             .child(gutter)
-            .child(
-                div()
-                    .h_full()
-                    .flex_1()
-                    .min_w_0()
-                    .child(tab.panes[1].view.clone()),
-            )
+            .child(self.render_split_right(tab, window))
             .children(shared)
             .into_any_element()
+    }
+}
+
+impl Workspace {
+    /// The right pane of a split tab. Just split, it slides in from the right as it fades in,
+    /// already laid out (the left pane has its new width at once) and taking clicks.
+    fn render_split_right(&self, tab: &Tab, window: &Window) -> gpui::Div {
+        let right = &tab.panes[1].view;
+        let pane = div().h_full().flex_1().min_w_0().child(right.clone());
+        if self.split_cue.0 == Some(right.entity_id()) {
+            let ease = crate::motion::ease_out;
+            self.split_cue
+                .1
+                .slide(pane, window, ease, crate::motion::SLIDE_LG, 0.)
+        } else {
+            pane
+        }
     }
 }
 
@@ -2697,65 +2713,16 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col();
-        let left = if let Some((collapsing, serial)) = self.sidebar_ui.motion {
-            // Sliding: the width moves while the full sidebar (clipped) and the column of icons
-            // crossfade. Their icons sit in different places, so swapping one for the other at
-            // the end would read as a jump.
-            let (from, to) = if collapsing {
-                (theme::sidebar_full_width(), theme::rail_w())
-            } else {
-                (theme::rail_w(), theme::sidebar_full_width())
-            };
-            let full = div()
-                .id("sidebar-slide-full")
-                .debug_selector(|| "sidebar-slide-full".to_owned())
-                .w(theme::sidebar_full_width())
-                .flex_none()
-                .h_full()
-                .flex()
-                .flex_col()
-                .child(self.render_brand_row(cx))
-                .child(self.render_home_button(cx))
-                .child(self.render_sidebar(cx))
-                .child(self.render_sidebar_footer(cx));
-            let rail = div()
-                .id("sidebar-slide-rail")
-                .absolute()
-                .top_0()
-                .left_0()
-                .h_full()
-                .w(theme::rail_w())
-                .child(self.render_rail(cx));
-            let fade = |el: gpui::Stateful<gpui::Div>, name: &'static str, going: bool| {
-                gpui::AnimationExt::with_animation(
-                    el,
-                    gpui::ElementId::NamedInteger(name.into(), serial),
-                    gpui::Animation::new(crate::motion::BASE),
-                    move |el, t| el.opacity(crossfade(t, going)),
-                )
-            };
-            gpui::AnimationExt::with_animation(
-                left.overflow_hidden()
-                    .child(fade(full, "sidebar-fade-full", collapsing))
-                    .child(fade(rail, "sidebar-fade-rail", !collapsing)),
-                gpui::ElementId::NamedInteger("sidebar-slide".into(), serial),
-                crate::motion::enter(),
-                move |el, t| el.w(from + (to - from) * t),
-            )
-            .into_any_element()
-        } else {
-            left.when(theme::sidebar_collapsed(), |d| {
+        // The column takes its new width at once (see `slide_sidebar`): only the full sidebar
+        // slides, so the panes are laid out once, at their new size.
+        let left = left
+            .when(theme::sidebar_collapsed(), |d| {
                 d.child(self.render_rail(cx))
             })
             .children(self.render_peek(cx))
             .when(!theme::sidebar_collapsed(), |d| {
-                d.child(self.render_brand_row(cx))
-                    .child(self.render_home_button(cx))
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_sidebar_footer(cx))
-            })
-            .into_any_element()
-        };
+                d.child(self.render_full_sidebar(window, cx))
+            });
         let body = div()
             .relative()
             .flex()
@@ -2781,6 +2748,10 @@ impl Render for Workspace {
                 },
             })
             .children(self.render_sidebar_edge(cx));
+        // A transition drawn in the sidebar (rows dropping in) is still playing.
+        if self.sidebar_ui.frame_wanted.take() {
+            window.request_animation_frame();
+        }
         div()
             .id("workspace")
             .key_context("Workspace")
@@ -2996,22 +2967,30 @@ impl Render for Workspace {
     }
 }
 
-/// Opacity at progress `t` (0 to 1, linear) of a layer leaving (`going`) or arriving in the
-/// sidebar's crossfade: the leaving one is mostly gone before the arriving one is mostly there,
-/// so the two never read as one cluttered layer.
-fn crossfade(t: f32, going: bool) -> f32 {
-    let smooth = |a: f32, b: f32| {
-        let x = ((t - a) / (b - a)).clamp(0., 1.);
-        x * x * (3. - 2. * x)
-    };
-    if going {
-        1. - smooth(0., 0.6)
-    } else {
-        smooth(0.35, 1.)
-    }
-}
-
 impl Workspace {
+    /// The full sidebar in its column. Just expanded, it slides out from behind where the column of
+    /// icons was (its right edge starting at the column's) while it fades in; it is in place and
+    /// takes clicks from the first frame.
+    fn render_full_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let body = div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(self.render_brand_row(cx))
+            .child(self.render_home_button(cx))
+            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar_footer(cx));
+        self.sidebar_ui.expand_cue.slide(
+            body,
+            window,
+            crate::motion::ease_out_soft,
+            -Self::drawer_travel(),
+            0.,
+        )
+    }
+
     /// Vertical tabs: the sidebar top row has the Arke mark, then back, forward and refresh for the
     /// active pane (like Arc); the rest is window drag area. The mark sits on the sidebar's icon
     /// column; no name, since the taskbar and Alt+Tab already show it.
@@ -3345,11 +3324,12 @@ impl Render for Tooltip {
 /// Arke's interface scale doesn't change.
 const POINTER_CLEARANCE: gpui::Pixels = px(20.);
 
-/// The tooltip bubble itself.
-fn tooltip_card(text: &SharedString) -> gpui::Div {
+/// The tooltip bubble itself. It fades in where it is, as quickly as a context menu (it only
+/// shows after the pointer rested, so nothing waits on it).
+fn tooltip_card(text: &SharedString) -> AnyElement {
     // Tooltips lay out at minimum size (max_w has no effect), so long text gets an explicit width to wrap.
     let long = text.chars().count() > 48;
-    div()
+    let card = div()
         .debug_selector(|| "tooltip-card".to_owned())
         .px(theme::s_8())
         .py(theme::s_4())
@@ -3360,5 +3340,15 @@ fn tooltip_card(text: &SharedString) -> gpui::Div {
         .ui_font()
         .text_size(theme::fs_12())
         .text_color(theme::text())
-        .child(text.clone())
+        .child(text.clone());
+    if !crate::motion::enabled() {
+        return card.into_any_element();
+    }
+    gpui::AnimationExt::with_animation(
+        card,
+        "tooltip-in",
+        crate::motion::menu_enter(),
+        crate::motion::fade_in,
+    )
+    .into_any_element()
 }

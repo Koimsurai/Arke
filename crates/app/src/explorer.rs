@@ -2109,6 +2109,10 @@ impl Explorer {
                 path: path.clone(),
                 reason: error,
             });
+        } else if kind == FailKind::Offline {
+            // The reason names the server already; with the path in front as well, the toast
+            // runs past its four lines and gets cut off.
+            self.error = Some(error);
         } else {
             self.error =
                 Some(t!("error.open_failed", name = short_path(&path), error = error).into_owned());

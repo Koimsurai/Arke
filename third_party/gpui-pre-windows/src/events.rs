@@ -1508,6 +1508,11 @@ impl WindowsWindowInner {
             signal_at,
             signal_source,
         });
+        // Arke: a touchpad gesture's updates are read in this function, so the window keeps
+        // drawing while one runs or glides on (#258).
+        if self.state.direct_manipulation.interacting() {
+            self.state.frames.wake();
+        }
         self.state.frames.end_frame();
 
         self.state.callbacks.request_frame.set(Some(request_frame));

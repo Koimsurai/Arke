@@ -26,6 +26,8 @@ pub(crate) struct DirectManipulationHandler {
     window: HWND,
     scale_factor: Rc<Cell<f32>>,
     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+    /// Arke: a gesture is running or gliding on (inertia), see [`Self::interacting`].
+    interacting: Rc<Cell<bool>>,
 }
 
 impl DirectManipulationHandler {
@@ -65,12 +67,14 @@ impl DirectManipulationHandler {
 
             let scale_factor = Rc::new(Cell::new(scale_factor));
             let pending_events = Rc::new(RefCell::new(Vec::new()));
+            let interacting = Rc::new(Cell::new(false));
 
             let event_handler: IDirectManipulationViewportEventHandler =
                 DirectManipulationEventHandler::new(
                     window,
                     Rc::clone(&scale_factor),
                     Rc::clone(&pending_events),
+                    Rc::clone(&interacting),
                 )
                 .into();
 
@@ -86,6 +90,7 @@ impl DirectManipulationHandler {
                 window,
                 scale_factor,
                 pending_events,
+                interacting,
             })
         }
     }
@@ -109,6 +114,13 @@ impl DirectManipulationHandler {
         unsafe {
             self.update_manager.Update(None).log_err();
         }
+    }
+
+    /// Arke: whether a gesture is running or gliding on. Its updates are only read when the
+    /// window draws, so the window keeps drawing until the gesture ends; an idle window would
+    /// otherwise read one update and stop (#258).
+    pub fn interacting(&self) -> bool {
+        self.interacting.get()
     }
 
     pub fn drain_events(&self) -> Vec<PlatformInput> {
@@ -143,6 +155,7 @@ struct DirectManipulationEventHandler {
     last_y_offset: Cell<f32>,
     scroll_phase: Cell<TouchPhase>,
     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+    interacting: Rc<Cell<bool>>,
 }
 
 impl DirectManipulationEventHandler {
@@ -150,6 +163,7 @@ impl DirectManipulationEventHandler {
         window: HWND,
         scale_factor: Rc<Cell<f32>>,
         pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+        interacting: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             window,
@@ -160,6 +174,7 @@ impl DirectManipulationEventHandler {
             last_y_offset: Cell::new(0.0),
             scroll_phase: Cell::new(TouchPhase::Started),
             pending_events,
+            interacting,
         }
     }
 
@@ -211,6 +226,8 @@ impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHan
         current: DIRECTMANIPULATION_STATUS,
         previous: DIRECTMANIPULATION_STATUS,
     ) -> windows_core::Result<()> {
+        self.interacting
+            .set(current == DIRECTMANIPULATION_RUNNING || current == DIRECTMANIPULATION_INERTIA);
         if current == previous {
             return Ok(());
         }

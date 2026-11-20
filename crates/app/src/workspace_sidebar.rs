@@ -1364,7 +1364,13 @@ impl Workspace {
                     None => tree_label(label, space).into_any_element(),
                 })
                 .with_file_drop(path.to_path_buf(), cx)
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                    // Like File Explorer's navigation pane: the first click opens the folder,
+                    // a double-click also expands or collapses it (#242).
+                    if e.click_count() == 2 && !leaf {
+                        this.toggle_expand(open.clone(), cx);
+                        return;
+                    }
                     this.navigate_active(open.clone(), window, cx);
                 }))
                 .on_mouse_down(
@@ -2412,6 +2418,10 @@ impl Workspace {
 impl Workspace {
     pub(crate) fn toggle_expand_for_test(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.toggle_expand(path, cx);
+    }
+
+    pub(crate) fn tree_expanded_for_test(&self, path: &Path) -> bool {
+        self.expanded.contains(path)
     }
 
     pub(crate) fn tree_children_for_test(&self, path: &Path) -> Option<Vec<PathBuf>> {

@@ -167,11 +167,41 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Right click on a drive or network card: its menu, Home stays.
-        if let HomeEvent::PlaceMenu { path, position } = event {
-            self.open_place_menu(*position, path, cx);
-            return;
+        // Right click on a card or a recent file: its menu, Home stays.
+        match event {
+            HomeEvent::PlaceMenu { path, position } => {
+                let items = self.tree_menu(path, 0, cx);
+                self.open_sidebar_menu(*position, items, cx);
+                return;
+            }
+            HomeEvent::FavoriteMenu { path, position } => {
+                let items = self.favorite_menu(path, cx);
+                self.open_sidebar_menu(*position, items, cx);
+                return;
+            }
+            HomeEvent::FileMenu { path, position } => {
+                let items = super::sidebar::file_menu(path);
+                self.open_sidebar_menu(*position, items, cx);
+                return;
+            }
+            // Home's favorites are the sidebar's: reordering them on Home saves the same order.
+            HomeEvent::MoveFavorite { path, to } => {
+                self.move_pin(path, crate::settings::PinSlot::Tile(*to), cx);
+                return;
+            }
+            _ => {}
         }
+        self.run_home_event(event, window, cx);
+    }
+
+    /// What a pick on Home does (also from a recent file's menu): opens the folder, here or
+    /// elsewhere, or goes to the file.
+    pub(super) fn run_home_event(
+        &mut self,
+        event: &HomeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Middle click: a new tab in the background; Home stays.
         if let HomeEvent::OpenInNewTab(path) = event {
             self.open_in_background(path.clone(), window, cx);
@@ -194,7 +224,11 @@ impl Workspace {
                 });
             }
             HomeEvent::OpenRecycle => self.open_recycle(false, window, cx),
-            HomeEvent::OpenInNewTab(_) | HomeEvent::PlaceMenu { .. } => {}
+            HomeEvent::OpenInNewTab(_)
+            | HomeEvent::PlaceMenu { .. }
+            | HomeEvent::FavoriteMenu { .. }
+            | HomeEvent::FileMenu { .. }
+            | HomeEvent::MoveFavorite { .. } => {}
             HomeEvent::Reveal(path) => {
                 let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                     return;
@@ -226,7 +260,12 @@ impl Workspace {
                 ),
                 _ => return false,
             },
-            HomeEvent::OpenRecycle | HomeEvent::OpenInNewTab(_) | HomeEvent::PlaceMenu { .. } => {
+            HomeEvent::OpenRecycle
+            | HomeEvent::OpenInNewTab(_)
+            | HomeEvent::PlaceMenu { .. }
+            | HomeEvent::FavoriteMenu { .. }
+            | HomeEvent::FileMenu { .. }
+            | HomeEvent::MoveFavorite { .. } => {
                 return false;
             }
         };
@@ -288,28 +327,6 @@ impl Workspace {
             home.set_favorites(favorites);
             home.set_names(names, rename);
         });
-    }
-
-    /// The menu of a drive or network card on Home: only places that can be renamed have one.
-    fn open_place_menu(
-        &mut self,
-        position: gpui::Point<gpui::Pixels>,
-        path: &std::path::Path,
-        cx: &mut Context<Self>,
-    ) {
-        let places = self.active_view().read(cx).places.clone();
-        let settings = &SettingsStore::global(cx).read(cx).settings;
-        if super::sidebar::place_default_name(settings, &places, path).is_none() {
-            return;
-        }
-        self.open_sidebar_menu(
-            position,
-            vec![(
-                t!("menu.rename").to_string().into(),
-                super::sidebar::SidebarAction::RenamePlace(path.to_path_buf()),
-            )],
-            cx,
-        );
     }
 
     /// Reloads on window activation; recent files may have changed.

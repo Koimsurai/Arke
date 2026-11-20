@@ -62,3 +62,50 @@ fn home_lists_the_sidebar_favorites(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(listed(&ws, cx).is_empty(), "no favorites, no cards");
 }
+
+/// A favorite card dragged over another on Home takes its place, saved as the sidebar's order.
+#[gpui::test]
+fn home_favorites_reorder_by_drag(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, point, px};
+    let fs = FakeFs::new();
+    let names = ["a", "b", "c"];
+    fs.insert_dir(r"C:\w", names.iter().map(|n| dir(n)).collect());
+    for name in names {
+        fs.insert_dir(p(name), Vec::new());
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\w");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\w"));
+    change(cx, |st| st.favorites = Some(vec![p("a"), p("b"), p("c")]));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    refresh(cx);
+    let card = |cx: &mut VisualTestContext, name: &str| {
+        let selector: &'static str = format!("home-favorite {name}").leak();
+        cx.debug_bounds(selector).expect("card drawn")
+    };
+    let a = card(cx, "a");
+    let c = card(cx, "c");
+    cx.simulate_mouse_down(a.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        a.center() + point(px(8.), px(2.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    refresh(cx);
+    cx.simulate_mouse_move(c.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    cx.simulate_mouse_up(c.center(), MouseButton::Left, Modifiers::none());
+    refresh(cx);
+    let order = cx.update(|_, cx| {
+        SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .favorites
+            .clone()
+    });
+    assert_eq!(order, Some(vec![p("b"), p("c"), p("a")]));
+    let shown: Vec<PathBuf> = listed(&ws, cx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(shown, [p("b"), p("c"), p("a")], "Home shows the new order");
+}

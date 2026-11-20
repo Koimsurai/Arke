@@ -333,7 +333,10 @@ impl Workspace {
         large: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !over_tiles(cx) {
+        // One sign at a time: at a tile's edge the insertion mark says where it goes.
+        let marked =
+            self.pin_shown.is_some() && self.pin_mark.is_some_and(|m| m.area == PinArea::Tiles);
+        if !over_tiles(cx) || marked {
             return None;
         }
         let hot = self.pin_shown == Some(PinSlot::Tile(count));

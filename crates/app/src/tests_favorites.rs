@@ -512,3 +512,41 @@ fn unpinning_the_recycle_bin_says_it_is_on_home(cx: &mut TestAppContext) {
         Some(t!("sidebar.recycle_on_home").into_owned())
     );
 }
+
+/// A pinned list entry dragged up over the tiles becomes a tile on the way, its cell left empty
+/// under the pointer as a dragged tile's, and let go it stays there.
+#[gpui::test]
+fn a_list_entry_dragged_over_the_tiles_becomes_one(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let row = bounds(cx, "pin-row-0");
+    let first = bounds(cx, "tile-slot-0");
+    cx.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        row.center() + point(px(6.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    refresh(cx);
+    let over = first.center() + point(px(2.), px(2.));
+    cx.simulate_mouse_move(over, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("c"), p("a"), p("b")]));
+    assert!(current(cx).pinned.is_empty(), "out of the list");
+    assert!(
+        drawn(cx, "tile-gap"),
+        "its cell is the gap under the pointer"
+    );
+    cx.simulate_mouse_up(over, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(
+        current(cx).favorites,
+        Some(vec![p("c"), p("a"), p("b")]),
+        "stays where it was let go"
+    );
+}

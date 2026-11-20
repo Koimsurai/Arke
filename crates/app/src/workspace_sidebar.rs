@@ -123,6 +123,35 @@ pub(super) enum SidebarAction {
     ShelfRemove(PathBuf),
     /// Go to a shelf item's folder and select it.
     ShelfReveal(PathBuf),
+    /// A file (a recent file on Home): open it, go to it in its folder, copy its path, show its
+    /// properties.
+    OpenFile(PathBuf),
+    RevealFile(PathBuf),
+    CopyPath(PathBuf),
+    Properties(PathBuf),
+}
+
+/// The menu of a recent file on Home.
+pub(super) fn file_menu(path: &Path) -> Vec<(SharedString, SidebarAction)> {
+    let path = path.to_path_buf();
+    vec![
+        (
+            t!("menu.open").to_string().into(),
+            SidebarAction::OpenFile(path.clone()),
+        ),
+        (
+            t!("menu.open_file_location").to_string().into(),
+            SidebarAction::RevealFile(path.clone()),
+        ),
+        (
+            t!("menu.copy_path").to_string().into(),
+            SidebarAction::CopyPath(path.clone()),
+        ),
+        (
+            t!("menu.properties").to_string().into(),
+            SidebarAction::Properties(path),
+        ),
+    ]
 }
 
 /// How much bigger a dragged tile is drawn under the pointer than in its slot: lifted off the grid.
@@ -894,7 +923,8 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        if dragged.from_tile {
+        // A tile, or a list entry that became one on the way (`on_tile_drag_move`).
+        if self.tile_favorites(cx).contains(&dragged.path) {
             self.drop_tile(&dragged.path, window, cx);
         } else {
             self.place_pin(&dragged.path, crate::settings::PinSlot::Tile(last), cx);
@@ -1273,8 +1303,8 @@ impl Workspace {
     }
 
     /// A favorite listed as a row because its name doesn't fit on a tile (#174). It still is one of
-    /// the favorites at slot `ix`: dragged, it moves like a list entry; a pin dropped on it takes
-    /// its slot.
+    /// the favorites at slot `ix`: dragged, it moves like a list entry. A pin dropped on it goes
+    /// in the list it is drawn in (first, right under it), not back up among the tiles.
     fn favorite_row(
         ix: usize,
         path: &Path,
@@ -1304,15 +1334,15 @@ impl Workspace {
                 start_pin_drag(&workspace, dragged, grab, cx)
             })
             .drag_over::<DraggedPin>(|s, _, _, _| s.bg(theme::signal_wash()))
-            .on_drop(cx.listener(move |this, dragged: &DraggedPin, _, cx| {
-                this.place_pin(&dragged.path, crate::settings::PinSlot::Tile(ix), cx);
+            .on_drop(cx.listener(move |this, dragged: &DraggedPin, window, cx| {
+                this.drop_pin_in_list(dragged, 0, window, cx);
             }))
             .into_any_element()
     }
 
     /// The menu of a favorite, on a tile or in the list: the usual entries and "Rename" (#259),
     /// which names the favorite rather than the place.
-    fn favorite_menu(
+    pub(super) fn favorite_menu(
         &self,
         path: &Path,
         cx: &mut Context<Self>,
@@ -1793,7 +1823,7 @@ impl Workspace {
 
     /// Tree node context menu: the common folder entries, plus "Disconnect" for network drives
     /// and "Remove from list" for shares.
-    fn tree_menu(
+    pub(super) fn tree_menu(
         &self,
         path: &Path,
         depth: usize,
@@ -2373,7 +2403,16 @@ impl Workspace {
                 to_list.push(dir.clone());
             }
         }
-        self.sidebar_ui.reveal.set(to_list.is_empty());
+        // Already marked higher up, on a favorite or a pinned folder (one just clicked there):
+        // the tree opens under it but the sidebar doesn't scroll away from it.
+        let shown = self.favorites(cx).iter().any(|(p, ..)| *p == here)
+            || SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .pinned
+                .contains(&here);
+        self.sidebar_ui.reveal_wanted.set(!shown);
+        self.sidebar_ui.reveal.set(to_list.is_empty() && !shown);
         cx.notify();
         if to_list.is_empty() {
             return;
@@ -2411,7 +2450,9 @@ impl Workspace {
             }
             // Every folder on the way is listed: the current folder's row is drawn now.
             let _ = this.update(cx, |this, cx| {
-                this.sidebar_ui.reveal.set(true);
+                this.sidebar_ui
+                    .reveal
+                    .set(this.sidebar_ui.reveal_wanted.get());
                 cx.notify();
             });
         })
@@ -2756,6 +2797,28 @@ impl Workspace {
                 }
             }
             SidebarAction::SetSidebarPeek(on) => Self::set_sidebar_peek(on, cx),
+            SidebarAction::OpenFile(path) => {
+                crate::search_history::SearchHistory::record(&path, false, cx);
+                let shell = Arc::clone(&self.services.shell);
+                crate::explorer::spawn_thread("home-open", move || {
+                    if let Err(err) = shell.open(&path, None) {
+                        log::info!("cannot open {}: {err}", path.display());
+                    }
+                });
+            }
+            SidebarAction::RevealFile(path) => {
+                self.run_home_event(&crate::home::HomeEvent::Reveal(path), window, cx);
+            }
+            SidebarAction::CopyPath(path) => {
+                let shell = Arc::clone(&self.services.shell);
+                crate::explorer::spawn_thread("copy-path", move || {
+                    let _ = shell.set_clipboard_text(&path.display().to_string());
+                });
+            }
+            SidebarAction::Properties(path) => {
+                self.active_view()
+                    .update(cx, |e, cx| e.open_properties(vec![(path, false)], cx));
+            }
             SidebarAction::OpenInNewTab(path) => {
                 let at = self.active + 1;
                 self.open_folder_tab(path, at, true, window, cx);

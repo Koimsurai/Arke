@@ -470,7 +470,8 @@ impl Workspace {
 
 impl Workspace {
     /// The tile in grid cell `cell` reports its bounds during a pin drag. Entering it with another
-    /// tile moves that one here.
+    /// tile moves that one here; a favorite dragged up from the list becomes a tile here, its cell
+    /// left empty under the pointer like a dragged tile's.
     fn on_tile_drag_move(
         &mut self,
         cell: usize,
@@ -479,28 +480,24 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.tab_drag.tile_cells.insert(cell, e.bounds);
-        let dragged = e.drag(cx);
-        if !dragged.from_tile
-            || dragged.path == path
-            || self.tab_drag.moved
-            || !e.bounds.contains(&e.event.position)
-        {
+        let dragged = e.drag(cx).path.clone();
+        if dragged == path || self.tab_drag.moved || !e.bounds.contains(&e.event.position) {
             return;
         }
-        let dragged = dragged.path.clone();
         // The saved order counts every favorite, tiles and the ones listed as rows (#174).
         let old: Vec<PathBuf> = self.favorites(cx).into_iter().map(|(p, ..)| p).collect();
         let Some(to) = old.iter().position(|p| p == path) else {
             return;
         };
-        if !old.contains(&dragged) {
-            return;
-        }
         // The grid only holds the favorites drawn as tiles: their slots before the move.
         let old_tiles = self.tile_favorites(cx);
         let slots = self.tile_slots(old_tiles.len());
         self.move_pin(&dragged, crate::settings::PinSlot::Tile(to), cx);
         self.tab_drag.moved = true;
+        // From the list: it is a tile now, drawn as the gap where it would land.
+        if self.tab_drag.tile.is_none() {
+            self.tab_drag.tile = Some(dragged.clone());
+        }
         if let Some(slots) = slots {
             let new_tiles = self.tile_favorites(cx);
             self.slide_tiles(&slots, &old_tiles, &new_tiles);

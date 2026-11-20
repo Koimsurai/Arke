@@ -455,7 +455,8 @@ fn folders_and_tabs_dragged_onto_the_favorites_are_added_where_the_mark_shows(
         "no slot without a drag"
     );
 
-    // "one" onto the left edge of b: a mark, the "Add to favorites" slot, and it goes before b.
+    // "one" onto the left edge of b: a mark, and it goes before b. One sign at a time: the
+    // "Add to favorites" slot steps aside (the dragged chip says what the drop does).
     start_row_drag(cx, &view, 0);
     let edge = left_edge(cx, "tile-slot-1");
     move_to(cx, edge);
@@ -465,8 +466,8 @@ fn folders_and_tabs_dragged_onto_the_favorites_are_added_where_the_mark_shows(
         "the mark shows where"
     );
     assert!(
-        cx.debug_bounds("tile-add-favorite").is_some(),
-        "and what the drop does"
+        cx.debug_bounds("tile-add-favorite").is_none(),
+        "no second sign"
     );
     release_at(cx, edge + point(px(1.), px(0.)), Modifiers::none());
     assert_eq!(

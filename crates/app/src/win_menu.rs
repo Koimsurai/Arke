@@ -44,9 +44,10 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, GCS_VERBW,
-    IContextMenu, IContextMenu2, IContextMenu3, ILClone, ILFindLastID, ILFree, ILRemoveLastID,
-    IShellExtInit, IShellFolder, SHBindToParent, SHGetDesktopFolder, SHParseDisplayName,
+    CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
+    GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3, ILClone, ILFindLastID, ILFree,
+    ILRemoveLastID, IShellExtInit, IShellFolder, SHBindToParent, SHGetDesktopFolder,
+    SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -77,12 +78,14 @@ enum Request {
     Query {
         paths: Vec<PathBuf>,
         background: bool,
+        extended: bool,
         done: flume::Sender<Result<ShellMenu, ShellError>>,
     },
     /// One extension's menu (on a thread of its own).
     QueryHandler {
         paths: Vec<PathBuf>,
         background: bool,
+        extended: bool,
         handler: MenuHandler,
         done: flume::Sender<Result<ShellMenu, ShellError>>,
     },
@@ -287,6 +290,7 @@ static LATEST_GROUP: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn query_handler(
     paths: &[PathBuf],
     background: bool,
+    extended: bool,
     handler: &MenuHandler,
     group: u64,
 ) -> Result<ShellMenu, ShellError> {
@@ -297,6 +301,7 @@ pub(crate) fn query_handler(
     thread.send(Request::QueryHandler {
         paths: paths.to_vec(),
         background,
+        extended,
         handler: handler.clone(),
         done,
     })?;
@@ -342,12 +347,17 @@ fn take_part(session: u64) -> Option<Part> {
 }
 
 /// Reads the context menu for `paths`. Blocks on the STA thread, so call from a background thread.
-pub(crate) fn query(paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
+pub(crate) fn query(
+    paths: &[PathBuf],
+    background: bool,
+    extended: bool,
+) -> Result<ShellMenu, ShellError> {
     let thread = menu_thread().ok_or(ShellError::MenuThreadStart)?;
     let (done, result) = flume::bounded(1);
     thread.send(Request::Query {
         paths: paths.to_vec(),
         background,
+        extended,
         done,
     })?;
     result
@@ -468,19 +478,23 @@ fn handle(request: Request, window: HWND) {
         Request::Query {
             paths,
             background,
+            extended,
             done,
         } => {
             CURRENT.with(|c| c.borrow_mut().take());
-            let _ = done.send(build(&paths, background, window));
+            let _ = done.send(build(&paths, background, extended, window));
         }
         Request::QueryHandler {
             paths,
             background,
+            extended,
             handler,
             done,
         } => {
             CURRENT.with(|c| c.borrow_mut().take());
-            let _ = done.send(build_handler(&paths, background, &handler, window));
+            let _ = done.send(build_handler(
+                &paths, background, extended, &handler, window,
+            ));
         }
         Request::Invoke {
             session,
@@ -651,7 +665,12 @@ fn parse_pidls(paths: &[PathBuf]) -> Result<Pidls, ShellError> {
     Ok(pidls)
 }
 
-fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu, ShellError> {
+fn build(
+    paths: &[PathBuf],
+    background: bool,
+    extended: bool,
+    window: HWND,
+) -> Result<ShellMenu, ShellError> {
     if paths.is_empty() {
         return Ok(ShellMenu::default());
     }
@@ -684,7 +703,13 @@ fn build(paths: &[PathBuf], background: bool, window: HWND) -> Result<ShellMenu,
         // SAFETY: the PIDLs in children are valid for the call.
         unsafe { folder.GetUIObjectOf(owner, &children, None) }?
     };
-    fill(menu, owner, pidls, menu_directory(paths, background))
+    fill(
+        menu,
+        owner,
+        pidls,
+        menu_directory(paths, background),
+        extended,
+    )
 }
 
 /// The folder a menu for `paths` is for: the folder itself for its background, else the items'
@@ -701,12 +726,14 @@ fn menu_directory(paths: &[PathBuf], background: bool) -> Vec<u16> {
     wide(folder.as_os_str())
 }
 
-/// Reads `menu` into a [`Session`] that becomes this thread's current menu.
+/// Reads `menu` into a [`Session`] that becomes this thread's current menu. `extended`: Shift
+/// was held, so commands registered to show only then are included, as in File Explorer (#272).
 fn fill(
     menu: IContextMenu,
     owner: HWND,
     pidls: Pidls,
     directory: Vec<u16>,
+    extended: bool,
 ) -> Result<ShellMenu, ShellError> {
     // SAFETY: creates an empty popup menu; Session calls DestroyMenu.
     let hmenu = unsafe { CreatePopupMenu() }?;
@@ -719,12 +746,13 @@ fn fill(
         directory,
         lazy: Vec::new(),
     };
-    // SAFETY: hmenu is valid; command IDs range over 1..=0x7FFF.
-    let hr = unsafe {
-        session
-            .menu
-            .QueryContextMenu(hmenu, 0, 1, 0x7FFF, CMF_NORMAL)
+    let flags = if extended {
+        CMF_NORMAL | CMF_EXTENDEDVERBS
+    } else {
+        CMF_NORMAL
     };
+    // SAFETY: hmenu is valid; command IDs range over 1..=0x7FFF.
+    let hr = unsafe { session.menu.QueryContextMenu(hmenu, 0, 1, 0x7FFF, flags) };
     if hr.is_err() {
         return Err(windows::core::Error::from(hr).into());
     }
@@ -745,6 +773,7 @@ fn fill(
 fn build_handler(
     paths: &[PathBuf],
     background: bool,
+    extended: bool,
     handler: &MenuHandler,
     window: HWND,
 ) -> Result<ShellMenu, ShellError> {
@@ -811,7 +840,13 @@ fn build_handler(
     if background {
         set_background_site(&menu, &paths[0]);
     }
-    fill(menu, owner, pidls, menu_directory(paths, background))
+    fill(
+        menu,
+        owner,
+        pidls,
+        menu_directory(paths, background),
+        extended,
+    )
 }
 
 /// File Explorer's view is the site of its empty-space menu, and some extensions ask it what the
@@ -1183,7 +1218,7 @@ mod tests {
         let part = std::env::var("ARKE_BG_VERB").unwrap_or_else(|_| "Everything".into());
         let folder = std::env::temp_dir().join("arke-bg-verb-test");
         std::fs::create_dir_all(&folder).unwrap();
-        let menu = query(std::slice::from_ref(&folder), true).unwrap();
+        let menu = query(std::slice::from_ref(&folder), true, false).unwrap();
         let (id, label) = find(&menu.entries, &part).expect("the command is in the menu");
         let result = invoke(menu.session, id, (0, 0), None);
         assert!(result.is_ok(), "{label}: {result:?}");
@@ -1236,7 +1271,7 @@ mod tests {
             println!("Sharing isn't registered here");
             return;
         };
-        let own = query_handler(std::slice::from_ref(&dir), false, &sharing, 1).unwrap();
+        let own = query_handler(std::slice::from_ref(&dir), false, false, &sharing, 1).unwrap();
         let name = own
             .entries
             .iter()
@@ -1248,7 +1283,7 @@ mod tests {
         release(own.session);
         for (what, background) in [("folder", false), ("background", true)] {
             let started = std::time::Instant::now();
-            let menu = query(std::slice::from_ref(&dir), background).unwrap();
+            let menu = query(std::slice::from_ref(&dir), background, false).unwrap();
             let read = started.elapsed().as_millis();
             let lines = tree(menu.session, &menu.entries);
             println!("{what}: read in {read} ms");
@@ -1311,7 +1346,7 @@ mod tests {
     fn reads_a_real_shell_menu() {
         let windir = std::env::var("windir").unwrap_or_else(|_| r"C:\Windows".into());
         let path = PathBuf::from(windir).join(r"System32\notepad.exe");
-        let menu = query(&[path], false).expect("read the menu");
+        let menu = query(&[path], false, false).expect("read the menu");
         assert!(!menu.entries.is_empty());
         let labels: Vec<&str> = menu
             .entries

@@ -71,6 +71,7 @@ impl Explorer {
         if owners.is_empty() {
             return;
         }
+        let extended = menu.extended;
         menu.parts_request = Some(request);
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
@@ -84,7 +85,8 @@ impl Explorer {
             {
                 let (shell, tx, paths) = (Arc::clone(&shell), tx.clone(), paths.clone());
                 spawn_thread("menu-extension", move || {
-                    let result = shell.shell_menu_handler(&paths, background, &handler, request);
+                    let result =
+                        shell.shell_menu_handler(&paths, background, extended, &handler, request);
                     let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Part {
                         request,
                         name: handler.name,
@@ -163,10 +165,17 @@ impl Explorer {
         if unknown.is_empty() {
             return;
         }
+        let extended = menu.extended;
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("menu-learn", move || {
-            let owners = find_owners(shell.as_ref(), &paths, background, &unknown, request);
+            let owners = find_owners(
+                shell.as_ref(),
+                &paths,
+                (background, extended),
+                &unknown,
+                request,
+            );
             let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::PinOwners(owners)));
         });
     }
@@ -216,7 +225,7 @@ impl Explorer {
 fn find_owners(
     shell: &dyn crate::shell::Shell,
     paths: &[PathBuf],
-    background: bool,
+    (background, extended): (bool, bool),
     keys: &[String],
     group: u64,
 ) -> Vec<(String, String)> {
@@ -228,7 +237,8 @@ fn find_owners(
             .into_iter()
             .map(|handler| {
                 scope.spawn(move || {
-                    let result = shell.shell_menu_handler(paths, background, &handler, group);
+                    let result =
+                        shell.shell_menu_handler(paths, background, extended, &handler, group);
                     (handler, result)
                 })
             })

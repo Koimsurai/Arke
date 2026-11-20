@@ -700,11 +700,16 @@ impl Shell for RemoteShell {
         }
         self.inner.video_thumbnail(path, max_side)
     }
-    fn shell_menu(&self, paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
+    fn shell_menu(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+        extended: bool,
+    ) -> Result<ShellMenu, ShellError> {
         if paths.iter().any(|p| remote(p).is_some()) {
             return Err(ShellError::NotOnRemote);
         }
-        self.inner.shell_menu(paths, background)
+        self.inner.shell_menu(paths, background, extended)
     }
     fn shell_menu_prefetch(&self) -> bool {
         self.inner.shell_menu_prefetch()
@@ -743,6 +748,7 @@ impl Shell for RemoteShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
         handler: &crate::win_menu_parts::MenuHandler,
         group: u64,
     ) -> Result<(ShellMenu, std::time::Duration), ShellError> {
@@ -750,7 +756,7 @@ impl Shell for RemoteShell {
             return Err(ShellError::NotOnRemote);
         }
         self.inner
-            .shell_menu_handler(paths, background, handler, group)
+            .shell_menu_handler(paths, background, extended, handler, group)
     }
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {
         self.inner.set_clipboard_text(text)

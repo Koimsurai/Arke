@@ -183,3 +183,22 @@ fn unpinning_forgets_the_extension(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| v.toggle_shell_pin("Compress with 7-Zip", cx));
     assert!(owners(cx).is_empty());
 }
+
+/// Shift held at the right click: the Windows menu is read with the commands registered to show
+/// only then (#272), as in File Explorer; without Shift, not.
+#[gpui::test]
+fn shift_right_click_reads_the_extended_windows_menu(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\t");
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+
+    right_click(&view, cx, None);
+    wait_shell("plain menu", || shell.menu_extended.lock().len() == 1);
+    cx.simulate_keystrokes("escape");
+    cx.simulate_modifiers_change(gpui::Modifiers::shift());
+    right_click(&view, cx, None);
+    wait_shell("extended menu", || shell.menu_extended.lock().len() == 2);
+    assert_eq!(*shell.menu_extended.lock(), [false, true]);
+}

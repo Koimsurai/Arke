@@ -1464,7 +1464,7 @@ impl TextInput {
             .py(theme::s_4())
             .rounded(theme::r_12())
             .bg(theme::overlay())
-            .shadow(theme::elev_float())
+            .shadow(theme::elev_menu())
             .ui_font()
             .text_size(theme::fs_14())
             .text_color(theme::text());

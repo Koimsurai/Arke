@@ -146,6 +146,8 @@ struct FakeShell {
     shell_sessions: std::sync::atomic::AtomicU64,
     /// While set, reading the whole Windows menu waits for a message on it (a slow menu).
     menu_gate: Mutex<Option<flume::Receiver<()>>>,
+    /// Whether each whole Windows menu read asked for Shift's extra commands.
+    menu_extended: Mutex<Vec<bool>>,
     /// Context menu extensions and their menus, read on their own (sessions from 100).
     extensions: Mutex<
         Vec<(
@@ -611,8 +613,10 @@ impl Shell for FakeShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
     ) -> Result<crate::shell::ShellMenu, ShellError> {
         use crate::shell::ShellMenuEntry as E;
+        self.menu_extended.lock().push(extended);
         assert!(
             !arke_core::fs::is_ui_thread(),
             "shell menu read on the UI thread"
@@ -732,6 +736,7 @@ impl Shell for FakeShell {
         &self,
         _paths: &[PathBuf],
         _background: bool,
+        _extended: bool,
         handler: &crate::win_menu_parts::MenuHandler,
         _group: u64,
     ) -> Result<(crate::shell::ShellMenu, Duration), ShellError> {

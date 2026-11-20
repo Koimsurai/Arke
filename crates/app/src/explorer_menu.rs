@@ -538,6 +538,10 @@ struct LevelPopup {
     state: Rc<crate::popup::PopupState>,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one open menu"
+)]
 pub(crate) struct ContextMenu {
     position: Point<Pixels>,
     /// The window the menu belongs to; its levels are popups owned by it.
@@ -573,6 +577,8 @@ pub(crate) struct ContextMenu {
     parts: Vec<(u64, Vec<MenuEntry>)>,
     /// Id those were asked for with (the whole menu's request).
     parts_request: Option<u64>,
+    /// Opened with Shift held: the Windows menu includes its Shift-only commands (#272).
+    pub(super) extended: bool,
     /// Differs per menu open; used as the animation id so only a new menu replays the entrance.
     serial: u64,
     /// Last input was keyboard: when submenu items arrive late, keyboard users get the first item
@@ -613,6 +619,7 @@ impl ContextMenu {
             pinned_rows: 0,
             parts: Vec::new(),
             parts_request: None,
+            extended: false,
             serial: NEXT_MENU.fetch_add(1, Ordering::Relaxed),
             keyboard: false,
             geometry: Rc::default(),
@@ -981,6 +988,9 @@ impl Explorer {
         window.focus(&focus, cx);
         self.release_shell_menu();
         let mut menu = ContextMenu::new(position, entries, focus, targets);
+        // Shift held, as File Explorer: the Windows menu includes commands registered to show
+        // only then (#272).
+        menu.extended = window.modifiers().shift;
         menu.shell_slot = menu
             .entries
             .iter()
@@ -2015,12 +2025,13 @@ impl Explorer {
         let Some((paths, background)) = self.menu_paths(menu) else {
             return;
         };
+        let extended = menu.extended;
         let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         menu.shell_request = Some(request);
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("more-options", move || {
-            let result = shell.shell_menu(&paths, background);
+            let result = shell.shell_menu(&paths, background, extended);
             let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Whole {
                 request,
                 result,
@@ -2620,7 +2631,7 @@ impl Explorer {
             .py(theme::s_4())
             .rounded(theme::r_12())
             .bg(theme::overlay())
-            .shadow(theme::elev_float())
+            .shadow(theme::elev_menu())
             .ui_font()
             .text_size(theme::fs_14())
             .text_color(theme::text())

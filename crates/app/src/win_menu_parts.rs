@@ -295,7 +295,7 @@ mod timing {
         // group per extension would expire all but the last.
         static GROUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000);
         let started = Instant::now();
-        let whole = crate::win_menu::query(paths, background);
+        let whole = crate::win_menu::query(paths, background, false);
         let whole_ms = started.elapsed().as_millis();
         if let Ok(menu) = &whole {
             crate::win_menu::release(menu.session);
@@ -318,7 +318,7 @@ mod timing {
                 let paths = paths.to_vec();
                 std::thread::spawn(move || {
                     let started = Instant::now();
-                    let menu = crate::win_menu::query_handler(&paths, background, &h, group);
+                    let menu = crate::win_menu::query_handler(&paths, background, false, &h, group);
                     let ms = started.elapsed().as_millis();
                     let items = menu.as_ref().map_or(0, |m| m.entries.len());
                     if let Ok(m) = &menu
@@ -533,7 +533,7 @@ mod leftovers {
         std::fs::write(&file, b"x").unwrap();
         // Warm up once so one-time threads don't count.
         for (paths, background) in [(vec![file.clone()], false), (vec![dir.clone()], true)] {
-            if let Ok(m) = crate::win_menu::query(&paths, background) {
+            if let Ok(m) = crate::win_menu::query(&paths, background, false) {
                 crate::win_menu::release(m.session);
             }
         }
@@ -543,7 +543,7 @@ mod leftovers {
             ("background menu", vec![dir], true),
         ] {
             for _ in 0..ROUNDS {
-                if let Ok(m) = crate::win_menu::query(&paths, background) {
+                if let Ok(m) = crate::win_menu::query(&paths, background, false) {
                     crate::win_menu::release(m.session);
                 }
             }
@@ -553,6 +553,7 @@ mod leftovers {
                     if let Ok(m) = crate::win_menu::query_handler(
                         &paths,
                         background,
+                        false,
                         &handler,
                         10_000 + round as u64,
                     ) {

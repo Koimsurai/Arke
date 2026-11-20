@@ -68,14 +68,11 @@ fn icon_sizes_by_keys_and_ctrl_wheel(cx: &mut TestAppContext) {
     ctrl_wheel(cx, &view, 20.);
     assert_eq!(
         icons_of(&view, cx),
-        (ViewMode::Icons, IconSize::EXTRA_LARGE),
+        (ViewMode::Icons, IconSize::LARGEST),
         "the largest"
     );
     ctrl_wheel(cx, &view, 1.);
-    assert_eq!(
-        icons_of(&view, cx),
-        (ViewMode::Icons, IconSize::EXTRA_LARGE)
-    );
+    assert_eq!(icons_of(&view, cx), (ViewMode::Icons, IconSize::LARGEST));
     // Wheel down past small icons lands in Details, and up again comes back to small icons.
     cx.simulate_keystrokes("ctrl-shift-3");
     ctrl_wheel(cx, &view, -2.);
@@ -150,7 +147,7 @@ fn view_options_flyout(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| v.slide_icon_size_for_test(0.5, cx));
     let half = IconSize::from_fraction(0.5);
     assert_eq!(icons_of(&view, cx), (ViewMode::Icons, half));
-    assert_eq!(half, IconSize::from_px(120.));
+    assert_eq!(half, IconSize::from_px(152.));
     let remembered = cx.update(|_, cx| {
         FolderViewStore::global(cx)
             .read(cx)
@@ -902,4 +899,46 @@ fn clicking_inside_the_rename_box_keeps_renaming(cx: &mut TestAppContext) {
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
     }
+}
+
+/// Grouped Details with a folder expanded in the list (#279): the sections stay, the folder's
+/// items sit under it in its section, and its header selects them too.
+#[gpui::test]
+fn expanding_a_folder_keeps_the_sections(cx: &mut TestAppContext) {
+    use crate::explorer::groups::Row;
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\t",
+        vec![dir("docs"), file("apple.txt", 1), file("banana.txt", 1)],
+    );
+    fs.insert_dir(
+        r"C:\t\docs",
+        vec![file("zeta.txt", 1), file("alpha.txt", 1)],
+    );
+    let (view, cx) = setup_tree(cx, Arc::clone(&fs), Arc::default());
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
+    });
+    cx.run_until_parked();
+    view.update(cx, |v, cx| v.click_chevron_for_test("docs", cx));
+    wait_until(cx, &view, "listed", |v| {
+        view_names(v).contains(&sep(&["docs", "zeta.txt"]))
+    });
+    let headers = view.update(cx, |v, _| {
+        v.groups()
+            .expect("still grouped")
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Header {
+                    start, count, span, ..
+                } => Some((*start, *count, *span)),
+                Row::Item(_) => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    // Folders (docs and its two items), A, B: no section for the nested "alpha" or "zeta".
+    assert_eq!(headers, [(0, 1, 3), (3, 1, 1), (4, 1, 1)]);
+    let rows = view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
+    assert_eq!(rows, Some(8), "5 items plus 3 headers");
 }

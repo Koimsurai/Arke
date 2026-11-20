@@ -770,7 +770,7 @@ pub(crate) fn run_menu_verb(
             _ => None,
         })
     }
-    let menu = shell.shell_menu(paths, false)?;
+    let menu = shell.shell_menu(paths, false, false)?;
     let Some(id) = find(&menu.entries, verb) else {
         shell.release_shell_menu(menu.session);
         return Ok(false);
@@ -1004,7 +1004,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// With `background`, `paths` is one folder and the menu is its empty-space menu (New, Open in Terminal, ...).
     /// Shell extensions are loaded in a separate process (`shell_host.rs`), never in Arke itself. Background thread.
     /// The menu object stays alive there; later calls invoke an entry or release it by `session`.
-    fn shell_menu(&self, paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError>;
+    /// `extended`: Shift was held, so commands registered to show only then are included (#272).
+    fn shell_menu(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+        extended: bool,
+    ) -> Result<ShellMenu, ShellError>;
     /// Whether "More options" can be prefetched when the context menu opens. Only possible out of process;
     /// otherwise it is read when the user opens it.
     fn shell_menu_prefetch(&self) -> bool {
@@ -1047,6 +1053,7 @@ pub(crate) trait Shell: Send + Sync + 'static {
         &self,
         _paths: &[PathBuf],
         _background: bool,
+        _extended: bool,
         _handler: &crate::win_menu_parts::MenuHandler,
         _group: u64,
     ) -> Result<(ShellMenu, std::time::Duration), ShellError> {

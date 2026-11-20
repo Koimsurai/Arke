@@ -1037,7 +1037,7 @@ impl RecycleBin {
             .gap(theme::s_2())
             .rounded(theme::r_8())
             .bg(theme::overlay())
-            .shadow(theme::elev_float())
+            .shadow(theme::elev_menu())
             .child(
                 menu_row(
                     "recycle-menu-restore",

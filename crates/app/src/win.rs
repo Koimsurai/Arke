@@ -1033,9 +1033,10 @@ impl Shell for WinShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
     ) -> Result<crate::shell::ShellMenu, ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        crate::shell_host::query(paths, background)
+        crate::shell_host::query(paths, background, extended)
     }
 
     fn shell_menu_prefetch(&self) -> bool {
@@ -1079,11 +1080,12 @@ impl Shell for WinShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
         handler: &crate::win_menu_parts::MenuHandler,
         group: u64,
     ) -> Result<(crate::shell::ShellMenu, std::time::Duration), ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        crate::shell_host::query_handler(paths, background, handler, group)
+        crate::shell_host::query_handler(paths, background, extended, handler, group)
     }
 
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {

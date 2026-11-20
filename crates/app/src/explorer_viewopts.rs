@@ -3,7 +3,7 @@
 //! layout flyout, it gathers everything about how the folder is shown:
 //!
 //! - the layout (Details, Icons, Columns);
-//! - Icons: the icon size slider, any size from small to extra large (`explorer_icons.rs`);
+//! - Icons: the icon size slider, any size from small to 256 px (`explorer_icons.rs`);
 //!   Details: row density (not in split panes, which always use compact rows);
 //! - switches for grouping, the Details tree, hidden items and file name extensions. They are the
 //!   same settings as in Settings, so every tab follows.

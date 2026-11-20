@@ -342,6 +342,13 @@ pub(crate) const TILE_XL: Tile = Tile {
     image: px(192.),
     icon: px(128.),
 };
+/// The largest icons, past extra large (slider or Ctrl+wheel only).
+pub(crate) const TILE_LARGEST: Tile = Tile {
+    w: px(284.),
+    h: px(308.),
+    image: px(256.),
+    icon: px(160.),
+};
 // Details view tree: indent per nesting level and the expand chevron's box.
 scaled!(tree_indent, 18.);
 scaled!(tree_chevron, 16.);
@@ -1238,6 +1245,24 @@ pub(crate) fn elev_float() -> Vec<BoxShadow> {
         alpha(p().veil, if is_dark() { 0.35 } else { 0.10 }),
         8.,
         24.,
+    );
+    if is_dark() {
+        vec![
+            dark_outline(),
+            drop,
+            inner_hairline(alpha(p().ink, FLOAT_EDGE)),
+        ]
+    } else {
+        vec![hairline(line()), drop]
+    }
+}
+/// Menus (context menus, dropdowns): a tighter shadow than other floating surfaces, close to the
+/// system's own menus (#275).
+pub(crate) fn elev_menu() -> Vec<BoxShadow> {
+    let drop = drop_shadow(
+        alpha(p().veil, if is_dark() { 0.35 } else { 0.12 }),
+        3.,
+        10.,
     );
     if is_dark() {
         vec![

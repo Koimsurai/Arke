@@ -43,6 +43,10 @@ Shell extensions from other programs run in a separate process, so a buggy one c
 
 If Arke is useful to you, a ⭐ on GitHub helps other people find it.
 
+Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com/blog/2026/11/weekly-issue-420.html) and is listed in [awesome-rust](https://github.com/rust-unofficial/awesome-rust), [awesome-gpui](https://github.com/zed-industries/awesome-gpui) and on AlternativeTo.
+
+<p><a href="https://alternativeto.net/software/arke/about/?utm_source=badge&utm_medium=referral"><img src="https://alternativeto.net/static/badges/badge-compact-color.svg" alt="Arke on AlternativeTo" height="40"></a></p>
+
 ## Features
 
 <table>

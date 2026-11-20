@@ -36,6 +36,10 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 
 如果 Arke 對你有幫助，在 GitHub 按個 ⭐，能讓更多人找到它。
 
+Arke 登上了[阮一峰《科技愛好者週刊》第 420 期](https://www.ruanyifeng.com/blog/2026/11/weekly-issue-420.html)，也收錄在 [awesome-rust](https://github.com/rust-unofficial/awesome-rust)、[awesome-gpui](https://github.com/zed-industries/awesome-gpui) 和 AlternativeTo。
+
+<p><a href="https://alternativeto.net/software/arke/about/?utm_source=badge&utm_medium=referral"><img src="https://alternativeto.net/static/badges/badge-compact-color.svg" alt="Arke 在 AlternativeTo" height="40"></a></p>
+
 ## 功能
 
 <table>

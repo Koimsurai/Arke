@@ -127,6 +127,8 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
 
 ## 性能
 
+<p align="center"><img src=".github/assets/responsive.gif" alt="Arke 打开十万个文件的文件夹，立刻滚动、重新排序、筛选；接着打开离线的服务器，一秒内就提示，同时照常浏览（真实速度）"></p>
+
 <p align="center"><img src=".github/assets/search-compare.gif" alt="在文件资源管理器、Files、Arke 中搜索整个 C 盘里的一个文件（3 倍速，计时器是真实秒数）"></p>
 
 <p align="center"><img src=".github/assets/delete-compare.gif" alt="把同一个 2 万个文件（2.48 GB）的文件夹删除到回收站：Arke 0.2 秒，文件资源管理器 47.3 秒，最后再从回收站还原（5 倍速，计时器是真实秒数）"></p>

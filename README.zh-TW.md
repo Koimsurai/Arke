@@ -127,6 +127,8 @@ GPU 繪製，用 Rust 寫成，只有一個小小的執行檔。</p>
 
 ## 效能
 
+<p align="center"><img src=".github/assets/responsive.gif" alt="Arke 開啟十萬個檔案的資料夾，立刻捲動、重新排序、篩選；接著打開離線的伺服器，一秒內就告知，同時照常瀏覽（真實速度）"></p>
+
 <p align="center"><img src=".github/assets/search-compare.gif" alt="在檔案總管、Files、Arke 搜尋整個 C 槽裡的一個檔案（3 倍速，計時器是真實秒數）"></p>
 
 <p align="center"><img src=".github/assets/delete-compare.gif" alt="把同一個 2 萬個檔案（2.48 GB）的資料夾丟進資源回收筒：Arke 0.2 秒，檔案總管 47.3 秒，最後再從資源回收筒還原（5 倍速，計時器是真實秒數）"></p>

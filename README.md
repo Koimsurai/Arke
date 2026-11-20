@@ -155,6 +155,8 @@ used; see the [changelog](CHANGELOG.md). Feedback in issues is welcome.
 
 ## Performance
 
+<p align="center"><img src=".github/assets/responsive.gif" alt="Arke opening a folder with 100,000 files, scrolling, re-sorting and filtering it at once, then reporting an offline server within a second while browsing goes on (real time)"></p>
+
 <p align="center"><img src=".github/assets/search-compare.gif" alt="Searching all of C: for one file in File Explorer, Files and Arke (3× speed; the timer shows real seconds)"></p>
 
 <p align="center"><img src=".github/assets/delete-compare.gif" alt="Sending the same folder of 20,000 files (2.48 GB) to the Recycle Bin: Arke in 0.2 s, File Explorer in 47.3 s, then restoring it from the Recycle Bin (5× speed; the timers show real seconds)"></p>

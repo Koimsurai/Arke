@@ -14,7 +14,7 @@ pub(crate) fn plural_key(key: &str, count: usize) -> String {
 /// `t!` for a counted message: picks `<key>_one` or `<key>_other` by `count` (a `usize`) and passes
 /// it, with digit grouping, as `%{count}`. Other `name = value` arguments are passed through.
 ///
-/// `tn!("clip.copied", n)` reads `clip.copied_one` or `clip.copied_other`.
+/// `tn!("extract.done", n)` reads `extract.done_one` or `extract.done_other`.
 macro_rules! tn {
     ($key:literal, $count:expr $(, $name:ident = $value:expr)* $(,)?) => {{
         let count: usize = $count;
@@ -28,35 +28,29 @@ macro_rules! tn {
 
 #[cfg(test)]
 mod tests {
-    use rust_i18n::t;
 
     use super::plural_key;
 
     #[test]
     fn one_is_singular_and_everything_else_plural() {
-        assert_eq!(plural_key("clip.copied", 1), "clip.copied_one");
-        assert_eq!(plural_key("clip.copied", 0), "clip.copied_other");
-        assert_eq!(plural_key("clip.copied", 2), "clip.copied_other");
-        assert_eq!(plural_key("clip.copied", 21), "clip.copied_other");
+        assert_eq!(plural_key("extract.done", 1), "extract.done_one");
+        assert_eq!(plural_key("extract.done", 0), "extract.done_other");
+        assert_eq!(plural_key("extract.done", 2), "extract.done_other");
+        assert_eq!(plural_key("extract.done", 21), "extract.done_other");
     }
 
     #[test]
     fn english_reads_naturally_and_chinese_is_unchanged() {
-        let en = |n: usize| tn!("clip.copied", n, locale = "en").into_owned();
-        assert_eq!(en(1), "Copied 1 item");
-        assert_eq!(en(2), "Copied 2 items");
-        assert_eq!(en(0), "Copied 0 items");
-        assert_eq!(en(1234), "Copied 1,234 items");
-        let zh = |n: usize| tn!("clip.copied", n, locale = "zh-TW").into_owned();
-        assert_eq!(zh(1), "已複製 1 個項目");
-        assert_eq!(zh(3), "已複製 3 個項目");
+        let en = |n: usize| tn!("extract.done", n, locale = "en").into_owned();
+        assert_eq!(en(1), "Extracted 1 file");
+        assert_eq!(en(2), "Extracted 2 files");
+        assert_eq!(en(0), "Extracted 0 files");
+        assert_eq!(en(1234), "Extracted 1,234 files");
+        let zh = |n: usize| tn!("extract.done", n, locale = "zh-TW").into_owned();
+        assert_eq!(zh(1), "已解壓縮 1 個檔案");
+        assert_eq!(zh(3), "已解壓縮 3 個檔案");
         // Extra arguments are passed through.
-        let undid = tn!(
-            "undo.done",
-            1,
-            op = t!("op.copy", locale = "en"),
-            locale = "en"
-        );
-        assert_eq!(undid, "Undid Copy (1 item)");
+        let compressed = tn!("compress.done", 1, name = "a.zip", locale = "en");
+        assert_eq!(compressed, "Compressed 1 file into “a.zip”");
     }
 }

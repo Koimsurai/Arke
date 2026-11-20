@@ -596,6 +596,10 @@ fn disk_space(root: &[u16]) -> Option<(u64, u64)> {
 }
 
 impl Shell for WinShell {
+    fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
+        crate::quick_access::read_windows_pins()
+    }
+
     fn load_places(&self) -> Vec<Place> {
         debug_assert!(
             !arke_core::fs::is_ui_thread(),

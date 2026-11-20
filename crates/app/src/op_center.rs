@@ -11,10 +11,70 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use gpui::{App, BorrowAppContext, Global};
+use gpui::{App, BorrowAppContext, Context, EntityId, Global, Task};
 use rust_i18n::t;
 
 use crate::shell::{OpOutcome, OpProgress};
+
+/// A running operation gets its bottom-right progress toast only after this long; shorter ones
+/// are just in the top bar's operation center.
+pub(crate) const TOAST_DELAY: Duration = Duration::from_secs(2);
+/// A progress toast that is waiting for [`TOAST_DELAY`], or showing.
+struct PendingToast {
+    shown: bool,
+    /// Reveals the toast and redraws the view; dropped with the job.
+    _timer: Task<()>,
+}
+
+/// Progress toasts of running jobs, per view and kind. A job that ends before the delay never
+/// shows one: short operations are only in the operation center.
+#[derive(Default)]
+pub(crate) struct ToastDelays(std::collections::HashMap<(EntityId, &'static str), PendingToast>);
+
+impl Global for ToastDelays {}
+
+impl ToastDelays {
+    /// Call on every render of `cx`'s view with whether the job `kind` is running: starts the
+    /// delay when it begins (the timer redraws the view at the mark, so the toast appears even if
+    /// nothing else does) and forgets it when it ends.
+    pub(crate) fn track<V: 'static>(cx: &mut Context<V>, kind: &'static str, running: bool) {
+        let view = cx.entity_id();
+        let waiting = cx
+            .try_global::<Self>()
+            .is_some_and(|g| g.0.contains_key(&(view, kind)));
+        if running == waiting {
+            return;
+        }
+        if !running {
+            cx.global_mut::<Self>().0.remove(&(view, kind));
+            return;
+        }
+        let timer = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOAST_DELAY).await;
+            let _ = this.update(cx, |_, cx| {
+                let view = cx.entity_id();
+                if let Some(toast) = cx.default_global::<Self>().0.get_mut(&(view, kind)) {
+                    toast.shown = true;
+                }
+                cx.notify();
+            });
+        });
+        cx.default_global::<Self>().0.insert(
+            (view, kind),
+            PendingToast {
+                shown: false,
+                _timer: timer,
+            },
+        );
+    }
+
+    /// Whether the progress toast of `kind` is due in `view`.
+    pub(crate) fn shown(cx: &App, view: EntityId, kind: &'static str) -> bool {
+        cx.try_global::<Self>()
+            .and_then(|g| g.0.get(&(view, kind)))
+            .is_some_and(|toast| toast.shown)
+    }
+}
 
 /// Finished jobs kept
 const HISTORY_MAX: usize = 20;

@@ -77,7 +77,7 @@ mod welcome;
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
-pub(crate) use sidebar::{leave_drive_everywhere, place_icon};
+pub(crate) use sidebar::leave_drive_everywhere;
 pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
@@ -682,6 +682,9 @@ impl Workspace {
             this.sync_look(window, cx);
             this.recycle_refresh(cx);
             this.home_refresh(cx);
+            // A folder pinned to Quick Access in File Explorer shows up in the favorites (#45).
+            let places = this.active_view().read(cx).places.clone();
+            crate::quick_access::refresh(&this.services.shell, places, cx);
             // Another program may have added or deleted files.
             this.refresh_disk_space(cx);
             // QuickLook may have been started or quit while Arke was in the background.
@@ -1796,6 +1799,114 @@ impl Workspace {
         self.focus_active(window, cx);
     }
 
+    /// Keeps the integration API's picture of this window fresh (`api.rs`). Runs every frame; only
+    /// what each pane shows is compared, and selections are listed again only when it changed.
+    fn publish_api_state(&self, window: &Window, cx: &App) {
+        let hwnd = Explorer::owner_from(window).unwrap_or(0);
+        crate::api::publish(
+            window.window_handle().window_id().as_u64(),
+            hwnd,
+            self.active,
+            &self.api_tabs(cx),
+        );
+    }
+
+    /// Tests: the integration API's picture of this window.
+    #[cfg(test)]
+    pub(crate) fn api_state_for_test(&self, cx: &App) -> crate::api::WindowState {
+        crate::api::window_state(0, self.active, &self.api_tabs(cx))
+    }
+
+    /// Tests: publishes this window's state as window `id` with HWND `hwnd`.
+    #[cfg(test)]
+    pub(crate) fn api_publish_for_test(&self, id: u64, hwnd: isize, cx: &App) {
+        crate::api::publish(id, hwnd, self.active, &self.api_tabs(cx));
+    }
+
+    /// What the integration API reads from each tab and pane.
+    fn api_tabs<'a>(&'a self, cx: &'a App) -> Vec<crate::api::TabInput<'a>> {
+        use crate::api::{Page, PaneInput, TabInput};
+        use crate::assets::Icon;
+        self.tabs
+            .iter()
+            .map(|tab| TabInput {
+                active_pane: tab.active_pane,
+                panes: tab
+                    .panes
+                    .iter()
+                    .map(|pane| PaneInput {
+                        explorer: pane.view.read(cx),
+                        page: self
+                            .page_title(pane.view.entity_id())
+                            .map(|(_, icon)| match icon {
+                                Icon::KfHome => Page::Home,
+                                Icon::Trash => Page::RecycleBin,
+                                _ => Page::Other,
+                            }),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The integration API's `open` (`api.rs`): `path` in the active pane, or in a new tab, with
+    /// the items named in `select` selected once it is listed.
+    pub(crate) fn api_open(
+        &mut self,
+        path: PathBuf,
+        new_tab: bool,
+        select: Vec<Arc<str>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if new_tab || self.active_pinned_elsewhere(&path, cx) {
+            let at = self.active + 1;
+            if new_tab {
+                self.open_tab(path.clone(), at, true, window, cx);
+            } else {
+                // A pinned tab keeps its folder: one beside it, or the tab already on it.
+                self.open_folder_tab(path.clone(), at, true, window, cx);
+            }
+            if !select.is_empty() {
+                self.active_view()
+                    .update(cx, |e, cx| e.select_in_folder(&path, select, cx));
+            }
+            cx.notify();
+            return;
+        }
+        // A page over the tab gives way, as when a folder is picked in the sidebar.
+        self.drop_shown_page();
+        let view = self.active_view().clone();
+        let here = view
+            .read(cx)
+            .display_path()
+            .is_some_and(|p| crate::explorer::same_folder(p, &path));
+        if here {
+            if !select.is_empty() {
+                view.update(cx, |e, cx| e.select_in_folder(&path, select, cx));
+            }
+        } else {
+            view.update(cx, |e, cx| {
+                e.navigate_selecting_all(path, NavKind::New, select, cx);
+            });
+        }
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// The integration API's `run` (`api.rs`): `command` in the active pane, dispatched as the
+    /// command palette does, without counting as a recently run command.
+    pub(crate) fn api_run(
+        &mut self,
+        command: &crate::commands::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_active(window, cx);
+        let action = command.action();
+        window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+    }
+
     /// The active tab is pinned and `path` isn't its folder (a pinned tab whose folder failed to
     /// open can go elsewhere in place, see [`Explorer::keeps_folder`]).
     pub(super) fn active_pinned_elsewhere(&self, path: &Path, cx: &App) -> bool {
@@ -2554,6 +2665,7 @@ impl Render for Workspace {
         let start_clock = std::mem::take(&mut self.start_clock);
         self.last_viewport_width = window.viewport_size().width;
         self.sync_window_title(window, cx);
+        self.publish_api_state(window, cx);
         self.drop_stale_menu();
         note_menu_open(window, self.sidebar_menu.is_some());
         let sidebar_menu = self.render_sidebar_menu(window, cx);
@@ -2605,7 +2717,7 @@ impl Render for Workspace {
                 .child(self.render_brand_row(cx))
                 .child(self.render_home_button(cx))
                 .child(self.render_sidebar(cx))
-                .child(self.render_settings_button(cx));
+                .child(self.render_sidebar_footer(cx));
             let rail = div()
                 .id("sidebar-slide-rail")
                 .absolute()
@@ -2640,7 +2752,7 @@ impl Render for Workspace {
                 d.child(self.render_brand_row(cx))
                     .child(self.render_home_button(cx))
                     .child(self.render_sidebar(cx))
-                    .child(self.render_settings_button(cx))
+                    .child(self.render_sidebar_footer(cx))
             })
             .into_any_element()
         };

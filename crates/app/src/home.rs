@@ -1,4 +1,4 @@
-//! Home page: a page title, then quick access (the known folders as large cards), drives with
+//! Home page: a page title, then the favorites (the sidebar's, as large cards), drives with
 //! capacity, network locations, and the most recent files (Windows' own recent list).
 //!
 //! Recent files load in the background from the shortcut targets without touching the targets, so
@@ -21,7 +21,7 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{kind_icon, spawn_thread};
 use crate::settings::SettingsStore;
-use crate::shell::{KnownFolder, Place, PlaceKind, Shell};
+use crate::shell::{Place, PlaceKind, Shell};
 use crate::text_input::TextInput;
 use crate::theme;
 
@@ -59,15 +59,8 @@ const NEARLY_FULL: f32 = 0.9;
 fn recent_row_h() -> gpui::Pixels {
     crate::theme::scaled_px(48.)
 }
-/// Known folders on the quick access row, in this order.
-const QUICK_FOLDERS: [KnownFolder; 6] = [
-    KnownFolder::Desktop,
-    KnownFolder::Downloads,
-    KnownFolder::Documents,
-    KnownFolder::Pictures,
-    KnownFolder::Music,
-    KnownFolder::Videos,
-];
+/// A favorite as the sidebar shows it: folder, its name (a name of its own first) and icon.
+pub(crate) type Favorite = (PathBuf, String, Icon);
 
 /// One recent file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +114,8 @@ pub(crate) struct HomePage {
     /// File Explorer's "Show recently used files" is on; off hides the recent section.
     show_recent: bool,
     places: Vec<Place>,
+    /// The sidebar's favorites, in its order with its names (edited there, not here).
+    favorites: Vec<Favorite>,
     /// Recently opened shares (`\\server\share`)
     shares: Vec<PathBuf>,
     /// Names given to mapped drives and network places (settings).
@@ -227,6 +222,7 @@ impl HomePage {
     pub(crate) fn new(
         shell: Arc<dyn Shell>,
         places: Vec<Place>,
+        favorites: Vec<Favorite>,
         shares: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -235,6 +231,7 @@ impl HomePage {
             recent: None,
             show_recent: true,
             places,
+            favorites,
             shares,
             names: crate::place_names::Names::new(),
             rename: None,
@@ -276,6 +273,20 @@ impl HomePage {
     pub(crate) fn set_locations(&mut self, places: Vec<Place>, shares: Vec<PathBuf>) {
         self.places = places;
         self.shares = shares;
+    }
+
+    /// The sidebar's favorites changed (reordered, renamed, added, removed).
+    pub(crate) fn set_favorites(&mut self, favorites: Vec<Favorite>) {
+        self.favorites = favorites;
+    }
+
+    /// The favorites the page lists, as `(path, name)` (tests).
+    #[cfg(test)]
+    pub(crate) fn favorites_for_test(&self) -> Vec<(PathBuf, String)> {
+        self.favorites
+            .iter()
+            .map(|(path, name, _)| (path.clone(), name.clone()))
+            .collect()
     }
 
     /// Custom place names changed, or a place is (no longer) being renamed.
@@ -502,11 +513,17 @@ impl HomePage {
         })
     }
 
-    /// Quick access: a known folder as a large card, icon over name.
-    fn quick_card(ix: usize, place: &Place, cx: &mut Context<Self>) -> AnyElement {
+    /// A favorite as a large card, icon over name; a long name is cut and shown whole in the tooltip.
+    fn quick_card(
+        ix: usize,
+        path: &Path,
+        label: &str,
+        icon: Icon,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let card = div()
             .id(("home-quick", ix))
-            .a11y_lazy(gpui::Role::Link, || place.label.clone())
+            .a11y_lazy(gpui::Role::Link, || label.to_owned())
             .w(quick_w())
             .h(quick_h())
             .flex()
@@ -521,7 +538,7 @@ impl HomePage {
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash()))
             .child(crate::assets::tinted(
-                crate::workspace::place_icon(place.kind),
+                icon,
                 card_icon(),
                 theme::text_muted(),
             ))
@@ -531,12 +548,17 @@ impl HomePage {
                     .px(theme::s_8())
                     .truncate()
                     .text_size(theme::fs_13())
-                    .child(place.label.clone()),
-            );
+                    .debug_selector({
+                        let label = label.to_owned();
+                        move || format!("home-favorite {label}")
+                    })
+                    .child(label.to_owned()),
+            )
+            .tooltip(crate::explorer::tooltip(label.to_owned()));
         Self::card_actions(
             card,
-            HomeEvent::OpenFolder(place.path.clone()),
-            Some(place.path.clone()),
+            HomeEvent::OpenFolder(path.to_path_buf()),
+            Some(path.to_path_buf()),
             cx,
         )
         .into_any_element()
@@ -661,19 +683,11 @@ impl Render for HomePage {
         reason = "Sections in reading order: title, quick access, drives, network, recent"
     )]
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let known: Vec<Place> = QUICK_FOLDERS
-            .iter()
-            .filter_map(|kf| {
-                self.places
-                    .iter()
-                    .find(|p| p.kind == PlaceKind::Folder(*kf))
-                    .cloned()
-            })
-            .collect();
-        let quick: Vec<AnyElement> = known
+        let quick: Vec<AnyElement> = self
+            .favorites
             .iter()
             .enumerate()
-            .map(|(ix, place)| Self::quick_card(ix, place, cx))
+            .map(|(ix, (path, label, icon))| Self::quick_card(ix, path, label, *icon, cx))
             .collect();
         let mut drives: Vec<AnyElement> = self
             .places
@@ -780,7 +794,7 @@ impl Render for HomePage {
                                     .child(t!("home.title").into_owned()),
                             )
                             .when(has_quick, |d| {
-                                d.child(Self::section(t!("home.quick_access")))
+                                d.child(Self::section(t!("sidebar.favorites")))
                                     .child(cards(quick))
                             })
                             .child(Self::section(t!("home.drives")))
@@ -802,6 +816,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::shell::KnownFolder;
 
     fn place(label: &str, path: &str, kind: PlaceKind) -> Place {
         Place {

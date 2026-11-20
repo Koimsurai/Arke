@@ -144,6 +144,91 @@ fn svg_files_are_rendered_in_the_preview(cx: &mut TestAppContext) {
     });
 }
 
+/// A picture wider than the frame is shown in a frame as tall as the picture at the pane's width,
+/// not in a taller one with the picture centered; the boundary handle sits at its bottom. A
+/// tall picture keeps the full frame.
+#[gpui::test]
+fn the_preview_frame_hugs_a_wide_picture(cx: &mut TestAppContext) {
+    let wide = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#;
+    let tall = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"><rect width="10" height="20" fill="blue"/></svg>"#;
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\art",
+        vec![file("logo.svg", 120), file("tall.svg", 120)],
+    );
+    fs.set_content(Path::new(r"C:\art\logo.svg"), wide.to_vec());
+    fs.set_content(Path::new(r"C:\art\tall.svg"), tall.to_vec());
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\art");
+    wait_until(cx, &view, "load", loaded(r"C:\art"));
+    open_pane(&view, cx, (1200., 900.));
+    let frame_and_handle = |cx: &mut VisualTestContext| {
+        settle(cx, "the frame and handle are drawn", |cx| {
+            cx.debug_bounds("preview-frame").is_some() && cx.debug_bounds("preview-split").is_some()
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        (
+            cx.debug_bounds("preview-frame").expect("frame"),
+            cx.debug_bounds("preview-split").expect("handle"),
+        )
+    };
+
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "wide svg", |v| {
+        image_size(v) == Some((1600, 800))
+    });
+    let (frame, handle) = frame_and_handle(cx);
+    assert!(
+        (frame.size.height - frame.size.width / 2.).abs() < px(2.),
+        "as tall as the picture at this width: {frame:?}"
+    );
+    assert!(
+        (handle.top() - frame.bottom()).abs() < px(2.),
+        "the handle is under the picture: {frame:?} {handle:?}"
+    );
+
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "tall svg", |v| {
+        image_size(v) == Some((800, 1600))
+    });
+    let (tall_frame, _) = frame_and_handle(cx);
+    assert!(
+        tall_frame.size.height > frame.size.height,
+        "a tall picture keeps the full frame: {tall_frame:?}"
+    );
+
+    // Dragging the boundary far down stops at the picture's height; the share is still saved.
+    cx.simulate_keystrokes("up");
+    wait_until(cx, &view, "wide svg again", |v| {
+        image_size(v) == Some((1600, 800))
+    });
+    let (_, handle) = frame_and_handle(cx);
+    let at = handle.center();
+    cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        at + point(px(0.), px(100.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(
+        at + point(px(0.), px(200.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        at + point(px(0.), px(200.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let (dragged, _) = frame_and_handle(cx);
+    assert!(
+        (dragged.size.height - frame.size.height).abs() < px(2.),
+        "no taller than the picture: {dragged:?}"
+    );
+    assert!(saved_split(cx).is_some(), "the dragged share is saved");
+}
+
 /// A gzip file with one stored (uncompressed) deflate block: valid, and built by hand so the
 /// test needs no compressor.
 fn gzip(name: Option<&str>, content: &[u8]) -> Vec<u8> {

@@ -1818,9 +1818,12 @@ impl Explorer {
 
     // ───────────────────────── Background events ─────────────────────────
 
+    #[allow(clippy::too_many_lines, reason = "one short arm per background event")]
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
         match event {
             AppEvent::Places(places) => {
+                // The first places of a window: Quick Access pins from File Explorer (#45).
+                crate::quick_access::refresh(&self.services.shell, places.clone(), cx);
                 self.places = places;
                 cx.notify();
             }

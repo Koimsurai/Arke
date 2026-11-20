@@ -1537,7 +1537,6 @@ impl Explorer {
             C::ClearHistory => {
                 crate::settings::SettingsStore::global(cx)
                     .update(cx, |s, cx| s.update(|st| st.recent.clear(), cx));
-                self.notice = Some(t!("notice.history_cleared").into_owned());
             }
             C::RevealInExplorer => self.reveal_in_explorer(&targets),
             C::KeepOnDevice | C::FreeUpSpace => {
@@ -2309,10 +2308,11 @@ impl Explorer {
                     name = name.as_str()
                 )
                 .into_owned();
+                // A clean run is in the operation center only (#266); skipped files are worth a toast.
                 if s.skipped > 0 {
                     msg.push_str(&t!("compress.skipped", count = s.skipped));
+                    self.notice = Some(msg);
                 }
-                self.notice = Some(msg);
                 // Ctrl+Z moves the new archive to the recycle bin.
                 super::ops::UndoHistory::push(
                     cx,
@@ -2375,7 +2375,10 @@ impl Explorer {
                         usize::try_from(s.skipped_unsafe).unwrap_or(usize::MAX)
                     ));
                 }
-                self.notice = Some(msg);
+                // A clean, complete run is in the operation center only (#266).
+                if s.cancelled || s.skipped_existing > 0 || s.skipped_unsafe > 0 {
+                    self.notice = Some(msg);
+                }
                 if let Some(folder) = folder {
                     // Selected as soon as the new folder shows up in the list.
                     self.selection.select_name(Arc::from(folder.as_str()));

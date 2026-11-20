@@ -278,6 +278,17 @@ impl NetDialog {
         }
     }
 
+    /// A whole URL in the Server field wins over the Port and folder fields: its port and path
+    /// (empty while the URL doesn't parse), which the form shows dimmed in their place. `None`
+    /// when the field holds no URL.
+    fn url_in_host(&self, cx: &App) -> Option<(String, String)> {
+        let host = self.host.read(cx).committed_text().trim().to_owned();
+        host.contains("://").then(|| {
+            RemoteUrl::parse_input(&host)
+                .map_or_else(Default::default, |url| (url.port.to_string(), url.path))
+        })
+    }
+
     /// The remote location from the form, or the message to show.
     fn remote_url(&self, cx: &App) -> Result<RemoteUrl, String> {
         let host = self.host.read(cx).committed_text().trim().to_owned();
@@ -555,6 +566,39 @@ impl NetDialog {
         self.submit(cx);
     }
 
+    /// Types into the remote form (switching to `protocol`) without submitting.
+    #[cfg(test)]
+    pub(crate) fn type_remote_for_test(
+        &mut self,
+        protocol: Protocol,
+        fields: [&str; 3],
+        cx: &mut Context<Self>,
+    ) {
+        self.protocol = protocol;
+        for (input, text) in [&self.host, &self.port, &self.path].into_iter().zip(fields) {
+            input.update(cx, |i, cx| i.set_text(text.to_owned(), cx));
+        }
+        cx.notify();
+    }
+
+    /// The port and folder shown dimmed because the Server field holds a URL.
+    #[cfg(test)]
+    pub(crate) fn url_values_for_test(&self, cx: &App) -> Option<(String, String)> {
+        self.url_in_host(cx)
+    }
+
+    /// The location the form describes.
+    #[cfg(test)]
+    pub(crate) fn remote_url_for_test(&self, cx: &App) -> Result<RemoteUrl, String> {
+        self.remote_url(cx)
+    }
+
+    /// What the Port input itself holds (kept while the URL wins).
+    #[cfg(test)]
+    pub(crate) fn port_text_for_test(&self, cx: &App) -> String {
+        self.port.read(cx).text().to_owned()
+    }
+
     #[cfg(test)]
     pub(crate) fn submit_for_test(&mut self, cx: &mut Context<Self>) {
         self.submit(cx);
@@ -609,6 +653,24 @@ fn field(input: &Entity<TextInput>, window: &Window, cx: &App) -> gpui::Div {
             d.bg(theme::wash()).border_color(theme::line())
         })
         .child(input.clone())
+}
+
+/// A field the form ignores (the Server field holds a whole URL): the value that applies, dimmed,
+/// in the place of the input, whose own text stays for when the URL goes.
+fn locked_field(id: &'static str, text: &str) -> gpui::Div {
+    div()
+        .h(theme::h_ctl())
+        .px(theme::s_8())
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .rounded(theme::r_8())
+        .border_1()
+        .border_color(theme::line())
+        .bg(theme::wash())
+        .text_color(theme::text_disabled())
+        .debug_selector(move || id.into())
+        .child(div().truncate().child(text.to_owned()))
 }
 
 /// Label above a field.
@@ -780,6 +842,7 @@ impl NetDialog {
         let sftp = self.protocol == Protocol::Sftp;
         let login = matches!(self.kind, NetDialogKind::RemoteLogin { .. });
         let use_key = self.use_key && sftp;
+        let from_url = self.url_in_host(cx);
         div()
             .flex()
             .flex_col()
@@ -794,13 +857,22 @@ impl NetDialog {
                                 .flex_1(),
                         )
                         .child(
-                            labeled(t!("net.port").into_owned(), field(&self.port, window, cx))
-                                .w(crate::theme::scaled_px(80.)),
+                            labeled(
+                                t!("net.port").into_owned(),
+                                match &from_url {
+                                    Some((port, _)) => locked_field("net-port-locked", port),
+                                    None => field(&self.port, window, cx),
+                                },
+                            )
+                            .w(crate::theme::scaled_px(80.)),
                         ),
                 )
                 .child(labeled(
                     t!("net.remote_path").into_owned(),
-                    field(&self.path, window, cx),
+                    match &from_url {
+                        Some((_, path)) => locked_field("net-path-locked", path),
+                        None => field(&self.path, window, cx),
+                    },
                 ))
             })
             .child(labeled(

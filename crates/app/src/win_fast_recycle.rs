@@ -411,6 +411,18 @@ fn read_dword_in(
     Some(data)
 }
 
+/// Deleting on the drive of `root` (`C:\`) never goes to the Recycle Bin: the user turned it off
+/// for that drive ("Don't move files to the Recycle Bin"), or a policy did for every drive.
+/// Registry reads only.
+pub(crate) fn recycling_off(root: &Path) -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+    let policy = [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .any(|hive| read_dword_in(hive, KEY, "NoRecycleFiles").is_some_and(|v| v != 0));
+    policy || bin_settings(root).is_some_and(|(_, nuke)| nuke)
+}
+
 /// Group Policy over the bin, user and machine: "Do not move deleted files to the Recycle Bin"
 /// (`NoRecycleFiles`) and "Maximum allowed Recycle Bin size" (`RecycleBinSize`, a share of the
 /// drive), both under `...\CurrentVersion\Policies\Explorer`. Read only.

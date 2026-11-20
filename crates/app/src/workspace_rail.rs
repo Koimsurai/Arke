@@ -55,8 +55,8 @@ pub(super) struct SidebarUi {
     pub(super) reveal: std::cell::Cell<bool>,
     /// Index among the places of the current folder's row under This PC, while drawing it.
     pub(super) here_row: std::cell::Cell<Option<usize>>,
-    /// This PC's chevron just turned.
-    pub(super) this_pc_cue: crate::motion::Cue,
+    /// A section heading was just clicked: its chevron turns and, expanding, its rows drop in.
+    pub(super) section_cue: (Option<crate::settings::SidebarSection>, crate::motion::Cue),
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -812,7 +812,7 @@ impl Workspace {
             .child(self.render_brand_row(cx))
             .child(self.render_home_button(cx))
             .child(self.render_sidebar(cx))
-            .child(self.render_settings_button(cx))
+            .child(self.render_sidebar_footer(cx))
     }
 
     /// Right click on the column: turn opening on hover on or off.

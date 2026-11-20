@@ -49,6 +49,34 @@ pub(crate) enum PinSlot {
     List(usize),
 }
 
+/// A sidebar section that collapses to its heading. Home and its tiles never collapse, nor do the
+/// tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SidebarSection {
+    Favorites,
+    ThisPc,
+    Network,
+}
+
+/// Reads the collapsed sections, skipping names this version doesn't know (a section added later):
+/// one unknown name must not fail the whole file, which would fall back to the defaults.
+fn known_sections<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<SidebarSection>, D::Error> {
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let mut out: Vec<SidebarSection> = Vec::new();
+    for section in raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+    {
+        if !out.contains(&section) {
+            out.push(section);
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TabLayout {
@@ -460,6 +488,10 @@ pub(crate) struct Settings {
     /// Pinned folders on the tiles (at most [`FAVORITES_MAX`]). `None` means the defaults
     /// (Desktop, Downloads, Documents, Pictures, Music, Videos).
     pub(crate) favorites: Option<Vec<PathBuf>>,
+    /// Folders pinned to Quick Access in File Explorer as of the last sync into the favorites
+    /// (#45). `None` until the first sync. Kept so a folder removed from the favorites here is not
+    /// added back while it stays pinned in Windows.
+    pub(crate) quick_access_seen: Option<Vec<PathBuf>>,
     /// Recycle Bin row at the end of the pinned list.
     pub(crate) recycle_pinned: bool,
     /// Recent folders, newest first (for Ctrl+T).
@@ -514,8 +546,10 @@ pub(crate) struct Settings {
     pub(crate) sidebar_collapsed: bool,
     /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
     pub(crate) sidebar_peek: bool,
-    /// The sidebar's This PC section is collapsed to its heading.
-    pub(crate) this_pc_collapsed: bool,
+    /// Sidebar sections collapsed to their heading. Before 0.8 only This PC could collapse
+    /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
+    #[serde(deserialize_with = "known_sections")]
+    pub(crate) collapsed_sections: Vec<SidebarSection>,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -674,6 +708,7 @@ impl Default for Settings {
         Self {
             pinned: Vec::new(),
             favorites: None,
+            quick_access_seen: None,
             recycle_pinned: true,
             recent: Vec::new(),
             tab_layout: TabLayout::default(),
@@ -703,7 +738,7 @@ impl Default for Settings {
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
             sidebar_peek: true,
-            this_pc_collapsed: false,
+            collapsed_sections: Vec::new(),
             font: String::new(),
             background_image: None,
             background_opacity: 20,
@@ -1272,6 +1307,7 @@ fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
                 .retain(|p| arke_core::net::server_of(p).is_some());
             settings.migrate_session();
             settings.migrate_single_window(bytes);
+            settings.migrate_this_pc_collapsed(bytes);
             Some(settings)
         }
         Err(err) => {
@@ -1323,6 +1359,39 @@ impl Settings {
             && let Some(old) = map.get(OLD).and_then(serde_json::Value::as_bool)
         {
             self.single_window = old;
+        }
+    }
+
+    /// Before 0.8 only This PC could collapse (`this_pc_collapsed`): a file that has only the old
+    /// switch keeps This PC collapsed. Read here like [`Self::migrate_single_window`]; the key is
+    /// dropped on the next save.
+    fn migrate_this_pc_collapsed(&mut self, bytes: &[u8]) {
+        const OLD: &str = "this_pc_collapsed";
+        if !bytes.windows(OLD.len()).any(|w| w == OLD.as_bytes()) {
+            return;
+        }
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(bytes) else {
+            return;
+        };
+        if !map.contains_key("collapsed_sections")
+            && map.get(OLD).and_then(serde_json::Value::as_bool) == Some(true)
+            && !self.is_collapsed(SidebarSection::ThisPc)
+        {
+            self.collapsed_sections.push(SidebarSection::ThisPc);
+        }
+    }
+
+    /// Whether a sidebar section is collapsed to its heading.
+    pub(crate) fn is_collapsed(&self, section: SidebarSection) -> bool {
+        self.collapsed_sections.contains(&section)
+    }
+
+    /// Collapses a sidebar section, or expands it again.
+    pub(crate) fn toggle_collapsed(&mut self, section: SidebarSection) {
+        if let Some(ix) = self.collapsed_sections.iter().position(|s| *s == section) {
+            self.collapsed_sections.remove(ix);
+        } else {
+            self.collapsed_sections.push(section);
         }
     }
 
@@ -1564,6 +1633,47 @@ mod tests {
         // The old key isn't written back.
         let json = serde_json::to_string(&off).unwrap();
         assert!(!json.contains("open_external_in_tab"), "{json}");
+    }
+
+    /// Before 0.8 only This PC collapsed: a file with `this_pc_collapsed: true` keeps it collapsed,
+    /// the old key isn't written back, and a section name from a later version is skipped rather
+    /// than failing the file.
+    #[test]
+    fn collapsed_this_pc_carries_over_to_the_sections() {
+        let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
+        let old = read(br#"{"this_pc_collapsed": true, "show_hidden": true}"#);
+        assert_eq!(old.collapsed_sections, vec![SidebarSection::ThisPc]);
+        assert!(old.show_hidden, "the rest of the file too");
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("this_pc_collapsed"), "{json}");
+        assert!(
+            json.contains(r#""collapsed_sections":["this_pc"]"#),
+            "{json}"
+        );
+
+        assert!(
+            read(br#"{"this_pc_collapsed": false}"#)
+                .collapsed_sections
+                .is_empty()
+        );
+        // The new key wins once it is there.
+        let both = read(br#"{"this_pc_collapsed": true, "collapsed_sections": ["network"]}"#);
+        assert_eq!(both.collapsed_sections, vec![SidebarSection::Network]);
+        // The tabs collapsed for a while during 0.8's development; that's dropped.
+        assert!(
+            read(br#"{"collapsed_sections": ["tabs"]}"#)
+                .collapsed_sections
+                .is_empty()
+        );
+        let later = read(br#"{"collapsed_sections": ["network", "someday", "network"]}"#);
+        assert_eq!(later.collapsed_sections, vec![SidebarSection::Network]);
+
+        let mut s = Settings::default();
+        s.toggle_collapsed(SidebarSection::Favorites);
+        assert!(s.is_collapsed(SidebarSection::Favorites));
+        assert!(!s.is_collapsed(SidebarSection::ThisPc));
+        s.toggle_collapsed(SidebarSection::Favorites);
+        assert!(s.collapsed_sections.is_empty());
     }
 
     /// A file with both the old switch and single window mode (an older Arke ran after 0.7 and

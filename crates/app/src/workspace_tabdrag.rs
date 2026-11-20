@@ -9,15 +9,17 @@
 //!   the tab list (in place of the New tab row, so nothing shifts) or under the start of the
 //!   horizontal strip. A pinned tab dragged past the end of the pinned group is unpinned there.
 //!
-//! Favorite tiles reorder the same way on their grid: entering another tile moves the dragged one
-//! into its slot (saved right away), and the others slide over from their old slots.
+//! Favorite tiles reorder the same way on their grid, like app icons on a phone: the dragged tile
+//! is lifted under the pointer and leaves an empty slot; entering another tile moves that slot
+//! there (saved right away), and the others slide over from their old slots. Dropped, the tile
+//! glides from under the pointer into its slot.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{
     AnimationExt, AnyElement, App, Bounds, Context, DragMoveEvent, ExternalPaths, IntoElement,
-    Pixels, Styled, Window, div, prelude::*, px, svg,
+    Pixels, Point, Styled, Window, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -49,10 +51,14 @@ pub(super) struct TabDrag {
     moved: bool,
     /// Tab that files are being dragged over (tab id, wait serial); switches to it after a short hover.
     spring: Option<(u64, usize)>,
-    /// Favorite tile being dragged (dimmed in its slot).
+    /// Favorite tile being dragged (its slot is left empty).
     tile: Option<PathBuf>,
-    /// Last reported tile bounds (outer, without animation offset).
-    tile_bounds: HashMap<PathBuf, Bounds<Pixels>>,
+    /// Where the pointer took hold of the dragged tile, from the tile's top left corner.
+    grab: Point<Pixels>,
+    /// Last reported bounds of each cell of the tile grid, in grid order (outer, without the
+    /// sliding offset). Kept per cell, not per tile: a cell stays put whichever tile is in it, so
+    /// a reorder never reads where a tile was before the last one.
+    tile_cells: HashMap<usize, Bounds<Pixels>>,
     /// Tiles currently sliding back to 0 from their starting offset (x, y).
     tile_shift: HashMap<PathBuf, Slide<(f32, f32)>>,
 }
@@ -66,10 +72,13 @@ impl TabDrag {
         self.moved = false;
     }
 
-    /// A pin drag starts; `tile` is set when it comes from the tiles.
-    pub(super) fn start_tile(&mut self, tile: Option<PathBuf>) {
+    /// A pin drag starts; `tile` is set when it comes from the tiles, taken hold of at `grab`.
+    pub(super) fn start_tile(&mut self, tile: Option<PathBuf>, grab: Point<Pixels>) {
         self.tile = tile;
+        self.grab = grab;
         self.tile_shift.clear();
+        // The grid may have moved since the last drag (a wider sidebar): every cell reports again.
+        self.tile_cells.clear();
     }
 
     /// The pin drag ended (dropped or cancelled). Slides still running finish.
@@ -447,16 +456,16 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// A tile reports its bounds during a pin drag. Entering it with another tile moves that one here.
+    /// The tile in grid cell `cell` reports its bounds during a pin drag. Entering it with another
+    /// tile moves that one here.
     fn on_tile_drag_move(
         &mut self,
+        cell: usize,
         path: &Path,
         e: &DragMoveEvent<DraggedPin>,
         cx: &mut Context<Self>,
     ) {
-        self.tab_drag
-            .tile_bounds
-            .insert(path.to_path_buf(), e.bounds);
+        self.tab_drag.tile_cells.insert(cell, e.bounds);
         let dragged = e.drag(cx);
         if !dragged.from_tile
             || dragged.path == path
@@ -474,54 +483,107 @@ impl Workspace {
         if !old.contains(&dragged) {
             return;
         }
-        // The grid only holds the favorites drawn as tiles: their slot positions before the move.
-        // Only animate when every one of them has reported.
+        // The grid only holds the favorites drawn as tiles: their slots before the move.
         let old_tiles = self.tile_favorites(cx);
-        let slots: Option<Vec<(f32, f32)>> = old_tiles
-            .iter()
-            .map(|p| {
-                self.tab_drag
-                    .tile_bounds
-                    .get(p)
-                    .map(|b| (b.origin.x.into(), b.origin.y.into()))
-            })
-            .collect();
+        let slots = self.tile_slots(old_tiles.len());
         self.move_pin(&dragged, crate::settings::PinSlot::Tile(to), cx);
         self.tab_drag.moved = true;
-        if let Some(slots) = slots.filter(|_| crate::motion::enabled()) {
+        if let Some(slots) = slots {
             let new_tiles = self.tile_favorites(cx);
-            let now = std::time::Instant::now();
-            for (p, (dx, dy)) in grid_offsets(&slots, &old_tiles, &new_tiles) {
-                // A tile still sliding from the last move continues from where it is drawn.
-                let (lx, ly) = self
-                    .tab_drag
-                    .tile_shift
-                    .get(&p)
-                    .map_or((0., 0.), |s| s.left(now));
-                self.tab_drag.serial += 1;
-                self.tab_drag.tile_shift.insert(
-                    p,
-                    Slide {
-                        from: (dx + lx, dy + ly),
-                        started: now,
-                        serial: self.tab_drag.serial,
-                    },
-                );
-            }
+            self.slide_tiles(&slots, &old_tiles, &new_tiles);
         }
     }
 
-    /// Wraps a favorite tile like [`Self::tab_drag_shell`]: reports drag bounds, slides it from its
-    /// old slot after a reorder, and dims the dragged tile while keeping its slot.
+    /// Where the first `count` cells of the tile grid are, in grid order. `None` until every one
+    /// has reported: then nothing animates.
+    fn tile_slots(&self, count: usize) -> Option<Vec<Bounds<Pixels>>> {
+        (0..count)
+            .map(|cell| self.tab_drag.tile_cells.get(&cell).copied())
+            .collect()
+    }
+
+    /// The tiles whose slot changed from `old` to `new` order slide over from where they were
+    /// drawn, every one of them (across rows too). A tile still sliding from the last move goes
+    /// on from where it is, so quick moves never jump.
+    fn slide_tiles(&mut self, slots: &[Bounds<Pixels>], old: &[PathBuf], new: &[PathBuf]) {
+        if !crate::motion::enabled() || old.len() != new.len() {
+            return;
+        }
+        let origins: Vec<(f32, f32)> = slots
+            .iter()
+            .map(|b| (b.origin.x.into(), b.origin.y.into()))
+            .collect();
+        let now = std::time::Instant::now();
+        for (p, (dx, dy)) in grid_offsets(&origins, old, new) {
+            let (lx, ly) = self
+                .tab_drag
+                .tile_shift
+                .get(&p)
+                .filter(|s| s.live(now))
+                .map_or((0., 0.), |s| s.left(now));
+            self.tab_drag.serial += 1;
+            self.tab_drag.tile_shift.insert(
+                p,
+                Slide {
+                    from: (dx + lx, dy + ly),
+                    started: now,
+                    serial: self.tab_drag.serial,
+                },
+            );
+        }
+    }
+
+    /// A dragged tile let go over the tiles: the tiles already reordered while it moved, so it
+    /// only glides from under the pointer, where its lifted copy was, into its slot.
+    pub(super) fn drop_tile(&mut self, path: &Path, window: &Window, cx: &mut Context<Self>) {
+        let old_tiles = self.tile_favorites(cx);
+        let slots = self.tile_slots(old_tiles.len());
+        let grab = self.tab_drag.grab;
+        self.dragging_pin = false;
+        self.tab_drag.end_tile();
+        pindrop::clear(cx);
+        cx.notify();
+        let Some(slots) = slots else {
+            return;
+        };
+        let new_tiles = self.tile_favorites(cx);
+        self.slide_tiles(&slots, &old_tiles, &new_tiles);
+        let Some(home) = new_tiles
+            .iter()
+            .position(|p| p == path)
+            .and_then(|ix| slots.get(ix))
+            .filter(|_| crate::motion::enabled() && old_tiles.len() == new_tiles.len())
+        else {
+            return;
+        };
+        let (dx, dy) = settle_offset(window.mouse_position(), grab, *home);
+        self.tab_drag.serial += 1;
+        self.tab_drag.tile_shift.insert(
+            path.to_path_buf(),
+            Slide {
+                from: (dx, dy),
+                started: std::time::Instant::now(),
+                serial: self.tab_drag.serial,
+            },
+        );
+    }
+
+    /// Wraps a favorite tile like [`Self::tab_drag_shell`]: reports drag bounds and slides it from
+    /// its old slot after a reorder. The dragged tile's slot stays empty (the tile is under the
+    /// pointer), keeping its place in the grid.
+    ///
+    /// `ix` is the tile's slot among all the favorites (some are rows, #174), `cell` its place in
+    /// the grid.
     pub(super) fn tile_drag_shell(
         &self,
         ix: usize,
+        cell: usize,
         path: &Path,
         tile: impl IntoElement + Styled + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let dragged = self.tab_drag.tile.as_deref() == Some(path);
-        let tile = tile.opacity(if dragged { 0.4 } else { 1. });
+        let dragged = self.tab_drag.tile.as_deref() == Some(path) && cx.has_active_drag();
+        let tile = if dragged { tile.invisible() } else { tile };
         let now = std::time::Instant::now();
         let inner = match self
             .tab_drag
@@ -556,7 +618,7 @@ impl Workspace {
             .relative()
             .on_drag_move(cx.listener(
                 move |this, e: &DragMoveEvent<DraggedPin>, _: &mut Window, cx| {
-                    this.on_tile_drag_move(&key, e, cx);
+                    this.on_tile_drag_move(cell, &key, e, cx);
                 },
             ))
             .on_drag_move(
@@ -577,8 +639,40 @@ impl Workspace {
             .with_pin_drops(cx)
             .child(inner)
             .children(mark)
+            .when(dragged, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .debug_selector(|| "tile-gap".to_owned()),
+                )
+            })
             .into_any_element()
     }
+}
+
+/// How far a dropped tile is from its slot `home`: from the lifted copy under the pointer at
+/// `mouse` (taken hold of at `grab`, [`super::sidebar::TILE_LIFT`] times the tile's size) to the
+/// slot, center to center.
+fn settle_offset(mouse: Point<Pixels>, grab: Point<Pixels>, home: Bounds<Pixels>) -> (f32, f32) {
+    let lift = super::sidebar::TILE_LIFT;
+    let axis = |mouse: Pixels, grab: Pixels, start: Pixels, len: Pixels| -> f32 {
+        let (mouse, grab, start, len) = (
+            f32::from(mouse),
+            f32::from(grab),
+            f32::from(start),
+            f32::from(len),
+        );
+        // The copy's center: the pointer, less the grab point and plus half the size, all lifted.
+        let lifted = lift.mul_add(len / 2. - grab, mouse);
+        lifted - (start + len / 2.)
+    };
+    (
+        axis(mouse.x, grab.x, home.origin.x, home.size.width),
+        axis(mouse.y, grab.y, home.origin.y, home.size.height),
+    )
 }
 
 #[cfg(test)]
@@ -592,6 +686,16 @@ impl Workspace {
     ) {
         let id = self.tabs[ix].id;
         self.spring_hover(id, inside, window, cx);
+    }
+
+    /// Where the tile at `path` slides in from (its offset from its slot), while it slides.
+    pub(crate) fn tile_slide_from_for_test(&self, path: &Path) -> Option<(f32, f32)> {
+        let now = std::time::Instant::now();
+        self.tab_drag
+            .tile_shift
+            .get(path)
+            .filter(|slide| slide.live(now))
+            .map(|slide| slide.from)
     }
 
     /// The favorite tiles sliding from their old slots after a reorder, sorted.
@@ -611,7 +715,8 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{crosses, flip_offsets, grid_offsets};
+    use super::{crosses, flip_offsets, grid_offsets, settle_offset};
+    use gpui::{Bounds, point, px, size};
 
     #[test]
     fn grid_moves_slide_tiles_from_their_old_slots() {
@@ -635,6 +740,31 @@ mod tests {
             ]
         );
         assert!(grid_offsets(&slots, &['a', 'b'], &['a', 'b']).is_empty());
+    }
+
+    #[test]
+    fn a_dropped_tile_glides_in_from_under_the_pointer() {
+        // A tile 80 x 56 at (100, 40), taken hold of at its center.
+        let home = Bounds::new(point(px(100.), px(40.)), size(px(80.), px(56.)));
+        let grab = point(px(40.), px(28.));
+        let near = |(dx, dy): (f32, f32), (x, y): (f32, f32)| {
+            assert!((dx - x).abs() < 0.01 && (dy - y).abs() < 0.01, "{dx} {dy}");
+        };
+        // Let go right over its slot: nothing to cover.
+        near(
+            settle_offset(point(px(140.), px(68.)), grab, home),
+            (0., 0.),
+        );
+        // 30 to the right of it and 20 down: it starts from there.
+        near(
+            settle_offset(point(px(170.), px(88.)), grab, home),
+            (30., 20.),
+        );
+        // Taken hold of at its top left corner, the lifted copy reaches further right and down.
+        near(
+            settle_offset(point(px(100.), px(40.)), point(px(0.), px(0.)), home),
+            (4., 2.8),
+        );
     }
 
     #[test]

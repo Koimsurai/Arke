@@ -2816,10 +2816,6 @@ notice.address_copied:
   en: Copied the address
   zh-TW: 已複製位址
   zh-CN: 已复制地址
-notice.history_cleared:
-  en: "History cleared"
-  zh-TW: "已清除瀏覽記錄"
-  zh-CN: "已清除历史记录"
 menu.copy_address:
   en: Copy address
   zh-TW: 複製位址
@@ -2852,14 +2848,6 @@ notice.recycled_other:
   en: "Moved %{count} items to Recycle Bin"
   zh-TW: "已將 %{count} 個項目移到資源回收筒"
   zh-CN: "已将 %{count} 个项目移到回收站"
-notice.moved_to_new_folder_one:
-  en: "Moved 1 item into a new folder"
-  zh-TW: "已將 1 個項目移到新資料夾"
-  zh-CN: "已将 1 个项目移到新文件夹"
-notice.moved_to_new_folder_other:
-  en: "Moved %{count} items into a new folder"
-  zh-TW: "已將 %{count} 個項目移到新資料夾"
-  zh-CN: "已将 %{count} 个项目移到新文件夹"
 error.open_failed:
   en: "Couldn't open %{name}: %{error}"
   zh-TW: 無法開啟 %{name}：%{error}
@@ -2926,22 +2914,6 @@ extract.skipped_unsafe_other:
   zh-CN: "，跳过 %{count} 个不安全或不支持的项目"
 
 # ─── Clipboard and file operations
-clip.copied_one:
-  en: "Copied 1 item"
-  zh-TW: "已複製 %{count} 個項目"
-  zh-CN: "已复制 %{count} 个项目"
-clip.copied_other:
-  en: "Copied %{count} items"
-  zh-TW: "已複製 %{count} 個項目"
-  zh-CN: "已复制 %{count} 个项目"
-clip.cut_one:
-  en: "Cut 1 item"
-  zh-TW: "已剪下 %{count} 個項目"
-  zh-CN: "已剪切 %{count} 个项目"
-clip.cut_other:
-  en: "Cut %{count} items"
-  zh-TW: "已剪下 %{count} 個項目"
-  zh-CN: "已剪切 %{count} 个项目"
 clip.failed:
   en: "Couldn't put the files on the clipboard: %{error}"
   zh-TW: 無法放到剪貼簿：%{error}
@@ -2986,14 +2958,6 @@ menu.undo_op:
   en: "Undo %{op}"
   zh-TW: "復原「%{op}」"
   zh-CN: "撤销“%{op}”"
-undo.done_one:
-  en: "Undid %{op} (1 item)"
-  zh-TW: "已復原「%{op}」（%{count} 項）"
-  zh-CN: "已撤销“%{op}”（%{count} 项）"
-undo.done_other:
-  en: "Undid %{op} (%{count} items)"
-  zh-TW: "已復原「%{op}」（%{count} 項）"
-  zh-CN: "已撤销“%{op}”（%{count} 项）"
 undo.nothing:
   en: "Nothing to undo"
   zh-TW: "沒有可以復原的操作"
@@ -3456,10 +3420,6 @@ home.network:
   en: Network locations
   zh-TW: 網路位置
   zh-CN: 网络位置
-home.quick_access:
-  en: Quick access
-  zh-TW: 快速存取
-  zh-CN: 快速访问
 home.just_now:
   en: Just now
   zh-TW: 剛剛
@@ -4119,10 +4079,6 @@ redo.nothing:
   en: "Nothing to redo"
   zh-TW: "沒有可以重做的操作"
   zh-CN: "没有可重做的操作"
-redo.done:
-  en: "Redid %{op}"
-  zh-TW: "已重做「%{op}」"
-  zh-CN: "已重做“%{op}”"
 ops.state_queued:
   en: "Queued"
   zh-TW: "排隊中"
@@ -4179,10 +4135,6 @@ verify.reason_unreadable:
   en: "%{name} (can't read: %{error})"
   zh-TW: "%{name}（無法讀取：%{error}）"
   zh-CN: "%{name}（无法读取：%{error}）"
-teracopy.handed_off:
-  en: "Sent to TeraCopy"
-  zh-TW: "已交給 TeraCopy"
-  zh-CN: "已交给 TeraCopy"
 settings.group_file_ops:
   en: "Copy and move"
   zh-TW: "複製與移動"

@@ -38,6 +38,7 @@ use super::{DragPreview, DraggedFiles, drop_external_into, drop_into};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::media::MediaKey;
+use crate::op_center::ToastDelays;
 use crate::text_input::TextInput;
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
@@ -66,6 +67,10 @@ fn tail_items(item: Pixels) -> usize {
 const NOTICE_TTL: Duration = Duration::from_secs(5);
 /// A notice with Undo stays longer, so there's time to reach the button.
 const NOTICE_UNDO_TTL: Duration = Duration::from_secs(10);
+/// Delay keys of the progress toasts (see [`ToastDelays`]).
+const OPS_TOAST: &str = "ops";
+const EXTRACT_TOAST: &str = "extract";
+
 /// Widest the rename problem message gets before wrapping.
 fn rename_balloon_w() -> gpui::Pixels {
     crate::theme::scaled_px(440.)
@@ -1893,7 +1898,13 @@ impl Explorer {
 
     fn render_toasts(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mut toasts: Vec<AnyElement> = Vec::new();
-        if let Some(job) = &self.extract_job {
+        let view = cx.entity_id();
+        // Progress toasts wait: short jobs are only in the operation center.
+        if let Some(job) = self
+            .extract_job
+            .as_ref()
+            .filter(|_| ToastDelays::shown(cx, view, EXTRACT_TOAST))
+        {
             let p = job.progress;
             let progress = if p.total > 0 {
                 Progress::Fraction(p.done.min(p.total) as f32 / p.total as f32)
@@ -1919,17 +1930,21 @@ impl Explorer {
                 )],
             ));
         }
-        if let Some((progress, verb)) = self.op_progress.as_ref().filter(|_| self.ops_running > 0) {
-            toasts.push(Self::op_toast(progress, verb, cx));
-        } else if self.ops_running > 0 {
-            toasts.push(toast(
-                "toast-ops",
-                Icon::Copy,
-                t!("toast.ops_running").into_owned(),
-                Tone::Normal,
-                Progress::Indeterminate,
-                Vec::new(),
-            ));
+        if self.ops_running > 0 {
+            if ToastDelays::shown(cx, view, OPS_TOAST) {
+                if let Some((progress, verb)) = &self.op_progress {
+                    toasts.push(Self::op_toast(progress, verb, cx));
+                } else {
+                    toasts.push(toast(
+                        "toast-ops",
+                        Icon::Copy,
+                        t!("toast.ops_running").into_owned(),
+                        Tone::Normal,
+                        Progress::Indeterminate,
+                        Vec::new(),
+                    ));
+                }
+            }
         } else if let Some(notice) = &self.notice {
             toasts.push(self.notice_toast(notice, cx));
         }
@@ -2006,6 +2021,12 @@ impl Explorer {
         } else if let Some(gone) = gone {
             crate::motion::Leaving::start(self, gone, |this| &mut this.closing_notice, cx);
         }
+    }
+
+    /// Starts the delay of the progress toasts when a job begins and forgets it when the job ends.
+    fn track_progress_toasts(&mut self, cx: &mut Context<Self>) {
+        ToastDelays::track(cx, OPS_TOAST, self.ops_running > 0);
+        ToastDelays::track(cx, EXTRACT_TOAST, self.extract_job.is_some());
     }
 
     /// The toasts up now, or else a notice that is fading out.
@@ -2990,6 +3011,7 @@ impl Explorer {
             self.ensure_sorted(cx);
         }
         self.track_notice_exit(cx);
+        self.track_progress_toasts(cx);
         self.screen = (window.viewport_size(), window.scale_factor());
         let window_w = window.viewport_size().width;
         // A split tab's shared preview takes its room first; the panes share the rest.

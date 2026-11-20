@@ -157,6 +157,14 @@ impl PinDrag for DraggedFiles {
     }
 }
 
+/// A favorite moved within the sidebar (a tile taken out of the grid, or a list entry): over the
+/// list it goes in above or below the row, like a tab.
+impl PinDrag for super::sidebar::DraggedPin {
+    fn edges(&self, _: &Workspace, _: &App) -> Option<bool> {
+        Some(false)
+    }
+}
+
 impl PinDrag for ExternalPaths {
     fn edges(&self, _: &Workspace, _: &App) -> Option<bool> {
         // Whether they are folders is only known after the drop, off the UI thread.

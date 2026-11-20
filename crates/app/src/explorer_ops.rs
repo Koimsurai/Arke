@@ -248,8 +248,6 @@ pub(crate) struct OpFollowUp {
     deleted: Option<(Vec<Arc<str>>, usize)>,
     /// How to undo this operation (whatever completed, including before a cancel).
     undo: Option<Undo>,
-    /// This was an undo: the original operation and item count, for the "undone" toast.
-    undid: Option<(&'static str, usize)>,
     /// Job id in the progress center, if listed there.
     job: Option<u64>,
     /// Say what happened once it's done, with an Undo button (quiet operations otherwise only
@@ -313,21 +311,19 @@ pub(crate) struct PendingCreate {
     row: Option<Arc<str>>,
 }
 
-/// Short "done" notice with Undo for operations whose result is easy to miss: recycled items
-/// leave the list, and moved items disappear into the new folder.
+/// Short "done" notice with Undo for the one operation whose slip needs an immediate way back:
+/// deleting by mistake. Every other finished operation stays quiet and is listed in the
+/// operation center.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Announce {
     /// Moved to the Recycle Bin, with the item count.
     Recycled(usize),
-    /// Moved into a new folder ("Move to new folder"), with the item count.
-    MovedToNewFolder(usize),
 }
 
 impl Announce {
     pub(crate) fn text(self) -> String {
         match self {
             Self::Recycled(count) => tn!("notice.recycled", count).into_owned(),
-            Self::MovedToNewFolder(count) => tn!("notice.moved_to_new_folder", count).into_owned(),
         }
     }
 }
@@ -770,7 +766,7 @@ impl Explorer {
         &mut self,
         result: Result<u32, crate::shell::ShellError>,
         cut: bool,
-        count: usize,
+        _count: usize,
         parent: PathBuf,
         names: HashSet<Arc<str>>,
         cx: &mut Context<Self>,
@@ -780,11 +776,7 @@ impl Explorer {
                 if cut {
                     cx.set_global(CutMarks { seq, parent, names });
                 }
-                self.notice = Some(if cut {
-                    tn!("clip.cut", count).into_owned()
-                } else {
-                    tn!("clip.copied", count).into_owned()
-                });
+                // No toast: cut items are drawn faded, and copying changes nothing to look at.
             }
             Err(e) => self.error = Some(t!("clip.failed", error = e).into_owned()),
         }
@@ -1520,7 +1512,6 @@ impl Explorer {
             dest: Some(parent.clone()),
             select: vec![Arc::clone(&name_arc)],
             rename: Some((name_arc, false)),
-            announce: Some(Announce::MovedToNewFolder(sources.len())),
             ..OpFollowUp::default()
         };
         let create = FileOp::NewFolder {
@@ -1652,7 +1643,6 @@ impl Explorer {
         let follow = OpFollowUp {
             dest: entry.undo.target_dir().map(Path::to_path_buf),
             select,
-            undid: Some((entry.verb, entry.undo.len())),
             redo: entry.redo.clone().map(|op| Box::new((entry.verb, op))),
             ..OpFollowUp::default()
         };
@@ -1805,9 +1795,6 @@ impl Explorer {
         if let (Some(job), Some(undo)) = (follow.job, undo_id) {
             crate::op_center::OpCenter::set_undo(cx, job, undo);
         }
-        if let (Some((original, count)), Ok(OpOutcome::Done)) = (follow.undid, &result) {
-            self.notice = Some(tn!("undo.done", count, op = t!(original)).into_owned());
-        }
         // Undone completely: Ctrl+Y can redo it.
         if let (Some(redo), Ok(OpOutcome::Done)) = (follow.redo.clone(), &result) {
             let (original, op) = *redo;
@@ -1815,12 +1802,6 @@ impl Explorer {
             if let Some(job) = follow.job {
                 crate::op_center::OpCenter::set_redo(cx, job, redo_id);
             }
-        }
-        if let (Some(original), Ok(OpOutcome::Done)) = (follow.redone, &result) {
-            self.notice = Some(t!("redo.done", op = t!(original)).into_owned());
-        }
-        if follow.handed_off && result.is_ok() {
-            self.notice = Some(t!("teracopy.handed_off").into_owned());
         }
         if let (Some(announce), Ok(OpOutcome::Done)) = (follow.announce, &result) {
             let text = announce.text();

@@ -784,6 +784,12 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = path;
         FileDetails::default()
     }
+    /// Folders pinned to Quick Access in Windows' File Explorer, in Explorer's order. `None` when
+    /// they could not be read; `Some` of an empty list when none are pinned. Read only: Arke never
+    /// changes Windows' Quick Access. Background thread.
+    fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
+        None
+    }
     /// Sets the attribute bits in `set` and clears those in `clear` on each of `paths`, leaving
     /// every other bit alone. Stops at the first item that fails. Background thread.
     fn set_attributes(&self, paths: &[PathBuf], set: u32, clear: u32) -> Result<(), ShellError> {

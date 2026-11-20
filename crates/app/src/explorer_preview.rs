@@ -1114,6 +1114,18 @@ impl Explorer {
         (width * PDF_FRAME_RATIO).min(self.screen.0.height * 0.55)
     }
 
+    /// Pixel size of what the body draws as one picture (images, SVG, video thumbnails, a
+    /// single-page PDF); `None` for everything else, which fills its frame.
+    const fn content_size(body: &PreviewBody) -> Option<(u32, u32)> {
+        match body {
+            PreviewBody::Image { width, height, .. } => Some((*width, *height)),
+            PreviewBody::Pdf(view) if view.render.pages <= 1 => {
+                Some((view.render.width, view.render.height))
+            }
+            _ => None,
+        }
+    }
+
     /// Height of the pane's frame for images and text: the image ratio, but in a pane dragged
     /// wide it stops growing so the name and details stay on screen.
     fn image_frame_h(&self, width: Pixels) -> Pixels {
@@ -1602,17 +1614,20 @@ impl Explorer {
             .into_any_element()
     }
 
+    /// `frame_ratio`: width over height of the frame the body is drawn in.
     fn preview_body(
         preview: &Preview,
         scroll: &gpui::ScrollHandle,
         bars: office::SheetBars,
+        frame_ratio: f32,
     ) -> AnyElement {
         match &preview.body {
             // Give the element the frame's aspect ratio; otherwise GPUI sizes by the image's own
-            // ratio and portrait photos overflow.
+            // ratio and portrait photos overflow (and a frame hugging a wide picture would cut
+            // it off).
             PreviewBody::Image { image, .. } => img(Arc::clone(image))
                 .size_full()
-                .aspect_ratio(PANE_IMAGE_RATIO)
+                .aspect_ratio(frame_ratio)
                 .object_fit(ObjectFit::Contain)
                 .rounded(theme::r_8())
                 .into_any_element(),
@@ -2323,7 +2338,13 @@ impl Explorer {
         };
         // The height the user dragged the boundary to replaces the automatic one.
         let dragged = self.dragged_frame_h();
-        let frame_h = dragged.unwrap_or(auto_h);
+        // A picture with a known shape doesn't get a frame taller than it is at this width, so
+        // the boundary handle sits right under it.
+        let frame_h = hugged_frame_h(
+            dragged.unwrap_or(auto_h),
+            frame_w,
+            Self::content_size(&preview.body),
+        );
         // The frame takes up to `frame_h` and gives height back in a short window, so the name and
         // details below it stay on screen. PDF pages fit the height it got (measured at the last
         // layout; drawn once more when that changes).
@@ -2380,6 +2401,7 @@ impl Explorer {
                     .relative()
                     .min_h(pane_frame_min_h())
                     .overflow_hidden()
+                    .debug_selector(|| "preview-frame".into())
                     .map(|d| {
                         if dragged.is_some() {
                             // The dragged height, giving way first when the window is too short.
@@ -2412,6 +2434,7 @@ impl Explorer {
                                     Rc::clone(&self.preview_scrollbar),
                                     Rc::clone(&self.preview_hscrollbar),
                                 ),
+                                f32::from(shown.width) / f32::from(shown.height).max(1.),
                             );
                             if Self::scrolls(&preview.body) {
                                 // A table reaches past the frame sideways: its own bar.
@@ -3378,6 +3401,21 @@ const PDF_FRAME_RATIO: f32 = 1.3;
 fn pane_frame_min_h() -> gpui::Pixels {
     crate::theme::scaled_px(96.)
 }
+/// The frame height for a picture of `content` pixels (`None`: not a picture): `frame_h`, or less
+/// when the picture fitted to `frame_w` is shorter, but never below the smallest frame.
+fn hugged_frame_h(
+    frame_h: gpui::Pixels,
+    frame_w: gpui::Pixels,
+    content: Option<(u32, u32)>,
+) -> gpui::Pixels {
+    match content {
+        Some((w, h)) if w > 0 && h > 0 => {
+            let fitted = frame_w * (h as f32 / w as f32);
+            frame_h.min(fitted).max(pane_frame_min_h().min(frame_h))
+        }
+        _ => frame_h,
+    }
+}
 /// Long side of the high-res image for "actual size" (4096² × 4 ≈ 64 MB)
 const ZOOM_SIDE: u32 = 4096;
 /// Zoom change per wheel notch
@@ -3960,6 +3998,7 @@ impl Explorer {
                             Rc::clone(&self.look_scrollbar),
                             Rc::clone(&self.look_hscrollbar),
                         ),
+                        PANE_IMAGE_RATIO,
                     ),
                 };
                 let body = if Self::scrolls(&preview.body) {

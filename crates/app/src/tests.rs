@@ -35,6 +35,8 @@ mod favorites;
 mod folder_views;
 #[path = "tests_idle.rs"]
 mod idle;
+#[path = "tests_api.rs"]
+mod integration_api;
 #[path = "tests_lazy_submenus.rs"]
 mod lazy_submenus;
 #[cfg(windows)]
@@ -60,12 +62,16 @@ mod properties_card;
 mod properties_window;
 #[path = "tests_quick_look.rs"]
 mod quick_look;
+#[path = "tests_quiet_toasts.rs"]
+mod quiet_toasts;
 #[path = "tests_quiet_update.rs"]
 mod quiet_update;
 #[path = "tests_remote.rs"]
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_sidebar_sections.rs"]
+mod sidebar_sections;
 #[path = "tests_sidebar_tree.rs"]
 mod sidebar_tree;
 #[path = "tests_small_behaviors.rs"]
@@ -80,6 +86,10 @@ mod tabs;
 mod tests_columns;
 #[path = "tests_commands.rs"]
 mod tests_commands;
+#[path = "tests_home_favorites.rs"]
+mod tests_home_favorites;
+#[path = "tests_quick_access.rs"]
+mod tests_quick_access;
 #[path = "tests_text_input_menu.rs"]
 mod text_input_menu;
 #[path = "tests_top_bar.rs"]
@@ -108,6 +118,8 @@ unsafe impl Sync for FakeClipboardData {}
 
 #[derive(Default)]
 struct FakeShell {
+    /// What Windows' Quick Access has pinned (`None`: unreadable).
+    quick_access: Mutex<Option<Vec<PathBuf>>>,
     opened: Mutex<Vec<PathBuf>>,
     /// The view order each `opened` file was opened in.
     opened_sorts: Mutex<Vec<Option<SortSpec>>>,
@@ -230,6 +242,10 @@ impl FakeShell {
 }
 
 impl Shell for FakeShell {
+    fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
+        self.quick_access.lock().clone()
+    }
+
     fn load_places(&self) -> Vec<Place> {
         assert!(
             !arke_core::fs::is_ui_thread(),
@@ -2652,6 +2668,10 @@ fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext)
         purge_job(cx).map(|(state, ..)| state),
         Some(JobState::Running)
     );
+    // The progress toast waits a couple of seconds; a short delete is only in the operation center.
+    assert!(cx.debug_bounds("toast-ops-action-0").is_none(), "not yet");
+    cx.executor().advance_clock(crate::op_center::TOAST_DELAY);
+    cx.run_until_parked();
     assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
 
     // One item goes; the bar moves (1 of 3).
@@ -2766,6 +2786,8 @@ fn reopening_the_bin_while_it_empties_keeps_it_busy(cx: &mut TestAppContext) {
     );
     let purging = t!("recycle.purging").into_owned();
     assert_eq!(page.update(cx, |p, cx| p.status_for_test(cx)), purging);
+    cx.executor().advance_clock(crate::op_center::TOAST_DELAY);
+    cx.run_until_parked();
     assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
 
     for _ in 0..2 {
@@ -3007,7 +3029,9 @@ fn copy_cut_paste_through_clipboard(cx: &mut TestAppContext) {
             cut: false,
         })
     );
-    wait_until(cx, &view, "notice", |v| v.notice.is_some());
+    // Copying to the clipboard is quiet: nothing to look at, so no toast.
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |v, _| v.notice.clone()), None);
 
     view.update(cx, |v, cx| {
         v.navigate(PathBuf::from(r"C:\b"), NavKind::New, cx);
@@ -3308,7 +3332,7 @@ fn ctrl_z_undoes_the_last_file_op_but_not_in_text_boxes(cx: &mut TestAppContext)
 
     cx.simulate_keystrokes("escape ctrl-z");
     wait_until(cx, &view, "undo", |v| {
-        v.ops_running == 0 && v.notice.is_some()
+        v.ops_running == 0 && !shell.undone.lock().is_empty()
     });
     assert_eq!(
         *shell.undone.lock(),
@@ -3318,10 +3342,8 @@ fn ctrl_z_undoes_the_last_file_op_but_not_in_text_boxes(cx: &mut TestAppContext)
             name: "b.txt".into(),
         }])]
     );
-    view.update(cx, |v, _| {
-        let undone = tn!("undo.done", 1, op = t!("op.recycle"));
-        assert_eq!(v.notice.as_deref(), Some(&*undone));
-    });
+    // A finished undo says nothing: it is in the operation center.
+    view.update(cx, |v, _| assert_eq!(v.notice, None));
     // Undo is listed in the progress center too.
     let undo = t!("op.undo");
     let jobs = finished_jobs(cx);
@@ -5319,10 +5341,10 @@ fn extract_zip_from_context_menu(cx: &mut TestAppContext) {
     right_click(&view, cx, Some(0));
     run_command(&view, cx, MenuCommand::ExtractToFolder);
     wait_until(cx, &view, "extract done", |v| {
-        v.extract_job.is_none() && v.notice.is_some()
+        v.extract_job.is_none() && v.selection.contains("album")
     });
-    let notice = view.update(cx, |v, _| v.notice.clone().unwrap());
-    assert_eq!(notice, tn!("extract.done", 2));
+    // A clean extraction says nothing; it is in the operation center.
+    assert_eq!(view.update(cx, |v, _| v.notice.clone()), None);
     // The progress center has a finished extraction.
     let jobs = finished_jobs(cx);
     assert!(
@@ -7760,10 +7782,8 @@ fn ctrl_y_redoes_the_last_undo_until_something_new_happens(cx: &mut TestAppConte
     wait_shell("redo", || shell.ops().len() == 2);
     wait_until(cx, &view, "redo done", |v| v.ops_running == 0);
     assert_eq!(shell.ops(), [recycle_b.clone(), recycle_b]);
-    view.update(cx, |v, _| {
-        let redid = t!("redo.done", op = t!("op.recycle"));
-        assert_eq!(v.notice.as_deref(), Some(&*redid));
-    });
+    // A finished redo says nothing: it is in the operation center.
+    view.update(cx, |v, _| assert_eq!(v.notice, None));
     // The redo is itself undoable, and Ctrl+Shift+Z redoes again after that.
     cx.simulate_keystrokes("ctrl-z");
     wait_shell("second undo", || shell.undone.lock().len() == 2);

@@ -58,10 +58,22 @@ pub(crate) fn has_recycle_bin(path: &Path) -> bool {
     let root = windows::core::HSTRING::from(format!(r"{}:\", char::from(letter)));
     // SAFETY: root is a NUL-terminated wide string that outlives the call.
     let kind = unsafe { GetDriveTypeW(&root) };
-    !matches!(
+    if matches!(
         kind,
         DRIVE_REMOTE | DRIVE_REMOVABLE | DRIVE_CDROM | DRIVE_RAMDISK
-    )
+    ) {
+        return false;
+    }
+    // A subst drive reports the type of the drive under it, but Windows keeps no bin for it.
+    // Nor does a drive where the user (or a policy) turned the Recycle Bin off.
+    let subst = crate::win::dos_device(char::from(letter)).is_some_and(|d| is_subst_target(&d));
+    !subst && !crate::win_fast_recycle::recycling_off(Path::new(&root.to_os_string()))
+}
+
+/// A `subst` drive's device is `\??\` plus its folder, where a real volume's is
+/// `\Device\HarddiskVolume3`.
+fn is_subst_target(device: &str) -> bool {
+    device.starts_with(r"\??\")
 }
 
 /// Lists the Recycle Bin across all drives. Call from a background thread.
@@ -178,6 +190,15 @@ fn system_time(ft: FILETIME) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_subst_drive_is_told_from_a_volume() {
+        assert!(is_subst_target(r"\??\C:\Users\me\Projects"));
+        assert!(!is_subst_target(r"\Device\HarddiskVolume3"));
+        assert!(!is_subst_target(
+            r"\Device\LanmanRedirector\;Z:0000\server\share"
+        ));
+    }
 
     #[test]
     fn network_paths_have_no_recycle_bin() {

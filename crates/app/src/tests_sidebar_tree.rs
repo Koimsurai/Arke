@@ -128,7 +128,7 @@ fn this_pc_collapsed(cx: &mut VisualTestContext) -> bool {
         SettingsStore::global(cx)
             .read(cx)
             .settings
-            .this_pc_collapsed
+            .is_collapsed(crate::settings::SidebarSection::ThisPc)
     })
 }
 

@@ -91,3 +91,15 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   click dropped it. Capture moving to a window of the same thread (menus, OLE drag and drop, the
   move loop) is left alone. Arke's `crates/app/src/press_guard.rs` sends the same release when a
   move or press shows a button is up, and treats `click_count` 0 as "cancelled".
+- Window classes and the integration API (`src/window.rs` `WINDOW_CLASS_NAME`, `POPUP_CLASS_NAME`,
+  `window_class_for`, `register_window_class`, `set_copydata_handler`, `answer_copydata`,
+  `window_procedure`; `src/gpui_windows.rs` exports). Upstream registers every window as
+  `Zed::Window`. Normal windows are now `ArkeWindow`, the class other programs find Arke by
+  (`ahk_class ArkeWindow`), and every other kind (menus, tooltips, dialogs) is
+  `ArkeWindow.Popup`, so such a search never lands on a menu. The window procedure answers
+  `WM_COPYDATA` tagged `COPYDATA_ID` ("ARKE") through the handler the app sets: it gets the
+  request bytes, and its reply goes straight back to the sender's window (`wParam`) as a
+  `WM_COPYDATA` with the same tag (`SendMessageTimeoutW`, so a hung sender can't hang Arke)
+  before the message returns `TRUE`. This runs before the window state is looked at, and the
+  handler must not touch GPUI (Arke answers from a snapshot, see `crates/app/src/api.rs` and
+  `docs/integration.md`). Other `WM_COPYDATA` messages get the default handling. (#193)

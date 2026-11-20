@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::Workspace;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
-use crate::home::{HomeEvent, HomePage};
+use crate::home::{Favorite, HomeEvent, HomePage};
 use crate::settings::SettingsStore;
 use crate::theme;
 
@@ -23,6 +23,12 @@ pub(super) struct HomeView {
     /// under it, the one it was opened from.
     start: bool,
     _events: Subscription,
+}
+
+/// The favorites as the sidebar's tiles show them: same list and order, a name of its own first
+/// (#259), otherwise the place's (mapped drives keep their custom name) or the folder's; same icons.
+fn sidebar_favorites(places: &[crate::shell::Place], cx: &mut App) -> Vec<Favorite> {
+    super::sidebar::favorite_tiles(places, cx)
 }
 
 impl Workspace {
@@ -95,7 +101,8 @@ impl Workspace {
             .settings
             .net_places
             .clone();
-        let view = cx.new(|cx| HomePage::new(shell, places, shares, cx));
+        let favorites = sidebar_favorites(&places, cx);
+        let view = cx.new(|cx| HomePage::new(shell, places, favorites, shares, cx));
         let events = cx.subscribe_in(&view, window, Self::on_home_event);
         self.home_page = Some(HomeView {
             view,
@@ -275,8 +282,10 @@ impl Workspace {
             .place_rename
             .as_ref()
             .map(|r| (r.path.clone(), r.input.clone()));
+        let favorites = sidebar_favorites(&places, cx);
         page.view.update(cx, |home, _| {
             home.set_locations(places, shares);
+            home.set_favorites(favorites);
             home.set_names(names, rename);
         });
     }
@@ -314,6 +323,15 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn home_recent_for_test(&self, cx: &App) -> Option<Vec<std::path::PathBuf>> {
         self.home_page.as_ref()?.view.read(cx).recent_for_test()
+    }
+
+    /// The favorites Home lists, as `(path, name)` (`None` while closed).
+    #[cfg(test)]
+    pub(crate) fn home_favorites_for_test(
+        &self,
+        cx: &App,
+    ) -> Option<Vec<(std::path::PathBuf, String)>> {
+        Some(self.home_page.as_ref()?.view.read(cx).favorites_for_test())
     }
 
     /// Whether Home draws its recent files section (tests).

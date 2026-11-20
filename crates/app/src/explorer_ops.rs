@@ -536,6 +536,7 @@ pub(crate) fn retry_of(op: &FileOp, error: &ShellError) -> Option<FileOp> {
                 FailReason::BadName
                     | FailReason::BadNameInside
                     | FailReason::NoRecycleBin
+                    | FailReason::TooBigForBin
                     | FailReason::PathTooLong
                     | FailReason::Gone
             )
@@ -547,6 +548,11 @@ pub(crate) fn retry_of(op: &FileOp, error: &ShellError) -> Option<FileOp> {
         paths,
         recycle: *recycle,
     })
+}
+
+/// An item a recycle kept back because it is too big for the Recycle Bin.
+fn too_big(failure: &crate::shell::ItemFailure) -> bool {
+    failure.reason == arke_core::failure::FailReason::TooBigForBin
 }
 
 /// Top-level paths an operation removed from where they were: deleted or moved away, minus those
@@ -1054,7 +1060,14 @@ impl Explorer {
             (paths, Vec::new())
         };
         if !no_bin.is_empty() {
-            self.ask_no_recycle_bin(paths, no_bin, follow, window, cx);
+            self.ask_no_recycle_bin(
+                paths,
+                no_bin,
+                super::confirm::NoBinWhy::NoBin,
+                follow,
+                window,
+                cx,
+            );
         } else if !recycle {
             self.ask_delete_permanently(paths, follow, window, cx);
         } else if ask {
@@ -1761,6 +1774,10 @@ impl Explorer {
         cx.notify();
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one place that settles every finished operation, outcome by outcome"
+    )]
     pub(super) fn handle_op_finished(
         &mut self,
         verb: &'static str,
@@ -1837,7 +1854,33 @@ impl Explorer {
         if let Some(op) = follow.op.as_deref() {
             self.forget_search_hits(&removed_paths(op, &result), cx);
         }
+        let recycled = matches!(
+            follow.op.as_deref(),
+            Some(FileOp::Delete { recycle: true, .. })
+        );
         match result {
+            // Too big for the Recycle Bin: kept, and Arke asks about deleting them permanently
+            // (instead of the error toast); other failures still show theirs.
+            Err(ShellError::Items { failed }) if recycled && failed.iter().any(too_big) => {
+                let (big, rest): (Vec<_>, Vec<_>) = failed.into_iter().partition(too_big);
+                let purge_follow = OpFollowUp {
+                    dest: follow.dest.clone(),
+                    deleted: follow.deleted.clone(),
+                    ..OpFollowUp::default()
+                };
+                let big = big.into_iter().map(|f| f.path);
+                match &mut self.too_big_ask {
+                    // Another recycle's are still waiting: ask about all of them at once.
+                    Some((waiting, _)) => waiting.extend(big),
+                    None => self.too_big_ask = Some((big.collect(), purge_follow)),
+                }
+                if rest.is_empty() {
+                    self.scroll_to_cursor = None;
+                } else {
+                    let rest = ShellError::Items { failed: rest };
+                    self.show_op_failure(verb, &rest, follow.op.as_deref(), follow.job, cx);
+                }
+            }
             Err(e) => self.show_op_failure(verb, &e, follow.op.as_deref(), follow.job, cx),
             Ok(OpOutcome::Cancelled) => {
                 self.scroll_to_cursor = None;

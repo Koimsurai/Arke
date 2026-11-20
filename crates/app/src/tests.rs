@@ -92,6 +92,8 @@ mod tests_home_favorites;
 mod tests_quick_access;
 #[path = "tests_text_input_menu.rs"]
 mod text_input_menu;
+#[path = "tests_too_big_for_bin.rs"]
+mod too_big_for_bin;
 #[path = "tests_top_bar.rs"]
 mod top_bar;
 #[path = "tests_views.rs"]
@@ -308,9 +310,13 @@ impl Shell for FakeShell {
                     .collect(),
             )
         };
-        // Deletes that fail on some items: the rest go, and only they can be undone.
+        // Deletes that fail on some items: the rest go, and only they can be undone. Too big for
+        // the Recycle Bin only stops recycling them; deleting them permanently works.
         if let FileOp::Delete { paths, recycle } = op {
-            let failing = self.fail_delete.lock().clone();
+            let mut failing = self.fail_delete.lock().clone();
+            if !*recycle {
+                failing.retain(|(_, reason, _)| *reason != FailReason::TooBigForBin);
+            }
             let (bad, good): (Vec<PathBuf>, Vec<PathBuf>) = paths
                 .iter()
                 .cloned()

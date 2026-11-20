@@ -580,16 +580,21 @@ pub(crate) fn perform_tracked(
         return (crate::win_purge::purge(paths, progress), None);
     }
     // Fast Recycle Bin: what it can take goes there directly, the rest through
-    // the engine below (win_fast_recycle.rs).
+    // the engine below (win_fast_recycle.rs). Items too big for their drive's bin stay where they
+    // are and are reported, so Arke asks about deleting them permanently instead of Windows.
     let mut fast = Vec::new();
+    let mut too_big = Vec::new();
     let rest;
     let op = match op {
         FileOp::Delete {
             paths,
             recycle: true,
-        } if crate::win_fast_recycle::enabled() => {
+        } => {
+            use crate::win_fast_recycle::Outcome;
             let mut left = Vec::new();
-            let mut batch = crate::win_fast_recycle::Batch::default();
+            let mut batch =
+                crate::win_fast_recycle::enabled().then(crate::win_fast_recycle::Batch::default);
+            let mut limits = crate::win_fast_recycle::Limits::default();
             let mut cancelled = false;
             for path in paths {
                 // Like the engine: stop before the next item; what is in the bin stays there,
@@ -598,27 +603,37 @@ pub(crate) fn perform_tracked(
                     cancelled = true;
                     break;
                 }
-                match batch.recycle(path) {
-                    Some(now) => {
+                let measured = match batch.as_mut().map(|b| b.recycle(path)) {
+                    Some(Outcome::Recycled(now)) => {
                         progress
                             .done
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         fast.extend(put_back(path, &now));
+                        continue;
                     }
-                    None => left.push(path.clone()),
+                    Some(Outcome::TooBig) => {
+                        too_big.push(path.clone());
+                        continue;
+                    }
+                    Some(Outcome::Engine { measured }) => measured,
+                    None => false,
+                };
+                if !measured && limits.exceeds_bin(path) {
+                    too_big.push(path.clone());
+                } else {
+                    left.push(path.clone());
                 }
             }
-            batch.finish();
+            if let Some(batch) = batch {
+                batch.finish();
+            }
             if cancelled || left.is_empty() {
                 let outcome = if cancelled {
-                    OpOutcome::Cancelled
+                    Ok(OpOutcome::Cancelled)
                 } else {
-                    OpOutcome::Done
+                    with_too_big(Ok(OpOutcome::Done), too_big)
                 };
-                return (
-                    Ok(outcome),
-                    (!fast.is_empty()).then_some(Undo::PutBack(fast)),
-                );
+                return (outcome, (!fast.is_empty()).then_some(Undo::PutBack(fast)));
             }
             rest = FileOp::Delete {
                 paths: left,
@@ -639,7 +654,33 @@ pub(crate) fn perform_tracked(
         }
         (_, false) => Some(Undo::PutBack(fast)),
     };
-    (result, undo)
+    (with_too_big(result, too_big), undo)
+}
+
+/// `result` with the items kept back as too big for the Recycle Bin added to its failures. A
+/// cancel, or a failure of the whole operation, stays what is reported; those items are still
+/// where they were.
+fn with_too_big(
+    result: Result<OpOutcome, ShellError>,
+    too_big: Vec<PathBuf>,
+) -> Result<OpOutcome, ShellError> {
+    use arke_core::failure::FailReason;
+    if too_big.is_empty() {
+        return result;
+    }
+    let big = too_big
+        .into_iter()
+        .map(|path| ItemFailure::new(path, FailReason::TooBigForBin, String::new()));
+    match result {
+        Ok(OpOutcome::Done) => Err(ShellError::Items {
+            failed: big.collect(),
+        }),
+        Err(ShellError::Items { mut failed }) => {
+            failed.extend(big);
+            Err(ShellError::Items { failed })
+        }
+        other => other,
+    }
 }
 
 /// How to undo moving `from` to `now`.

@@ -3054,6 +3054,7 @@ impl Explorer {
         }
         self.poll_pending_create(cx);
         self.poll_pending_rename(window, cx);
+        self.poll_too_big_ask(window, cx);
         self.schedule_notice_dismiss(cx);
         self.sync_preview(cx);
         self.sync_parent_column();

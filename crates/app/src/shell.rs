@@ -201,6 +201,7 @@ impl ItemFailure {
             FailReason::ReadOnly => t!("fail.read_only", name = name),
             FailReason::PathTooLong => t!("fail.too_long", name = name),
             FailReason::NoRecycleBin => t!("fail.no_recycle_bin", name = name),
+            FailReason::TooBigForBin => t!("fail.too_big_for_bin", name = name),
             FailReason::BadName => t!("fail.bad_name", name = name),
             FailReason::BadNameInside => t!("fail.bad_name_inside", name = name),
             FailReason::DiskFull => t!("fail.disk_full", name = name),
@@ -237,6 +238,7 @@ pub(crate) fn items_failed(failed: &[ItemFailure]) -> String {
         Some(t!("fail.hint_close"))
     } else if any(&[
         FailReason::NoRecycleBin,
+        FailReason::TooBigForBin,
         FailReason::BadName,
         FailReason::BadNameInside,
     ]) {

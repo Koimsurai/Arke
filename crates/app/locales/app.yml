@@ -2724,6 +2724,10 @@ fail.no_recycle_bin:
   en: "“%{name}” can't go to the Recycle Bin"
   zh-TW: "「%{name}」無法移到資源回收筒"
   zh-CN: "“%{name}”无法移到回收站"
+fail.too_big_for_bin:
+  en: "“%{name}” is too big for the Recycle Bin"
+  zh-TW: "「%{name}」太大，無法放進資源回收筒"
+  zh-CN: "“%{name}”太大，无法放入回收站"
 fail.bad_name:
   en: "The Recycle Bin can't take the name “%{name}”"
   zh-TW: "資源回收筒無法處理「%{name}」這個名稱"
@@ -2788,6 +2792,14 @@ confirm.no_bin_many:
   en: "%{count} items are on a drive without a Recycle Bin, so they will be permanently deleted. This can't be undone."
   zh-TW: "有 %{count} 個項目所在的磁碟沒有資源回收筒，會永久刪除，無法復原。"
   zh-CN: "有 %{count} 个项目所在的磁盘没有回收站，将永久删除，无法恢复。"
+confirm.too_big_one:
+  en: "“%{name}” is too big for the Recycle Bin, so it can only be deleted permanently. This can't be undone."
+  zh-TW: "「%{name}」太大，無法放進資源回收筒，只能永久刪除，無法復原。"
+  zh-CN: "“%{name}”太大，无法放入回收站，只能永久删除，无法恢复。"
+confirm.too_big_many:
+  en: "%{count} items are too big for the Recycle Bin, so they can only be deleted permanently. This can't be undone."
+  zh-TW: "有 %{count} 個項目太大，無法放進資源回收筒，只能永久刪除，無法復原。"
+  zh-CN: "有 %{count} 个项目太大，无法放入回收站，只能永久删除，无法恢复。"
 confirm.no_bin_others_one:
   en: "The other item goes to the Recycle Bin."
   zh-TW: "另外 %{count} 個項目會移到資源回收筒。"

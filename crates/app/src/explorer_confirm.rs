@@ -41,6 +41,15 @@ pub(crate) enum ConfirmAction {
     },
 }
 
+/// Why items to recycle would be deleted permanently instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoBinWhy {
+    /// Their drive has no Recycle Bin (or it is turned off).
+    NoBin,
+    /// Each is bigger than its drive's Recycle Bin may hold.
+    TooBig,
+}
+
 pub(crate) struct Confirm {
     title: SharedString,
     body: SharedString,
@@ -113,28 +122,30 @@ impl Explorer {
         );
     }
 
-    /// Some items to recycle are where Windows has no Recycle Bin (network share, USB stick):
-    /// they would be deleted permanently, so ask like a permanent delete, naming why.
+    /// Some items to recycle can't go to the Recycle Bin: where Windows has none (network share,
+    /// USB stick), or too big for it. They would be deleted permanently, so ask like a permanent
+    /// delete, naming why.
     pub(super) fn ask_no_recycle_bin(
         &mut self,
         recycle: Vec<PathBuf>,
         purge: Vec<PathBuf>,
+        why: NoBinWhy,
         follow: OpFollowUp,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut body = match purge.as_slice() {
-            [one] => t!(
-                "confirm.no_bin_one",
-                name = one.file_name().map_or_else(
-                    || one.display().to_string(),
-                    |n| n.to_string_lossy().into_owned()
-                )
-            ),
-            many => t!(
-                "confirm.no_bin_many",
-                count = arke_core::format::format_count(many.len())
-            ),
+        let name = |path: &PathBuf| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        };
+        let count = arke_core::format::format_count(purge.len());
+        let mut body = match (why, purge.as_slice()) {
+            (NoBinWhy::NoBin, [one]) => t!("confirm.no_bin_one", name = name(one)),
+            (NoBinWhy::NoBin, _) => t!("confirm.no_bin_many", count = count),
+            (NoBinWhy::TooBig, [one]) => t!("confirm.too_big_one", name = name(one)),
+            (NoBinWhy::TooBig, _) => t!("confirm.too_big_many", count = count),
         }
         .into_owned();
         if !recycle.is_empty() {
@@ -154,6 +165,19 @@ impl Explorer {
             window,
             cx,
         );
+    }
+
+    /// Asks about the items a recycle kept back as too big for the Recycle Bin (`too_big_ask`):
+    /// Delete removes exactly those, permanently; Cancel leaves them. Called during render, since
+    /// the dialog takes focus, and only once no other dialog is open.
+    pub(super) fn poll_too_big_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm.is_some() {
+            return;
+        }
+        let Some((purge, follow)) = self.too_big_ask.take() else {
+            return;
+        };
+        self.ask_no_recycle_bin(Vec::new(), purge, NoBinWhy::TooBig, follow, window, cx);
     }
 
     /// Ask once before recycling (when "Confirm before deleting" is on).

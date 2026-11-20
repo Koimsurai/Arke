@@ -841,6 +841,9 @@ pub(crate) struct Explorer {
     pub(crate) confirm: Option<confirm::Confirm>,
     /// A cancelled confirmation fading out.
     pub(crate) closing_confirm: Option<crate::motion::Leaving<confirm::Confirm>>,
+    /// Items a recycle left because they are too big for the Recycle Bin, waiting to be asked
+    /// about (the dialog needs a Window; asked during render, once no other dialog is open).
+    pub(crate) too_big_ask: Option<(Vec<PathBuf>, ops::OpFollowUp)>,
     /// Subfolder sizes, computed in the background.
     folder_sizes: sizes::FolderSizes,
     pub(crate) preview: Option<preview::Preview>,
@@ -1138,6 +1141,7 @@ impl Explorer {
             closing_quick_look: None,
             confirm: None,
             closing_confirm: None,
+            too_big_ask: None,
             folder_sizes: sizes::FolderSizes::default(),
             preview: None,
             parent_column: None,

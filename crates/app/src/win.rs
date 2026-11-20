@@ -1171,6 +1171,37 @@ impl Shell for WinShell {
         crate::win_eject::is_ejectable(root)
     }
 
+    fn format_drive(&self, root: &Path, owner: Option<isize>) -> Result<(), ShellError> {
+        use windows::Win32::UI::Shell::{SHFMT_ID_DEFAULT, SHFMT_OPT_NONE, SHFormatDrive};
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        // The drive number: 0 for A:, 2 for C:.
+        let letter = root
+            .to_string_lossy()
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+            .ok_or(ShellError::Unsupported)?;
+        let drive = u32::from(letter.to_ascii_uppercase()) - u32::from('A');
+        let owner = windows::Win32::Foundation::HWND(owner.unwrap_or_default() as *mut _);
+        // SAFETY: shows Windows' modal Format dialog for the drive; owner is Arke's window or null.
+        let _ = unsafe { SHFormatDrive(owner, drive, SHFMT_ID_DEFAULT, SHFMT_OPT_NONE) };
+        Ok(())
+    }
+
+    fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
+        let letter = root
+            .to_string_lossy()
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+            .ok_or(ShellError::Unsupported)?;
+        std::process::Command::new("cleanmgr.exe")
+            .arg(format!("/d{letter}"))
+            .spawn()
+            .map(drop)
+            .map_err(|e| ShellError::Host(e.to_string()))
+    }
+
     fn eject_drive(&self, root: &Path) -> Result<(), ShellError> {
         debug_assert!(
             !arke_core::fs::is_ui_thread(),

@@ -846,6 +846,18 @@ impl Shell for RemoteShell {
     fn eject_drive(&self, root: &Path) -> Result<(), ShellError> {
         self.inner.eject_drive(root)
     }
+    fn format_drive(&self, root: &Path, owner: Option<isize>) -> Result<(), ShellError> {
+        if remote(root).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.format_drive(root, owner)
+    }
+    fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
+        if remote(root).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.disk_cleanup(root)
+    }
     fn choose_app(&self, path: &Path, owner: Option<isize>) -> Result<(), ShellError> {
         if remote(path).is_some() {
             return Err(ShellError::NotOnRemote);

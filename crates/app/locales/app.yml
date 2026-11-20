@@ -2990,6 +2990,14 @@ menu.open_new_window:
   en: Open in new window
   zh-TW: 在新視窗開啟
   zh-CN: 在新窗口中打开
+menu.format_drive:
+  en: Format…
+  zh-TW: 格式化…
+  zh-CN: 格式化…
+menu.disk_cleanup:
+  en: Disk Cleanup
+  zh-TW: 磁碟清理
+  zh-CN: 磁盘清理
 menu.properties:
   en: Properties
   zh-TW: 內容
@@ -3364,10 +3372,6 @@ sidebar.pinned_to_list:
   en: "Tiles are full; added to the list below"
   zh-TW: "方塊已滿，已加入下方清單"
   zh-CN: "磁贴已满，已添加到下方列表"
-sidebar.drop_to_list:
-  en: "Drop here to add to the list"
-  zh-TW: "放到這裡以加入清單"
-  zh-CN: "放到这里以加入列表"
 sidebar.favorite_removed:
   en: "Removed from favorites"
   zh-TW: "已從最愛移除"

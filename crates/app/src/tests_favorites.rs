@@ -550,3 +550,32 @@ fn a_list_entry_dragged_over_the_tiles_becomes_one(cx: &mut TestAppContext) {
         "stays where it was let go"
     );
 }
+
+/// Dragging a pinned list entry, the tiles show from the start that it can go up there: the
+/// "Add to favorites" slot and its wash, before the pointer gets to them.
+#[gpui::test]
+fn the_tiles_invite_a_list_entry_being_dragged(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    assert!(!drawn(cx, "tile-add-favorite"));
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        row.center() + point(px(6.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    refresh(cx);
+    assert!(
+        drawn(cx, "tile-add-favorite"),
+        "shown while it is still over the list"
+    );
+    cx.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert!(!drawn(cx, "tile-add-favorite"), "gone with the drag");
+}

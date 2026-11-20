@@ -129,6 +129,62 @@ pub(super) enum SidebarAction {
     RevealFile(PathBuf),
     CopyPath(PathBuf),
     Properties(PathBuf),
+    /// A drive (or any folder): Windows Terminal there, File Explorer there.
+    OpenTerminal(PathBuf),
+    OpenInExplorer(PathBuf),
+    /// Windows' Format dialog for a drive.
+    FormatDrive(PathBuf),
+    /// Windows' Disk Cleanup for a drive.
+    DiskCleanup(PathBuf),
+}
+
+/// A drive's own entries (here or on Home), what File Explorer's drive menu has, in Arke's
+/// words: copy path, Terminal, File Explorer, and for a local drive Eject (`ejectable`), Format
+/// (not the drive Windows runs from) and Disk Cleanup.
+fn drive_items(path: &Path, local: bool, ejectable: bool) -> Vec<(SharedString, SidebarAction)> {
+    let at = path.to_path_buf();
+    let mut items: Vec<(SharedString, SidebarAction)> = vec![
+        (
+            t!("menu.copy_path").to_string().into(),
+            SidebarAction::CopyPath(at.clone()),
+        ),
+        (
+            t!("menu.open_terminal").to_string().into(),
+            SidebarAction::OpenTerminal(at.clone()),
+        ),
+        (
+            t!("menu.open_in_explorer").to_string().into(),
+            SidebarAction::OpenInExplorer(at.clone()),
+        ),
+    ];
+    if ejectable {
+        items.push((
+            t!("sidebar.eject").to_string().into(),
+            SidebarAction::EjectDrive(at.clone()),
+        ));
+    }
+    if local {
+        if !is_system_drive(path) {
+            items.push((
+                t!("menu.format_drive").to_string().into(),
+                SidebarAction::FormatDrive(at.clone()),
+            ));
+        }
+        items.push((
+            t!("menu.disk_cleanup").to_string().into(),
+            SidebarAction::DiskCleanup(at),
+        ));
+    }
+    items
+}
+
+/// Whether `path` is the drive Windows runs from (`%SystemDrive%`).
+fn is_system_drive(path: &Path) -> bool {
+    std::env::var("SystemDrive").is_ok_and(|d| {
+        path.to_string_lossy()
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(d.trim_end_matches('\\'))
+    })
 }
 
 /// The menu of a recent file on Home.
@@ -1120,32 +1176,10 @@ impl Workspace {
             let row = pinned_rows.remove(row_at);
             pinned_rows.insert(row_at, self.pin_list_row(ix, path, label, row, cx));
         }
-        // With an empty list, a dragged tile still needs somewhere to drop (the heading, while
-        // the list is collapsed).
+        // With an empty list, a dragged tile still needs somewhere to drop: the heading (shown for
+        // the drag), and the Recycle Bin row under it. No extra drop bar: the insertion mark under
+        // the heading says it, as for a longer list.
         let wants_list_drop = pinned.is_empty() && self.dragging_pin;
-        let list_drop = (wants_list_drop && !collapsed).then(|| {
-            div()
-                .id("pin-list-drop")
-                .h(theme::h_row())
-                .mx(theme::s_4())
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(theme::r_8())
-                .border_1()
-                .border_dashed()
-                .border_color(theme::line_strong())
-                .text_size(theme::fs_12())
-                .text_color(theme::text_muted())
-                .child(t!("sidebar.drop_to_list").into_owned())
-                .drag_over::<DraggedPin>(|s, _, _, _| {
-                    s.bg(theme::signal_wash())
-                        .border_color(theme::signal_line())
-                })
-                .on_drop(cx.listener(|this, dragged: &DraggedPin, window, cx| {
-                    this.drop_pin_in_list(dragged, 0, window, cx);
-                }))
-        });
         // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
         // the last one (`workspace_pindrop.rs`).
         let add_slot = self.render_add_favorite_slot(tile_count, large, cx);
@@ -1177,19 +1211,54 @@ impl Workspace {
                 }))
                 .into_any_element(),
         ];
-        // The Recycle Bin is pinned by default and always sits last; it cannot be dragged.
+        // The Recycle Bin is pinned by default and always sits last; it cannot be dragged. A
+        // favorite or folder dragged over it goes in last in the list, just above it.
         if recycle_pinned {
-            pinned_rows.push(self.render_recycle_row(cx));
+            let end = pinned.len();
+            let marked = self.pin_shown == Some(PinSlot::List(end)) && self.pin_mark.is_none();
+            pinned_rows.push(
+                div()
+                    .id("recycle-drop")
+                    .relative()
+                    .child(self.render_recycle_row(cx))
+                    .when(marked, |d| d.child(pindrop::insertion_mark(false, true)))
+                    .on_drag_move(
+                        cx.listener(move |this, e: &DragMoveEvent<DraggedPin>, _, cx| {
+                            this.pin_hover_at(PinSlot::List(end), e, cx);
+                        }),
+                    )
+                    .on_drag_move(
+                        cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                            this.pin_hover_at(PinSlot::List(end), e, cx);
+                        }),
+                    )
+                    .on_drag_move(cx.listener(
+                        move |this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                            this.pin_hover_at(PinSlot::List(end), e, cx);
+                        },
+                    ))
+                    .on_drag_move(cx.listener(
+                        move |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                            this.pin_hover_at(PinSlot::List(end), e, cx);
+                        },
+                    ))
+                    .with_pin_drops(cx)
+                    .on_drop(cx.listener(move |this, dragged: &DraggedPin, window, cx| {
+                        this.drop_pin_in_list(dragged, end, window, cx);
+                    }))
+                    .into_any_element(),
+            );
         }
         // No pins, no section. "Pin to sidebar" makes it appear; no placeholder text.
         let heading = !long_rows.is_empty() || !pinned_rows.is_empty() || wants_list_drop;
         if heading {
             out.push(
                 self.section_header(SidebarSection::Favorites, collapsed, Vec::new(), cx)
-                    // A folder or tab goes first in the list; with no folder pinned yet, or the
-                    // list collapsed, the heading itself shows it.
+                    // A folder or tab goes first in the list; with the list collapsed, or no
+                    // folder pinned and no Recycle Bin row to show the spot above, the heading
+                    // itself shows it (one mark, where it lands).
                     .when(
-                        (pinned.is_empty() || collapsed)
+                        (collapsed || (pinned.is_empty() && !recycle_pinned))
                             && self.pin_shown == Some(PinSlot::List(0)),
                         |d| d.child(pindrop::insertion_mark(false, false)),
                     )
@@ -1230,7 +1299,6 @@ impl Workspace {
                 .child(row)
                 .into_any_element()
         }));
-        out.extend(list_drop.map(IntoElement::into_any_element));
         // A parent for each pinned row, so a folder pinned and also shown under This PC doesn't
         // repeat an element id (the screen reader tree needs them unique). Each row stays its own
         // item of the scrolling list, so one cut off at its bottom is dimmed alone.
@@ -1859,18 +1927,15 @@ impl Workspace {
         let is_drive = places
             .iter()
             .any(|p| p.path == path && matches!(p.kind, PlaceKind::Drive { remote: false, .. }));
-        if is_drive
-            && self
-                .active_view()
-                .read(cx)
-                .services
-                .shell
-                .is_ejectable(path)
-        {
-            items.push((
-                t!("sidebar.eject").to_string().into(),
-                SidebarAction::EjectDrive(path.to_path_buf()),
-            ));
+        if is_drive || mapped {
+            let ejectable = is_drive
+                && self
+                    .active_view()
+                    .read(cx)
+                    .services
+                    .shell
+                    .is_ejectable(path);
+            items.extend(drive_items(path, is_drive, ejectable));
         }
         if mapped || net_place {
             let searched = crate::global_search::is_searched(settings, path);
@@ -1889,6 +1954,12 @@ impl Workspace {
             items.push((
                 t!("sidebar.forget_share").to_string().into(),
                 SidebarAction::ForgetShare(path.to_path_buf()),
+            ));
+        }
+        if is_drive || mapped {
+            items.push((
+                t!("menu.properties").to_string().into(),
+                SidebarAction::Properties(path.to_path_buf()),
             ));
         }
         if settings.remote_places.iter().any(|p| p.url == path) {
@@ -2816,8 +2887,40 @@ impl Workspace {
                 });
             }
             SidebarAction::Properties(path) => {
+                let folder = path.parent().is_none() || path.is_dir();
                 self.active_view()
-                    .update(cx, |e, cx| e.open_properties(vec![(path, false)], cx));
+                    .update(cx, |e, cx| e.open_properties(vec![(path, folder)], cx));
+            }
+            SidebarAction::OpenTerminal(path) => {
+                let shell = Arc::clone(&self.services.shell);
+                crate::explorer::spawn_thread("terminal", move || {
+                    if let Err(e) = shell.open_terminal(&path) {
+                        log::info!("terminal at {}: {e}", path.display());
+                    }
+                });
+            }
+            SidebarAction::OpenInExplorer(path) => {
+                let shell = Arc::clone(&self.services.shell);
+                crate::explorer::spawn_thread("reveal", move || {
+                    let _ = shell.reveal_in_explorer(&path, false);
+                });
+            }
+            SidebarAction::FormatDrive(path) => {
+                let shell = Arc::clone(&self.services.shell);
+                let owner = crate::explorer::Explorer::owner_from(window);
+                crate::explorer::spawn_thread("format", move || {
+                    if let Err(e) = shell.format_drive(&path, owner) {
+                        log::info!("format {}: {e}", path.display());
+                    }
+                });
+            }
+            SidebarAction::DiskCleanup(path) => {
+                let shell = Arc::clone(&self.services.shell);
+                crate::explorer::spawn_thread("cleanup", move || {
+                    if let Err(e) = shell.disk_cleanup(&path) {
+                        log::info!("disk cleanup {}: {e}", path.display());
+                    }
+                });
             }
             SidebarAction::OpenInNewTab(path) => {
                 let at = self.active + 1;

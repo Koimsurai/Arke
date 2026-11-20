@@ -96,6 +96,11 @@ impl TabDrag {
         self.pin_out = false;
     }
 
+    /// A favorite from the list is being dragged (not yet a tile).
+    pub(super) const fn pin_from_list(&self) -> bool {
+        self.pin.is_some() && self.tile.is_none()
+    }
+
     /// The favorite being dragged, if any.
     pub(super) fn dragged_pin(&self) -> Option<&Path> {
         self.pin.as_deref()

@@ -322,3 +322,33 @@ fn the_collapsed_sidebar_uses_the_name(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(cx.debug_bounds("rail Backup (Z:)").is_some());
 }
+
+/// A local drive's menu has the drive things (copy path, Terminal, File Explorer, Format, Disk
+/// Cleanup, Properties); the drive Windows runs from can't be formatted; a folder has none.
+#[gpui::test]
+fn a_drive_menu_has_drive_things(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let labels = |ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: &str| {
+        let path = PathBuf::from(path);
+        ws.update(cx, |ws, cx| ws.place_menu_labels_for_test(&path, cx))
+    };
+    let drive = labels(&ws, cx, r"C:\");
+    for key in [
+        "menu.copy_path",
+        "menu.open_terminal",
+        "menu.open_in_explorer",
+        "menu.disk_cleanup",
+        "menu.properties",
+    ] {
+        assert!(drive.contains(&t!(key).to_string()), "{key}: {drive:?}");
+    }
+    let format = t!("menu.format_drive").to_string();
+    let system = std::env::var("SystemDrive").unwrap_or_default();
+    assert_eq!(
+        drive.contains(&format),
+        !system.eq_ignore_ascii_case("C:"),
+        "no Format for the system drive"
+    );
+    let folder = labels(&ws, cx, r"C:\a");
+    assert!(!folder.contains(&t!("menu.properties").to_string()));
+}

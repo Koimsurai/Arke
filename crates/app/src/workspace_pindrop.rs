@@ -336,7 +336,10 @@ impl Workspace {
         // One sign at a time: at a tile's edge the insertion mark says where it goes.
         let marked =
             self.pin_shown.is_some() && self.pin_mark.is_some_and(|m| m.area == PinArea::Tiles);
-        if !over_tiles(cx) || marked {
+        // A favorite dragged from the list: the tiles show it can go up there from the start of
+        // the drag, not only once it is over them (it becomes a tile on entering one).
+        let from_list = self.dragging_pin && self.tab_drag.pin_from_list();
+        if !(over_tiles(cx) || from_list) || marked {
             return None;
         }
         let hot = self.pin_shown == Some(PinSlot::Tile(count));
@@ -380,6 +383,11 @@ impl Workspace {
                         this.pin_hover_at(slot, e, cx);
                     }),
                 )
+                .on_drag_move(cx.listener(
+                    move |this, e: &DragMoveEvent<super::sidebar::DraggedPin>, _, cx| {
+                        this.pin_hover_at(slot, e, cx);
+                    },
+                ))
                 .on_drag_move(
                     cx.listener(move |this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
                         this.pin_hover_at(slot, e, cx);

@@ -706,26 +706,6 @@ impl HomePage {
             .relative()
             .when_some(shift, |d, (dx, dy)| d.left(px(dx)).top(px(dy)))
             .when(dragged, gpui::Styled::invisible)
-            .on_drag(drag, move |card, grab, _, cx| {
-                let _ = home.update(cx, |home, cx| {
-                    home.dragging = Some(card.path.clone());
-                    home.card_cells.clear();
-                    cx.notify();
-                });
-                cx.new(|_| CardPreview {
-                    card: card.clone(),
-                    grab,
-                })
-            })
-            .on_drag_move(cx.listener(
-                move |this, e: &DragMoveEvent<DraggedCard>, _: &mut Window, cx| {
-                    this.card_drag_move(ix, &key, e, cx);
-                },
-            ))
-            .on_drop(cx.listener(|this, _: &DraggedCard, _, cx| {
-                this.dragging = None;
-                cx.notify();
-            }))
             .a11y_lazy(gpui::Role::Link, || label.to_owned())
             .w(quick_w())
             .h(quick_h())
@@ -759,7 +739,7 @@ impl HomePage {
             )
             .tooltip(crate::explorer::tooltip(label.to_owned()));
         let menu_path = path.to_path_buf();
-        Self::card_actions(
+        let card = Self::card_actions(
             card,
             HomeEvent::OpenFolder(path.to_path_buf()),
             Some(path.to_path_buf()),
@@ -773,8 +753,35 @@ impl HomePage {
                     position: e.position,
                 });
             }),
-        )
-        .into_any_element()
+        );
+        // The cell holds still while its card slides: drag moves are read against where the
+        // cells are, never against a card midway through a slide (which threw reorders off).
+        div()
+            .id(("home-quick-cell", ix))
+            .w(quick_w())
+            .h(quick_h())
+            .child(card)
+            .on_drag(drag, move |card, grab, _, cx| {
+                let _ = home.update(cx, |home, cx| {
+                    home.dragging = Some(card.path.clone());
+                    home.card_cells.clear();
+                    cx.notify();
+                });
+                cx.new(|_| CardPreview {
+                    card: card.clone(),
+                    grab,
+                })
+            })
+            .on_drag_move(cx.listener(
+                move |this, e: &DragMoveEvent<DraggedCard>, _: &mut Window, cx| {
+                    this.card_drag_move(ix, &key, e, cx);
+                },
+            ))
+            .on_drop(cx.listener(|this, _: &DraggedCard, _, cx| {
+                this.dragging = None;
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     /// Drive, network location or Recycle Bin card: large icon, name, and for drives a usage bar

@@ -1118,6 +1118,17 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = root;
         false
     }
+    /// Windows' Format dialog for the drive at `root`, owned by `owner`. Background thread (the
+    /// dialog is modal).
+    fn format_drive(&self, root: &Path, owner: Option<isize>) -> Result<(), ShellError> {
+        let _ = (root, owner);
+        Err(ShellError::Unsupported)
+    }
+    /// Windows' Disk Cleanup for the drive at `root`. Background thread.
+    fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
+        let _ = root;
+        Err(ShellError::Unsupported)
+    }
     /// Ejects a drive (Safely Remove Hardware). Returns the reason if it is in use. Background thread.
     fn eject_drive(&self, root: &Path) -> Result<(), ShellError> {
         let _ = root;

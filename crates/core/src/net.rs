@@ -8,7 +8,7 @@
 //! Only connects when a network folder is opened; nothing touches the network at startup.
 
 use std::io;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::time::Duration;
 
@@ -210,6 +210,27 @@ pub fn share_root(unc: &Path) -> Option<PathBuf> {
 /// Tries the SMB port on `server`. Name resolution gets at most `resolve_budget`, each
 /// address at most `connect_timeout`.
 pub fn tcp_reach(server: &str, resolve_budget: Duration, connect_timeout: Duration) -> Reach {
+    tcp_reach_with(server, std_resolve, resolve_budget, connect_timeout)
+}
+
+/// Resolves a server name to its addresses.
+pub type Resolve = fn(&str) -> io::Result<Vec<IpAddr>>;
+
+/// The standard library's resolver. On Windows it hands the name to the ANSI `getaddrinfo`, which
+/// mangles names that aren't ASCII (#262); the app passes a wide-character resolver there.
+pub fn std_resolve(host: &str) -> io::Result<Vec<IpAddr>> {
+    (host, 445)
+        .to_socket_addrs()
+        .map(|addrs| addrs.map(|a| a.ip()).collect())
+}
+
+/// [`tcp_reach`] with the name resolved by `resolve`.
+pub fn tcp_reach_with(
+    server: &str,
+    resolve: Resolve,
+    resolve_budget: Duration,
+    connect_timeout: Duration,
+) -> Reach {
     // Name resolution can hang (NetBIOS/LLMNR), so it runs on another thread; past the budget we
     // report Unknown.
     let (tx, rx) = flume::bounded(1);
@@ -217,9 +238,8 @@ pub fn tcp_reach(server: &str, resolve_budget: Duration, connect_timeout: Durati
     let spawned = std::thread::Builder::new()
         .name("net-resolve".into())
         .spawn(move || {
-            let addrs: io::Result<Vec<SocketAddr>> = (host.as_str(), 445)
-                .to_socket_addrs()
-                .map(Iterator::collect);
+            let addrs: io::Result<Vec<SocketAddr>> = resolve(&host)
+                .map(|ips| ips.into_iter().map(|ip| SocketAddr::new(ip, 445)).collect());
             let _ = tx.send(addrs);
         });
     if spawned.is_err() {
@@ -480,6 +500,33 @@ mod tests {
             describe(&remote, true),
             ("host key changed".into(), FailKind::NeedsLogin)
         );
+    }
+
+    /// The name goes through the resolver it is given (on Windows, a wide-character one, since
+    /// the standard library's mangles names that aren't ASCII: #262).
+    #[test]
+    fn the_given_resolver_resolves_the_name() {
+        fn nowhere(_: &str) -> io::Result<Vec<IpAddr>> {
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        }
+        #[allow(
+            clippy::unnecessary_wraps,
+            reason = "a resolver: the same signature as one that can fail"
+        )]
+        fn here(host: &str) -> io::Result<Vec<IpAddr>> {
+            assert_eq!(host, "文件服务器");
+            Ok(vec![IpAddr::from([127, 0, 0, 2])])
+        }
+        let quick = |resolve| {
+            tcp_reach_with(
+                "文件服务器",
+                resolve,
+                Duration::from_secs(2),
+                Duration::from_millis(500),
+            )
+        };
+        assert_eq!(quick(nowhere), Reach::NoSuchHost);
+        assert_ne!(quick(here), Reach::NoSuchHost);
     }
 
     #[test]

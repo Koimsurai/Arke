@@ -436,7 +436,14 @@ impl Job {
                 .name(format!("probe-{}", self.generation))
                 .spawn(move || {
                     let reach = probe.reach(&server);
-                    if let Some(error) = crate::net::describe_reach(reach, &server) {
+                    // Only a server whose name resolves but doesn't answer is reported before the
+                    // listing ends. A name the probe can't resolve may still work for Windows'
+                    // network redirector (NetBIOS-only names, #262): the listing decides.
+                    let down = reach == crate::net::Reach::Down;
+                    if let Some(error) = down
+                        .then(|| crate::net::describe_reach(reach, &server))
+                        .flatten()
+                    {
                         log::info!("{server} unreachable ({reach:?}), not waiting for listing");
                         job.fail(path, error, FailKind::Offline);
                     }
@@ -1003,6 +1010,37 @@ mod tests {
         fs.release(&share);
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(complete_listing_of(&events, &share), None);
+    }
+
+    /// A name the probe can't resolve doesn't fail the folder: Windows' redirector may still
+    /// reach it (a NetBIOS-only name, or one in characters the probe mangled: #262).
+    #[test]
+    fn an_unresolved_name_waits_for_the_listing() {
+        let fs = FakeFs::new();
+        let share = PathBuf::from(r"\\文件服务器\共享文件夹");
+        fs.insert_many(&share, 3);
+        // The listing takes a while (connecting), so the probe answers first.
+        fs.hang(&share);
+        let (svc, events, _) = network_service(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            crate::net::Reach::NoSuchHost,
+        );
+        let generation = svc.navigate(share.clone(), opts(false));
+        std::thread::sleep(Duration::from_millis(200));
+        fs.release(&share);
+        assert!(wait_for(&events, Duration::from_secs(2), |e| matches!(
+            e,
+            IoEvent::Listing { generation: g, complete: true, entries, .. }
+                if *g == generation && entries.len() == 3
+        )));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !events
+                .lock()
+                .iter()
+                .any(|e| matches!(e, IoEvent::ListFailed { .. })),
+            "not reported unreachable"
+        );
     }
 
     /// Local folders are neither probed nor remembered.

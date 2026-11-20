@@ -181,6 +181,9 @@ enum Msg {
 
 pub(crate) struct Properties {
     services: Services,
+    /// The search index, which answers a folder's space at once when it follows its drive live
+    /// (`IndexService::usage_below`); otherwise the folder is walked.
+    index: Option<Arc<arke_core::index_service::IndexService>>,
     focus: FocusHandle,
     /// The items asked about, with whether each is a folder.
     targets: Vec<(PathBuf, bool)>,
@@ -375,6 +378,7 @@ impl Properties {
         ];
         let this = Self {
             services,
+            index: crate::global_search::GlobalSearch::local_service(cx),
             focus,
             targets,
             loaded: None,
@@ -483,6 +487,7 @@ impl Properties {
 
     fn start_loading(&self) {
         let services = self.services.clone();
+        let index = self.index.clone();
         let targets = self.targets.clone();
         let tx = self.tx.clone();
         let cancel = Arc::clone(&self.cancel);
@@ -492,7 +497,15 @@ impl Properties {
             let rows: Vec<Row> = loaded.rows.clone();
             let details = loaded.details;
             let _ = tx.send(Msg::Loaded(Box::new(loaded)));
-            count_space(&services, &rows, details, cluster, &cancel, &tx);
+            count_space(
+                &services,
+                index.as_deref(),
+                &rows,
+                details,
+                cluster,
+                &cancel,
+                &tx,
+            );
         });
     }
 
@@ -1495,6 +1508,7 @@ pub(crate) fn on_disk_of(entry: &Entry, details: FileDetails, cluster: u64) -> u
 /// Counts the files and folders under the items and reports as it goes. Background thread.
 fn count_space(
     services: &Services,
+    index: Option<&arke_core::index_service::IndexService>,
     rows: &[Row],
     details: FileDetails,
     cluster: u64,
@@ -1518,18 +1532,23 @@ fn count_space(
     let mut last_sent: Option<Instant> = None;
     for row in rows.iter().filter(|r| r.entry.is_dir_like()) {
         let before = done.clone();
-        let walked = dirsize::usage(&*services.fs, &row.path, cluster, cancel, &mut |so_far| {
-            if last_sent.is_none_or(|at| at.elapsed() >= PROGRESS_EVERY) {
-                last_sent = Some(Instant::now());
-                let mut shown = before.clone();
-                shown.usage += so_far.usage;
-                if single {
-                    shown.children.clone_from(&so_far.children);
-                } else {
-                    shown.children.push((row.path.clone(), so_far.usage.bytes));
+        // From the index when it follows this drive live: one pass in memory instead of a walk
+        // (a whole C: drive in about a second instead of a minute or more).
+        let from_index = index.and_then(|ix| ix.usage_below(&row.path, cluster, cancel));
+        let walked = from_index.or_else(|| {
+            dirsize::usage(&*services.fs, &row.path, cluster, cancel, &mut |so_far| {
+                if last_sent.is_none_or(|at| at.elapsed() >= PROGRESS_EVERY) {
+                    last_sent = Some(Instant::now());
+                    let mut shown = before.clone();
+                    shown.usage += so_far.usage;
+                    if single {
+                        shown.children.clone_from(&so_far.children);
+                    } else {
+                        shown.children.push((row.path.clone(), so_far.usage.bytes));
+                    }
+                    let _ = tx.send(Msg::Space(shown, Counting::Running));
                 }
-                let _ = tx.send(Msg::Space(shown, Counting::Running));
-            }
+            })
         });
         match walked {
             Some(space) => {

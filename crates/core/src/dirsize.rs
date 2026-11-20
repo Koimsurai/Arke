@@ -288,10 +288,20 @@ pub fn count_file(total: &mut Usage, entry: &Entry, cluster: u64) {
     total.categories[Category::of(entry).index()] += entry.size;
 }
 
-/// Walks everything below the folder `root` and counts it, calling `progress` after each folder
-/// with what is known so far. Only lists folders (names, sizes, attributes), so files are never
-/// opened and cloud placeholders are not downloaded. Links are not followed. `None` when
-/// cancelled; an unreadable folder makes the result `partial`.
+/// Threads walking a folder at once for [`usage`]. Measured on a whole SSD (C:, 3.3 million
+/// files): 182 s alone, 69 s with 4; more don't help (the file system and antivirus are the
+/// limit then).
+const WALKERS: usize = 4;
+
+/// How often [`usage`] reports while its walkers work.
+const PROGRESS_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Walks everything below the folder `root` and counts it, calling `progress` now and then with
+/// what is known so far. Only lists folders (names, sizes, attributes), so files are never opened
+/// and cloud placeholders are not downloaded. Links are not followed. `None` when cancelled; an
+/// unreadable folder makes the result `partial`.
+///
+/// [`WALKERS`] threads share the folders still to list; `progress` runs on the calling thread.
 pub fn usage(
     fs: &dyn Fs,
     root: &Path,
@@ -301,43 +311,144 @@ pub fn usage(
 ) -> Option<Space> {
     crate::fs::debug_assert_not_ui_thread("usage", root);
     let mut space = Space::default();
-    // Each folder waits with the index of the folder directly inside `root` it is part of.
-    let mut stack: Vec<(PathBuf, Option<usize>)> = vec![(root.to_path_buf(), None)];
-    while let Some((dir, child)) = stack.pop() {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
+    // The folder itself: its files count here, its folders are the children the rest is split by.
+    let mut todo: Vec<(PathBuf, usize)> = Vec::new();
+    match fs.read_dir(root) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(e) => match e.kind {
+                        EntryKind::File => count_file(&mut space.usage, &e, cluster),
+                        EntryKind::Dir => {
+                            space.usage.folders += 1;
+                            let path = root.join(&*e.name);
+                            space.children.push((path.clone(), 0));
+                            todo.push((path, space.children.len() - 1));
+                        }
+                        EntryKind::Link { .. } => {}
+                    },
+                    Err(_) => space.usage.partial = true,
+                }
+            }
         }
+        Err(_) => space.usage.partial = true,
+    }
+    progress(&space);
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    if todo.is_empty() {
+        return Some(space);
+    }
+    let walk = Walk {
+        state: parking_lot::Mutex::new(WalkState {
+            space,
+            todo,
+            busy: 0,
+        }),
+        work: parking_lot::Condvar::new(),
+        finished: parking_lot::Condvar::new(),
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..WALKERS {
+            scope.spawn(|| walker(fs, cluster, cancel, &walk));
+        }
+        let mut state = walk.state.lock();
+        while !(cancel.load(Ordering::Relaxed) || (state.todo.is_empty() && state.busy == 0)) {
+            walk.finished.wait_for(&mut state, PROGRESS_TICK);
+            let snapshot = state.space.clone();
+            drop(state);
+            progress(&snapshot);
+            state = walk.state.lock();
+        }
+        drop(state);
+        walk.work.notify_all();
+    });
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(walk.state.into_inner().space)
+}
+
+/// What [`usage`]'s walkers share.
+struct Walk {
+    state: parking_lot::Mutex<WalkState>,
+    /// More folders to list, or the walk is over.
+    work: parking_lot::Condvar,
+    /// Nothing left to list.
+    finished: parking_lot::Condvar,
+}
+
+struct WalkState {
+    space: Space,
+    /// Folders still to list, each with the child of the root it is in.
+    todo: Vec<(PathBuf, usize)>,
+    /// Folders being listed right now.
+    busy: usize,
+}
+
+/// One of [`usage`]'s threads: lists folders until there are none left (and none being listed
+/// that could add more), adding what it finds to the shared totals.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the lock is taken back after each folder; waiting releases it"
+)]
+fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
+    let mut state = walk.state.lock();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            walk.work.notify_all();
+            walk.finished.notify_all();
+            return;
+        }
+        let Some((dir, child)) = state.todo.pop() else {
+            if state.busy == 0 {
+                walk.work.notify_all();
+                walk.finished.notify_all();
+                return;
+            }
+            walk.work.wait(&mut state);
+            continue;
+        };
+        state.busy += 1;
+        drop(state);
+        let mut usage = Usage::default();
+        let mut bytes = 0;
+        let mut found: Vec<(PathBuf, usize)> = Vec::new();
         match fs.read_dir(&dir) {
             Ok(entries) => {
                 for entry in entries {
                     match entry {
                         Ok(e) => match e.kind {
                             EntryKind::File => {
-                                count_file(&mut space.usage, &e, cluster);
-                                if let Some(ix) = child {
-                                    space.children[ix].1 += e.size;
-                                }
+                                count_file(&mut usage, &e, cluster);
+                                bytes += e.size;
                             }
                             EntryKind::Dir => {
-                                space.usage.folders += 1;
-                                let path = dir.join(&*e.name);
-                                let ix = child.unwrap_or_else(|| {
-                                    space.children.push((path.clone(), 0));
-                                    space.children.len() - 1
-                                });
-                                stack.push((path, Some(ix)));
+                                usage.folders += 1;
+                                found.push((dir.join(&*e.name), child));
                             }
                             EntryKind::Link { .. } => {}
                         },
-                        Err(_) => space.usage.partial = true,
+                        Err(_) => usage.partial = true,
                     }
                 }
             }
-            Err(_) => space.usage.partial = true,
+            Err(_) => usage.partial = true,
         }
-        progress(&space);
+        state = walk.state.lock();
+        state.space.usage += usage;
+        state.space.children[child].1 += bytes;
+        let more = !found.is_empty();
+        state.todo.extend(found);
+        state.busy -= 1;
+        if more {
+            walk.work.notify_all();
+        } else if state.todo.is_empty() && state.busy == 0 {
+            walk.work.notify_all();
+            walk.finished.notify_all();
+        }
     }
-    Some(space)
 }
 
 #[cfg(test)]
@@ -372,7 +483,7 @@ mod tests {
         assert_eq!(got.on_disk, 4096 + 4096 + 8192);
         assert_eq!((got.files, got.folders), (4, 2));
         assert!(got.partial, "the unreadable folder makes it an undercount");
-        assert_eq!(steps, 3, "progress after every folder");
+        assert!(steps >= 1, "progress as it goes");
         cancel.store(true, Ordering::Relaxed);
         assert_eq!(
             usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| {}),
@@ -440,7 +551,8 @@ mod tests {
             "folders with nothing in them are left out"
         );
         assert_eq!(space.largest(1).len(), 1);
-        assert!(seen.windows(2).all(|w| w[0] <= w[1]) && seen.len() == 5);
+        // Reported as it goes, never going back.
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]) && !seen.is_empty());
     }
 
     #[test]

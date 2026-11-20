@@ -1532,7 +1532,38 @@ impl Index {
         overlay: &Overlay,
         cancel: &AtomicBool,
     ) -> Option<Vec<IndexedDirSize>> {
+        self.sum_below(dir, overlay, None, cancel)
+            .map(|(_, children)| children)
+    }
+
+    /// Everything below `dir` counted as [`crate::dirsize::usage`] counts a walk: the files
+    /// directly in it and the folder count in the first value, each subfolder's
+    /// [`IndexedDirSize::usage`] (categories, and space on disk for clusters of `cluster` bytes)
+    /// in the second. Index entries carry no cloud state, so a cloud file that isn't on this
+    /// device counts its rounded size on disk. Same `None` and unindexed folders as
+    /// [`Self::child_dir_sizes`].
+    pub fn usage_below(
+        &self,
+        dir: &Path,
+        overlay: &Overlay,
+        cluster: u64,
+        cancel: &AtomicBool,
+    ) -> Option<(crate::dirsize::Usage, Vec<IndexedDirSize>)> {
+        self.sum_below(dir, overlay, Some(cluster), cancel)
+    }
+
+    /// One pass for [`Self::child_dir_sizes`] (`detail` `None`: sizes and counts only, as fast as
+    /// before) and [`Self::usage_below`] (`detail`: the cluster size; categories and space on
+    /// disk too, and the files directly in `dir`).
+    fn sum_below(
+        &self,
+        dir: &Path,
+        overlay: &Overlay,
+        detail: Option<u64>,
+        cancel: &AtomicBool,
+    ) -> Option<(crate::dirsize::Usage, Vec<IndexedDirSize>)> {
         const NONE: u32 = u32::MAX;
+        let mut direct = crate::dirsize::Usage::default();
         if overlay.is_removed(dir) {
             return None;
         }
@@ -1579,8 +1610,14 @@ impl Index {
             }
             if p == target {
                 if !is_dir {
+                    if let Some(cluster) = detail
+                        && !replaced
+                    {
+                        count_indexed(&mut direct, self.name(node), self.sizes[i], cluster);
+                    }
                     continue;
                 }
+                direct.folders += u64::from(detail.is_some());
                 slot = u32::try_from(out.len()).ok()?;
                 out.push(IndexedDirSize {
                     name: self.name(node).to_string(),
@@ -1589,6 +1626,9 @@ impl Index {
             }
             let child = &mut out[slot as usize];
             if is_dir {
+                if p != target {
+                    child.usage.folders += u64::from(detail.is_some());
+                }
                 if flags & FLAG_PRUNED != 0 {
                     child.unindexed.push(self.path_of(id));
                 } else {
@@ -1597,10 +1637,13 @@ impl Index {
             } else if !replaced {
                 child.size.bytes += self.sizes[i];
                 child.size.files += 1;
+                if let Some(cluster) = detail {
+                    count_indexed(&mut child.usage, self.name(node), self.sizes[i], cluster);
+                }
             }
         }
-        overlay.add_files_under(dir, &mut out);
-        Some(out)
+        overlay.add_files_under(dir, detail, &mut out);
+        Some((direct, out))
     }
 
     /// A new index with `overlay` folded in, without walking or reading the MFT again: removed
@@ -2846,7 +2889,7 @@ impl Overlay {
 
     /// Adds files recorded since the build to the subfolders of `dir` they are in (new
     /// subfolders get an entry). Files in folders the caller walks anyway are skipped.
-    fn add_files_under(&self, dir: &Path, out: &mut Vec<IndexedDirSize>) {
+    fn add_files_under(&self, dir: &Path, detail: Option<u64>, out: &mut Vec<IndexedDirSize>) {
         for (path, (seen, _)) in &self.added {
             if seen.is_dir {
                 continue;
@@ -2873,6 +2916,10 @@ impl Overlay {
             }
             child.size.bytes += seen.size;
             child.size.files += 1;
+            if let Some(cluster) = detail {
+                let name = path.file_name().map_or_default(|n| n.to_string_lossy());
+                count_indexed(&mut child.usage, &name, seen.size, cluster);
+            }
         }
     }
 
@@ -2967,6 +3014,18 @@ impl Overlay {
     }
 }
 
+/// Counts a file the index knows of (`name`, `size` bytes) into `usage`, as
+/// [`crate::dirsize::count_file`] counts a listed one.
+fn count_indexed(usage: &mut crate::dirsize::Usage, name: &str, size: u64, cluster: u64) {
+    let ext = name
+        .rsplit_once('.')
+        .map_or_default(|(_, e)| e.to_ascii_lowercase());
+    usage.bytes += size;
+    usage.on_disk += crate::dirsize::round_to_clusters(size, cluster);
+    usage.files += 1;
+    usage.categories[crate::dirsize::Category::of_extension(&ext).index()] += size;
+}
+
 /// One subfolder's size from [`Index::child_dir_sizes`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexedDirSize {
@@ -2974,6 +3033,8 @@ pub struct IndexedDirSize {
     pub name: String,
     /// Files below it that the index knows of (changes since the build applied).
     pub size: crate::dirsize::DirSize,
+    /// The same with categories, space on disk and folders, from [`Index::usage_below`] only.
+    pub usage: crate::dirsize::Usage,
     /// Folders below it whose contents aren't indexed; walk them and add.
     pub unindexed: Vec<PathBuf>,
 }
@@ -4603,6 +4664,61 @@ mod tests {
         out
     }
 
+    /// The Properties count from the index (totals, categories, space on disk, folders, each
+    /// folder inside), with the folders it skips walked: the same as walking everything.
+    #[test]
+    fn usage_from_the_index_matches_a_walk() {
+        let fs = size_tree();
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\w")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            true,
+        );
+        let cancel = AtomicBool::new(false);
+        let cluster = 4096;
+        let (direct, children) = index
+            .usage_below(Path::new(r"C:\w"), &Overlay::default(), cluster, &cancel)
+            .unwrap();
+        let mut total = direct;
+        let mut sizes: Vec<(String, u64)> = Vec::new();
+        for child in children {
+            let mut usage = child.usage;
+            for u in &child.unindexed {
+                usage += crate::dirsize::usage(fs.as_ref(), u, cluster, &cancel, &mut |_| {})
+                    .unwrap()
+                    .usage;
+            }
+            total += usage;
+            sizes.push((child.name, usage.bytes));
+        }
+        sizes.sort();
+        let walk = crate::dirsize::usage(
+            fs.as_ref(),
+            Path::new(r"C:\w"),
+            cluster,
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(total, walk.usage, "totals, categories, on disk and folders");
+        let mut walked: Vec<(String, u64)> = walk
+            .children
+            .iter()
+            .map(|(p, bytes)| {
+                (
+                    p.file_name().unwrap().to_string_lossy().into_owned(),
+                    *bytes,
+                )
+            })
+            .collect();
+        walked.sort();
+        assert_eq!(sizes, walked, "each folder inside");
+    }
+
     #[test]
     fn folder_sizes_from_the_index_match_a_walk() {
         let fs = size_tree();
@@ -4786,6 +4902,17 @@ mod tests {
             "{} items: {} subfolders of C:\\ in {:?}",
             big.len(),
             sizes.len(),
+            t.elapsed()
+        );
+        // What the Properties window asks for a whole drive: categories and space on disk too.
+        let t = std::time::Instant::now();
+        let (_, usage) = big
+            .usage_below(Path::new(r"C:\"), &Overlay::default(), 4096, &cancel)
+            .unwrap();
+        println!(
+            "{} items: Properties usage of C:\\ ({} folders inside) in {:?}",
+            big.len(),
+            usage.len(),
             t.elapsed()
         );
         let _ = std::fs::remove_dir_all(&root);

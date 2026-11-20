@@ -1450,6 +1450,11 @@ impl WindowsWindowInner {
 
     fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
         self.state.direct_manipulation.on_pointer_hit_test(wparam);
+        // Arke: Direct Manipulation's touchpad gestures are only read when the window draws
+        // (`draw_window`), and an idle window doesn't draw until something wakes it. Without
+        // this, a two-finger scroll over a window that had been left alone (behind another
+        // program, say) did nothing until a click woke it (#258).
+        self.state.frames.wake();
         None
     }
 

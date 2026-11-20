@@ -262,6 +262,19 @@ pub fn tcp_reach(server: &str, resolve_budget: Duration, connect_timeout: Durati
     Reach::Down
 }
 
+/// The Win32 error code in an `HRESULT_FROM_WIN32` value (`0x8007xxxx`), which shell APIs return
+/// for the same errors; other codes as they are. Without this, "network path not found" arriving
+/// as 0x80070035 showed its raw number and no Retry.
+const fn win32_code(code: i32) -> i32 {
+    const FACILITY_WIN32: u32 = 0x8007_0000;
+    let bits = code.cast_unsigned();
+    if bits & 0xFFFF_0000 == FACILITY_WIN32 {
+        (bits & 0xFFFF).cast_signed()
+    } else {
+        code
+    }
+}
+
 /// Turns a listing error into a user-facing message and the button to offer.
 /// `network`: whether the location is remote (access denied there usually means sign-in).
 pub fn describe(err: &io::Error, network: bool) -> (String, FailKind) {
@@ -291,7 +304,7 @@ pub fn describe(err: &io::Error, network: bool) -> (String, FailKind) {
     if let Some(located) = LocationError::of(err) {
         return (located.message.clone(), located.kind);
     }
-    match err.raw_os_error() {
+    match err.raw_os_error().map(win32_code) {
         Some(BAD_NETPATH) => (t!("io.net_not_found").into_owned(), FailKind::Offline),
         Some(
             UNEXP_NET_ERR
@@ -438,6 +451,17 @@ mod tests {
         let kind =
             |code: i32, network: bool| describe(&io::Error::from_raw_os_error(code), network).1;
         assert_eq!(kind(53, true), FailKind::Offline);
+        // The same error as an HRESULT (0x80070035), the way shell APIs report it.
+        let hresult = 0x8007_0035_u32.cast_signed();
+        assert_eq!(
+            kind(hresult, true),
+            FailKind::Offline,
+            "network path as HRESULT"
+        );
+        assert_eq!(
+            describe(&io::Error::from_raw_os_error(hresult), true).0,
+            describe(&io::Error::from_raw_os_error(53), true).0
+        );
         assert_eq!(kind(64, true), FailKind::Offline, "connection dropped");
         assert_eq!(kind(121, true), FailKind::Offline, "timeout");
         assert_eq!(kind(1326, true), FailKind::NeedsLogin, "bad credentials");

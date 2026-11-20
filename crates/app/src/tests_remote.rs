@@ -185,6 +185,10 @@ fn unreachable_server_fails_fast_with_retry(cx: &mut TestAppContext) {
         view.update(cx, |v, _| v.error_action.clone()),
         Some(crate::explorer::ErrorAction::Retry(_))
     ));
+    // The toast gives the reason only: with the path in front it ran past its four lines.
+    if let Some(error) = view.update(cx, |v, _| v.error.clone()) {
+        assert!(!error.contains("sftp://"), "{error}");
+    }
 }
 
 /// The routing file system passes link targets (the Link target column) through to the local file

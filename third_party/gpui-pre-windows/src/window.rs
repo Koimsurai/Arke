@@ -682,7 +682,11 @@ impl rwh::HasDisplayHandle for WindowsWindow {
 impl Drop for WindowsWindow {
     fn drop(&mut self) {
         self.0.dialog_owner.close();
-        unsafe { ShowWindowAsync(self.0.hwnd, SW_HIDE).ok().log_err() };
+        // Arke: a window closed from its title bar is already destroyed by Windows. Hiding,
+        // revoking and destroying it again only logs "invalid window handle" errors.
+        if unsafe { IsWindow(Some(self.0.hwnd)) }.as_bool() {
+            unsafe { ShowWindowAsync(self.0.hwnd, SW_HIDE).ok().log_err() };
+        }
         // `DestroyWindow` below sends `WM_SHOWWINDOW`; without a callback the
         // resulting visibility report has nothing to notify.
         self.0.state.callbacks.visibility_change.take();
@@ -693,6 +697,9 @@ impl Drop for WindowsWindow {
             .spawn(async move {
                 this.dialog_owner.when_idle().await;
                 let handle = this.hwnd;
+                if !unsafe { IsWindow(Some(handle)) }.as_bool() {
+                    return;
+                }
                 unsafe {
                     // Arke: popups take no drops (see `WindowsWindow::new`).
                     if !this.popup {

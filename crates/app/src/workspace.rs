@@ -3209,15 +3209,24 @@ pub(crate) fn tooltip(
 
 impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().when(!tooltips_hidden(window), |d| d.child(tooltip_card(&self.0)))
+        // gpui puts a tooltip 1 px below the mouse, where the pointer's own arrow covers its
+        // corner (#246). Like File Explorer's, it goes below the pointer instead.
+        div().when(!tooltips_hidden(window), |d| {
+            d.pt(POINTER_CLEARANCE).child(tooltip_card(&self.0))
+        })
     }
 }
+
+/// How far below the mouse a tooltip starts: the height of the standard arrow pointer, which
+/// Arke's interface scale doesn't change.
+const POINTER_CLEARANCE: gpui::Pixels = px(20.);
 
 /// The tooltip bubble itself.
 fn tooltip_card(text: &SharedString) -> gpui::Div {
     // Tooltips lay out at minimum size (max_w has no effect), so long text gets an explicit width to wrap.
     let long = text.chars().count() > 48;
     div()
+        .debug_selector(|| "tooltip-card".to_owned())
         .px(theme::s_8())
         .py(theme::s_4())
         .when(long, |d| d.w(theme::tooltip_max_w()))

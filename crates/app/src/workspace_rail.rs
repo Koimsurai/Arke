@@ -17,7 +17,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::sidebar::{SidebarAction, display_name};
-use super::{OpenPalette, ToggleSidebar, Workspace};
+use super::{OpenPalette, ToggleSidebar, TooltipBelowExt as _, Workspace};
 
 /// Sidebar state that isn't a setting.
 #[derive(Default)]
@@ -169,6 +169,7 @@ impl Workspace {
         .into_owned();
         div()
             .id("sidebar-toggle")
+            .debug_selector(|| "sidebar-toggle".to_owned())
             .a11y_button(label.clone())
             .aria_keyshortcuts("Ctrl+B")
             .size(theme::h_ctl())
@@ -180,7 +181,8 @@ impl Workspace {
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash_strong()))
             .child(icon(Icon::Sidebar, false))
-            .tooltip(super::sidebar::tooltip_text(format!("{label} (Ctrl+B)")))
+            // Below the button like Back and Forward beside it, not at the mouse (#246).
+            .tooltip_below(format!("{label} (Ctrl+B)"))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.toggle_sidebar(&ToggleSidebar, window, cx);
             }))

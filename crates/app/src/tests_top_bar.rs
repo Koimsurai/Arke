@@ -451,3 +451,49 @@ fn horizontal_tabs_go_under_the_title_row(cx: &mut TestAppContext) {
         "the active (last) tab is in view: {tab:?} in {strip:?}"
     );
 }
+
+/// Rests the mouse at `at` long enough for gpui to show the tooltip there.
+fn hover_for_tooltip(cx: &mut VisualTestContext, at: Point<Pixels>) {
+    cx.simulate_mouse_move(at, None, Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(800));
+    settle(cx);
+}
+
+/// #246: a tooltip at the mouse starts below the pointer's arrow, not at its tip, so the arrow
+/// doesn't cover it; the sidebar button's sits under the button like Back and Forward beside it.
+#[gpui::test]
+fn tooltips_clear_the_pointer(cx: &mut TestAppContext) {
+    let (_ws, _view, cx) = open_deep(cx, 1200.);
+    // The path bar's blank part: a tooltip at the mouse.
+    let blank = bounds(cx, "path-blank");
+    let at = point(blank.center().x, blank.top() + px(4.));
+    hover_for_tooltip(cx, at);
+    let card = bounds(cx, "tooltip-card");
+    assert!(
+        card.top() >= at.y + px(18.),
+        "below the arrow: mouse {:?}, tooltip {:?}",
+        at.y,
+        card.top()
+    );
+    cx.simulate_mouse_move(point(px(600.), px(500.)), None, Modifiers::none());
+    settle(cx);
+
+    // The sidebar button: under the button wherever the mouse is on it.
+    let button = bounds(cx, "sidebar-toggle");
+    for at in [
+        point(button.center().x, button.top() + px(2.)),
+        point(button.right() - px(2.), button.bottom() - px(2.)),
+    ] {
+        hover_for_tooltip(cx, at);
+        let card = bounds(cx, "tooltip-card");
+        assert!(
+            near(card.top(), button.bottom() + theme::s_8(), 1.),
+            "under the button: button {:?}, tooltip {:?}",
+            button.bottom(),
+            card.top()
+        );
+        cx.simulate_mouse_move(point(px(600.), px(500.)), None, Modifiers::none());
+        settle(cx);
+    }
+}

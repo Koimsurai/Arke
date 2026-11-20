@@ -36,6 +36,10 @@ NTFS 的主文件表，几秒就能为几百万个文件建好索引，并持续
 
 如果 Arke 对你有帮助，在 GitHub 点个 ⭐，能让更多人找到它。
 
+Arke 登上了[阮一峰《科技爱好者周刊》第 420 期](https://www.ruanyifeng.com/blog/2026/11/weekly-issue-420.html)，也收录在 [awesome-rust](https://github.com/rust-unofficial/awesome-rust)、[awesome-gpui](https://github.com/zed-industries/awesome-gpui) 和 AlternativeTo。
+
+<p><a href="https://alternativeto.net/software/arke/about/?utm_source=badge&utm_medium=referral"><img src="https://alternativeto.net/static/badges/badge-compact-color.svg" alt="Arke 在 AlternativeTo" height="40"></a></p>
+
 ## 功能
 
 <table>

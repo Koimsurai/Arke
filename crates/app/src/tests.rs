@@ -1164,10 +1164,12 @@ fn hung_network_share_never_blocks_ui(cx: &mut TestAppContext) {
     // Advance the fake clock to fire the loading timer.
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.run_until_parked();
-    view.update(cx, |v, _| {
+    view.update(cx, |v, cx| {
         assert_eq!(v.display_path(), Some(Path::new(r"\\dead\share")));
         assert!(v.show_loading, "loading state should show");
         assert_eq!(v.current_path(), Some(Path::new(r"C:\home")));
+        // The bar doesn't give C:\home's item count as the share's.
+        assert_eq!(v.info_parts(cx), [t!("info.loading").into_owned()]);
     });
 
     // While hung, navigate elsewhere via the path bar using the keyboard.
@@ -7461,6 +7463,45 @@ fn an_outdated_search_service_offers_an_update(cx: &mut TestAppContext) {
     set(cx, Some("0.5.2"));
     assert!(cx.debug_bounds("search-service-update").is_some(), "Update");
     assert!(cx.debug_bounds("search-service").is_some(), "Remove stays");
+}
+
+/// Settings › About › Show settings file shows the file in Arke, selected, and leaves
+/// File Explorer alone (someone who opens folders in Arke expects Arke there too).
+#[gpui::test]
+fn the_settings_file_is_shown_in_arke(cx: &mut TestAppContext) {
+    let path = crate::settings::default_path().expect("APPDATA is set");
+    let dir = path.parent().expect("settings folder").to_path_buf();
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    fs.insert_dir(
+        dir.to_str().expect("UTF-8 path"),
+        vec![file("folder_views.json", 1), file("settings.json", 1)],
+    );
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+    });
+    cx.run_until_parked();
+    let button = cx
+        .debug_bounds("reveal-settings")
+        .expect("the settings file card should be drawn");
+    cx.simulate_click(button.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    let folder = dir.to_str().expect("UTF-8 path").to_owned();
+    wait_until(cx, &view, "the settings folder", loaded(&folder));
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["settings.json"]);
+    assert!(
+        cx.debug_bounds("reveal-settings").is_none(),
+        "Settings closes"
+    );
+    assert!(
+        shell.revealed.lock().is_empty(),
+        "File Explorer isn't opened"
+    );
 }
 
 /// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the

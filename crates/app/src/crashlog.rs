@@ -20,13 +20,29 @@ struct Lines(flume::Sender<Vec<u8>>);
 
 impl Write for Lines {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = self.0.send(buf.to_vec());
+        if !is_noise(buf) {
+            let _ = self.0.send(buf.to_vec());
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// GPUI errors that only mean a window closed a moment before GPUI got to it: every menu (a
+/// window of its own) that closes logs one. They aren't problems, but as ERROR lines they fill
+/// the log and every problem report with what reads like a fault.
+fn is_noise(line: &[u8]) -> bool {
+    const NOISE: [&str; 2] = [
+        "] scheduling follow-up frame for window ",
+        "] handling active status change for window ",
+    ];
+    let Ok(line) = std::str::from_utf8(line) else {
+        return false;
+    };
+    line.trim_end().ends_with(": window not found") && NOISE.iter().any(|n| line.contains(n))
 }
 
 /// Path of the log file, or `None` when logging to the console.
@@ -156,4 +172,30 @@ fn module_at(address: usize) -> String {
     // SAFETY: `buf` is a correctly sized output buffer.
     let len = unsafe { GetModuleFileNameW(Some(module), &mut buf) } as usize;
     String::from_utf16_lossy(&buf[..len.min(buf.len())])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_noise;
+
+    #[test]
+    fn closed_window_races_are_left_out_of_the_log() {
+        assert!(is_noise(
+            b"[2026-11-20T01:41:56.835Z ERROR] scheduling follow-up frame for window WindowId(2v1): window not found
+"
+        ));
+        assert!(is_noise(
+            b"[2026-11-20T01:41:56.835Z ERROR] handling active status change for window WindowId(2v3): window not found
+"
+        ));
+        // Anything else about a window stays, and so do other errors.
+        assert!(!is_noise(
+            b"[2026-11-20T01:41:56.835Z ERROR] drawing and presenting frame for window WindowId(1v1): device lost
+"
+        ));
+        assert!(!is_noise(
+            b"[2026-11-20T02:05:01.969Z ERROR] scheduling follow-up frame for window WindowId(1v1): out of memory
+"
+        ));
+    }
 }

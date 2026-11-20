@@ -12,6 +12,7 @@
 
 use gpui::{App, Context, SharedString, div, prelude::*, svg};
 use rust_i18n::t;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -346,7 +347,8 @@ impl Workspace {
         });
     }
 
-    /// Saves a timestamped report `.txt` to Downloads and selects it in the file list.
+    /// Saves a timestamped report `.txt` to Downloads and selects it in the file list (in Arke,
+    /// not File Explorer).
     fn save_report(&mut self, cx: &mut Context<Self>) {
         let settings = SettingsStore::global(cx).read(cx).settings.clone();
         let explorer = self.active_view().read(cx);
@@ -362,7 +364,7 @@ impl Workspace {
             })
             .map(|p| p.path.clone());
         let (shown, with_log, mask) = text_to_send(cx);
-        let (tx, rx) = flume::bounded::<Result<String, ReportError>>(1);
+        let (tx, rx) = flume::bounded::<Result<PathBuf, ReportError>>(1);
         crate::explorer::spawn_thread("report-save", move || {
             let result = (|| {
                 let folder = folder.ok_or(ReportError::NoFolder)?;
@@ -374,15 +376,32 @@ impl Workspace {
                 let path = folder.join(format!("{}{stamp}.txt", t!("report.file_stem")));
                 let text = shown.unwrap_or_else(|| prepare(&settings, with_log, mask));
                 std::fs::write(&path, text).map_err(ReportError::Write)?;
-                let _ = shell.reveal_in_explorer(&path, true);
-                Ok(t!("report.saved", path = path.display().to_string()).into_owned())
+                Ok(path)
             })();
             let _ = tx.send(result);
         });
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             if let Ok(result) = rx.recv_async().await {
                 cx.update(|cx| {
-                    cx.set_global(ReportNote(Some(result.map_err(|e| e.to_string()))));
+                    // The saved report is waiting, selected, in the active tab once Settings
+                    // closes; the note says where it went meanwhile.
+                    if let Ok(path) = &result
+                        && let (Some(dir), Some(name)) = (path.parent(), path.file_name())
+                    {
+                        let name = Arc::from(name.to_string_lossy().as_ref());
+                        let dir = dir.to_path_buf();
+                        let _ = this.update(cx, |ws, cx| {
+                            ws.active_view().clone().update(cx, |v, cx| {
+                                v.navigate_selecting(dir, arke_core::NavKind::New, Some(name), cx);
+                            });
+                        });
+                    }
+                    let note = result
+                        .map(|path| {
+                            t!("report.saved", path = path.display().to_string()).into_owned()
+                        })
+                        .map_err(|e| e.to_string());
+                    cx.set_global(ReportNote(Some(note)));
                     cx.refresh_windows();
                 });
             }

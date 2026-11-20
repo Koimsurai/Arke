@@ -35,6 +35,10 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
     recovery doesn't wait for the next frame.
 
   Worth offering upstream (Zed has the same loop).
+- `src/window.rs` `impl Drop for WindowsWindow`: a window closed from its title bar has already
+  been destroyed by Windows when GPUI drops it, so hiding it, revoking its drop target and
+  destroying it again each failed and logged an "invalid window handle" error (four per closed
+  Properties window). They are skipped when `IsWindow` says the window is gone.
 - `src/window.rs` `WindowsDragDropHandler::Drop`: the dropped files are asked for again when the
   drop happens, not only when the drag enters. 7-Zip and NanaZip list placeholder paths during the
   drag and only extract to a temp folder when asked after the button is released (and delete it

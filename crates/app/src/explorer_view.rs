@@ -638,7 +638,8 @@ impl Explorer {
             }
             return parts;
         }
-        if let Some(model) = &self.model {
+        // Once the list says "Loading", the old folder's counts would read as the new one's.
+        if let Some(model) = self.model.as_ref().filter(|_| !self.show_loading) {
             let total = format_count(model.entries.len());
             parts.push(if self.is_filtering() {
                 let shown = self.view().map_or(0, |v| v.len());

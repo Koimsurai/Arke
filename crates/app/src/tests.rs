@@ -1164,10 +1164,12 @@ fn hung_network_share_never_blocks_ui(cx: &mut TestAppContext) {
     // Advance the fake clock to fire the loading timer.
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.run_until_parked();
-    view.update(cx, |v, _| {
+    view.update(cx, |v, cx| {
         assert_eq!(v.display_path(), Some(Path::new(r"\\dead\share")));
         assert!(v.show_loading, "loading state should show");
         assert_eq!(v.current_path(), Some(Path::new(r"C:\home")));
+        // The bar doesn't give C:\home's item count as the share's.
+        assert_eq!(v.info_parts(cx), [t!("info.loading").into_owned()]);
     });
 
     // While hung, navigate elsewhere via the path bar using the keyboard.
@@ -7496,7 +7498,10 @@ fn the_settings_file_is_shown_in_arke(cx: &mut TestAppContext) {
         cx.debug_bounds("reveal-settings").is_none(),
         "Settings closes"
     );
-    assert!(shell.revealed.lock().is_empty(), "File Explorer isn't opened");
+    assert!(
+        shell.revealed.lock().is_empty(),
+        "File Explorer isn't opened"
+    );
 }
 
 /// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the

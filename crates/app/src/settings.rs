@@ -660,9 +660,15 @@ pub(crate) struct Settings {
     pub(crate) menu_hidden: Vec<String>,
     /// Windows commands pinned to the main menu from "More options" (`explorer_menu::pin_key` keys, in pin order).
     pub(crate) menu_pinned: Vec<String>,
-    /// Which extension (COM class) each pinned command comes from, learned from the menus seen;
-    /// empty when none has it. Lets a pinned command show before the whole Windows menu is read.
+    /// Where each pinned command comes from, learned from the menus seen
+    /// (`win_menu_parts::MenuHandler::owner`): an extension's class id, `verb:<verb>` for a
+    /// registry command, `command:{CLSID}` for a packaged app's, `-` for none of those (left to
+    /// the whole Windows menu). Empty: learned by an older version, learned again. Lets a pinned
+    /// command show before the whole Windows menu is read (#129, #278).
     pub(crate) menu_pin_owners: std::collections::BTreeMap<String, String>,
+    /// Packaged apps' pinned commands (`command:{CLSID}` owners): the item kinds they are for,
+    /// from the app's manifest and the menus they were seen in (`win_menu_parts::item_kind`).
+    pub(crate) menu_pin_types: std::collections::BTreeMap<String, Vec<String>>,
     /// Shortcuts changed in Settings: command id (`commands.rs`) to its keys, empty when the
     /// command has none. Only changes are stored; a command that is absent keeps its defaults.
     pub(crate) shortcuts: std::collections::BTreeMap<String, Vec<String>>,
@@ -790,6 +796,7 @@ impl Default for Settings {
             menu_hidden: Vec::new(),
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
+            menu_pin_types: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
             update_channel_choice: None,

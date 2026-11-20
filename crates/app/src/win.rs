@@ -1067,6 +1067,16 @@ impl Shell for WinShell {
         crate::shell_host::fill_submenu(session, index)
     }
 
+    fn shell_menu_kind(&self, paths: &[PathBuf], background: bool) -> Option<String> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_menu_parts::item_kind(paths, background)
+    }
+
+    fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_packaged::item_types(clsid)
+    }
+
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],

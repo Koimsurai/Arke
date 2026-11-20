@@ -108,6 +108,7 @@ mod win_menu;
 mod win_menu_parts;
 mod win_net;
 mod win_openinfolder;
+mod win_packaged;
 mod win_pdf;
 mod win_picker;
 mod win_popup;

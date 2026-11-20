@@ -1037,8 +1037,18 @@ pub(crate) trait Shell: Send + Sync + 'static {
     ) -> Result<Vec<ShellMenuEntry>, ShellError> {
         Err(ShellError::Unsupported)
     }
-    /// Context menu extensions that apply to `paths`, or the folder's empty space
-    /// (`win_menu_parts.rs`). Background thread.
+    /// What kind of item a menu for `paths` is for, as packaged apps register their commands
+    /// (`win_menu_parts::item_kind`: `Directory`, `.txt`...). Background thread.
+    fn shell_menu_kind(&self, _paths: &[PathBuf], _background: bool) -> Option<String> {
+        None
+    }
+    /// Item types a packaged app's command (class id `{...}`) is registered for, from its
+    /// manifest (`win_packaged.rs`); empty when unknown. Background thread.
+    fn packaged_item_types(&self, _clsid: &str) -> Vec<String> {
+        Vec::new()
+    }
+    /// Context menu extensions and registry commands that apply to `paths`, or the folder's
+    /// empty space (`win_menu_parts.rs`). Background thread.
     fn shell_menu_handlers(
         &self,
         _paths: &[PathBuf],

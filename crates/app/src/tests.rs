@@ -148,6 +148,12 @@ struct FakeShell {
     menu_gate: Mutex<Option<flume::Receiver<()>>>,
     /// Whether each whole Windows menu read asked for Shift's extra commands.
     menu_extended: Mutex<Vec<bool>>,
+    /// Packaged apps' commands: class id and the item types their manifest names.
+    packaged_types: Mutex<Vec<(String, Vec<String>)>>,
+    /// Items added at the end of the whole Windows menu.
+    extra_menu: Mutex<Vec<crate::shell::ShellMenuEntry>>,
+    /// While set, reading one source's menu waits for a message on it (a slow source).
+    part_gate: Mutex<Option<flume::Receiver<()>>>,
     /// Context menu extensions and their menus, read on their own (sessions from 100).
     extensions: Mutex<
         Vec<(
@@ -657,6 +663,7 @@ impl Shell for FakeShell {
             E::Separator,
             verb_item(5, "Copy", Some("Copy")),
         ];
+        entries.extend(self.extra_menu.lock().iter().cloned());
         entries.extend(
             self.lazy_submenus
                 .lock()
@@ -718,6 +725,28 @@ impl Shell for FakeShell {
         self.shell_released.lock().push(session);
     }
 
+    fn shell_menu_kind(&self, _paths: &[PathBuf], background: bool) -> Option<String> {
+        assert!(!arke_core::fs::is_ui_thread());
+        Some(
+            if background {
+                r"Directory\Background"
+            } else {
+                ".txt"
+            }
+            .into(),
+        )
+    }
+
+    fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
+        assert!(!arke_core::fs::is_ui_thread());
+        self.packaged_types
+            .lock()
+            .iter()
+            .filter(|(c, _)| c.eq_ignore_ascii_case(clsid))
+            .flat_map(|(_, t)| t.clone())
+            .collect()
+    }
+
     fn shell_menu_handlers(
         &self,
         _paths: &[PathBuf],
@@ -741,6 +770,10 @@ impl Shell for FakeShell {
         _group: u64,
     ) -> Result<(crate::shell::ShellMenu, Duration), ShellError> {
         assert!(!arke_core::fs::is_ui_thread());
+        let gate = self.part_gate.lock().clone();
+        if let Some(gate) = gate {
+            let _ = gate.recv_timeout(Duration::from_secs(20));
+        }
         let extensions = self.extensions.lock();
         let at = extensions
             .iter()

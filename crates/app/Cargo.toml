@@ -36,6 +36,9 @@ thiserror.workspace = true
 arke-indexd.workspace = true
 gpui_windows.workspace = true
 windows-core.workspace = true
+# Packaged apps' manifests, for which items their context menu commands are for (#278)
+quick-xml.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true

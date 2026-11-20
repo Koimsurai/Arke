@@ -62,7 +62,11 @@ use windows::core::{Interface, PCSTR, PCWSTR, PSTR, PWSTR, w};
 
 use crate::shell::{ShellError, ShellMenu, ShellMenuEntry, tidy_separators};
 use crate::win_fileops::wide;
-use crate::win_menu_parts::MenuHandler;
+use crate::win_menu_parts::{HandlerKind, MenuHandler};
+
+/// Registry and packaged-app commands read on their own (#278).
+#[path = "win_menu_single.rs"]
+mod one;
 
 const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 /// Submenu depth and total item limits; some extensions add very long lists.
@@ -726,6 +730,34 @@ fn menu_directory(paths: &[PathBuf], background: bool) -> Vec<u16> {
     wide(folder.as_os_str())
 }
 
+/// A menu whose entries are already known (one command read on its own, `one.rs`) as this
+/// thread's current session: `menu` runs its item like any other menu's.
+fn fill_single(
+    menu: IContextMenu,
+    owner: HWND,
+    pidls: Pidls,
+    directory: Vec<u16>,
+    entries: Vec<ShellMenuEntry>,
+) -> Result<ShellMenu, ShellError> {
+    // SAFETY: creates an empty popup menu; Session calls DestroyMenu.
+    let hmenu = unsafe { CreatePopupMenu() }?;
+    let session = Session {
+        id: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+        menu,
+        hmenu,
+        owner,
+        _pidls: pidls,
+        directory,
+        lazy: Vec::new(),
+    };
+    let result = ShellMenu {
+        session: session.id,
+        entries,
+    };
+    CURRENT.with(|c| *c.borrow_mut() = Some(session));
+    Ok(result)
+}
+
 /// Reads `menu` into a [`Session`] that becomes this thread's current menu. `extended`: Shift
 /// was held, so commands registered to show only then are included, as in File Explorer (#272).
 fn fill(
@@ -779,6 +811,9 @@ fn build_handler(
 ) -> Result<ShellMenu, ShellError> {
     if paths.is_empty() {
         return Ok(ShellMenu::default());
+    }
+    if handler.kind != HandlerKind::Extension {
+        return one::build(paths, background, handler, window);
     }
     let mut pidls = parse_pidls(paths)?;
     let owner = window;

@@ -734,6 +734,15 @@ impl Shell for RemoteShell {
     ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
         self.inner.fill_shell_submenu(session, index)
     }
+    fn shell_menu_kind(&self, paths: &[PathBuf], background: bool) -> Option<String> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return None;
+        }
+        self.inner.shell_menu_kind(paths, background)
+    }
+    fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
+        self.inner.packaged_item_types(clsid)
+    }
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],

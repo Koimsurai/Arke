@@ -307,6 +307,7 @@ dependencies = [
  "image",
  "log",
  "parking_lot 0.13.0",
+ "quick-xml 0.42.0",
  "raw-window-handle",
  "rust-i18n",
  "serde",

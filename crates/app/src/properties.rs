@@ -175,6 +175,8 @@ enum Msg {
     Native(Result<(), String>),
     Hash(HashState),
     Unblocked(Result<(), String>),
+    /// Reading this drive's file table took this long (ms): remembered for the next count.
+    TableTime(String, u64),
     /// An action from the quick row that failed.
     Action(Result<(), String>),
 }
@@ -184,6 +186,8 @@ pub(crate) struct Properties {
     /// The search index, which answers a folder's space at once when it follows its drive live
     /// (`IndexService::usage_below`); otherwise the folder is walked.
     index: Option<Arc<arke_core::index_service::IndexService>>,
+    /// How long reading each drive's file table took before (`Settings::mft_list_ms`).
+    table_times: std::collections::BTreeMap<String, u64>,
     focus: FocusHandle,
     /// The items asked about, with whether each is a folder.
     targets: Vec<(PathBuf, bool)>,
@@ -379,6 +383,11 @@ impl Properties {
         let this = Self {
             services,
             index: crate::global_search::GlobalSearch::local_service(cx),
+            table_times: crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .mft_list_ms
+                .clone(),
             focus,
             targets,
             loaded: None,
@@ -488,6 +497,7 @@ impl Properties {
     fn start_loading(&self) {
         let services = self.services.clone();
         let index = self.index.clone();
+        let table_times = self.table_times.clone();
         let targets = self.targets.clone();
         let tx = self.tx.clone();
         let cancel = Arc::clone(&self.cancel);
@@ -497,15 +507,13 @@ impl Properties {
             let rows: Vec<Row> = loaded.rows.clone();
             let details = loaded.details;
             let _ = tx.send(Msg::Loaded(Box::new(loaded)));
-            count_space(
-                &services,
-                index.as_deref(),
-                &rows,
-                details,
-                cluster,
-                &cancel,
-                &tx,
-            );
+            let table = table_reader();
+            let fast = Fast {
+                index: index.as_deref(),
+                table: table.as_deref(),
+                table_times: &table_times,
+            };
+            count_space(&services, &fast, &rows, details, cluster, &cancel, &tx);
         });
     }
 
@@ -513,6 +521,12 @@ impl Properties {
         match msg {
             Msg::Loaded(loaded) => {
                 self.loaded = Some(*loaded);
+            }
+            Msg::TableTime(volume, ms) => {
+                self.table_times.insert(volume.clone(), ms);
+                crate::settings::SettingsStore::global(cx).update(cx, |store, cx| {
+                    store.update(|s| _ = s.mft_list_ms.insert(volume, ms), cx);
+                });
             }
             Msg::Space(space, counting) => {
                 // Stopped by the user: what comes in late is dropped.
@@ -1505,10 +1519,119 @@ pub(crate) fn on_disk_of(entry: &Entry, details: FileDetails, cluster: u64) -> u
     )
 }
 
+/// The faster ways to count a folder than walking it.
+struct Fast<'a> {
+    /// The search index, when it follows the folder's drive live: one pass in memory.
+    index: Option<&'a arke_core::index_service::IndexService>,
+    /// The index service, which reads a drive's whole file table ($MFT) in seconds, as WizTree
+    /// does (admin rights, which it has as a service).
+    table: Option<&'a dyn arke_core::journal::Journal>,
+    /// How long that took before, per drive (`C:\`).
+    table_times: &'a std::collections::BTreeMap<String, u64>,
+}
+
+/// The index service, when it is installed, for reading drives' file tables.
+fn table_reader() -> Option<Arc<dyn arke_core::journal::Journal>> {
+    if cfg!(test) || !arke_indexd::client::installed() {
+        return None;
+    }
+    Some(Arc::new(arke_indexd::client::ServiceJournal::new()))
+}
+
+/// `C:\` for anything on drive C.
+fn drive_root(path: &Path) -> Option<PathBuf> {
+    let root: PathBuf = path.components().take(2).collect();
+    (root.components().count() == 2 && root.to_string_lossy().ends_with('\\')).then_some(root)
+}
+
+/// Counts `dir`, reporting as it goes through `progress`:
+/// - from the index when it follows the drive live;
+/// - a drive itself from its file table (a whole drive in seconds instead of a minute or more);
+/// - a folder by walking it, overtaken by a read of the file table once the walk has taken as long
+///   as reading the table took on that drive before (or from the start when that isn't known yet).
+///   Whichever is done first counts; the other stops. Nothing is a fixed time: a small folder is
+///   walked in less than the table takes, a big one is not.
+fn count_folder(
+    services: &Services,
+    fast: &Fast,
+    dir: &Path,
+    cluster: u64,
+    cancel: &AtomicBool,
+    tx: &flume::Sender<Msg>,
+    progress: &mut dyn FnMut(&Space),
+) -> Option<Space> {
+    if let Some(space) = fast
+        .index
+        .and_then(|ix| ix.usage_below(dir, cluster, cancel))
+    {
+        return Some(space);
+    }
+    let table = fast.table.zip(drive_root(dir));
+    let Some((table, root)) = table else {
+        return dirsize::usage(&*services.fs, dir, cluster, cancel, progress);
+    };
+    let key = root.to_string_lossy().into_owned();
+    let read_table = |stop: &AtomicBool| {
+        let started = Instant::now();
+        let result = dirsize::usage_from_listing(table, &*services.fs, dir, cluster, stop);
+        if result.is_ok() {
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let _ = tx.send(Msg::TableTime(key.clone(), ms));
+        }
+        result
+    };
+    // The drive itself: the table has everything.
+    if dir == root {
+        match read_table(cancel) {
+            Ok(space) => return Some(space),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return None,
+            // No table (not NTFS, an older service): walk.
+            Err(_) => return dirsize::usage(&*services.fs, dir, cluster, cancel, progress),
+        }
+    }
+    let overtake = fast
+        .table_times
+        .get(&key)
+        .map(|ms| std::time::Duration::from_millis(*ms));
+    let stop_walk = AtomicBool::new(false);
+    let stop_table = AtomicBool::new(false);
+    let (done_tx, done_rx) = flume::bounded::<std::io::Result<Space>>(1);
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        let mut table_started = false;
+        let mut from_table: Option<Space> = None;
+        let walked = dirsize::usage(&*services.fs, dir, cluster, &stop_walk, &mut |so_far| {
+            if cancel.load(Ordering::Relaxed) {
+                stop_walk.store(true, Ordering::Relaxed);
+                return;
+            }
+            if !table_started && overtake.is_none_or(|after| started.elapsed() >= after) {
+                table_started = true;
+                let done_tx = done_tx.clone();
+                let (read_table, stop_table) = (&read_table, &stop_table);
+                scope.spawn(move || {
+                    let _ = done_tx.send(read_table(stop_table));
+                });
+            }
+            if let Ok(Ok(space)) = done_rx.try_recv() {
+                from_table = Some(space);
+                stop_walk.store(true, Ordering::Relaxed);
+                return;
+            }
+            progress(so_far);
+        });
+        stop_table.store(true, Ordering::Relaxed);
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        walked.or(from_table)
+    })
+}
+
 /// Counts the files and folders under the items and reports as it goes. Background thread.
 fn count_space(
     services: &Services,
-    index: Option<&arke_core::index_service::IndexService>,
+    fast: &Fast,
     rows: &[Row],
     details: FileDetails,
     cluster: u64,
@@ -1532,11 +1655,14 @@ fn count_space(
     let mut last_sent: Option<Instant> = None;
     for row in rows.iter().filter(|r| r.entry.is_dir_like()) {
         let before = done.clone();
-        // From the index when it follows this drive live: one pass in memory instead of a walk
-        // (a whole C: drive in about a second instead of a minute or more).
-        let from_index = index.and_then(|ix| ix.usage_below(&row.path, cluster, cancel));
-        let walked = from_index.or_else(|| {
-            dirsize::usage(&*services.fs, &row.path, cluster, cancel, &mut |so_far| {
+        let walked = count_folder(
+            services,
+            fast,
+            &row.path,
+            cluster,
+            cancel,
+            tx,
+            &mut |so_far| {
                 if last_sent.is_none_or(|at| at.elapsed() >= PROGRESS_EVERY) {
                     last_sent = Some(Instant::now());
                     let mut shown = before.clone();
@@ -1548,8 +1674,8 @@ fn count_space(
                     }
                     let _ = tx.send(Msg::Space(shown, Counting::Running));
                 }
-            })
-        });
+            },
+        );
         match walked {
             Some(space) => {
                 done.usage += space.usage;

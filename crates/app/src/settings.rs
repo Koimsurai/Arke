@@ -669,6 +669,10 @@ pub(crate) struct Settings {
     /// Packaged apps' pinned commands (`command:{CLSID}` owners): the item kinds they are for,
     /// from the app's manifest and the menus they were seen in (`win_menu_parts::item_kind`).
     pub(crate) menu_pin_types: std::collections::BTreeMap<String, Vec<String>>,
+    /// How long reading each drive's whole file table through the index service took, in ms
+    /// (`C:\` keys), as last measured by Properties: a folder walk that has taken longer than that
+    /// is overtaken by a read of the table (`properties.rs`).
+    pub(crate) mft_list_ms: std::collections::BTreeMap<String, u64>,
     /// Shortcuts changed in Settings: command id (`commands.rs`) to its keys, empty when the
     /// command has none. Only changes are stored; a command that is absent keeps its defaults.
     pub(crate) shortcuts: std::collections::BTreeMap<String, Vec<String>>,
@@ -797,6 +801,7 @@ impl Default for Settings {
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),
+            mft_list_ms: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
             update_channel_choice: None,

@@ -326,7 +326,7 @@ version = "0.7.3"
 dependencies = [
  "flate2",
  "flume",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "image",
  "jpeg-decoder",
  "log",

@@ -361,6 +361,10 @@ type Learned = (Vec<(String, String)>, Vec<(String, Vec<String>)>);
 /// `{CLSID}` verb (with the item types its manifest names), a registry command by a verb the
 /// registry has for these items, else the extension whose menu has it, read all at once
 /// ([`NO_OWNER`] when none has it). Logs each extension's time. Background thread.
+#[allow(
+    clippy::too_many_lines,
+    reason = "three lookups in order, sharing what is still unplaced"
+)]
 fn find_owners(
     shell: &dyn crate::shell::Shell,
     paths: &[PathBuf],

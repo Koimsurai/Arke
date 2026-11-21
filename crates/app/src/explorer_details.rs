@@ -456,7 +456,7 @@ impl Explorer {
     }
 
     /// A date as its column shows it (full date-times, or short forms like "Today 07:49").
-    fn date_text(&self, time: Option<std::time::SystemTime>, full: bool) -> String {
+    pub(super) fn date_text(&self, time: Option<std::time::SystemTime>, full: bool) -> String {
         let shell = &self.services.shell;
         time.map_or_default(|t| {
             if full {

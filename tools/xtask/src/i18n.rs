@@ -133,7 +133,7 @@ fn number_like(text: &str) -> bool {
     text.starts_with(|c: char| c.is_ascii_digit())
         && text
             .chars()
-            .all(|c| c.is_ascii_hexdigit() || "xXoOtT_.+-:".contains(c))
+            .all(|c| c.is_ascii_hexdigit() || matches!(c, 'x' | 'X' | 'o' | 'O' | 't' | 'T' | '_' | '.' | '+' | '-' | ':'))
 }
 
 /// A YAML scalar for `text`: plain when that reads back as the same string, double-quoted

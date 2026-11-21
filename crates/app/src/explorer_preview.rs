@@ -1477,7 +1477,8 @@ impl Explorer {
                     // A path wraps at its separators, so all of it shows.
                     .map(|d| {
                         if let Some(time) = date {
-                            d.child(self.date_text(time))
+                            // Once: the list's short form, or the full one with "full dates".
+                            d.child(self.date_text(Some(time), crate::prefs::full_dates()))
                         } else if key == location {
                             d.child(wrappable_path(&value))
                         } else {
@@ -1531,17 +1532,6 @@ impl Explorer {
                     }))
             }))
             .into_any_element()
-    }
-
-    /// A date as the Info list shows it, once: the list's short form ("Today 06:06") or, with the
-    /// "full dates" setting on, the full date and time.
-    fn date_text(&self, time: std::time::SystemTime) -> String {
-        let shell = &self.services.shell;
-        if crate::prefs::full_dates() {
-            shell.format_time(time)
-        } else {
-            shell.format_time_short(time)
-        }
     }
 
     fn preview_details(&self, preview: &Preview) -> Vec<(String, String)> {

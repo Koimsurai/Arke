@@ -696,10 +696,10 @@ impl IndexService {
                 continue;
             }
             let walked = crate::dirsize::usage(fs, &path, cluster, cancel, &mut |_| {})?;
-            let child = way.first().cloned().or_else(|| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-            });
+            let child = way
+                .first()
+                .cloned()
+                .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_lowercase()));
             if let Some(child) = child
                 && let Some(slot) = space.children.iter_mut().find(|(p, _)| {
                     p.file_name()
@@ -2759,12 +2759,8 @@ mod tests {
                 .usage_below(Path::new(r"C:\Users\me"), 0, Some(&profiles), &cancel)
                 .expect("from the index");
             assert_eq!((mine.usage.bytes, mine.usage.partial), (10, false));
-            let inside = svc.usage_below(
-                Path::new(r"C:\Users\Default"),
-                0,
-                Some(&profiles),
-                &cancel,
-            );
+            let inside =
+                svc.usage_below(Path::new(r"C:\Users\Default"), 0, Some(&profiles), &cancel);
             assert_eq!(inside, None, "walked instead");
             drop(svc);
         }

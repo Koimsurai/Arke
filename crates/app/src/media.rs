@@ -288,6 +288,7 @@ impl MediaStore {
         store
     }
 
+    #[allow(clippy::too_many_lines, reason = "one short loader per kind of media")]
     fn new(services: Services, cx: &mut Context<Self>) -> Self {
         let (tx, rx) = flume::unbounded::<MediaEvent>();
         let thumbs = {

@@ -1674,13 +1674,8 @@ fn count_folder(
         let mut asked = false;
         let mut reading = None;
         let mut from_table: Option<Space> = None;
-        let walked = dirsize::usage_pausable(
-            fs,
-            dir,
-            cluster,
-            &stop_walk,
-            &pause_walk,
-            &mut |so_far| {
+        let walked =
+            dirsize::usage_pausable(fs, dir, cluster, &stop_walk, &pause_walk, &mut |so_far| {
                 if cancel.load(Ordering::Relaxed) {
                     stop_walk.store(true, Ordering::Relaxed);
                     return;
@@ -1710,8 +1705,7 @@ fn count_folder(
                     Err(flume::TryRecvError::Empty) => {}
                 }
                 progress(so_far);
-            },
-        );
+            });
         stop_table.store(true, Ordering::Relaxed);
         // Joined here so a panic in the table's thread doesn't take the count down with it.
         if let Some(reading) = reading
@@ -3180,7 +3174,13 @@ mod count_folder_tests {
             r"C:\",
             vec![
                 Entry::new("sys", EntryKind::Dir, 0, None, 0x10 | 0x2 | 0x4),
-                Entry::new("jl", EntryKind::Link { is_dir: true }, 0, None, 0x10 | 0x400),
+                Entry::new(
+                    "jl",
+                    EntryKind::Link { is_dir: true },
+                    0,
+                    None,
+                    0x10 | 0x400,
+                ),
             ],
         );
         fs.insert_dir(

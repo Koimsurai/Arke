@@ -1913,12 +1913,11 @@ fn raise(hwnd: isize, also: Option<u32>) -> bool {
 /// codes are; anything else is the drive's format result (success).
 fn format_drive_result(code: u32) -> Result<(), ShellError> {
     const SHFMT_ERROR: u32 = 0xFFFF_FFFF;
-    const SHFMT_CANCEL: u32 = 0xFFFF_FFFE;
     const SHFMT_NOFORMAT: u32 = 0xFFFF_FFFD;
     match code {
-        SHFMT_CANCEL => Ok(()),
         SHFMT_ERROR => Err(ShellError::Host("The drive could not be formatted.".into())),
         SHFMT_NOFORMAT => Err(ShellError::Host("This drive cannot be formatted.".into())),
+        // Formatted, or SHFMT_CANCEL (0xFFFF_FFFE): the dialog was closed.
         _ => Ok(()),
     }
 }

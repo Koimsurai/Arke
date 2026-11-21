@@ -395,15 +395,11 @@ impl Journal for ServiceJournal {
         let custom = self.custom.clone();
         // Connecting may wait for the service to start: the sink is asked meanwhile too. A pipe
         // that comes after it gave up is dropped, which tells the service nobody is listening.
-        let pipe = with_timeout_while(
-            CONNECT_TIMEOUT * 2,
-            &mut || sink(Vec::new()),
-            move || {
-                let pipe = session(custom.as_deref())?;
-                send(&pipe, &Request::List { root }).ok()?;
-                Some(pipe)
-            },
-        )?
+        let pipe = with_timeout_while(CONNECT_TIMEOUT * 2, &mut || sink(Vec::new()), move || {
+            let pipe = session(custom.as_deref())?;
+            send(&pipe, &Request::List { root }).ok()?;
+            Some(pipe)
+        })?
         .ok_or_else(|| io::Error::other("Arke index service unavailable"))?;
         // Receive on another thread so a stuck service times out here (falling back to a walk)
         // instead of stalling the index build.

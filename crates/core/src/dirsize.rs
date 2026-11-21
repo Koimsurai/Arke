@@ -596,7 +596,7 @@ impl std::error::Error for ReadToEnd {}
 /// Whether [`usage_from_listing`] failed only after reading the whole listing (`dir` isn't in
 /// it, or the listing doesn't go into it), so it took as long as reading the file table takes.
 pub fn listed_to_end(err: &std::io::Error) -> bool {
-    err.get_ref().is_some_and(|e| e.is::<ReadToEnd>())
+    matches!(err.get_ref(), Some(e) if e.is::<ReadToEnd>())
 }
 
 /// Everything below `dir` counted as [`usage`] counts it, from a whole-volume listing of its
@@ -616,6 +616,10 @@ pub fn listed_to_end(err: &std::io::Error) -> bool {
 /// below `dir` are walked too, so what the user can read counts (`C:\Users\Default`) and the rest
 /// makes the count `partial`, as a walk would. `PermissionDenied` at once when `dir` is in one
 /// of them: walk it instead.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pass over the streamed listing, its state shared by the steps"
+)]
 pub fn usage_from_listing(
     journal: &dyn crate::journal::Journal,
     fs: &dyn Fs,
@@ -907,9 +911,8 @@ mod tests {
         assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
         assert!(listed_to_end(&missing));
         cancel.store(true, Ordering::Relaxed);
-        let stopped =
-            usage_from_listing(&*journal, &*fs, Path::new(r"C:\w"), 4096, None, &cancel)
-                .unwrap_err();
+        let stopped = usage_from_listing(&*journal, &*fs, Path::new(r"C:\w"), 4096, None, &cancel)
+            .unwrap_err();
         assert_eq!(stopped.kind(), std::io::ErrorKind::Interrupted);
         assert!(!listed_to_end(&stopped));
     }
@@ -943,7 +946,10 @@ mod tests {
         );
         let fs = FakeFs::new();
         // Default can be read; Bob's folder can't (not in the fake: listing it fails).
-        fs.insert_dir(r"C:\Users\Default", vec![dir("AppData"), file("NTUSER.DAT", 300)]);
+        fs.insert_dir(
+            r"C:\Users\Default",
+            vec![dir("AppData"), file("NTUSER.DAT", 300)],
+        );
         fs.insert_dir(r"C:\Users\Default\AppData", vec![file("x", 4000)]);
         let profiles = Profiles {
             dir: PathBuf::from(r"C:\Users"),
@@ -978,7 +984,10 @@ mod tests {
         assert!(!profiles.hides("PUBLIC") && !profiles.hides("Me") && profiles.hides("default"));
         assert!(!profiles.hidden(Path::new(r"C:\Users")));
         assert!(profiles.hidden(Path::new(r"C:\USERS\Bob")));
-        assert_eq!(profiles.way_down(Path::new(r"c:\")), Some(vec!["users".to_owned()]));
+        assert_eq!(
+            profiles.way_down(Path::new(r"c:\")),
+            Some(vec!["users".to_owned()])
+        );
         assert_eq!(profiles.way_down(Path::new(r"C:\Users\me")), None);
         assert_eq!(profiles.way_down(Path::new(r"D:\")), None);
     }

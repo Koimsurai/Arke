@@ -1927,6 +1927,23 @@ impl Workspace {
         self.open_folder_tab(path, at, false, window, cx);
     }
 
+    /// A click on a folder in the sidebar: opens it here, or with Ctrl in a new tab, in the
+    /// background or with Shift too in front, as a link in a browser (#291).
+    fn open_clicked(
+        &mut self,
+        path: PathBuf,
+        modifiers: gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if modifiers.control {
+            let at = self.active + 1;
+            self.open_folder_tab(path, at, modifiers.shift, window, cx);
+        } else {
+            self.navigate_active(path, window, cx);
+        }
+    }
+
     // --- Dual pane ---
 
     /// Splits a tab into two panes, opening `path` on the right as the active side.

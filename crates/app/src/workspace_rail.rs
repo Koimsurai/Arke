@@ -442,8 +442,8 @@ impl Workspace {
     ) -> AnyElement {
         let (open, background) = (path.clone(), path);
         rail_button(id, icon_el, label, here)
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.navigate_active(open.clone(), window, cx);
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                this.open_clicked(open.clone(), e.modifiers(), window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Middle,

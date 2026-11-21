@@ -202,9 +202,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Middle click: a new tab in the background; Home stays.
-        if let HomeEvent::OpenInNewTab(path) = event {
-            self.open_in_background(path.clone(), window, cx);
+        // Middle or Ctrl+click: a new tab, in the background (Home stays) or in front.
+        if let HomeEvent::OpenInNewTab { path, activate } = event {
+            let at = self.active + 1;
+            self.open_folder_tab(path.clone(), at, *activate, window, cx);
             return;
         }
         if self.home_opens_elsewhere(event, window, cx) {
@@ -224,7 +225,7 @@ impl Workspace {
                 });
             }
             HomeEvent::OpenRecycle => self.open_recycle(false, window, cx),
-            HomeEvent::OpenInNewTab(_)
+            HomeEvent::OpenInNewTab { .. }
             | HomeEvent::PlaceMenu { .. }
             | HomeEvent::FavoriteMenu { .. }
             | HomeEvent::FileMenu { .. }
@@ -261,7 +262,7 @@ impl Workspace {
                 _ => return false,
             },
             HomeEvent::OpenRecycle
-            | HomeEvent::OpenInNewTab(_)
+            | HomeEvent::OpenInNewTab { .. }
             | HomeEvent::PlaceMenu { .. }
             | HomeEvent::FavoriteMenu { .. }
             | HomeEvent::FileMenu { .. }

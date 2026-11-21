@@ -75,8 +75,9 @@ pub(crate) struct RecentFile {
 pub(crate) enum HomeEvent {
     /// Open the folder in the current tab (drive, network location)
     OpenFolder(PathBuf),
-    /// Open the folder in a new background tab (middle click); Home stays.
-    OpenInNewTab(PathBuf),
+    /// Open the folder in a new tab (middle click or Ctrl+click), in the background unless
+    /// `activate` (Ctrl+Shift+click); Home stays then.
+    OpenInNewTab { path: PathBuf, activate: bool },
     /// Go to the file's folder and select it
     Reveal(PathBuf),
     /// Open the Recycle Bin page (listed here only while it is unpinned from the sidebar).
@@ -577,7 +578,10 @@ impl HomePage {
                     MouseButton::Middle,
                     cx.listener(move |_, _: &MouseDownEvent, _, cx| {
                         if let Some(parent) = parent.clone() {
-                            cx.emit(HomeEvent::OpenInNewTab(parent));
+                            cx.emit(HomeEvent::OpenInNewTab {
+                                path: parent,
+                                activate: false,
+                            });
                         }
                     }),
                 )
@@ -604,21 +608,32 @@ impl HomePage {
             .into_any_element()
     }
 
-    /// Click opens, middle click opens in a new tab (when there's a folder to open).
+    /// Click opens; middle click or Ctrl+click opens in a new tab (when there's a folder to open).
     fn card_actions(
         el: gpui::Stateful<gpui::Div>,
         event: HomeEvent,
         new_tab: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        el.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-            cx.emit(event.clone());
+        let ctrl_tab = new_tab.clone();
+        el.on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+            // Ctrl: a new tab, in front with Shift too, as a link in a browser (#291).
+            match &ctrl_tab {
+                Some(path) if e.modifiers().control => cx.emit(HomeEvent::OpenInNewTab {
+                    path: path.clone(),
+                    activate: e.modifiers().shift,
+                }),
+                _ => cx.emit(event.clone()),
+            }
         }))
         .when_some(new_tab, |el, path| {
             el.on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(move |_, _: &MouseDownEvent, _, cx| {
-                    cx.emit(HomeEvent::OpenInNewTab(path.clone()));
+                    cx.emit(HomeEvent::OpenInNewTab {
+                        path: path.clone(),
+                        activate: false,
+                    });
                 }),
             )
         })

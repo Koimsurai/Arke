@@ -8837,3 +8837,71 @@ fn click_to_rename_not_in_search_results(cx: &mut TestAppContext) {
     assert_eq!(renaming(&view, cx), None);
     assert!(view.update(cx, |v, _| v.search_mode));
 }
+
+/// Ctrl+double-click on a folder opens it in a new tab in the background (the folder stays
+/// selected); with Shift too, the new tab comes to the front. Ctrl+click alone still selects
+/// (#291).
+#[gpui::test]
+fn ctrl_double_click_opens_a_folder_in_a_new_tab(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![dir("one"), dir("two")]);
+    fs.insert_many(r"C:\t\one", 1);
+    fs.insert_many(r"C:\t\two", 2);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let double_click = |at, modifiers: Modifiers, cx: &mut VisualTestContext| {
+        for click_count in [1, 2] {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count,
+            });
+        }
+        cx.run_until_parked();
+    };
+    let one = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
+    let two = point(bounds.left() + px(60.), bounds.top() + row * 1.5);
+    let ctrl = Modifiers {
+        control: true,
+        ..Modifiers::default()
+    };
+    double_click(one, ctrl, cx);
+    ws.update(cx, |ws, cx| {
+        assert_eq!(
+            tab_paths(ws, cx),
+            [
+                Some(PathBuf::from(r"C:\t")),
+                Some(PathBuf::from(r"C:\t\one"))
+            ]
+        );
+        assert_eq!(ws.active, 0, "in the background");
+    });
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["one"]);
+    assert!(view.update(cx, |v, _| loaded(r"C:\t")(v)), "this tab stays");
+
+    let ctrl_shift = Modifiers {
+        control: true,
+        shift: true,
+        ..Modifiers::default()
+    };
+    double_click(two, ctrl_shift, cx);
+    ws.update(cx, |ws, cx| {
+        assert_eq!(tab_paths(ws, cx).len(), 3);
+        assert_eq!(
+            tab_paths(ws, cx)[ws.active],
+            Some(PathBuf::from(r"C:\t\two"))
+        );
+    });
+}

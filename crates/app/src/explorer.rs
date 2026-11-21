@@ -3322,7 +3322,11 @@ impl Explorer {
             if m.shift {
                 self.selection.extend_to(&view, ix, m.control);
             } else if m.control {
-                self.selection.toggle(&view, ix);
+                // Ctrl+double-click opens a folder in a new tab: its second click keeps the
+                // selection the first one made.
+                if event.click_count < 2 {
+                    self.selection.toggle(&view, ix);
+                }
             } else if in_selection && self.selection.len() > 1 {
                 self.click_select = Some(ix);
             } else {
@@ -3337,6 +3341,17 @@ impl Explorer {
         // folder.
         if event.click_count >= 2 && !m.control && !m.shift && !crate::prefs::single_click() {
             self.open_index(ix, cx);
+        }
+        // Ctrl+double-click on a folder: a new tab, in the background; with Shift too, in front, as
+        // Ctrl+click on a link in a browser (#291). Ctrl+click alone selects, as in File Explorer.
+        if event.click_count == 2
+            && m.control
+            && let Some((path, true)) = self.path_at(ix)
+        {
+            cx.emit(ExplorerEvent::OpenInNewTab {
+                path,
+                activate: m.shift,
+            });
         }
         cx.notify();
     }

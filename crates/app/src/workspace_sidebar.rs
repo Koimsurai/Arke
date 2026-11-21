@@ -2327,8 +2327,8 @@ impl Workspace {
                     this.place_pin(&dragged.path, slot, cx);
                 }
             }))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.navigate_active(open.clone(), window, cx);
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                this.open_clicked(open.clone(), e.modifiers(), window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Middle,
@@ -2477,8 +2477,10 @@ impl Workspace {
                     // a double-click also expands or collapses it (#242). The clicks after the
                     // first don't open it again (that would reload it).
                     match e.click_count() {
-                        0 | 1 => this.navigate_active(open.clone(), window, cx),
-                        2 if !leaf => this.toggle_expand(open.clone(), cx),
+                        0 | 1 => this.open_clicked(open.clone(), e.modifiers(), window, cx),
+                        2 if !leaf && !e.modifiers().control => {
+                            this.toggle_expand(open.clone(), cx);
+                        }
                         _ => {}
                     }
                 }))

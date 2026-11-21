@@ -2256,43 +2256,51 @@ impl Explorer {
                 .child(t!("preview.nothing_selected").to_string())
                 .into_any_element();
         };
-        // Archive: name and summary, with the contents filling the column below.
-        if let PreviewBody::Archive(listing) = &preview.body {
-            return pane
-                .child(
-                    div()
-                        .font_weight(theme::FW_STRONG)
-                        .text_size(theme::fs_15())
-                        .child(SharedString::from(
-                            arke_core::tree::leaf(&preview.entry.name).to_owned(),
-                        )),
-                )
-                .child(
-                    div()
-                        .text_size(theme::fs_12())
-                        .text_color(theme::text_subtle())
-                        .child(archive_summary(listing)),
-                )
-                .child(div().flex_1().min_h_0().child(Self::with_preview_scrollbar(
-                    Self::archive_list(listing, &self.preview_scroll),
-                    &self.preview_scroll,
-                    &self.preview_scrollbar,
-                )))
-                .into_any_element();
-        }
-        // Folder: name and item count, with the contents below (click to enter and select).
-        if let PreviewBody::Folder { entries, total } = &preview.body {
+        // Folders and archives: name and summary, the contents filling the column, and the same
+        // details as a file's below. Loading has the same layout, so nothing jumps or disappears
+        // when the contents come in (#290).
+        let contents = match &preview.body {
+            PreviewBody::Archive(_) | PreviewBody::Folder { .. } => true,
+            PreviewBody::Loading(_) => {
+                preview.entry.is_dir_like() || archive_kind(&preview.entry.name).is_some()
+            }
+            _ => false,
+        };
+        if contents {
+            let summary = match &preview.body {
+                PreviewBody::Archive(listing) => archive_summary(listing),
+                PreviewBody::Folder { total, .. } => tn!("info.items", *total).into_owned(),
+                // Keeps the line, so the list doesn't move up and back.
+                _ => "\u{a0}".to_owned(),
+            };
+            let (scroll, drag) = (
+                self.preview_scroll.clone(),
+                Rc::clone(&self.preview_scrollbar),
+            );
+            let list = match &preview.body {
+                PreviewBody::Archive(listing) => Self::with_preview_scrollbar(
+                    Self::archive_list(listing, &scroll),
+                    &scroll,
+                    &drag,
+                ),
+                PreviewBody::Folder { entries, total } => Self::with_preview_scrollbar(
+                    Self::folder_list(&preview.path, entries, *total, &scroll, Some(cx)),
+                    &scroll,
+                    &drag,
+                ),
+                PreviewBody::Loading(since) => loading_skeleton(*since),
+                _ => div().into_any_element(),
+            };
             return pane
                 .child(
                     div()
                         .flex()
                         .items_start()
                         .gap(theme::s_8())
-                        .child(
-                            div()
-                                .flex_none()
-                                .child(kind_icon(FileKind::Folder, crate::theme::scaled_px(20.))),
-                        )
+                        .child(div().flex_none().child(kind_icon(
+                            file_kind(&preview.entry),
+                            crate::theme::scaled_px(20.),
+                        )))
                         .child(
                             // Wraps like a file's name, so a narrow pane shows all of it.
                             div()
@@ -2309,19 +2317,15 @@ impl Explorer {
                     div()
                         .text_size(theme::fs_12())
                         .text_color(theme::text_subtle())
-                        .child(tn!("info.items", *total).into_owned()),
+                        .child(summary),
                 )
-                .child({
-                    let (scroll, drag) = (
-                        self.preview_scroll.clone(),
-                        Rc::clone(&self.preview_scrollbar),
-                    );
-                    let list = Self::folder_list(&preview.path, entries, *total, &scroll, Some(cx));
+                .child(
                     div()
                         .flex_1()
-                        .min_h_0()
-                        .child(Self::with_preview_scrollbar(list, &scroll, &drag))
-                })
+                        .min_h(crate::theme::scaled_px(96.))
+                        .child(list),
+                )
+                .child(self.pane_info_block(preview, cx))
                 .into_any_element();
         }
         // The pane's width follows the window or the user's drag, so the frame keeps the image
@@ -2453,28 +2457,31 @@ impl Explorer {
             )
             .child(self.preview_split_handle(cx))
             .child(div().flex_none().child(Self::pane_title(preview, cx)))
+            .child(self.pane_info_block(preview, cx))
+            .into_any_element()
+    }
+
+    /// The details under the preview. Only in a window too short for the rest: they scroll.
+    fn pane_info_block(&self, preview: &Preview, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_shrink(1.)
+            .min_h_0()
             .child(
-                // Only in a window too short for even the smallest frame: the details scroll.
                 div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .flex_shrink(1.)
+                    .id("pane-info-scroll")
+                    .flex_initial()
                     .min_h_0()
-                    .child(
-                        div()
-                            .id("pane-info-scroll")
-                            .flex_initial()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.pane_info_scroll.0)
-                            .child(self.pane_info(preview, false, cx)),
-                    )
-                    .child(crate::scrollbar::scrollbar(
-                        self.pane_info_scroll.0.clone(),
-                        Rc::clone(&self.pane_info_scroll.1),
-                    )),
+                    .overflow_y_scroll()
+                    .track_scroll(&self.pane_info_scroll.0)
+                    .child(self.pane_info(preview, false, cx)),
             )
+            .child(crate::scrollbar::scrollbar(
+                self.pane_info_scroll.0.clone(),
+                Rc::clone(&self.pane_info_scroll.1),
+            ))
             .into_any_element()
     }
 

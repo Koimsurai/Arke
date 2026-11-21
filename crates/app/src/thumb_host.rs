@@ -183,9 +183,12 @@ struct State {
 
 /// The running video host and its bookkeeping.
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
-/// The PDF host: separate, so a slow video never holds up PDFs and a stuck PDF never holds up
-/// videos.
-static PDF_STATE: OnceLock<Mutex<State>> = OnceLock::new();
+/// The PDF hosts, one per PDF loader thread so PDFs render two at a time as they did in-process;
+/// separate from the video host, so a slow video never holds up PDFs and a stuck PDF never holds
+/// up videos.
+static PDF_STATES: [OnceLock<Mutex<State>>; 2] = [const { OnceLock::new() }; 2];
+/// Which PDF host to wait for when both are busy.
+static PDF_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Windows' thumbnail for a video, fitted within `max_side`, from the host process. `Ok(None)`
 /// when the file has none (unsupported format, no codec, or decoding it hung or crashed twice).
@@ -202,8 +205,15 @@ pub(crate) fn video_thumbnail(path: &Path, max_side: u32) -> Result<Option<Thumb
 /// First page of a PDF fitted within `max_side`, rendered in a host process: a malformed file
 /// that stalls or crashes the renderer costs only that file. `Ok(None)` when it has none.
 pub(crate) fn pdf_thumbnail(path: &Path, max_side: u32) -> Result<Option<Thumbnail>, HostError> {
+    // A free host if there is one, else wait for one of them in turn.
+    for state in &PDF_STATES {
+        if let Some(mut state) = state.get_or_init(Mutex::default).try_lock() {
+            return ask(&mut state, Kind::Pdf, path, max_side);
+        }
+    }
+    let n = PDF_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % PDF_STATES.len();
     ask(
-        &mut PDF_STATE.get_or_init(Mutex::default).lock(),
+        &mut PDF_STATES[n].get_or_init(Mutex::default).lock(),
         Kind::Pdf,
         path,
         max_side,

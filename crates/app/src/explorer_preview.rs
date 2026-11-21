@@ -1440,6 +1440,10 @@ impl Explorer {
     /// them. `raised`: drawn on Quick Look's card, which needs the stronger subtle text.
     fn pane_info(&self, preview: &Preview, raised: bool, cx: &mut Context<Self>) -> AnyElement {
         let location = t!("col.location").into_owned();
+        let dates = [
+            (t!("col.created").into_owned(), preview.entry.created),
+            (t!("col.modified").into_owned(), preview.entry.modified),
+        ];
         let subtle = if raised {
             theme::text_subtle_raised()
         } else {
@@ -1462,13 +1466,19 @@ impl Explorer {
             .children(rows.into_iter().enumerate().map(|(ix, (key, value))| {
                 let icon = detail_icon(&key);
                 let link = reveal && key == location;
+                let date = dates
+                    .iter()
+                    .find(|(label, _)| *label == key)
+                    .and_then(|(_, time)| *time);
                 let value = div()
                     .debug_selector(move || format!("pane-info-value-{ix}"))
                     .min_w_0()
                     .text_color(theme::text_muted())
                     // A path wraps at its separators, so all of it shows.
                     .map(|d| {
-                        if key == location {
+                        if let Some(time) = date {
+                            d.child(self.date_text(time))
+                        } else if key == location {
                             d.child(wrappable_path(&value))
                         } else {
                             d.child(value)
@@ -1521,6 +1531,17 @@ impl Explorer {
                     }))
             }))
             .into_any_element()
+    }
+
+    /// A date as the Info list shows it, once: the list's short form ("Today 06:06") or, with the
+    /// "full dates" setting on, the full date and time.
+    fn date_text(&self, time: std::time::SystemTime) -> String {
+        let shell = &self.services.shell;
+        if crate::prefs::full_dates() {
+            shell.format_time(time)
+        } else {
+            shell.format_time_short(time)
+        }
     }
 
     fn preview_details(&self, preview: &Preview) -> Vec<(String, String)> {

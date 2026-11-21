@@ -49,9 +49,21 @@ const SPAWN_COOLDOWN: Duration = Duration::from_millis(300);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 
+/// What a request asks the host to make.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+enum Kind {
+    /// Windows' thumbnail of a video.
+    #[default]
+    Video,
+    /// First page of a PDF, from the Windows PDF renderer.
+    Pdf,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Request {
     id: u64,
+    #[serde(default)]
+    kind: Kind,
     path: PathBuf,
     max_side: u32,
 }
@@ -91,7 +103,7 @@ pub(crate) fn run() {
         });
     let mut out = std::io::stdout().lock();
     while let Ok(request) = rx.recv_timeout(IDLE) {
-        let picture = make(&request.path, request.max_side)
+        let picture = make(request.kind, &request.path, request.max_side)
             .and_then(|t| arke_core::thumb_cache::encode(&t))
             .map(|bytes| to_hex(&bytes));
         let reply = Reply {
@@ -108,14 +120,19 @@ pub(crate) fn run() {
 }
 
 #[cfg(not(test))]
-fn make(path: &Path, max_side: u32) -> Option<Thumbnail> {
-    crate::win_icons::video_thumbnail(path, max_side)
+fn make(kind: Kind, path: &Path, max_side: u32) -> Option<Thumbnail> {
+    match kind {
+        Kind::Video => crate::win_icons::video_thumbnail(path, max_side),
+        Kind::Pdf => crate::win_pdf::render_page(path, 0, (max_side, max_side))
+            .ok()
+            .map(|r| r.image),
+    }
 }
 
 /// In tests the host is the test binary itself, and file names choose what happens: `hang*` never
 /// answers, `crash*` ends the process, `none*` has no thumbnail, `slow*` takes a moment.
 #[cfg(test)]
-fn make(path: &Path, max_side: u32) -> Option<Thumbnail> {
+fn make(_kind: Kind, path: &Path, max_side: u32) -> Option<Thumbnail> {
     let name = path
         .file_name()
         .map_or_default(|n| n.to_string_lossy().into_owned());
@@ -164,8 +181,14 @@ struct State {
     blocked_until: Option<Instant>,
 }
 
-/// The running host and its bookkeeping.
+/// The running video host and its bookkeeping.
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+/// The PDF hosts, one per PDF loader thread so PDFs render two at a time as they did in-process;
+/// separate from the video host, so a slow video never holds up PDFs and a stuck PDF never holds
+/// up videos.
+static PDF_STATES: [OnceLock<Mutex<State>>; 2] = [const { OnceLock::new() }; 2];
+/// Which PDF host to wait for when both are busy.
+static PDF_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Windows' thumbnail for a video, fitted within `max_side`, from the host process. `Ok(None)`
 /// when the file has none (unsupported format, no codec, or decoding it hung or crashed twice).
@@ -173,12 +196,36 @@ pub(crate) fn video_thumbnail(path: &Path, max_side: u32) -> Result<Option<Thumb
     // One request at a time: the lock is held until the answer is in.
     ask(
         &mut STATE.get_or_init(Mutex::default).lock(),
+        Kind::Video,
         path,
         max_side,
     )
 }
 
-fn ask(state: &mut State, path: &Path, max_side: u32) -> Result<Option<Thumbnail>, HostError> {
+/// First page of a PDF fitted within `max_side`, rendered in a host process: a malformed file
+/// that stalls or crashes the renderer costs only that file. `Ok(None)` when it has none.
+pub(crate) fn pdf_thumbnail(path: &Path, max_side: u32) -> Result<Option<Thumbnail>, HostError> {
+    // A free host if there is one, else wait for one of them in turn.
+    for state in &PDF_STATES {
+        if let Some(mut state) = state.get_or_init(Mutex::default).try_lock() {
+            return ask(&mut state, Kind::Pdf, path, max_side);
+        }
+    }
+    let n = PDF_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % PDF_STATES.len();
+    ask(
+        &mut PDF_STATES[n].get_or_init(Mutex::default).lock(),
+        Kind::Pdf,
+        path,
+        max_side,
+    )
+}
+
+fn ask(
+    state: &mut State,
+    kind: Kind,
+    path: &Path,
+    max_side: u32,
+) -> Result<Option<Thumbnail>, HostError> {
     for attempt in 0..2 {
         if state.host.is_none() {
             if state.blocked_until.is_some_and(|t| Instant::now() < t) {
@@ -200,6 +247,7 @@ fn ask(state: &mut State, path: &Path, max_side: u32) -> Result<Option<Thumbnail
         let id = state.next_id;
         let line = serde_json::to_string(&Request {
             id,
+            kind,
             path: path.to_path_buf(),
             max_side,
         })
@@ -446,6 +494,18 @@ pub(crate) mod tests {
         assert!(!process_alive(first), "and is gone");
         assert!(ask_for("holiday.mkv").unwrap().is_some());
         assert_ne!(host_pid(), Some(first));
+    }
+
+    /// PDFs have their own host: a hung PDF is ended after the timeout and videos are unaffected.
+    #[test]
+    fn a_hung_pdf_does_not_block_videos() {
+        let _serial = SERIAL.lock();
+        let pdf = |name: &str| pdf_thumbnail(&PathBuf::from(format!(r"C:\docs\{name}")), 16);
+        assert!(pdf("a.pdf").unwrap().is_some());
+        assert!(ask_for("trip.mp4").unwrap().is_some());
+        assert!(pdf("hang.pdf").unwrap().is_none());
+        assert!(ask_for("holiday.mkv").unwrap().is_some());
+        assert!(pdf("b.pdf").unwrap().is_some(), "a new PDF host starts");
     }
 
     /// A file the decoder crashes on: tried once more in a new host, then it has none; other files

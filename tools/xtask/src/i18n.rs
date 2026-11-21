@@ -131,9 +131,13 @@ fn decode(value: &str) -> Result<String> {
 /// `2026-11-12`. Anything starting with a digit made only of such characters.
 fn number_like(text: &str) -> bool {
     text.starts_with(|c: char| c.is_ascii_digit())
-        && text
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() || matches!(c, 'x' | 'X' | 'o' | 'O' | 't' | 'T' | '_' | '.' | '+' | '-' | ':'))
+        && text.chars().all(|c| {
+            c.is_ascii_hexdigit()
+                || matches!(
+                    c,
+                    'x' | 'X' | 'o' | 'O' | 't' | 'T' | '_' | '.' | '+' | '-' | ':'
+                )
+        })
 }
 
 /// A YAML scalar for `text`: plain when that reads back as the same string, double-quoted

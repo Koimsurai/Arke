@@ -351,8 +351,14 @@ fn a_drive_menu_has_drive_things(cx: &mut TestAppContext) {
         "no Format for the system drive"
     );
     let folder = labels(&ws, cx, r"C:\a");
-    assert!(folder.contains(&t!("menu.properties").to_string()), "{folder:?}");
-    assert!(!folder.contains(&t!("menu.disk_cleanup").to_string()), "{folder:?}");
+    assert!(
+        folder.contains(&t!("menu.properties").to_string()),
+        "{folder:?}"
+    );
+    assert!(
+        !folder.contains(&t!("menu.disk_cleanup").to_string()),
+        "{folder:?}"
+    );
     assert!(!folder.contains(&format), "{folder:?}");
 }
 

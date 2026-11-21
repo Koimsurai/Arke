@@ -175,10 +175,9 @@ const fn menu_glyph(action: &SidebarAction) -> Option<Icon> {
         A::CopyPath(_) => Icon::CopyPath,
         A::Properties(..) => Icon::Info,
         A::OpenFile(_) => Icon::Open,
-        A::RevealFile(_)
-        | A::ShelfReveal(_)
-        | A::HistoryJump { .. }
-        | A::TimelineStep { .. } => Icon::Folder,
+        A::RevealFile(_) | A::ShelfReveal(_) | A::HistoryJump { .. } | A::TimelineStep { .. } => {
+            Icon::Folder
+        }
         A::EjectDrive(_) => Icon::ArrowUp,
         A::FormatDrive(_) => Icon::Drive,
         A::DiskCleanup(_) => Icon::Trash,
@@ -273,7 +272,10 @@ pub(super) fn file_menu(path: &Path) -> Vec<SidebarRow> {
             SidebarAction::RevealFile(path.clone()),
         ),
         row(t!("menu.copy_path"), SidebarAction::CopyPath(path.clone())),
-        row(t!("menu.properties"), SidebarAction::Properties(path, false)),
+        row(
+            t!("menu.properties"),
+            SidebarAction::Properties(path, false),
+        ),
     ]
 }
 
@@ -1582,9 +1584,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Vec<SidebarRow> {
         let place = path.to_path_buf();
+        let store = SettingsStore::global(cx);
         let view = self.active_view().read(cx);
         let places = &view.places;
-        let settings = &SettingsStore::global(cx).read(cx).settings;
+        let settings = &store.read(cx).settings;
         let favorite = matches!(at, MenuFor::Favorite | MenuFor::HomeFavorite);
         // The place itself (a drive, a network place, a favorite), not a folder in its tree.
         let top = !matches!(at, MenuFor::Tree { depth } if depth > 0);
@@ -1711,7 +1714,10 @@ impl Workspace {
                 SidebarAction::OpenInExplorer(place.clone()),
             ));
         }
-        items.push(row(t!("menu.copy_path"), SidebarAction::CopyPath(place.clone())));
+        items.push(row(
+            t!("menu.copy_path"),
+            SidebarAction::CopyPath(place.clone()),
+        ));
         if !remote && !server {
             items.push(row(
                 t!("menu.properties"),
@@ -3609,10 +3615,13 @@ impl Workspace {
     /// keys as they are set in Settings.
     fn menu_shortcut(&self, action: &SidebarAction, cx: &App) -> Option<SharedString> {
         use SidebarAction as A;
+        let store = SettingsStore::try_global(cx);
         let key = |id: &str| {
-            let overrides = &SettingsStore::global(cx).read(cx).settings.shortcuts;
+            let overrides = store
+                .as_ref()
+                .map_or_else(Default::default, |s| s.read(cx).settings.shortcuts.clone());
             crate::commands::find(id)
-                .and_then(|c| crate::commands::shown_key(c, overrides))
+                .and_then(|c| crate::commands::shown_key(c, &overrides))
                 .map(SharedString::from)
         };
         match action {
@@ -3636,6 +3645,7 @@ impl Workspace {
 
     /// The tab, sidebar or history menu's panel, drawn in its own window. It looks like the file
     /// list's menu: an icon on each row, the key on the right, lines between groups of rows.
+    #[allow(clippy::too_many_lines, reason = "one row builder, shared by every sidebar menu")]
     fn sidebar_menu_panel(
         &mut self,
         max_h: Pixels,
@@ -3685,7 +3695,10 @@ impl Workspace {
                 div()
                     .id(("sidebar-menu-item", ix))
                     .a11y_menu_item(label.clone(), true, false, false)
-                    .when_some(shortcut.clone(), |d, s| d.aria_keyshortcuts(s))
+                    .when_some(
+                        shortcut.clone(),
+                        gpui::StatefulInteractiveElement::aria_keyshortcuts,
+                    )
                     .h(theme::h_ctl_sm() + theme::s_4())
                     .mx(theme::s_4())
                     .px(theme::s_8())

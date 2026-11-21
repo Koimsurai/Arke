@@ -670,6 +670,15 @@ impl ContextMenu {
     /// not in this menu. Previously placed rows are removed first, so calling again after a pin
     /// change
     /// is enough. Open submenus and the highlighted row shift accordingly.
+    /// Pinned rows drawn ahead (`coming`) whose source turned out not to have them: no longer
+    /// drawn, and a click waiting on one is dropped.
+    pub(super) fn drop_coming(&mut self, keys: &[String]) {
+        self.coming.retain(|k| !keys.contains(k));
+        if self.pending.as_ref().is_some_and(|p| keys.contains(p)) {
+            self.pending = None;
+        }
+    }
+
     pub(super) fn sync_pinned(&mut self, pinned: &[String]) {
         let Some(slot) = self.shell_slot else {
             return;

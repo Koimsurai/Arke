@@ -425,3 +425,48 @@ fn a_command_in_a_packaged_submenu_shows_on_its_own(cx: &mut TestAppContext) {
     let _ = open_gate.send(());
     *shell.menu_gate.lock() = None;
 }
+
+/// A pinned app command whose app was uninstalled (its class no longer reads): the row drawn
+/// ahead goes away when its source fails, instead of staying until the whole Windows menu is in.
+#[gpui::test]
+fn a_pinned_command_of_an_uninstalled_app_goes_away(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_commands();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    pin(cx, &["Open in Terminal"]);
+    right_click(&view, cx, Some(0));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !owners(cx).contains_key("Open in Terminal") || pin_types(cx).is_empty() {
+        assert!(Instant::now() < deadline, "owner not learned");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Uninstalled: reading it alone fails. The whole Windows menu is slow.
+    shell
+        .extensions
+        .lock()
+        .retain(|(h, _)| h.kind != HandlerKind::Command);
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    right_click(&view, cx, Some(0));
+    for _ in 0..50 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        view.update(cx, |v, _| v
+            .context_menu
+            .as_ref()
+            .is_some_and(|m| !m.shell_state().0)),
+        "the whole menu is still loading"
+    );
+    let rows = rows_above_more_options(&view, cx);
+    assert!(!rows.contains(&"Open in Terminal".to_owned()), "{rows:?}");
+    let _ = open_whole.send(());
+    *shell.menu_gate.lock() = None;
+}

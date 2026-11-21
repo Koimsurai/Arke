@@ -207,6 +207,9 @@ fn shown(
     ))
 }
 
+/// Most rows read from one command's own commands.
+const MAX_SUB_COMMANDS: usize = 200;
+
 /// The rows of a command's own commands (`EnumSubCommands`), separators included.
 fn sub_commands(
     command: &IExplorerCommand,
@@ -220,7 +223,8 @@ fn sub_commands(
     let Ok(list) = (unsafe { command.EnumSubCommands() }) else {
         return rows;
     };
-    loop {
+    // A command listing more than this is misbehaving; the whole menu still shows it.
+    for _ in 0..MAX_SUB_COMMANDS {
         let mut next = [None];
         let mut fetched = 0u32;
         // SAFETY: one slot to fill and a count, both ours.
@@ -238,6 +242,10 @@ fn sub_commands(
         };
         if flags & ECF_ISSEPARATOR.0.cast_unsigned() != 0 {
             rows.push(ShellMenuEntry::Separator);
+            continue;
+        }
+        // Deeper submenus are left to the whole menu: skip them before reading anything.
+        if flags & ECF_HASSUBCOMMANDS.0.cast_unsigned() != 0 {
             continue;
         }
         // SAFETY: as above; the canonical name is a GUID, the row's verb.
@@ -271,6 +279,10 @@ fn item(
 
 /// A string from a COM call, freed.
 fn take(text: PWSTR) -> String {
+    // Some commands answer S_OK with no string (no icon, no title).
+    if text.0.is_null() {
+        return String::new();
+    }
     // SAFETY: a NUL-terminated string allocated with CoTaskMemAlloc, freed once here.
     unsafe {
         let s = text.to_string().unwrap_or_default();

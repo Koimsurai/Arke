@@ -368,9 +368,15 @@ fn find_owners(
     keys: &[(String, Option<String>)],
     group: u64,
 ) -> Learned {
+    // Set when a lookup failed or timed out: what it would have found is unknown, so the
+    // commands still unplaced must be asked again next time, not remembered as ownerless.
+    let mut incomplete = false;
     let found = shell
         .shell_menu_handlers(paths, background)
-        .unwrap_or_default();
+        .unwrap_or_else(|_| {
+            incomplete = true;
+            Vec::new()
+        });
     let mut owners: Vec<(String, String)> = Vec::new();
     let mut types: Vec<(String, Vec<String>)> = Vec::new();
     let mut rest: Vec<String> = Vec::new();
@@ -412,7 +418,10 @@ fn find_owners(
                 }
                 shell.release_shell_menu(menu.session);
             }
-            Err(e) => times.push(format!("{} failed ({e})", handler.name)),
+            Err(e) => {
+                incomplete = true;
+                times.push(format!("{} failed ({e})", handler.name));
+            }
         }
     }
     // Still unknown: a command in a packaged command's own submenu (NanaZip, WinRAR), which has
@@ -421,16 +430,25 @@ fn find_owners(
         .iter()
         .filter(|key| !owners.iter().any(|(k, _)| k == *key))
         .collect();
-    if !left.is_empty()
-        && let Some(kind) = shell.shell_menu_kind(paths, background)
-    {
+    let kind = if left.is_empty() {
+        None
+    } else {
+        shell.shell_menu_kind(paths, background)
+    };
+    if !left.is_empty() && kind.is_none() {
+        incomplete = true;
+    }
+    if let Some(kind) = kind {
         let commands: Vec<MenuHandler> = shell
             .packaged_commands(&kind)
             .iter()
             .map(|clsid| MenuHandler::command(clsid))
             .collect();
         for (handler, result) in read_parts(shell, paths, background, commands, group) {
-            let Ok((menu, took)) = result else { continue };
+            let Ok((menu, took)) = result else {
+                incomplete = true;
+                continue;
+            };
             times.push(format!("{} {} ms", handler.clsid, took.as_millis()));
             let mut have = Vec::new();
             pin_keys(&menu.entries, &[], &mut have);
@@ -451,7 +469,8 @@ fn find_owners(
             .map_or_else(String::new, |p| p.display().to_string()),
         times.join(", ")
     );
-    for key in rest {
+    // Absent everywhere only counts when every lookup completed.
+    for key in rest.into_iter().filter(|_| !incomplete) {
         if !owners.iter().any(|(k, _)| *k == key) {
             owners.push((key, NO_OWNER.to_string()));
         }

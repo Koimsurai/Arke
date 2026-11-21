@@ -1,0 +1,70 @@
+# Keeps the release build's compiled dependencies in the Actions cache, one per architecture, so
+# a release compiles only Arke itself. A tag's own runs can't save a cache another run can use,
+# so it is saved here, from main, where tags can read it. It is rebuilt when the dependencies
+# change (and only when the cache for them isn't there yet), and twice a week so it isn't
+# evicted after a week unused.
+name: release cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - .github/workflows/release-cache.yml
+  schedule:
+    - cron: "0 20 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cache
+  cancel-in-progress: true
+
+# No CARGO_* settings here or in the jobs: the cache key hashes them, and release.yml's build
+# jobs have none, so the keys match.
+jobs:
+  cache:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: add ARM64 target
+        if: matrix.arch == 'arm64'
+        run: rustup target add aarch64-pc-windows-msvc
+      # Same key and target directory as release.yml's build job (`cargo xtask build` builds into
+      # target/dist).
+      - id: lookup
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-${{ matrix.arch }}
+          workspaces: ". -> target/dist"
+          lookup-only: true
+          save-if: false
+      - id: cache
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-${{ matrix.arch }}
+          workspaces: ". -> target/dist"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The build `cargo xtask build` runs, without the version settings, which only Arke's own
+      # crate reads.
+      - name: build
+        if: steps.lookup.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target/dist
+        run: cargo build --locked --release -p arke-app --bin arke --target ${{ matrix.target }}

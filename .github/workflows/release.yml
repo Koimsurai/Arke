@@ -55,6 +55,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The dependencies as compiled for the release build, saved from main by
+      # release-cache.yml: only Arke's own crates compile here. Restore only, like the test job.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-${{ matrix.arch }}
+          workspaces: ". -> target/dist"
+          save-if: false
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-about
@@ -86,6 +93,15 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
+      # xtask, built here to check the tag and package: the publish job runs it instead of
+      # compiling it again.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.arch == 'x64'
+        with:
+          name: xtask
+          path: target/debug/xtask.exe
+          if-no-files-found: error
+          retention-days: 1
 
   publish:
     needs: [test, build]
@@ -107,6 +123,10 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: xtask
+          path: xtask-bin
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*.exe
@@ -119,4 +139,4 @@ jobs:
         run: |
           args=("$CHANNEL")
           if [ -n "$NUMBER" ]; then args+=(--number "$NUMBER"); fi
-          cargo xtask publish "${args[@]}" --prebuilt
+          xtask-bin/xtask.exe publish "${args[@]}" --prebuilt

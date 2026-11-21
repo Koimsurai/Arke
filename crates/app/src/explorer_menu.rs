@@ -578,6 +578,9 @@ pub(crate) struct ContextMenu {
     shell_session: Option<u64>,
     /// "Show more options" still loading: id of this request.
     shell_request: Option<u64>,
+    /// The request the whole Windows menu came in for, once it is in: a command pinned from it
+    /// learns its source at once (`toggle_shell_pin`).
+    whole_request: Option<u64>,
     /// Top-level row index of the "Show more options" submenu.
     shell_slot: Option<usize>,
     /// Number of pinned Windows commands placed directly above "Show more options".
@@ -633,6 +636,7 @@ impl ContextMenu {
             pinned_rows: 0,
             parts: Vec::new(),
             parts_request: None,
+            whole_request: None,
             extended: false,
             coming: Vec::new(),
             pending: None,
@@ -2098,6 +2102,7 @@ impl Explorer {
             return;
         };
         menu.shell_request = None;
+        menu.whole_request = Some(request);
         let children = match result {
             Ok(shell_menu) => {
                 menu.shell_session = Some(shell_menu.session);
@@ -2195,11 +2200,14 @@ impl Explorer {
     /// updates immediately.
     pub(crate) fn toggle_shell_pin(&mut self, key: &str, cx: &mut Context<Self>) {
         let key = key.to_string();
+        let mut added = true;
         let pinned = SettingsStore::global(cx).update(cx, |store, cx| {
             store.update(
                 |s| {
                     if let Some(at) = s.menu_pinned.iter().position(|k| *k == key) {
+                        added = false;
                         s.menu_pinned.remove(at);
+                        s.menu_pin_seen.remove(&key);
                         if let Some(owner) = s.menu_pin_owners.remove(&key)
                             && !s.menu_pin_owners.values().any(|o| *o == owner)
                         {
@@ -2215,6 +2223,14 @@ impl Explorer {
         });
         if let Some(menu) = self.context_menu.as_mut() {
             menu.sync_pinned(&pinned);
+        }
+        // Pinned from the whole Windows menu, which is in: where it comes from is learned now,
+        // so it shows on its own from the very next menu, not the one after.
+        if added
+            && let Some(menu) = self.context_menu.as_ref()
+            && let Some(request) = menu.whole_request
+        {
+            self.learn_pin_owners(menu, request, cx);
         }
         cx.notify();
     }

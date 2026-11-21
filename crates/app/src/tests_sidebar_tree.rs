@@ -306,3 +306,99 @@ fn the_current_folder_is_scrolled_into_view(cx: &mut TestAppContext) {
         "the places had to scroll"
     );
 }
+
+/// A long `C:\work` with `zeta\deep` at its end, the window short: following `deep` has to scroll.
+fn deep_window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\", vec![dir("work")]);
+    let mut many: Vec<Entry> = (1..=40).map(|i| dir(&format!("d{i:02}"))).collect();
+    many.push(dir("zeta"));
+    fs.insert_dir(r"C:\work", many);
+    fs.insert_dir(r"C:\work\zeta", vec![dir("deep")]);
+    fs.insert_dir(r"C:\work\zeta\deep", Vec::new());
+    let (ws, cx) = window_at(cx, fs, r"C:\");
+    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(480.)));
+    refresh(cx);
+    (ws, cx)
+}
+
+fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut crate::settings::Settings) + 'static) {
+    cx.update(|_, cx| SettingsStore::global(cx).update(cx, |s, cx| s.update(f, cx)));
+    cx.run_until_parked();
+}
+
+/// #307: working in a folder inside a favorite, the sidebar stays on the favorite: the tree
+/// opens below, out of sight, but doesn't scroll away to the folder.
+#[gpui::test]
+fn inside_a_favorite_the_sidebar_stays_on_it(cx: &mut TestAppContext) {
+    let (ws, cx) = deep_window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![PathBuf::from(r"C:\work")]);
+    });
+    open(&ws, cx, r"C:\work\zeta\deep");
+    settle(cx, "the tree opens to deep", |cx| {
+        expanded(&ws, cx, r"C:\work\zeta")
+    });
+    for _ in 0..5 {
+        refresh(cx);
+    }
+    assert!(
+        ws.update(cx, |ws, _| ws.places_overflow_for_test()) > gpui::px(0.),
+        "deep is out of sight"
+    );
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.places_offset_for_test()),
+        gpui::px(0.),
+        "the sidebar stays on the favorite"
+    );
+}
+
+/// #299: following the folder turned off, the tree opens only where the user opens it.
+#[gpui::test]
+fn following_the_folder_can_be_turned_off(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    settle(cx, "the drive opens to work", |cx| {
+        expanded(&ws, cx, r"C:\")
+    });
+    change(cx, |st| st.sidebar_follow = false);
+    open(&ws, cx, r"C:\work\reports\2026");
+    for _ in 0..5 {
+        refresh(cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!expanded(&ws, cx, r"C:\work"), "nothing more is opened");
+    assert!(expanded(&ws, cx, r"C:\"), "what was open stays open");
+}
+
+/// The favorite tiles are drawn whole under Home while the tree opens to the current folder on
+/// start: following the folder doesn't scroll them away or leave them cut.
+#[gpui::test]
+fn the_tiles_stay_in_view_while_the_tree_follows(cx: &mut TestAppContext) {
+    let (_ws, cx) = window_at(cx, fs(), r"C:\work\reports\2026");
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.favorites =
+                        Some(vec![PathBuf::from(r"C:\music"), PathBuf::from(r"C:\work")]);
+                },
+                cx,
+            );
+        });
+    });
+    settle(cx, "the tree opened to 2026", |cx| shows(cx, "2026"));
+    refresh(cx);
+    let frame = cx
+        .debug_bounds("sidebar-places-frame")
+        .expect("the places are drawn");
+    let tiles = cx.debug_bounds("pin-tiles").expect("the tiles are drawn");
+    assert!(tiles.size.height > gpui::px(40.), "{tiles:?}");
+    for slot in ["tile-slot-0", "tile-slot-1"] {
+        let tile = cx.debug_bounds(slot).expect("a tile");
+        assert!(
+            tile.top() >= frame.top() - gpui::px(1.)
+                && tile.bottom() <= frame.bottom() + gpui::px(1.),
+            "{slot} {tile:?} in {frame:?}"
+        );
+    }
+}

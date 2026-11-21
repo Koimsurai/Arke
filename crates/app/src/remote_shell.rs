@@ -530,6 +530,15 @@ impl Shell for RemoteShell {
     fn load_places(&self) -> Vec<Place> {
         self.inner.load_places()
     }
+    fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
+        self.inner.quick_access_pinned()
+    }
+    fn recent_files_enabled(&self) -> bool {
+        self.inner.recent_files_enabled()
+    }
+    fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {
+        self.inner.window_at_cursor()
+    }
     fn disk_spaces(&self, roots: &[PathBuf]) -> Vec<(PathBuf, (u64, u64))> {
         self.inner.disk_spaces(roots)
     }

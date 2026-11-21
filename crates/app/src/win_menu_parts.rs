@@ -35,6 +35,11 @@ pub(crate) struct MenuHandler {
     pub(crate) name: String,
     #[serde(default)]
     pub(crate) kind: HandlerKind,
+    /// A registry command in a cascading menu (`ExtendedSubCommandsKey`, as context menu
+    /// managers make them): the registry path of the verb that opens that menu
+    /// (`*\shell\Tools`), under whose label it is shown, so its pinned key matches (#278).
+    #[serde(default)]
+    pub(crate) parent: Option<String>,
 }
 
 /// Where a menu command comes from. Each item of the whole Windows menu says which with its
@@ -72,6 +77,7 @@ impl MenuHandler {
             clsid: clsid.to_string(),
             name: clsid.to_string(),
             kind: HandlerKind::Command,
+            parent: None,
         }
     }
 }
@@ -204,6 +210,7 @@ pub(crate) fn handlers(paths: &[PathBuf], background: bool) -> Vec<MenuHandler> 
                 clsid,
                 name,
                 kind: HandlerKind::Extension,
+                parent: None,
             });
         }
     }
@@ -212,8 +219,10 @@ pub(crate) fn handlers(paths: &[PathBuf], background: bool) -> Vec<MenuHandler> 
 }
 
 /// Registry commands (`<class>\shell\<verb>`) for `target`, each verb once, the first class
-/// that has it winning, as File Explorer does. Left out: ones Windows decides on by itself
-/// (`AppliesTo`, `CommandStateHandler`), cascading ones, hidden ones (`LegacyDisable`,
+/// that has it winning, as File Explorer does, and the commands of a cascading menu one level
+/// down (`ExtendedSubCommandsKey`: the key whose `shell` holds them, run with that key as their
+/// class). Left out: ones Windows decides on by itself (`AppliesTo`, `CommandStateHandler`),
+/// Windows' own cascades (`SubCommands`), hidden ones (`LegacyDisable`,
 /// `ProgrammaticAccessOnly`), and, for several items, ones run by command line (Windows runs
 /// those once per item, by rules of their own).
 fn verbs(target: &Target, items: usize) -> Vec<MenuHandler> {
@@ -225,40 +234,79 @@ fn verbs(target: &Target, items: usize) -> Vec<MenuHandler> {
                 continue;
             }
             let at = format!(r"{shell}\{verb}");
-            let has = |name: &str| reg::value_exists(&at, name);
-            if [
-                "AppliesTo",
-                "CommandStateHandler",
-                "SubCommands",
-                "ExtendedSubCommandsKey",
-                "LegacyDisable",
-                "ProgrammaticAccessOnly",
-            ]
-            .into_iter()
-            .any(has)
+            if !shown_alone(&at) {
+                continue;
+            }
+            let extended = reg::value_exists(&at, "Extended");
+            if let Some(sub) = reg::value(&at, "ExtendedSubCommandsKey")
+                .map(|k| k.trim().trim_matches('\\').to_string())
+                .filter(|k| !k.is_empty())
             {
+                let sub_shell = format!(r"{sub}\shell");
+                for child in reg::subkeys(&sub_shell) {
+                    let child_at = format!(r"{sub_shell}\{child}");
+                    if out.iter().any(|h| h.name.eq_ignore_ascii_case(&child))
+                        || !shown_alone(&child_at)
+                        || reg::value_exists(&child_at, "ExtendedSubCommandsKey")
+                    {
+                        continue;
+                    }
+                    if let Some(handler) = verb_handler(&sub, &child, &child_at, items) {
+                        out.push(MenuHandler {
+                            kind: HandlerKind::Verb {
+                                extended: extended || reg::value_exists(&child_at, "Extended"),
+                            },
+                            parent: Some(at.clone()),
+                            ..handler
+                        });
+                    }
+                }
                 continue;
             }
-            let handler = reg::value(&at, "ExplorerCommandHandler")
-                .map(|c| c.trim().to_string())
-                .filter(|c| is_clsid(c));
-            let by_line = reg::subkeys(&at)
-                .iter()
-                .any(|k| k.eq_ignore_ascii_case("command"));
-            if handler.is_none() && (!by_line || items > 1) {
-                continue;
+            if let Some(handler) = verb_handler(&key, &verb, &at, items) {
+                out.push(MenuHandler {
+                    kind: HandlerKind::Verb { extended },
+                    ..handler
+                });
             }
-            out.push(MenuHandler {
-                key: key.clone(),
-                clsid: handler.unwrap_or_default(),
-                name: verb,
-                kind: HandlerKind::Verb {
-                    extended: has("Extended"),
-                },
-            });
         }
     }
     out
+}
+
+/// Whether the verb at registry path `at` can be read on its own: not one Windows decides on by
+/// itself, not Windows' own cascade, not hidden.
+fn shown_alone(at: &str) -> bool {
+    ![
+        "AppliesTo",
+        "CommandStateHandler",
+        "SubCommands",
+        "LegacyDisable",
+        "ProgrammaticAccessOnly",
+    ]
+    .into_iter()
+    .any(|name| reg::value_exists(at, name))
+}
+
+/// The verb `verb` of class `key` (at registry path `at`) as a command run on its own: by its
+/// `ExplorerCommandHandler`, or its command line for one item. `None` when neither applies.
+fn verb_handler(key: &str, verb: &str, at: &str, items: usize) -> Option<MenuHandler> {
+    let handler = reg::value(at, "ExplorerCommandHandler")
+        .map(|c| c.trim().to_string())
+        .filter(|c| is_clsid(c));
+    let by_line = reg::subkeys(at)
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case("command"));
+    if handler.is_none() && (!by_line || items > 1) {
+        return None;
+    }
+    Some(MenuHandler {
+        key: key.to_string(),
+        clsid: handler.unwrap_or_default(),
+        name: verb.to_string(),
+        kind: HandlerKind::Verb { extended: false },
+        parent: None,
+    })
 }
 
 fn target_of(path: &Path) -> Target {

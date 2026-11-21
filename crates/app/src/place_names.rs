@@ -81,6 +81,33 @@ pub(crate) fn drive_default_name(place: &Place) -> String {
         .to_owned()
 }
 
+/// Where the ` (C:)` Windows ends a drive's name with starts, if `label` ends with one.
+pub(crate) fn letter_suffix(label: &str) -> Option<usize> {
+    let at = label.len().checked_sub(5).filter(|&at| at > 0)?;
+    match label.as_bytes().get(at..)? {
+        [b' ', b'(', letter, b':', b')'] if letter.is_ascii_alphabetic() => Some(at),
+        _ => None,
+    }
+}
+
+/// A drive's name on one line that keeps its letter: a long name is cut before ` (C:)`, so two
+/// drives of the same long name (German "Lokaler Datenträger") still tell apart. Other names are
+/// cut at the end as usual.
+pub(crate) fn drive_name(label: String) -> gpui::Div {
+    let Some(at) = letter_suffix(&label) else {
+        return div().min_w_0().truncate().child(label);
+    };
+    // A no-break space: a plain one at the start of its own text box may not take up room.
+    let letter = format!("\u{a0}{}", &label[at + 1..]);
+    let mut name = label;
+    name.truncate(at);
+    div()
+        .min_w_0()
+        .flex()
+        .child(div().min_w_0().truncate().child(name))
+        .child(div().flex_none().child(letter))
+}
+
 /// The box a place is renamed in, in the sidebar or on Home: like the one in a file list. Presses
 /// stay in it, so the row under it neither opens the place nor takes the focus back.
 pub(crate) fn rename_box(input: Entity<TextInput>) -> AnyElement {
@@ -171,6 +198,16 @@ mod tests {
         assert_eq!(drive_letter(Path::new(r"Z:")), Some('Z'));
         assert_eq!(drive_letter(Path::new(r"Z:\a")), None);
         assert_eq!(drive_letter(Path::new(r"\\nas\docs")), None);
+    }
+
+    #[test]
+    fn a_drive_name_keeps_its_letter_apart() {
+        assert_eq!(letter_suffix("Lokaler Datenträger (C:)"), Some(20));
+        assert_eq!(letter_suffix(r"docs (\\nas) (Z:)"), Some(12));
+        assert_eq!(letter_suffix(" (C:)"), None, "no name before it");
+        assert_eq!(letter_suffix("Fotos (2024)"), None);
+        assert_eq!(letter_suffix("Fotos"), None);
+        assert_eq!(letter_suffix("(C:)"), None);
     }
 
     #[test]

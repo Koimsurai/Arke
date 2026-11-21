@@ -1360,7 +1360,8 @@ impl Workspace {
             ),
         ];
         let sorting = vec![
-            card(
+            wrapping_card(
+                "columns-card",
                 Icon::ViewColumns,
                 t!("settings.columns"),
                 Some(t!("settings.columns_desc")),
@@ -1836,6 +1837,12 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
                 st.sidebar_peek = !st.sidebar_peek;
             }),
         ))
+        .child(sub_row(
+            t!("settings.sidebar_follow"),
+            switch("sidebar-follow", s.sidebar_follow, |st| {
+                st.sidebar_follow = !st.sidebar_follow;
+            }),
+        ))
         .into_any_element()
 }
 
@@ -2140,6 +2147,34 @@ pub(super) fn row(
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc))
         .child(div().flex_none().child(control))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
+        .into_any_element()
+}
+
+/// A row whose control is a set of chips: they wrap to more lines as the row narrows, and the
+/// title keeps a third of the row, instead of the chips staying on one line and squeezing the
+/// title to a letter a line (#313, with a wider fallback font or a narrow window).
+fn wrapping_card(
+    id: &'static str,
+    icon: Icon,
+    title: impl Into<SharedString>,
+    desc: Option<Cow<'static, str>>,
+    control: AnyElement,
+) -> AnyElement {
+    let title = title.into();
+    let a11y = crate::a11y::active();
+    div()
+        .debug_selector(move || id.to_owned())
+        .min_h(card_min_h())
+        .px(theme::s_16())
+        .py(theme::s_12())
+        .flex()
+        .items_center()
+        .gap(theme::s_16())
+        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+        .child(row_icon(icon, theme::text_muted()))
+        .child(row_text(title, desc.map(row_desc)).min_w(gpui::relative(1. / 3.)))
+        .child(div().min_w_0().child(control))
         .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()
 }
@@ -3406,6 +3441,7 @@ fn column_toggles(s: &Settings) -> AnyElement {
             })
     };
     div()
+        .debug_selector(|| "column-chips".to_owned())
         .flex()
         .flex_wrap()
         .justify_end()

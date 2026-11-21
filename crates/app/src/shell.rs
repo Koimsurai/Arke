@@ -1228,6 +1228,19 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (path, page, max);
         Err(ShellError::Unsupported)
     }
+    /// The first page of a PDF as a thumbnail fitted within `max_side`, for file lists. Where
+    /// the shell can, it renders in a separate process so a malformed file can't stall or crash
+    /// Arke; the default renders in this one. Background thread. `Ok(None)`: no thumbnail.
+    fn pdf_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
+        Ok(self
+            .render_pdf(path, 0, (max_side, max_side))
+            .ok()
+            .map(|r| r.image))
+    }
     /// Sync state of one folder's items from the Cloud Files API. `items` are the names worth a
     /// per-item read (local placeholders, see `Entry::wants_sync_check`). Reads attributes and
     /// placeholder info only: nothing is downloaded and the sync client isn't woken. Background

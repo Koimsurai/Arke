@@ -607,7 +607,10 @@ fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
     assert!(drawn(cx, "pin-row-gap"), "its row is the gap");
     assert!(!drawn(cx, "pin-insertion-mark"), "no line");
     assert!(!drawn(cx, "pin-list-drop"), "the block made way for it");
-    assert!(drawn(cx, "tile-add-favorite"), "the tiles invite it back");
+    assert!(
+        !drawn(cx, "tile-add-favorite"),
+        "the tiles it left just close its gap"
+    );
 
     let tile = bounds(cx, "tile-slot-0");
     cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
@@ -622,6 +625,126 @@ fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(!drawn(cx, "pin-list-drop"), "nothing left behind");
     assert!(!drawn(cx, "tile-add-favorite"));
+
+    // The other way: a list entry shows the tiles take it, and once a tile, the list it left
+    // shows nothing.
+    let row = bounds(cx, "pin-row-0");
+    pick_up(cx, row);
+    assert!(
+        drawn(cx, "tile-add-favorite"),
+        "the tiles show it can go there"
+    );
+    let tile = bounds(cx, "tile-slot-0");
+    cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert!(
+        !drawn(cx, "pin-list-drop"),
+        "the list it left just closes its gap"
+    );
+    cx.simulate_mouse_up(tile.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// Rows of the list make room for a favorite dragged over them as the tiles do: they slide to
+/// their new places, a row at a time, and close up sliding when it leaves for the tiles.
+#[gpui::test]
+fn list_rows_slide_to_make_room(cx: &mut TestAppContext) {
+    crate::motion::force_for_test(true);
+    let (ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("b"), p("c"), p("d")];
+    });
+    refresh(cx);
+    let rows: Vec<Bounds<Pixels>> = (0..3)
+        .map(|ix| bounds(cx, &format!("pin-row-{ix}")))
+        .collect();
+    let pitch = f32::from(rows[1].top() - rows[0].top());
+    let from = |ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: Option<&str>| {
+        ws.update(cx, |ws, _| {
+            ws.list_row_slide_from_for_test(path.map(p).as_deref())
+        })
+    };
+    let close = |got: Option<f32>, want: f32| got.is_some_and(|got| (got - want).abs() < 1.);
+
+    pick_up(cx, rows[0]);
+    assert!(
+        near(bounds(cx, "pin-row-1").top(), rows[1].top()),
+        "its gap is a row high: the rows under it stay put"
+    );
+    cx.simulate_mouse_move(rows[2].center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).pinned, vec![p("c"), p("d"), p("b")]);
+    assert!(
+        close(from(&ws, cx, Some("c")), pitch),
+        "c slides up from a row down"
+    );
+    assert!(close(from(&ws, cx, Some("d")), pitch), "d too");
+    assert!(
+        close(from(&ws, cx, Some("b")), -2. * pitch),
+        "its gap from where it was"
+    );
+    assert_eq!(from(&ws, cx, None), None, "the Recycle Bin stays put");
+
+    // Up onto the tiles: the rows under its gap close up, sliding.
+    let tile = bounds(cx, "tile-slot-0");
+    cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).pinned, vec![p("c"), p("d")]);
+    assert!(
+        close(from(&ws, cx, None), pitch),
+        "the Recycle Bin closes up"
+    );
+    cx.simulate_mouse_up(tile.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    crate::motion::force_for_test(false);
+}
+
+/// A list row picked up with the tiles scrolled away above: the tiles open a row for it up there,
+/// and the rows in view stay where they are, the one picked up under the pointer.
+#[gpui::test]
+fn a_row_picked_up_under_tiles_scrolled_away_stays_put(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollEvent};
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b"), p("c")]);
+        st.pinned = vec![p("d"), p(LONG)];
+    });
+    cx.simulate_resize(gpui::size(px(1200.), px(360.)));
+    refresh(cx);
+    let grid = bounds(cx, "pin-tiles");
+    let over = bounds(cx, "sidebar-places-frame").center();
+    cx.simulate_event(ScrollEvent {
+        position: over,
+        delta: ScrollDelta::Pixels(point(px(0.), -(grid.size.height + px(12.)))),
+        ..ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    refresh(cx);
+    let frame = bounds(cx, "sidebar-places-frame");
+    assert!(
+        bounds(cx, "pin-tiles").bottom() <= frame.top(),
+        "the tiles are out of sight"
+    );
+    let row = bounds(cx, "pin-row-0");
+    pick_up(cx, row);
+    let slot = bounds(cx, "tile-add-favorite");
+    assert!(
+        slot.top() > bounds(cx, "tile-slot-0").bottom(),
+        "the tiles open a row for it"
+    );
+    assert!(
+        near(bounds(cx, "pin-row-gap").top(), row.top()),
+        "the row stays under the pointer"
+    );
+    let at = bounds(cx, "pin-row-gap").center();
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert!(
+        near(bounds(cx, "pin-row-0").top(), row.top()),
+        "and once let go, the row closing up above leaves it there"
+    );
 }
 
 /// Let go over the sidebar where nothing takes it (This PC), a list entry stays where the drag
@@ -746,4 +869,113 @@ fn esc_puts_dragged_favorites_back(cx: &mut TestAppContext) {
         "nothing on release"
     );
     assert_eq!(current(cx).pinned, vec![p("c")]);
+}
+
+/// A folder's menu as drawn, from translation keys: `key` for a row, `key|shortcut` for a row
+/// with its key on the right (`shortcut` a translation key too), `-` for a line between groups.
+fn drawn_rows(keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .map(|k| match k.split_once('|') {
+            _ if *k == "-" => "-".to_owned(),
+            Some((label, key)) => format!("{} [{}]", t!(label), t!(key)),
+            None => t!(*k).into_owned(),
+        })
+        .collect()
+}
+
+/// The folder actions after the favorites' rows, the same for every folder on this PC.
+const FOLDER_TAIL: [&str; 5] = [
+    "-",
+    "menu.open_terminal",
+    "menu.open_in_explorer",
+    "menu.copy_path",
+    "menu.properties",
+];
+
+/// A favorite has the same menu wherever it is, in the same order: a tile and a list row differ
+/// only in where "Move" sends it, Home words that row for its own page, a folder that is no
+/// favorite has the same rows without it, and Ctrl+click shows on "Open in new tab".
+#[gpui::test]
+fn folder_menus_match_wherever_the_folder_is(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let menu = |ws: &Entity<Workspace>,
+                cx: &mut VisualTestContext,
+                path: PathBuf,
+                depth: Option<usize>,
+                home: bool| {
+        ws.update(cx, |ws, cx| {
+            ws.folder_menu_drawn_for_test(&path, depth, home, cx)
+        })
+    };
+    let open = ["sidebar.open_in_new_tab|menu.ctrl_click", "-"];
+    let with = |rows: &[&str]| {
+        let all: Vec<&str> = open
+            .iter()
+            .chain(rows)
+            .chain(FOLDER_TAIL.iter())
+            .copied()
+            .collect();
+        drawn_rows(&all)
+    };
+    let tile = with(&[
+        "sidebar.remove_favorite",
+        "sidebar.move_to_list",
+        "menu.rename",
+    ]);
+    assert_eq!(menu(&ws, cx, p("a"), None, false), tile, "a tile");
+    assert_eq!(
+        menu(&ws, cx, p("c"), None, false),
+        with(&[
+            "sidebar.remove_favorite",
+            "sidebar.move_to_tiles",
+            "menu.rename",
+        ]),
+        "a list row"
+    );
+    assert_eq!(
+        menu(&ws, cx, p("a"), None, true),
+        with(&[
+            "sidebar.remove_favorite",
+            "home.move_to_sidebar_list",
+            "menu.rename",
+        ]),
+        "a card on Home, which has no list below"
+    );
+    assert_eq!(
+        menu(&ws, cx, p("d"), Some(1), false),
+        with(&["sidebar.add_favorite"]),
+        "a folder in the tree"
+    );
+
+    // A right click on the tile opens that menu (built then, not when the tile is drawn).
+    let at = bounds(cx, "tile-slot-0").center();
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, cx| ws.open_menu_drawn_for_test(cx)),
+        Some(tile)
+    );
+}
+
+/// The tab menu shows its keys on the right, as the file list's menu does, instead of in the
+/// label: Ctrl+W on the active tab only, where it works.
+#[gpui::test]
+fn the_tab_menu_shows_its_keys_on_the_right(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    // Home in a tab of its own, the active one.
+    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(true, window, cx));
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.active), 1);
+    let close = t!("sidebar.close_tab").into_owned();
+    let active = ws.update(cx, |ws, cx| ws.tab_menu_drawn_for_test(1, cx));
+    assert!(active.contains(&format!("{close} [Ctrl+W]")), "{active:?}");
+    let other = ws.update(cx, |ws, cx| ws.tab_menu_drawn_for_test(0, cx));
+    assert!(other.contains(&close), "{other:?}");
+    assert!(!other.iter().any(|row| row.contains("(Ctrl")), "{other:?}");
 }

@@ -400,7 +400,10 @@ pub(crate) fn apply(settings: &Settings) {
     }
     let preview = settings.preview_width.map_or(0, u32::from);
     changed |= PREVIEW_W.swap(preview, Ordering::Relaxed) != preview;
-    let split = settings.preview_split.map_or(0, u32::from);
+    // Clamped like a drag: a hand-edited value can't hide the name and details or the content.
+    let split = settings.preview_split.map_or(0, |v| {
+        u32::from(v).clamp(PREVIEW_SPLIT_RANGE.0, PREVIEW_SPLIT_RANGE.1)
+    });
     changed |= PREVIEW_SPLIT.swap(split, Ordering::Relaxed) != split;
     let view_columns = settings.column_view_widths;
     for (col, width) in [

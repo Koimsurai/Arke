@@ -488,8 +488,10 @@ pub(crate) enum Density {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TableTime {
     pub(crate) ms: u64,
-    /// Read to the end. Otherwise it was stopped after `ms` (counted another way first), so it
-    /// takes at least that long.
+    /// Read to the end. Otherwise it was stopped: a walk that had run `ms` (the read starting
+    /// part way through) was done first, so the table isn't worth starting before `ms`. That is
+    /// under twice the table's time: the read started no later than the table takes, and hadn't
+    /// ended.
     pub(crate) done: bool,
 }
 
@@ -578,6 +580,9 @@ pub(crate) struct Settings {
     pub(crate) sidebar_collapsed: bool,
     /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
     pub(crate) sidebar_peek: bool,
+    /// This PC's tree opens down to the current folder and scrolls to it (#241); off, the tree
+    /// only opens where the user opens it (#299).
+    pub(crate) sidebar_follow: bool,
     /// Sidebar sections collapsed to their heading. Before 0.8 only This PC could collapse
     /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
     #[serde(deserialize_with = "known_sections")]
@@ -701,6 +706,10 @@ pub(crate) struct Settings {
     /// Packaged apps' pinned commands (`command:{CLSID}` owners): the item kinds they are for,
     /// from the app's manifest and the menus they were seen in (`win_menu_parts::item_kind`).
     pub(crate) menu_pin_types: std::collections::BTreeMap<String, Vec<String>>,
+    /// Extensions' pinned commands, by pin key: the item kinds (`win_menu_parts::item_kind`) the
+    /// extension showed them for when last read. An extension decides for itself whether it adds
+    /// an item, so its row is drawn ahead only where it showed last time (#278).
+    pub(crate) menu_pin_seen: std::collections::BTreeMap<String, Vec<String>>,
     /// How long reading each drive's whole file table through the index service took (`C:\`
     /// keys), as last measured by Properties: a folder walk that has taken longer than that is
     /// overtaken by a read of the table (`properties.rs`).
@@ -780,6 +789,7 @@ impl Default for Settings {
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
             sidebar_peek: false,
+            sidebar_follow: true,
             collapsed_sections: Vec::new(),
             font: String::new(),
             background_image: None,
@@ -833,6 +843,7 @@ impl Default for Settings {
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),
+            menu_pin_seen: std::collections::BTreeMap::new(),
             mft_list: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
@@ -1352,6 +1363,7 @@ fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
             settings.migrate_session();
             settings.migrate_single_window(bytes);
             settings.migrate_this_pc_collapsed(bytes);
+            settings.migrate_pin_owners(bytes);
             Some(settings)
         }
         Err(err) => {
@@ -1422,6 +1434,22 @@ impl Settings {
             && !self.is_collapsed(SidebarSection::ThisPc)
         {
             self.collapsed_sections.push(SidebarSection::ThisPc);
+        }
+    }
+
+    /// Before 0.8.0-rc.2 a pinned command in a cascading menu made in the registry was learned to
+    /// have no source of its own (`-`, left to the whole Windows menu) and waited for it on every
+    /// menu (#278). A file written before then (no `menu_pin_seen` yet) learns those again: an
+    /// empty owner is learned anew at the next menu.
+    fn migrate_pin_owners(&mut self, bytes: &[u8]) {
+        const SINCE: &str = "menu_pin_seen";
+        if bytes.windows(SINCE.len()).any(|w| w == SINCE.as_bytes()) {
+            return;
+        }
+        for owner in self.menu_pin_owners.values_mut() {
+            if owner == "-" {
+                owner.clear();
+            }
         }
     }
 
@@ -1608,6 +1636,26 @@ mod tests {
         assert_eq!(back.recent_commands, s.recent_commands);
         let old = parse_settings(br#"{"show_hidden": true}"#, Path::new("settings.json")).unwrap();
         assert!(old.shortcuts.is_empty() && old.recent_commands.is_empty());
+    }
+
+    /// #278: pinned commands learned to have no source of their own before 0.8.0-rc.2 (a file
+    /// without `menu_pin_seen`) are learned again; once it is written by this version, they keep it.
+    #[test]
+    fn ownerless_pins_are_learned_again_once() {
+        let path = Path::new("settings.json");
+        let old = parse_settings(
+            br#"{"menu_pin_owners": {"Tools / 01_one": "-", "Edit": "verb:Edit"}}"#,
+            path,
+        )
+        .unwrap();
+        assert_eq!(old.menu_pin_owners["Tools / 01_one"], "", "learned again");
+        assert_eq!(old.menu_pin_owners["Edit"], "verb:Edit", "kept");
+        let saved = serde_json::to_vec(&old).unwrap();
+        let mut back = parse_settings(&saved, path).unwrap();
+        back.menu_pin_owners
+            .insert("Tools / 01_one".into(), "-".into());
+        let again = parse_settings(&serde_json::to_vec(&back).unwrap(), path).unwrap();
+        assert_eq!(again.menu_pin_owners["Tools / 01_one"], "-", "only once");
     }
 
     /// Settings from before 0.5 get the new near-black dark theme; the gray one is a choice.

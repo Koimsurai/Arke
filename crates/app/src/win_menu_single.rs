@@ -54,12 +54,17 @@ pub(super) fn build(
     let Some(first) = paths.first() else {
         return Ok(ShellMenu::default());
     };
-    let pidls = parse_pidls(paths)?;
     let directory = menu_directory(paths, background);
-    let (menu, entries) = match handler.kind {
-        HandlerKind::Verb { .. } if handler.clsid.is_empty() => verb(first, background, handler),
+    // A registry verb runs through ShellExecuteEx and needs no PIDLs, which on a dead mapped
+    // drive can take long to parse.
+    let (pidls, (menu, entries)) = match handler.kind {
+        HandlerKind::Verb { .. } if handler.clsid.is_empty() => {
+            (Pidls(Vec::new()), verb(first, background, handler))
+        }
         HandlerKind::Verb { .. } | HandlerKind::Command => {
-            command(&pidls, first, background, handler)?
+            let pidls = parse_pidls(paths)?;
+            let built = command(&pidls, first, background, handler)?;
+            (pidls, built)
         }
         HandlerKind::Extension => return Err(ShellError::Unsupported),
     };
@@ -76,9 +81,7 @@ fn verb(
     let read = |name: &str| {
         crate::win::read_reg_string(HKEY_CLASSES_ROOT, &at, name).filter(|s| !s.trim().is_empty())
     };
-    let label = read("MUIVerb")
-        .or_else(|| read(""))
-        .map_or_else(|| handler.name.clone(), |s| indirect(&s));
+    let label = verb_label(&at).unwrap_or_else(|| handler.name.clone());
     let icon = read("Icon").and_then(|spec| icon_of(&spec));
     let folder = if background {
         target.to_path_buf()
@@ -87,17 +90,41 @@ fn verb(
             .parent()
             .map_or_else(|| target.to_path_buf(), Path::to_path_buf)
     };
-    let menu: IContextMenu = Single(vec![Action::Verb {
-        class: handler.key.clone(),
-        verb: handler.name.clone(),
-        file: target.to_path_buf(),
-        folder,
-    }])
-    .into();
-    (
-        menu,
-        vec![item(1, &handler.name, &label, true, false, icon)],
+    let menu: IContextMenu = Single(
+        vec![Action::Verb {
+            class: handler.key.clone(),
+            verb: handler.name.clone(),
+            file: target.to_path_buf(),
+            folder,
+        }],
+        None,
     )
+    .into();
+    let entry = item(1, &handler.name, &label, true, false, icon);
+    // In a cascading menu: under that menu's label, as in the whole Windows menu, so the pinned
+    // command's key (`Tools › Command`) is found (#278).
+    let entry = match handler.parent.as_deref() {
+        Some(parent) => ShellMenuEntry::Submenu {
+            label: clean_label(
+                &verb_label(parent)
+                    .unwrap_or_else(|| parent.rsplit('\\').next().unwrap_or(parent).to_string()),
+            ),
+            enabled: true,
+            icon: None,
+            children: vec![entry],
+            lazy: None,
+        },
+        None => entry,
+    };
+    (menu, vec![entry])
+}
+
+/// A registry verb's label (at registry path `at`): its `MUIVerb`, else the key's value.
+fn verb_label(at: &str) -> Option<String> {
+    let read = |name: &str| {
+        crate::win::read_reg_string(HKEY_CLASSES_ROOT, at, name).filter(|s| !s.trim().is_empty())
+    };
+    read("MUIVerb").or_else(|| read("")).map(|s| indirect(&s))
 }
 
 /// An `IExplorerCommand` (a packaged app's command, or a registry command's
@@ -122,6 +149,9 @@ fn command(
     let ids: Vec<*const ITEMIDLIST> = pidls.0.iter().map(|p| p.cast_const()).collect();
     // SAFETY: the PIDLs are valid absolute ones, owned by `pidls` for the call.
     let items: IShellItemArray = unsafe { SHCreateShellItemArrayFromIDLists(&ids) }?;
+    // The command holding the view site; the menu clears it when it is dropped, so the two
+    // never keep each other alive.
+    let mut sited: Option<IObjectWithSite> = None;
     if background {
         // Commands for a folder's empty space may look at the view (Windows Terminal does when
         // it gets no item), as from File Explorer's menu.
@@ -130,7 +160,9 @@ fn command(
             command.cast::<IObjectWithSite>(),
         ) {
             // SAFETY: plain COM call on this STA thread.
-            let _ = unsafe { with_site.SetSite(&site) };
+            if unsafe { with_site.SetSite(&site) }.is_ok() {
+                sited = Some(with_site);
+            }
         }
     }
     // SAFETY: plain COM calls on this STA thread.
@@ -148,7 +180,7 @@ fn command(
     let entries = shown(&command, &items, verb, &mut actions, flags, state)
         .into_iter()
         .collect();
-    let menu: IContextMenu = Single(actions).into();
+    let menu: IContextMenu = Single(actions, sited).into();
     Ok((menu, entries))
 }
 
@@ -461,12 +493,22 @@ fn run_verb(
 mod single {
     use super::{
         Action, CMINVOKECOMMANDINFO, E_NOTIMPL, HMENU, HRESULT, HWND, IContextMenu,
-        IContextMenu_Impl, PSTR, run_verb,
+        IContextMenu_Impl, IObjectWithSite, PSTR, run_verb,
     };
 
-    /// The rows' actions: row id `n` at place `n - 1`.
+    /// The rows' actions: row id `n` at place `n - 1`, and the command given a view site, whose
+    /// site is cleared with the menu.
     #[windows::core::implement(IContextMenu)]
-    pub(super) struct Single(pub(super) Vec<Action>);
+    pub(super) struct Single(pub(super) Vec<Action>, pub(super) Option<IObjectWithSite>);
+
+    impl Drop for Single {
+        fn drop(&mut self) {
+            if let Some(command) = &self.1 {
+                // SAFETY: plain COM call; the menu is dropped on the thread that built it.
+                let _ = unsafe { command.SetSite(None::<&windows::core::IUnknown>) };
+            }
+        }
+    }
 
     impl IContextMenu_Impl for Single_Impl {
         fn QueryContextMenu(&self, _: HMENU, _: u32, _: u32, _: u32, _: u32) -> HRESULT {

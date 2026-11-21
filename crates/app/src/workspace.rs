@@ -77,7 +77,7 @@ mod welcome;
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
-pub(crate) use sidebar::{leave_drive_everywhere, place_icon};
+pub(crate) use sidebar::leave_drive_everywhere;
 pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
@@ -356,6 +356,8 @@ pub(crate) struct Workspace {
     expanded: HashSet<PathBuf>,
     /// The tree node just expanded or collapsed: its chevron turns and its children fade in.
     tree_cue: (Option<PathBuf>, crate::motion::Cue),
+    /// A tab was just split: the new right pane (its view) slides in from the right as it fades in.
+    split_cue: (Option<gpui::EntityId>, crate::motion::Cue),
     tree_children: HashMap<PathBuf, sidebar::TreeChildren>,
     /// Folders a background check found to have no subfolders (no chevron in the tree).
     tree_leaf: HashSet<PathBuf>,
@@ -682,6 +684,9 @@ impl Workspace {
             this.sync_look(window, cx);
             this.recycle_refresh(cx);
             this.home_refresh(cx);
+            // A folder pinned to Quick Access in File Explorer shows up in the favorites (#45).
+            let places = this.active_view().read(cx).places.clone();
+            crate::quick_access::refresh(&this.services.shell, places, cx);
             // Another program may have added or deleted files.
             this.refresh_disk_space(cx);
             // QuickLook may have been started or quit while Arke was in the background.
@@ -724,6 +729,7 @@ impl Workspace {
             active: 0,
             expanded: HashSet::new(),
             tree_cue: (None, crate::motion::Cue::default()),
+            split_cue: (None, crate::motion::Cue::default()),
             tree_children: HashMap::new(),
             tree_leaf: HashSet::new(),
             sidebar_menu: None,
@@ -1482,8 +1488,20 @@ impl Workspace {
             return;
         }
         if self.tabs.len() == 1 {
-            // The last tab closes the window, like File Explorer and browsers (#98). The session
-            // keeps it, Home included, for the next start.
+            // By default the last tab closes the window, like File Explorer and browsers (#98).
+            // The session keeps it, Home included, for the next start. The setting can keep the
+            // window and show Home instead (#253, #255).
+            if SettingsStore::global(cx).read(cx).settings.last_tab
+                == crate::settings::LastTabAction::Home
+            {
+                // Already on Home: there is nothing left to close.
+                if !self.home_open() {
+                    self.remember_closed(ix, cx);
+                    self.home_page = None;
+                    self.open_home_as(false, true, window, cx);
+                }
+                return;
+            }
             window.remove_window();
             return;
         }
@@ -1784,6 +1802,114 @@ impl Workspace {
         self.focus_active(window, cx);
     }
 
+    /// Keeps the integration API's picture of this window fresh (`api.rs`). Runs every frame; only
+    /// what each pane shows is compared, and selections are listed again only when it changed.
+    fn publish_api_state(&self, window: &Window, cx: &App) {
+        let hwnd = Explorer::owner_from(window).unwrap_or(0);
+        crate::api::publish(
+            window.window_handle().window_id().as_u64(),
+            hwnd,
+            self.active,
+            &self.api_tabs(cx),
+        );
+    }
+
+    /// Tests: the integration API's picture of this window.
+    #[cfg(test)]
+    pub(crate) fn api_state_for_test(&self, cx: &App) -> crate::api::WindowState {
+        crate::api::window_state(0, self.active, &self.api_tabs(cx))
+    }
+
+    /// Tests: publishes this window's state as window `id` with HWND `hwnd`.
+    #[cfg(test)]
+    pub(crate) fn api_publish_for_test(&self, id: u64, hwnd: isize, cx: &App) {
+        crate::api::publish(id, hwnd, self.active, &self.api_tabs(cx));
+    }
+
+    /// What the integration API reads from each tab and pane.
+    fn api_tabs<'a>(&'a self, cx: &'a App) -> Vec<crate::api::TabInput<'a>> {
+        use crate::api::{Page, PaneInput, TabInput};
+        use crate::assets::Icon;
+        self.tabs
+            .iter()
+            .map(|tab| TabInput {
+                active_pane: tab.active_pane,
+                panes: tab
+                    .panes
+                    .iter()
+                    .map(|pane| PaneInput {
+                        explorer: pane.view.read(cx),
+                        page: self
+                            .page_title(pane.view.entity_id())
+                            .map(|(_, icon)| match icon {
+                                Icon::KfHome => Page::Home,
+                                Icon::Trash => Page::RecycleBin,
+                                _ => Page::Other,
+                            }),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The integration API's `open` (`api.rs`): `path` in the active pane, or in a new tab, with
+    /// the items named in `select` selected once it is listed.
+    pub(crate) fn api_open(
+        &mut self,
+        path: PathBuf,
+        new_tab: bool,
+        select: Vec<Arc<str>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if new_tab || self.active_pinned_elsewhere(&path, cx) {
+            let at = self.active + 1;
+            if new_tab {
+                self.open_tab(path.clone(), at, true, window, cx);
+            } else {
+                // A pinned tab keeps its folder: one beside it, or the tab already on it.
+                self.open_folder_tab(path.clone(), at, true, window, cx);
+            }
+            if !select.is_empty() {
+                self.active_view()
+                    .update(cx, |e, cx| e.select_in_folder(&path, select, cx));
+            }
+            cx.notify();
+            return;
+        }
+        // A page over the tab gives way, as when a folder is picked in the sidebar.
+        self.drop_shown_page();
+        let view = self.active_view().clone();
+        let here = view
+            .read(cx)
+            .display_path()
+            .is_some_and(|p| crate::explorer::same_folder(p, &path));
+        if here {
+            if !select.is_empty() {
+                view.update(cx, |e, cx| e.select_in_folder(&path, select, cx));
+            }
+        } else {
+            view.update(cx, |e, cx| {
+                e.navigate_selecting_all(path, NavKind::New, select, cx);
+            });
+        }
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// The integration API's `run` (`api.rs`): `command` in the active pane, dispatched as the
+    /// command palette does, without counting as a recently run command.
+    pub(crate) fn api_run(
+        &mut self,
+        command: &crate::commands::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_active(window, cx);
+        let action = command.action();
+        window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+    }
+
     /// The active tab is pinned and `path` isn't its folder (a pinned tab whose folder failed to
     /// open can go elsewhere in place, see [`Explorer::keeps_folder`]).
     pub(super) fn active_pinned_elsewhere(&self, path: &Path, cx: &App) -> bool {
@@ -1801,6 +1927,23 @@ impl Workspace {
         self.open_folder_tab(path, at, false, window, cx);
     }
 
+    /// A click on a folder in the sidebar: opens it here, or with Ctrl in a new tab, in the
+    /// background or with Shift too in front, as a link in a browser (#291).
+    fn open_clicked(
+        &mut self,
+        path: PathBuf,
+        modifiers: gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if modifiers.control {
+            let at = self.active + 1;
+            self.open_folder_tab(path, at, modifiers.shift, window, cx);
+        } else {
+            self.navigate_active(path, window, cx);
+        }
+    }
+
     // --- Dual pane ---
 
     /// Splits a tab into two panes, opening `path` on the right as the active side.
@@ -1815,6 +1958,8 @@ impl Workspace {
             return;
         }
         let pane = self.make_pane(path, None, Instant::now(), window, cx);
+        self.split_cue.0 = Some(pane.view.entity_id());
+        self.split_cue.1.fire();
         let tab = &mut self.tabs[tab_ix];
         tab.panes.push(pane);
         tab.active_pane = 1;
@@ -1981,9 +2126,9 @@ impl Workspace {
     }
 
     /// Drag handle on the full sidebar's right edge (not drawn for the collapsed rail or while it
-    /// slides or peeks).
+    /// peeks).
     fn render_sidebar_edge(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if theme::sidebar_collapsed() || self.sidebar_ui.motion.is_some() {
+        if theme::sidebar_collapsed() {
             return None;
         }
         let active = self.sidebar_resizing;
@@ -2273,11 +2418,11 @@ impl Workspace {
             .h_full()
             .child(title_row)
             .children(self.tab_strip_under_bar(window, cx))
-            .child(self.render_pane_area(cx))
+            .child(self.render_pane_area(window, cx))
             .into_any_element()
     }
 
-    fn render_pane_area(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane_area(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[self.active];
         if !tab.is_split() {
             return div()
@@ -2336,7 +2481,7 @@ impl Workspace {
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
         let shared = self.shared_preview.and_then(|shared| {
             let host = tab.view().clone();
-            let preview = host.update(cx, Explorer::render_shared_preview)?;
+            let preview = host.update(cx, |e, cx| e.render_shared_preview(window, cx))?;
             Some(
                 div()
                     .absolute()
@@ -2361,15 +2506,26 @@ impl Workspace {
                     .child(tab.panes[0].view.clone()),
             )
             .child(gutter)
-            .child(
-                div()
-                    .h_full()
-                    .flex_1()
-                    .min_w_0()
-                    .child(tab.panes[1].view.clone()),
-            )
+            .child(self.render_split_right(tab, window))
             .children(shared)
             .into_any_element()
+    }
+}
+
+impl Workspace {
+    /// The right pane of a split tab. Just split, it slides in from the right as it fades in,
+    /// already laid out (the left pane has its new width at once) and taking clicks.
+    fn render_split_right(&self, tab: &Tab, window: &Window) -> gpui::Div {
+        let right = &tab.panes[1].view;
+        let pane = div().h_full().flex_1().min_w_0().child(right.clone());
+        if self.split_cue.0 == Some(right.entity_id()) {
+            let ease = crate::motion::ease_out;
+            self.split_cue
+                .1
+                .slide(pane, window, ease, crate::motion::SLIDE_LG, 0.)
+        } else {
+            pane
+        }
     }
 }
 
@@ -2542,6 +2698,7 @@ impl Render for Workspace {
         let start_clock = std::mem::take(&mut self.start_clock);
         self.last_viewport_width = window.viewport_size().width;
         self.sync_window_title(window, cx);
+        self.publish_api_state(window, cx);
         self.drop_stale_menu();
         note_menu_open(window, self.sidebar_menu.is_some());
         let sidebar_menu = self.render_sidebar_menu(window, cx);
@@ -2573,65 +2730,16 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col();
-        let left = if let Some((collapsing, serial)) = self.sidebar_ui.motion {
-            // Sliding: the width moves while the full sidebar (clipped) and the column of icons
-            // crossfade. Their icons sit in different places, so swapping one for the other at
-            // the end would read as a jump.
-            let (from, to) = if collapsing {
-                (theme::sidebar_full_width(), theme::rail_w())
-            } else {
-                (theme::rail_w(), theme::sidebar_full_width())
-            };
-            let full = div()
-                .id("sidebar-slide-full")
-                .debug_selector(|| "sidebar-slide-full".to_owned())
-                .w(theme::sidebar_full_width())
-                .flex_none()
-                .h_full()
-                .flex()
-                .flex_col()
-                .child(self.render_brand_row(cx))
-                .child(self.render_home_button(cx))
-                .child(self.render_sidebar(cx))
-                .child(self.render_settings_button(cx));
-            let rail = div()
-                .id("sidebar-slide-rail")
-                .absolute()
-                .top_0()
-                .left_0()
-                .h_full()
-                .w(theme::rail_w())
-                .child(self.render_rail(cx));
-            let fade = |el: gpui::Stateful<gpui::Div>, name: &'static str, going: bool| {
-                gpui::AnimationExt::with_animation(
-                    el,
-                    gpui::ElementId::NamedInteger(name.into(), serial),
-                    gpui::Animation::new(crate::motion::BASE),
-                    move |el, t| el.opacity(crossfade(t, going)),
-                )
-            };
-            gpui::AnimationExt::with_animation(
-                left.overflow_hidden()
-                    .child(fade(full, "sidebar-fade-full", collapsing))
-                    .child(fade(rail, "sidebar-fade-rail", !collapsing)),
-                gpui::ElementId::NamedInteger("sidebar-slide".into(), serial),
-                crate::motion::enter(),
-                move |el, t| el.w(from + (to - from) * t),
-            )
-            .into_any_element()
-        } else {
-            left.when(theme::sidebar_collapsed(), |d| {
+        // The column takes its new width at once (see `slide_sidebar`): only the full sidebar
+        // slides, so the panes are laid out once, at their new size.
+        let left = left
+            .when(theme::sidebar_collapsed(), |d| {
                 d.child(self.render_rail(cx))
             })
             .children(self.render_peek(cx))
             .when(!theme::sidebar_collapsed(), |d| {
-                d.child(self.render_brand_row(cx))
-                    .child(self.render_home_button(cx))
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_settings_button(cx))
-            })
-            .into_any_element()
-        };
+                d.child(self.render_full_sidebar(window, cx))
+            });
         let body = div()
             .relative()
             .flex()
@@ -2657,6 +2765,10 @@ impl Render for Workspace {
                 },
             })
             .children(self.render_sidebar_edge(cx));
+        // A transition drawn in the sidebar (rows dropping in) is still playing.
+        if self.sidebar_ui.frame_wanted.take() {
+            window.request_animation_frame();
+        }
         div()
             .id("workspace")
             .key_context("Workspace")
@@ -2872,22 +2984,30 @@ impl Render for Workspace {
     }
 }
 
-/// Opacity at progress `t` (0 to 1, linear) of a layer leaving (`going`) or arriving in the
-/// sidebar's crossfade: the leaving one is mostly gone before the arriving one is mostly there,
-/// so the two never read as one cluttered layer.
-fn crossfade(t: f32, going: bool) -> f32 {
-    let smooth = |a: f32, b: f32| {
-        let x = ((t - a) / (b - a)).clamp(0., 1.);
-        x * x * (3. - 2. * x)
-    };
-    if going {
-        1. - smooth(0., 0.6)
-    } else {
-        smooth(0.35, 1.)
-    }
-}
-
 impl Workspace {
+    /// The full sidebar in its column. Just expanded, it slides out from behind where the column of
+    /// icons was (its right edge starting at the column's) while it fades in; it is in place and
+    /// takes clicks from the first frame.
+    fn render_full_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let body = div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(self.render_brand_row(cx))
+            .child(self.render_home_button(cx))
+            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar_footer(cx));
+        self.sidebar_ui.expand_cue.slide(
+            body,
+            window,
+            crate::motion::ease_out_soft,
+            -Self::drawer_travel(),
+            0.,
+        )
+    }
+
     /// Vertical tabs: the sidebar top row has the Arke mark, then back, forward and refresh for the
     /// active pane (like Arc); the rest is window drag area. The mark sits on the sidebar's icon
     /// column; no name, since the taskbar and Alt+Tab already show it.
@@ -3221,11 +3341,12 @@ impl Render for Tooltip {
 /// Arke's interface scale doesn't change.
 const POINTER_CLEARANCE: gpui::Pixels = px(20.);
 
-/// The tooltip bubble itself.
-fn tooltip_card(text: &SharedString) -> gpui::Div {
+/// The tooltip bubble itself. It fades in where it is, as quickly as a context menu (it only
+/// shows after the pointer rested, so nothing waits on it).
+fn tooltip_card(text: &SharedString) -> AnyElement {
     // Tooltips lay out at minimum size (max_w has no effect), so long text gets an explicit width to wrap.
     let long = text.chars().count() > 48;
-    div()
+    let card = div()
         .debug_selector(|| "tooltip-card".to_owned())
         .px(theme::s_8())
         .py(theme::s_4())
@@ -3236,5 +3357,15 @@ fn tooltip_card(text: &SharedString) -> gpui::Div {
         .ui_font()
         .text_size(theme::fs_12())
         .text_color(theme::text())
-        .child(text.clone())
+        .child(text.clone());
+    if !crate::motion::enabled() {
+        return card.into_any_element();
+    }
+    gpui::AnimationExt::with_animation(
+        card,
+        "tooltip-in",
+        crate::motion::menu_enter(),
+        crate::motion::fade_in,
+    )
+    .into_any_element()
 }

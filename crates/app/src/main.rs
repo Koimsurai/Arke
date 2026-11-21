@@ -8,6 +8,8 @@
 //!                                           memory (see `bench_index.rs`)
 //!   arke --no-resident [path]   don't use or become the resident process
 //!   arke --quit                 quit the resident process
+//!   arke --api <json>           an integration API request; prints the JSON reply (see `api.rs`
+//!                               and `docs/integration.md`)
 //!   arke --home                 what Win+E runs while "Open folders in Arke" is on: opens a window
 //!                               like starting Arke (Settings › "New windows open to")
 //!   arke --restore-explorer     undo the folder handler registration and turn the setting off
@@ -38,6 +40,7 @@
 mod plural;
 
 mod a11y;
+mod api;
 mod assets;
 mod bench;
 mod bench_index;
@@ -65,6 +68,7 @@ mod popup;
 mod prefs;
 mod press_guard;
 mod properties;
+mod quick_access;
 mod quicklook;
 mod recycle_bin;
 mod remote_shell;
@@ -104,6 +108,7 @@ mod win_menu;
 mod win_menu_parts;
 mod win_net;
 mod win_openinfolder;
+mod win_packaged;
 mod win_pdf;
 mod win_picker;
 mod win_popup;
@@ -275,6 +280,28 @@ fn main() -> std::process::ExitCode {
     if args.get(1).map(String::as_str) == Some(uninstall::ARG) {
         rust_i18n::set_locale(&win::ui_locale());
         return uninstall::run_cli(&args[2..]);
+    }
+    // `arke.exe --api <json>`: asks the running Arke, prints its reply and exits (`api.rs`).
+    // `--api -` reads the request from stdin: Windows PowerShell 5.1 drops the quotes inside an
+    // argument it passes to a program, so piping the JSON is the way that works everywhere.
+    if args.get(1).map(String::as_str) == Some(api::ARG) {
+        let json = match args.get(2).map(String::as_str) {
+            Some("-") => {
+                let mut bytes = Vec::new();
+                if let Err(err) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes) {
+                    log::warn!("reading the API request from stdin failed: {err}");
+                }
+                api::stdin_text(&bytes)
+            }
+            other => {
+                // SAFETY: GetCommandLineW returns this process's command line, valid for its life.
+                let raw =
+                    unsafe { windows::Win32::System::Environment::GetCommandLineW().to_string() }
+                        .unwrap_or_default();
+                api::command_line_request(other.unwrap_or_default(), &raw)
+            }
+        };
+        return run_api_cli(json.trim());
     }
     // A Browse button's file dialog, shown in its own process (see `win_picker.rs`).
     if args.get(1).map(String::as_str) == Some(win_picker::PICK_ARG) {
@@ -516,6 +543,8 @@ fn app_main(mut args: Args) {
                 explorer::set_open_with(apps, icons);
             });
         }
+        // The integration API (`api.rs`): `WM_COPYDATA` to any window, and the resident pipe.
+        let api_queue = start_api(cx, &services);
         if bench.is_none() {
             follow_drive_removals(cx);
             teracopy::detect_in_background();
@@ -602,7 +631,7 @@ fn app_main(mut args: Args) {
             return;
         }
         if let Some(listener) = listener {
-            start_resident_service(cx, listener, services);
+            start_resident_service(cx, listener, services, api_queue);
             quit_with_last_window_unless_resident(cx);
             resident::watch(cx);
             if background {
@@ -1424,19 +1453,34 @@ fn hand_off(request: &Request) -> HandOff {
     HandOff::Standalone
 }
 
-fn start_resident_service(cx: &mut App, listener: instance::Listener, services: Services) {
+fn start_resident_service(
+    cx: &mut App,
+    listener: instance::Listener,
+    services: Services,
+    api_queue: flume::Sender<api::Action>,
+) {
     let (tx, rx) = flume::unbounded::<(Request, Instant, flume::Sender<bool>)>();
     instance::serve(listener, move |request| {
+        // `arke.exe --api`: answered here, from the snapshot, without waiting for the UI thread.
+        if let Request::Api(json) = &request {
+            return instance::Reply::Data(api::serve(
+                json.as_bytes(),
+                api::Target::LastUsed,
+                &api_queue,
+            ));
+        }
         let received = Instant::now();
         let (ack_tx, ack_rx) = flume::bounded(1);
         if tx.send((request, received, ack_tx)).is_err() {
-            return false;
+            return instance::Reply::Status(false);
         }
         // If the UI thread doesn't handle it in time, reply failure so the sender opens its own
         // window.
-        ack_rx
-            .recv_timeout(instance::SERVER_ACK_TIMEOUT)
-            .unwrap_or(false)
+        instance::Reply::Status(
+            ack_rx
+                .recv_timeout(instance::SERVER_ACK_TIMEOUT)
+                .unwrap_or(false),
+        )
     });
     cx.spawn(async move |cx| {
         while let Ok((request, received, ack)) = rx.recv_async().await {
@@ -1447,11 +1491,158 @@ fn start_resident_service(cx: &mut App, listener: instance::Listener, services: 
                 }
                 Request::Select { folder, items } => select_items(cx, &services, &folder, &items),
                 Request::Open(open) => handle_open(cx, &services, open, received),
+                // Answered on the pipe thread.
+                Request::Api(_) => false,
             });
             let _ = ack.send(handled);
         }
     })
     .detach();
+}
+
+/// The integration API (`api.rs`): requests sent to any window as `WM_COPYDATA` are answered in its
+/// window procedure, and those from `arke.exe --api` on the resident pipe thread; both queue their
+/// `open` and `run` here, for the UI thread. Returns the queue for the pipe.
+fn start_api(cx: &mut App, services: &Services) -> flume::Sender<api::Action> {
+    let (tx, rx) = flume::unbounded::<api::Action>();
+    let queue = tx.clone();
+    gpui_windows::set_copydata_handler(move |hwnd, request| {
+        Some(api::serve(request, api::Target::Window(hwnd), &queue))
+    });
+    let services = services.clone();
+    cx.spawn(async move |cx| {
+        while let Ok(action) = rx.recv_async().await {
+            cx.update(|cx| apply_api(cx, &services, action));
+        }
+    })
+    .detach();
+    cx.on_window_closed(|_, id| api::forget(id.as_u64()))
+        .detach();
+    tx
+}
+
+/// The window an API `open` or `run` is for: the one it was sent to when that is a workspace
+/// window, else the one used last.
+fn api_window(cx: &App, target: api::Target) -> Option<gpui::WindowHandle<Workspace>> {
+    let sent_to = match target {
+        api::Target::Window(hwnd) => api::window_of(hwnd).and_then(|id| {
+            cx.windows()
+                .into_iter()
+                .find(|w| w.window_id().as_u64() == id)
+                .and_then(|w| w.downcast::<Workspace>())
+        }),
+        api::Target::LastUsed => None,
+    };
+    sent_to.or_else(|| last_window(cx))
+}
+
+/// Does what an API request queued (`api.rs`).
+fn apply_api(cx: &mut App, services: &Services, action: api::Action) {
+    match action {
+        api::Action::Open {
+            target,
+            path,
+            new_tab,
+            select,
+        } => {
+            if let Some(host) = api_window(cx, target) {
+                let names: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
+                let shown = host.update(cx, |workspace, window, cx| {
+                    workspace.api_open(path.clone(), new_tab, names, window, cx);
+                    bring_to_front(window, None);
+                });
+                if shown.is_ok() {
+                    cx.activate(true);
+                    return;
+                }
+            }
+            // No window open (only the notification area icon): one opens on it.
+            open_target(cx, services, Target::Folder(path), &select, None);
+        }
+        api::Action::Run { target, id } => {
+            let Some(command) = commands::find(id) else {
+                return;
+            };
+            let host = api_window(cx, target).or_else(|| {
+                open_fresh(cx, services, Instant::now())
+                    .then(|| last_window(cx))
+                    .flatten()
+            });
+            if let Some(host) = host {
+                let _ = host.update(cx, |workspace, window, cx| {
+                    workspace.api_run(command, window, cx);
+                });
+            }
+        }
+    }
+}
+
+/// `arke.exe --api <json>`: asks the resident Arke and prints its reply. With no Arke running,
+/// `state` and `commands` are answered here; `open` and `run` start one in the background first.
+fn run_api_cli(json: &str) -> std::process::ExitCode {
+    // A GUI program has no console of its own: write to the one it was started from.
+    bench_index::console::attach();
+    rust_i18n::set_locale(&win::ui_locale());
+    api::print_reply(&api_cli_reply(json))
+}
+
+/// How long `arke.exe --api` waits for an Arke it started to answer.
+const API_START_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn api_cli_reply(json: &str) -> Vec<u8> {
+    let request = match api::parse(json.as_bytes()) {
+        Ok(request) => request,
+        Err(error) => return api::error_reply(&error),
+    };
+    let message = api::encode_request(&api::absolute(request));
+    match instance::ask(&message, instance::CLIENT_TIMEOUT) {
+        instance::Asked::Replied(reply) => return reply,
+        instance::Asked::Failed => return api_unavailable(),
+        instance::Asked::NoServer => {}
+    }
+    // Nothing is running: what needs no window is answered here, as are requests that fail.
+    let local = api::answer(message.as_bytes(), api::Target::LastUsed, &api::NotRunning);
+    if local.action.is_none() {
+        return local.reply;
+    }
+    if !start_background_arke() {
+        return api_unavailable();
+    }
+    let deadline = Instant::now() + API_START_TIMEOUT;
+    while Instant::now() < deadline {
+        match instance::ask(&message, Duration::from_secs(10)) {
+            instance::Asked::Replied(reply) => return reply,
+            instance::Asked::Failed => return api_unavailable(),
+            instance::Asked::NoServer => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+    api_unavailable()
+}
+
+fn api_unavailable() -> Vec<u8> {
+    api::error_reply(&api::ApiError::new(
+        api::ErrorCode::Unavailable,
+        "Arke did not answer in time",
+    ))
+}
+
+/// Starts Arke in the background (`--background`, no window) for an API request that needs one.
+/// It gets no console handles, so a script reading this command's output isn't held open by it.
+fn start_background_arke() -> bool {
+    use std::os::windows::process::CommandExt as _;
+    /// No console for the new process.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    std::process::Command::new(exe)
+        .arg("--background")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(DETACHED_PROCESS)
+        .spawn()
+        .is_ok()
 }
 
 /// Resident mode: a notification area icon so Arke is reachable with all windows closed (left click

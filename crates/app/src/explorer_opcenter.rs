@@ -9,8 +9,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
-    AnimationExt, AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, SharedString,
-    Transformation, Window, anchored, deferred, div, point, prelude::*, px, radians, svg,
+    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, SharedString, Transformation,
+    Window, anchored, deferred, div, point, prelude::*, px, radians, svg,
 };
 use rust_i18n::t;
 
@@ -119,6 +119,27 @@ impl Explorer {
         (start, sweep)
     }
 
+    /// Opens or closes the list from its button; closing it there fades it out.
+    fn toggle_ops(&mut self, cx: &mut Context<Self>) {
+        if !self.close_ops(cx) {
+            self.ops_open = true;
+            self.closing_ops = None;
+            OpCenter::mark_seen(cx);
+            cx.notify();
+        }
+    }
+
+    /// Dismisses the list (its button or a click outside): it fades out. Returns whether it was
+    /// open.
+    fn close_ops(&mut self, cx: &mut Context<Self>) -> bool {
+        if !std::mem::take(&mut self.ops_open) {
+            return false;
+        }
+        crate::motion::Leaving::start(self, (), |this| &mut this.closing_ops, cx);
+        cx.notify();
+        true
+    }
+
     /// Top bar button plus its open list; takes no space when there are no jobs.
     pub(super) fn render_op_center(
         &self,
@@ -183,7 +204,16 @@ impl Explorer {
         let ring = busy.then(|| self.ring_frame(overall, cx));
         let button = button(ring, unseen, open, tip, speed, cx);
         if !open {
-            return Some(button.into_any_element());
+            let Some(ghost) = &self.closing_ops else {
+                return Some(button.into_any_element());
+            };
+            let panel = crate::motion::leave(
+                panel(rows, cx),
+                ghost.id("op-center-leave"),
+                0.,
+                -crate::motion::NUDGE,
+            );
+            return Some(Self::op_center_with(button, None, panel));
         }
         let viewport = window.viewport_size();
         let scrim = deferred(
@@ -197,14 +227,28 @@ impl Explorer {
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             cx.stop_propagation();
-                            this.ops_open = false;
-                            cx.notify();
+                            this.close_ops(cx);
                         }),
                     ),
             ),
         )
         .with_priority(1);
-        let panel = panel(rows, cx);
+        let panel = crate::motion::appear(
+            panel(rows, cx),
+            "op-center-appear",
+            0.,
+            -crate::motion::NUDGE,
+        );
+        Some(Self::op_center_with(button, Some(scrim), panel))
+    }
+
+    /// The button with its list (open, or fading out) under it, right-aligned and kept inside the
+    /// window; `scrim` closes it on a click elsewhere.
+    fn op_center_with(
+        button: gpui::Stateful<gpui::Div>,
+        scrim: Option<gpui::Deferred>,
+        panel: AnyElement,
+    ) -> AnyElement {
         let flyout = deferred(
             anchored()
                 .anchor(gpui::Anchor::TopRight)
@@ -212,21 +256,19 @@ impl Explorer {
                 .child(panel),
         )
         .with_priority(2);
-        Some(
-            div()
-                .relative()
-                .flex_none()
-                .child(button)
-                .child(scrim)
-                .child(
-                    div()
-                        .absolute()
-                        .top(theme::h_ctl() + theme::s_4())
-                        .right_0()
-                        .child(flyout),
-                )
-                .into_any_element(),
-        )
+        div()
+            .relative()
+            .flex_none()
+            .child(button)
+            .children(scrim)
+            .child(
+                div()
+                    .absolute()
+                    .top(theme::h_ctl() + theme::s_4())
+                    .right_0()
+                    .child(flyout),
+            )
+            .into_any_element()
     }
 }
 
@@ -243,6 +285,7 @@ fn button(
     let busy = ring.is_some();
     div()
         .id("op-center")
+        .debug_selector(|| "op-center".to_owned())
         .a11y_button(tip.clone())
         .aria_expanded(open)
         .relative()
@@ -290,16 +333,12 @@ fn button(
         // No tooltip while its list is open: it would sit on top of it.
         .when(!open, |d| d.tooltip_below(tip))
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-            this.ops_open = !this.ops_open;
-            if this.ops_open {
-                OpCenter::mark_seen(cx);
-            }
-            cx.notify();
+            this.toggle_ops(cx);
         }))
 }
 
 /// The open list: title, "Clear completed", then one row per job (newest first).
-fn panel(rows: Vec<Row>, cx: &mut Context<Explorer>) -> impl IntoElement + use<> {
+fn panel(rows: Vec<Row>, cx: &mut Context<Explorer>) -> gpui::Stateful<gpui::Div> {
     let any_finished = rows.iter().any(|row| row.state != JobState::Running);
     // Pause only matters while something is running or waiting. A running job can't be paused
     // halfway (Windows' copy engine), so the button says it takes effect after the current job.
@@ -359,9 +398,6 @@ fn panel(rows: Vec<Row>, cx: &mut Context<Explorer>) -> impl IntoElement + use<>
                 }),
         )
         .children(rows.into_iter().map(|row| job_row(row, cx)))
-        .with_animation("op-center-appear", crate::motion::enter(), |el, t| {
-            crate::motion::slide_in(el, t, 0., -crate::motion::NUDGE)
-        })
 }
 
 /// One job: title, cancel or result on the right, a status line, and a progress bar while running.

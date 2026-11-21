@@ -1,5 +1,5 @@
-//! Icon size of the Icons view: any size between Explorer's small and extra large icons, picked
-//! with the slider in the view options flyout (`explorer_viewopts.rs`).
+//! Icon size of the Icons view: any size from Explorer's small icons to 256 px, past its extra
+//! large, picked with the slider in the view options flyout (`explorer_viewopts.rs`).
 //!
 //! - Ctrl+Shift+1/2/3/4 jump to extra large, large, medium and small icons (Explorer's keys).
 //! - Ctrl+mouse wheel over the list steps through [`IconSize::LADDER`]; past small icons it goes on
@@ -22,7 +22,7 @@ use super::{Explorer, ViewIcons, ViewIconsExtraLarge, ViewIconsMedium, ViewIcons
 use crate::theme;
 
 /// Icon size of the Icons view: the edge of a tile's image area in logical pixels, a multiple of
-/// [`IconSize::GRAIN`] from [`IconSize::SMALL`] to [`IconSize::EXTRA_LARGE`].
+/// [`IconSize::GRAIN`] from [`IconSize::SMALL`] to [`IconSize::LARGEST`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct IconSize(u16);
 
@@ -36,12 +36,13 @@ pub(crate) enum ZoomTarget {
     Details,
 }
 
-/// The four sizes Explorer names, smallest first, with their tile metrics.
-const ANCHORS: [(IconSize, theme::Tile); 4] = [
+/// The four sizes Explorer names and the largest, smallest first, with their tile metrics.
+const ANCHORS: [(IconSize, theme::Tile); 5] = [
     (IconSize::SMALL, theme::TILE_SMALL),
     (IconSize::MEDIUM, theme::TILE_MEDIUM),
     (IconSize::LARGE, theme::TILE_LARGE),
     (IconSize::EXTRA_LARGE, theme::TILE_XL),
+    (IconSize::LARGEST, theme::TILE_LARGEST),
 ];
 
 impl Default for IconSize {
@@ -58,12 +59,15 @@ impl IconSize {
     pub(crate) const MEDIUM: Self = Self(64);
     /// Large icons (Ctrl+Shift+2), the default.
     pub(crate) const LARGE: Self = Self(88);
-    /// Extra large icons (Ctrl+Shift+1), the largest size.
+    /// Extra large icons (Ctrl+Shift+1).
     pub(crate) const EXTRA_LARGE: Self = Self(192);
+    /// The largest size, past extra large by the slider or Ctrl+wheel (#267): File Explorer's
+    /// largest thumbnails.
+    pub(crate) const LARGEST: Self = Self(256);
     /// The slider moves in steps of this many pixels.
     const GRAIN: u16 = 4;
     /// Ctrl+wheel stops, smallest to largest: roughly even ratios, through the four named sizes.
-    pub(crate) const LADDER: [Self; 10] = [
+    pub(crate) const LADDER: [Self; 12] = [
         Self(48),
         Self(56),
         Self(64),
@@ -74,27 +78,29 @@ impl IconSize {
         Self(144),
         Self(168),
         Self(192),
+        Self(224),
+        Self(256),
     ];
 
     /// The size nearest to `px` image pixels, clamped to the range and snapped to the grain.
     pub(crate) fn from_px(px: f32) -> Self {
-        let (lo, hi) = (f32::from(Self::SMALL.0), f32::from(Self::EXTRA_LARGE.0));
+        let (lo, hi) = (f32::from(Self::SMALL.0), f32::from(Self::LARGEST.0));
         let grain = f32::from(Self::GRAIN);
         let px = if px.is_finite() { px } else { hi };
         let snapped = (px.clamp(lo, hi) / grain).round() * grain;
-        // Clamped to 48..=192 above, so the cast is exact.
+        // Clamped to 48..=256 above, so the cast is exact.
         Self(snapped as u16)
     }
 
     /// Where the size sits on the slider, 0 (small) to 1 (extra large).
     pub(crate) fn fraction(self) -> f32 {
-        let (lo, hi) = (f32::from(Self::SMALL.0), f32::from(Self::EXTRA_LARGE.0));
+        let (lo, hi) = (f32::from(Self::SMALL.0), f32::from(Self::LARGEST.0));
         ((f32::from(self.0) - lo) / (hi - lo)).clamp(0., 1.)
     }
 
     /// The size at slider position `fraction`.
     pub(crate) fn from_fraction(fraction: f32) -> Self {
-        let (lo, hi) = (f32::from(Self::SMALL.0), f32::from(Self::EXTRA_LARGE.0));
+        let (lo, hi) = (f32::from(Self::SMALL.0), f32::from(Self::LARGEST.0));
         Self::from_px(lo + fraction.clamp(0., 1.) * (hi - lo))
     }
 
@@ -105,7 +111,7 @@ impl IconSize {
             .windows(2)
             .map(|w| (w[0], w[1]))
             .find(|(_, (b, _))| self.0 <= b.0)
-            .unwrap_or((ANCHORS[2], ANCHORS[3]));
+            .unwrap_or((ANCHORS[3], ANCHORS[4]));
         let t = (f32::from(self.0.saturating_sub(a.0)) / f32::from(b.0 - a.0)).clamp(0., 1.);
         let mix = |p: Pixels, q: Pixels| px(f32::from(p).mul_add(1. - t, f32::from(q) * t).round());
         // The tile constants are at 100%; the interface scale multiplies the result.
@@ -379,9 +385,13 @@ mod tests {
         assert_eq!(zoom(icons, S::LARGE, -1), Some(Z::Icons(S::from_px(76.))));
         assert_eq!(zoom(icons, S::MEDIUM, -2), Some(Z::Icons(S::SMALL)));
         assert_eq!(zoom(icons, S::SMALL, -1), Some(Z::Details));
-        assert_eq!(zoom(icons, S::EXTRA_LARGE, 1), None, "largest already");
+        assert_eq!(
+            zoom(icons, S::EXTRA_LARGE, 1),
+            Some(Z::Icons(S::from_px(224.)))
+        );
+        assert_eq!(zoom(icons, S::LARGEST, 1), None, "largest already");
         assert_eq!(zoom(icons, S::LARGE, -9), Some(Z::Details), "clamped");
-        assert_eq!(zoom(icons, S::LARGE, 40), Some(Z::Icons(S::EXTRA_LARGE)));
+        assert_eq!(zoom(icons, S::LARGE, 40), Some(Z::Icons(S::LARGEST)));
         assert_eq!(zoom(icons, S::MEDIUM, 0), None);
         // A slider size between stops goes to the next stop either way.
         let between = S::from_px(92.);
@@ -403,7 +413,7 @@ mod tests {
             .map(|i| IconSize::from_fraction(i as f32 / 200.))
             .collect();
         assert_eq!(all.first(), Some(&IconSize::SMALL));
-        assert_eq!(all.last(), Some(&IconSize::EXTRA_LARGE));
+        assert_eq!(all.last(), Some(&IconSize::LARGEST));
         for pair in all.windows(2) {
             let (a, b) = (pair[0].tile(), pair[1].tile());
             assert!(a.w <= b.w && a.h <= b.h && a.image <= b.image && a.icon <= b.icon);
@@ -425,8 +435,8 @@ mod tests {
         assert_eq!(IconSize::from_px(89.), IconSize::LARGE);
         assert_eq!(IconSize::from_px(91.), IconSize::from_px(92.));
         assert_eq!(IconSize::from_px(10.), IconSize::SMALL);
-        assert_eq!(IconSize::from_px(1e6), IconSize::EXTRA_LARGE);
-        assert_eq!(IconSize::from_px(f32::NAN), IconSize::EXTRA_LARGE);
+        assert_eq!(IconSize::from_px(1e6), IconSize::LARGEST);
+        assert_eq!(IconSize::from_px(f32::NAN), IconSize::LARGEST);
         for size in IconSize::LADDER {
             assert_eq!(IconSize::from_fraction(size.fraction()), size);
         }
@@ -443,7 +453,8 @@ mod tests {
         assert_eq!(back(r#""medium""#), IconSize::MEDIUM);
         assert_eq!(back("120.0"), IconSize::from_px(120.));
         assert_eq!(back("121"), IconSize::from_px(120.), "snapped");
-        assert_eq!(back("5000"), IconSize::EXTRA_LARGE, "clamped");
+        assert_eq!(back("5000"), IconSize::LARGEST, "clamped");
+        assert_eq!(json(IconSize::LARGEST), "256");
         assert!(serde_json::from_str::<IconSize>(r#""huge""#).is_err());
     }
 }

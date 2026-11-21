@@ -95,6 +95,8 @@ fn main() {
 
     println!("cargo:rerun-if-changed=arke.rc");
     println!("cargo:rerun-if-changed=assets/brand/arke.ico");
+    // `rust_i18n::i18n!` reads the translations at compile time.
+    println!("cargo:rerun-if-changed=locales");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

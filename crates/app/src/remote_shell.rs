@@ -261,7 +261,31 @@ pub(crate) fn start(
             remotes.set_key_file(&url, place.key_file.clone());
         }
     }
+    for origin in &store.read(cx).settings.insecure_http {
+        if let Some(url) = remote(Path::new(origin)) {
+            remotes.set_insecure_allowed(&url, true);
+        }
+    }
     remotes
+}
+
+/// Whether the user allowed sending the password over plain http to the server of `path`.
+/// Menus use this to offer [`revoke_insecure_http`] only where it applies.
+pub(crate) fn insecure_http_allowed(remotes: &Remotes, path: &Path) -> bool {
+    remote(path).is_some_and(|url| remotes.insecure_allowed(&url))
+}
+
+/// Takes back the plain-http allowance for the server of `path` (a saved location's menu
+/// entry "Require a secure connection"). The next sign-in over http asks again.
+pub(crate) fn revoke_insecure_http(remotes: &Remotes, path: &Path, cx: &mut gpui::App) {
+    let Some(url) = remote(path) else {
+        return;
+    };
+    remotes.set_insecure_allowed(&url, false);
+    let origin = url.origin();
+    crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+        s.update(|st| st.set_insecure_http(&origin, false), cx);
+    });
 }
 
 /// A hub for tests: keys in memory, nothing remembered, no HTTP.
@@ -676,11 +700,16 @@ impl Shell for RemoteShell {
         }
         self.inner.video_thumbnail(path, max_side)
     }
-    fn shell_menu(&self, paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
+    fn shell_menu(
+        &self,
+        paths: &[PathBuf],
+        background: bool,
+        extended: bool,
+    ) -> Result<ShellMenu, ShellError> {
         if paths.iter().any(|p| remote(p).is_some()) {
             return Err(ShellError::NotOnRemote);
         }
-        self.inner.shell_menu(paths, background)
+        self.inner.shell_menu(paths, background, extended)
     }
     fn shell_menu_prefetch(&self) -> bool {
         self.inner.shell_menu_prefetch()
@@ -705,6 +734,18 @@ impl Shell for RemoteShell {
     ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
         self.inner.fill_shell_submenu(session, index)
     }
+    fn shell_menu_kind(&self, paths: &[PathBuf], background: bool) -> Option<String> {
+        if paths.iter().any(|p| remote(p).is_some()) {
+            return None;
+        }
+        self.inner.shell_menu_kind(paths, background)
+    }
+    fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
+        self.inner.packaged_item_types(clsid)
+    }
+    fn packaged_commands(&self, kind: &str) -> Vec<String> {
+        self.inner.packaged_commands(kind)
+    }
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],
@@ -719,6 +760,7 @@ impl Shell for RemoteShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
         handler: &crate::win_menu_parts::MenuHandler,
         group: u64,
     ) -> Result<(ShellMenu, std::time::Duration), ShellError> {
@@ -726,7 +768,7 @@ impl Shell for RemoteShell {
             return Err(ShellError::NotOnRemote);
         }
         self.inner
-            .shell_menu_handler(paths, background, handler, group)
+            .shell_menu_handler(paths, background, extended, handler, group)
     }
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {
         self.inner.set_clipboard_text(text)
@@ -806,6 +848,18 @@ impl Shell for RemoteShell {
     }
     fn eject_drive(&self, root: &Path) -> Result<(), ShellError> {
         self.inner.eject_drive(root)
+    }
+    fn format_drive(&self, root: &Path, owner: Option<isize>) -> Result<(), ShellError> {
+        if remote(root).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.format_drive(root, owner)
+    }
+    fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
+        if remote(root).is_some() {
+            return Err(ShellError::NotOnRemote);
+        }
+        self.inner.disk_cleanup(root)
     }
     fn choose_app(&self, path: &Path, owner: Option<isize>) -> Result<(), ShellError> {
         if remote(path).is_some() {

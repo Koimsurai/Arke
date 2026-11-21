@@ -15,9 +15,14 @@
 //! - The rename succeeds: a file in use inside the folder makes it fail, nothing has moved, and
 //!   the item goes through the engine instead.
 //!
-//! Everything else returns `None` and the caller uses the Windows engine. The size is summed from
-//! directory listings only, so no file is opened (and scanned). The `$I` layout (version 2) was
-//! checked byte for byte against records Windows wrote (see the tests):
+//! Everything else goes to the Windows engine. An item bigger than its drive's bin may hold at
+//! all is the exception: Windows would delete it permanently (asking behind Arke's window, or not
+//! at all without confirmations), so the caller keeps it and Arke asks instead. The fast path
+//! already has the size for that; for items it leaves to the engine before measuring them,
+//! [`Limits`] sums the size, stopping as soon as it is past the limit. A bin that is merely full is
+//! no reason: Windows makes room by dropping older items. The size is summed from directory
+//! listings only, so no file is opened (and scanned). The `$I` layout (version 2) was checked byte
+//! for byte against records Windows wrote (see the tests):
 //!
 //! | offset | size | value |
 //! |---|---|---|
@@ -60,9 +65,30 @@ const PROBE_RECORDS: usize = 8;
 #[cfg(test)]
 pub(crate) fn recycle(path: &Path) -> Option<PathBuf> {
     let mut batch = Batch::default();
-    let item = batch.recycle(path);
+    let item = if let Outcome::Recycled(now) = batch.recycle(path) {
+        Some(now)
+    } else {
+        None
+    };
     batch.finish();
     item
+}
+
+/// What [`Batch::recycle`] did with an item.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// In the bin, as this `$R` item.
+    Recycled(PathBuf),
+    /// Bigger than the drive's bin may hold: Windows would delete it permanently. Not moved.
+    TooBig,
+    /// Not moved; the engine should take it. `measured`: its size was already summed (it fits,
+    /// or the tree couldn't be listed), so checking it again against the bin's limit is no use.
+    Engine { measured: bool },
+}
+
+impl Outcome {
+    const UNMEASURED: Self = Self::Engine { measured: false };
+    const MEASURED: Self = Self::Engine { measured: true };
 }
 
 /// Most items reported to Explorer one by one; past this a batch reports each folder they left
@@ -101,35 +127,56 @@ struct Drive {
 }
 
 impl Batch {
-    /// Like [`recycle`], for one item of the batch.
-    pub(crate) fn recycle(&mut self, path: &Path) -> Option<PathBuf> {
-        let sid = self
+    /// One item of the batch: in the bin, too big for it, or for the engine.
+    pub(crate) fn recycle(&mut self, path: &Path) -> Outcome {
+        let Some(sid) = self
             .user
             .get_or_init(|| policy_allows().then(user_sid).flatten())
-            .clone()?;
+            .clone()
+        else {
+            return Outcome::UNMEASURED;
+        };
 
-        let root = drive_root(path)?;
-        let drive = self
+        let Some(root) = drive_root(path) else {
+            return Outcome::UNMEASURED;
+        };
+        let Some(drive) = self
             .drives
             .entry(root.clone())
             .or_insert_with(|| Drive::check(&root, &sid))
-            .as_mut()?;
-        let meta = fs::symlink_metadata(path).ok()?;
+            .as_mut()
+        else {
+            return Outcome::UNMEASURED;
+        };
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return Outcome::UNMEASURED;
+        };
         // Links, junctions and cloud placeholders (OneDrive and the like keep a reparse point on
         // every item they sync) stay with the engine, which knows what each of them needs.
         if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return None;
+            return Outcome::UNMEASURED;
         }
         let size = if meta.is_dir() {
-            tree_size(path)?
+            let Some(size) = tree_size(path) else {
+                return Outcome::MEASURED;
+            };
+            size
         } else {
             meta.len()
         };
         if !has_room(drive.used, size, drive.max_mb) {
-            return None;
+            // Over the bin's maximum on its own: Windows would delete it permanently. Only short
+            // of room: Windows drops older items to make it fit.
+            return if has_room(0, size, drive.max_mb) {
+                Outcome::MEASURED
+            } else {
+                Outcome::TooBig
+            };
         }
         let ext = bin_extension(path);
-        let (info, item) = free_names(&drive.bin, &ext)?;
+        let Some((info, item)) = free_names(&drive.bin, &ext) else {
+            return Outcome::MEASURED;
+        };
         let record = encode(
             VERSION,
             size,
@@ -149,7 +196,7 @@ impl Batch {
         let in_place = || fs::symlink_metadata(&info).is_ok_and(|m| m.len() == record.len() as u64);
         if written.is_err() || !in_place() {
             let _ = fs::remove_file(&info);
-            return None;
+            return Outcome::MEASURED;
         }
         if let Err(err) = move_no_replace(
             &arke_core::path::verbatim(path),
@@ -160,7 +207,7 @@ impl Batch {
                 path.display()
             );
             let _ = fs::remove_file(&info);
-            return None;
+            return Outcome::MEASURED;
         }
         // The first item moved to a drive's bin: Windows must count it. If it doesn't, put it
         // back, and this item and every later one on the drive go to the engine. (A crash
@@ -179,7 +226,7 @@ impl Batch {
                 if back.is_ok() {
                     let _ = fs::remove_file(&info);
                     self.drives.insert(root, None);
-                    return None;
+                    return Outcome::MEASURED;
                 }
             }
             drive.unconfirmed = None;
@@ -188,7 +235,7 @@ impl Batch {
         self.moved.push((path.to_path_buf(), meta.is_dir()));
         #[cfg(test)]
         TAKEN.fetch_add(1, Ordering::Relaxed);
-        Some(item)
+        Outcome::Recycled(item)
     }
 
     /// Tells Explorer windows and the desktop icon what changed. Call once, after the last item.
@@ -267,19 +314,28 @@ fn drive_root(path: &Path) -> Option<PathBuf> {
 
 /// A fixed drive formatted NTFS. Local mount information only, no network.
 fn local_ntfs(root: &Path) -> bool {
-    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumeInformationW};
-    const DRIVE_FIXED: u32 = 3;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+    if !fixed_drive(root) {
+        return false;
+    }
     let root = windows::core::HSTRING::from(root.as_os_str());
     let mut fs_name = [0u16; 32];
-    // SAFETY: root is NUL-terminated; the name buffer outlives the calls.
-    let named = unsafe {
-        GetDriveTypeW(&root) == DRIVE_FIXED
-            && GetVolumeInformationW(&root, None, None, None, None, Some(&mut fs_name)).is_ok()
-    };
+    // SAFETY: root is NUL-terminated; the name buffer outlives the call.
+    let named =
+        unsafe { GetVolumeInformationW(&root, None, None, None, None, Some(&mut fs_name)) }.is_ok();
     named
         && String::from_utf16_lossy(&fs_name)
             .trim_end_matches('\0')
             .eq_ignore_ascii_case("NTFS")
+}
+
+/// A fixed drive (not a network, removable or optical one). Local mount information only.
+fn fixed_drive(root: &Path) -> bool {
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_FIXED: u32 = 3;
+    let root = windows::core::HSTRING::from(root.as_os_str());
+    // SAFETY: root is NUL-terminated.
+    unsafe { GetDriveTypeW(&root) == DRIVE_FIXED }
 }
 
 /// This user's SID as text, the name of their bin folder.
@@ -334,6 +390,17 @@ fn layout_is_known(bin: &Path) -> bool {
 /// Total size of the files below `dir`, from directory listings (no file is opened). Links are
 /// not followed. `None` if part of the tree can't be listed.
 fn tree_size(dir: &Path) -> Option<u64> {
+    tree_size_upto(dir, u64::MAX)
+}
+
+/// Whether the files below `dir` add up to more than `limit` bytes; stops listing as soon as they
+/// do. `None` if part of the tree (listed before that) can't be listed.
+fn tree_size_over(dir: &Path, limit: u64) -> Option<bool> {
+    tree_size_upto(dir, limit).map(|total| total > limit)
+}
+
+/// Like [`tree_size`], but stops once the total is past `limit` and returns the total so far.
+fn tree_size_upto(dir: &Path, limit: u64) -> Option<u64> {
     let mut total = 0u64;
     let mut pending = vec![arke_core::path::verbatim(dir)];
     while let Some(dir) = pending.pop() {
@@ -346,11 +413,102 @@ fn tree_size(dir: &Path) -> Option<u64> {
             if meta.is_dir() {
                 pending.push(entry.path());
             } else {
-                total += meta.file_size();
+                total = total.saturating_add(meta.file_size());
+                if total > limit {
+                    return Some(total);
+                }
             }
         }
     }
     Some(total)
+}
+
+/// Per drive, the size above which Windows deletes an item instead of recycling it: for the items
+/// [`Batch`] leaves to the engine without measuring them (fast recycle off, a drive or a policy it
+/// leaves to the engine, links). Registry and volume information are read once per drive; then
+/// a file costs its metadata and a folder the listings up to the limit.
+#[derive(Default)]
+pub(crate) struct Limits {
+    /// "Maximum allowed Recycle Bin size" policy (percent of the drive), looked up when needed.
+    policy: std::cell::OnceCell<Option<u32>>,
+    /// Per drive root; `None` when it isn't known (no bin settings, not a fixed drive).
+    drives: std::collections::HashMap<PathBuf, Option<u64>>,
+}
+
+impl Limits {
+    /// `path` is bigger than its drive's Recycle Bin may hold, so Windows would delete it
+    /// permanently. `false` whenever that isn't known for sure (the engine and its prompt decide).
+    pub(crate) fn exceeds_bin(&mut self, path: &Path) -> bool {
+        let Some(root) = drive_root(path) else {
+            return false;
+        };
+        let policy = *self.policy.get_or_init(policy_size_percent);
+        let Some(limit) = *self
+            .drives
+            .entry(root.clone())
+            .or_insert_with(|| drive_limit(&root, policy))
+        else {
+            return false;
+        };
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return false;
+        };
+        // Links and cloud placeholders: what the engine does with them doesn't depend on this.
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return false;
+        }
+        if meta.is_dir() {
+            tree_size_over(path, limit) == Some(true)
+        } else {
+            meta.len() > limit
+        }
+    }
+}
+
+/// The bin limit of the drive at `root` (see [`bin_limit`]); `None` for a drive that isn't fixed
+/// or whose bin deletes everything anyway. Registry and local volume information only.
+fn drive_limit(root: &Path, policy_percent: Option<u32>) -> Option<u64> {
+    if !fixed_drive(root) {
+        return None;
+    }
+    let max_mb = match bin_settings(root) {
+        Some((_, true)) => return None,
+        Some((max_mb, false)) => Some(max_mb),
+        None => None,
+    };
+    let volume = policy_percent.and_then(|_| volume_bytes(root));
+    bin_limit(max_mb, policy_percent, volume)
+}
+
+/// Bytes above which an item can't go to the bin: the policy's share of the volume when the
+/// "Maximum allowed Recycle Bin size" policy is set (it replaces each drive's own setting), else
+/// the bin's own maximum (`MaxCapacity`, MB). `None` when that isn't known.
+fn bin_limit(max_mb: Option<u32>, policy_percent: Option<u32>, volume: Option<u64>) -> Option<u64> {
+    match policy_percent {
+        Some(percent) => volume.map(|total| total / 100 * u64::from(percent.min(100))),
+        None => max_mb.map(|mb| u64::from(mb).saturating_mul(1024 * 1024)),
+    }
+}
+
+/// The "Maximum allowed Recycle Bin size" policy (`RecycleBinSize`, percent), the smaller of the
+/// user's and the machine's. Read only.
+fn policy_size_percent() -> Option<u32> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .filter_map(|hive| read_dword_in(hive, KEY, "RecycleBinSize"))
+        .min()
+}
+
+/// Size of the volume at `root`, bytes. Local mount information (fixed drives only).
+fn volume_bytes(root: &Path) -> Option<u64> {
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let root = windows::core::HSTRING::from(root.as_os_str());
+    let mut total = 0u64;
+    // SAFETY: root is NUL-terminated; the out pointer is valid for the call.
+    unsafe { GetDiskFreeSpaceExW(&root, None, Some(&raw mut total), None) }.ok()?;
+    (total > 0).then_some(total)
 }
 
 /// `size` more bytes fit in a bin holding `used` bytes of at most `max_mb` megabytes.
@@ -409,6 +567,18 @@ fn read_dword_in(
     .ok()
     .ok()?;
     Some(data)
+}
+
+/// Deleting on the drive of `root` (`C:\`) never goes to the Recycle Bin: the user turned it off
+/// for that drive ("Don't move files to the Recycle Bin"), or a policy did for every drive.
+/// Registry reads only.
+pub(crate) fn recycling_off(root: &Path) -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+    let policy = [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .any(|hive| read_dword_in(hive, KEY, "NoRecycleFiles").is_some_and(|v| v != 0));
+    policy || bin_settings(root).is_some_and(|(_, nuke)| nuke)
 }
 
 /// Group Policy over the bin, user and machine: "Do not move deleted files to the Recycle Bin"
@@ -701,6 +871,119 @@ mod tests {
         assert!(!has_room(5 * mb, 6 * mb, 10));
         assert!(!has_room(0, 1, 0), "a bin of size 0 takes nothing");
         assert!(!has_room(u64::MAX, 1, u32::MAX), "no overflow");
+    }
+
+    #[test]
+    fn the_policy_share_replaces_the_bins_own_maximum() {
+        let mb = 1024 * 1024;
+        assert_eq!(bin_limit(None, None, None), None, "nothing known");
+        assert_eq!(bin_limit(Some(10), None, None), Some(10 * mb));
+        assert_eq!(bin_limit(Some(0), None, None), Some(0), "a bin of size 0");
+        assert_eq!(
+            bin_limit(Some(10), Some(5), None),
+            None,
+            "the policy decides, and the volume size is unknown"
+        );
+        assert_eq!(bin_limit(None, Some(5), None), None);
+        assert_eq!(
+            bin_limit(Some(10), Some(5), Some(100 * mb)),
+            Some(5 * mb),
+            "the policy's share, though smaller"
+        );
+        assert_eq!(
+            bin_limit(Some(1), Some(5), Some(100 * mb)),
+            Some(5 * mb),
+            "the policy's share, though the bin's own maximum is smaller"
+        );
+        assert_eq!(
+            bin_limit(None, Some(10), Some(1000)),
+            Some(100),
+            "policy alone"
+        );
+        assert_eq!(
+            bin_limit(None, Some(250), Some(1000)),
+            Some(1000),
+            "at most the whole drive"
+        );
+        assert_eq!(
+            bin_limit(Some(u32::MAX), None, None),
+            Some(u64::from(u32::MAX) * mb),
+            "no overflow"
+        );
+    }
+
+    /// A folder under %TEMP% for tests that only write and list their own files; removed after.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = crate::win::long_temp_dir()
+                .join(format!("arke-test-binlimit-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Ten files of 100 bytes and a subfolder with 500 more.
+    fn sized_tree(dir: &Path) {
+        for i in 0..10 {
+            fs::write(dir.join(format!("f{i}.bin")), [0u8; 100]).unwrap();
+        }
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join(r"sub\deep.bin"), [0u8; 500]).unwrap();
+    }
+
+    #[test]
+    fn folder_sizes_stop_listing_once_past_the_limit() {
+        let sb = Scratch::new("treesize");
+        sized_tree(&sb.0);
+        assert_eq!(tree_size(&sb.0), Some(1500));
+        assert_eq!(
+            tree_size_over(&sb.0, 1500),
+            Some(false),
+            "exactly the limit fits"
+        );
+        assert_eq!(tree_size_over(&sb.0, 1499), Some(true));
+        // Past the limit at the third file of the top folder: no more of its files are counted,
+        // and the subfolder (listed after it) never is.
+        assert_eq!(tree_size_upto(&sb.0, 250), Some(300));
+        assert_eq!(tree_size_over(&sb.0, 250), Some(true));
+        assert_eq!(
+            tree_size_over(&sb.0.join("missing"), 1),
+            None,
+            "can't be listed"
+        );
+    }
+
+    #[test]
+    fn items_over_the_drive_limit_are_too_big_for_the_bin() {
+        let sb = Scratch::new("exceeds");
+        sized_tree(&sb.0);
+        let root = drive_root(&sb.0).expect("%TEMP% is on a drive letter");
+        let limits = |limit: Option<u64>| Limits {
+            policy: std::cell::OnceCell::from(None),
+            drives: std::iter::once((root.clone(), limit)).collect(),
+        };
+        let mut limits_1000 = limits(Some(1000));
+        assert!(limits_1000.exceeds_bin(&sb.0), "the folder's total is over");
+        assert!(!limits_1000.exceeds_bin(&sb.0.join("sub")), "500 fits");
+        assert!(!limits_1000.exceeds_bin(&sb.0.join("f0.bin")));
+        assert!(
+            limits(Some(99)).exceeds_bin(&sb.0.join("f0.bin")),
+            "a file over"
+        );
+        assert!(
+            !limits(None).exceeds_bin(&sb.0),
+            "an unknown limit leaves it to the engine"
+        );
+        assert!(!limits_1000.exceeds_bin(&sb.0.join("missing")), "gone");
     }
 
     #[test]

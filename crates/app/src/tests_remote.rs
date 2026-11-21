@@ -157,6 +157,51 @@ fn adds_an_sftp_location_and_works_in_it(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Plain http with a password is refused until the user allows it for that location: the dialog
+/// warns first, and allowing lets the sign-in go on. The test hub has no HTTP, so the attempt
+/// after allowing fails with its own message, which also takes the consent back (it was not used).
+#[gpui::test]
+fn plain_http_sign_in_asks_before_sending_the_password(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_remote(cx, fs, r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_net_dialog(NetDialogKind::Map { letters: vec!['Z'] }, None, window, cx);
+        });
+    });
+    let dialog = ws.update(cx, |ws, _| ws.net_dialog_for_test()).unwrap();
+    dialog.update(cx, |d, cx| {
+        d.fill_remote_for_test(Protocol::WebDav, "http://nas.invalid/", "", "u", "pw", cx);
+    });
+    wait(cx, "plain http warning", &|cx| {
+        dialog.update(cx, |d, _| d.pending_insecure_for_test())
+    });
+    assert_eq!(dialog.update(cx, |d, _| d.error_for_test()), None);
+
+    // Allow for this location: the sign-in goes on (and fails here for lack of HTTP).
+    dialog.update(cx, crate::net_dialog::NetDialog::submit_for_test);
+    wait(cx, "the sign-in was tried", &|cx| {
+        dialog.update(cx, |d, _| d.error_for_test()).is_some()
+    });
+    assert!(!dialog.update(cx, |d, _| d.pending_insecure_for_test()));
+    assert_ne!(
+        dialog.update(cx, |d, _| d.error_for_test()),
+        Some(arke_remote::RemoteError::Insecure.to_string())
+    );
+    // Nothing is remembered from a sign-in that did not work.
+    let allowed = cx.update(|_, cx| {
+        SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .insecure_http
+            .clone()
+    });
+    assert!(allowed.is_empty(), "{allowed:?}");
+}
+
 #[gpui::test]
 fn unreachable_server_fails_fast_with_retry(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
@@ -204,4 +249,61 @@ fn routing_fs_reads_local_link_targets_only() {
         Some(PathBuf::from(r"D:\docs"))
     );
     assert!(fs.read_link(Path::new("sftp://u@h/docs")).is_err());
+}
+
+/// A whole URL in the Server field wins over the Port and folder fields: they show the URL's port
+/// and path instead (dimmed), keep what was typed for when the URL goes, and the location is the
+/// same as before.
+#[gpui::test]
+fn a_url_in_the_server_field_shows_its_port_and_path(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_remote(cx, fs, r"C:\o");
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_net_dialog(NetDialogKind::Map { letters: vec!['Z'] }, None, window, cx);
+        });
+    });
+    let dialog = ws.update(cx, |ws, _| ws.net_dialog_for_test()).unwrap();
+    dialog.update(cx, |d, cx| {
+        d.type_remote_for_test(Protocol::WebDav, ["nas", "8443", "/mine"], cx);
+    });
+    assert_eq!(dialog.update(cx, |d, cx| d.url_values_for_test(cx)), None);
+
+    dialog.update(cx, |d, cx| {
+        d.type_remote_for_test(
+            Protocol::WebDav,
+            ["http://nas:8080/dav", "8443", "/mine"],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        dialog.update(cx, |d, cx| d.url_values_for_test(cx)),
+        Some(("8080".to_owned(), "/dav".to_owned()))
+    );
+    let url = dialog
+        .update(cx, |d, cx| d.remote_url_for_test(cx))
+        .unwrap();
+    assert_eq!((url.port, url.path.as_str()), (8080, "/dav"));
+    assert_eq!(dialog.update(cx, |d, cx| d.port_text_for_test(cx)), "8443");
+
+    // No port in the URL: the scheme's own.
+    dialog.update(cx, |d, cx| {
+        d.type_remote_for_test(Protocol::WebDav, ["http://nas", "8443", "/mine"], cx);
+    });
+    assert_eq!(
+        dialog.update(cx, |d, cx| d.url_values_for_test(cx)),
+        Some(("80".to_owned(), "/".to_owned()))
+    );
+
+    // The "://" goes: the typed values apply again.
+    dialog.update(cx, |d, cx| {
+        d.type_remote_for_test(Protocol::WebDav, ["nas", "8443", "/mine"], cx);
+    });
+    assert_eq!(dialog.update(cx, |d, cx| d.url_values_for_test(cx)), None);
+    let url = dialog
+        .update(cx, |d, cx| d.remote_url_for_test(cx))
+        .unwrap();
+    assert_eq!((url.port, url.path.as_str()), (8443, "/mine"));
 }

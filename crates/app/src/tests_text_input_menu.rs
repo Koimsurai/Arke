@@ -1,6 +1,6 @@
 //! GPUI tests for the right-click edit menu of text boxes (rename box, address bar editor).
 
-use gpui::{Focusable as _, Modifiers, MouseButton};
+use gpui::{Focusable as _, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, point, px};
 
 use super::*;
 use crate::text_input::{EditCommand, TextInput};
@@ -642,6 +642,68 @@ fn ctrl_moves_selects_and_erases_by_word(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("end shift-home backspace");
     assert_eq!(text(&input, cx), "");
     assert!(view.update(cx, |v, _| v.editing_path), "still editing");
+}
+
+/// Double-click selects the word under the pointer, triple-click the whole text (#284).
+#[gpui::test]
+fn double_click_selects_a_word(cx: &mut TestAppContext) {
+    let (view, cx) = rename_setup(cx);
+    cx.simulate_keystrokes("ctrl-l");
+    let input = path_input(&view, cx);
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input(r"C:\Users\me\report.docx");
+    cx.run_until_parked();
+    let bounds = input.read_with(cx, |i, _| i.bounds_for_test()).unwrap();
+    // Past the end of the text: the last word.
+    let at = point(bounds.right() - px(2.), bounds.center().y);
+    let clicks = |count: usize, cx: &mut VisualTestContext| {
+        for click_count in 1..=count {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::none(),
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::none(),
+                click_count,
+            });
+        }
+        cx.run_until_parked();
+    };
+    clicks(2, cx);
+    assert_eq!(
+        input.read_with(cx, |i, _| i.selected_text_for_test()),
+        "docx"
+    );
+    clicks(3, cx);
+    assert_eq!(
+        input.read_with(cx, |i, _| i.selected_text_for_test()),
+        r"C:\Users\me\report.docx"
+    );
+}
+
+#[test]
+fn word_at_a_point() {
+    use crate::text_input::word_at;
+    let s = "report final.docx";
+    assert_eq!(&s[word_at(s, 2)], "report");
+    assert_eq!(&s[word_at(s, 0)], "report");
+    assert_eq!(&s[word_at(s, 6)], "report", "just after a word");
+    assert_eq!(&s[word_at(s, 9)], "final");
+    assert_eq!(&s[word_at(s, s.len())], "docx");
+    assert_eq!(&s[word_at(s, 12)], "final", "the dot right after it");
+    assert_eq!(word_at("", 0), 0..0);
+    assert_eq!(
+        &"a  b"[word_at("a  b", 2)],
+        "  ",
+        "between words: the spaces"
+    );
+    let cjk = "\u{8CC7}\u{6599} x";
+    assert_eq!(&cjk[word_at(cjk, 3)], "\u{8CC7}\u{6599}");
 }
 
 #[test]

@@ -378,6 +378,30 @@ pub(crate) fn double_click_time() -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(if ms == 0 { 500 } else { ms }))
 }
 
+/// How long the pointer must rest on an item to select it in single-click mode (Settings >
+/// Mouse; `SPI_GETMOUSEHOVERTIME`, 400 ms by default). Reads one system parameter, fine on the
+/// UI thread.
+pub(crate) fn mouse_hover_time() -> std::time::Duration {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETMOUSEHOVERTIME, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    let mut ms = 0u32;
+    // SAFETY: ms is a correctly sized out param.
+    let asked = unsafe {
+        SystemParametersInfoW(
+            SPI_GETMOUSEHOVERTIME,
+            0,
+            Some((&raw mut ms).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    std::time::Duration::from_millis(if asked.is_err() || ms == 0 {
+        400
+    } else {
+        u64::from(ms)
+    })
+}
+
 /// Windows accent color as 0xRRGGBB. Asks DWM only (no registry); cheap enough for the UI thread.
 pub(crate) fn system_accent() -> Option<u32> {
     use windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
@@ -435,7 +459,8 @@ pub(crate) fn supports_mica() -> bool {
 
 /// UI language: `ARKE_LANG` wins, otherwise the user locale. Traditional Chinese locales
 /// (TW, HK, MO, Hant) map to zh-TW, other Chinese ones (CN, SG, Hans, plain zh) to zh-CN,
-/// everything else to English.
+/// Japanese, German, Spanish and Portuguese ones to ja, de, es and pt-BR, everything else to
+/// English.
 pub(crate) fn ui_locale() -> String {
     if let Ok(lang) = std::env::var("ARKE_LANG") {
         return lang;
@@ -443,7 +468,7 @@ pub(crate) fn ui_locale() -> String {
     system_locale().to_owned()
 }
 
-/// UI language Windows itself is set to (`zh-TW`, `zh-CN` or `en`), ignoring `ARKE_LANG` and the
+/// UI language Windows itself is set to (`zh-TW`, `zh-CN`, `ja`, `de`, `es`, `pt-BR` or `en`), ignoring `ARKE_LANG` and the
 /// Language setting. Decides which Chinese font English UI text falls back to.
 pub(crate) fn system_locale() -> &'static str {
     let mut buf = [0u16; 85];
@@ -485,9 +510,25 @@ fn locale_for(system: &str) -> &'static str {
     } else if lower == "zh" || lower.starts_with("zh-") || lower.starts_with("zh_") {
         // zh-CN, zh-SG, zh-Hans-*, and plain zh default to Simplified.
         "zh-CN"
+    } else if is_language(&lower, "ja") {
+        "ja"
+    } else if is_language(&lower, "de") {
+        "de"
+    } else if is_language(&lower, "es") {
+        "es"
+    } else if is_language(&lower, "pt") {
+        // Portugal's Portuguese reads Brazilian text far better than English.
+        "pt-BR"
     } else {
         "en"
     }
+}
+
+/// Whether the lower-case locale name is `code` itself or one of its regions (`de`, `de-AT`).
+fn is_language(lower: &str, code: &str) -> bool {
+    lower
+        .strip_prefix(code)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '_']))
 }
 
 /// The device behind a drive letter (`\Device\Floppy0`, `\Device\HarddiskVolume3`...), from the
@@ -572,6 +613,10 @@ fn disk_space(root: &[u16]) -> Option<(u64, u64)> {
 }
 
 impl Shell for WinShell {
+    fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
+        crate::quick_access::read_windows_pins()
+    }
+
     fn load_places(&self) -> Vec<Place> {
         debug_assert!(
             !arke_core::fs::is_ui_thread(),
@@ -1005,9 +1050,10 @@ impl Shell for WinShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
     ) -> Result<crate::shell::ShellMenu, ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        crate::shell_host::query(paths, background)
+        crate::shell_host::query(paths, background, extended)
     }
 
     fn shell_menu_prefetch(&self) -> bool {
@@ -1038,6 +1084,25 @@ impl Shell for WinShell {
         crate::shell_host::fill_submenu(session, index)
     }
 
+    fn shell_menu_kind(&self, paths: &[PathBuf], background: bool) -> Option<String> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_menu_parts::item_kind(paths, background)
+    }
+
+    fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_packaged::item_types(clsid)
+    }
+
+    fn packaged_commands(&self, kind: &str) -> Vec<String> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_packaged::commands()
+            .into_iter()
+            .filter(|(_, types)| crate::win_menu_parts::kind_matches(types, kind))
+            .map(|(clsid, _)| clsid)
+            .collect()
+    }
+
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],
@@ -1051,11 +1116,12 @@ impl Shell for WinShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
         handler: &crate::win_menu_parts::MenuHandler,
         group: u64,
     ) -> Result<(crate::shell::ShellMenu, std::time::Duration), ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        crate::shell_host::query_handler(paths, background, handler, group)
+        crate::shell_host::query_handler(paths, background, extended, handler, group)
     }
 
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {
@@ -1066,6 +1132,26 @@ impl Shell for WinShell {
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         let t = local_time(time)?;
         Some([t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond])
+    }
+
+    fn recent_files_enabled(&self) -> bool {
+        use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        const EXPLORER: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer";
+        const POLICIES: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+        debug_assert!(
+            !arke_core::fs::is_ui_thread(),
+            "recent_files_enabled must not run on the UI thread"
+        );
+        // File Explorer's own switch (Folder Options > Privacy), absent means on.
+        if read_reg_dword(HKEY_CURRENT_USER, EXPLORER, "ShowRecent") == Some(0) {
+            return false;
+        }
+        // The group policy "Do not keep history of recently opened documents".
+        ![HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+            .into_iter()
+            .any(|hive| {
+                read_reg_dword(hive, POLICIES, "NoRecentDocsHistory").is_some_and(|v| v != 0)
+            })
     }
 
     fn recent_files(&self, limit: usize) -> Vec<crate::home::RecentFile> {
@@ -1109,6 +1195,37 @@ impl Shell for WinShell {
 
     fn is_ejectable(&self, root: &Path) -> bool {
         crate::win_eject::is_ejectable(root)
+    }
+
+    fn format_drive(&self, root: &Path, owner: Option<isize>) -> Result<(), ShellError> {
+        use windows::Win32::UI::Shell::{SHFMT_ID_DEFAULT, SHFMT_OPT_NONE, SHFormatDrive};
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        // The drive number: 0 for A:, 2 for C:.
+        let letter = root
+            .to_string_lossy()
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+            .ok_or(ShellError::Unsupported)?;
+        let drive = u32::from(letter.to_ascii_uppercase()) - u32::from('A');
+        let owner = windows::Win32::Foundation::HWND(owner.unwrap_or_default() as *mut _);
+        // SAFETY: shows Windows' modal Format dialog for the drive; owner is Arke's window or null.
+        let _ = unsafe { SHFormatDrive(owner, drive, SHFMT_ID_DEFAULT, SHFMT_OPT_NONE) };
+        Ok(())
+    }
+
+    fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
+        let letter = root
+            .to_string_lossy()
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+            .ok_or(ShellError::Unsupported)?;
+        std::process::Command::new("cleanmgr.exe")
+            .arg(format!("/d{letter}"))
+            .spawn()
+            .map(drop)
+            .map_err(|e| ShellError::Host(e.to_string()))
     }
 
     fn eject_drive(&self, root: &Path) -> Result<(), ShellError> {
@@ -1966,7 +2083,19 @@ mod locale_tests {
         ] {
             assert_eq!(locale_for(cn), "zh-CN", "{cn}");
         }
-        for en in ["en-US", "ja-JP", "", "zhx"] {
+        for (system, ui) in [
+            ("ja-JP", "ja"),
+            ("de-DE", "de"),
+            ("de-AT", "de"),
+            ("es-ES", "es"),
+            ("es-MX", "es"),
+            ("pt-BR", "pt-BR"),
+            ("pt-PT", "pt-BR"),
+            ("DE", "de"),
+        ] {
+            assert_eq!(locale_for(system), ui, "{system}");
+        }
+        for en in ["en-US", "fr-FR", "", "zhx", "dex", "jav", "ko-KR"] {
             assert_eq!(locale_for(en), "en", "{en}");
         }
     }

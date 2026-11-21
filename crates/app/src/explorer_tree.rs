@@ -117,7 +117,7 @@ impl Explorer {
         self.tree_flat().map(|(entries, _)| entries)
     }
 
-    fn tree_flat(&self) -> Option<FlatList> {
+    pub(super) fn tree_flat(&self) -> Option<FlatList> {
         if !self.tree_active() || self.tree.nodes.is_empty() {
             return None;
         }

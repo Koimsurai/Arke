@@ -285,6 +285,18 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Tests: the selected text.
+    #[cfg(test)]
+    pub(crate) fn selected_text_for_test(&self) -> String {
+        self.content[self.selected_range.clone()].to_string()
+    }
+
+    /// Tests: where the text was last drawn.
+    #[cfg(test)]
+    pub(crate) const fn bounds_for_test(&self) -> Option<Bounds<Pixels>> {
+        self.last_bounds
+    }
+
     /// Tests: the text shown while the input is empty.
     #[cfg(test)]
     pub(crate) fn placeholder_for_test(&self) -> String {
@@ -689,11 +701,27 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let at = self.index_for_mouse_position(event.position);
+        // Double-click selects the word, triple-click everything, as in a Windows edit box (#284).
+        if event.click_count >= 2 && !event.modifiers.shift {
+            self.is_selecting = false;
+            let range = if event.click_count == 2 && !self.masked {
+                word_at(&self.content, at)
+            } else {
+                0..self.content.len()
+            };
+            self.selected_range = range;
+            self.selection_reversed = false;
+            self.step = None;
+            window.notify_text_selection_changed(&self.focus_handle);
+            cx.notify();
+            return;
+        }
         self.is_selecting = true;
         if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), window, cx);
+            self.select_to(at, window, cx);
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), window, cx);
+            self.move_to(at, window, cx);
         }
     }
 
@@ -1464,7 +1492,7 @@ impl TextInput {
             .py(theme::s_4())
             .rounded(theme::r_12())
             .bg(theme::overlay())
-            .shadow(theme::elev_float())
+            .shadow(theme::elev_menu())
             .ui_font()
             .text_size(theme::fs_14())
             .text_color(theme::text());
@@ -1735,6 +1763,39 @@ fn is_word(grapheme: &str) -> bool {
         .chars()
         .next()
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The word at `offset` in `text` (the one ending there at its end), or the run of separators
+/// there, for a double-click.
+pub(crate) fn word_at(text: &str, offset: usize) -> Range<usize> {
+    let graphemes: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
+    let Some(ix) = graphemes
+        .iter()
+        .rposition(|(start, _)| *start <= offset)
+        .map(|ix| {
+            // At the very end, or just after a word: that word.
+            let at_end = graphemes[ix].0 == offset && ix > 0 && !is_word(graphemes[ix].1);
+            if (offset >= text.len() || at_end) && ix > 0 && is_word(graphemes[ix - 1].1) {
+                ix - 1
+            } else {
+                ix
+            }
+        })
+    else {
+        return 0..0;
+    };
+    let word = is_word(graphemes[ix].1);
+    let same = |g: &(usize, &str)| is_word(g.1) == word;
+    let first = graphemes[..ix]
+        .iter()
+        .rposition(|g| !same(g))
+        .map_or(0, |i| i + 1);
+    let last = graphemes[ix..]
+        .iter()
+        .position(|g| !same(g))
+        .map_or(graphemes.len(), |i| ix + i);
+    let end = graphemes.get(last).map_or(text.len(), |g| g.0);
+    graphemes[first].0..end
 }
 
 /// Start of the word before `offset` in `text`: separators and spaces right before it are skipped.

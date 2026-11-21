@@ -664,7 +664,14 @@ impl RecycleBin {
     fn render_toasts(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mut toasts: Vec<AnyElement> = Vec::new();
         if let Some(progress) = &Self::progress(cx) {
-            toasts.push(Explorer::op_toast(progress, PURGE_VERB, cx));
+            // Like the file list: a short delete is only in the operation center.
+            crate::op_center::ToastDelays::track(cx, "purge", true);
+            let view = cx.entity_id();
+            if crate::op_center::ToastDelays::shown(cx, view, "purge") {
+                toasts.push(Explorer::op_toast(progress, PURGE_VERB, cx));
+            }
+        } else {
+            crate::op_center::ToastDelays::track(cx, "purge", false);
         }
         if let Some(failure) = &self.failure {
             toasts.push(crate::explorer::error_toast(
@@ -1030,7 +1037,7 @@ impl RecycleBin {
             .gap(theme::s_2())
             .rounded(theme::r_8())
             .bg(theme::overlay())
-            .shadow(theme::elev_float())
+            .shadow(theme::elev_menu())
             .child(
                 menu_row(
                     "recycle-menu-restore",

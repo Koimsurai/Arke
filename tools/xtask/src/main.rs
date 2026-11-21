@@ -9,6 +9,7 @@
 //!                                                 changelogs (CHANGELOG.md, .zh-TW.md, .zh-CN.md)
 //! cargo xtask release-version <stable|rc|nightly> [--number N]
 //!                                                 print the version a build would get
+//! cargo xtask i18n <status|missing|merge> ...     translation helper for the locale files (i18n.rs)
 //! cargo xtask licenses                            regenerate THIRD_PARTY_LICENSES.md (cargo-about)
 //! cargo xtask build <stable|rc|nightly> [--number N] [--arch x64|arm64]
 //!                                                 package the exes into dist/ (exe, installer,
@@ -45,6 +46,7 @@ use sha2::{Digest, Sha256};
 
 use notes::{Bump, ChangeText, LANGS};
 
+mod i18n;
 #[allow(
     dead_code,
     reason = "the reading half is for Arke's What's new page (whats_new.rs)"
@@ -762,11 +764,12 @@ fn main() -> ExitCode {
             let channel = rest.first().map_or_default(String::as_str);
             release_version(channel, rest).map(|v| println!("{v}"))
         }
+        Some("i18n") => i18n::run(&root(), rest),
         Some("licenses") => cmd_licenses(),
         Some("build") => cmd_build(rest).map(|_| ()),
         Some("publish") => cmd_publish(rest),
         _ => Err(anyhow!(
-            "usage: cargo xtask <change|status|version|release-version|licenses|build|publish> ..."
+            "usage: cargo xtask <change|status|version|release-version|i18n|licenses|build|publish> ..."
         )),
     };
     match result {

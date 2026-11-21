@@ -12,7 +12,7 @@ GPU-rendered, written in Rust, one small exe.</p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="AGPL-3.0"></a>
 </p>
 
-<p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.zh-TW.md">繁體中文</a></p>
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português (Brasil)</a></p>
 
 <p align="center"><img src=".github/assets/preview.png" alt="Arke showing a folder with the preview pane open"></p>
 
@@ -77,35 +77,40 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
 </table>
 
 **Browse**
-- Details, icons (any size, Ctrl+mouse wheel) and columns views. In Details, folders can expand
-  in place, and you can sort by several columns, reorder columns and show link targets.
+- Details, icons (any size up to 256 px, Ctrl+mouse wheel) and columns views. In Details, folders
+  can expand in place, and you can sort by several columns, reorder columns and show link targets.
 - Each folder remembers its view and sort.
 - Tabs you can pin or save as workspaces. Split a tab into two panes with one shared preview,
-  synchronized browsing and folder compare.
+  synchronized browsing and folder compare. Middle-click or Ctrl+click a folder in the sidebar, on
+  Home or in the address bar to open it in a new tab (Ctrl+double-click in the file list).
 - The search box sits in the middle of the title bar and searches the active pane. Each pane has
   its own row with Up, its path and its view buttons, so in split view each side keeps its own
   filter.
 - Drag a tab out to give it a window of its own, or drop files on a tab to copy or move them into
   its folder.
-- Favorites at the top of the sidebar, as tiles and a list: add a folder or a tab from its menu, or
-  drag it there.
+- Favorites at the top of the sidebar and on Home, as tiles and a list: add a folder or a tab from
+  its menu, or drag it there. Drag them to reorder (the others make room, like app icons on a
+  phone) or out to remove them, and rename them without renaming the folder. Folders pinned to
+  Quick Access in File Explorer show up too.
 - One window by default (since 0.7): folders from other apps, Win+E and starting Arke again add a
   tab to the window you used last. Turn off "Single window" in settings for a window each.
 - With "New windows open to: Last tabs", the windows open when you quit Arke (or Windows shuts
   down) come back with their tabs. A window you close while others stay open isn't kept.
 - Spring-loaded folders, a shelf for collecting files from different folders, and a Home page
-  with recent files, drives and network locations.
+  with your favorites, recent files, drives and network locations, each with its own right-click
+  menu (drives get eject, Format, Disk Cleanup and Properties).
 - Swipe with two fingers on a touchpad to go back and forward, like in a browser.
-- The sidebar can be made wider by dragging its edge, collapses to a column of icons (Ctrl+B) and
-  opens over the content when you rest the pointer on it. Columns in the columns view can be
-  resized.
+- The sidebar can be made wider by dragging its edge and collapses to a column of icons (Ctrl+B),
+  which can open over the content when you rest the pointer on it. Favorites, This PC and Network
+  collapse on their own, and the folder tree follows the folder you're in. Columns in the columns
+  view can be resized.
 - Interface scale from 80% to 150%, on top of Windows' own scale.
 - Command palette (Ctrl+Shift+P) for every command, and shortcuts you can change.
 
 **Preview**
-- A resizable preview pane and Quick Look (Space) for images, PDF, Word, Excel and PowerPoint,
-  text and code with syntax highlighting, Markdown, archives and folders.
-- Videos show a frame as their thumbnail. Quick Look zooms text, documents and PDF pages
+- A resizable preview pane and Quick Look (Space) for images (SVG too), PDF, Word, Excel and
+  PowerPoint, text and code with syntax highlighting, Markdown, archives, `.gz` files and folders.
+- Videos show a frame and PDFs their first page as their thumbnail. Quick Look zooms text, documents and PDF pages
   (Ctrl+wheel), and with QuickLook installed, Space can open that instead.
 
 **Search**
@@ -122,11 +127,14 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
   mouse button or drop with Alt held.
 - A Properties window of its own (Alt+Enter): sizes, where a folder's space goes, attributes, the
   app a file opens with, SHA-256 and unblocking downloaded files. Windows' own is one click away.
+  A whole drive is counted in seconds, from the search index or, with the search service, from
+  the drive's file table the way WizTree does.
 
 **Places**
 - Network shares that fail fast when a server is offline and show the last known contents;
-  `\\server` lists its shares. SFTP and WebDAV locations (experimental). Mapped drives and
-  network places can get names of their own, kept in Arke only.
+  `\\server` lists its shares. SFTP and WebDAV locations (experimental; plain http only after you
+  allow it for that location). Mapped drives and network places can get names of their own, kept
+  in Arke only.
 - OneDrive and other cloud folders with sync status. Previews never download online-only files.
 - Archives: preview and extract zip, 7z, tar (.gz, .xz, .bz2, .zst) and RAR, compress to zip.
   RAR and the xz / bzip2 / zstd tars use the libarchive built into Windows (best on Windows 11
@@ -141,7 +149,11 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
 - Updates download quietly in the background and install the next time Arke restarts, never while
   files are being copied and never over a metered connection.
 - Menus open in windows of their own, like Windows menus, so near the edge they reach past Arke's
-  window instead of being squeezed.
+  window instead of being squeezed. Windows commands you pin from "More options" (Git Bash,
+  Windows Terminal, VS Code, 7-Zip, NanaZip...) show as soon as the menu opens, and Shift+right-click
+  adds the extended ones, as in File Explorer.
+- Launchers and scripts (Listary, ALTRun, AutoHotkey, PowerShell) can read Arke's windows, tabs and
+  selection and open folders through one JSON interface ([docs/integration.md](docs/integration.md)).
 - Quiet when idle: nothing on screen changing means nothing redrawn, minimized included. Folder
   sizes, indexing and the search service run at low priority in Windows' efficiency mode, and with
   only the tray icon left Arke frees its caches.
@@ -152,7 +164,8 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
   turn on "Win+E and the File Explorer icon open Arke too".
 - Screen reader support, x64 and ARM64 builds (both tested on real hardware),
   taskbar jump list, safe USB eject, system tray, settings backup. English, Simplified and
-  Traditional Chinese.
+  Traditional Chinese, Japanese, German, Spanish and Brazilian Portuguese (the last four are new
+  in 0.8; corrections to the wording are welcome in issues).
 
 *Experimental* features are covered by automated tests and local test servers but not yet widely
 used; see the [changelog](CHANGELOG.md). Feedback in issues is welcome.

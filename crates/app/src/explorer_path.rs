@@ -1016,10 +1016,31 @@ fn crumb_piece(
         })
         .child(label)
         .children(spring_bar)
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            cx.stop_propagation();
-            this.navigate(target.clone(), NavKind::New, cx);
+        .on_click(cx.listener({
+            let target = target.clone();
+            move |this, e: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                // Ctrl: a new tab (in front with Shift too), as a link in a browser (#291).
+                if e.modifiers().control {
+                    cx.emit(super::ExplorerEvent::OpenInNewTab {
+                        path: target.clone(),
+                        activate: e.modifiers().shift,
+                    });
+                } else {
+                    this.navigate(target.clone(), NavKind::New, cx);
+                }
+            }
         }))
+        .on_mouse_down(
+            gpui::MouseButton::Middle,
+            cx.listener(move |_, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                cx.emit(super::ExplorerEvent::OpenInNewTab {
+                    path: target.clone(),
+                    activate: false,
+                });
+            }),
+        )
         .into_any_element()
 }
 
@@ -1065,7 +1086,7 @@ fn menu_panel(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .py(theme::s_4())
         .rounded(theme::r_12())
         .bg(theme::overlay())
-        .shadow(theme::elev_float())
+        .shadow(theme::elev_menu())
         .ui_font()
         .text_size(theme::fs_14())
         .text_color(theme::text())

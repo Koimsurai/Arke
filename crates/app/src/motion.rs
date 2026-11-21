@@ -3,19 +3,25 @@
 //! Every animation in Arke uses one of these durations and easings:
 //!
 //! - [`FAST`] (120 ms): a control changing state in place (switch thumb).
-//! - [`MENU`] (80 ms): a context menu or submenu appearing. A short fade in place, no slide, like
-//!   Windows 11 menus: a menu is opened to pick from right away, so it shouldn't travel.
+//! - [`MENU`] (80 ms): a context menu, submenu or tooltip appearing. A short fade in place, no
+//!   slide, like Windows 11 menus: a menu is opened to pick from right away, so it shouldn't
+//!   travel.
 //! - [`BASE`] (180 ms): a surface entering or moving: flyouts, dialogs, toasts, Quick Look,
-//!   panels, the view switch crossfade, tabs and tiles sliding after a reorder.
+//!   panels, the sidebar expanding, a new split pane, the view switch crossfade, tabs and tiles
+//!   sliding after a reorder.
 //! - [`EXIT`] (120 ms): a surface leaving after it was dismissed. Shorter than entering, so closing
 //!   never feels like waiting.
 //! - [`FLASH`] (1600 ms): a one-off highlight fading out (a folder that was just pinned).
 //!
-//! Entering eases out ([`ease_out`]: fast start, soft landing). Leaving moves away eased in
-//! ([`ease_in`]) but fades linearly, so it visibly starts on the very next frame (an eased-in fade
-//! stays near full opacity for its first half and reads as a delay).
+//! Entering eases out ([`ease_out`]: fast start, soft landing). A panel sliding by its own width
+//! (the sidebar) eases out more gently ([`drawer`]), so the slide is seen. Leaving moves away
+//! eased in ([`ease_in`]) but fades linearly, so it visibly starts on the very next frame (an
+//! eased-in fade stays near full opacity for its first half and reads as a delay).
 //! Offsets are [`NUDGE`] (flyouts dropping from their button), [`SLIDE`] (palette, dialogs) and
-//! [`SLIDE_LG`] (Quick Look card, preview pane). Context menus don't move, entering or leaving.
+//! [`SLIDE_LG`] (Quick Look card, preview pane, a new split pane). Context menus and tooltips
+//! don't move, entering or leaving. Whatever moves is laid out in its final place at once: only
+//! its offset and opacity animate, so it can be used (and the content beside it has its new size)
+//! from the first frame.
 //!
 //! Nothing that should be instant is animated: folder switches, tab switches, list navigation,
 //! selection, typing, scrolling, resizing by drag. Hover and press styles are instant too (GPUI has
@@ -35,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Styled, div, px,
+    ParentElement, Styled, Window, div, px,
 };
 
 /// A control changing state in place.
@@ -99,6 +105,12 @@ pub(crate) fn ease_out(t: f32) -> f32 {
     1. - (1. - t).powi(5)
 }
 
+/// Decelerating curve for a panel sliding by its own width (cubic). Over a couple of hundred pixels
+/// [`ease_out`] covers two thirds of the way in the first two frames, which reads as a jump.
+pub(crate) fn ease_out_soft(t: f32) -> f32 {
+    1. - (1. - t).powi(3)
+}
+
 /// Accelerating curve for leaving: starts gently, then goes (quadratic).
 pub(crate) fn ease_in(t: f32) -> f32 {
     t * t
@@ -107,6 +119,11 @@ pub(crate) fn ease_in(t: f32) -> f32 {
 /// Surfaces entering or moving ([`BASE`], eased out).
 pub(crate) fn enter() -> Animation {
     Animation::new(BASE).with_easing(ease_out)
+}
+
+/// A panel sliding in by its own width, the sidebar ([`BASE`], eased with [`ease_out_soft`]).
+pub(crate) fn drawer() -> Animation {
+    Animation::new(BASE).with_easing(ease_out_soft)
 }
 
 /// A context menu appearing ([`MENU`], eased out: most of the fade lands on the first frame, so
@@ -213,7 +230,10 @@ pub(crate) fn inert(el: impl IntoElement) -> AnyElement {
 
 /// A transition the user just started (switching the view, opening the preview pane). The element
 /// animates only while the cue is fresh, so mounting it again later (switching tabs, a folder with
-/// the pane already open) draws it in place instead of replaying the entrance.
+/// the pane already open) draws it in place instead of replaying the entrance. It is drawn from
+/// the cue's own clock by styling the element in place ([`Cue::slide`], [`drop_in`]), never by
+/// wrapping it in an animation for a while: taking the wrapper away mounts everything inside anew,
+/// and a press made before that frame would lose its release.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Cue {
     serial: u64,
@@ -229,6 +249,13 @@ impl Cue {
         }
     }
 
+    /// Tests: play the transition from now (`true`) or have it over (`false`), without firing
+    /// again.
+    #[cfg(test)]
+    pub(crate) fn set_playing_for_test(&mut self, playing: bool) {
+        self.at = playing.then(Instant::now);
+    }
+
     /// Changes each time the cue fires: an animation id that replays per transition.
     pub(crate) const fn serial(&self) -> u64 {
         self.serial
@@ -240,19 +267,48 @@ impl Cue {
             .is_some_and(|at| now.saturating_duration_since(at) < BASE + Duration::from_millis(60))
     }
 
-    /// `el` entering (fading in from offset `dx`, `dy`) while the cue is live, otherwise as is.
-    pub(crate) fn wrap<E>(&self, el: E, name: &'static str, dx: f32, dy: f32) -> AnyElement
-    where
-        E: Styled + IntoElement + 'static,
-    {
-        if self.live_at(Instant::now()) {
-            let id = ElementId::NamedInteger(name.into(), self.serial);
-            el.with_animation(id, enter(), move |el, t| slide_in(el, t, dx, dy))
-                .into_any_element()
+    /// `el` entering over [`BASE`] (fading in from offset `dx`, `dy`, progress eased with `ease`),
+    /// styled in place: the element tree is the same while it plays and afterwards, so nothing in
+    /// it is mounted anew when it ends. Asks `window` for the next frame while it plays (call it
+    /// while rendering the view that owns the cue) and for none afterwards.
+    pub(crate) fn slide<E: Styled>(
+        &self,
+        el: E,
+        window: &Window,
+        ease: fn(f32) -> f32,
+        dx: f32,
+        dy: f32,
+    ) -> E {
+        if let Some(t) = self.progress_at(Instant::now()) {
+            window.request_animation_frame();
+            slide_in(el, ease(t), dx, dy)
         } else {
-            el.into_any_element()
+            el
         }
     }
+
+    /// [`Cue::progress_at`] now, for drawing code that has no `Window`: while it is `Some`, the
+    /// view that owns the cue has to ask for the next frame itself.
+    pub(crate) fn progress(&self) -> Option<f32> {
+        self.progress_at(Instant::now())
+    }
+
+    /// Linear progress (0 to 1) through [`BASE`] of the transition at `now`; `None` before it
+    /// fired and once it is over.
+    pub(crate) fn progress_at(&self, now: Instant) -> Option<f32> {
+        let elapsed = now.saturating_duration_since(self.at?);
+        (elapsed < BASE).then(|| elapsed.as_secs_f32() / BASE.as_secs_f32())
+    }
+}
+
+/// Rows just revealed under their heading (a tree node, a sidebar section, the Shelf) at linear
+/// progress `t` of a cue: each fades in as it drops from [`NUDGE`] above, eased out. The box each
+/// row is put in has no id, so nothing inside it is mounted anew when the rows are drawn without
+/// it again: a click on a row during the transition still lands.
+pub(crate) fn drop_in(rows: Vec<AnyElement>, t: f32) -> impl Iterator<Item = AnyElement> {
+    let t = ease_out(t);
+    rows.into_iter()
+        .map(move |row| slide_in(div().child(row), t, 0., -NUDGE).into_any_element())
 }
 
 static NEXT_LEAVING: AtomicU64 = AtomicU64::new(1);
@@ -309,12 +365,11 @@ pub(crate) fn remaining(elapsed: Duration) -> f32 {
     1. - ease_out(t)
 }
 
-/// A slide in progress: its starting offset, when it started, and its animation serial.
+/// A slide in progress: its starting offset and when it started.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Slide<T> {
     pub(crate) from: T,
     pub(crate) started: Instant,
-    pub(crate) serial: usize,
 }
 
 impl<T> Slide<T> {
@@ -346,7 +401,7 @@ mod tests {
 
     #[test]
     fn easings_run_from_zero_to_one() {
-        for ease in [ease_out, ease_in] {
+        for ease in [ease_out, ease_out_soft, ease_in] {
             assert!(ease(0.).abs() < 1e-6, "starts at 0");
             assert!((ease(1.) - 1.).abs() < 1e-6, "ends at 1");
             let mut last = 0.;
@@ -359,6 +414,8 @@ mod tests {
         // Entering is ahead of linear, leaving behind it.
         assert!(ease_out(0.5) > 0.5);
         assert!(ease_in(0.5) < 0.5);
+        // A drawer is still ahead of linear, but leaves more of its slide to be seen.
+        assert!(ease_out_soft(0.2) > 0.2 && ease_out_soft(0.2) < ease_out(0.2));
     }
 
     #[test]
@@ -390,14 +447,12 @@ mod tests {
         let slide = Slide {
             from: 30.,
             started: start,
-            serial: 1,
         };
         let mid = slide.left(start + BASE / 4);
         assert!(mid > 0. && mid < 30., "partway: {mid}");
         let grid = Slide {
             from: (10., -20.),
             started: start,
-            serial: 2,
         };
         let (x, y) = grid.left(start + BASE);
         assert!(x.abs() < 1e-6 && y.abs() < 1e-6);
@@ -419,5 +474,24 @@ mod tests {
         let mut off = Cue::default();
         off.fire();
         assert!(!off.live_at(Instant::now()), "reduced motion never plays");
+        assert!(off.progress_at(Instant::now()).is_none());
+    }
+
+    /// A cue styled in place runs from 0 to 1 over `BASE`, then stops asking for frames.
+    #[test]
+    fn a_cue_in_place_progresses_over_base() {
+        force_for_test(true);
+        let mut cue = Cue::default();
+        let now = Instant::now();
+        assert!(cue.progress_at(now).is_none(), "nothing fired yet");
+        cue.fire();
+        let at = cue.at.expect("fired");
+        assert!(cue.progress_at(at).is_some_and(|t| t.abs() < 1e-6));
+        assert!(
+            cue.progress_at(at + BASE / 2)
+                .is_some_and(|t| (t - 0.5).abs() < 1e-3)
+        );
+        assert!(cue.progress_at(at + BASE).is_none(), "over");
+        force_for_test(false);
     }
 }

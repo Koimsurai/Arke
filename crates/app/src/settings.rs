@@ -49,6 +49,34 @@ pub(crate) enum PinSlot {
     List(usize),
 }
 
+/// A sidebar section that collapses to its heading. Home and its tiles never collapse, nor do the
+/// tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SidebarSection {
+    Favorites,
+    ThisPc,
+    Network,
+}
+
+/// Reads the collapsed sections, skipping names this version doesn't know (a section added later):
+/// one unknown name must not fail the whole file, which would fall back to the defaults.
+fn known_sections<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<SidebarSection>, D::Error> {
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let mut out: Vec<SidebarSection> = Vec::new();
+    for section in raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+    {
+        if !out.contains(&section) {
+            out.push(section);
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TabLayout {
@@ -70,6 +98,17 @@ pub(crate) enum NewTabAction {
     Home,
     /// A new tab on the current folder, as in File Explorer.
     CurrentFolder,
+}
+
+/// What closing the last tab does (#253, #255).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LastTabAction {
+    /// The window closes, as in File Explorer and browsers (#98).
+    #[default]
+    CloseWindow,
+    /// The tab stays and shows Home.
+    Home,
 }
 
 /// Dark, light, or follow the system.
@@ -411,6 +450,10 @@ pub(crate) enum Language {
     ZhTw,
     ZhCn,
     En,
+    Ja,
+    De,
+    Es,
+    PtBr,
 }
 
 impl Language {
@@ -424,6 +467,10 @@ impl Language {
             Self::ZhTw => "zh-TW".into(),
             Self::ZhCn => "zh-CN".into(),
             Self::En => "en".into(),
+            Self::Ja => "ja".into(),
+            Self::De => "de".into(),
+            Self::Es => "es".into(),
+            Self::PtBr => "pt-BR".into(),
         }
     }
 }
@@ -435,6 +482,30 @@ pub(crate) enum Density {
     #[default]
     Standard,
     Comfortable,
+}
+
+/// How long reading a drive's whole file table through the index service took (Properties).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TableTime {
+    pub(crate) ms: u64,
+    /// Read to the end. Otherwise it was stopped after `ms` (counted another way first), so it
+    /// takes at least that long.
+    pub(crate) done: bool,
+}
+
+impl TableTime {
+    /// Keeps what is known best: a read to the end replaces anything, a stopped read only raises
+    /// a lower bound.
+    pub(crate) fn learn(
+        times: &mut std::collections::BTreeMap<String, Self>,
+        volume: String,
+        new: Self,
+    ) {
+        let known = times.get(&volume);
+        if new.done || known.is_none_or(|k| !k.done && new.ms > k.ms) {
+            times.insert(volume, new);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -449,6 +520,10 @@ pub(crate) struct Settings {
     /// Pinned folders on the tiles (at most [`FAVORITES_MAX`]). `None` means the defaults
     /// (Desktop, Downloads, Documents, Pictures, Music, Videos).
     pub(crate) favorites: Option<Vec<PathBuf>>,
+    /// Folders pinned to Quick Access in File Explorer as of the last sync into the favorites
+    /// (#45). `None` until the first sync. Kept so a folder removed from the favorites here is not
+    /// added back while it stays pinned in Windows.
+    pub(crate) quick_access_seen: Option<Vec<PathBuf>>,
     /// Recycle Bin row at the end of the pinned list.
     pub(crate) recycle_pinned: bool,
     /// Recent folders, newest first (for Ctrl+T).
@@ -458,6 +533,8 @@ pub(crate) struct Settings {
     pub(crate) one_tab_per_folder: bool,
     /// What Ctrl+T does (#90).
     pub(crate) new_tab: NewTabAction,
+    /// What closing the last tab does (#253, #255).
+    pub(crate) last_tab: LastTabAction,
     pub(crate) density: Density,
     /// Preview pane on the right.
     pub(crate) preview_pane: bool,
@@ -486,9 +563,14 @@ pub(crate) struct Settings {
     /// Saved SFTP and WebDAV locations (sidebar Network section). Never holds a password: those
     /// stay in Windows Credential Manager.
     pub(crate) remote_places: Vec<RemotePlace>,
+    /// Origins (`http://user@host:port`) the user allowed to sign in over plain http, where the
+    /// password crosses the network unencrypted. Per location and per user, never per network.
+    pub(crate) insecure_http: Vec<String>,
     /// Names the user gave mapped drives, network places and saved remote locations, shown
     /// instead of the default ones (`place_names.rs`). Windows' own labels are never changed.
     pub(crate) place_names: crate::place_names::Names,
+    /// Names the user gave favorites (#259), shown on their tile or row in the sidebar only.
+    pub(crate) favorite_names: crate::place_names::Names,
     pub(crate) theme: ThemeMode,
     /// Background of the dark theme.
     pub(crate) dark_shade: DarkShade,
@@ -496,6 +578,10 @@ pub(crate) struct Settings {
     pub(crate) sidebar_collapsed: bool,
     /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
     pub(crate) sidebar_peek: bool,
+    /// Sidebar sections collapsed to their heading. Before 0.8 only This PC could collapse
+    /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
+    #[serde(deserialize_with = "known_sections")]
+    pub(crate) collapsed_sections: Vec<SidebarSection>,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -583,6 +669,9 @@ pub(crate) struct Settings {
     pub(crate) column_widths: ColumnWidths,
     /// Width the preview pane was dragged to, app-wide (`None`: follows the window).
     pub(crate) preview_width: Option<u16>,
+    /// Share of the preview pane's height the dragged preview content takes above its details, in
+    /// thousandths (`None`: automatic, from the content's shape).
+    pub(crate) preview_split: Option<u16>,
     /// Column view: the parent and current folder columns' widths.
     pub(crate) column_view_widths: ColumnViewWidths,
     pub(crate) show_type: bool,
@@ -603,9 +692,19 @@ pub(crate) struct Settings {
     pub(crate) menu_hidden: Vec<String>,
     /// Windows commands pinned to the main menu from "More options" (`explorer_menu::pin_key` keys, in pin order).
     pub(crate) menu_pinned: Vec<String>,
-    /// Which extension (COM class) each pinned command comes from, learned from the menus seen;
-    /// empty when none has it. Lets a pinned command show before the whole Windows menu is read.
+    /// Where each pinned command comes from, learned from the menus seen
+    /// (`win_menu_parts::MenuHandler::owner`): an extension's class id, `verb:<verb>` for a
+    /// registry command, `command:{CLSID}` for a packaged app's, `-` for none of those (left to
+    /// the whole Windows menu). Empty: learned by an older version, learned again. Lets a pinned
+    /// command show before the whole Windows menu is read (#129, #278).
     pub(crate) menu_pin_owners: std::collections::BTreeMap<String, String>,
+    /// Packaged apps' pinned commands (`command:{CLSID}` owners): the item kinds they are for,
+    /// from the app's manifest and the menus they were seen in (`win_menu_parts::item_kind`).
+    pub(crate) menu_pin_types: std::collections::BTreeMap<String, Vec<String>>,
+    /// How long reading each drive's whole file table through the index service took (`C:\`
+    /// keys), as last measured by Properties: a folder walk that has taken longer than that is
+    /// overtaken by a read of the table (`properties.rs`).
+    pub(crate) mft_list: std::collections::BTreeMap<String, TableTime>,
     /// Shortcuts changed in Settings: command id (`commands.rs`) to its keys, empty when the
     /// command has none. Only changes are stored; a command that is absent keeps its defaults.
     pub(crate) shortcuts: std::collections::BTreeMap<String, Vec<String>>,
@@ -646,15 +745,18 @@ pub(crate) struct Settings {
 }
 
 impl Default for Settings {
+    #[allow(clippy::too_many_lines, reason = "one line per setting")]
     fn default() -> Self {
         Self {
             pinned: Vec::new(),
             favorites: None,
+            quick_access_seen: None,
             recycle_pinned: true,
             recent: Vec::new(),
             tab_layout: TabLayout::default(),
             one_tab_per_folder: true,
             new_tab: NewTabAction::default(),
+            last_tab: LastTabAction::default(),
             density: Density::default(),
             preview_pane: false,
             space_quicklook: false,
@@ -668,14 +770,17 @@ impl Default for Settings {
             search_history: true,
             net_places: Vec::new(),
             remote_places: Vec::new(),
+            insecure_http: Vec::new(),
             place_names: crate::place_names::Names::new(),
+            favorite_names: crate::place_names::Names::new(),
             theme: ThemeMode::default(),
             accent: Accent::default(),
             tint: Tint::default(),
             material: Material::default(),
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
-            sidebar_peek: true,
+            sidebar_peek: false,
+            collapsed_sections: Vec::new(),
             font: String::new(),
             background_image: None,
             background_opacity: 20,
@@ -714,6 +819,7 @@ impl Default for Settings {
             show_created: false,
             column_widths: ColumnWidths::default(),
             preview_width: None,
+            preview_split: None,
             column_view_widths: ColumnViewWidths::default(),
             show_type: true,
             show_size: true,
@@ -726,6 +832,8 @@ impl Default for Settings {
             menu_hidden: Vec::new(),
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
+            menu_pin_types: std::collections::BTreeMap::new(),
+            mft_list: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
             update_channel_choice: None,
@@ -804,6 +912,14 @@ impl Settings {
     pub(crate) fn forget_remote_place(&mut self, url: &Path) {
         self.remote_places.retain(|p| p.url != url);
         self.place_names.remove(&crate::place_names::key(url));
+    }
+
+    /// Allows or takes back plain-http sign-in for a server (`origin`, see `RemoteUrl::origin`).
+    pub(crate) fn set_insecure_http(&mut self, origin: &str, allowed: bool) {
+        self.insecure_http.retain(|o| o != origin);
+        if allowed {
+            self.insecure_http.push(origin.to_owned());
+        }
     }
 
     /// Folders on the tiles: the custom list, or the known folders (excluding the profile folder itself).
@@ -924,13 +1040,14 @@ impl Settings {
         landed
     }
 
-    /// Unpins, from the tiles or the list.
+    /// Unpins, from the tiles or the list. The name the user gave it goes with it.
     pub(crate) fn unpin(&mut self, path: &Path, places: &[crate::shell::Place]) {
         let tiles = self.tiles(places);
         if tiles.iter().any(|p| p == path) {
             self.favorites = Some(tiles.into_iter().filter(|p| p != path).collect());
         }
         self.pinned.retain(|p| p != path);
+        self.favorite_names.remove(&crate::place_names::key(path));
     }
 
     /// Pins or unpins. Returns where the pin went, or `None` when unpinned.
@@ -1234,6 +1351,7 @@ fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
                 .retain(|p| arke_core::net::server_of(p).is_some());
             settings.migrate_session();
             settings.migrate_single_window(bytes);
+            settings.migrate_this_pc_collapsed(bytes);
             Some(settings)
         }
         Err(err) => {
@@ -1285,6 +1403,39 @@ impl Settings {
             && let Some(old) = map.get(OLD).and_then(serde_json::Value::as_bool)
         {
             self.single_window = old;
+        }
+    }
+
+    /// Before 0.8 only This PC could collapse (`this_pc_collapsed`): a file that has only the old
+    /// switch keeps This PC collapsed. Read here like [`Self::migrate_single_window`]; the key is
+    /// dropped on the next save.
+    fn migrate_this_pc_collapsed(&mut self, bytes: &[u8]) {
+        const OLD: &str = "this_pc_collapsed";
+        if !bytes.windows(OLD.len()).any(|w| w == OLD.as_bytes()) {
+            return;
+        }
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(bytes) else {
+            return;
+        };
+        if !map.contains_key("collapsed_sections")
+            && map.get(OLD).and_then(serde_json::Value::as_bool) == Some(true)
+            && !self.is_collapsed(SidebarSection::ThisPc)
+        {
+            self.collapsed_sections.push(SidebarSection::ThisPc);
+        }
+    }
+
+    /// Whether a sidebar section is collapsed to its heading.
+    pub(crate) fn is_collapsed(&self, section: SidebarSection) -> bool {
+        self.collapsed_sections.contains(&section)
+    }
+
+    /// Collapses a sidebar section, or expands it again.
+    pub(crate) fn toggle_collapsed(&mut self, section: SidebarSection) {
+        if let Some(ix) = self.collapsed_sections.iter().position(|s| *s == section) {
+            self.collapsed_sections.remove(ix);
+        } else {
+            self.collapsed_sections.push(section);
         }
     }
 
@@ -1526,6 +1677,47 @@ mod tests {
         // The old key isn't written back.
         let json = serde_json::to_string(&off).unwrap();
         assert!(!json.contains("open_external_in_tab"), "{json}");
+    }
+
+    /// Before 0.8 only This PC collapsed: a file with `this_pc_collapsed: true` keeps it collapsed,
+    /// the old key isn't written back, and a section name from a later version is skipped rather
+    /// than failing the file.
+    #[test]
+    fn collapsed_this_pc_carries_over_to_the_sections() {
+        let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
+        let old = read(br#"{"this_pc_collapsed": true, "show_hidden": true}"#);
+        assert_eq!(old.collapsed_sections, vec![SidebarSection::ThisPc]);
+        assert!(old.show_hidden, "the rest of the file too");
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("this_pc_collapsed"), "{json}");
+        assert!(
+            json.contains(r#""collapsed_sections":["this_pc"]"#),
+            "{json}"
+        );
+
+        assert!(
+            read(br#"{"this_pc_collapsed": false}"#)
+                .collapsed_sections
+                .is_empty()
+        );
+        // The new key wins once it is there.
+        let both = read(br#"{"this_pc_collapsed": true, "collapsed_sections": ["network"]}"#);
+        assert_eq!(both.collapsed_sections, vec![SidebarSection::Network]);
+        // The tabs collapsed for a while during 0.8's development; that's dropped.
+        assert!(
+            read(br#"{"collapsed_sections": ["tabs"]}"#)
+                .collapsed_sections
+                .is_empty()
+        );
+        let later = read(br#"{"collapsed_sections": ["network", "someday", "network"]}"#);
+        assert_eq!(later.collapsed_sections, vec![SidebarSection::Network]);
+
+        let mut s = Settings::default();
+        s.toggle_collapsed(SidebarSection::Favorites);
+        assert!(s.is_collapsed(SidebarSection::Favorites));
+        assert!(!s.is_collapsed(SidebarSection::ThisPc));
+        s.toggle_collapsed(SidebarSection::Favorites);
+        assert!(s.collapsed_sections.is_empty());
     }
 
     /// A file with both the old switch and single window mode (an older Arke ran after 0.7 and
@@ -1846,6 +2038,20 @@ mod tests {
         std::fs::write(&path, b"{not json").unwrap();
         assert_eq!(load(&path), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn plain_http_allowances_are_per_origin_and_persist() {
+        let mut s = Settings::default();
+        assert!(s.insecure_http.is_empty(), "nothing is allowed by default");
+        s.set_insecure_http("http://u@nas", true);
+        s.set_insecure_http("http://u@nas", true);
+        s.set_insecure_http("http://u@other", true);
+        assert_eq!(s.insecure_http, ["http://u@nas", "http://u@other"]);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.insecure_http, s.insecure_http);
+        s.set_insecure_http("http://u@nas", false);
+        assert_eq!(s.insecure_http, ["http://u@other"]);
     }
 
     #[test]

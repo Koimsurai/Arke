@@ -20,9 +20,10 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{
-    GUID_DEVINTERFACE_CDROM, GUID_DEVINTERFACE_DISK, IOCTL_STORAGE_GET_DEVICE_NUMBER,
-    IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR,
-    STORAGE_DEVICE_NUMBER, STORAGE_PROPERTY_QUERY, StorageDeviceProperty,
+    DEVICE_SEEK_PENALTY_DESCRIPTOR, GUID_DEVINTERFACE_CDROM, GUID_DEVINTERFACE_DISK,
+    IOCTL_STORAGE_GET_DEVICE_NUMBER, IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery,
+    STORAGE_DEVICE_DESCRIPTOR, STORAGE_DEVICE_NUMBER, STORAGE_PROPERTY_QUERY,
+    StorageDeviceProperty, StorageDeviceSeekPenaltyProperty,
 };
 use windows::core::PCWSTR;
 
@@ -125,6 +126,36 @@ fn on_external_bus(handle: &Handle) -> bool {
     // checked above).
     let desc = unsafe { &*buf.as_ptr().cast::<STORAGE_DEVICE_DESCRIPTOR>() };
     [BusTypeUsb, BusType1394, BusTypeSd, BusTypeMmc].contains(&desc.BusType)
+}
+
+/// Whether the drive is a spinning disk (reading two places at once makes it seek back and forth).
+/// Unknown counts as not. Needs no admin rights; a query of a few microseconds.
+pub(crate) fn seeks(root: &Path) -> bool {
+    let Some(handle) = letter(root).and_then(|c| open(&format!(r"\\.\{c}:"))) else {
+        return false;
+    };
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceSeekPenaltyProperty,
+        QueryType: PropertyStandardQuery,
+        ..STORAGE_PROPERTY_QUERY::default()
+    };
+    let mut desc = DEVICE_SEEK_PENALTY_DESCRIPTOR::default();
+    let mut returned = 0u32;
+    // SAFETY: input and output buffers are valid for the call with correct sizes; synchronous.
+    let ok = unsafe {
+        DeviceIoControl(
+            handle.0,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            Some((&raw const query).cast()),
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            Some((&raw mut desc).cast()),
+            size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>() as u32,
+            Some(&raw mut returned),
+            None,
+        )
+    }
+    .is_ok();
+    ok && returned as usize >= size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>() && desc.IncursSeekPenalty
 }
 
 /// Whether the drive can be ejected: removable, optical, or a disk on an external bus.

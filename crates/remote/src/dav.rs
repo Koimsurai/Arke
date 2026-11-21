@@ -224,6 +224,8 @@ pub struct DavClient {
     url: RemoteUrl,
     password: Option<String>,
     transport: std::sync::Arc<dyn Transport>,
+    /// The user allowed Basic sign-in over plain http for this location.
+    allow_insecure: bool,
 }
 
 /// Writes at most `left` bytes and then reports "full" by returning a short write of 0, which
@@ -251,15 +253,19 @@ impl Write for Limited<'_> {
 
 impl DavClient {
     /// Client for the server of `url`, signing in as `url.user` with `password`.
+    /// `allow_insecure`: the user explicitly allowed sending the password over plain http to
+    /// this location (otherwise only this computer is allowed).
     pub fn new(
         url: &RemoteUrl,
         password: Option<String>,
         transport: std::sync::Arc<dyn Transport>,
+        allow_insecure: bool,
     ) -> Self {
         Self {
             url: url.with_path("/"),
             password,
             transport,
+            allow_insecure,
         }
     }
 
@@ -267,7 +273,7 @@ impl DavClient {
         let Some(user) = &self.url.user else {
             return Ok(Vec::new());
         };
-        if self.url.scheme == Scheme::Dav && !is_loopback(&self.url.host) {
+        if self.url.scheme == Scheme::Dav && !self.allow_insecure && !is_loopback(&self.url.host) {
             return Err(RemoteError::Insecure);
         }
         let pair = format!("{user}:{}", self.password.as_deref().unwrap_or_default());
@@ -599,6 +605,7 @@ mod tests {
             &url,
             Some("pw".into()),
             Arc::clone(&t) as Arc<dyn Transport>,
+            false,
         );
         let entries = dav.list("/remote.php/dav/files/bob/").unwrap();
         let names: Vec<_> = entries.iter().map(|e| e.name.to_string()).collect();
@@ -624,24 +631,53 @@ mod tests {
         let t = script(vec![(201, b"")]);
         let remote = RemoteUrl::from_path(std::path::Path::new("http://u@nas/")).unwrap();
         assert!(matches!(
-            DavClient::new(&remote, None, Arc::clone(&t) as Arc<dyn Transport>).mkdir("/a"),
+            DavClient::new(&remote, None, Arc::clone(&t) as Arc<dyn Transport>, false).mkdir("/a"),
             Err(RemoteError::Insecure)
         ));
         let local = RemoteUrl::from_path(std::path::Path::new("http://u@127.0.0.1:8080/")).unwrap();
-        assert!(DavClient::new(&local, None, t).mkdir("/a").is_ok());
+        assert!(DavClient::new(&local, None, t, false).mkdir("/a").is_ok());
         let anonymous = RemoteUrl::from_path(std::path::Path::new("http://nas/")).unwrap();
         let t = script(vec![(401, b"")]);
         assert!(matches!(
-            DavClient::new(&anonymous, None, t).mkdir("/a"),
+            DavClient::new(&anonymous, None, t, false).mkdir("/a"),
             Err(RemoteError::NeedsLogin)
         ));
+    }
+
+    #[test]
+    fn an_allowed_location_sends_basic_auth_over_plain_http() {
+        let t = script(vec![(201, b"")]);
+        let nas = RemoteUrl::from_path(std::path::Path::new("http://u@10.0.0.5/")).unwrap();
+        let dav = DavClient::new(
+            &nas,
+            Some("pw".into()),
+            Arc::clone(&t) as Arc<dyn Transport>,
+            true,
+        );
+        assert!(dav.mkdir("/a").is_ok());
+        let seen = t.seen.lock()[0].clone();
+        assert!(
+            seen.2
+                .iter()
+                .any(|(k, v)| *k == "Authorization" && v.starts_with("Basic "))
+        );
+        // Not allowed: nothing is sent at all.
+        let t = script(vec![(201, b"")]);
+        let refused = DavClient::new(
+            &nas,
+            Some("pw".into()),
+            Arc::clone(&t) as Arc<dyn Transport>,
+            false,
+        );
+        assert!(matches!(refused.mkdir("/a"), Err(RemoteError::Insecure)));
+        assert!(t.seen.lock().is_empty());
     }
 
     #[test]
     fn move_sends_an_encoded_destination_without_overwrite() {
         let t = script(vec![(201, b""), (412, b"")]);
         let url = RemoteUrl::from_path(std::path::Path::new("https://h/")).unwrap();
-        let dav = DavClient::new(&url, None, Arc::clone(&t) as Arc<dyn Transport>);
+        let dav = DavClient::new(&url, None, Arc::clone(&t) as Arc<dyn Transport>, false);
         dav.rename("/a/old name.txt", "/a/new name.txt", false)
             .unwrap();
         let seen = t.seen.lock()[0].clone();

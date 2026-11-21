@@ -248,8 +248,6 @@ pub(crate) struct OpFollowUp {
     deleted: Option<(Vec<Arc<str>>, usize)>,
     /// How to undo this operation (whatever completed, including before a cancel).
     undo: Option<Undo>,
-    /// This was an undo: the original operation and item count, for the "undone" toast.
-    undid: Option<(&'static str, usize)>,
     /// Job id in the progress center, if listed there.
     job: Option<u64>,
     /// Say what happened once it's done, with an Undo button (quiet operations otherwise only
@@ -313,21 +311,19 @@ pub(crate) struct PendingCreate {
     row: Option<Arc<str>>,
 }
 
-/// Short "done" notice with Undo for operations whose result is easy to miss: recycled items
-/// leave the list, and moved items disappear into the new folder.
+/// Short "done" notice with Undo for the one operation whose slip needs an immediate way back:
+/// deleting by mistake. Every other finished operation stays quiet and is listed in the
+/// operation center.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Announce {
     /// Moved to the Recycle Bin, with the item count.
     Recycled(usize),
-    /// Moved into a new folder ("Move to new folder"), with the item count.
-    MovedToNewFolder(usize),
 }
 
 impl Announce {
     pub(crate) fn text(self) -> String {
         match self {
             Self::Recycled(count) => tn!("notice.recycled", count).into_owned(),
-            Self::MovedToNewFolder(count) => tn!("notice.moved_to_new_folder", count).into_owned(),
         }
     }
 }
@@ -540,6 +536,7 @@ pub(crate) fn retry_of(op: &FileOp, error: &ShellError) -> Option<FileOp> {
                 FailReason::BadName
                     | FailReason::BadNameInside
                     | FailReason::NoRecycleBin
+                    | FailReason::TooBigForBin
                     | FailReason::PathTooLong
                     | FailReason::Gone
             )
@@ -551,6 +548,11 @@ pub(crate) fn retry_of(op: &FileOp, error: &ShellError) -> Option<FileOp> {
         paths,
         recycle: *recycle,
     })
+}
+
+/// An item a recycle kept back because it is too big for the Recycle Bin.
+fn too_big(failure: &crate::shell::ItemFailure) -> bool {
+    failure.reason == arke_core::failure::FailReason::TooBigForBin
 }
 
 /// Top-level paths an operation removed from where they were: deleted or moved away, minus those
@@ -770,7 +772,7 @@ impl Explorer {
         &mut self,
         result: Result<u32, crate::shell::ShellError>,
         cut: bool,
-        count: usize,
+        _count: usize,
         parent: PathBuf,
         names: HashSet<Arc<str>>,
         cx: &mut Context<Self>,
@@ -780,11 +782,7 @@ impl Explorer {
                 if cut {
                     cx.set_global(CutMarks { seq, parent, names });
                 }
-                self.notice = Some(if cut {
-                    tn!("clip.cut", count).into_owned()
-                } else {
-                    tn!("clip.copied", count).into_owned()
-                });
+                // No toast: cut items are drawn faded, and copying changes nothing to look at.
             }
             Err(e) => self.error = Some(t!("clip.failed", error = e).into_owned()),
         }
@@ -1062,7 +1060,14 @@ impl Explorer {
             (paths, Vec::new())
         };
         if !no_bin.is_empty() {
-            self.ask_no_recycle_bin(paths, no_bin, follow, window, cx);
+            self.ask_no_recycle_bin(
+                paths,
+                no_bin,
+                super::confirm::NoBinWhy::NoBin,
+                follow,
+                window,
+                cx,
+            );
         } else if !recycle {
             self.ask_delete_permanently(paths, follow, window, cx);
         } else if ask {
@@ -1520,7 +1525,6 @@ impl Explorer {
             dest: Some(parent.clone()),
             select: vec![Arc::clone(&name_arc)],
             rename: Some((name_arc, false)),
-            announce: Some(Announce::MovedToNewFolder(sources.len())),
             ..OpFollowUp::default()
         };
         let create = FileOp::NewFolder {
@@ -1652,7 +1656,6 @@ impl Explorer {
         let follow = OpFollowUp {
             dest: entry.undo.target_dir().map(Path::to_path_buf),
             select,
-            undid: Some((entry.verb, entry.undo.len())),
             redo: entry.redo.clone().map(|op| Box::new((entry.verb, op))),
             ..OpFollowUp::default()
         };
@@ -1771,6 +1774,10 @@ impl Explorer {
         cx.notify();
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one place that settles every finished operation, outcome by outcome"
+    )]
     pub(super) fn handle_op_finished(
         &mut self,
         verb: &'static str,
@@ -1805,9 +1812,6 @@ impl Explorer {
         if let (Some(job), Some(undo)) = (follow.job, undo_id) {
             crate::op_center::OpCenter::set_undo(cx, job, undo);
         }
-        if let (Some((original, count)), Ok(OpOutcome::Done)) = (follow.undid, &result) {
-            self.notice = Some(tn!("undo.done", count, op = t!(original)).into_owned());
-        }
         // Undone completely: Ctrl+Y can redo it.
         if let (Some(redo), Ok(OpOutcome::Done)) = (follow.redo.clone(), &result) {
             let (original, op) = *redo;
@@ -1815,12 +1819,6 @@ impl Explorer {
             if let Some(job) = follow.job {
                 crate::op_center::OpCenter::set_redo(cx, job, redo_id);
             }
-        }
-        if let (Some(original), Ok(OpOutcome::Done)) = (follow.redone, &result) {
-            self.notice = Some(t!("redo.done", op = t!(original)).into_owned());
-        }
-        if follow.handed_off && result.is_ok() {
-            self.notice = Some(t!("teracopy.handed_off").into_owned());
         }
         if let (Some(announce), Ok(OpOutcome::Done)) = (follow.announce, &result) {
             let text = announce.text();
@@ -1856,7 +1854,33 @@ impl Explorer {
         if let Some(op) = follow.op.as_deref() {
             self.forget_search_hits(&removed_paths(op, &result), cx);
         }
+        let recycled = matches!(
+            follow.op.as_deref(),
+            Some(FileOp::Delete { recycle: true, .. })
+        );
         match result {
+            // Too big for the Recycle Bin: kept, and Arke asks about deleting them permanently
+            // (instead of the error toast); other failures still show theirs.
+            Err(ShellError::Items { failed }) if recycled && failed.iter().any(too_big) => {
+                let (big, rest): (Vec<_>, Vec<_>) = failed.into_iter().partition(too_big);
+                let purge_follow = OpFollowUp {
+                    dest: follow.dest.clone(),
+                    deleted: follow.deleted.clone(),
+                    ..OpFollowUp::default()
+                };
+                let big = big.into_iter().map(|f| f.path);
+                match &mut self.too_big_ask {
+                    // Another recycle's are still waiting: ask about all of them at once.
+                    Some((waiting, _)) => waiting.extend(big),
+                    None => self.too_big_ask = Some((big.collect(), purge_follow)),
+                }
+                if rest.is_empty() {
+                    self.scroll_to_cursor = None;
+                } else {
+                    let rest = ShellError::Items { failed: rest };
+                    self.show_op_failure(verb, &rest, follow.op.as_deref(), follow.job, cx);
+                }
+            }
             Err(e) => self.show_op_failure(verb, &e, follow.op.as_deref(), follow.job, cx),
             Ok(OpOutcome::Cancelled) => {
                 self.scroll_to_cursor = None;

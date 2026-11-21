@@ -1,4 +1,4 @@
-//! Home page: a page title, then quick access (the known folders as large cards), drives with
+//! Home page: a page title, then the favorites (the sidebar's, as large cards), drives with
 //! capacity, network locations, and the most recent files (Windows' own recent list).
 //!
 //! Recent files load in the background from the shortcut targets without touching the targets, so
@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    MouseButton, MouseDownEvent, ScrollHandle, SharedString, Window, div, prelude::*, svg,
+    AnyElement, App, Bounds, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Window, div,
+    prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -21,9 +22,9 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{kind_icon, spawn_thread};
 use crate::settings::SettingsStore;
-use crate::shell::{KnownFolder, Place, PlaceKind, Shell};
+use crate::shell::{Place, PlaceKind, Shell};
 use crate::text_input::TextInput;
-use crate::theme;
+use crate::theme::{self, UiFont as _};
 
 /// Recent files listed: enough to find today's work, few enough to stay a list and not a log.
 pub(crate) const RECENT_MAX: usize = 10;
@@ -59,15 +60,8 @@ const NEARLY_FULL: f32 = 0.9;
 fn recent_row_h() -> gpui::Pixels {
     crate::theme::scaled_px(48.)
 }
-/// Known folders on the quick access row, in this order.
-const QUICK_FOLDERS: [KnownFolder; 6] = [
-    KnownFolder::Desktop,
-    KnownFolder::Downloads,
-    KnownFolder::Documents,
-    KnownFolder::Pictures,
-    KnownFolder::Music,
-    KnownFolder::Videos,
-];
+/// A favorite as the sidebar shows it: folder, its name (a name of its own first) and icon.
+pub(crate) type Favorite = (PathBuf, String, Icon);
 
 /// One recent file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,17 +75,109 @@ pub(crate) struct RecentFile {
 pub(crate) enum HomeEvent {
     /// Open the folder in the current tab (drive, network location)
     OpenFolder(PathBuf),
-    /// Open the folder in a new background tab (middle click); Home stays.
-    OpenInNewTab(PathBuf),
+    /// Open the folder in a new tab (middle click or Ctrl+click), in the background unless
+    /// `activate` (Ctrl+Shift+click); Home stays then.
+    OpenInNewTab { path: PathBuf, activate: bool },
     /// Go to the file's folder and select it
     Reveal(PathBuf),
     /// Open the Recycle Bin page (listed here only while it is unpinned from the sidebar).
     OpenRecycle,
-    /// Right click on a drive or network card: the workspace opens its menu if the place has one.
+    /// Right click on a drive or network card: the workspace opens its menu, as in the sidebar.
     PlaceMenu {
         path: PathBuf,
         position: gpui::Point<gpui::Pixels>,
     },
+    /// Right click on a favorite: the same menu as its tile in the sidebar.
+    FavoriteMenu {
+        path: PathBuf,
+        position: gpui::Point<gpui::Pixels>,
+    },
+    /// Right click on a recent file: open it, go to it, copy its path, its properties.
+    FileMenu {
+        path: PathBuf,
+        position: gpui::Point<gpui::Pixels>,
+    },
+    /// A favorite card dragged over another: the favorite goes to slot `to` of the favorites, as
+    /// a tile dragged in the sidebar (Home shows the same favorites).
+    MoveFavorite { path: PathBuf, to: usize },
+}
+
+/// How much bigger a dragged card is drawn under the pointer: lifted off the grid, as the
+/// sidebar's tiles.
+const CARD_LIFT: f32 = 1.1;
+
+/// A favorite card being dragged on Home to reorder the favorites.
+#[derive(Clone)]
+pub(crate) struct DraggedCard {
+    path: PathBuf,
+    label: String,
+    icon: Icon,
+}
+
+/// What follows the pointer: the card itself, a little bigger, with a soft shadow, held where it
+/// was taken hold of.
+struct CardPreview {
+    card: DraggedCard,
+    grab: Point<Pixels>,
+}
+
+impl Render for CardPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let lift = CARD_LIFT;
+        let body = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(theme::s_8() * lift)
+            .rounded(theme::r_8() * lift)
+            .bg(theme::frame_solid())
+            .border_1()
+            .border_color(theme::line())
+            .shadow(theme::elev_float())
+            .ui_font()
+            .text_size(theme::fs_13() * lift)
+            .text_color(theme::text())
+            .child(crate::assets::tinted(
+                self.card.icon,
+                card_icon() * lift,
+                theme::text_muted(),
+            ))
+            .child(
+                div()
+                    .max_w_full()
+                    .px(theme::s_8() * lift)
+                    .truncate()
+                    .child(self.card.label.clone()),
+            );
+        div().relative().child(
+            div()
+                .absolute()
+                .left(-(self.grab.x * (lift - 1.)))
+                .top(-(self.grab.y * (lift - 1.)))
+                .w(quick_w() * lift)
+                .h(quick_h() * lift)
+                .child(body),
+        )
+    }
+}
+
+/// Offset each card slides back from after a reorder: a card now in cell j came from cell i.
+fn card_offsets(
+    cells: &[(f32, f32)],
+    old: &[PathBuf],
+    new: &[PathBuf],
+) -> Vec<(PathBuf, (f32, f32))> {
+    new.iter()
+        .zip(cells)
+        .filter_map(|(item, &(x, y))| {
+            let was = old.iter().position(|o| o == item)?;
+            let &(ox, oy) = cells.get(was)?;
+            let delta = (ox - x, oy - y);
+            (delta.0.abs() > 0.5 || delta.1.abs() > 0.5).then(|| (item.clone(), delta))
+        })
+        .collect()
 }
 
 /// The name on a drive or network card: text, or the box it is being renamed in.
@@ -118,7 +204,11 @@ pub(crate) struct HomePage {
     shell: Arc<dyn Shell>,
     /// `None` while loading
     recent: Option<Vec<RecentFile>>,
+    /// File Explorer's "Show recently used files" is on; off hides the recent section.
+    show_recent: bool,
     places: Vec<Place>,
+    /// The sidebar's favorites, in its order with its names (edited there, not here).
+    favorites: Vec<Favorite>,
     /// Recently opened shares (`\\server\share`)
     shares: Vec<PathBuf>,
     /// Names given to mapped drives and network places (settings).
@@ -127,6 +217,12 @@ pub(crate) struct HomePage {
     rename: Option<(PathBuf, Entity<TextInput>)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// The favorite card being dragged: its cell stays empty while the card is under the pointer.
+    dragging: Option<PathBuf>,
+    /// Where each favorite card's cell is, as last reported while dragging.
+    card_cells: std::collections::HashMap<usize, Bounds<Pixels>>,
+    /// Cards sliding into their new cell after a reorder.
+    card_shift: std::collections::HashMap<PathBuf, crate::motion::Slide<(f32, f32)>>,
 }
 
 impl EventEmitter<HomeEvent> for HomePage {}
@@ -225,18 +321,24 @@ impl HomePage {
     pub(crate) fn new(
         shell: Arc<dyn Shell>,
         places: Vec<Place>,
+        favorites: Vec<Favorite>,
         shares: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
             shell,
             recent: None,
+            show_recent: true,
             places,
+            favorites,
             shares,
             names: crate::place_names::Names::new(),
             rename: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            dragging: None,
+            card_cells: std::collections::HashMap::new(),
+            card_shift: std::collections::HashMap::new(),
         };
         this.reload(cx);
         this
@@ -245,14 +347,22 @@ impl HomePage {
     /// Reload recent files (when the home page opens or Arke regains focus).
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let shell = Arc::clone(&self.shell);
-        let (tx, rx) = flume::bounded::<Vec<RecentFile>>(1);
+        let (tx, rx) = flume::bounded::<(bool, Vec<RecentFile>)>(1);
         spawn_thread("home-recent", move || {
-            let _ = tx.send(shell.recent_files(RECENT_MAX));
+            // Off in Windows: the list isn't even read.
+            let enabled = shell.recent_files_enabled();
+            let files = if enabled {
+                shell.recent_files(RECENT_MAX)
+            } else {
+                Vec::new()
+            };
+            let _ = tx.send((enabled, files));
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(mut recent) = rx.recv_async().await {
+            if let Ok((enabled, mut recent)) = rx.recv_async().await {
                 recent.truncate(RECENT_MAX);
                 let _ = this.update(cx, |this, cx| {
+                    this.show_recent = enabled;
                     this.recent = Some(recent);
                     cx.notify();
                 });
@@ -265,6 +375,20 @@ impl HomePage {
     pub(crate) fn set_locations(&mut self, places: Vec<Place>, shares: Vec<PathBuf>) {
         self.places = places;
         self.shares = shares;
+    }
+
+    /// The sidebar's favorites changed (reordered, renamed, added, removed).
+    pub(crate) fn set_favorites(&mut self, favorites: Vec<Favorite>) {
+        self.favorites = favorites;
+    }
+
+    /// The favorites the page lists, as `(path, name)` (tests).
+    #[cfg(test)]
+    pub(crate) fn favorites_for_test(&self) -> Vec<(PathBuf, String)> {
+        self.favorites
+            .iter()
+            .map(|(path, name, _)| (path.clone(), name.clone()))
+            .collect()
     }
 
     /// Custom place names changed, or a place is (no longer) being renamed.
@@ -298,6 +422,12 @@ impl HomePage {
             }
             _ => CardName::Text(label),
         }
+    }
+
+    /// Whether the recent files section is drawn.
+    #[cfg(test)]
+    pub(crate) const fn recent_shown_for_test(&self) -> bool {
+        self.show_recent
     }
 
     #[cfg(test)]
@@ -374,6 +504,7 @@ impl HomePage {
                 .map_or_default(|e| e.to_string_lossy().to_lowercase());
             let open = file.path.clone();
             let reveal = file.path.clone();
+            let menu_path = file.path.clone();
             let parent = file.path.parent().map(Path::to_path_buf);
             let group = SharedString::from(format!("home-recent-{ix}"));
             div()
@@ -447,8 +578,20 @@ impl HomePage {
                     MouseButton::Middle,
                     cx.listener(move |_, _: &MouseDownEvent, _, cx| {
                         if let Some(parent) = parent.clone() {
-                            cx.emit(HomeEvent::OpenInNewTab(parent));
+                            cx.emit(HomeEvent::OpenInNewTab {
+                                path: parent,
+                                activate: false,
+                            });
                         }
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |_, e: &MouseDownEvent, _, cx| {
+                        cx.emit(HomeEvent::FileMenu {
+                            path: menu_path.clone(),
+                            position: e.position,
+                        });
                     }),
                 )
                 .into_any_element()
@@ -465,31 +608,120 @@ impl HomePage {
             .into_any_element()
     }
 
-    /// Click opens, middle click opens in a new tab (when there's a folder to open).
+    /// Click opens; middle click or Ctrl+click opens in a new tab (when there's a folder to open).
     fn card_actions(
         el: gpui::Stateful<gpui::Div>,
         event: HomeEvent,
         new_tab: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        el.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-            cx.emit(event.clone());
+        let ctrl_tab = new_tab.clone();
+        el.on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+            // Ctrl: a new tab, in front with Shift too, as a link in a browser (#291).
+            match &ctrl_tab {
+                Some(path) if e.modifiers().control => cx.emit(HomeEvent::OpenInNewTab {
+                    path: path.clone(),
+                    activate: e.modifiers().shift,
+                }),
+                _ => cx.emit(event.clone()),
+            }
         }))
         .when_some(new_tab, |el, path| {
             el.on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(move |_, _: &MouseDownEvent, _, cx| {
-                    cx.emit(HomeEvent::OpenInNewTab(path.clone()));
+                    cx.emit(HomeEvent::OpenInNewTab {
+                        path: path.clone(),
+                        activate: false,
+                    });
                 }),
             )
         })
     }
 
-    /// Quick access: a known folder as a large card, icon over name.
-    fn quick_card(ix: usize, place: &Place, cx: &mut Context<Self>) -> AnyElement {
+    /// A favorite as a large card, icon over name; a long name is cut and shown whole in the tooltip.
+    /// A favorite card reports its cell while a card is dragged; the dragged card entering it
+    /// takes its place, and the cards in between slide over (#173).
+    fn card_drag_move(
+        &mut self,
+        cell: usize,
+        path: &Path,
+        e: &DragMoveEvent<DraggedCard>,
+        cx: &mut Context<Self>,
+    ) {
+        self.card_cells.insert(cell, e.bounds);
+        let dragged = e.drag(cx).path.clone();
+        if dragged == path || !e.bounds.contains(&e.event.position) {
+            return;
+        }
+        let old: Vec<PathBuf> = self.favorites.iter().map(|(p, ..)| p.clone()).collect();
+        let (Some(from), Some(to)) = (
+            old.iter().position(|p| *p == dragged),
+            old.iter().position(|p| p == path),
+        ) else {
+            return;
+        };
+        let moving = self.favorites.remove(from);
+        self.favorites.insert(to, moving);
+        let new: Vec<PathBuf> = self.favorites.iter().map(|(p, ..)| p.clone()).collect();
+        let cells: Option<Vec<(f32, f32)>> = (0..old.len())
+            .map(|c| {
+                self.card_cells
+                    .get(&c)
+                    .map(|b| (f32::from(b.origin.x), f32::from(b.origin.y)))
+            })
+            .collect();
+        if let Some(cells) = cells.filter(|_| crate::motion::enabled()) {
+            let now = std::time::Instant::now();
+            for (p, (dx, dy)) in card_offsets(&cells, &old, &new) {
+                let (lx, ly) = self
+                    .card_shift
+                    .get(&p)
+                    .filter(|s| s.live(now))
+                    .map_or((0., 0.), |s| s.left(now));
+                self.card_shift.insert(
+                    p,
+                    crate::motion::Slide {
+                        from: (dx + lx, dy + ly),
+                        started: now,
+                    },
+                );
+            }
+        }
+        cx.emit(HomeEvent::MoveFavorite { path: dragged, to });
+        cx.notify();
+    }
+
+    fn quick_card(
+        &self,
+        ix: usize,
+        path: &Path,
+        label: &str,
+        icon: Icon,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dragged = self.dragging.as_deref() == Some(path) && cx.has_active_drag();
+        let now = std::time::Instant::now();
+        let shift = self
+            .card_shift
+            .get(path)
+            .filter(|s| s.live(now))
+            .map(|s| s.left(now));
+        let drag = DraggedCard {
+            path: path.to_path_buf(),
+            label: label.to_owned(),
+            icon,
+        };
+        let home = cx.entity().downgrade();
+        let key = path.to_path_buf();
+        // Known by its folder, not its place: after a reorder the card under the pointer is
+        // another one, and its hover and tooltip must not carry over.
         let card = div()
-            .id(("home-quick", ix))
-            .a11y_lazy(gpui::Role::Link, || place.label.clone())
+            .id(SharedString::from(format!("home-quick-{}", path.display())))
+            .relative()
+            .when_some(shift, |d, (dx, dy)| d.left(px(dx)).top(px(dy)))
+            .when(dragged, gpui::Styled::invisible)
+            .a11y_lazy(gpui::Role::Link, || label.to_owned())
             .w(quick_w())
             .h(quick_h())
             .flex()
@@ -504,7 +736,7 @@ impl HomePage {
             .cursor_pointer()
             .hover(|s| s.bg(theme::wash()))
             .child(crate::assets::tinted(
-                crate::workspace::place_icon(place.kind),
+                icon,
                 card_icon(),
                 theme::text_muted(),
             ))
@@ -514,15 +746,57 @@ impl HomePage {
                     .px(theme::s_8())
                     .truncate()
                     .text_size(theme::fs_13())
-                    .child(place.label.clone()),
-            );
-        Self::card_actions(
+                    .debug_selector({
+                        let label = label.to_owned();
+                        move || format!("home-favorite {label}")
+                    })
+                    .child(label.to_owned()),
+            )
+            .tooltip(crate::explorer::tooltip(label.to_owned()));
+        let menu_path = path.to_path_buf();
+        let card = Self::card_actions(
             card,
-            HomeEvent::OpenFolder(place.path.clone()),
-            Some(place.path.clone()),
+            HomeEvent::OpenFolder(path.to_path_buf()),
+            Some(path.to_path_buf()),
             cx,
         )
-        .into_any_element()
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |_, e: &MouseDownEvent, _, cx| {
+                cx.emit(HomeEvent::FavoriteMenu {
+                    path: menu_path.clone(),
+                    position: e.position,
+                });
+            }),
+        );
+        // The cell holds still while its card slides: drag moves are read against where the
+        // cells are, never against a card midway through a slide (which threw reorders off).
+        div()
+            .id(("home-quick-cell", ix))
+            .w(quick_w())
+            .h(quick_h())
+            .child(card)
+            .on_drag(drag, move |card, grab, _, cx| {
+                let _ = home.update(cx, |home, cx| {
+                    home.dragging = Some(card.path.clone());
+                    home.card_cells.clear();
+                    cx.notify();
+                });
+                cx.new(|_| CardPreview {
+                    card: card.clone(),
+                    grab,
+                })
+            })
+            .on_drag_move(cx.listener(
+                move |this, e: &DragMoveEvent<DraggedCard>, _: &mut Window, cx| {
+                    this.card_drag_move(ix, &key, e, cx);
+                },
+            ))
+            .on_drop(cx.listener(|this, _: &DraggedCard, _, cx| {
+                this.dragging = None;
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     /// Drive, network location or Recycle Bin card: large icon, name, and for drives a usage bar
@@ -643,21 +917,19 @@ impl Render for HomePage {
         clippy::too_many_lines,
         reason = "Sections in reading order: title, quick access, drives, network, recent"
     )]
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let known: Vec<Place> = QUICK_FOLDERS
-            .iter()
-            .filter_map(|kf| {
-                self.places
-                    .iter()
-                    .find(|p| p.kind == PlaceKind::Folder(*kf))
-                    .cloned()
-            })
-            .collect();
-        let quick: Vec<AnyElement> = known
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let quick: Vec<AnyElement> = self
+            .favorites
             .iter()
             .enumerate()
-            .map(|(ix, place)| Self::quick_card(ix, place, cx))
+            .map(|(ix, (path, label, icon))| self.quick_card(ix, path, label, *icon, cx))
             .collect();
+        // Cards still sliding into their cells after a reorder.
+        let now = std::time::Instant::now();
+        self.card_shift.retain(|_, s| s.live(now));
+        if !self.card_shift.is_empty() {
+            window.request_animation_frame();
+        }
         let mut drives: Vec<AnyElement> = self
             .places
             .clone()
@@ -763,7 +1035,7 @@ impl Render for HomePage {
                                     .child(t!("home.title").into_owned()),
                             )
                             .when(has_quick, |d| {
-                                d.child(Self::section(t!("home.quick_access")))
+                                d.child(Self::section(t!("sidebar.favorites")))
                                     .child(cards(quick))
                             })
                             .child(Self::section(t!("home.drives")))
@@ -771,8 +1043,10 @@ impl Render for HomePage {
                             .when(has_net, |d| {
                                 d.child(Self::section(t!("home.network"))).child(cards(net))
                             })
-                            .child(Self::section(t!("home.recent")))
-                            .child(self.render_recent(cx)),
+                            .when(self.show_recent, |d| {
+                                d.child(Self::section(t!("home.recent")))
+                                    .child(self.render_recent(cx))
+                            }),
                     ),
             )
     }
@@ -783,6 +1057,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::shell::KnownFolder;
 
     fn place(label: &str, path: &str, kind: PlaceKind) -> Place {
         Place {

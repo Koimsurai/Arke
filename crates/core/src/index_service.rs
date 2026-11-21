@@ -593,6 +593,66 @@ impl IndexService {
         )
     }
 
+    /// The index snapshot and overlay for `dir`, when the index follows its volume through the
+    /// change journal and is caught up (complete and current). `None` otherwise.
+    fn live_index_for(&self, dir: &Path) -> Option<(Arc<Index>, Overlay)> {
+        let shared = &self.shared;
+        let root = shared.opts.roots.iter().position(|r| {
+            dir.components().count() >= r.components().count()
+                && dir
+                    .components()
+                    .zip(r.components())
+                    .all(|(a, b)| a.as_os_str().eq_ignore_ascii_case(b.as_os_str()))
+        })?;
+        let live = shared.journaled.lock().get(root).copied().unwrap_or(false)
+            && shared.caught_up.lock().get(root).copied().unwrap_or(false);
+        if !live {
+            return None;
+        }
+        let index = shared.index.read().clone()?;
+        Some((index, shared.overlay.lock().under(dir)))
+    }
+
+    /// Everything below `dir` as [`crate::dirsize::usage`] would walk it (totals, categories,
+    /// space on disk for `cluster`-byte clusters, and the size of each folder directly inside),
+    /// answered from the index in one pass when it covers `dir` live, as
+    /// [`Self::child_dir_sizes`] does. Folders the index has no contents for are walked and
+    /// added. `None`: not covered, or cancelled; walk instead. Background threads only.
+    pub fn usage_below(
+        &self,
+        dir: &Path,
+        cluster: u64,
+        cancel: &AtomicBool,
+    ) -> Option<crate::dirsize::Space> {
+        let (index, overlay) = self.live_index_for(dir)?;
+        let (direct, children) = index.usage_below(dir, &overlay, cluster, cancel)?;
+        let mut space = crate::dirsize::Space {
+            usage: direct,
+            children: Vec::with_capacity(children.len()),
+        };
+        for child in children {
+            let mut usage = child.usage;
+            for path in &child.unindexed {
+                let walked = crate::dirsize::usage(
+                    self.shared.fs.as_ref(),
+                    path,
+                    cluster,
+                    cancel,
+                    &mut |_| {},
+                );
+                match walked {
+                    // The folder itself is counted already, with the index's folders.
+                    Some(more) => usage += more.usage,
+                    None if cancel.load(Ordering::Relaxed) => return None,
+                    None => usage.partial = true,
+                }
+            }
+            space.usage += usage;
+            space.children.push((dir.join(&child.name), usage.bytes));
+        }
+        Some(space)
+    }
+
     /// Sizes of the subfolders of `dir` (name, size), when the index follows `dir`'s volume
     /// through the change journal and is caught up, so it is complete and current. Folders the
     /// index has no contents for (build folders, exclusions, hidden system folders) are walked

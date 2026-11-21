@@ -22,6 +22,9 @@ pub enum FailReason {
     PathTooLong,
     /// The item can't go to the Recycle Bin (none on that drive, or too big for it).
     NoRecycleBin,
+    /// The item is bigger than its drive's Recycle Bin may hold, so Windows would delete it
+    /// permanently. Arke keeps it and asks.
+    TooBigForBin,
     /// The item's name (trailing dot or space, a device name like `con`) is one the shell can't
     /// handle, so it can't go to the Recycle Bin. Deleting it permanently works.
     BadName,

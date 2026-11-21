@@ -40,6 +40,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_FIRST_TIMEOUT: Duration = Duration::from_secs(180);
 /// Wait for each later batch.
 const LIST_NEXT_TIMEOUT: Duration = Duration::from_secs(30);
+/// While waiting for a batch, how often the sink is asked (with an empty batch) whether it still
+/// wants the listing, so a caller that has stopped needn't wait for the service to read the MFT.
+const LIST_ASK_EVERY: Duration = Duration::from_millis(100);
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -377,14 +380,30 @@ impl Journal for ServiceJournal {
             })?;
         let mut timeout = LIST_FIRST_TIMEOUT;
         loop {
-            let reply = rx.recv_timeout(timeout).map_err(|e| match e {
-                flume::RecvTimeoutError::Timeout => {
-                    io::Error::new(io::ErrorKind::TimedOut, "index service timed out")
+            let waiting = std::time::Instant::now();
+            let reply = loop {
+                match rx.recv_timeout(LIST_ASK_EVERY.min(timeout)) {
+                    Ok(reply) => break reply,
+                    Err(flume::RecvTimeoutError::Timeout) if waiting.elapsed() < timeout => {
+                        // Dropping the receiver closes the pipe: the service stops reading.
+                        if !sink(Vec::new()) {
+                            return Err(io::ErrorKind::Interrupted.into());
+                        }
+                    }
+                    Err(flume::RecvTimeoutError::Timeout) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "index service timed out",
+                        ));
+                    }
+                    Err(flume::RecvTimeoutError::Disconnected) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "index service connection closed",
+                        ));
+                    }
                 }
-                flume::RecvTimeoutError::Disconnected => {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "index service connection closed")
-                }
-            })??;
+            }?;
             timeout = LIST_NEXT_TIMEOUT;
             match reply {
                 Reply::Listing(items) => {

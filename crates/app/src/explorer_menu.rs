@@ -156,6 +156,9 @@ pub(crate) enum MenuCommand {
         session: u64,
         id: u32,
     },
+    /// A pinned Windows command known to show here, drawn before its source has answered
+    /// (#278), by index in the menu's `coming` list. Clicked, it runs once the source is in.
+    PinPending(usize),
     /// Cloud files: toggle "Always keep on this device".
     KeepOnDevice,
     /// Windows "Open with" dialog.
@@ -335,6 +338,9 @@ pub(crate) struct MenuItem {
     danger: bool,
     /// Windows menu items: key used to pin it to the main menu (see [`pin_key`]).
     pin: Option<String>,
+    /// Windows menu items: the canonical verb, which says where it comes from (a registry
+    /// command's verb, a packaged app's command's `{CLSID}`; most extensions' items have none).
+    verb: Option<String>,
 }
 
 pub(crate) enum MenuEntry {
@@ -383,12 +389,12 @@ impl MenuEntry {
         match entry {
             ShellMenuEntry::Item {
                 id,
+                verb,
                 label,
                 enabled,
                 checked,
                 default,
                 icon: i,
-                ..
             } => {
                 let mut path = parent.to_vec();
                 path.push(&label);
@@ -407,6 +413,7 @@ impl MenuEntry {
                     bold: default,
                     danger: false,
                     pin,
+                    verb,
                 })
             }
             ShellMenuEntry::Submenu {
@@ -458,6 +465,7 @@ const fn plain(
         bold: false,
         danger: false,
         pin: None,
+        verb: None,
     })
 }
 
@@ -474,6 +482,7 @@ fn action(label: impl Into<SharedString>, command: MenuCommand, enabled: bool) -
         bold: false,
         danger: false,
         pin: None,
+        verb: None,
     }
 }
 
@@ -538,6 +547,10 @@ struct LevelPopup {
     state: Rc<crate::popup::PopupState>,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one open menu"
+)]
 pub(crate) struct ContextMenu {
     position: Point<Pixels>,
     /// The window the menu belongs to; its levels are popups owned by it.
@@ -573,6 +586,13 @@ pub(crate) struct ContextMenu {
     parts: Vec<(u64, Vec<MenuEntry>)>,
     /// Id those were asked for with (the whole menu's request).
     parts_request: Option<u64>,
+    /// Opened with Shift held: the Windows menu includes its Shift-only commands (#272).
+    pub(super) extended: bool,
+    /// Pinned commands known to show here (registry and packaged-app commands), drawn as soon
+    /// as that is known, before their sources answer, so the menu doesn't move (#278).
+    pub(super) coming: Vec<String>,
+    /// A pinned row clicked before its source answered: run when it is in.
+    pending: Option<String>,
     /// Differs per menu open; used as the animation id so only a new menu replays the entrance.
     serial: u64,
     /// Last input was keyboard: when submenu items arrive late, keyboard users get the first item
@@ -613,6 +633,9 @@ impl ContextMenu {
             pinned_rows: 0,
             parts: Vec::new(),
             parts_request: None,
+            extended: false,
+            coming: Vec::new(),
+            pending: None,
             serial: NEXT_MENU.fetch_add(1, Ordering::Relaxed),
             keyboard: false,
             geometry: Rc::default(),
@@ -647,22 +670,29 @@ impl ContextMenu {
     /// not in this menu. Previously placed rows are removed first, so calling again after a pin
     /// change
     /// is enough. Open submenus and the highlighted row shift accordingly.
-    fn sync_pinned(&mut self, pinned: &[String]) {
+    pub(super) fn sync_pinned(&mut self, pinned: &[String]) {
         let Some(slot) = self.shell_slot else {
             return;
         };
         let start = slot - self.pinned_rows;
+        let whole_in = self.shell_session.is_some();
         let mut found: Vec<MenuItem> = Vec::new();
         if let Some(MenuEntry::Submenu { children, .. }) = self.entries.get(slot) {
-            // From the whole Windows menu once it's in, until then from the extensions read on
-            // their own.
+            // From the whole Windows menu once it's in, until then from the sources read on
+            // their own, and for the ones known to be coming, their row ahead of them.
             for key in pinned {
                 if let Some(item) = find_pinned(children, key).or_else(|| {
                     self.parts
                         .iter()
                         .find_map(|(_, entries)| find_pinned(entries, key))
                 }) {
+                    remember_pin_icon(key, item);
                     found.push(item.clone());
+                } else if !whole_in
+                    && let Some(ix) = self.coming.iter().position(|k| k == key)
+                    && let Some(row) = coming_row(key, ix)
+                {
+                    found.push(row);
                 }
             }
         }
@@ -981,6 +1011,9 @@ impl Explorer {
         window.focus(&focus, cx);
         self.release_shell_menu();
         let mut menu = ContextMenu::new(position, entries, focus, targets);
+        // Shift held, as File Explorer: the Windows menu includes commands registered to show
+        // only then (#272).
+        menu.extended = window.modifiers().shift;
         menu.shell_slot = menu
             .entries
             .iter()
@@ -1465,6 +1498,13 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         use MenuCommand as C;
+        if let C::PinPending(ix) = command {
+            // Its source is still being read: it runs as soon as it is in (`run_pending_pin`).
+            if let Some(menu) = self.context_menu.as_mut() {
+                menu.pending = menu.coming.get(ix).cloned();
+            }
+            return;
+        }
         let keep = match command {
             MenuCommand::Shell(_) => self.context_menu.as_ref().and_then(|m| m.shell_session),
             MenuCommand::ShellPart { session, .. } => Some(session),
@@ -1537,7 +1577,6 @@ impl Explorer {
             C::ClearHistory => {
                 crate::settings::SettingsStore::global(cx)
                     .update(cx, |s, cx| s.update(|st| st.recent.clear(), cx));
-                self.notice = Some(t!("notice.history_cleared").into_owned());
             }
             C::RevealInExplorer => self.reveal_in_explorer(&targets),
             C::KeepOnDevice | C::FreeUpSpace => {
@@ -1664,7 +1703,7 @@ impl Explorer {
                 }
             }
             // Disabled rows like "Loading..."; never executed.
-            C::DropCancel | C::MoreOptions => {}
+            C::DropCancel | C::MoreOptions | C::PinPending(_) => {}
             C::Shell(id) => {
                 if let Some(session) = menu.shell_session {
                     self.invoke_shell_menu(session, id, menu.position, window);
@@ -2016,12 +2055,13 @@ impl Explorer {
         let Some((paths, background)) = self.menu_paths(menu) else {
             return;
         };
+        let extended = menu.extended;
         let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         menu.shell_request = Some(request);
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("more-options", move || {
-            let result = shell.shell_menu(&paths, background);
+            let result = shell.shell_menu(&paths, background, extended);
             let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Whole {
                 request,
                 result,
@@ -2076,6 +2116,10 @@ impl Explorer {
             .clone();
         menu.sync_pinned(&pinned);
         let slot = menu.shell_slot;
+        self.run_pending_pin(cx);
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
         // Keyboard already entered "Show more options" while it held only the disabled "Loading..."
         // row:
         // select the first item.
@@ -2091,6 +2135,42 @@ impl Explorer {
             self.learn_pin_owners(menu, request, cx);
         }
         self.fill_lazy_for_pins(cx);
+    }
+
+    /// A pinned row clicked before its source answered: runs it now that it is in, or forgets it
+    /// once the whole Windows menu has come without it.
+    pub(super) fn run_pending_pin(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
+        let Some(key) = menu.pending.clone() else {
+            return;
+        };
+        let real = menu.entries.iter().find_map(|e| match e {
+            MenuEntry::Item(i)
+                if i.pin.as_deref() == Some(key.as_str())
+                    && !matches!(i.command, MenuCommand::PinPending(_)) =>
+            {
+                Some((i.command, i.enabled))
+            }
+            _ => None,
+        });
+        match real {
+            Some((command, enabled)) => {
+                menu.pending = None;
+                let Some(owner) = menu.owner.filter(|_| enabled) else {
+                    return;
+                };
+                let this = cx.entity();
+                cx.defer(move |cx| {
+                    let _ = owner.update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.run_menu_command(command, window, cx));
+                    });
+                });
+            }
+            None if menu.shell_request.is_none() => menu.pending = None,
+            None => {}
+        }
     }
 
     /// Arke's own Properties window for `targets` (full path, whether it is a folder).
@@ -2111,7 +2191,11 @@ impl Explorer {
                 |s| {
                     if let Some(at) = s.menu_pinned.iter().position(|k| *k == key) {
                         s.menu_pinned.remove(at);
-                        s.menu_pin_owners.remove(&key);
+                        if let Some(owner) = s.menu_pin_owners.remove(&key)
+                            && !s.menu_pin_owners.values().any(|o| *o == owner)
+                        {
+                            s.menu_pin_types.remove(&owner);
+                        }
                     } else {
                         s.menu_pinned.push(key);
                     }
@@ -2309,10 +2393,11 @@ impl Explorer {
                     name = name.as_str()
                 )
                 .into_owned();
+                // A clean run is in the operation center only (#266); skipped files are worth a toast.
                 if s.skipped > 0 {
                     msg.push_str(&t!("compress.skipped", count = s.skipped));
+                    self.notice = Some(msg);
                 }
-                self.notice = Some(msg);
                 // Ctrl+Z moves the new archive to the recycle bin.
                 super::ops::UndoHistory::push(
                     cx,
@@ -2375,7 +2460,10 @@ impl Explorer {
                         usize::try_from(s.skipped_unsafe).unwrap_or(usize::MAX)
                     ));
                 }
-                self.notice = Some(msg);
+                // A clean, complete run is in the operation center only (#266).
+                if s.cancelled || s.skipped_existing > 0 || s.skipped_unsafe > 0 {
+                    self.notice = Some(msg);
+                }
                 if let Some(folder) = folder {
                     // Selected as soon as the new folder shows up in the list.
                     self.selection.select_name(Arc::from(folder.as_str()));
@@ -2617,7 +2705,7 @@ impl Explorer {
             .py(theme::s_4())
             .rounded(theme::r_12())
             .bg(theme::overlay())
-            .shadow(theme::elev_float())
+            .shadow(theme::elev_menu())
             .ui_font()
             .text_size(theme::fs_14())
             .text_color(theme::text())
@@ -3131,6 +3219,43 @@ pub(crate) fn pin_key(path: &[&str]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" › ")
+}
+
+thread_local! {
+    /// Icons of pinned Windows commands as last seen, by pin key: a row drawn before its source
+    /// answers (`coming_row`) shows it already.
+    static PIN_ICONS: RefCell<std::collections::HashMap<String, Arc<RenderImage>>> =
+        RefCell::default();
+}
+
+fn remember_pin_icon(key: &str, item: &MenuItem) {
+    if let Some(icon) = &item.icon {
+        PIN_ICONS.with(|icons| {
+            icons.borrow_mut().insert(key.to_string(), Arc::clone(icon));
+        });
+    }
+}
+
+/// The row of a pinned command known to show, before its source answers: its label from the
+/// pin key (left out when the key shortened a quoted part), its icon as last seen.
+fn coming_row(key: &str, ix: usize) -> Option<MenuItem> {
+    let label = key.rsplit(" › ").next()?.trim();
+    if label.is_empty() || label.contains('…') {
+        return None;
+    }
+    Some(MenuItem {
+        label: label.to_string().into(),
+        shortcut: None,
+        command: MenuCommand::PinPending(ix),
+        enabled: true,
+        icon: PIN_ICONS.with(|icons| icons.borrow().get(key).cloned()),
+        glyph: None,
+        checked: false,
+        bold: false,
+        danger: false,
+        pin: Some(key.to_string()),
+        verb: None,
+    })
 }
 
 /// Finds the item with pin key `key` in a Windows menu, including submenus.

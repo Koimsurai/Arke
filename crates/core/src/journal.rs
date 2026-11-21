@@ -95,7 +95,8 @@ impl Listed {
     }
 }
 
-/// Receives one batch of the listing; returning false stops (cancel).
+/// Receives one batch of the listing; returning false stops (cancel). While the listing is being
+/// read it may be called with an empty batch now and then, only to ask whether to go on.
 pub type ListSink<'a> = &'a mut dyn FnMut(Vec<Listed>) -> bool;
 
 /// Source of change-journal positions, change streams and MFT listings for a volume root.

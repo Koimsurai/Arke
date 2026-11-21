@@ -2,7 +2,7 @@
 //! threads. Keeps one SFTP connection per server (reconnecting once if it dropped), the
 //! passwords typed this session, and a download cache for previews and opened files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -72,6 +72,8 @@ pub struct Remotes {
     session: Mutex<HashMap<String, String>>,
     /// SFTP key files, by origin.
     key_files: Mutex<HashMap<String, PathBuf>>,
+    /// Origins the user allowed to sign in over plain http (Basic auth, password unencrypted).
+    insecure: Mutex<HashSet<String>>,
     conns: Mutex<HashMap<String, Slot>>,
 }
 
@@ -120,6 +122,7 @@ impl Remotes {
             cache_dir: config.cache_dir,
             session: Mutex::default(),
             key_files: Mutex::default(),
+            insecure: Mutex::default(),
             conns: Mutex::default(),
         })
     }
@@ -143,6 +146,23 @@ impl Remotes {
             Some(path) => keys.insert(url.origin(), path),
             None => keys.remove(&url.origin()),
         };
+    }
+
+    /// Allows (or takes back) sending the password over plain http to this location. Keyed by
+    /// origin like passwords are; a private address is not trusted by itself, so this is per
+    /// location, never per network.
+    pub fn set_insecure_allowed(&self, url: &RemoteUrl, allowed: bool) {
+        let mut set = self.insecure.lock();
+        if allowed {
+            set.insert(url.origin());
+        } else {
+            set.remove(&url.origin());
+        }
+    }
+
+    /// Whether the user allowed plain-http sign-in to this location.
+    pub fn insecure_allowed(&self, url: &RemoteUrl) -> bool {
+        self.insecure.lock().contains(&url.origin())
     }
 
     fn auth(&self, url: &RemoteUrl) -> SshAuth {
@@ -247,7 +267,12 @@ impl Remotes {
     }
 
     fn dav(&self, url: &RemoteUrl) -> DavClient {
-        DavClient::new(url, self.auth(url).secret, Arc::clone(&self.transport))
+        DavClient::new(
+            url,
+            self.auth(url).secret,
+            Arc::clone(&self.transport),
+            self.insecure_allowed(url),
+        )
     }
 
     /// Lists a folder.
@@ -532,6 +557,20 @@ fn same_time(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
 mod tests {
     use super::*;
 
+    /// A transport that is never used: these tests touch no network.
+    struct NoHttp;
+
+    impl Transport for NoHttp {
+        fn send(
+            &self,
+            _: crate::dav::Request<'_>,
+            _: &mut dyn std::io::Write,
+            _: crate::dav::Progress<'_>,
+        ) -> RemoteResult<u16> {
+            Err(RemoteError::Server("no http".into()))
+        }
+    }
+
     #[test]
     fn remote_names_become_valid_windows_names() {
         assert_eq!(local_name("report.txt"), "report.txt");
@@ -539,6 +578,29 @@ mod tests {
         assert_eq!(local_name("trailing. "), "trailing");
         assert_eq!(local_name("CON"), "_CON");
         assert_eq!(local_name(""), "_");
+    }
+
+    #[test]
+    fn plain_http_is_allowed_per_origin_and_can_be_taken_back() {
+        let hub = Remotes::new(RemotesConfig {
+            known_hosts: None,
+            cache_dir: std::env::temp_dir().join("arke-hub-insecure-test"),
+            secrets: Arc::new(crate::creds::NoSecrets),
+            transport: Arc::new(NoHttp),
+        });
+        let nas = RemoteUrl::from_path(Path::new("http://u@10.0.0.5/files")).unwrap();
+        let other_user = RemoteUrl::from_path(Path::new("http://v@10.0.0.5/")).unwrap();
+        let other_host = RemoteUrl::from_path(Path::new("http://u@10.0.0.6/")).unwrap();
+        assert!(!hub.insecure_allowed(&nas));
+        hub.set_insecure_allowed(&nas, true);
+        assert!(
+            hub.insecure_allowed(&nas.with_path("/other")),
+            "any folder of it"
+        );
+        assert!(!hub.insecure_allowed(&other_user));
+        assert!(!hub.insecure_allowed(&other_host));
+        hub.set_insecure_allowed(&nas, false);
+        assert!(!hub.insecure_allowed(&nas));
     }
 
     #[test]

@@ -50,6 +50,9 @@ pub(crate) struct Command {
     /// Keys bound only in the list, left as they are when `keys` change.
     #[cfg_attr(not(test), allow(dead_code, reason = "only the list test reads it"))]
     also: &'static [&'static str],
+    /// Changes files (paste, delete, new folder, undo...): never run through the integration API
+    /// (`api.rs`), which only lists and runs the others. Mark new commands that change files too.
+    pub(crate) changes_files: bool,
     make: fn() -> Box<dyn Action>,
 }
 
@@ -75,7 +78,7 @@ impl Command {
 }
 
 macro_rules! command {
-    ($id:literal, $contexts:expr, [$($key:literal),*], also [$($also:literal),*], $action:expr) => {
+    (@make $files:expr, $id:literal, $contexts:expr, [$($key:literal),*], also [$($also:literal),*], $action:expr) => {
         Command {
             id: $id,
             // Braces: the locale key check reads `t!(` at the end of `concat!(` as a lookup.
@@ -83,11 +86,19 @@ macro_rules! command {
             contexts: $contexts,
             keys: &[$($key),*],
             also: &[$($also),*],
+            changes_files: $files,
             make: || Box::new($action),
         }
     };
+    // A command that changes files (`Command::changes_files`).
+    (files $id:literal, $contexts:expr, [$($key:literal),*], $action:expr) => {
+        command!(@make true, $id, $contexts, [$($key),*], also [], $action)
+    };
+    ($id:literal, $contexts:expr, [$($key:literal),*], also [$($also:literal),*], $action:expr) => {
+        command!(@make false, $id, $contexts, [$($key),*], also [$($also),*], $action)
+    };
     ($id:literal, $contexts:expr, [$($key:literal),*], $action:expr) => {
-        command!($id, $contexts, [$($key),*], also [], $action)
+        command!(@make false, $id, $contexts, [$($key),*], also [], $action)
     };
 }
 
@@ -240,38 +251,38 @@ pub(crate) static COMMANDS: &[Command] = &[
     ),
     command!("cut", EXPLORER, ["ctrl-x"], crate::explorer::ops::CutFiles),
     command!(
-        "paste",
+        files "paste",
         EXPLORER,
         ["ctrl-v"],
         crate::explorer::ops::PasteFiles
     ),
     command!(
-        "delete",
+        files "delete",
         EXPLORER,
         ["delete"],
         crate::explorer::ops::DeleteFiles
     ),
     command!(
-        "delete_permanently",
+        files "delete_permanently",
         EXPLORER,
         ["shift-delete"],
         crate::explorer::ops::DeletePermanently
     ),
     command!("rename", EXPLORER, ["f2"], crate::explorer::ops::RenameFile),
     command!(
-        "new_folder",
+        files "new_folder",
         EXPLORER,
         ["ctrl-shift-n"],
         crate::explorer::ops::NewFolder
     ),
     command!(
-        "undo",
+        files "undo",
         EXPLORER,
         ["ctrl-z"],
         crate::explorer::ops::UndoFileOp
     ),
     command!(
-        "redo",
+        files "redo",
         EXPLORER,
         ["ctrl-y", "ctrl-shift-z"],
         crate::explorer::ops::RedoFileOp
@@ -327,12 +338,27 @@ pub(crate) static COMMANDS: &[Command] = &[
         ["tab", "shift-tab"],
         crate::explorer::FocusOtherPane
     ),
-    command!("copy_to_peer", LIST, ["alt-c"], crate::explorer::CopyToPeer),
-    command!("move_to_peer", LIST, ["alt-m"], crate::explorer::MoveToPeer),
+    command!(
+        files "copy_to_peer",
+        LIST,
+        ["alt-c"],
+        crate::explorer::CopyToPeer
+    ),
+    command!(
+        files "move_to_peer",
+        LIST,
+        ["alt-m"],
+        crate::explorer::MoveToPeer
+    ),
 ];
 
 pub(crate) fn find(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
+}
+
+/// The commands the integration API may run (`api.rs`): all but the ones that change files.
+pub(crate) fn runnable() -> impl Iterator<Item = &'static Command> {
+    COMMANDS.iter().filter(|c| !c.changes_files)
 }
 
 /// Stored shortcut changes: command id to keys.

@@ -70,6 +70,9 @@ enum HostRequest {
         /// Menu for the folder background.
         #[serde(default)]
         background: bool,
+        /// Shift was held: commands that show only then too.
+        #[serde(default)]
+        extended: bool,
     },
     Invoke {
         id: u64,
@@ -92,6 +95,8 @@ enum HostRequest {
         id: u64,
         paths: Vec<PathBuf>,
         background: bool,
+        #[serde(default)]
+        extended: bool,
         handler: MenuHandler,
         /// Arke's menu asking; older menus' extension menus are released.
         group: u64,
@@ -167,10 +172,11 @@ where
                     id,
                     paths,
                     background,
+                    extended,
                 } => HostReply {
                     id,
                     result: if Some(i) == last_query {
-                        crate::win_menu::query(&paths, background)
+                        crate::win_menu::query(&paths, background, extended)
                             .map(Reply::Menu)
                             .map_err(|e| e.to_string())
                     } else {
@@ -311,11 +317,14 @@ fn serve_extension(request: HostRequest, send_reply: impl Fn(&HostReply) + Send 
                     id,
                     paths,
                     background,
+                    extended,
                     handler,
                     group,
                 } => {
                     let started = std::time::Instant::now();
-                    let menu = crate::win_menu::query_handler(&paths, background, &handler, group);
+                    let menu = crate::win_menu::query_handler(
+                        &paths, background, extended, &handler, group,
+                    );
                     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     HostReply {
                         id,
@@ -339,7 +348,7 @@ fn serve_extension(request: HostRequest, send_reply: impl Fn(&HostReply) + Send 
 /// Reads the menu for arke.exe once so extensions load and "Send to" builds its list.
 fn warm_up() {
     if let Ok(exe) = std::env::current_exe()
-        && let Ok(menu) = crate::win_menu::query(&[exe], false)
+        && let Ok(menu) = crate::win_menu::query(&[exe], false, false)
     {
         crate::win_menu::release(menu.session);
     }
@@ -624,20 +633,29 @@ pub(crate) fn prewarm() {
 
 /// Reads the Windows context menu for `paths`. Call from a background thread; waits at
 /// most [`QUERY_TIMEOUT`].
-pub(crate) fn query(paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
+pub(crate) fn query(
+    paths: &[PathBuf],
+    background: bool,
+    extended: bool,
+) -> Result<ShellMenu, ShellError> {
     if !isolated() {
-        return crate::win_menu::query(paths, background);
+        return crate::win_menu::query(paths, background, extended);
     }
-    query_host(paths, background)
+    query_host(paths, background, extended)
 }
 
-fn query_host(paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
+fn query_host(
+    paths: &[PathBuf],
+    background: bool,
+    extended: bool,
+) -> Result<ShellMenu, ShellError> {
     recycle_if_due();
     let (generation, wait) = with_host(|h| {
         let wait = submit(h, |id| HostRequest::Query {
             id,
             paths: paths.to_vec(),
             background,
+            extended,
         })?;
         h.reads += 1;
         if h.reads == recycle_after() {
@@ -693,12 +711,13 @@ pub(crate) fn menu_handlers(
 pub(crate) fn query_handler(
     paths: &[PathBuf],
     background: bool,
+    extended: bool,
     handler: &MenuHandler,
     group: u64,
 ) -> Result<(ShellMenu, Duration), ShellError> {
     if !isolated() {
         let started = std::time::Instant::now();
-        let menu = crate::win_menu::query_handler(paths, background, handler, group)?;
+        let menu = crate::win_menu::query_handler(paths, background, extended, handler, group)?;
         return Ok((menu, started.elapsed()));
     }
     let (generation, wait) = with_host(|h| {
@@ -706,6 +725,7 @@ pub(crate) fn query_handler(
             id,
             paths: paths.to_vec(),
             background,
+            extended,
             handler: handler.clone(),
             group,
         })?;
@@ -863,6 +883,7 @@ mod tests {
                 id,
                 paths: vec![notepad.clone()],
                 background: false,
+                extended: false,
             })
             .unwrap();
             input.push('\n');
@@ -937,6 +958,7 @@ mod tests {
                 id: 1,
                 paths: vec![notepad],
                 background: false,
+                extended: false,
             },
             1,
         );

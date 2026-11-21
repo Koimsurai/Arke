@@ -104,6 +104,8 @@ pub(crate) struct NetDialog {
     busy: bool,
     error: Option<SharedString>,
     pending_key: Option<PendingKey>,
+    /// Origin of a WebDAV server over plain http waiting for the user to allow it.
+    pending_insecure: Option<String>,
     _inputs: Vec<Subscription>,
 }
 
@@ -190,6 +192,7 @@ impl NetDialog {
             busy: false,
             error: None,
             pending_key: None,
+            pending_insecure: None,
             _inputs: inputs,
         }
     }
@@ -273,6 +276,17 @@ impl NetDialog {
                 (parts.next().is_some() && parts.next().is_some()).then(|| PathBuf::from(text))
             }
         }
+    }
+
+    /// A whole URL in the Server field wins over the Port and folder fields: its port and path
+    /// (empty while the URL doesn't parse), which the form shows dimmed in their place. `None`
+    /// when the field holds no URL.
+    fn url_in_host(&self, cx: &App) -> Option<(String, String)> {
+        let host = self.host.read(cx).committed_text().trim().to_owned();
+        host.contains("://").then(|| {
+            RemoteUrl::parse_input(&host)
+                .map_or_else(Default::default, |url| (url.port.to_string(), url.path))
+        })
     }
 
     /// The remote location from the form, or the message to show.
@@ -391,6 +405,10 @@ impl NetDialog {
 
     /// SFTP or WebDAV: trusts a confirmed host key, signs in and checks the folder opens, all in
     /// the background.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flow: host key, plain-http consent, sign-in and the folder check in order"
+    )]
     fn submit_remote(&mut self, cx: &mut Context<Self>) {
         let url = match self.remote_url(cx) {
             Ok(url) => url,
@@ -422,6 +440,16 @@ impl NetDialog {
             .take()
             .filter(|p| p.key.host == arke_remote::known_hosts::host_pattern(&url.host, url.port))
             .map(|p| p.key);
+        // The user said "Allow for this location" for exactly this server (editing the address
+        // in the meantime asks again).
+        let was_allowed = self.remotes.insecure_allowed(&url);
+        let newly_allowed = self
+            .pending_insecure
+            .take()
+            .is_some_and(|origin| origin == url.origin());
+        if newly_allowed {
+            self.remotes.set_insecure_allowed(&url, true);
+        }
         let remember = self.remember;
         self.busy = true;
         self.error = None;
@@ -451,6 +479,13 @@ impl NetDialog {
                 match result {
                     Ok(entry) => {
                         this.clear_password(cx);
+                        // Remember the consent only once it led to a working sign-in.
+                        if url.scheme == Scheme::Dav && this.remotes.insecure_allowed(&url) {
+                            let origin = url.origin();
+                            crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+                                s.update(|st| st.set_insecure_http(&origin, true), cx);
+                            });
+                        }
                         // A file was named: open the folder it's in.
                         let folder = if entry.is_dir_like() {
                             url.clone()
@@ -474,7 +509,16 @@ impl NetDialog {
                     Err(RemoteError::HostKeyChanged(key)) => {
                         this.pending_key = Some(PendingKey { key, changed: true });
                     }
-                    Err(err) => this.error = Some(err.to_string().into()),
+                    Err(RemoteError::Insecure) => {
+                        this.pending_insecure = Some(url.origin());
+                    }
+                    Err(err) => {
+                        if newly_allowed && !was_allowed {
+                            // Not used: the consent was for a sign-in that did not happen.
+                            this.remotes.set_insecure_allowed(&url, false);
+                        }
+                        this.error = Some(err.to_string().into());
+                    }
                 }
                 cx.notify();
             });
@@ -522,6 +566,39 @@ impl NetDialog {
         self.submit(cx);
     }
 
+    /// Types into the remote form (switching to `protocol`) without submitting.
+    #[cfg(test)]
+    pub(crate) fn type_remote_for_test(
+        &mut self,
+        protocol: Protocol,
+        fields: [&str; 3],
+        cx: &mut Context<Self>,
+    ) {
+        self.protocol = protocol;
+        for (input, text) in [&self.host, &self.port, &self.path].into_iter().zip(fields) {
+            input.update(cx, |i, cx| i.set_text(text.to_owned(), cx));
+        }
+        cx.notify();
+    }
+
+    /// The port and folder shown dimmed because the Server field holds a URL.
+    #[cfg(test)]
+    pub(crate) fn url_values_for_test(&self, cx: &App) -> Option<(String, String)> {
+        self.url_in_host(cx)
+    }
+
+    /// The location the form describes.
+    #[cfg(test)]
+    pub(crate) fn remote_url_for_test(&self, cx: &App) -> Result<RemoteUrl, String> {
+        self.remote_url(cx)
+    }
+
+    /// What the Port input itself holds (kept while the URL wins).
+    #[cfg(test)]
+    pub(crate) fn port_text_for_test(&self, cx: &App) -> String {
+        self.port.read(cx).text().to_owned()
+    }
+
     #[cfg(test)]
     pub(crate) fn submit_for_test(&mut self, cx: &mut Context<Self>) {
         self.submit(cx);
@@ -530,6 +607,12 @@ impl NetDialog {
     #[cfg(test)]
     pub(crate) fn error_for_test(&self) -> Option<String> {
         self.error.as_ref().map(ToString::to_string)
+    }
+
+    /// Whether the plain-http warning is waiting for the user's decision.
+    #[cfg(test)]
+    pub(crate) const fn pending_insecure_for_test(&self) -> bool {
+        self.pending_insecure.is_some()
     }
 
     /// Fingerprint waiting for confirmation and whether it changed.
@@ -570,6 +653,24 @@ fn field(input: &Entity<TextInput>, window: &Window, cx: &App) -> gpui::Div {
             d.bg(theme::wash()).border_color(theme::line())
         })
         .child(input.clone())
+}
+
+/// A field the form ignores (the Server field holds a whole URL): the value that applies, dimmed,
+/// in the place of the input, whose own text stays for when the URL goes.
+fn locked_field(id: &'static str, text: &str) -> gpui::Div {
+    div()
+        .h(theme::h_ctl())
+        .px(theme::s_8())
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .rounded(theme::r_8())
+        .border_1()
+        .border_color(theme::line())
+        .bg(theme::wash())
+        .text_color(theme::text_disabled())
+        .debug_selector(move || id.into())
+        .child(div().truncate().child(text.to_owned()))
 }
 
 /// Label above a field.
@@ -741,6 +842,7 @@ impl NetDialog {
         let sftp = self.protocol == Protocol::Sftp;
         let login = matches!(self.kind, NetDialogKind::RemoteLogin { .. });
         let use_key = self.use_key && sftp;
+        let from_url = self.url_in_host(cx);
         div()
             .flex()
             .flex_col()
@@ -755,13 +857,22 @@ impl NetDialog {
                                 .flex_1(),
                         )
                         .child(
-                            labeled(t!("net.port").into_owned(), field(&self.port, window, cx))
-                                .w(crate::theme::scaled_px(80.)),
+                            labeled(
+                                t!("net.port").into_owned(),
+                                match &from_url {
+                                    Some((port, _)) => locked_field("net-port-locked", port),
+                                    None => field(&self.port, window, cx),
+                                },
+                            )
+                            .w(crate::theme::scaled_px(80.)),
                         ),
                 )
                 .child(labeled(
                     t!("net.remote_path").into_owned(),
-                    field(&self.path, window, cx),
+                    match &from_url {
+                        Some((_, path)) => locked_field("net-path-locked", path),
+                        None => field(&self.path, window, cx),
+                    },
                 ))
             })
             .child(labeled(
@@ -821,6 +932,32 @@ impl NetDialog {
                 },
                 field(&self.password, window, cx),
             ))
+    }
+
+    /// Plain http with a password: say what that means before the user allows it.
+    fn render_insecure(&self) -> Option<gpui::Div> {
+        self.pending_insecure.as_ref()?;
+        Some(
+            div()
+                .p(theme::s_12())
+                .flex()
+                .flex_col()
+                .gap(theme::s_4())
+                .rounded(theme::r_8())
+                .bg(theme::danger_surface())
+                .child(
+                    div()
+                        .font_weight(theme::FW_STRONG)
+                        .text_color(theme::danger())
+                        .child(t!("net.insecure_title").into_owned()),
+                )
+                .child(
+                    div()
+                        .text_size(theme::fs_12())
+                        .text_color(theme::text_muted())
+                        .child(t!("net.insecure_body").into_owned()),
+                ),
+        )
     }
 
     /// First connection or changed key: the fingerprint to check.
@@ -884,6 +1021,9 @@ impl Render for NetDialog {
         let (ok, ok_danger) = match &self.pending_key {
             Some(p) if p.changed => (t!("net.key_replace").into_owned(), true),
             Some(_) => (t!("net.key_trust").into_owned(), false),
+            None if self.pending_insecure.is_some() => {
+                (t!("net.insecure_allow").into_owned(), true)
+            }
             None => (ok, false),
         };
         let panel = div()
@@ -952,6 +1092,7 @@ impl Render for NetDialog {
                     })),
             )
             .children(self.render_host_key())
+            .children(self.render_insecure())
             .children(self.error.clone().map(|error| {
                 div()
                     .text_size(theme::fs_12())

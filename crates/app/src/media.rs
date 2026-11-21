@@ -19,7 +19,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use arke_core::Entry;
 use arke_core::filetype::{
-    MAX_THUMBNAIL_SOURCE, can_thumbnail, can_video_thumbnail, wants_system_icon, wants_type_icon,
+    MAX_THUMBNAIL_SOURCE, can_pdf_thumbnail, can_thumbnail, can_video_thumbnail, wants_system_icon,
+    wants_type_icon,
 };
 use arke_core::loader::Loader;
 use arke_core::thumb_cache::{ThumbCache, ThumbKey};
@@ -65,12 +66,14 @@ pub(crate) enum MediaKind {
     SystemIcon,
     /// A video's thumbnail: a frame, from Windows, made in a separate process (`thumb_host.rs`).
     Video,
+    /// A PDF's first page, rendered by Windows in process (the same renderer as the preview).
+    Pdf,
 }
 
 impl MediaKind {
     /// A picture of the content (shown like a photo), not an icon.
     pub(crate) const fn is_picture(self) -> bool {
-        matches!(self, Self::Thumbnail | Self::Video)
+        matches!(self, Self::Thumbnail | Self::Video | Self::Pdf)
     }
 }
 
@@ -173,6 +176,8 @@ impl MediaKey {
             (MediaKind::SystemIcon, 0)
         } else if can_video_thumbnail(entry) {
             (MediaKind::Video, thumbnail_px?)
+        } else if can_pdf_thumbnail(entry) {
+            (MediaKind::Pdf, thumbnail_px?)
         } else {
             (
                 MediaKind::Thumbnail,
@@ -240,6 +245,7 @@ pub(crate) struct MediaStore {
     thumbs: Loader<MediaKey>,
     icons: Loader<MediaKey>,
     videos: Loader<MediaKey>,
+    pdfs: Loader<MediaKey>,
     last_wanted: Vec<MediaKey>,
     /// Wanted by the main list (in priority order)
     main_wanted: Vec<MediaKey>,
@@ -343,6 +349,23 @@ impl MediaStore {
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), thumb));
             })
         };
+        let pdfs = {
+            let shell = Arc::clone(&services.shell);
+            let tx = tx.clone();
+            // Two at a time: the renderer works on its own thread pool per call and a page is a
+            // few tens of milliseconds, unlike a video frame. A failed or unsupported file
+            // (encrypted, damaged) stays a type icon: the store remembers the `None`.
+            Loader::new("pdf-thumbnail", 2, move |key: &MediaKey| {
+                let side = key.px.max(1);
+                let thumb = thumb_cache().load(&key.thumb_key(), || {
+                    shell
+                        .render_pdf(&key.path, 0, (side, side))
+                        .ok()
+                        .map(|r| r.image)
+                });
+                let _ = tx.send(MediaEvent::Loaded(key.clone(), thumb));
+            })
+        };
         thumb_cache().count_in_background();
         let task = cx.spawn(async move |this, cx| {
             while let Ok(event) = rx.recv_async().await {
@@ -359,6 +382,7 @@ impl MediaStore {
             thumbs,
             icons,
             videos,
+            pdfs,
             last_wanted: Vec::new(),
             main_wanted: Vec::new(),
             side_wanted: Vec::new(),
@@ -378,6 +402,7 @@ impl MediaStore {
                     MediaKind::Thumbnail => self.thumbs.acknowledge(&key),
                     MediaKind::SystemIcon => self.icons.acknowledge(&key),
                     MediaKind::Video => self.videos.acknowledge(&key),
+                    MediaKind::Pdf => self.pdfs.acknowledge(&key),
                 }
                 self.insert(key, thumb);
                 self.evict(cx);
@@ -600,7 +625,8 @@ impl MediaStore {
         if keys == self.last_wanted {
             return;
         }
-        let (mut thumbs, mut icons, mut videos) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut thumbs, mut icons, mut videos, mut pdfs) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for key in &keys {
             if self.cache.contains_key(key) {
                 continue;
@@ -609,11 +635,13 @@ impl MediaStore {
                 MediaKind::Thumbnail => thumbs.push(key.clone()),
                 MediaKind::SystemIcon => icons.push(key.clone()),
                 MediaKind::Video => videos.push(key.clone()),
+                MediaKind::Pdf => pdfs.push(key.clone()),
             }
         }
         self.thumbs.set_wanted(thumbs);
         self.icons.set_wanted(icons);
         self.videos.set_wanted(videos);
+        self.pdfs.set_wanted(pdfs);
         // Move used entries to the recent end so visible thumbnails aren't evicted.
         for key in &keys {
             if self.cache.get(key).is_some_and(Option::is_some)

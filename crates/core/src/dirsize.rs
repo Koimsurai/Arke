@@ -288,10 +288,20 @@ pub fn count_file(total: &mut Usage, entry: &Entry, cluster: u64) {
     total.categories[Category::of(entry).index()] += entry.size;
 }
 
-/// Walks everything below the folder `root` and counts it, calling `progress` after each folder
-/// with what is known so far. Only lists folders (names, sizes, attributes), so files are never
-/// opened and cloud placeholders are not downloaded. Links are not followed. `None` when
-/// cancelled; an unreadable folder makes the result `partial`.
+/// Threads walking a folder at once for [`usage`]. Measured on a whole SSD (C:, 3.3 million
+/// files): 182 s alone, 69 s with 4; more don't help (the file system and antivirus are the
+/// limit then).
+const WALKERS: usize = 4;
+
+/// How often [`usage`] reports while its walkers work.
+const PROGRESS_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Walks everything below the folder `root` and counts it, calling `progress` now and then with
+/// what is known so far. Only lists folders (names, sizes, attributes), so files are never opened
+/// and cloud placeholders are not downloaded. Links are not followed. `None` when cancelled; an
+/// unreadable folder makes the result `partial`.
+///
+/// [`WALKERS`] threads share the folders still to list; `progress` runs on the calling thread.
 pub fn usage(
     fs: &dyn Fs,
     root: &Path,
@@ -301,43 +311,318 @@ pub fn usage(
 ) -> Option<Space> {
     crate::fs::debug_assert_not_ui_thread("usage", root);
     let mut space = Space::default();
-    // Each folder waits with the index of the folder directly inside `root` it is part of.
-    let mut stack: Vec<(PathBuf, Option<usize>)> = vec![(root.to_path_buf(), None)];
-    while let Some((dir, child)) = stack.pop() {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
+    // The folder itself: its files count here, its folders are the children the rest is split by.
+    let mut todo: Vec<(PathBuf, usize)> = Vec::new();
+    match fs.read_dir(root) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(e) => match e.kind {
+                        EntryKind::File => count_file(&mut space.usage, &e, cluster),
+                        EntryKind::Dir => {
+                            space.usage.folders += 1;
+                            let path = root.join(&*e.name);
+                            space.children.push((path.clone(), 0));
+                            todo.push((path, space.children.len() - 1));
+                        }
+                        EntryKind::Link { .. } => {}
+                    },
+                    Err(_) => space.usage.partial = true,
+                }
+            }
         }
+        Err(_) => space.usage.partial = true,
+    }
+    progress(&space);
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    if todo.is_empty() {
+        return Some(space);
+    }
+    let walk = Walk {
+        state: parking_lot::Mutex::new(WalkState {
+            space,
+            todo,
+            busy: 0,
+        }),
+        work: parking_lot::Condvar::new(),
+        finished: parking_lot::Condvar::new(),
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..WALKERS {
+            scope.spawn(|| walker(fs, cluster, cancel, &walk));
+        }
+        let mut state = walk.state.lock();
+        while !(cancel.load(Ordering::Relaxed) || (state.todo.is_empty() && state.busy == 0)) {
+            walk.finished.wait_for(&mut state, PROGRESS_TICK);
+            let snapshot = state.space.clone();
+            drop(state);
+            progress(&snapshot);
+            state = walk.state.lock();
+        }
+        drop(state);
+        walk.work.notify_all();
+    });
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(walk.state.into_inner().space)
+}
+
+/// What [`usage`]'s walkers share.
+struct Walk {
+    state: parking_lot::Mutex<WalkState>,
+    /// More folders to list, or the walk is over.
+    work: parking_lot::Condvar,
+    /// Nothing left to list.
+    finished: parking_lot::Condvar,
+}
+
+struct WalkState {
+    space: Space,
+    /// Folders still to list, each with the child of the root it is in.
+    todo: Vec<(PathBuf, usize)>,
+    /// Folders being listed right now.
+    busy: usize,
+}
+
+/// One of [`usage`]'s threads: lists folders until there are none left (and none being listed
+/// that could add more), adding what it finds to the shared totals.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the lock is taken back after each folder; waiting releases it"
+)]
+fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
+    let mut state = walk.state.lock();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            walk.work.notify_all();
+            walk.finished.notify_all();
+            return;
+        }
+        let Some((dir, child)) = state.todo.pop() else {
+            if state.busy == 0 {
+                walk.work.notify_all();
+                walk.finished.notify_all();
+                return;
+            }
+            walk.work.wait(&mut state);
+            continue;
+        };
+        state.busy += 1;
+        drop(state);
+        let mut usage = Usage::default();
+        let mut bytes = 0;
+        let mut found: Vec<(PathBuf, usize)> = Vec::new();
         match fs.read_dir(&dir) {
             Ok(entries) => {
                 for entry in entries {
                     match entry {
                         Ok(e) => match e.kind {
                             EntryKind::File => {
-                                count_file(&mut space.usage, &e, cluster);
-                                if let Some(ix) = child {
-                                    space.children[ix].1 += e.size;
-                                }
+                                count_file(&mut usage, &e, cluster);
+                                bytes += e.size;
                             }
                             EntryKind::Dir => {
-                                space.usage.folders += 1;
-                                let path = dir.join(&*e.name);
-                                let ix = child.unwrap_or_else(|| {
-                                    space.children.push((path.clone(), 0));
-                                    space.children.len() - 1
-                                });
-                                stack.push((path, Some(ix)));
+                                usage.folders += 1;
+                                found.push((dir.join(&*e.name), child));
                             }
                             EntryKind::Link { .. } => {}
                         },
-                        Err(_) => space.usage.partial = true,
+                        Err(_) => usage.partial = true,
                     }
                 }
             }
-            Err(_) => space.usage.partial = true,
+            Err(_) => usage.partial = true,
         }
-        progress(&space);
+        state = walk.state.lock();
+        state.space.usage += usage;
+        state.space.children[child].1 += bytes;
+        let more = !found.is_empty();
+        state.todo.extend(found);
+        state.busy -= 1;
+        if more {
+            walk.work.notify_all();
+        } else if state.todo.is_empty() && state.busy == 0 {
+            walk.work.notify_all();
+            walk.finished.notify_all();
+        }
     }
-    Some(space)
+}
+
+/// Everything below `dir` counted as [`usage`] counts it, from a whole-volume listing of its
+/// drive (the index service reads the NTFS MFT, as WizTree does: a whole C: drive in seconds
+/// instead of a minute of walking). The listing is summed as it streams in, nothing kept but two
+/// numbers per item and the names of folders. Errors when the listing can't be had (no service,
+/// not NTFS) or `dir` isn't in it; `Interrupted` when cancelled. Background thread.
+///
+/// The listing is the search index's, which doesn't go into some folders
+/// ([`crate::index::descends_into`]: hidden system folders such as `C:\Windows\Installer`, the
+/// recycle bin): those are walked with `fs` afterwards (a few small folders). `Unsupported` when
+/// `dir` is one of them or inside one: walk it instead.
+///
+/// The service leaves out what is inside other people's profile folders, which a walk can't read
+/// either: a count over them is marked `partial`, as a walk's would be.
+pub fn usage_from_listing(
+    journal: &dyn crate::journal::Journal,
+    fs: &dyn Fs,
+    dir: &Path,
+    cluster: u64,
+    cancel: &AtomicBool,
+) -> std::io::Result<Space> {
+    use crate::journal::LISTED_ROOT;
+    const OUT: u32 = u32::MAX;
+    const TARGET: u32 = u32::MAX - 1;
+    // How far down the way to `dir` each item is (its components matched), OUT once off it.
+    const OFF: u16 = u16::MAX;
+    let volume: PathBuf = dir.components().take(2).collect();
+    let wanted: Vec<String> = dir
+        .components()
+        .skip(2)
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let mut level: Vec<u16> = Vec::new();
+    // Per item: the child of `dir` it is in, TARGET for `dir` itself, OUT if not below it.
+    let mut slot: Vec<u32> = Vec::new();
+    let mut space = Space::default();
+    let mut found = wanted.is_empty();
+    // `dir` itself is a folder the listing doesn't go into.
+    let mut target_unlisted = false;
+    // Below `dir`: each folder's parent and name, for the paths of the folders to walk.
+    let mut dirs: std::collections::HashMap<u32, (u32, String)> = std::collections::HashMap::new();
+    let mut target_ix = LISTED_ROOT;
+    // Folders below `dir` the listing doesn't go into: (listing index, slot).
+    let mut unlisted: Vec<(u32, u32)> = Vec::new();
+    let mut sink = |batch: Vec<crate::journal::Listed>| -> bool {
+        for item in batch {
+            let ix = u32::try_from(level.len()).unwrap_or(OUT);
+            let (parent_level, parent_slot) = if item.parent == LISTED_ROOT {
+                (0, if wanted.is_empty() { TARGET } else { OUT })
+            } else {
+                let p = item.parent as usize;
+                (
+                    level.get(p).copied().unwrap_or(OFF),
+                    slot.get(p).copied().unwrap_or(OUT),
+                )
+            };
+            let is_dir = item.attributes & 0x10 != 0 && !item.link;
+            // On the way to `dir`: one more component matched, or off it.
+            let mut here_level = OFF;
+            let mut here_slot = OUT;
+            if parent_slot == OUT {
+                if parent_level != OFF
+                    && let Some(name) = wanted.get(usize::from(parent_level))
+                    && is_dir
+                    && item.name.to_lowercase() == *name
+                {
+                    here_level = parent_level + 1;
+                    if !crate::index::descends_into(&item.to_entry()) {
+                        // The listing has nothing below: neither `dir` nor anything on the way.
+                        target_unlisted = true;
+                    }
+                    if usize::from(here_level) == wanted.len() {
+                        here_slot = TARGET;
+                        target_ix = ix;
+                        found = true;
+                    }
+                }
+            } else if !item.link {
+                // Below `dir`.
+                if is_dir {
+                    space.usage.folders += 1;
+                    here_slot = if parent_slot == TARGET {
+                        space.children.push((dir.join(&item.name), 0));
+                        u32::try_from(space.children.len() - 1).unwrap_or(OUT)
+                    } else {
+                        parent_slot
+                    };
+                    if !crate::index::descends_into(&item.to_entry()) {
+                        unlisted.push((ix, here_slot));
+                    }
+                    dirs.insert(ix, (item.parent, item.name));
+                } else {
+                    count_file(&mut space.usage, &item.to_entry(), cluster);
+                    if parent_slot != TARGET
+                        && let Some(child) = space.children.get_mut(parent_slot as usize)
+                    {
+                        child.1 += item.size;
+                    }
+                }
+            }
+            level.push(here_level);
+            slot.push(here_slot);
+        }
+        !cancel.load(Ordering::Relaxed)
+    };
+    journal.list(&volume_root(&volume), &mut sink)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
+    if !found {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    if target_unlisted {
+        return Err(std::io::ErrorKind::Unsupported.into());
+    }
+    let paths = unlisted
+        .into_iter()
+        .map(|(ix, slot)| (listed_path(dir, target_ix, &dirs, ix), slot));
+    add_walks(fs, paths, cluster, cancel, &mut space)?;
+    // Other people's profiles are listed without their contents.
+    let profiles = volume_root(&volume).join("Users");
+    if profiles.starts_with(dir) || dir == volume_root(&volume) {
+        space.usage.partial = true;
+    }
+    Ok(space)
+}
+
+/// The path of listed folder `ix` below `dir` (listing index `dir_ix`), from each folder's parent
+/// and name.
+fn listed_path(
+    dir: &Path,
+    dir_ix: u32,
+    dirs: &std::collections::HashMap<u32, (u32, String)>,
+    ix: u32,
+) -> PathBuf {
+    let mut names = Vec::new();
+    let mut at = ix;
+    while at != dir_ix
+        && let Some((parent, name)) = dirs.get(&at)
+    {
+        names.push(name.as_str());
+        at = *parent;
+    }
+    names.iter().rev().fold(dir.to_path_buf(), |p, n| p.join(n))
+}
+
+/// Walks folders and adds them to `space`, each to its child of the folder counted (`slot`).
+fn add_walks(
+    fs: &dyn Fs,
+    folders: impl Iterator<Item = (PathBuf, u32)>,
+    cluster: u64,
+    cancel: &AtomicBool,
+    space: &mut Space,
+) -> std::io::Result<()> {
+    for (path, slot) in folders {
+        let Some(walked) = usage(fs, &path, cluster, cancel, &mut |_| {}) else {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        };
+        if let Some(child) = space.children.get_mut(slot as usize) {
+            child.1 += walked.usage.bytes;
+        }
+        space.usage += walked.usage;
+    }
+    Ok(())
+}
+
+/// `C:\` for `C:` (a drive prefix alone is the current folder on it, not its root).
+fn volume_root(volume: &Path) -> PathBuf {
+    let mut root = volume.to_path_buf();
+    if root.components().count() == 1 {
+        root.push(std::path::MAIN_SEPARATOR_STR);
+    }
+    root
 }
 
 #[cfg(test)]
@@ -345,6 +630,91 @@ mod tests {
     use super::*;
     use crate::entry::{Entry, EntryKind};
     use crate::fake::FakeFs;
+
+    /// A count from the drive's whole-volume listing (the file table) matches a walk: totals,
+    /// categories, space on disk, folders, each folder inside, for the drive and a folder on it,
+    /// whatever the letter case; links don't count, nor does anything outside the folder.
+    #[test]
+    fn usage_from_the_file_table_matches_a_walk() {
+        use crate::journal::{FakeJournal, LISTED_ROOT, Listed};
+        let item = |parent: u32, name: &str, dir: bool, size: u64| Listed {
+            parent,
+            name: name.into(),
+            attributes: if dir { 0x10 } else { 0x20 },
+            size,
+            mtime: 0,
+            link: false,
+        };
+        // C:\w\{a.mp4, docs\{x.pdf, old\y.txt}, src\main.rs, junction}, C:\other\z.bin
+        let mut junction = item(0, "jl", true, 0);
+        junction.link = true;
+        // A hidden system folder (like C:\Windows\Installer): the listing doesn't go in.
+        let mut hidden_system = item(4, "cache", true, 0);
+        hidden_system.attributes |= 0x2 | 0x4;
+        let listing = vec![
+            item(LISTED_ROOT, "w", true, 0),     // 0
+            item(LISTED_ROOT, "other", true, 0), // 1
+            item(0, "a.mp4", false, 5000),       // 2
+            item(0, "docs", true, 0),            // 3
+            item(0, "src", true, 0),             // 4
+            junction,                            // 5
+            item(1, "z.bin", false, 77),         // 6
+            item(3, "x.pdf", false, 300),        // 7
+            item(3, "old", true, 0),             // 8
+            item(4, "main.rs", false, 40),       // 9
+            item(8, "y.txt", false, 9000),       // 10
+            hidden_system,                       // 11
+        ];
+        let journal = FakeJournal::new(1);
+        journal.set_listing(r"C:\", listing);
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\", vec![dir("w"), dir("other")]);
+        fs.insert_dir(
+            r"C:\w",
+            vec![
+                file("a.mp4", 5000),
+                dir("docs"),
+                dir("src"),
+                Entry::new("jl", EntryKind::Link { is_dir: true }, 0, None, 0),
+            ],
+        );
+        fs.insert_dir(r"C:\w\docs", vec![file("x.pdf", 300), dir("old")]);
+        fs.insert_dir(r"C:\w\docs\old", vec![file("y.txt", 9000)]);
+        fs.insert_dir(
+            r"C:\w\src",
+            vec![
+                file("main.rs", 40),
+                Entry::new("cache", EntryKind::Dir, 0, None, 0x2 | 0x4),
+            ],
+        );
+        fs.insert_dir(r"C:\w\src\cache", vec![file("big.msi", 6000), dir("in")]);
+        fs.insert_dir(r"C:\w\src\cache\in", vec![file("p.msp", 700)]);
+        fs.insert_dir(r"C:\other", vec![file("z.bin", 77)]);
+        let cancel = AtomicBool::new(false);
+        for dir in [r"C:\w", r"C:\"] {
+            let walked = usage(&*fs, Path::new(dir), 4096, &cancel, &mut |_| {}).unwrap();
+            let mut listed =
+                usage_from_listing(&*journal, &*fs, Path::new(dir), 4096, &cancel).unwrap();
+            // The drive is marked partial for other people's profiles; the rest is the same.
+            listed.usage.partial = walked.usage.partial;
+            assert_eq!(listed, walked, "{dir}");
+        }
+        let upper =
+            usage_from_listing(&*journal, &*fs, Path::new(r"C:\W\DOCS"), 4096, &cancel).unwrap();
+        assert_eq!(upper.usage.bytes, 9300);
+        assert_eq!(
+            upper.children,
+            vec![(PathBuf::from(r"C:\W\DOCS\old"), 9000)]
+        );
+        let inside =
+            usage_from_listing(&*journal, &*fs, Path::new(r"C:\w\src\cache"), 4096, &cancel);
+        assert_eq!(inside.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+        let missing = usage_from_listing(&*journal, &*fs, Path::new(r"C:\nope"), 4096, &cancel);
+        assert_eq!(missing.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        cancel.store(true, Ordering::Relaxed);
+        let stopped = usage_from_listing(&*journal, &*fs, Path::new(r"C:\w"), 4096, &cancel);
+        assert_eq!(stopped.unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+    }
 
     #[test]
     fn usage_counts_files_folders_and_space_on_disk() {
@@ -372,7 +742,7 @@ mod tests {
         assert_eq!(got.on_disk, 4096 + 4096 + 8192);
         assert_eq!((got.files, got.folders), (4, 2));
         assert!(got.partial, "the unreadable folder makes it an undercount");
-        assert_eq!(steps, 3, "progress after every folder");
+        assert!(steps >= 1, "progress as it goes");
         cancel.store(true, Ordering::Relaxed);
         assert_eq!(
             usage(&*fs, Path::new(r"C:\u"), 4096, &cancel, &mut |_| {}),
@@ -440,7 +810,8 @@ mod tests {
             "folders with nothing in them are left out"
         );
         assert_eq!(space.largest(1).len(), 1);
-        assert!(seen.windows(2).all(|w| w[0] <= w[1]) && seen.len() == 5);
+        // Reported as it goes, never going back.
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]) && !seen.is_empty());
     }
 
     #[test]

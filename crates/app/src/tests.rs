@@ -29,10 +29,14 @@ use crate::workspace::{CloseTab, NewTab, Workspace};
 
 #[path = "tests_column_view.rs"]
 mod column_view;
+#[path = "tests_favorites.rs"]
+mod favorites;
 #[path = "tests_folder_views.rs"]
 mod folder_views;
 #[path = "tests_idle.rs"]
 mod idle;
+#[path = "tests_api.rs"]
+mod integration_api;
 #[path = "tests_lazy_submenus.rs"]
 mod lazy_submenus;
 #[cfg(windows)]
@@ -48,6 +52,8 @@ mod place_names;
 mod popup_menus;
 #[path = "tests_preview_info.rs"]
 mod preview_info;
+#[path = "tests_preview_media.rs"]
+mod preview_media;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
 #[path = "tests_properties_card.rs"]
@@ -56,12 +62,20 @@ mod properties_card;
 mod properties_window;
 #[path = "tests_quick_look.rs"]
 mod quick_look;
+#[path = "tests_quiet_toasts.rs"]
+mod quiet_toasts;
 #[path = "tests_quiet_update.rs"]
 mod quiet_update;
 #[path = "tests_remote.rs"]
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_sidebar_sections.rs"]
+mod sidebar_sections;
+#[path = "tests_sidebar_tree.rs"]
+mod sidebar_tree;
+#[path = "tests_small_behaviors.rs"]
+mod small_behaviors;
 #[path = "tests_stuck_drag.rs"]
 mod stuck_drag;
 #[path = "tests_tab_drag.rs"]
@@ -72,8 +86,14 @@ mod tabs;
 mod tests_columns;
 #[path = "tests_commands.rs"]
 mod tests_commands;
+#[path = "tests_home_favorites.rs"]
+mod tests_home_favorites;
+#[path = "tests_quick_access.rs"]
+mod tests_quick_access;
 #[path = "tests_text_input_menu.rs"]
 mod text_input_menu;
+#[path = "tests_too_big_for_bin.rs"]
+mod too_big_for_bin;
 #[path = "tests_top_bar.rs"]
 mod top_bar;
 #[path = "tests_views.rs"]
@@ -100,6 +120,8 @@ unsafe impl Sync for FakeClipboardData {}
 
 #[derive(Default)]
 struct FakeShell {
+    /// What Windows' Quick Access has pinned (`None`: unreadable).
+    quick_access: Mutex<Option<Vec<PathBuf>>>,
     opened: Mutex<Vec<PathBuf>>,
     /// The view order each `opened` file was opened in.
     opened_sorts: Mutex<Vec<Option<SortSpec>>>,
@@ -124,6 +146,14 @@ struct FakeShell {
     shell_sessions: std::sync::atomic::AtomicU64,
     /// While set, reading the whole Windows menu waits for a message on it (a slow menu).
     menu_gate: Mutex<Option<flume::Receiver<()>>>,
+    /// Whether each whole Windows menu read asked for Shift's extra commands.
+    menu_extended: Mutex<Vec<bool>>,
+    /// Packaged apps' commands: class id and the item types their manifest names.
+    packaged_types: Mutex<Vec<(String, Vec<String>)>>,
+    /// Items added at the end of the whole Windows menu.
+    extra_menu: Mutex<Vec<crate::shell::ShellMenuEntry>>,
+    /// While set, reading one source's menu waits for a message on it (a slow source).
+    part_gate: Mutex<Option<flume::Receiver<()>>>,
     /// Context menu extensions and their menus, read on their own (sessions from 100).
     extensions: Mutex<
         Vec<(
@@ -178,6 +208,8 @@ struct FakeShell {
     /// Windows' recent files list, newest first, and the limit Arke asked for.
     recent: Mutex<Vec<crate::home::RecentFile>>,
     recent_limit: Mutex<Option<usize>>,
+    /// Windows' "Show recently used files" is off.
+    recent_off: std::sync::atomic::AtomicBool,
     /// What the next file dialogs return (`None` is Cancel), and the requests they got.
     picks: Mutex<Vec<Option<PathBuf>>>,
     pick_requests: Mutex<Vec<crate::shell::PickRequest>>,
@@ -220,6 +252,10 @@ impl FakeShell {
 }
 
 impl Shell for FakeShell {
+    fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
+        self.quick_access.lock().clone()
+    }
+
     fn load_places(&self) -> Vec<Place> {
         assert!(
             !arke_core::fs::is_ui_thread(),
@@ -282,9 +318,13 @@ impl Shell for FakeShell {
                     .collect(),
             )
         };
-        // Deletes that fail on some items: the rest go, and only they can be undone.
+        // Deletes that fail on some items: the rest go, and only they can be undone. Too big for
+        // the Recycle Bin only stops recycling them; deleting them permanently works.
         if let FileOp::Delete { paths, recycle } = op {
-            let failing = self.fail_delete.lock().clone();
+            let mut failing = self.fail_delete.lock().clone();
+            if !*recycle {
+                failing.retain(|(_, reason, _)| *reason != FailReason::TooBigForBin);
+            }
             let (bad, good): (Vec<PathBuf>, Vec<PathBuf>) = paths
                 .iter()
                 .cloned()
@@ -579,8 +619,10 @@ impl Shell for FakeShell {
         &self,
         paths: &[PathBuf],
         background: bool,
+        extended: bool,
     ) -> Result<crate::shell::ShellMenu, ShellError> {
         use crate::shell::ShellMenuEntry as E;
+        self.menu_extended.lock().push(extended);
         assert!(
             !arke_core::fs::is_ui_thread(),
             "shell menu read on the UI thread"
@@ -621,6 +663,7 @@ impl Shell for FakeShell {
             E::Separator,
             verb_item(5, "Copy", Some("Copy")),
         ];
+        entries.extend(self.extra_menu.lock().iter().cloned());
         entries.extend(
             self.lazy_submenus
                 .lock()
@@ -682,6 +725,38 @@ impl Shell for FakeShell {
         self.shell_released.lock().push(session);
     }
 
+    fn shell_menu_kind(&self, _paths: &[PathBuf], background: bool) -> Option<String> {
+        assert!(!arke_core::fs::is_ui_thread());
+        Some(
+            if background {
+                r"Directory\Background"
+            } else {
+                ".txt"
+            }
+            .into(),
+        )
+    }
+
+    fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
+        assert!(!arke_core::fs::is_ui_thread());
+        self.packaged_types
+            .lock()
+            .iter()
+            .filter(|(c, _)| c.eq_ignore_ascii_case(clsid))
+            .flat_map(|(_, t)| t.clone())
+            .collect()
+    }
+
+    fn packaged_commands(&self, kind: &str) -> Vec<String> {
+        assert!(!arke_core::fs::is_ui_thread());
+        self.packaged_types
+            .lock()
+            .iter()
+            .filter(|(_, types)| crate::win_menu_parts::kind_matches(types, kind))
+            .map(|(clsid, _)| clsid.clone())
+            .collect()
+    }
+
     fn shell_menu_handlers(
         &self,
         _paths: &[PathBuf],
@@ -700,10 +775,15 @@ impl Shell for FakeShell {
         &self,
         _paths: &[PathBuf],
         _background: bool,
+        _extended: bool,
         handler: &crate::win_menu_parts::MenuHandler,
         _group: u64,
     ) -> Result<(crate::shell::ShellMenu, Duration), ShellError> {
         assert!(!arke_core::fs::is_ui_thread());
+        let gate = self.part_gate.lock().clone();
+        if let Some(gate) = gate {
+            let _ = gate.recv_timeout(Duration::from_secs(20));
+        }
         let extensions = self.extensions.lock();
         let at = extensions
             .iter()
@@ -918,6 +998,14 @@ impl Shell for FakeShell {
             .lock()
             .push((dir.to_path_buf(), items.to_vec()));
         self.cloud.lock().clone()
+    }
+
+    fn recent_files_enabled(&self) -> bool {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "recent files setting read on the UI thread"
+        );
+        !self.recent_off.load(Ordering::Relaxed)
     }
 
     /// Returns the whole fake list, ignoring `limit`, so the page's own cap is tested too.
@@ -2634,6 +2722,10 @@ fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext)
         purge_job(cx).map(|(state, ..)| state),
         Some(JobState::Running)
     );
+    // The progress toast waits a couple of seconds; a short delete is only in the operation center.
+    assert!(cx.debug_bounds("toast-ops-action-0").is_none(), "not yet");
+    cx.executor().advance_clock(crate::op_center::TOAST_DELAY);
+    cx.run_until_parked();
     assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
 
     // One item goes; the bar moves (1 of 3).
@@ -2748,6 +2840,8 @@ fn reopening_the_bin_while_it_empties_keeps_it_busy(cx: &mut TestAppContext) {
     );
     let purging = t!("recycle.purging").into_owned();
     assert_eq!(page.update(cx, |p, cx| p.status_for_test(cx)), purging);
+    cx.executor().advance_clock(crate::op_center::TOAST_DELAY);
+    cx.run_until_parked();
     assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
 
     for _ in 0..2 {
@@ -2989,7 +3083,9 @@ fn copy_cut_paste_through_clipboard(cx: &mut TestAppContext) {
             cut: false,
         })
     );
-    wait_until(cx, &view, "notice", |v| v.notice.is_some());
+    // Copying to the clipboard is quiet: nothing to look at, so no toast.
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |v, _| v.notice.clone()), None);
 
     view.update(cx, |v, cx| {
         v.navigate(PathBuf::from(r"C:\b"), NavKind::New, cx);
@@ -3290,7 +3386,7 @@ fn ctrl_z_undoes_the_last_file_op_but_not_in_text_boxes(cx: &mut TestAppContext)
 
     cx.simulate_keystrokes("escape ctrl-z");
     wait_until(cx, &view, "undo", |v| {
-        v.ops_running == 0 && v.notice.is_some()
+        v.ops_running == 0 && !shell.undone.lock().is_empty()
     });
     assert_eq!(
         *shell.undone.lock(),
@@ -3300,10 +3396,8 @@ fn ctrl_z_undoes_the_last_file_op_but_not_in_text_boxes(cx: &mut TestAppContext)
             name: "b.txt".into(),
         }])]
     );
-    view.update(cx, |v, _| {
-        let undone = tn!("undo.done", 1, op = t!("op.recycle"));
-        assert_eq!(v.notice.as_deref(), Some(&*undone));
-    });
+    // A finished undo says nothing: it is in the operation center.
+    view.update(cx, |v, _| assert_eq!(v.notice, None));
     // Undo is listed in the progress center too.
     let undo = t!("op.undo");
     let jobs = finished_jobs(cx);
@@ -5301,10 +5395,10 @@ fn extract_zip_from_context_menu(cx: &mut TestAppContext) {
     right_click(&view, cx, Some(0));
     run_command(&view, cx, MenuCommand::ExtractToFolder);
     wait_until(cx, &view, "extract done", |v| {
-        v.extract_job.is_none() && v.notice.is_some()
+        v.extract_job.is_none() && v.selection.contains("album")
     });
-    let notice = view.update(cx, |v, _| v.notice.clone().unwrap());
-    assert_eq!(notice, tn!("extract.done", 2));
+    // A clean extraction says nothing; it is in the operation center.
+    assert_eq!(view.update(cx, |v, _| v.notice.clone()), None);
     // The progress center has a finished extraction.
     let jobs = finished_jobs(cx);
     assert!(
@@ -5611,7 +5705,7 @@ fn ui_text_comes_from_locales() {
         "UI text hard-coded in source:\n{}",
         hardcoded.join("\n")
     );
-    let languages: BTreeSet<String> = ["en", "zh-TW", "zh-CN"]
+    let languages: BTreeSet<String> = ["en", "zh-TW", "zh-CN", "ja", "de", "es", "pt-BR"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
@@ -7742,10 +7836,8 @@ fn ctrl_y_redoes_the_last_undo_until_something_new_happens(cx: &mut TestAppConte
     wait_shell("redo", || shell.ops().len() == 2);
     wait_until(cx, &view, "redo done", |v| v.ops_running == 0);
     assert_eq!(shell.ops(), [recycle_b.clone(), recycle_b]);
-    view.update(cx, |v, _| {
-        let redid = t!("redo.done", op = t!("op.recycle"));
-        assert_eq!(v.notice.as_deref(), Some(&*redid));
-    });
+    // A finished redo says nothing: it is in the operation center.
+    view.update(cx, |v, _| assert_eq!(v.notice, None));
     // The redo is itself undoable, and Ctrl+Shift+Z redoes again after that.
     cx.simulate_keystrokes("ctrl-z");
     wait_shell("second undo", || shell.undone.lock().len() == 2);
@@ -8754,4 +8846,72 @@ fn click_to_rename_not_in_search_results(cx: &mut TestAppContext) {
     }
     assert_eq!(renaming(&view, cx), None);
     assert!(view.update(cx, |v, _| v.search_mode));
+}
+
+/// Ctrl+double-click on a folder opens it in a new tab in the background (the folder stays
+/// selected); with Shift too, the new tab comes to the front. Ctrl+click alone still selects
+/// (#291).
+#[gpui::test]
+fn ctrl_double_click_opens_a_folder_in_a_new_tab(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![dir("one"), dir("two")]);
+    fs.insert_many(r"C:\t\one", 1);
+    fs.insert_many(r"C:\t\two", 2);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let double_click = |at, modifiers: Modifiers, cx: &mut VisualTestContext| {
+        for click_count in [1, 2] {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count,
+            });
+        }
+        cx.run_until_parked();
+    };
+    let one = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
+    let two = point(bounds.left() + px(60.), bounds.top() + row * 1.5);
+    let ctrl = Modifiers {
+        control: true,
+        ..Modifiers::default()
+    };
+    double_click(one, ctrl, cx);
+    ws.update(cx, |ws, cx| {
+        assert_eq!(
+            tab_paths(ws, cx),
+            [
+                Some(PathBuf::from(r"C:\t")),
+                Some(PathBuf::from(r"C:\t\one"))
+            ]
+        );
+        assert_eq!(ws.active, 0, "in the background");
+    });
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["one"]);
+    assert!(view.update(cx, |v, _| loaded(r"C:\t")(v)), "this tab stays");
+
+    let ctrl_shift = Modifiers {
+        control: true,
+        shift: true,
+        ..Modifiers::default()
+    };
+    double_click(two, ctrl_shift, cx);
+    ws.update(cx, |ws, cx| {
+        assert_eq!(tab_paths(ws, cx).len(), 3);
+        assert_eq!(
+            tab_paths(ws, cx)[ws.active],
+            Some(PathBuf::from(r"C:\t\two"))
+        );
+    });
 }

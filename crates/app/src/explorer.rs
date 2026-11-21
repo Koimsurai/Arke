@@ -796,6 +796,8 @@ pub(crate) struct Explorer {
     pub(crate) op_progress: Option<(Arc<crate::shell::OpProgress>, &'static str)>,
     /// Progress center dropdown in the top bar is open.
     pub(crate) ops_open: bool,
+    /// It was just dismissed and is fading out (see `motion::Leaving`).
+    pub(crate) closing_ops: Option<crate::motion::Leaving<()>>,
     /// Status bar message, e.g. "Copied 3 items".
     pub(crate) notice: Option<String>,
     /// Notice counting down to auto-dismiss.
@@ -807,6 +809,9 @@ pub(crate) struct Explorer {
     /// Undo offered on the notice: the notice text it belongs to and the undo id. Ignored once
     /// the notice shows something else.
     pub(crate) notice_undo: Option<(String, u64)>,
+    /// Another action offered on the notice (e.g. the sidebar's Undo for a removed favorite):
+    /// ignored once the notice shows something else.
+    pub(crate) notice_action: Option<NoticeAction>,
     pub(crate) places: Vec<Place>,
     pub(crate) pane: PaneInfo,
     /// Dual pane folder compare: how this pane's items differ from the other side's, by name.
@@ -822,6 +827,9 @@ pub(crate) struct Explorer {
     /// renames once the double-click time has passed, like Explorer.
     rename_press: Option<Arc<str>>,
     rename_wait: Option<Task<()>>,
+    /// Single-click mode, point to select: the item the pointer rests on (row, name) and the
+    /// timer that selects it when the system hover time has passed (#46).
+    hover_pick: Option<(usize, Arc<str>, Task<()>)>,
     /// List density (settings, shared by all tabs).
     pub(crate) density: Density,
     /// Preview pane on the right is open (settings).
@@ -838,6 +846,9 @@ pub(crate) struct Explorer {
     pub(crate) confirm: Option<confirm::Confirm>,
     /// A cancelled confirmation fading out.
     pub(crate) closing_confirm: Option<crate::motion::Leaving<confirm::Confirm>>,
+    /// Items a recycle left because they are too big for the Recycle Bin, waiting to be asked
+    /// about (the dialog needs a Window; asked during render, once no other dialog is open).
+    pub(crate) too_big_ask: Option<(Vec<PathBuf>, ops::OpFollowUp)>,
     /// Subfolder sizes, computed in the background.
     folder_sizes: sizes::FolderSizes,
     pub(crate) preview: Option<preview::Preview>,
@@ -866,6 +877,9 @@ pub(crate) struct Explorer {
     /// Height the side preview's frame got at the last layout (less than asked for in a short
     /// window), so a PDF's pages fit what is shown.
     pane_frame_h: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
+    /// Where the side preview's content frame and column were drawn, and the drag of the boundary
+    /// between the frame and the details below it.
+    pane_split: std::rc::Rc<std::cell::Cell<preview::PaneSplit>>,
     /// The side preview's details, which scroll (with a scrollbar) in a window too short for them.
     pane_info_scroll: (gpui::ScrollHandle, crate::scrollbar::ScrollbarDrag),
     /// Full pane width including the preview pane. The top bar and context bar span it, so it
@@ -929,6 +943,14 @@ struct DeltaMerge {
     /// Changes that arrived since, applied after the merge.
     backlog: Vec<arke_core::Delta>,
     _task: Task<()>,
+}
+
+/// A button on the notice toast that isn't a file operation's Undo: the notice text it belongs
+/// to, its label and what it does.
+pub(crate) struct NoticeAction {
+    pub(crate) text: String,
+    pub(crate) label: SharedString,
+    pub(crate) run: std::rc::Rc<dyn Fn(&mut App)>,
 }
 
 pub(crate) fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
@@ -1111,11 +1133,13 @@ impl Explorer {
             ops_running: 0,
             op_progress: None,
             ops_open: false,
+            closing_ops: None,
             notice: None,
             notice_timer: None,
             notice_shown: None,
             closing_notice: None,
             notice_undo: None,
+            notice_action: None,
             places: Vec::new(),
             pane: PaneInfo::default(),
             compare: None,
@@ -1123,6 +1147,7 @@ impl Explorer {
             name_pressed: None,
             rename_press: None,
             rename_wait: None,
+            hover_pick: None,
             density: settings.read(cx).settings.density,
             preview_pane: settings.read(cx).settings.preview_pane,
             preview_cue: crate::motion::Cue::default(),
@@ -1131,6 +1156,7 @@ impl Explorer {
             closing_quick_look: None,
             confirm: None,
             closing_confirm: None,
+            too_big_ask: None,
             folder_sizes: sizes::FolderSizes::default(),
             preview: None,
             parent_column: None,
@@ -1151,6 +1177,7 @@ impl Explorer {
             cols: None,
             header_x: std::cell::Cell::new(None),
             pane_frame_h: std::rc::Rc::default(),
+            pane_split: std::rc::Rc::default(),
             pane_info_scroll: Default::default(),
             bar_width: crate::theme::scaled_px(1000.),
             paper_width: crate::theme::scaled_px(1000.),
@@ -1810,9 +1837,12 @@ impl Explorer {
 
     // ───────────────────────── Background events ─────────────────────────
 
+    #[allow(clippy::too_many_lines, reason = "one short arm per background event")]
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
         match event {
             AppEvent::Places(places) => {
+                // The first places of a window: Quick Access pins from File Explorer (#45).
+                crate::quick_access::refresh(&self.services.shell, places.clone(), cx);
                 self.places = places;
                 cx.notify();
             }
@@ -3260,6 +3290,8 @@ impl Explorer {
         let on_name = self.name_pressed.take() == Some(ix);
         window.focus(&self.list_focus, cx);
         self.row_pressed = true;
+        // A press decides the selection; a pending point-to-select must not undo it.
+        self.hover_pick = None;
         let m = event.modifiers;
         self.rename_wait = None;
         self.rename_press = None;
@@ -3290,7 +3322,11 @@ impl Explorer {
             if m.shift {
                 self.selection.extend_to(&view, ix, m.control);
             } else if m.control {
-                self.selection.toggle(&view, ix);
+                // Ctrl+double-click opens a folder in a new tab: its second click keeps the
+                // selection the first one made.
+                if event.click_count < 2 {
+                    self.selection.toggle(&view, ix);
+                }
             } else if in_selection && self.selection.len() > 1 {
                 self.click_select = Some(ix);
             } else {
@@ -3305,6 +3341,17 @@ impl Explorer {
         // folder.
         if event.click_count >= 2 && !m.control && !m.shift && !crate::prefs::single_click() {
             self.open_index(ix, cx);
+        }
+        // Ctrl+double-click on a folder: a new tab, in the background; with Shift too, in front, as
+        // Ctrl+click on a link in a browser (#291). Ctrl+click alone selects, as in File Explorer.
+        if event.click_count == 2
+            && m.control
+            && let Some((path, true)) = self.path_at(ix)
+        {
+            cx.emit(ExplorerEvent::OpenInNewTab {
+                path,
+                activate: m.shift,
+            });
         }
         cx.notify();
     }
@@ -3345,6 +3392,96 @@ impl Explorer {
                 }
             });
         }));
+    }
+
+    /// Single-click mode (point to select, as in File Explorer): the pointer moved over item `ix`.
+    /// Starts the hover timer unless the item already waits for it or the move is a drag, a
+    /// press or a modifier chord (#46).
+    pub(super) fn on_row_pointer_move(
+        &mut self,
+        ix: usize,
+        event: &gpui::MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let m = event.modifiers;
+        if !crate::prefs::single_click()
+            || event.pressed_button.is_some()
+            || m.control
+            || m.shift
+            || m.alt
+            || m.platform
+            || self.search_mode
+            || self.renaming.is_some()
+            || self.marquee.is_some()
+            || cx.has_active_drag()
+        {
+            // Not a resting pointer: whatever was pending is off.
+            self.hover_pick = None;
+            return;
+        }
+        let Some(name) = self
+            .view()
+            .and_then(|v| v.get(ix).map(|e| Arc::clone(&e.name)))
+        else {
+            return;
+        };
+        if self
+            .hover_pick
+            .as_ref()
+            .is_some_and(|(pending, n, _)| *pending == ix && *n == name)
+        {
+            return;
+        }
+        let wait = crate::win::mouse_hover_time();
+        let task = cx.spawn_in(window, {
+            let name = Arc::clone(&name);
+            async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.hover_pick = None;
+                    this.pick_hovered(ix, &name, window, cx);
+                });
+            }
+        });
+        self.hover_pick = Some((ix, name, task));
+    }
+
+    /// The pointer left item `ix`: its pending selection is off.
+    pub(super) fn on_row_pointer_left(&mut self, ix: usize) {
+        if self.hover_pick.as_ref().is_some_and(|(p, _, _)| *p == ix) {
+            self.hover_pick = None;
+        }
+    }
+
+    /// The hover time passed on item `ix` (still `name`): selects only it and moves the keyboard
+    /// cursor there, so Shift+arrows extend from it. Checked again here because the buttons, keys
+    /// and list can change while the timer runs.
+    fn pick_hovered(&mut self, ix: usize, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let m = window.modifiers();
+        if !crate::prefs::single_click()
+            || m.control
+            || m.shift
+            || m.alt
+            || m.platform
+            || self.search_mode
+            || self.renaming.is_some()
+            || self.marquee.is_some()
+            || cx.has_active_drag()
+        {
+            return;
+        }
+        let Some(view) = self.view() else { return };
+        if view.get(ix).is_none_or(|e| &*e.name != name) {
+            return;
+        }
+        if self.selection.len() == 1 && self.selection.contains(name) && self.cursor == Some(ix) {
+            return;
+        }
+        self.selection.select_only(&view, ix);
+        self.cursor = Some(ix);
+        self.click_select = None;
+        cx.notify();
     }
 
     /// Records a press on an item's name; the item's own press handler runs next.

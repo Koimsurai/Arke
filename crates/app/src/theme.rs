@@ -53,16 +53,22 @@ const SIMPLIFIED_FONTS: [&str; 2] = ["Microsoft YaHei UI", "Microsoft YaHei"];
 /// Traditional Chinese UI fonts, UI variant first.
 const TRADITIONAL_FONTS: [&str; 2] = ["Microsoft JhengHei UI", "Microsoft JhengHei"];
 
-/// CJK fallback fonts, in order, for a UI language (`zh-CN`, `zh-TW`, `en`) on a system whose
+/// Japanese UI fonts, UI variant first.
+const JAPANESE_FONTS: [&str; 2] = ["Yu Gothic UI", "Meiryo UI"];
+
+/// CJK fallback fonts, in order, for a UI language (`zh-CN`, `zh-TW`, `ja`, `en`) on a system whose
 /// display locale maps to `system` (same names).
 ///
 /// The default UI font has no CJK glyphs, so DirectWrite picks one by the *system* locale. Han
 /// characters shared by both scripts (U+7F29 in 「压缩」) would then come out in Traditional
 /// shapes on a zh-TW system even with a Simplified UI, or the reverse. Naming the fonts in the UI
-/// language's order fixes that. English follows the system, which is what the file names on it
-/// are most likely written in; other systems get no list and keep DirectWrite's own choice
-/// (Japanese and Korean included).
+/// language's order fixes that. Japanese has its own fonts, since the same characters take
+/// Chinese shapes on a Chinese system. English follows the system, which is what the file names on it
+/// are most likely written in; other systems get no list and keep DirectWrite's own choice.
 pub(crate) fn cjk_fallbacks(ui: &str, system: &str) -> Vec<&'static str> {
+    if ui == "ja" {
+        return JAPANESE_FONTS.to_vec();
+    }
     let simplified_first = match (ui, system) {
         ("zh-CN", _) | ("en", "zh-CN") => true,
         ("zh-TW", _) | ("en", "zh-TW") => false,
@@ -341,6 +347,13 @@ pub(crate) const TILE_XL: Tile = Tile {
     h: px(244.),
     image: px(192.),
     icon: px(128.),
+};
+/// The largest icons, past extra large (slider or Ctrl+wheel only).
+pub(crate) const TILE_LARGEST: Tile = Tile {
+    w: px(284.),
+    h: px(308.),
+    image: px(256.),
+    icon: px(160.),
 };
 // Details view tree: indent per nesting level and the expand chevron's box.
 scaled!(tree_indent, 18.);
@@ -1249,6 +1262,24 @@ pub(crate) fn elev_float() -> Vec<BoxShadow> {
         vec![hairline(line()), drop]
     }
 }
+/// Menus (context menus, dropdowns): a tighter shadow than other floating surfaces, close to the
+/// system's own menus (#275).
+pub(crate) fn elev_menu() -> Vec<BoxShadow> {
+    let drop = drop_shadow(
+        alpha(p().veil, if is_dark() { 0.35 } else { 0.12 }),
+        3.,
+        10.,
+    );
+    if is_dark() {
+        vec![
+            dark_outline(),
+            drop,
+            inner_hairline(alpha(p().ink, FLOAT_EDGE)),
+        ]
+    } else {
+        vec![hairline(line()), drop]
+    }
+}
 /// Dialogs, Ctrl+T, Quick Look.
 pub(crate) fn elev_3() -> Vec<BoxShadow> {
     let drop = drop_shadow(
@@ -1685,8 +1716,10 @@ mod tests {
         }
         assert_eq!(cjk_fallbacks("en", "zh-CN"), simplified);
         assert_eq!(cjk_fallbacks("en", "zh-TW"), traditional);
-        // Elsewhere DirectWrite keeps choosing by the system locale (Japanese, Korean, ...).
+        assert_eq!(cjk_fallbacks("ja", "zh-TW"), ["Yu Gothic UI", "Meiryo UI"]);
+        // Elsewhere DirectWrite keeps choosing by the system locale (Korean, ...).
         assert!(cjk_fallbacks("en", "en").is_empty());
+        assert!(cjk_fallbacks("de", "zh-CN").is_empty());
     }
 
     /// The UI font keeps a custom family and only takes the fallbacks.

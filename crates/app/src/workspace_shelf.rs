@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use arke_core::filetype::{FileKind, kind_for_extension};
 use gpui::{
-    AnyElement, ClickEvent, Context, ExternalPaths, MouseButton, MouseDownEvent, SharedString,
-    Window, div, prelude::*, svg,
+    AnimationExt, AnyElement, ClickEvent, Context, ExternalPaths, MouseButton, MouseDownEvent,
+    SharedString, Window, div, prelude::*, svg,
 };
 use rust_i18n::t;
 
@@ -102,6 +102,7 @@ impl Workspace {
     /// Shows or hides the items; opening rechecks which ones still exist.
     pub(super) fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.shelf_open = !self.shelf_open;
+        self.sidebar_ui.shelf_cue.fire();
         if self.shelf_open {
             let fs = Arc::clone(&self.services.fs);
             ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
@@ -143,6 +144,30 @@ impl Workspace {
         let open = self.shelf_open;
         let menu = self.shelf_menu(cx);
         let source = self.active_view().downgrade();
+        // Just clicked: the chevron turns and, opening, the items drop in, as in a section.
+        let cue = &self.sidebar_ui.shelf_cue;
+        let turning = cue.live_at(std::time::Instant::now()).then(|| cue.serial());
+        let turn = move |t: f32| {
+            gpui::Transformation::rotate(gpui::percentage(if open {
+                0.25 * t
+            } else {
+                0.25 * (1. - t)
+            }))
+        };
+        let glyph = svg()
+            .path(Icon::ChevronRight.path())
+            .size(theme::icon_sm())
+            .text_color(theme::text_subtle());
+        let glyph = match turning {
+            Some(serial) => glyph
+                .with_animation(
+                    ("shelf-chev", serial),
+                    crate::motion::enter(),
+                    move |s, t| s.with_transformation(turn(t)),
+                )
+                .into_any_element(),
+            None => glyph.with_transformation(turn(1.)).into_any_element(),
+        };
         let mut header = div()
             .id("shelf-row")
             .a11y(gpui::Role::Button, t!("shelf.title"))
@@ -165,17 +190,7 @@ impl Workspace {
                     .flex_none()
                     .items_center()
                     .justify_center()
-                    .child(
-                        svg()
-                            .path(Icon::ChevronRight.path())
-                            .size(theme::icon_sm())
-                            .text_color(theme::text_subtle())
-                            .when(open, |s| {
-                                s.with_transformation(gpui::Transformation::rotate(
-                                    gpui::percentage(0.25),
-                                ))
-                            }),
-                    ),
+                    .child(glyph),
             )
             .child(
                 svg()
@@ -265,8 +280,9 @@ impl Workspace {
         if !open {
             return out;
         }
+        let mut rows = Vec::new();
         if held.is_empty() {
-            out.push(
+            rows.push(
                 div()
                     .h(theme::h_row())
                     .flex()
@@ -279,12 +295,16 @@ impl Workspace {
                     .child(t!("shelf.empty").into_owned())
                     .into_any_element(),
             );
-            return out;
+        } else {
+            for (ix, item) in held.items().iter().enumerate() {
+                rows.push(Self::shelf_item_row(ix, item, &source, cx));
+            }
+            rows.push(self.shelf_actions(&held, cx));
         }
-        for (ix, item) in held.items().iter().enumerate() {
-            out.push(Self::shelf_item_row(ix, item, &source, cx));
+        match self.cue_progress(&self.sidebar_ui.shelf_cue) {
+            Some(t) => out.extend(crate::motion::drop_in(rows, t)),
+            None => out.extend(rows),
         }
-        out.push(self.shelf_actions(&held, cx));
         out
     }
 

@@ -328,3 +328,39 @@ fn a_loading_video_shows_the_picture_placeholder_in_quick_look(cx: &mut TestAppC
     assert!(frame.size.width > stage.size.width * 0.8, "fills the stage");
     assert!(frame.size.height > stage.size.height * 0.8);
 }
+
+/// A folder's details stay in the side pane while its contents load and after they come in, in
+/// the same place: they used to show only until the contents replaced them (#290).
+#[gpui::test]
+fn a_folder_keeps_its_details_beside_its_contents(cx: &mut TestAppContext) {
+    let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\p",
+        vec![Entry::new("docs", EntryKind::Dir, 0, Some(at), 0x10).with_created(Some(at))],
+    );
+    fs.insert_dir(
+        r"C:\p\docs",
+        vec![Entry::new("a.txt", EntryKind::File, 5, None, 0)],
+    );
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::new(FakeShell::default()), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    cx.simulate_resize(gpui::size(px(1200.), px(900.)));
+    view.update(cx, |v, cx| {
+        v.preview_pane = true;
+        cx.notify();
+    });
+    fs.hang(r"C:\p\docs");
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| !previewed(v)), "still loading");
+    let loading = bounds(cx, "pane-info-value-0");
+    fs.release(Path::new(r"C:\p\docs"));
+    wait_until(cx, &view, "previewed", previewed);
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| matches!(
+        v.preview.as_ref().map(|p| &p.body),
+        Some(PreviewBody::Folder { .. })
+    )));
+    assert_eq!(bounds(cx, "pane-info-value-0"), loading, "details stay put");
+}

@@ -91,6 +91,8 @@ impl RemoteError {
             | Self::LoginFailed
             | Self::HostKeyUnknown(_)
             | Self::HostKeyChanged(_)
+            // The sign-in dialog is where the user can allow plain http for the location.
+            | Self::Insecure
             | Self::BadKey(_) => FailKind::NeedsLogin,
             _ => FailKind::Other,
         }

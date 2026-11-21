@@ -28,11 +28,13 @@ use crate::theme;
 /// One row in the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
-    /// Section header: label, first item and item count.
+    /// Section header: label, first item, item count, and the items it covers (more than the
+    /// count when expanded folders list their items under themselves).
     Header {
         label: SharedString,
         start: usize,
         count: usize,
+        span: usize,
     },
     /// An item, by index in the list.
     Item(usize),
@@ -85,6 +87,7 @@ impl GridGroups {
                 label,
                 start,
                 count,
+                ..
             } = row
             else {
                 continue;
@@ -305,9 +308,11 @@ fn group_of(entry: &Entry, column: SortColumn, folders_apart: bool, today: Today
     }
 }
 
-/// Splits the list into sections, merging adjacent entries with the same label.
+/// Splits the list into sections, merging adjacent entries with the same label. Items inside an
+/// expanded folder (`depth` above 0) stay in their folder's section.
 fn build(
     entries: &[Entry],
+    depth: impl Fn(usize) -> u16,
     column: SortColumn,
     folders_apart: bool,
     today: Today,
@@ -317,18 +322,23 @@ fn build(
     let mut current: Option<String> = None;
     let mut header_at = 0usize;
     for (ix, entry) in entries.iter().enumerate() {
-        let group = group_of(entry, column, folders_apart, today);
-        if current.as_deref() != Some(group.as_str()) {
-            header_at = rows.len();
-            rows.push(Row::Header {
-                label: SharedString::from(group.clone()),
-                start: ix,
-                count: 0,
-            });
-            current = Some(group);
+        let nested = depth(ix) > 0 && current.is_some();
+        if !nested {
+            let group = group_of(entry, column, folders_apart, today);
+            if current.as_deref() != Some(group.as_str()) {
+                header_at = rows.len();
+                rows.push(Row::Header {
+                    label: SharedString::from(group.clone()),
+                    start: ix,
+                    count: 0,
+                    span: 0,
+                });
+                current = Some(group);
+            }
         }
-        if let Some(Row::Header { count, .. }) = rows.get_mut(header_at) {
-            *count += 1;
+        if let Some(Row::Header { count, span, .. }) = rows.get_mut(header_at) {
+            *count += usize::from(!nested);
+            *span += 1;
         }
         row_of.push(u32::try_from(rows.len()).unwrap_or(u32::MAX));
         rows.push(Row::Item(ix));
@@ -337,14 +347,13 @@ fn build(
 }
 
 impl Explorer {
-    /// Whether to group: setting on, details view, not search results or column view.
+    /// Whether to group: setting on, details view, not search results or column view. Expanded
+    /// folders keep their items under themselves, in the folder's section (#279).
     pub(super) fn grouping(&self) -> bool {
         self.group_rows
             && self.view_mode == ViewMode::Details
             && !self.search_mode
             && !self.columns_active()
-            // An expanded tree folder lists its items under itself, not in sections.
-            && !self.tree_expanding()
     }
 
     /// Grouped grid layout, or `None` when not grouping.
@@ -373,7 +382,7 @@ impl Explorer {
         {
             return Some(Rc::clone(cached));
         }
-        let (rows, _) = build(&view, self.sort.column, folders_apart, today);
+        let (rows, _) = build(&view, |_| 0, self.sort.column, folders_apart, today);
         let grid = Rc::new(GridGroups::new(key, &rows, cols));
         *self.group_cache.1.borrow_mut() = Some(Rc::clone(&grid));
         Some(grid)
@@ -412,7 +421,10 @@ impl Explorer {
                     label,
                     start,
                     count,
-                }) => self.group_header(slot, label.clone(), *start, *count, Some(slot_h), cx),
+                }) => {
+                    let n = *count;
+                    self.group_header(slot, label.clone(), *start, (n, n), Some(slot_h), cx)
+                }
                 Some(Slot::Row(r, k)) if wanted.peek() == Some(&(*r, *k)) => {
                     wanted.next();
                     let row = tiles.next().unwrap_or_else(|| div().into_any_element());
@@ -460,7 +472,17 @@ impl Explorer {
         {
             return Some(Rc::clone(cached));
         }
-        let (rows, row_of) = build(&view, self.sort.column, folders_apart, today);
+        // Items of expanded folders, when the list is the tree (not a filter of it).
+        let tree = self
+            .tree_flat()
+            .filter(|(entries, _)| Arc::ptr_eq(entries, &view))
+            .map(|(_, rows)| rows);
+        let depth = |ix: usize| {
+            tree.as_ref()
+                .and_then(|rows| rows.get(ix))
+                .map_or(0, |r| r.depth)
+        };
+        let (rows, row_of) = build(&view, depth, self.sort.column, folders_apart, today);
         let groups = Rc::new(Groups { key, rows, row_of });
         *self.group_cache.0.borrow_mut() = Some(Rc::clone(&groups));
         Some(groups)
@@ -514,11 +536,13 @@ impl Explorer {
                     label,
                     start,
                     count,
+                    span,
                 }) => {
                     if let Some(r) = run.take() {
                         out.extend(self.render_rows(r, focused, &[], cx));
                     }
-                    out.push(self.group_header(row, label.clone(), *start, *count, None, cx));
+                    let (start, count, span) = (*start, *count, *span);
+                    out.push(self.group_header(row, label.clone(), start, (count, span), None, cx));
                 }
                 None => {}
             }
@@ -529,13 +553,14 @@ impl Explorer {
         out
     }
 
-    /// Section header with label, count and a rule. Clicking selects the section.
+    /// Section header with label, count and a rule. Clicking selects the section: `span` items
+    /// from `start` (expanded folders' items included).
     fn group_header(
         &self,
         row: usize,
         label: SharedString,
         start: usize,
-        count: usize,
+        (count, span): (usize, usize),
         height: Option<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -587,7 +612,7 @@ impl Explorer {
                 } else {
                     Vec::new()
                 };
-                let end = (start + count).min(view.len());
+                let end = (start + span).min(view.len());
                 names.extend(view[start.min(end)..end].iter().map(|e| Arc::clone(&e.name)));
                 this.selection.select_names(names);
                 this.selection
@@ -615,7 +640,7 @@ mod tests {
         for name in ["a1", "a2", "a3", "a4", "a5", "b1", "b2"] {
             entries.push(Entry::new(name, EntryKind::File, 1, None, 0));
         }
-        let (rows, _) = build(&entries, SortColumn::Name, true, today);
+        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today);
         let grid = GridGroups::new((0, 0, SortColumn::Name, true, 0, 3), &rows, 3);
         // Folders 1 row, A two rows (3+2), B 1 row; a header slot before each section.
         let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
@@ -683,7 +708,7 @@ mod tests {
             // A non-ASCII first letter falls into "Other".
             Entry::new("報告.docx", EntryKind::File, 1, None, 0),
         ];
-        let (rows, row_of) = build(&entries, SortColumn::Name, true, today);
+        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today);
         let headers: Vec<(String, usize)> = rows
             .iter()
             .filter_map(|r| match r {

@@ -449,30 +449,34 @@ fn open_with_card(
         })
         .child(input.clone())
         .into_any_element();
-    // Last row: paste a path, or browse for the program.
+    // Last row: paste a path, or browse for the program. The + and the button line up with the
+    // text box, not with the label and box together (#281).
+    let beside_field = |d: gpui::Div| d.flex_none().h(theme::h_ctl()).flex().items_center();
     rows.push(
         div()
             .min_h(super::settings_panel::card_min_h())
             .px(theme::s_16())
             .py(theme::s_12())
             .flex()
-            .items_center()
+            .items_end()
             .gap(theme::s_16())
-            .child(super::settings_panel::row_icon(
+            .child(beside_field(div()).child(super::settings_panel::row_icon(
                 Icon::Plus,
                 theme::text_muted(),
-            ))
+            )))
             .child(super::settings_panel::row_text(
                 t!("openwith.add").into_owned().into(),
                 Some(field),
             ))
-            .child(div().flex_none().child(super::settings_panel::text_button(
-                "openwith-browse",
-                t!("settings.browse"),
-                cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.browse(super::settings_panel::Browse::OpenWithProgram, window, cx);
-                }),
-            )))
+            .child(
+                beside_field(div()).child(super::settings_panel::text_button(
+                    "openwith-browse",
+                    t!("settings.browse"),
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.browse(super::settings_panel::Browse::OpenWithProgram, window, cx);
+                    }),
+                )),
+            )
             .into_any_element(),
     );
     super::settings_panel::group_with(Some(t!("openwith.title")), Some(t!("openwith.desc")), rows)

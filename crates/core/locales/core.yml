@@ -5,353 +5,697 @@ type.folder:
   en: Folder
   zh-TW: 資料夾
   zh-CN: 文件夹
+  de: Dateiordner
+  es: Carpeta de archivos
+  pt-BR: Pasta
+  ja: ファイル フォルダー
 type.folder_link:
   en: Folder shortcut
   zh-TW: 資料夾捷徑
   zh-CN: 文件夹快捷方式
+  de: Ordnerverknüpfung
+  es: Acceso directo a carpeta
+  pt-BR: Atalho de pasta
+  ja: フォルダー ショートカット
 type.file:
   en: File
   zh-TW: 檔案
   zh-CN: 文件
+  de: Datei
+  es: Archivo
+  pt-BR: Arquivo
+  ja: ファイル
 type.ext_file:
   en: "%{ext} File"
   zh-TW: "%{ext} 檔案"
   zh-CN: "%{ext} 文件"
+  de: "%{ext}-Datei"
+  es: Archivo %{ext}
+  pt-BR: Arquivo %{ext}
+  ja: "%{ext} ファイル"
 type.text:
   en: Text Document
   zh-TW: 文字文件
   zh-CN: 文本文档
+  de: Textdokument
+  es: Documento de texto
+  pt-BR: Documento de Texto
+  ja: テキスト ドキュメント
 type.markdown:
   en: Markdown Document
   zh-TW: Markdown 文件
   zh-CN: Markdown 文档
+  de: Markdown-Dokument
+  es: Documento Markdown
+  pt-BR: Documento Markdown
+  ja: Markdown ドキュメント
 type.exe:
   en: Application
   zh-TW: 應用程式
   zh-CN: 应用程序
+  de: Anwendung
+  es: Aplicación
+  pt-BR: Aplicativo
+  ja: アプリケーション
 type.msi:
   en: Windows Installer
   zh-TW: Windows 安裝程式
   zh-CN: Windows Installer 程序包
+  de: Windows Installer
+  es: Paquete de Windows Installer
+  pt-BR: Windows Installer
+  ja: Windows インストーラー
 type.dll:
   en: Application Extension
   zh-TW: 應用程式擴充
   zh-CN: 应用程序扩展
+  de: Anwendungserweiterung
+  es: Extensión de la aplicación
+  pt-BR: Extensão de aplicativo
+  ja: アプリケーションの拡張
 type.lnk:
   en: Shortcut
   zh-TW: 捷徑
   zh-CN: 快捷方式
+  de: Verknüpfung
+  es: Acceso directo
+  pt-BR: Atalho
+  ja: ショートカット
 type.url:
   en: Internet Shortcut
   zh-TW: 網際網路捷徑
   zh-CN: Internet 快捷方式
+  de: Internetverknüpfung
+  es: Acceso directo a Internet
+  pt-BR: Atalho da Internet
+  ja: インターネット ショートカット
 type.batch:
   en: Batch File
   zh-TW: 批次檔
   zh-CN: 批处理文件
+  de: Batchdatei
+  es: Archivo por lotes de Windows
+  pt-BR: Arquivo em lotes
+  ja: バッチ ファイル
 type.ps1:
   en: PowerShell Script
   zh-TW: PowerShell 指令碼
   zh-CN: PowerShell 脚本
+  de: PowerShell-Skript
+  es: Script de PowerShell
+  pt-BR: Script do PowerShell
+  ja: PowerShell スクリプト
 type.zip:
   en: ZIP Archive
   zh-TW: ZIP 壓縮檔
   zh-CN: ZIP 压缩文件
+  de: ZIP-Archiv
+  es: Archivo ZIP
+  pt-BR: Arquivo compactado ZIP
+  ja: ZIP アーカイブ
 type.7z:
   en: 7-Zip Archive
   zh-TW: 7-Zip 壓縮檔
   zh-CN: 7-Zip 压缩文件
+  de: 7-Zip-Archiv
+  es: Archivo 7-Zip
+  pt-BR: Arquivo compactado 7-Zip
+  ja: 7-Zip アーカイブ
 type.rar:
   en: RAR Archive
   zh-TW: RAR 壓縮檔
   zh-CN: RAR 压缩文件
+  de: RAR-Archiv
+  es: Archivo RAR
+  pt-BR: Arquivo compactado RAR
+  ja: RAR アーカイブ
 type.jpeg:
   en: JPEG Image
   zh-TW: JPEG 影像
   zh-CN: JPEG 图像
+  de: JPEG-Bild
+  es: Imagen JPEG
+  pt-BR: Imagem JPEG
+  ja: JPEG 画像
 type.png:
   en: PNG Image
   zh-TW: PNG 影像
   zh-CN: PNG 图像
+  de: PNG-Bild
+  es: Imagen PNG
+  pt-BR: Imagem PNG
+  ja: PNG 画像
 type.gif:
   en: GIF Image
   zh-TW: GIF 影像
   zh-CN: GIF 图像
+  de: GIF-Bild
+  es: Imagen GIF
+  pt-BR: Imagem GIF
+  ja: GIF 画像
 type.webp:
   en: WebP Image
   zh-TW: WebP 影像
   zh-CN: WebP 图像
+  de: WebP-Bild
+  es: Imagen WebP
+  pt-BR: Imagem WebP
+  ja: WebP 画像
 type.svg:
   en: SVG Image
   zh-TW: SVG 影像
   zh-CN: SVG 图像
+  de: SVG-Bild
+  es: Imagen SVG
+  pt-BR: Imagem SVG
+  ja: SVG 画像
 type.ico:
   en: Icon
   zh-TW: 圖示
   zh-CN: 图标
+  de: Symbol
+  es: Icono
+  pt-BR: Ícone
+  ja: アイコン
 type.mp3:
   en: MP3 Audio
   zh-TW: MP3 音訊
   zh-CN: MP3 音频
+  de: MP3-Audio
+  es: Audio MP3
+  pt-BR: Áudio MP3
+  ja: MP3 オーディオ
 type.wav:
   en: WAV Audio
   zh-TW: WAV 音訊
   zh-CN: WAV 音频
+  de: WAV-Audio
+  es: Audio WAV
+  pt-BR: Áudio WAV
+  ja: WAV オーディオ
 type.flac:
   en: FLAC Audio
   zh-TW: FLAC 音訊
   zh-CN: FLAC 音频
+  de: FLAC-Audio
+  es: Audio FLAC
+  pt-BR: Áudio FLAC
+  ja: FLAC オーディオ
 type.mp4:
   en: MP4 Video
   zh-TW: MP4 影片
   zh-CN: MP4 视频
+  de: MP4-Video
+  es: Vídeo MP4
+  pt-BR: Vídeo MP4
+  ja: MP4 ビデオ
 type.mkv:
   en: MKV Video
   zh-TW: MKV 影片
   zh-CN: MKV 视频
+  de: MKV-Video
+  es: Vídeo MKV
+  pt-BR: Vídeo MKV
+  ja: MKV ビデオ
 type.mov:
   en: QuickTime Video
   zh-TW: QuickTime 影片
   zh-CN: QuickTime 视频
+  de: QuickTime-Video
+  es: Vídeo de QuickTime
+  pt-BR: Vídeo QuickTime
+  ja: QuickTime ビデオ
 type.pdf:
   en: PDF Document
   zh-TW: PDF 文件
   zh-CN: PDF 文档
+  de: PDF-Dokument
+  es: Documento PDF
+  pt-BR: Documento PDF
+  ja: PDF ドキュメント
 type.word:
   en: Word Document
   zh-TW: Word 文件
   zh-CN: Word 文档
+  de: Word-Dokument
+  es: Documento de Word
+  pt-BR: Documento do Word
+  ja: Word ドキュメント
 type.excel:
   en: Excel Spreadsheet
   zh-TW: Excel 試算表
   zh-CN: Excel 工作表
+  de: Excel-Tabelle
+  es: Hoja de cálculo de Excel
+  pt-BR: Planilha do Excel
+  ja: Excel ワークシート
 type.powerpoint:
   en: PowerPoint Presentation
   zh-TW: PowerPoint 簡報
   zh-CN: PowerPoint 演示文稿
+  de: PowerPoint-Präsentation
+  es: Presentación de PowerPoint
+  pt-BR: Apresentação do PowerPoint
+  ja: PowerPoint プレゼンテーション
 type.csv:
   en: CSV File
   zh-TW: CSV 檔案
   zh-CN: CSV 文件
+  de: CSV-Datei
+  es: Archivo CSV
+  pt-BR: Arquivo CSV
+  ja: CSV ファイル
 type.json:
   en: JSON File
   zh-TW: JSON 檔案
   zh-CN: JSON 文件
+  de: JSON-Datei
+  es: Archivo JSON
+  pt-BR: Arquivo JSON
+  ja: JSON ファイル
 type.xml:
   en: XML File
   zh-TW: XML 檔案
   zh-CN: XML 文件
+  de: XML-Datei
+  es: Archivo XML
+  pt-BR: Arquivo XML
+  ja: XML ファイル
 type.html:
   en: HTML Document
   zh-TW: HTML 文件
   zh-CN: HTML 文档
+  de: HTML-Dokument
+  es: Documento HTML
+  pt-BR: Documento HTML
+  ja: HTML ドキュメント
 type.rust:
   en: Rust Source
   zh-TW: Rust 原始碼
   zh-CN: Rust 源文件
+  de: Rust-Quelltext
+  es: Código fuente de Rust
+  pt-BR: Código-fonte Rust
+  ja: Rust ソース
 type.python:
   en: Python Source
   zh-TW: Python 原始碼
   zh-CN: Python 源文件
+  de: Python-Quelltext
+  es: Código fuente de Python
+  pt-BR: Código-fonte Python
+  ja: Python ソース
 type.javascript:
   en: JavaScript File
   zh-TW: JavaScript 檔案
   zh-CN: JavaScript 文件
+  de: JavaScript-Datei
+  es: Archivo JavaScript
+  pt-BR: Arquivo JavaScript
+  ja: JavaScript ファイル
 type.typescript:
   en: TypeScript File
   zh-TW: TypeScript 檔案
   zh-CN: TypeScript 文件
+  de: TypeScript-Datei
+  es: Archivo TypeScript
+  pt-BR: Arquivo TypeScript
+  ja: TypeScript ファイル
 type.toml:
   en: TOML File
   zh-TW: TOML 檔案
   zh-CN: TOML 文件
+  de: TOML-Datei
+  es: Archivo TOML
+  pt-BR: Arquivo TOML
+  ja: TOML ファイル
 type.yaml:
   en: YAML File
   zh-TW: YAML 檔案
   zh-CN: YAML 文件
+  de: YAML-Datei
+  es: Archivo YAML
+  pt-BR: Arquivo YAML
+  ja: YAML ファイル
 type.iso:
   en: Disc Image
   zh-TW: 光碟映像檔
   zh-CN: 光盘映像文件
+  de: Datenträgerabbild
+  es: Imagen de disco
+  pt-BR: Imagem de disco
+  ja: ディスク イメージ
 
 # ─── File name validation (path::validate_file_name)
 name.empty:
   en: The name can't be empty
   zh-TW: 名稱不能是空白
   zh-CN: 名称不能为空
+  de: Der Name darf nicht leer sein
+  es: El nombre no puede estar vacío
+  pt-BR: O nome não pode ficar vazio
+  ja: 名前を空にすることはできません
 name.bad_chars:
   en: 'A name can''t contain any of these characters: \ / : * ? " < > |'
   zh-TW: '名稱不能包含下列字元：\ / : * ? " < > |'
   zh-CN: '名称不能包含下列字符：\ / : * ? " < > |'
+  de: "Ein Name darf keines der folgenden Zeichen enthalten: \\ / : * ? \" < > |"
+  es: "Un nombre no puede contener ninguno de estos caracteres: \\ / : * ? \" < > |"
+  pt-BR: "Um nome não pode conter nenhum destes caracteres: \\ / : * ? \" < > |"
+  ja: "名前に次の文字は使えません: \\ / : * ? \" < > |"
 name.trailing:
   en: A name can't end with a period or a space
   zh-TW: 名稱結尾不能是句點或空白
   zh-CN: 名称不能以句点或空格结尾
+  de: Ein Name darf nicht mit einem Punkt oder Leerzeichen enden
+  es: Un nombre no puede terminar en punto ni en espacio
+  pt-BR: Um nome não pode terminar com ponto ou espaço
+  ja: 名前の末尾にピリオドやスペースは使えません
 name.too_long:
   en: The name is too long
   zh-TW: 名稱太長
   zh-CN: 名称太长
+  de: Der Name ist zu lang
+  es: El nombre es demasiado largo
+  pt-BR: O nome é longo demais
+  ja: 名前が長すぎます
 name.reserved:
   en: This name is reserved by Windows
   zh-TW: 這是 Windows 保留的名稱
   zh-CN: 这是 Windows 保留的名称
+  de: Dieser Name ist von Windows reserviert
+  es: Windows reserva este nombre
+  pt-BR: Este nome é reservado pelo Windows
+  ja: この名前は Windows で予約されています
 
 # ─── Listing errors (service)
 io.internal:
   en: "Internal error (logged); please report it"
   zh-TW: 內部錯誤（已記錄），請回報
   zh-CN: 内部错误（已记录），请反馈
+  de: Interner Fehler (protokolliert); bitte melden
+  es: Error interno (registrado); infórmelo, por favor
+  pt-BR: Erro interno (registrado); por favor, relate-o
+  ja: 内部エラー（ログに記録済み）。報告してください
 io.not_found:
   en: This location can't be found
   zh-TW: 找不到這個位置
   zh-CN: 找不到此位置
+  de: Dieser Ort wurde nicht gefunden
+  es: No se encuentra esta ubicación
+  pt-BR: Este local não foi encontrado
+  ja: この場所が見つかりません
 io.denied:
   en: Access denied
   zh-TW: 沒有存取權限
   zh-CN: 没有访问权限
+  de: Zugriff verweigert
+  es: Acceso denegado
+  pt-BR: Acesso negado
+  ja: アクセスが拒否されました
 io.not_dir:
   en: "This isn't a folder"
   zh-TW: 這不是資料夾
   zh-CN: 这不是文件夹
+  de: Dies ist kein Ordner
+  es: Esto no es una carpeta
+  pt-BR: Isto não é uma pasta
+  ja: フォルダーではありません
 io.too_large:
   en: The file is too large
   zh-TW: 檔案太大
   zh-CN: 文件太大
+  de: Die Datei ist zu groß
+  es: El archivo es demasiado grande
+  pt-BR: O arquivo é grande demais
+  ja: ファイルが大きすぎます
 
 # ─── Extraction (archive)
 archive.folder_fallback:
   en: Extracted
   zh-TW: 解壓縮
   zh-CN: 解压
+  de: Extrahiert
+  es: Extraído
+  pt-BR: Extraído
+  ja: 展開済み
 archive.exists:
   en: "%{path} already exists"
   zh-TW: "%{path} 已經存在"
   zh-CN: "%{path} 已存在"
+  de: "%{path} ist bereits vorhanden"
+  es: "%{path} ya existe"
+  pt-BR: "%{path} já existe"
+  ja: "%{path} は既に存在します"
 archive.zip_failed:
   en: "Couldn't create the zip file: %{error}"
   zh-TW: "無法建立 zip 檔：%{error}"
   zh-CN: "无法创建 zip 文件：%{error}"
+  de: "Die ZIP-Datei konnte nicht erstellt werden: %{error}"
+  es: "No se pudo crear el archivo zip: %{error}"
+  pt-BR: "Não foi possível criar o arquivo zip: %{error}"
+  ja: "zip ファイルを作成できませんでした: %{error}"
 archive.create_failed:
   en: "Couldn't create %{path}: %{error}"
   zh-TW: "無法建立 %{path}：%{error}"
   zh-CN: "无法创建 %{path}：%{error}"
+  de: "%{path} konnte nicht erstellt werden: %{error}"
+  es: "No se pudo crear %{path}: %{error}"
+  pt-BR: "Não foi possível criar %{path}: %{error}"
+  ja: "%{path} を作成できませんでした: %{error}"
 archive.open_failed:
   en: "Couldn't open the archive: %{error}"
   zh-TW: "無法開啟壓縮檔：%{error}"
   zh-CN: "无法打开压缩文件：%{error}"
+  de: "Das Archiv konnte nicht geöffnet werden: %{error}"
+  es: "No se pudo abrir el archivo comprimido: %{error}"
+  pt-BR: "Não foi possível abrir o arquivo compactado: %{error}"
+  ja: "アーカイブを開けませんでした: %{error}"
 archive.write_failed:
   en: "Couldn't write %{path}: %{error}"
   zh-TW: "無法寫入 %{path}：%{error}"
   zh-CN: "无法写入 %{path}：%{error}"
+  de: "%{path} konnte nicht geschrieben werden: %{error}"
+  es: "No se pudo escribir %{path}: %{error}"
+  pt-BR: "Não foi possível gravar %{path}: %{error}"
+  ja: "%{path} に書き込めませんでした: %{error}"
 archive.read_failed:
   en: "Couldn't read the archive (%{name}): %{error}"
   zh-TW: "壓縮檔讀取失敗（%{name}）：%{error}"
   zh-CN: "压缩文件读取失败（%{name}）：%{error}"
+  de: "Das Archiv (%{name}) konnte nicht gelesen werden: %{error}"
+  es: "No se pudo leer el archivo comprimido (%{name}): %{error}"
+  pt-BR: "Não foi possível ler o arquivo compactado (%{name}): %{error}"
+  ja: "アーカイブ (%{name}) を読み取れませんでした: %{error}"
 archive.not_zip:
   en: "Not a valid zip file: %{error}"
   zh-TW: "不是有效的 zip 檔：%{error}"
   zh-CN: "不是有效的 zip 文件：%{error}"
+  de: "Keine gültige ZIP-Datei: %{error}"
+  es: "No es un archivo zip válido: %{error}"
+  pt-BR: "Não é um arquivo zip válido: %{error}"
+  ja: "有効な zip ファイルではありません: %{error}"
 archive.not_tar:
   en: "Not a valid tar file: %{error}"
   zh-TW: "不是有效的 tar 檔：%{error}"
   zh-CN: "不是有效的 tar 文件：%{error}"
+  de: "Keine gültige TAR-Datei: %{error}"
+  es: "No es un archivo tar válido: %{error}"
+  pt-BR: "Não é um arquivo tar válido: %{error}"
+  ja: "有効な tar ファイルではありません: %{error}"
 archive.corrupt:
   en: "The archive is damaged: %{error}"
   zh-TW: "壓縮檔損毀：%{error}"
   zh-CN: "压缩文件已损坏：%{error}"
+  de: "Das Archiv ist beschädigt: %{error}"
+  es: "El archivo comprimido está dañado: %{error}"
+  pt-BR: "O arquivo compactado está danificado: %{error}"
+  ja: "アーカイブが破損しています: %{error}"
 archive.not_format:
   en: "Not a valid %{format} file: %{error}"
   zh-TW: "不是有效的 %{format} 檔：%{error}"
   zh-CN: "不是有效的 %{format} 文件：%{error}"
+  de: "Keine gültige %{format}-Datei: %{error}"
+  es: "No es un archivo %{format} válido: %{error}"
+  pt-BR: "Não é um arquivo %{format} válido: %{error}"
+  ja: "有効な %{format} ファイルではありません: %{error}"
 archive.encrypted:
   en: "Arke can't open password-protected archives yet"
   zh-TW: "Arke 還無法開啟有密碼保護的壓縮檔"
   zh-CN: "Arke 暂时无法打开受密码保护的压缩文件"
+  de: Arke kann kennwortgeschützte Archive noch nicht öffnen
+  es: Arke aún no puede abrir archivos comprimidos protegidos con contraseña
+  pt-BR: O Arke ainda não abre arquivos compactados protegidos por senha
+  ja: Arke はまだパスワード保護されたアーカイブを開けません
 archive.unsupported_method:
   en: "This archive uses a compression method Arke can't read (%{method})"
   zh-TW: "這個壓縮檔使用 Arke 無法讀取的壓縮方式（%{method}）"
   zh-CN: "此压缩文件使用了 Arke 无法读取的压缩方式（%{method}）"
+  de: Dieses Archiv verwendet eine Komprimierungsmethode, die Arke nicht lesen kann (%{method})
+  es: Este archivo comprimido usa un método de compresión que Arke no puede leer (%{method})
+  pt-BR: Este arquivo compactado usa um método de compactação que o Arke não consegue ler (%{method})
+  ja: このアーカイブは Arke が読み取れない圧縮方式 (%{method}) を使っています
 archive.system_missing:
   en: "Opening %{format} files needs Windows 11 version 23H2 or later"
   zh-TW: "開啟 %{format} 檔需要 Windows 11 23H2 以上版本"
   zh-CN: "打开 %{format} 文件需要 Windows 11 23H2 或更高版本"
+  de: Zum Öffnen von %{format}-Dateien ist Windows 11 Version 23H2 oder höher erforderlich
+  es: Abrir archivos %{format} requiere Windows 11 versión 23H2 o posterior
+  pt-BR: Abrir arquivos %{format} requer o Windows 11 versão 23H2 ou posterior
+  ja: "%{format} ファイルを開くには Windows 11 バージョン 23H2 以降が必要です"
 archive.system_unsupported:
   en: "This version of Windows can't read this %{format} file (%{error}). The file may be damaged, or it may need Windows 11 version 23H2 or later."
   zh-TW: "這個 Windows 版本無法讀取這個 %{format} 檔（%{error}）。檔案可能已損毀，或需要 Windows 11 23H2 以上版本。"
   zh-CN: "此 Windows 版本无法读取这个 %{format} 文件（%{error}）。文件可能已损坏，或需要 Windows 11 23H2 或更高版本。"
+  de: Diese Windows-Version kann diese %{format}-Datei nicht lesen (%{error}). Die Datei ist möglicherweise beschädigt oder erfordert Windows 11 Version 23H2 oder höher.
+  es: Esta versión de Windows no puede leer este archivo %{format} (%{error}). El archivo puede estar dañado o requerir Windows 11 versión 23H2 o posterior.
+  pt-BR: Esta versão do Windows não consegue ler este arquivo %{format} (%{error}). O arquivo pode estar danificado ou exigir o Windows 11 versão 23H2 ou posterior.
+  ja: このバージョンの Windows では、この %{format} ファイルを読み取れません (%{error})。ファイルが破損しているか、Windows 11 バージョン 23H2 以降が必要な可能性があります。
 archive.system_names:
   en: "This version of Windows can't handle some file names in this archive (characters outside the system language). Files before them were kept; Windows 11 version 23H2 or later can extract it all."
   zh-TW: "這個 Windows 版本無法處理壓縮檔裡的部分檔名（含系統語言以外的字元）。之前的檔案已保留；Windows 11 23H2 以上版本可以完整解壓縮。"
   zh-CN: "此 Windows 版本无法处理压缩文件中的部分文件名（含系统语言以外的字符）。之前的文件已保留；Windows 11 23H2 或更高版本可以完整解压。"
+  de: Diese Windows-Version kann einige Dateinamen in diesem Archiv nicht verarbeiten (Zeichen außerhalb der Systemsprache). Davor liegende Dateien wurden behalten; Windows 11 Version 23H2 oder höher kann alles extrahieren.
+  es: Esta versión de Windows no puede procesar algunos nombres de archivo de este archivo comprimido (caracteres fuera del idioma del sistema). Se conservaron los anteriores; Windows 11 versión 23H2 o posterior puede extraerlo todo.
+  pt-BR: Esta versão do Windows não consegue lidar com alguns nomes de arquivo neste arquivo compactado (caracteres fora do idioma do sistema). Os arquivos anteriores foram mantidos; o Windows 11 versão 23H2 ou posterior consegue extrair tudo.
+  ja: このバージョンの Windows では、このアーカイブ内の一部のファイル名（システム言語以外の文字）を処理できません。それより前のファイルは保持されました。Windows 11 バージョン 23H2 以降なら、すべて展開できます。
 archive.tar_failed:
   en: "Windows' tar.exe failed: %{error}"
   zh-TW: "Windows 的 tar.exe 執行失敗：%{error}"
   zh-CN: "Windows 的 tar.exe 运行失败：%{error}"
+  de: "tar.exe von Windows ist fehlgeschlagen: %{error}"
+  es: "Error de tar.exe de Windows: %{error}"
+  pt-BR: "O tar.exe do Windows falhou: %{error}"
+  ja: "Windows の tar.exe が失敗しました: %{error}"
 archive.run_failed:
   en: "Couldn't run %{path}: %{error}"
   zh-TW: "無法執行 %{path}：%{error}"
   zh-CN: "无法运行 %{path}：%{error}"
+  de: "%{path} konnte nicht ausgeführt werden: %{error}"
+  es: "No se pudo ejecutar %{path}: %{error}"
+  pt-BR: "Não foi possível executar %{path}: %{error}"
+  ja: "%{path} を実行できませんでした: %{error}"
 archive.needs_file:
   en: "%{format} archives can only be read from a file on disk"
   zh-TW: "%{format} 壓縮檔只能從磁碟上的檔案讀取"
   zh-CN: "%{format} 压缩文件只能从磁盘上的文件读取"
+  de: "%{format}-Archive können nur aus einer Datei auf dem Datenträger gelesen werden"
+  es: Los archivos %{format} solo se pueden leer desde un archivo en disco
+  pt-BR: Arquivos compactados %{format} só podem ser lidos a partir de um arquivo em disco
+  ja: "%{format} アーカイブは、ディスク上のファイルからのみ読み取れます"
 
 # ─── Date keywords for dm:… (English always works; these are the localized forms, comma-separated)
 query.dm.today:
   en: today
   zh-TW: 今天
   zh-CN: 今天
+  de: today
+  es: hoy
+  pt-BR: hoje
+  ja: 今日
 query.dm.yesterday:
   en: yesterday
   zh-TW: 昨天
   zh-CN: 昨天
+  de: yesterday
+  es: ayer
+  pt-BR: ontem
+  ja: 昨日
 query.dm.thisweek:
   en: thisweek
   zh-TW: 本週,這週
   zh-CN: 本周,这周
+  de: thisweek
+  es: estasemana
+  pt-BR: estasemana
+  ja: 今週
 query.dm.thismonth:
   en: thismonth
   zh-TW: 本月,這個月
   zh-CN: 本月,这个月
+  de: thismonth
+  es: estemes
+  pt-BR: estemes
+  ja: 今月
 query.dm.thisyear:
   en: thisyear
   zh-TW: 今年
   zh-CN: 今年
+  de: thisyear
+  es: esteaño
+  pt-BR: esteano
+  ja: 今年
 
 # ─── Network locations (SMB)
 io.net_not_found:
   en: "Can't find the network path; check the server name and that the server is on"
   zh-TW: "找不到網路路徑，請檢查伺服器名稱並確認伺服器已開機"
   zh-CN: "找不到网络路径，请检查服务器名称并确认服务器已开机"
+  de: Der Netzwerkpfad wurde nicht gefunden; Servername prüfen und ob der Server eingeschaltet ist
+  es: No se encuentra la ruta de red; compruebe el nombre del servidor y que esté encendido
+  pt-BR: Não foi possível encontrar o caminho de rede; verifique o nome do servidor e se ele está ligado
+  ja: ネットワーク パスが見つかりません。サーバー名とサーバーの電源を確認してください
 io.net_offline:
   en: "The server isn't responding; check your network or VPN connection"
   zh-TW: "伺服器沒有回應，請檢查網路或 VPN 連線"
   zh-CN: "服务器没有响应，请检查网络或 VPN 连接"
+  de: Der Server antwortet nicht; Netzwerk- oder VPN-Verbindung prüfen
+  es: El servidor no responde; compruebe su conexión de red o VPN
+  pt-BR: O servidor não está respondendo; verifique sua rede ou conexão VPN
+  ja: サーバーが応答しません。ネットワークまたは VPN の接続を確認してください
 io.net_no_share:
   en: The server has no shared folder with this name
   zh-TW: 伺服器上沒有這個共用資料夾
   zh-CN: 服务器上没有这个共享文件夹
+  de: Der Server hat keinen freigegebenen Ordner mit diesem Namen
+  es: El servidor no tiene ninguna carpeta compartida con este nombre
+  pt-BR: O servidor não tem pasta compartilhada com este nome
+  ja: サーバーにこの名前の共有フォルダーがありません
 io.net_other_account:
   en: You're already connected to this server with a different account; disconnect it first
   zh-TW: "已經用其他帳戶連到這台伺服器，請先中斷該連線"
   zh-CN: "已使用其他帐户连接到此服务器，请先断开该连接"
+  de: Sie sind bereits mit einem anderen Konto mit diesem Server verbunden; trennen Sie diese Verbindung zuerst
+  es: Ya está conectado a este servidor con otra cuenta; desconéctela primero
+  pt-BR: Você já está conectado a este servidor com outra conta; desconecte-a primeiro
+  ja: このサーバーには既に別のアカウントで接続されています。先に切断してください
 io.net_login:
   en: You need to sign in to this server
   zh-TW: 需要登入這台伺服器
   zh-CN: 需要登录此服务器
+  de: Sie müssen sich an diesem Server anmelden
+  es: Debe iniciar sesión en este servidor
+  pt-BR: É preciso entrar neste servidor
+  ja: このサーバーにサインインする必要があります
 io.net_account:
   en: The server didn't accept your account (password expired, account locked, or restricted)
   zh-TW: "伺服器不接受這個帳戶（密碼過期、帳戶遭鎖定或受限制）"
   zh-CN: 服务器不接受此帐户（密码过期、帐户被锁定或受限）
+  de: Der Server hat Ihr Konto nicht akzeptiert (Kennwort abgelaufen, Konto gesperrt oder eingeschränkt)
+  es: El servidor no aceptó su cuenta (contraseña caducada, cuenta bloqueada o restringida)
+  pt-BR: O servidor não aceitou sua conta (senha expirada, conta bloqueada ou restrita)
+  ja: サーバーがアカウントを受け付けませんでした（パスワードの期限切れ、アカウントのロック、または制限）
 io.net_denied:
   en: Access denied; you may need to sign in with another account
   zh-TW: "沒有存取權限，可能要用其他帳戶登入"
   zh-CN: 没有访问权限，可能需要使用其他帐户登录
+  de: Zugriff verweigert; melden Sie sich möglicherweise mit einem anderen Konto an
+  es: Acceso denegado; puede que deba iniciar sesión con otra cuenta
+  pt-BR: Acesso negado; talvez seja preciso entrar com outra conta
+  ja: アクセスが拒否されました。別のアカウントでサインインする必要があるかもしれません
 io.net_no_host:
   en: Can't find a server named %{server}
   zh-TW: 找不到名為 %{server} 的伺服器
   zh-CN: 找不到名为 %{server} 的服务器
+  de: Ein Server mit dem Namen %{server} wurde nicht gefunden
+  es: No se encuentra un servidor llamado %{server}
+  pt-BR: Não foi possível encontrar um servidor chamado %{server}
+  ja: "%{server} というサーバーが見つかりません"
 io.net_down:
   en: Can't reach %{server} (it may be off, or the network or VPN is down)
   zh-TW: 連不到 %{server}（可能沒開機，或網路、VPN 斷了）
   zh-CN: 无法连接到 %{server}（可能未开机，或网络、VPN 已断开）
+  de: "%{server} ist nicht erreichbar (möglicherweise ausgeschaltet, oder Netzwerk bzw. VPN ist ausgefallen)"
+  es: No se puede acceder a %{server} (puede estar apagado, o la red o la VPN no funciona)
+  pt-BR: Não foi possível acessar %{server} (pode estar desligado, ou a rede ou a VPN está fora do ar)
+  ja: "%{server} に接続できません（電源が切れているか、ネットワークまたは VPN が停止している可能性があります）"

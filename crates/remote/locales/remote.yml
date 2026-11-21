@@ -4,67 +4,135 @@ remote.no_host:
   en: "Can't find the server %{host}"
   zh-TW: "找不到伺服器 %{host}"
   zh-CN: "找不到服务器 %{host}"
+  de: Der Server %{host} wurde nicht gefunden
+  es: No se encuentra el servidor %{host}
+  pt-BR: Não foi possível encontrar o servidor %{host}
+  ja: サーバー %{host} が見つかりません
 remote.unreachable:
   en: "Can't connect to %{host}; check the address and port"
   zh-TW: "無法連線到 %{host}，請檢查位址和連接埠"
   zh-CN: "无法连接到 %{host}，请检查地址和端口"
+  de: Verbindung zu %{host} nicht möglich; Adresse und Port prüfen
+  es: No se puede conectar con %{host}; compruebe la dirección y el puerto
+  pt-BR: Não foi possível conectar a %{host}; verifique o endereço e a porta
+  ja: "%{host} に接続できません。アドレスとポートを確認してください"
 remote.timeout:
   en: "The server isn't responding"
   zh-TW: "伺服器沒有回應"
   zh-CN: "服务器没有响应"
+  de: Der Server antwortet nicht
+  es: El servidor no responde
+  pt-BR: O servidor não está respondendo
+  ja: サーバーが応答しません
 remote.lost:
   en: The connection to the server was lost
   zh-TW: 與伺服器的連線中斷了
   zh-CN: 与服务器的连接断开了
+  de: Die Verbindung zum Server wurde unterbrochen
+  es: Se perdió la conexión con el servidor
+  pt-BR: A conexão com o servidor foi perdida
+  ja: サーバーとの接続が切断されました
 remote.needs_login:
   en: You need to sign in to this server
   zh-TW: 需要登入這台伺服器
   zh-CN: 需要登录此服务器
+  de: Sie müssen sich an diesem Server anmelden
+  es: Debe iniciar sesión en este servidor
+  pt-BR: É preciso entrar neste servidor
+  ja: このサーバーにサインインする必要があります
 remote.login_failed:
   en: The user name or password is incorrect
   zh-TW: 使用者名稱或密碼不正確
   zh-CN: 用户名或密码不正确
+  de: Benutzername oder Kennwort ist falsch
+  es: El nombre de usuario o la contraseña son incorrectos
+  pt-BR: O nome de usuário ou a senha está incorreto
+  ja: ユーザー名またはパスワードが正しくありません
 remote.host_unknown:
   en: "First connection to this server. Check that its key fingerprint is %{fingerprint}"
   zh-TW: "第一次連線到這台伺服器，請確認它的金鑰指紋是 %{fingerprint}"
   zh-CN: "第一次连接到此服务器，请确认它的密钥指纹是 %{fingerprint}"
+  de: Erste Verbindung mit diesem Server. Prüfen Sie, ob sein Schlüssel-Fingerabdruck %{fingerprint} lautet
+  es: Primera conexión a este servidor. Compruebe que la huella digital de su clave sea %{fingerprint}
+  pt-BR: Primeira conexão com este servidor. Confirme que a impressão digital da chave é %{fingerprint}
+  ja: このサーバーへの初回接続です。キーのフィンガープリントが %{fingerprint} であることを確認してください
 remote.host_changed:
   en: "The key of %{host} has changed. Someone may be intercepting the connection; Arke did not connect"
   zh-TW: "%{host} 的金鑰變了，可能有人在攔截連線，Arke 沒有連線"
   zh-CN: "%{host} 的密钥变了，可能有人在拦截连接，Arke 没有连接"
+  de: Der Schlüssel von %{host} hat sich geändert. Möglicherweise fängt jemand die Verbindung ab; Arke hat keine Verbindung hergestellt
+  es: La clave de %{host} ha cambiado. Alguien puede estar interceptando la conexión; Arke no se conectó
+  pt-BR: A chave de %{host} mudou. Alguém pode estar interceptando a conexão; o Arke não se conectou
+  ja: "%{host} のキーが変更されました。接続が傍受されている可能性があるため、Arke は接続しませんでした"
 remote.insecure:
   en: "The password would go unencrypted over http; sign in to allow it"
   zh-TW: "密碼會以 http 明文傳送，登入時可選擇允許"
   zh-CN: "密码会以 http 明文发送，登录时可选择允许"
+  de: Das Kennwort würde unverschlüsselt über http gesendet; melden Sie sich an, um dies zu erlauben
+  es: La contraseña viajaría sin cifrar por http; inicie sesión para permitirlo
+  pt-BR: A senha iria sem criptografia por http; entre para permitir
+  ja: パスワードが http で暗号化されずに送信されます。許可するにはサインインしてください
 remote.bad_key:
   en: "Can't use the key file: %{reason}"
   zh-TW: "無法使用金鑰檔：%{reason}"
   zh-CN: "无法使用密钥文件：%{reason}"
+  de: "Die Schlüsseldatei kann nicht verwendet werden: %{reason}"
+  es: "No se puede usar el archivo de clave: %{reason}"
+  pt-BR: "Não foi possível usar o arquivo de chave: %{reason}"
+  ja: "キー ファイルを使用できません: %{reason}"
 remote.not_found:
   en: The item was not found on the server
   zh-TW: 伺服器上找不到這個項目
   zh-CN: 服务器上找不到此项目
+  de: Das Element wurde auf dem Server nicht gefunden
+  es: No se encontró el elemento en el servidor
+  pt-BR: O item não foi encontrado no servidor
+  ja: サーバー上に項目が見つかりません
 remote.denied:
   en: The server denied access
   zh-TW: 伺服器拒絕存取
   zh-CN: 服务器拒绝访问
+  de: Der Server hat den Zugriff verweigert
+  es: El servidor denegó el acceso
+  pt-BR: O servidor negou o acesso
+  ja: サーバーがアクセスを拒否しました
 remote.exists:
   en: An item with that name already exists
   zh-TW: 已有同名的項目
   zh-CN: 已有同名的项目
+  de: Ein Element mit diesem Namen existiert bereits
+  es: Ya existe un elemento con ese nombre
+  pt-BR: Já existe um item com esse nome
+  ja: その名前の項目が既に存在します
 remote.too_large:
   en: Too large to preview from the server
   zh-TW: 檔案太大，無法從伺服器預覽
   zh-CN: 文件太大，无法从服务器预览
+  de: Zu groß für eine Vorschau vom Server
+  es: Demasiado grande para la vista previa desde el servidor
+  pt-BR: Grande demais para visualizar a partir do servidor
+  ja: 大きすぎてサーバーからプレビューできません
 remote.cancelled:
   en: Cancelled
   zh-TW: 已取消
   zh-CN: 已取消
+  de: Abgebrochen
+  es: Cancelado
+  pt-BR: Cancelado
+  ja: キャンセルしました
 remote.server:
   en: "The server reported an error: %{reason}"
   zh-TW: "伺服器回報錯誤：%{reason}"
   zh-CN: "服务器报告错误：%{reason}"
+  de: "Der Server hat einen Fehler gemeldet: %{reason}"
+  es: "El servidor informó de un error: %{reason}"
+  pt-BR: "O servidor relatou um erro: %{reason}"
+  ja: "サーバーがエラーを報告しました: %{reason}"
 remote.cert:
   en: "The server's certificate isn't trusted"
   zh-TW: 伺服器的憑證不受信任
   zh-CN: 服务器的证书不受信任
+  de: Dem Zertifikat des Servers wird nicht vertraut
+  es: El certificado del servidor no es de confianza
+  pt-BR: O certificado do servidor não é confiável
+  ja: サーバーの証明書は信頼されていません

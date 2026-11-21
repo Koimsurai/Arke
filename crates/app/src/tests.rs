@@ -5705,7 +5705,7 @@ fn ui_text_comes_from_locales() {
         "UI text hard-coded in source:\n{}",
         hardcoded.join("\n")
     );
-    let languages: BTreeSet<String> = ["en", "zh-TW", "zh-CN"]
+    let languages: BTreeSet<String> = ["en", "zh-TW", "zh-CN", "ja", "de", "es", "pt-BR"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect();

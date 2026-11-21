@@ -450,6 +450,10 @@ pub(crate) enum Language {
     ZhTw,
     ZhCn,
     En,
+    Ja,
+    De,
+    Es,
+    PtBr,
 }
 
 impl Language {
@@ -463,6 +467,10 @@ impl Language {
             Self::ZhTw => "zh-TW".into(),
             Self::ZhCn => "zh-CN".into(),
             Self::En => "en".into(),
+            Self::Ja => "ja".into(),
+            Self::De => "de".into(),
+            Self::Es => "es".into(),
+            Self::PtBr => "pt-BR".into(),
         }
     }
 }

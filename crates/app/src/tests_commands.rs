@@ -120,7 +120,7 @@ fn the_list_agrees_with_the_keys_bound_by_default(cx: &mut TestAppContext) {
 fn every_command_is_named_in_every_language() {
     for command in COMMANDS {
         let key = format!("cmd.{}", command.id);
-        for locale in ["en", "zh-TW", "zh-CN"] {
+        for locale in ["en", "zh-TW", "zh-CN", "ja", "de", "es", "pt-BR"] {
             let name = t!(&key, locale = locale).into_owned();
             assert_ne!(name, key, "{key} has no {locale} name");
         }

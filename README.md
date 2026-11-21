@@ -152,7 +152,7 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
   turn on "Win+E and the File Explorer icon open Arke too".
 - Screen reader support, x64 and ARM64 builds (both tested on real hardware),
   taskbar jump list, safe USB eject, system tray, settings backup. English, Simplified and
-  Traditional Chinese.
+  Traditional Chinese, Japanese, German, Spanish and Brazilian Portuguese.
 
 *Experimental* features are covered by automated tests and local test servers but not yet widely
 used; see the [changelog](CHANGELOG.md). Feedback in issues is welcome.

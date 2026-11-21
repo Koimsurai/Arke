@@ -459,7 +459,8 @@ pub(crate) fn supports_mica() -> bool {
 
 /// UI language: `ARKE_LANG` wins, otherwise the user locale. Traditional Chinese locales
 /// (TW, HK, MO, Hant) map to zh-TW, other Chinese ones (CN, SG, Hans, plain zh) to zh-CN,
-/// everything else to English.
+/// Japanese, German, Spanish and Portuguese ones to ja, de, es and pt-BR, everything else to
+/// English.
 pub(crate) fn ui_locale() -> String {
     if let Ok(lang) = std::env::var("ARKE_LANG") {
         return lang;
@@ -467,7 +468,7 @@ pub(crate) fn ui_locale() -> String {
     system_locale().to_owned()
 }
 
-/// UI language Windows itself is set to (`zh-TW`, `zh-CN` or `en`), ignoring `ARKE_LANG` and the
+/// UI language Windows itself is set to (`zh-TW`, `zh-CN`, `ja`, `de`, `es`, `pt-BR` or `en`), ignoring `ARKE_LANG` and the
 /// Language setting. Decides which Chinese font English UI text falls back to.
 pub(crate) fn system_locale() -> &'static str {
     let mut buf = [0u16; 85];
@@ -509,9 +510,25 @@ fn locale_for(system: &str) -> &'static str {
     } else if lower == "zh" || lower.starts_with("zh-") || lower.starts_with("zh_") {
         // zh-CN, zh-SG, zh-Hans-*, and plain zh default to Simplified.
         "zh-CN"
+    } else if is_language(&lower, "ja") {
+        "ja"
+    } else if is_language(&lower, "de") {
+        "de"
+    } else if is_language(&lower, "es") {
+        "es"
+    } else if is_language(&lower, "pt") {
+        // Portugal's Portuguese reads Brazilian text far better than English.
+        "pt-BR"
     } else {
         "en"
     }
+}
+
+/// Whether the lower-case locale name is `code` itself or one of its regions (`de`, `de-AT`).
+fn is_language(lower: &str, code: &str) -> bool {
+    lower
+        .strip_prefix(code)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '_']))
 }
 
 /// The device behind a drive letter (`\Device\Floppy0`, `\Device\HarddiskVolume3`...), from the
@@ -2066,7 +2083,19 @@ mod locale_tests {
         ] {
             assert_eq!(locale_for(cn), "zh-CN", "{cn}");
         }
-        for en in ["en-US", "ja-JP", "", "zhx"] {
+        for (system, ui) in [
+            ("ja-JP", "ja"),
+            ("de-DE", "de"),
+            ("de-AT", "de"),
+            ("es-ES", "es"),
+            ("es-MX", "es"),
+            ("pt-BR", "pt-BR"),
+            ("pt-PT", "pt-BR"),
+            ("DE", "de"),
+        ] {
+            assert_eq!(locale_for(system), ui, "{system}");
+        }
+        for en in ["en-US", "fr-FR", "", "zhx", "dex", "jav", "ko-KR"] {
             assert_eq!(locale_for(en), "en", "{en}");
         }
     }

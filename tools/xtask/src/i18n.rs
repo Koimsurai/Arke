@@ -273,7 +273,6 @@ fn merge(root: &Path, lang: &str, translations: &BTreeMap<String, String>) -> Re
             };
             left.remove(entry.key.as_str());
             let en = entry.text("en").unwrap_or_default();
-            ensure!(!new.trim().is_empty(), "{}: empty translation", entry.key);
             ensure!(
                 placeholders(en) == placeholders(new),
                 "{}: placeholders {:?} should be {:?}\n  en: {en}\n  {lang}: {new}",

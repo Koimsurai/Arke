@@ -71,9 +71,17 @@ pub(super) struct TabDrag {
     morph: u64,
     /// A tile cell's size, for drawing a list entry that became a tile.
     tile_size: Option<gpui::Size<Pixels>>,
-    /// Where the dragged favorite was when the drag started: let go where nothing takes it, it
-    /// goes back there, and removed, Undo puts it back there.
-    pub(super) origin: Option<crate::settings::PinSlot>,
+    /// The favorites as they were when the drag started (the drag reorders them live): let go
+    /// where nothing takes it, or cancelled (Esc), they go back to this; removed, Undo puts the
+    /// favorite back where it was. Taken by a drop that keeps the new order.
+    pub(super) origin: Option<PinSnapshot>,
+}
+
+/// Both favorites lists, as saved (`Settings::favorites`, `Settings::pinned`).
+#[derive(Clone, Debug)]
+pub(super) struct PinSnapshot {
+    pub(super) favorites: Option<Vec<std::path::PathBuf>>,
+    pub(super) pinned: Vec<std::path::PathBuf>,
 }
 
 /// Hover time before switching to a tab while dragging files, like Explorer's spring-loaded folders.
@@ -594,6 +602,7 @@ impl Workspace {
         let slots = self.tile_slots(old_tiles.len());
         let grab = self.tab_drag.grab;
         self.dragging_pin = false;
+        self.tab_drag.origin = None;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
         cx.notify();

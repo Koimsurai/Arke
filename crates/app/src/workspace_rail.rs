@@ -717,7 +717,8 @@ impl Workspace {
         if !self.rail_peek {
             return;
         }
-        let outside = e.position.x > theme::sidebar_full_width();
+        // A favorite being dragged out of it to be removed: it stays until the drag ends.
+        let outside = e.position.x > theme::sidebar_full_width() && !self.dragging_pin;
         if !outside {
             // Cancels a pending close.
             self.rail_hover += 1;

@@ -3322,9 +3322,12 @@ impl Explorer {
             if m.shift {
                 self.selection.extend_to(&view, ix, m.control);
             } else if m.control {
-                // Ctrl+double-click opens a folder in a new tab: its second click keeps the
-                // selection the first one made.
-                if event.click_count < 2 {
+                // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
+                // selected, whether the first one selected it or (already selected) unselected it.
+                let selected = view
+                    .get(ix)
+                    .is_some_and(|e| self.selection.contains(&e.name));
+                if event.click_count < 2 || !selected {
                     self.selection.toggle(&view, ix);
                 }
             } else if in_selection && self.selection.len() > 1 {

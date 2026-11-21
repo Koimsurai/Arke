@@ -716,3 +716,34 @@ fn a_favorite_goes_back_where_its_drag_started(cx: &mut TestAppContext) {
     assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b")]));
     assert_eq!(current(cx).pinned, vec![p("c")]);
 }
+
+/// Esc during a favorite drag (no drop at all): the favorites go back the way they were,
+/// including where the drag moved them on the way.
+#[gpui::test]
+fn esc_puts_dragged_favorites_back(cx: &mut TestAppContext) {
+    let (_ws, _shell, cx) = window_and_shell(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let tile = bounds(cx, "tile-slot-0");
+    pick_up(cx, tile);
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_move(row.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).pinned, vec![p("a"), p("c")], "moved on the way");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b")]));
+    assert_eq!(current(cx).pinned, vec![p("c")]);
+    cx.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        current(cx).favorites,
+        Some(vec![p("a"), p("b")]),
+        "nothing on release"
+    );
+    assert_eq!(current(cx).pinned, vec![p("c")]);
+}

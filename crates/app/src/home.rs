@@ -918,6 +918,11 @@ impl Render for HomePage {
         reason = "Sections in reading order: title, quick access, drives, network, recent"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A card drag that ended without a drop on a card (empty space, Esc): forgotten, so a
+        // later drag of something else doesn't hide that card.
+        if !cx.has_active_drag() {
+            self.dragging = None;
+        }
         let quick: Vec<AnyElement> = self
             .favorites
             .iter()

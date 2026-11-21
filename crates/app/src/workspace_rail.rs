@@ -58,6 +58,11 @@ pub(super) struct SidebarUi {
     pub(super) reveal_wanted: std::cell::Cell<bool>,
     /// Index among the places of the current folder's row under This PC, while drawing it.
     pub(super) here_row: std::cell::Cell<Option<usize>>,
+    /// The places were just scrolled to the current folder's row: next frame, a row of tiles cut
+    /// in half at the top is scrolled on to a whole one (`Workspace::snap_tile_rows`).
+    pub(super) snap_tiles: std::cell::Cell<bool>,
+    /// Rows of favorite tiles drawn last frame.
+    pub(super) tile_rows: std::cell::Cell<usize>,
     /// A section heading was just clicked: its chevron turns and, expanding, its rows drop in.
     pub(super) section_cue: (Option<crate::settings::SidebarSection>, crate::motion::Cue),
     /// The Shelf row was just clicked: the same for its items.

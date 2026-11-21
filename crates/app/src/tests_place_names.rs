@@ -324,7 +324,8 @@ fn the_collapsed_sidebar_uses_the_name(cx: &mut TestAppContext) {
 }
 
 /// A local drive's menu has the drive things (copy path, Terminal, File Explorer, Format, Disk
-/// Cleanup, Properties); the drive Windows runs from can't be formatted; a folder has none.
+/// Cleanup, Properties); the drive Windows runs from can't be formatted; a folder has the folder
+/// things too, but none of a drive's own.
 #[gpui::test]
 fn a_drive_menu_has_drive_things(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
@@ -350,5 +351,67 @@ fn a_drive_menu_has_drive_things(cx: &mut TestAppContext) {
         "no Format for the system drive"
     );
     let folder = labels(&ws, cx, r"C:\a");
-    assert!(!folder.contains(&t!("menu.properties").to_string()));
+    assert!(folder.contains(&t!("menu.properties").to_string()), "{folder:?}");
+    assert!(!folder.contains(&t!("menu.disk_cleanup").to_string()), "{folder:?}");
+    assert!(!folder.contains(&format), "{folder:?}");
+}
+
+/// A mapped drive and a network place: the same rows as any folder, in the same order, with
+/// their own (rename, disconnect, search, forget) in between, and lines between the groups.
+#[gpui::test]
+fn network_menus_keep_the_folder_order(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let drawn = |ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: &str| {
+        let path = PathBuf::from(path);
+        ws.update(cx, |ws, cx| {
+            ws.folder_menu_drawn_for_test(&path, Some(0), false, cx)
+        })
+    };
+    let rows = |keys: &[&str]| -> Vec<String> {
+        keys.iter()
+            .map(|k| match *k {
+                "-" => "-".to_owned(),
+                "open" => format!(
+                    "{} [{}]",
+                    t!("sidebar.open_in_new_tab"),
+                    t!("menu.ctrl_click")
+                ),
+                key => t!(key).into_owned(),
+            })
+            .collect()
+    };
+    assert_eq!(
+        drawn(&ws, cx, DRIVE),
+        rows(&[
+            "open",
+            "-",
+            "sidebar.add_favorite",
+            "menu.rename",
+            "-",
+            "sidebar.disconnect_drive",
+            "sidebar.search_network",
+            "-",
+            "menu.open_terminal",
+            "menu.open_in_explorer",
+            "menu.copy_path",
+            "menu.properties",
+        ])
+    );
+    assert_eq!(
+        drawn(&ws, cx, SHARE),
+        rows(&[
+            "open",
+            "-",
+            "sidebar.add_favorite",
+            "menu.rename",
+            "-",
+            "sidebar.search_network",
+            "sidebar.forget_share",
+            "-",
+            "menu.open_terminal",
+            "menu.open_in_explorer",
+            "menu.copy_path",
+            "menu.properties",
+        ])
+    );
 }

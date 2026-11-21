@@ -747,3 +747,112 @@ fn esc_puts_dragged_favorites_back(cx: &mut TestAppContext) {
     );
     assert_eq!(current(cx).pinned, vec![p("c")]);
 }
+
+/// A folder's menu as drawn, from translation keys: `key` for a row, `key|shortcut` for a row
+/// with its key on the right (`shortcut` a translation key too), `-` for a line between groups.
+fn drawn_rows(keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .map(|k| match k.split_once('|') {
+            _ if *k == "-" => "-".to_owned(),
+            Some((label, key)) => format!("{} [{}]", t!(label), t!(key)),
+            None => t!(*k).into_owned(),
+        })
+        .collect()
+}
+
+/// The folder actions after the favorites' rows, the same for every folder on this PC.
+const FOLDER_TAIL: [&str; 5] = [
+    "-",
+    "menu.open_terminal",
+    "menu.open_in_explorer",
+    "menu.copy_path",
+    "menu.properties",
+];
+
+/// A favorite has the same menu wherever it is, in the same order: a tile and a list row differ
+/// only in where "Move" sends it, Home words that row for its own page, a folder that is no
+/// favorite has the same rows without it, and Ctrl+click shows on "Open in new tab".
+#[gpui::test]
+fn folder_menus_match_wherever_the_folder_is(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let menu = |ws: &Entity<Workspace>,
+                cx: &mut VisualTestContext,
+                path: PathBuf,
+                depth: Option<usize>,
+                home: bool| {
+        ws.update(cx, |ws, cx| {
+            ws.folder_menu_drawn_for_test(&path, depth, home, cx)
+        })
+    };
+    let open = ["sidebar.open_in_new_tab|menu.ctrl_click", "-"];
+    let with = |rows: &[&str]| {
+        let all: Vec<&str> = open
+            .iter()
+            .chain(rows)
+            .chain(FOLDER_TAIL.iter())
+            .copied()
+            .collect();
+        drawn_rows(&all)
+    };
+    let tile = with(&[
+        "sidebar.remove_favorite",
+        "sidebar.move_to_list",
+        "menu.rename",
+    ]);
+    assert_eq!(menu(&ws, cx, p("a"), None, false), tile, "a tile");
+    assert_eq!(
+        menu(&ws, cx, p("c"), None, false),
+        with(&[
+            "sidebar.remove_favorite",
+            "sidebar.move_to_tiles",
+            "menu.rename",
+        ]),
+        "a list row"
+    );
+    assert_eq!(
+        menu(&ws, cx, p("a"), None, true),
+        with(&[
+            "sidebar.remove_favorite",
+            "home.move_to_sidebar_list",
+            "menu.rename",
+        ]),
+        "a card on Home, which has no list below"
+    );
+    assert_eq!(
+        menu(&ws, cx, p("d"), Some(1), false),
+        with(&["sidebar.add_favorite"]),
+        "a folder in the tree"
+    );
+
+    // A right click on the tile opens that menu (built then, not when the tile is drawn).
+    let at = bounds(cx, "tile-slot-0").center();
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, cx| ws.open_menu_drawn_for_test(cx)),
+        Some(tile)
+    );
+}
+
+/// The tab menu shows its keys on the right, as the file list's menu does, instead of in the
+/// label: Ctrl+W on the active tab only, where it works.
+#[gpui::test]
+fn the_tab_menu_shows_its_keys_on_the_right(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    // Home in a tab of its own, the active one.
+    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(true, window, cx));
+    cx.run_until_parked();
+    assert_eq!(ws.update(cx, |ws, _| ws.active), 1);
+    let close = t!("sidebar.close_tab").into_owned();
+    let active = ws.update(cx, |ws, cx| ws.tab_menu_drawn_for_test(1, cx));
+    assert!(active.contains(&format!("{close} [Ctrl+W]")), "{active:?}");
+    let other = ws.update(cx, |ws, cx| ws.tab_menu_drawn_for_test(0, cx));
+    assert!(other.contains(&close), "{other:?}");
+    assert!(!other.iter().any(|row| row.contains("(Ctrl")), "{other:?}");
+}

@@ -11,6 +11,7 @@ fn seven_zip() -> MenuHandler {
         clsid: "{23170F69-40C1-278A-1000-000100020000}".into(),
         name: "7-Zip".into(),
         kind: HandlerKind::Extension,
+        parent: None,
     }
 }
 
@@ -35,6 +36,7 @@ fn shell_with_extensions() -> Arc<FakeShell> {
                 clsid: "{00000000-0000-0000-0000-000000000001}".into(),
                 name: "Other".into(),
                 kind: HandlerKind::Extension,
+                parent: None,
             },
             vec![item(3, "Something else")],
         ),
@@ -231,6 +233,7 @@ fn shell_with_commands() -> Arc<FakeShell> {
                 clsid: String::new(),
                 name: "git_shell".into(),
                 kind: HandlerKind::Verb { extended: false },
+                parent: None,
             },
             vec![item(1, "Open Git Bash here", "git_shell")],
         ),
@@ -553,6 +556,94 @@ fn an_extension_row_shows_ahead_where_it_showed_before(cx: &mut TestAppContext) 
     });
     wait_for(cx, "forgotten", |cx| !pin_seen(cx).contains_key(key));
     *shell.part_gate.lock() = None;
+    let _ = open_whole.send(());
+    *shell.menu_gate.lock() = None;
+}
+
+/// #278: a registry command in a cascading menu (`ExtendedSubCommandsKey`, as context menu
+/// managers make them) is learned by its verb like a top-level one, and from then on its row is
+/// drawn before any source answers and runs in its own one-command menu, which shows it under
+/// the cascade's label so its pinned key matches.
+#[gpui::test]
+fn a_command_in_a_cascading_menu_shows_on_its_own(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: Some("01_one".into()),
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    let tools = |child| ShellMenuEntry::Submenu {
+        label: "Tools".into(),
+        enabled: true,
+        icon: None,
+        children: vec![child],
+        lazy: None,
+    };
+    *shell.extra_menu.lock() = vec![tools(item(30, "01_one"))];
+    shell.extensions.lock().push((
+        MenuHandler {
+            key: "Tools.Menu".into(),
+            clsid: String::new(),
+            name: "01_one".into(),
+            kind: HandlerKind::Verb { extended: false },
+            parent: Some(r"*\shell\Tools".into()),
+        },
+        vec![tools(item(1, "01_one"))],
+    ));
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let key = "Tools › 01_one";
+    pin(cx, &[key]);
+
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "learned", |cx| owners(cx).contains_key(key));
+    assert_eq!(
+        owners(cx)[key],
+        "verb:01_one",
+        "its verb, not left to the whole menu"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Next menu, every source slow: the row is there, and a click runs it once it answers.
+    let (open_whole, whole_gate) = flume::unbounded();
+    let (open_parts, parts_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    *shell.part_gate.lock() = Some(parts_gate);
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "row drawn ahead", |cx| {
+        rows_above_more_options(&view, cx).contains(&"01_one".to_owned())
+    });
+    let at = rows_above_more_options(&view, cx)
+        .iter()
+        .position(|r| r == "01_one")
+        .unwrap();
+    view.update(cx, |v, cx| {
+        if let Some(menu) = v.context_menu.as_mut() {
+            menu.highlight_for_test(at);
+        }
+        cx.notify();
+    });
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(
+        shell.shell_invoked.lock().is_empty(),
+        "not before it answers"
+    );
+    for _ in 0..4 {
+        let _ = open_parts.send(());
+    }
+    *shell.part_gate.lock() = None;
+    wait_for(cx, "ran", |_| !shell.shell_invoked.lock().is_empty());
+    let ran = shell.shell_invoked.lock().clone();
+    assert_eq!(ran.len(), 1);
+    assert_eq!(ran[0].1, 1, "its own one-command menu");
     let _ = open_whole.send(());
     *shell.menu_gate.lock() = None;
 }

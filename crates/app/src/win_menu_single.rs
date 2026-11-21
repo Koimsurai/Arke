@@ -81,9 +81,7 @@ fn verb(
     let read = |name: &str| {
         crate::win::read_reg_string(HKEY_CLASSES_ROOT, &at, name).filter(|s| !s.trim().is_empty())
     };
-    let label = read("MUIVerb")
-        .or_else(|| read(""))
-        .map_or_else(|| handler.name.clone(), |s| indirect(&s));
+    let label = verb_label(&at).unwrap_or_else(|| handler.name.clone());
     let icon = read("Icon").and_then(|spec| icon_of(&spec));
     let folder = if background {
         target.to_path_buf()
@@ -102,10 +100,31 @@ fn verb(
         None,
     )
     .into();
-    (
-        menu,
-        vec![item(1, &handler.name, &label, true, false, icon)],
-    )
+    let entry = item(1, &handler.name, &label, true, false, icon);
+    // In a cascading menu: under that menu's label, as in the whole Windows menu, so the pinned
+    // command's key (`Tools › Command`) is found (#278).
+    let entry = match handler.parent.as_deref() {
+        Some(parent) => ShellMenuEntry::Submenu {
+            label: clean_label(
+                &verb_label(parent)
+                    .unwrap_or_else(|| parent.rsplit('\\').next().unwrap_or(parent).to_string()),
+            ),
+            enabled: true,
+            icon: None,
+            children: vec![entry],
+            lazy: None,
+        },
+        None => entry,
+    };
+    (menu, vec![entry])
+}
+
+/// A registry verb's label (at registry path `at`): its `MUIVerb`, else the key's value.
+fn verb_label(at: &str) -> Option<String> {
+    let read = |name: &str| {
+        crate::win::read_reg_string(HKEY_CLASSES_ROOT, at, name).filter(|s| !s.trim().is_empty())
+    };
+    read("MUIVerb").or_else(|| read("")).map(|s| indirect(&s))
 }
 
 /// An `IExplorerCommand` (a packaged app's command, or a registry command's

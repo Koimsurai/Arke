@@ -101,8 +101,9 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
   de clic derecho (las unidades tienen expulsar, Formatear, Liberador de espacio en disco y Propiedades).
 - Deslice dos dedos en un panel táctil para ir atrás y adelante, como en un navegador.
 - La barra lateral se puede ensanchar arrastrando su borde y se contrae en una columna de iconos (Ctrl+B),
-  que puede abrirse sobre el contenido al dejar el puntero encima. Favoritos, Este equipo y Red
-  se contraen por sí solos, y el árbol de carpetas sigue a la carpeta en la que está. Las columnas de la vista de
+  que se puede configurar para abrirse sobre el contenido al dejar el puntero encima (desactivado
+  de forma predeterminada). Favoritos, Este equipo y Red se contraen por separado haciendo clic en
+  su encabezado, y el árbol de carpetas sigue a la carpeta en la que está. Las columnas de la vista de
   columnas se pueden redimensionar.
 - Escala de la interfaz del 80 % al 150 %, además de la propia escala de Windows.
 - Paleta de comandos (Ctrl+Shift+P) para todos los comandos, y atajos de teclado que se pueden cambiar.

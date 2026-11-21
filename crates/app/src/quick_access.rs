@@ -39,6 +39,14 @@ fn is_favorite(settings: &Settings, path: &std::path::Path, places: &[Place]) ->
 /// A folder is added when Windows has it pinned, the last sync did not know about it (all of them
 /// on the first sync) and it is not a favorite yet. Nothing is ever removed.
 pub(crate) fn sync(settings: &mut Settings, windows_pinned: &[PathBuf], places: &[Place]) -> bool {
+    // The first sync for someone who already arranged their favorites (upgrading from before
+    // the sync): Windows' current pins are only noted, not added all at once; ones pinned later
+    // still come in.
+    let arranged = settings.favorites.is_some() || !settings.pinned.is_empty();
+    if settings.quick_access_seen.is_none() && arranged {
+        settings.quick_access_seen = Some(windows_pinned.to_vec());
+        return true;
+    }
     let seen: HashSet<String> = settings
         .quick_access_seen
         .iter()
@@ -235,6 +243,22 @@ mod tests {
         assert_eq!(st.pinned, vec![p("listed")]);
     }
 
+    /// Upgrading with favorites already arranged: Windows' pins at that time are noted, not
+    /// poured into the favorites; one pinned later still comes in.
+    #[test]
+    fn arranged_favorites_only_take_pins_made_later() {
+        let mut st = Settings {
+            pinned: vec![p("mine")],
+            ..Settings::default()
+        };
+        assert!(sync(&mut st, &[p("a"), p("b")], &places()));
+        assert!(!st.is_pinned(&p("a"), &places()) && !st.is_pinned(&p("b"), &places()));
+        assert_eq!(st.quick_access_seen, Some(vec![p("a"), p("b")]));
+        assert!(sync(&mut st, &[p("a"), p("b"), p("c")], &places()));
+        assert!(st.is_pinned(&p("c"), &places()));
+        assert!(!st.is_pinned(&p("a"), &places()));
+    }
+
     #[test]
     fn a_favorite_removed_in_arke_stays_removed() {
         let mut st = Settings::default();
@@ -276,6 +300,8 @@ mod tests {
     fn full_tiles_send_it_to_the_list() {
         let mut st = Settings {
             favorites: Some((0..FAVORITES_MAX).map(|i| p(&format!("t{i}"))).collect()),
+            // Synced before, with nothing pinned in Windows then: "extra" is new.
+            quick_access_seen: Some(Vec::new()),
             ..Settings::default()
         };
         assert!(sync(&mut st, &[p("extra")], &places()));

@@ -193,8 +193,7 @@ fn card_label(label: CardName) -> AnyElement {
                 let text = text.clone();
                 move || format!("home-card {text}")
             })
-            .truncate()
-            .child(text)
+            .child(crate::place_names::drive_name(text))
             .into_any_element(),
         CardName::Editing(input) => crate::place_names::rename_box(input),
     }
@@ -993,9 +992,11 @@ impl Render for HomePage {
             .into_iter()
             .enumerate()
             .map(|(ix, (label, path))| {
-                // The path under the name, unless the name already is the path.
-                let detail =
-                    (label != path.display().to_string()).then(|| path.display().to_string());
+                // The path under the name, unless the name already is the path, or it is a
+                // mapped drive's `Z:\`, whose letter the name already ends with.
+                let detail = (label != path.display().to_string()
+                    && crate::place_names::drive_letter(&path).is_none())
+                .then(|| path.display().to_string());
                 Self::place_card(
                     ("home-net", ix),
                     Icon::NetDrive,

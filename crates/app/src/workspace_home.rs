@@ -175,7 +175,7 @@ impl Workspace {
                 return;
             }
             HomeEvent::FavoriteMenu { path, position } => {
-                let items = self.favorite_menu(path, cx);
+                let items = self.folder_menu(path, super::sidebar::MenuFor::HomeFavorite, cx);
                 self.open_sidebar_menu(*position, items, cx);
                 return;
             }

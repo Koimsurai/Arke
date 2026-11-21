@@ -326,10 +326,13 @@ impl Workspace {
     }
 
     /// The "Add to favorites" slot after the last tile while something that can be added is over
-    /// the tiles. `count` is the number of tiles.
+    /// the tiles. `count` is the number of favorites (its slot), `drawn` the tiles in the grid.
+    /// It takes the rest of the last row, or a row of its own when its name doesn't fit there,
+    /// so the name is never cut (a single cell is too narrow for it in any language).
     pub(super) fn render_add_favorite_slot(
         &self,
         count: usize,
+        drawn: usize,
         large: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -344,16 +347,28 @@ impl Workspace {
         }
         let hot = self.pin_shown == Some(PinSlot::Tile(count));
         let slot = PinSlot::Tile(count);
+        let label = t!("sidebar.add_favorite").into_owned();
+        let per_row: u16 = if large { 3 } else { 4 };
+        let free = per_row - u16::try_from(drawn % usize::from(per_row)).unwrap_or(0);
+        let cells = f32::from(free);
+        let room = self.tile_size(large).width * cells + theme::s_4() * (cells - 1.)
+            - theme::s_4() * 3.
+            - theme::icon_sm();
+        let fits = cx
+            .text_system()
+            .line_wrapper(theme::ui_font_at(gpui::FontWeight::NORMAL), theme::fs_11())
+            .should_truncate_line(&label, room, "", gpui::TruncateFrom::End)
+            .is_none();
         Some(
             div()
                 .id("tile-add-favorite")
                 .debug_selector(|| "tile-add-favorite".to_owned())
+                .col_span(if fits { free } else { per_row })
                 .h(if large { px(56.) } else { px(48.) })
                 .flex()
-                .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(theme::s_2())
+                .gap(theme::s_4())
                 .px(theme::s_4())
                 .rounded(theme::r_8())
                 .border_1()
@@ -369,15 +384,11 @@ impl Workspace {
                 .child(
                     svg()
                         .path(Icon::Plus.path())
+                        .flex_none()
                         .size(theme::icon_sm())
                         .text_color(theme::signal()),
                 )
-                .child(
-                    div()
-                        .max_w_full()
-                        .truncate()
-                        .child(t!("sidebar.add_favorite").into_owned()),
-                )
+                .child(div().min_w_0().truncate().child(label))
                 .on_drag_move(
                     cx.listener(move |this, e: &DragMoveEvent<DraggedTab>, _, cx| {
                         this.pin_hover_at(slot, e, cx);

@@ -607,7 +607,10 @@ fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
     assert!(drawn(cx, "pin-row-gap"), "its row is the gap");
     assert!(!drawn(cx, "pin-insertion-mark"), "no line");
     assert!(!drawn(cx, "pin-list-drop"), "the block made way for it");
-    assert!(drawn(cx, "tile-add-favorite"), "the tiles invite it back");
+    assert!(
+        !drawn(cx, "tile-add-favorite"),
+        "the tiles it left just close its gap"
+    );
 
     let tile = bounds(cx, "tile-slot-0");
     cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
@@ -622,6 +625,24 @@ fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(!drawn(cx, "pin-list-drop"), "nothing left behind");
     assert!(!drawn(cx, "tile-add-favorite"));
+
+    // The other way: a list entry shows the tiles take it, and once a tile, the list it left
+    // shows nothing.
+    let row = bounds(cx, "pin-row-0");
+    pick_up(cx, row);
+    assert!(
+        drawn(cx, "tile-add-favorite"),
+        "the tiles show it can go there"
+    );
+    let tile = bounds(cx, "tile-slot-0");
+    cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert!(
+        !drawn(cx, "pin-list-drop"),
+        "the list it left just closes its gap"
+    );
+    cx.simulate_mouse_up(tile.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
 }
 
 /// Let go over the sidebar where nothing takes it (This PC), a list entry stays where the drag

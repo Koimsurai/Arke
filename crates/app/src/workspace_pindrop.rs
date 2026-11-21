@@ -341,13 +341,24 @@ impl Workspace {
             self.pin_shown.is_some() && self.pin_mark.is_some_and(|m| m.area == PinArea::Tiles);
         // A favorite dragged from the list: the tiles show it can go up there from the start of
         // the drag, not only once it is over them (it becomes a tile on entering one).
-        let from_list = self.dragging_pin && cx.has_active_drag() && self.tab_drag.pin_from_list();
+        // Only one that started in the list: a tile dragged down into the list leaves the tiles
+        // just closing its gap, nothing to add there.
+        let from_list = self.dragging_pin
+            && cx.has_active_drag()
+            && self.tab_drag.pin_from_list()
+            && !self.tab_drag.started_on_tile();
         if !(over_tiles(cx) || from_list) || marked {
             return None;
         }
         let hot = self.pin_shown == Some(PinSlot::Tile(count));
         let slot = PinSlot::Tile(count);
-        let label = t!("sidebar.add_favorite").into_owned();
+        // A favorite from the list is one already: it moves up, not in.
+        let label = if from_list {
+            t!("sidebar.move_to_tiles")
+        } else {
+            t!("sidebar.add_favorite")
+        }
+        .into_owned();
         let per_row: u16 = if large { 3 } else { 4 };
         let free = per_row - u16::try_from(drawn % usize::from(per_row)).unwrap_or(0);
         let cells = f32::from(free);

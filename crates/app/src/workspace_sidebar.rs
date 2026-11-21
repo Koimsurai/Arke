@@ -210,8 +210,9 @@ const fn menu_glyph(action: &SidebarAction) -> Option<Icon> {
 /// list's unscrolled terms: the edge at `top` now; the tiles from `tiles.0` to `tiles.1` in
 /// `rows` rows `gap` apart; the current folder's row from `here.0` to `here.1`, which must stay
 /// in a view `view_h` high; the edge going no further than `max_top`. Back to the start of the cut
-/// row first, else on to the next row, but never past the last one: that would scroll every tile
-/// away, and the tiles are what Home's part of the sidebar is for. `None`: leave it as it is.
+/// row first, else on to the next row (past the tiles when it is the last one: scrolling up shows
+/// them, and the shadow under Home says there is more above). Never a half row. `None`: leave it
+/// as it is.
 fn tile_snap(
     top: f32,
     tiles: (f32, f32),
@@ -231,9 +232,9 @@ fn tile_snap(
         return None;
     }
     let shows_here = |t: f32| t <= max_top + 0.5 && here.0 >= t - 0.5 && here.1 <= t + view_h + 0.5;
-    [top - into, top + period - into]
+    [top - into, (top + period - into).min(tiles.1)]
         .into_iter()
-        .find(|&t| t < tiles.1 - gap && shows_here(t))
+        .find(|&t| shows_here(t))
 }
 
 /// A line goes above row `ix`: it starts another group than the row above.
@@ -1228,7 +1229,15 @@ impl Workspace {
             .debug_selector(move || format!("pin-row-{ix}"))
             .relative()
             .rounded(theme::r_8())
-            .when(gap, |d| d.debug_selector(|| "pin-row-gap".to_owned()))
+            .when(gap, |d| {
+                // Where it lands, drawn like the block that showed the list takes it.
+                d.debug_selector(|| "pin-row-gap".to_owned())
+                    .mx(theme::s_4())
+                    .border_1()
+                    .border_dashed()
+                    .border_color(theme::signal_line())
+                    .bg(theme::signal_wash())
+            })
             .child(if gap {
                 div().invisible().child(row).into_any_element()
             } else {
@@ -1350,8 +1359,13 @@ impl Workspace {
             pinned_rows.insert(row_at, self.pin_list_row(ix, path, label, row, cx));
         }
         // A tile being dragged: the list shows it can go down there (a block under the heading,
-        // the heading shown for it even with nothing listed). Over the list it becomes a row.
-        let tile_dragged = self.dragging_pin && cx.has_active_drag() && self.tab_drag.is_tile_now();
+        // the heading shown for it even with nothing listed). Over the list it becomes a row, its
+        // gap drawn like the block. A list entry dragged up onto the tiles shows nothing here:
+        // the list only closes its gap.
+        let tile_dragged = self.dragging_pin
+            && cx.has_active_drag()
+            && self.tab_drag.is_tile_now()
+            && self.tab_drag.started_on_tile();
         let wants_list_drop = tile_dragged;
         // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
         // the last one (`workspace_pindrop.rs`).
@@ -1458,12 +1472,12 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        if tile_dragged {
-            out.push(Self::list_drop_block(cx));
-        }
         // Collapsed to its heading: the list goes, the Shelf under it too (the tiles stay, they
-        // belong to Home).
+        // belong to Home). The block stays, under the heading.
         if heading && collapsed {
+            if tile_dragged {
+                out.push(Self::list_drop_block(cx));
+            }
             return out;
         }
         let start = out.len();
@@ -1478,6 +1492,11 @@ impl Workspace {
                 .child(row)
                 .into_any_element()
         }));
+        // Where a tile dropped into the list lands (first of the pinned folders), so the block
+        // turns into its gap in place when it gets there.
+        if tile_dragged {
+            out.push(Self::list_drop_block(cx));
+        }
         // A parent for each pinned row, so a folder pinned and also shown under This PC doesn't
         // repeat an element id (the screen reader tree needs them unique). Each row stays its own
         // item of the scrolling list, so one cut off at its bottom is dimmed alone.
@@ -1857,6 +1876,8 @@ impl Workspace {
         div()
             .id("pin-list-drop")
             .debug_selector(|| "pin-list-drop".to_owned())
+            // A row's height, as the gap it turns into: not squeezed by the list.
+            .flex_none()
             .h(theme::h_row())
             .mx(theme::s_4())
             .flex()
@@ -4478,7 +4499,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_row_cut_by_the_top_edge_is_shown_whole_or_left_alone() {
+    fn a_tile_row_cut_by_the_top_edge_is_shown_whole_or_scrolled_past() {
         // Two rows of 56 px tiles 4 px apart (0 to 116), a view 652 px high that can start at
         // most at 118.
         let tiles = (0., 116.);
@@ -4487,9 +4508,9 @@ mod tests {
         };
         // The second row cut 18 px in: back to its start while the current row stays in view.
         assert_eq!(snap(78., 2, (500., 532.)), Some(60.));
-        // The current row would drop out at the bottom, and going on would scroll every tile
-        // away (the start in German at S:\Studio): left as it is.
-        assert_eq!(snap(78., 2, (698., 730.)), None);
+        // The current row would drop out at the bottom (the start in German at S:\Studio): on
+        // past the last row, no half row left at the top.
+        assert_eq!(snap(78., 2, (698., 730.)), Some(116.));
         // Three rows (0 to 176), the first cut: on to the second.
         let three = tile_snap(30., (0., 176.), 3, 4., (658., 690.), 652., 200.);
         assert_eq!(three, Some(60.));

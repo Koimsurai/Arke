@@ -75,6 +75,8 @@ pub(super) struct TabDrag {
     /// where nothing takes it, or cancelled (Esc), they go back to this; removed, Undo puts the
     /// favorite back where it was. Taken by a drop that keeps the new order.
     pub(super) origin: Option<PinSnapshot>,
+    /// The dragged favorite started on the tiles (`start_tile`).
+    from_tile: bool,
 }
 
 /// Both favorites lists, as saved (`Settings::favorites`, `Settings::pinned`).
@@ -96,6 +98,7 @@ impl TabDrag {
     /// A drag of the favorite at `path` starts, from the tiles (`tile`) or the list, taken hold of
     /// at `grab`.
     pub(super) fn start_tile(&mut self, path: PathBuf, tile: bool, grab: Point<Pixels>) {
+        self.from_tile = tile;
         self.tile = tile.then(|| path.clone());
         self.pin = Some(path);
         self.pin_out = false;
@@ -129,6 +132,12 @@ impl TabDrag {
     /// The dragged favorite is a tile at the moment.
     pub(super) const fn is_tile_now(&self) -> bool {
         self.tile.is_some()
+    }
+
+    /// The dragged favorite was a tile when the drag started (else a list entry). Only the other
+    /// area shows where it can go: the one it left just closes its gap.
+    pub(super) const fn started_on_tile(&self) -> bool {
+        self.from_tile
     }
 
     /// Changes each time the dragged favorite changes shape.

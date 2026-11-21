@@ -1581,6 +1581,23 @@ fn table_can_count(
     })
 }
 
+/// The count from the file table, else from `walk` when the table can't give one (not NTFS, an
+/// older service, the folder isn't in it, a bug in the read). `None` when cancelled.
+fn table_else_walk(
+    read: impl FnOnce() -> std::io::Result<Space>,
+    walk: impl FnOnce() -> Option<Space>,
+) -> Option<Space> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)) {
+        Ok(Ok(space)) => Some(space),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::Interrupted => None,
+        Ok(Err(_)) => walk(),
+        Err(_) => {
+            log::warn!("properties: the file table read panicked");
+            walk()
+        }
+    }
+}
+
 /// `C:\` for anything on drive C.
 fn drive_root(path: &Path) -> Option<PathBuf> {
     let root: PathBuf = path.components().take(2).collect();
@@ -1597,9 +1614,8 @@ fn drive_root(path: &Path) -> Option<PathBuf> {
 ///   tells that the table isn't worth starting before the walk's time, so small folders soon
 ///   stop starting it. A folder the table can't count (`table_can_count`) is only walked.
 ///
-/// On a spinning disk the walk pauses while the table reads (once its time is measured): the two
-/// would slow each other down. What it walked is kept: if the table can't answer after all, the
-/// walk goes on where it was.
+/// On a spinning disk the table counts alone, from the start: a walk there seeks for every folder,
+/// and the two at once would slow each other down. Only what the table can't count is walked.
 fn count_folder(
     fs: &dyn arke_core::fs::Fs,
     fast: &Fast,
@@ -1650,21 +1666,18 @@ fn count_folder(
         }
         result
     };
-    // The drive itself: the table has everything.
-    if dir == root {
-        match read_table(cancel, Instant::now()) {
-            Ok(space) => return Some(space),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return None,
-            // No table (not NTFS, an older service): walk.
-            Err(_) => return dirsize::usage(fs, dir, cluster, cancel, progress),
-        }
+    // The drive itself (the table has everything), or a spinning disk: there the table is one
+    // sweep over the drive, a walk seeks for every folder, and the two at once slow each other
+    // down. The table alone, a walk only when it can't count it.
+    if dir == root || ((fast.seeks)(&root) && table_can_count(fs, &root, dir, profiles)) {
+        return table_else_walk(
+            || read_table(cancel, Instant::now()),
+            || dirsize::usage(fs, dir, cluster, cancel, progress),
+        );
     }
     let known = times.lock().get(&key).copied();
     let overtake = known.map(|t| std::time::Duration::from_millis(t.ms));
-    // Hand over to the table on a spinning disk, when how long it takes is known.
-    let hand_over = known.is_some_and(|t| t.done) && (fast.seeks)(&root);
     let stop_walk = AtomicBool::new(false);
-    let pause_walk = AtomicBool::new(false);
     let stop_table = AtomicBool::new(false);
     let (done_tx, done_rx) = flume::bounded::<std::io::Result<Space>>(1);
     // Moved into the table's thread, so the channel closes when it ends whatever way (a panic).
@@ -1674,38 +1687,30 @@ fn count_folder(
         let mut asked = false;
         let mut reading = None;
         let mut from_table: Option<Space> = None;
-        let walked =
-            dirsize::usage_pausable(fs, dir, cluster, &stop_walk, &pause_walk, &mut |so_far| {
-                if cancel.load(Ordering::Relaxed) {
-                    stop_walk.store(true, Ordering::Relaxed);
-                    return;
+        let walked = dirsize::usage(fs, dir, cluster, &stop_walk, &mut |so_far| {
+            if cancel.load(Ordering::Relaxed) {
+                stop_walk.store(true, Ordering::Relaxed);
+                return;
+            }
+            if !asked && overtake.is_none_or(|after| started.elapsed() >= after) {
+                asked = true;
+                if table_can_count(fs, &root, dir, profiles)
+                    && let Some(done_tx) = done_tx.take()
+                {
+                    let (read_table, stop_table) = (&read_table, &stop_table);
+                    reading = Some(scope.spawn(move || {
+                        let _ = done_tx.send(read_table(stop_table, started));
+                    }));
                 }
-                if !asked && overtake.is_none_or(|after| started.elapsed() >= after) {
-                    asked = true;
-                    if table_can_count(fs, &root, dir, profiles)
-                        && let Some(done_tx) = done_tx.take()
-                    {
-                        let (read_table, stop_table) = (&read_table, &stop_table);
-                        reading = Some(scope.spawn(move || {
-                            let _ = done_tx.send(read_table(stop_table, started));
-                        }));
-                        pause_walk.store(hand_over, Ordering::Relaxed);
-                    }
-                }
-                match done_rx.try_recv() {
-                    Ok(Ok(space)) => {
-                        from_table = Some(space);
-                        stop_walk.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    // The table can't count it (or its thread failed): the walk goes on.
-                    Ok(Err(_)) | Err(flume::TryRecvError::Disconnected) => {
-                        pause_walk.store(false, Ordering::Relaxed);
-                    }
-                    Err(flume::TryRecvError::Empty) => {}
-                }
-                progress(so_far);
-            });
+            }
+            // The table can't count it (or its thread failed): the walk just goes on.
+            if let Ok(Ok(space)) = done_rx.try_recv() {
+                from_table = Some(space);
+                stop_walk.store(true, Ordering::Relaxed);
+                return;
+            }
+            progress(so_far);
+        });
         stop_table.store(true, Ordering::Relaxed);
         // Joined here so a panic in the table's thread doesn't take the count down with it.
         if let Some(reading) = reading
@@ -2588,7 +2593,9 @@ impl Properties {
         reason = "one card: bar, legend and folder rows"
     )]
     fn space_card(&self) -> Option<(AnyElement, f32)> {
-        let view = self.space_view()?;
+        let Some(view) = self.space_view() else {
+            return self.space_card_counting();
+        };
         let total = view.total.max(1) as f32;
         let mut bar = div()
             .id("props-space-bar")
@@ -2698,6 +2705,68 @@ impl Properties {
                                     .bg(theme::signal()),
                             ),
                     )
+                    .into_any_element(),
+                height: 44.,
+            });
+        }
+        Some(card(Icon::Sort, t!("props.space").into_owned(), rows))
+    }
+
+    /// The space card while nothing is counted yet (a drive's file table answers all at once):
+    /// there from the start, an empty bar and the rows the folders will fill, so the window
+    /// doesn't change its layout when the numbers come.
+    fn space_card_counting(&self) -> Option<(AnyElement, f32)> {
+        if !self.any_folder() || !matches!(self.counting, Counting::Running) {
+            return None;
+        }
+        let placeholder = |height: f32, width: f32| {
+            div()
+                .h(px(height))
+                .w(relative(width))
+                .rounded(theme::R_FULL)
+                .bg(theme::wash())
+        };
+        let mut rows = vec![CardRow {
+            element: div()
+                .debug_selector(|| "props-space-counting".to_owned())
+                .px(theme::s_16())
+                .py(theme::s_12())
+                .flex()
+                .flex_col()
+                .gap(theme::s_8())
+                .child(
+                    div()
+                        .h(px(12.))
+                        .w_full()
+                        .rounded(theme::R_FULL)
+                        .bg(theme::wash_strong()),
+                )
+                .child(
+                    div()
+                        .h(px(16.))
+                        .text_size(theme::fs_12())
+                        .text_color(theme::text_muted())
+                        .child(t!("props.calculating").into_owned()),
+                )
+                // The legend's usual lines (`space_card`: 20 px each).
+                .child(placeholder(8., 0.7))
+                .child(placeholder(8., 0.5))
+                .into_any_element(),
+            height: 40. + 3. * 20.,
+        }];
+        // The three biggest folders go here.
+        for width in [0.6, 0.45, 0.3] {
+            rows.push(CardRow {
+                element: div()
+                    .px(theme::s_16())
+                    .py(theme::s_8())
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .gap(theme::s_8())
+                    .h(px(44.))
+                    .child(placeholder(8., width))
+                    .child(placeholder(3., 1.))
                     .into_any_element(),
                 height: 44.,
             });
@@ -3138,20 +3207,22 @@ mod count_folder_tests {
         );
     }
 
-    /// What one folder teaches is used by the next in the same window: a drive read to the end
-    /// makes the folder after it hand over on a spinning disk.
+    /// What one folder teaches is used by the next in the same window: the times the window
+    /// counts with have the drive's time as soon as it is read.
     #[test]
     fn folders_in_one_window_share_what_they_learn() {
         let (fs, journal) = setup();
         let times = parking_lot::Mutex::new(BTreeMap::new());
-        let (_, learned) = count_with(&fs, &*journal, &times, hdd, r"C:\");
+        let (_, learned) = count_with(&fs, &*journal, &times, ssd, r"C:\");
         assert!(matches!(learned[..], [TableTime { done: true, .. }]));
-        let (bytes, _) = count_with(&fs, &*journal, &times, hdd, r"C:\w");
-        assert_eq!(bytes, 1_000_000 + 100, "handed over to the table");
+        assert!(
+            times.lock().get(r"C:\").is_some_and(|t| t.done),
+            "the next folder starts with it"
+        );
     }
 
-    /// Handed over on a spinning disk and the table hasn't the folder: the walk goes on where it
-    /// paused (each folder listed once), and the read still tells how long the table takes.
+    /// On a spinning disk the table goes first and hasn't the folder: it is walked, each folder
+    /// listed once, and the read still tells how long the table takes.
     #[test]
     fn a_walk_handed_over_for_nothing_goes_on() {
         let (fs, journal) = setup();
@@ -3210,20 +3281,16 @@ mod count_folder_tests {
         assert!(learned.is_empty());
     }
 
-    /// On a spinning disk the walk hands over to the table (its time measured), instead of both
-    /// reading at once; a lower bound alone doesn't hand over (both run, as on an SSD).
+    /// On a spinning disk the table counts alone from the start, whatever is known about its
+    /// time: nothing is walked (a walk there seeks for every folder).
     #[test]
-    fn a_spinning_disk_hands_over_to_the_table() {
-        let (fs, journal) = setup();
-        let (bytes, _) = count(&fs, &*journal, &known(0, true), hdd, r"C:\w");
-        assert_eq!(bytes, 1_000_000 + 100, "from the table");
-        let (fs, journal) = setup();
-        let slow = Slow {
-            inner: journal,
-            wait: Duration::from_secs(5),
-        };
-        let (bytes, _) = count(&fs, &slow, &known(0, false), hdd, r"C:\w");
-        assert_eq!(bytes, 100, "walked");
+    fn a_spinning_disk_counts_from_the_table() {
+        for times in [known(0, true), known(60_000, false), BTreeMap::new()] {
+            let (fs, journal) = setup();
+            let (bytes, _) = count(&fs, &*journal, &times, hdd, r"C:\w");
+            assert_eq!(bytes, 1_000_000 + 100, "from the table");
+            assert_eq!(fs.read_dir_calls(), 0, "nothing walked");
+        }
     }
 
     /// A read to the end replaces what was known; a stopped one only raises a lower bound.

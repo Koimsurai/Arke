@@ -230,8 +230,7 @@ fn tile_snap(
     if into < 1. || into > period - gap - 1. {
         return None;
     }
-    let shows_here =
-        |t: f32| t <= max_top + 0.5 && here.0 >= t - 0.5 && here.1 <= t + view_h + 0.5;
+    let shows_here = |t: f32| t <= max_top + 0.5 && here.0 >= t - 0.5 && here.1 <= t + view_h + 0.5;
     [top - into, top + period - into]
         .into_iter()
         .find(|&t| t < tiles.1 - gap && shows_here(t))

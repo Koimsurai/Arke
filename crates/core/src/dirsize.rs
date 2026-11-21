@@ -309,6 +309,21 @@ pub fn usage(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&Space),
 ) -> Option<Space> {
+    usage_pausable(fs, root, cluster, cancel, &AtomicBool::new(false), progress)
+}
+
+/// [`usage`], with the walkers listing no new folder while `pause` is set (what they found is
+/// kept; the walk goes on where it was once it is cleared). `progress` still runs meanwhile, so
+/// it can clear it: a spinning disk counted from its file table instead waits for the table
+/// without losing the walk if the table can't answer.
+pub fn usage_pausable(
+    fs: &dyn Fs,
+    root: &Path,
+    cluster: u64,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+    progress: &mut dyn FnMut(&Space),
+) -> Option<Space> {
     crate::fs::debug_assert_not_ui_thread("usage", root);
     let mut space = Space::default();
     // The folder itself: its files count here, its folders are the children the rest is split by.
@@ -345,24 +360,47 @@ pub fn usage(
             space,
             todo,
             busy: 0,
+            walkers: WALKERS,
         }),
         work: parking_lot::Condvar::new(),
         finished: parking_lot::Condvar::new(),
     };
     std::thread::scope(|scope| {
+        let mut walkers = Vec::with_capacity(WALKERS);
         for _ in 0..WALKERS {
-            scope.spawn(|| walker(fs, cluster, cancel, &walk));
+            walkers.push(scope.spawn(|| walker(fs, cluster, cancel, pause, &walk)));
         }
         let mut state = walk.state.lock();
-        while !(cancel.load(Ordering::Relaxed) || (state.todo.is_empty() && state.busy == 0)) {
+        let mut paused = false;
+        while !(cancel.load(Ordering::Relaxed)
+            || (state.todo.is_empty() && state.busy == 0)
+            || state.walkers == 0)
+        {
             walk.finished.wait_for(&mut state, PROGRESS_TICK);
             let snapshot = state.space.clone();
             drop(state);
             progress(&snapshot);
+            // Resumed: the walkers go on now rather than at their next look.
+            let now = pause.load(Ordering::Relaxed);
+            if paused && !now {
+                walk.work.notify_all();
+            }
+            paused = now;
             state = walk.state.lock();
+        }
+        // No walker left with folders still to list (each one panicked): those weren't counted.
+        if !state.todo.is_empty() {
+            state.space.usage.partial = true;
         }
         drop(state);
         walk.work.notify_all();
+        for walker in walkers {
+            // Joined here so a walker's panic doesn't take the count down with it; its folder
+            // is already counted as unread (`Leaving`).
+            if walker.join().is_err() {
+                log::warn!("a folder size walker panicked");
+            }
+        }
     });
     if cancel.load(Ordering::Relaxed) {
         return None;
@@ -385,6 +423,31 @@ struct WalkState {
     todo: Vec<(PathBuf, usize)>,
     /// Folders being listed right now.
     busy: usize,
+    /// Walkers still running.
+    walkers: usize,
+}
+
+/// Keeps [`WalkState`] true when a walker ends, also by a panic (a bug, a file system driver's):
+/// the folder it was listing is no longer busy and counts as unread, and once no walker is left
+/// [`usage`] stops waiting for them.
+struct Leaving<'a> {
+    walk: &'a Walk,
+    /// Between taking a folder and adding what was in it.
+    listing: bool,
+}
+
+impl Drop for Leaving<'_> {
+    fn drop(&mut self) {
+        let mut state = self.walk.state.lock();
+        if self.listing {
+            state.busy -= 1;
+            state.space.usage.partial = true;
+        }
+        state.walkers -= 1;
+        drop(state);
+        self.walk.work.notify_all();
+        self.walk.finished.notify_all();
+    }
 }
 
 /// One of [`usage`]'s threads: lists folders until there are none left (and none being listed
@@ -393,24 +456,29 @@ struct WalkState {
     clippy::significant_drop_tightening,
     reason = "the lock is taken back after each folder; waiting releases it"
 )]
-fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
+fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, pause: &AtomicBool, walk: &Walk) {
+    let mut leaving = Leaving {
+        walk,
+        listing: false,
+    };
     let mut state = walk.state.lock();
     loop {
         if cancel.load(Ordering::Relaxed) {
-            walk.work.notify_all();
-            walk.finished.notify_all();
             return;
+        }
+        if pause.load(Ordering::Relaxed) {
+            walk.work.wait_for(&mut state, PROGRESS_TICK);
+            continue;
         }
         let Some((dir, child)) = state.todo.pop() else {
             if state.busy == 0 {
-                walk.work.notify_all();
-                walk.finished.notify_all();
                 return;
             }
             walk.work.wait(&mut state);
             continue;
         };
         state.busy += 1;
+        leaving.listing = true;
         drop(state);
         let mut usage = Usage::default();
         let mut bytes = 0;
@@ -442,6 +510,7 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
         let more = !found.is_empty();
         state.todo.extend(found);
         state.busy -= 1;
+        leaving.listing = false;
         if more {
             walk.work.notify_all();
         } else if state.todo.is_empty() && state.busy == 0 {
@@ -451,31 +520,123 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
     }
 }
 
+/// Where user profiles live and which one is the user's. The index service lists the other
+/// profile folders without their contents (privacy), `C:\Users\Default` too, which anyone can
+/// read: counts from its listing walk those instead.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Profiles {
+    /// Where all profiles live (`C:\Users`).
+    pub dir: PathBuf,
+    /// The user's own profile.
+    pub mine: Option<PathBuf>,
+}
+
+impl Profiles {
+    /// Whether the service lists the profile folder `name` (directly in [`Self::dir`]) without
+    /// its contents: every one but the user's own and Public.
+    pub fn hides(&self, name: &str) -> bool {
+        let name = name.to_lowercase();
+        name != "public"
+            && !self.mine.as_deref().is_some_and(|mine| {
+                mine.file_name()
+                    .is_some_and(|m| m.to_string_lossy().to_lowercase() == name)
+                    && mine
+                        .parent()
+                        .and_then(|p| below(p, &self.dir))
+                        .is_some_and(|rest| rest.is_empty())
+            })
+    }
+
+    /// Whether `path` is a profile folder the service lists without contents, or is inside one.
+    pub fn hidden(&self, path: &Path) -> bool {
+        below(path, &self.dir)
+            .and_then(|rest| rest.first().map(|owner| self.hides(owner)))
+            .unwrap_or(false)
+    }
+
+    /// The names on the way from `path` down to [`Self::dir`] (lowercase; none when it is
+    /// `path`), when `path` is it or above it: a count there holds the hidden profiles.
+    pub fn way_down(&self, path: &Path) -> Option<Vec<String>> {
+        below(&self.dir, path)
+    }
+}
+
+/// The components of `path` below `base` (lowercase), whatever the letter case of either;
+/// `None` when it isn't `base` or below it.
+fn below(path: &Path, base: &Path) -> Option<Vec<String>> {
+    let mut parts = path.components();
+    for want in base.components() {
+        let got = parts.next()?;
+        let (got, want) = (got.as_os_str(), want.as_os_str());
+        if !got.eq_ignore_ascii_case(want)
+            && got.to_string_lossy().to_lowercase() != want.to_string_lossy().to_lowercase()
+        {
+            return None;
+        }
+    }
+    Some(
+        parts
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect(),
+    )
+}
+
+/// Why [`usage_from_listing`] couldn't count a folder after reading the whole listing.
+#[derive(Debug)]
+struct ReadToEnd(&'static str);
+
+impl std::fmt::Display for ReadToEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ReadToEnd {}
+
+/// Whether [`usage_from_listing`] failed only after reading the whole listing (`dir` isn't in
+/// it, or the listing doesn't go into it), so it took as long as reading the file table takes.
+pub fn listed_to_end(err: &std::io::Error) -> bool {
+    err.get_ref().is_some_and(|e| e.is::<ReadToEnd>())
+}
+
 /// Everything below `dir` counted as [`usage`] counts it, from a whole-volume listing of its
 /// drive (the index service reads the NTFS MFT, as WizTree does: a whole C: drive in seconds
 /// instead of a minute of walking). The listing is summed as it streams in, nothing kept but two
 /// numbers per item and the names of folders. Errors when the listing can't be had (no service,
-/// not NTFS) or `dir` isn't in it; `Interrupted` when cancelled. Background thread.
+/// not NTFS) or `dir` isn't in it (`NotFound`, as through a junction); `Interrupted` when
+/// cancelled. Background thread.
 ///
 /// The listing is the search index's, which doesn't go into some folders
 /// ([`crate::index::descends_into`]: hidden system folders such as `C:\Windows\Installer`, the
 /// recycle bin): those are walked with `fs` afterwards (a few small folders). `Unsupported` when
-/// `dir` is one of them or inside one: walk it instead.
+/// `dir` is one of them or inside one: walk it instead. Both after the whole listing
+/// ([`listed_to_end`]).
 ///
-/// The service leaves out what is inside other people's profile folders, which a walk can't read
-/// either: a count over them is marked `partial`, as a walk's would be.
+/// The service lists other people's profile folders (`profiles`) without their contents: those
+/// below `dir` are walked too, so what the user can read counts (`C:\Users\Default`) and the rest
+/// makes the count `partial`, as a walk would. `PermissionDenied` at once when `dir` is in one
+/// of them: walk it instead.
 pub fn usage_from_listing(
     journal: &dyn crate::journal::Journal,
     fs: &dyn Fs,
     dir: &Path,
     cluster: u64,
+    profiles: Option<&Profiles>,
     cancel: &AtomicBool,
 ) -> std::io::Result<Space> {
     use crate::journal::LISTED_ROOT;
     const OUT: u32 = u32::MAX;
     const TARGET: u32 = u32::MAX - 1;
-    // How far down the way to `dir` each item is (its components matched), OUT once off it.
+    // How far down the way to `dir` each item is (its components matched), OFF once off it.
+    // Below `dir` the same for the way from `dir` to the profiles folder.
     const OFF: u16 = u16::MAX;
+    if profiles.is_some_and(|p| p.hidden(dir)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file table is listed without what is in other people's profiles",
+        ));
+    }
+    let way_down = profiles.and_then(|p| p.way_down(dir).map(|way| (p, way)));
     let volume: PathBuf = dir.components().take(2).collect();
     let wanted: Vec<String> = dir
         .components()
@@ -525,6 +686,8 @@ pub fn usage_from_listing(
                         here_slot = TARGET;
                         target_ix = ix;
                         found = true;
+                        // Below it, the way to the profiles folder starts here.
+                        here_level = 0;
                     }
                 }
             } else if !item.link {
@@ -537,8 +700,22 @@ pub fn usage_from_listing(
                     } else {
                         parent_slot
                     };
-                    if !crate::index::descends_into(&item.to_entry()) {
+                    let descends = crate::index::descends_into(&item.to_entry());
+                    if !descends {
                         unlisted.push((ix, here_slot));
+                    }
+                    // On the way to the profiles folder, or a profile in it listed without
+                    // contents: walked like the folders the listing doesn't go into.
+                    if let Some((profiles, way)) = &way_down
+                        && parent_level != OFF
+                    {
+                        if let Some(next) = way.get(usize::from(parent_level)) {
+                            if item.name.to_lowercase() == *next {
+                                here_level = parent_level + 1;
+                            }
+                        } else if descends && profiles.hides(&item.name) {
+                            unlisted.push((ix, here_slot));
+                        }
                     }
                     dirs.insert(ix, (item.parent, item.name));
                 } else {
@@ -560,20 +737,21 @@ pub fn usage_from_listing(
         return Err(std::io::ErrorKind::Interrupted.into());
     }
     if !found {
-        return Err(std::io::ErrorKind::NotFound.into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            ReadToEnd("not in the file table listing"),
+        ));
     }
     if target_unlisted {
-        return Err(std::io::ErrorKind::Unsupported.into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            ReadToEnd("the file table listing doesn't go into it"),
+        ));
     }
     let paths = unlisted
         .into_iter()
         .map(|(ix, slot)| (listed_path(dir, target_ix, &dirs, ix), slot));
     add_walks(fs, paths, cluster, cancel, &mut space)?;
-    // Other people's profiles are listed without their contents.
-    let profiles = volume_root(&volume).join("Users");
-    if profiles.starts_with(dir) || dir == volume_root(&volume) {
-        space.usage.partial = true;
-    }
     Ok(space)
 }
 
@@ -693,27 +871,163 @@ mod tests {
         let cancel = AtomicBool::new(false);
         for dir in [r"C:\w", r"C:\"] {
             let walked = usage(&*fs, Path::new(dir), 4096, &cancel, &mut |_| {}).unwrap();
-            let mut listed =
-                usage_from_listing(&*journal, &*fs, Path::new(dir), 4096, &cancel).unwrap();
-            // The drive is marked partial for other people's profiles; the rest is the same.
-            listed.usage.partial = walked.usage.partial;
+            let listed =
+                usage_from_listing(&*journal, &*fs, Path::new(dir), 4096, None, &cancel).unwrap();
             assert_eq!(listed, walked, "{dir}");
         }
-        let upper =
-            usage_from_listing(&*journal, &*fs, Path::new(r"C:\W\DOCS"), 4096, &cancel).unwrap();
+        let upper = usage_from_listing(
+            &*journal,
+            &*fs,
+            Path::new(r"C:\W\DOCS"),
+            4096,
+            None,
+            &cancel,
+        )
+        .unwrap();
         assert_eq!(upper.usage.bytes, 9300);
         assert_eq!(
             upper.children,
             vec![(PathBuf::from(r"C:\W\DOCS\old"), 9000)]
         );
-        let inside =
-            usage_from_listing(&*journal, &*fs, Path::new(r"C:\w\src\cache"), 4096, &cancel);
-        assert_eq!(inside.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
-        let missing = usage_from_listing(&*journal, &*fs, Path::new(r"C:\nope"), 4096, &cancel);
-        assert_eq!(missing.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        // Both known only once the whole listing is read: it took as long as the table takes.
+        let inside = usage_from_listing(
+            &*journal,
+            &*fs,
+            Path::new(r"C:\w\src\cache"),
+            4096,
+            None,
+            &cancel,
+        )
+        .unwrap_err();
+        assert_eq!(inside.kind(), std::io::ErrorKind::Unsupported);
+        assert!(listed_to_end(&inside));
+        let missing =
+            usage_from_listing(&*journal, &*fs, Path::new(r"C:\nope"), 4096, None, &cancel)
+                .unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+        assert!(listed_to_end(&missing));
         cancel.store(true, Ordering::Relaxed);
-        let stopped = usage_from_listing(&*journal, &*fs, Path::new(r"C:\w"), 4096, &cancel);
-        assert_eq!(stopped.unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+        let stopped =
+            usage_from_listing(&*journal, &*fs, Path::new(r"C:\w"), 4096, None, &cancel)
+                .unwrap_err();
+        assert_eq!(stopped.kind(), std::io::ErrorKind::Interrupted);
+        assert!(!listed_to_end(&stopped));
+    }
+
+    /// The service lists other people's profile folders without contents (`Default` too): a
+    /// count of the profiles folder or the drive walks them, so what can be read counts and the
+    /// rest makes it "at least"; a count inside one is left to a walk. Any letter case.
+    #[test]
+    fn hidden_profiles_are_walked_from_the_file_table() {
+        use crate::journal::{FakeJournal, LISTED_ROOT, Listed};
+        let item = |parent: u32, name: &str, dir: bool, size: u64| Listed {
+            parent,
+            name: name.into(),
+            attributes: if dir { 0x10 } else { 0x20 },
+            size,
+            mtime: 0,
+            link: false,
+        };
+        let journal = FakeJournal::new(1);
+        journal.set_listing(
+            r"C:\",
+            vec![
+                item(LISTED_ROOT, "Users", true, 0), // 0
+                item(0, "me", true, 0),              // 1
+                item(0, "Public", true, 0),          // 2
+                item(0, "Default", true, 0),         // 3
+                item(0, "Bob", true, 0),             // 4
+                item(1, "mine.txt", false, 10),      // 5
+                item(2, "shared.txt", false, 20),    // 6
+            ],
+        );
+        let fs = FakeFs::new();
+        // Default can be read; Bob's folder can't (not in the fake: listing it fails).
+        fs.insert_dir(r"C:\Users\Default", vec![dir("AppData"), file("NTUSER.DAT", 300)]);
+        fs.insert_dir(r"C:\Users\Default\AppData", vec![file("x", 4000)]);
+        let profiles = Profiles {
+            dir: PathBuf::from(r"C:\Users"),
+            mine: Some(PathBuf::from(r"C:\Users\me")),
+        };
+        let cancel = AtomicBool::new(false);
+        let count = |dir: &str| {
+            usage_from_listing(&*journal, &*fs, Path::new(dir), 0, Some(&profiles), &cancel)
+        };
+        for dir in [r"C:\", r"C:\Users", r"c:\users"] {
+            let space = count(dir).unwrap();
+            assert_eq!(space.usage.bytes, 10 + 20 + 300 + 4000, "{dir}");
+            assert!(space.usage.partial, "{dir}: Bob's can't be read");
+        }
+        let users = count(r"C:\Users").unwrap();
+        assert!(
+            users
+                .children
+                .contains(&(PathBuf::from(r"C:\Users\Default"), 4300)),
+            "{:?}",
+            users.children
+        );
+        let mine = count(r"C:\Users\me").unwrap();
+        assert_eq!((mine.usage.bytes, mine.usage.partial), (10, false));
+        let lists = journal.list_calls();
+        for dir in [r"C:\Users\Default", r"C:\users\bob\x"] {
+            let err = count(dir).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{dir}");
+            assert!(!listed_to_end(&err));
+        }
+        assert_eq!(journal.list_calls(), lists, "not read for those");
+        assert!(!profiles.hides("PUBLIC") && !profiles.hides("Me") && profiles.hides("default"));
+        assert!(!profiles.hidden(Path::new(r"C:\Users")));
+        assert!(profiles.hidden(Path::new(r"C:\USERS\Bob")));
+        assert_eq!(profiles.way_down(Path::new(r"c:\")), Some(vec!["users".to_owned()]));
+        assert_eq!(profiles.way_down(Path::new(r"C:\Users\me")), None);
+        assert_eq!(profiles.way_down(Path::new(r"D:\")), None);
+    }
+
+    /// While `pause` is set no folder is listed; cleared, the walk goes on and counts it all.
+    #[test]
+    fn a_paused_walk_goes_on_where_it_was() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\p", vec![dir("a"), dir("b"), file("top", 1)]);
+        fs.insert_dir(r"C:\p\a", vec![dir("deep"), file("x", 10)]);
+        fs.insert_dir(r"C:\p\a\deep", vec![file("y", 100)]);
+        fs.insert_dir(r"C:\p\b", vec![file("z", 1000)]);
+        let cancel = AtomicBool::new(false);
+        let pause = AtomicBool::new(false);
+        let mut calls = 0;
+        let mut listed_while_paused = Vec::new();
+        let space = usage_pausable(&*fs, Path::new(r"C:\p"), 0, &cancel, &pause, &mut |_| {
+            calls += 1;
+            match calls {
+                1 => pause.store(true, Ordering::Relaxed),
+                2 | 3 => listed_while_paused.push(fs.read_dir_calls()),
+                _ => pause.store(false, Ordering::Relaxed),
+            }
+        })
+        .unwrap();
+        assert_eq!(listed_while_paused, [1, 1], "only the folder itself");
+        assert_eq!(space.usage.bytes, 1111);
+        assert_eq!(fs.read_dir_calls(), 4, "each folder once");
+    }
+
+    /// A walker that panics (a bug, a driver's) doesn't hang the count nor take it down: what
+    /// it was listing counts as unread, the rest is counted; even when every walker panics.
+    #[test]
+    fn a_panicking_walker_leaves_a_partial_count() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\q", vec![dir("bad"), dir("good")]);
+        fs.insert_dir(r"C:\q\good", vec![file("g", 5)]);
+        fs.crash(r"C:\q\bad");
+        let cancel = AtomicBool::new(false);
+        let space = usage(&*fs, Path::new(r"C:\q"), 0, &cancel, &mut |_| {}).unwrap();
+        assert_eq!((space.usage.bytes, space.usage.partial), (5, true));
+
+        let names: Vec<String> = (0..WALKERS + 2).map(|i| format!("d{i}")).collect();
+        fs.insert_dir(r"C:\all", names.iter().map(|n| dir(n.as_str())).collect());
+        for name in &names {
+            fs.crash(Path::new(r"C:\all").join(name));
+        }
+        let space = usage(&*fs, Path::new(r"C:\all"), 0, &cancel, &mut |_| {}).unwrap();
+        assert!(space.usage.partial);
     }
 
     #[test]

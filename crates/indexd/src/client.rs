@@ -317,6 +317,43 @@ fn with_timeout<T: Send + 'static>(
     rx.recv_timeout(timeout).ok().flatten()
 }
 
+/// [`with_timeout`] that also asks `wanted` every [`LIST_ASK_EVERY`] whether the answer is still
+/// wanted: `Err(Interrupted)` at once when it isn't, so a caller that has stopped needn't wait
+/// for the service to start or answer.
+fn with_timeout_while<T: Send + 'static>(
+    timeout: Duration,
+    wanted: &mut dyn FnMut() -> bool,
+    f: impl FnOnce() -> Option<T> + Send + 'static,
+) -> io::Result<Option<T>> {
+    let (tx, rx) = flume::bounded(1);
+    std::thread::Builder::new()
+        .name("arke-indexd-client".into())
+        .spawn(move || {
+            let _ = tx.send(f());
+        })?;
+    let started = Instant::now();
+    loop {
+        match rx.recv_timeout(LIST_ASK_EVERY.min(timeout.saturating_sub(started.elapsed()))) {
+            Ok(answer) => return Ok(answer),
+            Err(flume::RecvTimeoutError::Timeout) if started.elapsed() < timeout => {
+                if !wanted() {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+            }
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
+/// Which profile folders the service lists without their contents: every one in the profiles
+/// folder but this user's own and Public (the service's privacy rule).
+pub fn profiles() -> Option<arke_core::dirsize::Profiles> {
+    Some(arke_core::dirsize::Profiles {
+        dir: crate::server::profiles_dir()?,
+        mine: std::env::var_os("USERPROFILE").map(std::path::PathBuf::from),
+    })
+}
+
 /// Reads the USN journal through the background service.
 #[derive(Default)]
 pub struct ServiceJournal {
@@ -356,11 +393,17 @@ impl Journal for ServiceJournal {
     fn list(&self, root: &Path, sink: ListSink) -> io::Result<()> {
         let root = root.to_path_buf();
         let custom = self.custom.clone();
-        let pipe = with_timeout(CONNECT_TIMEOUT * 2, move || {
-            let pipe = session(custom.as_deref())?;
-            send(&pipe, &Request::List { root }).ok()?;
-            Some(pipe)
-        })
+        // Connecting may wait for the service to start: the sink is asked meanwhile too. A pipe
+        // that comes after it gave up is dropped, which tells the service nobody is listening.
+        let pipe = with_timeout_while(
+            CONNECT_TIMEOUT * 2,
+            &mut || sink(Vec::new()),
+            move || {
+                let pipe = session(custom.as_deref())?;
+                send(&pipe, &Request::List { root }).ok()?;
+                Some(pipe)
+            },
+        )?
         .ok_or_else(|| io::Error::other("Arke index service unavailable"))?;
         // Receive on another thread so a stuck service times out here (falling back to a walk)
         // instead of stalling the index build.
@@ -498,6 +541,27 @@ impl Drop for FollowGuard {
         self.0.stopped.store(true, Ordering::Relaxed);
         // SAFETY: pipe is a valid handle kept alive by the Arc; cancels all pending I/O on it.
         let _ = unsafe { CancelIoEx(self.0.pipe.0, None) };
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    /// A listing given up while still connecting (no service answers on the pipe) ends at once,
+    /// not after the connect timeout.
+    #[test]
+    fn giving_up_while_connecting_ends_the_listing() {
+        let pipe = format!(r"\\.\pipe\arke-indexd-test.nobody.{}", std::process::id());
+        let journal = ServiceJournal::at(&pipe);
+        let started = Instant::now();
+        let listed = journal.list(Path::new(r"C:\"), &mut |_| false);
+        assert_eq!(listed.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
 

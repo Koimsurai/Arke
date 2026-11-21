@@ -488,8 +488,10 @@ pub(crate) enum Density {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TableTime {
     pub(crate) ms: u64,
-    /// Read to the end. Otherwise it was stopped after `ms` (counted another way first), so it
-    /// takes at least that long.
+    /// Read to the end. Otherwise it was stopped: a walk that had run `ms` (the read starting
+    /// part way through) was done first, so the table isn't worth starting before `ms`. That is
+    /// under twice the table's time: the read started no later than the table takes, and hadn't
+    /// ended.
     pub(crate) done: bool,
 }
 

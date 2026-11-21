@@ -690,7 +690,9 @@ impl Shell for WinShell {
                 hidden |= 1 << i;
                 continue;
             }
-            // Labels only for fixed drives; network or optical drives can block or ask for media.
+            // Labels for fixed drives, and for removable ones that just answered with their media
+            // (an empty slot was left out above, so reading it asks for nothing, #315); network
+            // or optical drives can block or ask for media.
             let (label, remote) = match drive_type {
                 DRIVE_REMOVABLE if floppy => (t!("drive.floppy").into_owned(), false),
                 DRIVE_FIXED => (
@@ -703,7 +705,10 @@ impl Shell for WinShell {
                         .unwrap_or_else(|| t!("drive.network").into_owned()),
                     true,
                 ),
-                DRIVE_REMOVABLE => (t!("drive.removable").into_owned(), false),
+                DRIVE_REMOVABLE => (
+                    volume_label(&root_w).unwrap_or_else(|| t!("drive.removable").into_owned()),
+                    false,
+                ),
                 DRIVE_CDROM => (t!("drive.cdrom").into_owned(), false),
                 _ => (t!("drive.other").into_owned(), false),
             };

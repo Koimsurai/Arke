@@ -952,7 +952,10 @@ mod tests {
         );
         fs.insert_dir(r"C:\Users\Default\AppData", vec![file("x", 4000)]);
         // Walks go below `dir` as it is spelled (Windows doesn't mind the case; the fake does).
-        fs.insert_dir(r"c:\users\Default", vec![dir("AppData"), file("NTUSER.DAT", 300)]);
+        fs.insert_dir(
+            r"c:\users\Default",
+            vec![dir("AppData"), file("NTUSER.DAT", 300)],
+        );
         fs.insert_dir(r"c:\users\Default\AppData", vec![file("x", 4000)]);
         let profiles = Profiles {
             dir: PathBuf::from(r"C:\Users"),

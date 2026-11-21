@@ -3645,7 +3645,10 @@ impl Workspace {
 
     /// The tab, sidebar or history menu's panel, drawn in its own window. It looks like the file
     /// list's menu: an icon on each row, the key on the right, lines between groups of rows.
-    #[allow(clippy::too_many_lines, reason = "one row builder, shared by every sidebar menu")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one row builder, shared by every sidebar menu"
+    )]
     fn sidebar_menu_panel(
         &mut self,
         max_h: Pixels,

@@ -327,8 +327,9 @@ fn name_cmp(a: &Entry, b: &Entry) -> Ordering {
     natural_cmp(&a.sort_key, &b.sort_key).then_with(|| a.name.cmp(&b.name))
 }
 
-/// Natural sort: digit runs compare numerically (file2 < file10), everything else per char.
-/// Inputs must already be lowercase.
+/// Natural sort: digit runs compare numerically (file2 < file10), everything else per char, with
+/// spaces and ASCII symbols before digits and digits before letters, as in File Explorer
+/// (`_notes` before `01 notes`, #311). Inputs must already be lowercase.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let (ab, bb) = (a.as_bytes(), b.as_bytes());
     let (mut i, mut j) = (0, 0);
@@ -359,13 +360,26 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
             // &str here: two multibyte chars can share a lead byte, and the index would land inside
             // a char. Digits are ASCII and never occur inside a multibyte char.
             if ca != cb {
-                return ca.cmp(&cb);
+                return char_rank(ca).cmp(&char_rank(cb));
             }
             i += 1;
             j += 1;
         }
     }
     (ab.len() - i).cmp(&(bb.len() - j))
+}
+
+/// Where a byte goes in [`natural_cmp`]: ASCII spaces and symbols, then digits, then the rest
+/// (letters, and every byte of a multibyte char, in code point order).
+const fn char_rank(c: u8) -> (u8, u8) {
+    let group = if c.is_ascii_digit() {
+        1
+    } else if c.is_ascii() && !c.is_ascii_alphabetic() {
+        0
+    } else {
+        2
+    };
+    (group, c)
 }
 
 fn trim_zeros(s: &[u8]) -> &[u8] {
@@ -386,6 +400,33 @@ mod tests {
             v,
             ["a", "b1c", "b01c", "file1", "file2", "file02", "file10"]
         );
+    }
+
+    /// #311: symbols first, then digits, then letters, as File Explorer has them.
+    #[test]
+    fn symbols_go_before_digits() {
+        let mut v = vec![
+            "01 folder two",
+            "_folder one",
+            "alpha",
+            "(draft)",
+            "1a",
+            "z",
+        ];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            v,
+            [
+                "(draft)",
+                "_folder one",
+                "1a",
+                "01 folder two",
+                "alpha",
+                "z"
+            ]
+        );
+        assert_eq!(natural_cmp("_text.txt", "01 text.txt"), Ordering::Less);
+        assert_eq!(natural_cmp("a_b", "a1"), Ordering::Less);
     }
 
     #[test]

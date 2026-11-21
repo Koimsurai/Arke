@@ -75,6 +75,23 @@ pub(super) struct TabDrag {
     /// where nothing takes it, or cancelled (Esc), they go back to this; removed, Undo puts the
     /// favorite back where it was. Taken by a drop that keeps the new order.
     pub(super) origin: Option<PinSnapshot>,
+    /// The dragged favorite started on the tiles (`start_tile`).
+    from_tile: bool,
+    /// The rows of the places list (the favorites' list and everything under it) slide to their
+    /// new places as the favorites change under the drag, like the tiles.
+    pub(super) rows: std::rc::Rc<crate::motion::Flip<PlaceRow>>,
+}
+
+/// A row of the sidebar's places list, as [`TabDrag::rows`] knows it across a change: a favorite
+/// listed as a row (#174) or a pinned folder (`n`-th row of it, its folders under it when it is
+/// expanded), the Recycle Bin, the Shelf's rows and the rows after the favorites, by their place.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum PlaceRow {
+    Favorite(PathBuf, usize),
+    Pinned(PathBuf, usize),
+    Recycle,
+    Shelf(usize),
+    After(usize),
 }
 
 /// Both favorites lists, as saved (`Settings::favorites`, `Settings::pinned`).
@@ -96,11 +113,13 @@ impl TabDrag {
     /// A drag of the favorite at `path` starts, from the tiles (`tile`) or the list, taken hold of
     /// at `grab`.
     pub(super) fn start_tile(&mut self, path: PathBuf, tile: bool, grab: Point<Pixels>) {
+        self.from_tile = tile;
         self.tile = tile.then(|| path.clone());
         self.pin = Some(path);
         self.pin_out = false;
         self.grab = grab;
         self.tile_shift.clear();
+        self.rows.start();
         // The grid may have moved since the last drag (a wider sidebar): every cell reports again.
         self.tile_cells.clear();
     }
@@ -110,6 +129,7 @@ impl TabDrag {
         self.tile = None;
         self.pin = None;
         self.pin_out = false;
+        self.rows.stop();
     }
 
     /// A favorite from the list is being dragged (not yet a tile).
@@ -129,6 +149,12 @@ impl TabDrag {
     /// The dragged favorite is a tile at the moment.
     pub(super) const fn is_tile_now(&self) -> bool {
         self.tile.is_some()
+    }
+
+    /// The dragged favorite was a tile when the drag started (else a list entry). Only the other
+    /// area shows where it can go: the one it left just closes its gap.
+    pub(super) const fn started_on_tile(&self) -> bool {
+        self.from_tile
     }
 
     /// Changes each time the dragged favorite changes shape.
@@ -548,6 +574,8 @@ impl Workspace {
         // The grid only holds the favorites drawn as tiles: their slots before the move.
         let old_tiles = self.tile_favorites(cx);
         let slots = self.tile_slots(old_tiles.len());
+        // A list entry leaving the list closes its gap there.
+        self.tab_drag.rows.moved();
         self.move_pin(&dragged, crate::settings::PinSlot::Tile(to), cx);
         self.tab_drag.moved = true;
         // From the list: it is a tile now, drawn as the gap where it would land.
@@ -746,6 +774,13 @@ impl Workspace {
             .get(path)
             .filter(|slide| slide.live(now))
             .map(|slide| slide.from)
+    }
+
+    /// Where the pinned folder `path`'s row slides in from (its offset from where it is laid
+    /// out, down), while it slides; `None` for the Recycle Bin's row.
+    pub(crate) fn list_row_slide_from_for_test(&self, path: Option<&Path>) -> Option<f32> {
+        let key = path.map_or(PlaceRow::Recycle, |p| PlaceRow::Pinned(p.to_path_buf(), 0));
+        self.tab_drag.rows.sliding_from(&key)
     }
 
     /// The favorite tiles sliding from their old slots after a reorder, sorted.

@@ -436,6 +436,68 @@ const SVG_MAX_SOURCE: u64 = 8 * 1024 * 1024;
 /// Width the first, small render of an SVG is made at to learn its proportions.
 const SVG_PROBE_SIDE: u32 = 512;
 
+/// Most markup tags a previewed SVG may have. Drawings with more take seconds to render and
+/// nothing in a preview is worth that.
+const SVG_MAX_TAGS: usize = 150_000;
+
+/// Whether an SVG is fine to hand to the renderer: not absurdly complex, and with no `<image>` or
+/// `<feImage>` pointing anywhere but inside the file (`data:` or `#id`). The renderer would read
+/// any other `href` as a local file path, so a downloaded SVG could show another file's picture.
+fn svg_is_self_contained(bytes: &[u8]) -> bool {
+    let mut tags = 0;
+    let mut at = 0;
+    while let Some(found) = bytes[at..].iter().position(|&b| b == b'<') {
+        at += found + 1;
+        tags += 1;
+        if tags > SVG_MAX_TAGS {
+            return false;
+        }
+        let rest = &bytes[at..];
+        if !(rest.starts_with(b"image") || rest.starts_with(b"feImage")) {
+            continue;
+        }
+        // The tag's attributes, up to the `>` outside quotes.
+        let mut quote = None;
+        let end = rest
+            .iter()
+            .position(|&b| match (quote, b) {
+                (None, b'"' | b'\'') => {
+                    quote = Some(b);
+                    false
+                }
+                (Some(q), _) if q == b => {
+                    quote = None;
+                    false
+                }
+                (None, b'>') => true,
+                _ => false,
+            })
+            .unwrap_or(rest.len());
+        let tag = &rest[..end];
+        let mut from = 0;
+        while let Some(h) = find(&tag[from..], b"href") {
+            let value = tag[from + h + 4..]
+                .iter()
+                .skip_while(|b| b.is_ascii_whitespace())
+                .skip(1) // `=`
+                .skip_while(|b| b.is_ascii_whitespace())
+                .skip(1) // the opening quote
+                .copied()
+                .take(5)
+                .collect::<Vec<u8>>();
+            if !(value.starts_with(b"#") || value.eq_ignore_ascii_case(b"data:")) {
+                return false;
+            }
+            from += h + 4;
+        }
+    }
+    true
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 /// An SVG rendered to `IMAGE_SIDE` on its long side by GPUI's renderer (resvg). It is parsed once
 /// and rendered twice: a small render shows whether it is portrait or landscape, since the
 /// renderer fits a width. Fonts come from the system; the file is never run or fetched from.
@@ -448,6 +510,9 @@ fn load_svg(fs: &dyn Fs, renderer: &gpui::SvgRenderer, path: &Path, size: u64) -
     let Ok(bytes) = fs.read(path, SVG_MAX_SOURCE) else {
         return PreviewData::Nothing;
     };
+    if !svg_is_self_contained(&bytes) {
+        return PreviewData::Nothing;
+    }
     let Ok(parsed) = renderer.parse_svg(&bytes) else {
         return PreviewData::Nothing;
     };
@@ -500,12 +565,14 @@ fn load_gzip(fs: &dyn Fs, shell: &dyn Shell, path: &Path, entry: &Entry) -> Prev
         return PreviewData::Nothing;
     };
     // `gzip` run on a pipe stores no name: the file's own name without `.gz` is the best guess.
+    // A file named just `.gz` has nothing left after the cut: its own name then.
     let name = info.name.unwrap_or_else(|| {
-        entry
+        let stem = entry
             .name
             .get(..entry.name.len().saturating_sub(".gz".len()))
-            .unwrap_or_default()
-            .to_owned()
+            .unwrap_or_default();
+        let name = if stem.is_empty() { &entry.name } else { stem };
+        name.to_owned()
     });
     let decode = |bytes: &[u8]| shell.decode_ansi(bytes);
     let text = if info.head.is_empty() {
@@ -1407,19 +1474,16 @@ impl Explorer {
                     .debug_selector(move || format!("pane-info-value-{ix}"))
                     .min_w_0()
                     .text_color(theme::text_muted())
-                    .map(|d| match date.map(|t| self.date_parts(t)) {
-                        // A path wraps at its separators, so all of it shows.
-                        None if key == location => d.child(wrappable_path(&value)),
-                        None => d.child(value),
-                        Some((short, None)) => d.child(short),
-                        // "Today 06:06" first, the full date and time dimmed after it (on the next
-                        // line when there's no room).
-                        Some((short, Some(full))) => d
-                            .flex()
-                            .flex_wrap()
-                            .gap_x(theme::s_6())
-                            .child(short)
-                            .child(div().text_color(subtle).child(full)),
+                    // A path wraps at its separators, so all of it shows.
+                    .map(|d| {
+                        if let Some(time) = date {
+                            // Once: the list's short form, or the full one with "full dates".
+                            d.child(self.date_text(Some(time), crate::prefs::full_dates()))
+                        } else if key == location {
+                            d.child(wrappable_path(&value))
+                        } else {
+                            d.child(value)
+                        }
                     });
                 // A label column of fixed width with the value right after it, so the eye doesn't
                 // cross the pane to pair them.
@@ -1468,23 +1532,6 @@ impl Explorer {
                     }))
             }))
             .into_any_element()
-    }
-
-    /// A date as the Info list shows it: the list's short form ("Today 06:06") and, when that
-    /// leaves something out, the full date and time to dim after it. Only the full form with the
-    /// "full dates" setting on.
-    fn date_parts(&self, time: std::time::SystemTime) -> (String, Option<String>) {
-        let shell = &self.services.shell;
-        let full = shell.format_time(time);
-        if crate::prefs::full_dates() {
-            return (full, None);
-        }
-        let short = shell.format_time_short(time);
-        if short == full {
-            (full, None)
-        } else {
-            (short, Some(full))
-        }
     }
 
     fn preview_details(&self, preview: &Preview) -> Vec<(String, String)> {
@@ -4710,4 +4757,31 @@ where
         },
     )
     .into_any_element()
+}
+
+#[cfg(test)]
+mod svg_guard_tests {
+    use super::svg_is_self_contained as ok;
+
+    #[test]
+    fn external_images_are_refused() {
+        assert!(ok(
+            b"<svg><rect/><image href=\"data:image/png;base64,AAAA\"/></svg>"
+        ));
+        assert!(ok(
+            b"<svg><image xlink:href='#other'/><a href=\"https://x\"/></svg>"
+        ));
+        assert!(!ok(b"<svg><image href=\"C:\\Users\\a\\b.png\"/></svg>"));
+        assert!(!ok(b"<svg><image xlink:href = 'photo.png'/></svg>"));
+        assert!(!ok(b"<svg><feImage href=\"..\\x.png\"/></svg>"));
+        assert!(!ok(b"<svg><image id=\">\" href=\"x.png\"/></svg>"));
+        assert!(!ok(b"<svg><image href=\"&h;\"/></svg>"));
+    }
+
+    #[test]
+    fn absurdly_many_tags_are_refused() {
+        let many = "<g/>".repeat(super::SVG_MAX_TAGS + 1);
+        assert!(!ok(format!("<svg>{many}</svg>").as_bytes()));
+        assert!(ok(b"<svg><g/></svg>"));
+    }
 }

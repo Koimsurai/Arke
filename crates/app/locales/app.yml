@@ -2836,6 +2836,14 @@ settings.sidebar_peek:
   es: Abrir la barra lateral contraída al dejar el puntero sobre ella
   pt-BR: Abrir a barra lateral recolhida ao pausar o ponteiro sobre ela
   ja: 折りたたんだサイドバーをポインターを置いたときに開く
+settings.sidebar_follow:
+  en: Open This PC to the current folder
+  zh-TW: 此電腦跟著目前資料夾展開
+  zh-CN: 此电脑随当前文件夹展开
+  de: Dieser PC bis zum aktuellen Ordner aufklappen
+  es: Expandir Este equipo hasta la carpeta actual
+  pt-BR: Expandir Este Computador até a pasta atual
+  ja: PC を現在のフォルダーまで展開する
 settings.list:
   en: List
   zh-TW: 清單
@@ -2944,8 +2952,8 @@ settings.startup:
   en: Startup
   zh-TW: 啟動
   zh-CN: 启动
-  de: Start
-  es: Inicio
+  de: Programmstart
+  es: Al iniciar
   pt-BR: Inicialização
   ja: 起動
 settings.start:
@@ -4194,6 +4202,14 @@ menu.open_in_new_tab:
   es: Abrir en pestaña nueva
   pt-BR: Abrir em nova guia
   ja: 新しいタブで開く
+menu.ctrl_click:
+  en: Ctrl+click
+  zh-TW: Ctrl+按一下
+  zh-CN: Ctrl+单击
+  de: Strg+Klick
+  es: Ctrl+clic
+  pt-BR: Ctrl+clique
+  ja: Ctrl+クリック
 menu.extract_to:
   en: "Extract to “%{name}\\”"
   zh-TW: 解壓縮到「%{name}\」
@@ -6789,13 +6805,13 @@ sidebar.close_other_tabs:
   pt-BR: Fechar outras guias
   ja: ほかのタブを閉じる
 sidebar.reopen_closed_tab:
-  en: Reopen closed tab (Ctrl+Shift+T)
-  zh-TW: 重新開啟關閉的分頁（Ctrl+Shift+T）
-  zh-CN: 重新打开关闭的标签页（Ctrl+Shift+T）
-  de: Geschlossene Registerkarte wieder öffnen (Strg+Umschalt+T)
-  es: Reabrir pestaña cerrada (Ctrl+Shift+T)
-  pt-BR: Reabrir guia fechada (Ctrl+Shift+T)
-  ja: 閉じたタブを開きなおす (Ctrl+Shift+T)
+  en: Reopen closed tab
+  zh-TW: 重新開啟關閉的分頁
+  zh-CN: 重新打开关闭的标签页
+  de: Geschlossene Registerkarte wieder öffnen
+  es: Reabrir pestaña cerrada
+  pt-BR: Reabrir guia fechada
+  ja: 閉じたタブを開きなおす
 sidebar.drop_to_list:
   en: "Drop here to add to the list"
   zh-TW: "放到這裡以加入清單"
@@ -6868,6 +6884,14 @@ home.title:
   es: Inicio
   pt-BR: Página Inicial
   ja: ホーム
+home.move_to_sidebar_list:
+  en: Move to the list in the sidebar
+  zh-TW: 移到側邊欄的清單
+  zh-CN: 移到侧边栏的列表
+  de: In die Liste der Seitenleiste verschieben
+  es: Mover a la lista de la barra lateral
+  pt-BR: Mover para a lista da barra lateral
+  ja: サイドバーの一覧に移動
 home.recent:
   en: Recent files
   zh-TW: 最近使用的檔案
@@ -6996,22 +7020,14 @@ sidebar.close_tab:
   es: Cerrar pestaña
   pt-BR: Fechar guia
   ja: タブを閉じる
-sidebar.close_tab_key:
-  en: Close tab (Ctrl+W)
-  zh-TW: 關閉分頁（Ctrl+W）
-  zh-CN: 关闭标签页（Ctrl+W）
-  de: Registerkarte schließen (Strg+W)
-  es: Cerrar pestaña (Ctrl+W)
-  pt-BR: Fechar guia (Ctrl+W)
-  ja: タブを閉じる (Ctrl+W)
 sidebar.close_side:
-  en: Close active side (Ctrl+W)
-  zh-TW: 關閉目前這一側（Ctrl+W）
-  zh-CN: 关闭当前这一侧（Ctrl+W）
-  de: Aktive Seite schließen (Strg+W)
-  es: Cerrar el lado activo (Ctrl+W)
-  pt-BR: Fechar lado ativo (Ctrl+W)
-  ja: アクティブな側を閉じる (Ctrl+W)
+  en: Close active side
+  zh-TW: 關閉目前這一側
+  zh-CN: 关闭当前这一侧
+  de: Aktive Seite schließen
+  es: Cerrar el lado activo
+  pt-BR: Fechar lado ativo
+  ja: アクティブな側を閉じる
 sidebar.unsplit:
   en: "Back to one pane"
   zh-TW: 取消分割
@@ -8987,8 +9003,8 @@ welcome.later_hint:
   en: "You can change this later in Settings › Startup"
   zh-TW: "之後可以在 設定 › 啟動 更改"
   zh-CN: "之后可以在 设置 › 启动 中更改"
-  de: Sie können dies später unter Einstellungen › Start ändern
-  es: Puede cambiarlo más tarde en Configuración › Inicio
+  de: Sie können dies später unter Einstellungen › Programmstart ändern
+  es: Puede cambiarlo más tarde en Configuración › Al iniciar
   pt-BR: Você pode mudar isso depois em Configurações › Inicialização
   ja: 後から [設定] › [起動] で変更できます
 

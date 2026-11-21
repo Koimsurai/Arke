@@ -518,7 +518,7 @@ fn user_profile(token: HANDLE) -> Option<PathBuf> {
     })
 }
 
-fn profiles_dir() -> Option<PathBuf> {
+pub(crate) fn profiles_dir() -> Option<PathBuf> {
     read_wide_path(|buf, len| {
         // SAFETY: buf is null or holds at least *len u16s; len is a valid pointer.
         unsafe { GetProfilesDirectoryW(Some(buf), len) }.is_ok()

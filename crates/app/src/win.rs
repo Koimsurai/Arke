@@ -1210,8 +1210,8 @@ impl Shell for WinShell {
         let drive = u32::from(letter.to_ascii_uppercase()) - u32::from('A');
         let owner = windows::Win32::Foundation::HWND(owner.unwrap_or_default() as *mut _);
         // SAFETY: shows Windows' modal Format dialog for the drive; owner is Arke's window or null.
-        let _ = unsafe { SHFormatDrive(owner, drive, SHFMT_ID_DEFAULT, SHFMT_OPT_NONE) };
-        Ok(())
+        let code = unsafe { SHFormatDrive(owner, drive, SHFMT_ID_DEFAULT, SHFMT_OPT_NONE) };
+        format_drive_result(code)
     }
 
     fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
@@ -1635,6 +1635,16 @@ impl Shell for WinShell {
         crate::win_pdf::render_page(path, page, max)
     }
 
+    fn pdf_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::thumb_host::pdf_thumbnail(path, max_side)
+            .map_err(|e| ShellError::Host(e.to_string()))
+    }
+
     fn cloud_scan(&self, dir: &Path, items: &[std::sync::Arc<str>]) -> crate::shell::CloudScan {
         crate::win_cloud::scan(dir, items)
     }
@@ -1899,10 +1909,31 @@ fn raise(hwnd: isize, also: Option<u32>) -> bool {
     }
 }
 
+/// What `SHFormatDrive` answered: a cancelled dialog is not a failure, the other special
+/// codes are; anything else is the drive's format result (success).
+fn format_drive_result(code: u32) -> Result<(), ShellError> {
+    const SHFMT_ERROR: u32 = 0xFFFF_FFFF;
+    const SHFMT_NOFORMAT: u32 = 0xFFFF_FFFD;
+    match code {
+        SHFMT_ERROR => Err(ShellError::Host("The drive could not be formatted.".into())),
+        SHFMT_NOFORMAT => Err(ShellError::Host("This drive cannot be formatted.".into())),
+        // Formatted, or SHFMT_CANCEL (0xFFFF_FFFE): the dialog was closed.
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn format_drive_codes_map_to_errors() {
+        assert!(format_drive_result(0).is_ok());
+        assert!(format_drive_result(0xFFFF_FFFE).is_ok());
+        assert!(format_drive_result(0xFFFF_FFFF).is_err());
+        assert!(format_drive_result(0xFFFF_FFFD).is_err());
+    }
 
     /// Real shortcuts in a temp folder: the target reads back, and a name clash gets a number.
     #[test]

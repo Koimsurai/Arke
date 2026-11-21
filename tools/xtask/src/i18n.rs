@@ -32,6 +32,9 @@ struct Entry {
     key: String,
     /// `(language, decoded text)` in file order.
     langs: Vec<(String, String)>,
+    /// Index into the file's lines of each of `langs`' lines (comments or blank lines may sit
+    /// between them).
+    at: Vec<usize>,
     /// Index into the file's lines of the first line after this key's language lines.
     end: usize,
 }
@@ -50,7 +53,10 @@ impl Entry {
 fn parse(lines: &[&str]) -> Result<Vec<Entry>> {
     let mut entries: Vec<Entry> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        if line.starts_with('#') || line.starts_with("_version") || line.trim().is_empty() {
+        if line.trim_start().starts_with('#')
+            || line.starts_with("_version")
+            || line.trim().is_empty()
+        {
             continue;
         }
         if let Some(rest) = line.strip_prefix("  ") {
@@ -69,11 +75,13 @@ fn parse(lines: &[&str]) -> Result<Vec<Entry>> {
                 lang.to_owned(),
                 decode(value.trim_start()).with_context(|| format!("line {}", i + 1))?,
             ));
+            entry.at.push(i);
             entry.end = i + 1;
         } else if let Some(key) = line.strip_suffix(':') {
             entries.push(Entry {
                 key: key.to_owned(),
                 langs: Vec::new(),
+                at: Vec::new(),
                 end: i + 1,
             });
         } else {
@@ -122,6 +130,19 @@ fn decode(value: &str) -> Result<String> {
     Ok(out)
 }
 
+/// Text a YAML parser may read as a number or date: `0x1F`, `0o17`, `1_000`, `1e3`, `10:30`,
+/// `2026-11-12`. Anything starting with a digit made only of such characters.
+fn number_like(text: &str) -> bool {
+    text.starts_with(|c: char| c.is_ascii_digit())
+        && text.chars().all(|c| {
+            c.is_ascii_hexdigit()
+                || matches!(
+                    c,
+                    'x' | 'X' | 'o' | 'O' | 't' | 'T' | '_' | '.' | '+' | '-' | ':'
+                )
+        })
+}
+
 /// A YAML scalar for `text`: plain when that reads back as the same string, double-quoted
 /// otherwise.
 fn encode(text: &str) -> String {
@@ -136,7 +157,8 @@ fn encode(text: &str) -> String {
         && !text.contains(" #")
         && !text.contains(['"', '\'', '\\', '\n', '\t'])
         && !WORDS.contains(&text.to_ascii_lowercase().as_str())
-        && text.parse::<f64>().is_err();
+        && text.parse::<f64>().is_err()
+        && !number_like(text);
     if plain {
         return text.to_owned();
     }
@@ -282,17 +304,9 @@ fn merge(root: &Path, lang: &str, translations: &BTreeMap<String, String>) -> Re
             );
             let line = format!("  {lang}: {}", encode(new));
             // Replace this language's line when it is there, else add after the last one.
-            let mut at = entry.end - entry.langs.len();
-            let mut replace = false;
-            for (l, _) in &entry.langs {
-                if l == lang {
-                    replace = true;
-                    break;
-                }
-                at += 1;
-            }
-            if replace {
-                lines[at] = line;
+            let existing = entry.langs.iter().position(|(l, _)| l == lang);
+            if let Some(at) = existing.and_then(|n| entry.at.get(n)) {
+                lines[*at] = line;
             } else {
                 lines.insert(entry.end, line);
             }
@@ -424,11 +438,31 @@ a.two:
             "a\nb",
             "ok #1",
             "Dossier :",
+            "0x1F",
+            "1_000",
+            "0o17",
+            "1e3",
+            "10:30",
+            "2026-11-12",
+            ".inf",
+            ".NaN",
+            "+1",
+            "True",
+            "Off",
+            "NULL",
+            "~",
+            "Y",
         ] {
             assert_eq!(decode(&encode(text)).unwrap(), text, "{text}");
         }
         assert_eq!(encode("Open"), "Open");
         assert_eq!(encode("No"), "\"No\"");
+        for text in [
+            "0x1F", "1_000", "0o17", ".inf", "true", "yes", "off", "null", "~",
+        ] {
+            assert!(encode(text).starts_with('"'), "{text} is quoted");
+        }
+        assert_eq!(encode("3 files"), "3 files");
         assert_eq!(encode("%{n} files"), "\"%{n} files\"");
     }
 
@@ -455,6 +489,44 @@ a.two:
         merge(&root, "ja", &again).unwrap();
         let after = std::fs::read_to_string(root.join("crates/x/locales/x.yml")).unwrap();
         assert!(after.contains("  ja: 壱\n") && !after.contains("一つ"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A comment between a key's language lines doesn't make a replacement hit the wrong line.
+    #[test]
+    fn replaces_the_right_line_when_a_comment_sits_between_languages() {
+        let root = std::env::temp_dir().join("arke-xtask-i18n-gap");
+        let dir = root.join("crates/x/locales");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = "_version: 2
+a.one:
+  en: One
+  # note
+  zh-TW: 一
+
+  ja: 古い
+  zh-CN: 一
+";
+        std::fs::write(dir.join("x.yml"), file).unwrap();
+        let translations = read_translations(
+            "a.one	新しい
+",
+        )
+        .unwrap();
+        merge(&root, "ja", &translations).unwrap();
+        let after = std::fs::read_to_string(dir.join("x.yml")).unwrap();
+        assert_eq!(
+            after,
+            "_version: 2
+a.one:
+  en: One
+  # note
+  zh-TW: 一
+
+  ja: 新しい
+  zh-CN: 一
+"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

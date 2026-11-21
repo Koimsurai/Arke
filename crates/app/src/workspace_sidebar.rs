@@ -23,6 +23,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::pindrop::{self, PinArea, PinDrops as _};
+use super::tabdrag::PlaceRow;
 use super::{DraggedTab, Tab, Workspace};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -48,6 +49,8 @@ const USAGE_DANGER: f32 = 0.9;
 struct DriveSpace {
     free: String,
     used: f32,
+    /// Free and total bytes, for the row's tooltip.
+    bytes: (u64, u64),
 }
 /// Max subfolders listed per folder; past that a tree is not useful.
 const TREE_MAX_CHILDREN: usize = 500;
@@ -128,7 +131,8 @@ pub(super) enum SidebarAction {
     OpenFile(PathBuf),
     RevealFile(PathBuf),
     CopyPath(PathBuf),
-    Properties(PathBuf),
+    /// Properties of a folder (`true`: no need to ask the disk) or a file.
+    Properties(PathBuf, bool),
     /// A drive (or any folder): Windows Terminal there, File Explorer there.
     OpenTerminal(PathBuf),
     OpenInExplorer(PathBuf),
@@ -138,44 +142,146 @@ pub(super) enum SidebarAction {
     DiskCleanup(PathBuf),
 }
 
-/// A drive's own entries (here or on Home), what File Explorer's drive menu has, in Arke's
-/// words: copy path, Terminal, File Explorer, and for a local drive Eject (`ejectable`), Format
-/// (not the drive Windows runs from) and Disk Cleanup.
-fn drive_items(path: &Path, local: bool, ejectable: bool) -> Vec<(SharedString, SidebarAction)> {
-    let at = path.to_path_buf();
-    let mut items: Vec<(SharedString, SidebarAction)> = vec![
-        (
-            t!("menu.copy_path").to_string().into(),
-            SidebarAction::CopyPath(at.clone()),
-        ),
-        (
-            t!("menu.open_terminal").to_string().into(),
-            SidebarAction::OpenTerminal(at.clone()),
-        ),
-        (
-            t!("menu.open_in_explorer").to_string().into(),
-            SidebarAction::OpenInExplorer(at.clone()),
-        ),
-    ];
-    if ejectable {
-        items.push((
-            t!("sidebar.eject").to_string().into(),
-            SidebarAction::EjectDrive(at.clone()),
-        ));
-    }
-    if local {
-        if !is_system_drive(path) {
-            items.push((
-                t!("menu.format_drive").to_string().into(),
-                SidebarAction::FormatDrive(at.clone()),
-            ));
+/// One row of a sidebar or Home menu.
+pub(super) type SidebarRow = (SharedString, SidebarAction);
+
+fn row(label: std::borrow::Cow<'_, str>, action: SidebarAction) -> SidebarRow {
+    (label.into_owned().into(), action)
+}
+
+/// Where a folder's menu was opened, for [`Workspace::folder_menu`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MenuFor {
+    /// A row of the tree under This PC or Network, or a drive or network card on Home; `depth` 0
+    /// is the place itself.
+    Tree { depth: usize },
+    /// A favorite in the sidebar: a tile, a row of a name too long for one, a pinned list row.
+    Favorite,
+    /// A favorite card on Home (Home shows the tiles only).
+    HomeFavorite,
+}
+
+/// The icon on the left of a menu row, as the file list's menu has one on each of Arke's own
+/// rows. `None`: the row keeps the icon's room empty.
+const fn menu_glyph(action: &SidebarAction) -> Option<Icon> {
+    use SidebarAction as A;
+    Some(match action {
+        A::OpenInNewTab(_) | A::OpenRecycleInNewTab => Icon::TabOpen,
+        A::TogglePin(_) | A::SetRecyclePinned(_) | A::TogglePinTab(_) => Icon::Pin,
+        A::MoveToList(_) => Icon::ViewList,
+        A::MoveToTiles(_) => Icon::ViewGrid,
+        A::RenamePlace(_) | A::RenameFavorite(_) => Icon::Rename,
+        A::OpenTerminal(_) => Icon::Terminal,
+        A::OpenInExplorer(_) => Icon::Explorer,
+        A::CopyPath(_) => Icon::CopyPath,
+        A::Properties(..) => Icon::Info,
+        A::OpenFile(_) => Icon::Open,
+        A::RevealFile(_) | A::ShelfReveal(_) | A::HistoryJump { .. } | A::TimelineStep { .. } => {
+            Icon::Folder
         }
-        items.push((
-            t!("menu.disk_cleanup").to_string().into(),
-            SidebarAction::DiskCleanup(at),
-        ));
+        A::EjectDrive(_) => Icon::ArrowUp,
+        A::FormatDrive(_) => Icon::Drive,
+        A::DiskCleanup(_) => Icon::Trash,
+        A::DisconnectDrive(_) => Icon::Power,
+        A::MapDrive => Icon::NetDrive,
+        A::ToggleSearchNetwork(_) => Icon::Search,
+        A::RequireSecure(_) => Icon::Globe,
+        A::ForgetShare(_)
+        | A::ForgetRemote(_)
+        | A::ShelfRemove(_)
+        | A::ShelfClear
+        | A::CloseTab(_)
+        | A::CloseSide(_) => Icon::Close,
+        A::DuplicateTab(_) => Icon::TabNew,
+        A::ReopenClosedTab => Icon::Restore,
+        A::Unsplit(_) => Icon::Split,
+        A::ShelfToHere { is_move: false } => Icon::Copy,
+        A::ShelfToHere { is_move: true } => Icon::Cut,
+        A::WindowMinimize => Icon::WinMin,
+        A::WindowMaximize => Icon::WinMax,
+        A::WindowRestore => Icon::WinRestore,
+        A::WindowClose => Icon::WinClose,
+        A::OpenSettings => Icon::Settings,
+        A::SetSidebarPeek(_) => Icon::Sidebar,
+        A::CloseOtherTabs(_) | A::CloseAllTabs => return None,
+    })
+}
+
+/// Where the places' top edge goes so it doesn't cut a row of favorite tiles in half, all in the
+/// list's unscrolled terms: the edge at `top` now; the tiles from `tiles.0` to `tiles.1` in
+/// `rows` rows `gap` apart; the current folder's row from `here.0` to `here.1`, which must stay
+/// in a view `view_h` high; the edge going no further than `max_top`. Back to the start of the cut
+/// row first, else on to the next row (past the tiles when it is the last one: scrolling up shows
+/// them, and the shadow under Home says there is more above). Never a half row. `None`: leave it
+/// as it is.
+fn tile_snap(
+    top: f32,
+    tiles: (f32, f32),
+    rows: usize,
+    gap: f32,
+    here: (f32, f32),
+    view_h: f32,
+    max_top: f32,
+) -> Option<f32> {
+    if rows == 0 || top <= tiles.0 || top >= tiles.1 {
+        return None;
     }
-    items
+    let period = (tiles.1 - tiles.0 + gap) / rows as f32;
+    let into = (top - tiles.0).rem_euclid(period);
+    // In the gap between two rows, or a hair into one: nothing is cut.
+    if into < 1. || into > period - gap - 1. {
+        return None;
+    }
+    let shows_here = |t: f32| t <= max_top + 0.5 && here.0 >= t - 0.5 && here.1 <= t + view_h + 0.5;
+    [top - into, (top + period - into).min(tiles.1)]
+        .into_iter()
+        .find(|&t| shows_here(t))
+}
+
+/// A line goes above row `ix`: it starts another group than the row above.
+fn line_before(items: &[SidebarRow], ix: usize) -> bool {
+    ix.checked_sub(1)
+        .and_then(|above| items.get(above))
+        .zip(items.get(ix))
+        .is_some_and(|((_, a), (_, b))| menu_group(a) != menu_group(b))
+}
+
+/// Rows of one group stay together and a line parts the groups, as in the file list's menu: a
+/// menu is built in this order, so the lines fall where the kind of action changes.
+const fn menu_group(action: &SidebarAction) -> u8 {
+    use SidebarAction as A;
+    match action {
+        A::OpenInNewTab(_)
+        | A::OpenRecycleInNewTab
+        | A::OpenFile(_)
+        | A::RevealFile(_)
+        | A::ShelfReveal(_) => 0,
+        A::TogglePin(_)
+        | A::SetRecyclePinned(_)
+        | A::MoveToList(_)
+        | A::MoveToTiles(_)
+        | A::RenamePlace(_)
+        | A::RenameFavorite(_) => 1,
+        A::DisconnectDrive(_)
+        | A::EjectDrive(_)
+        | A::FormatDrive(_)
+        | A::DiskCleanup(_)
+        | A::ToggleSearchNetwork(_)
+        | A::ForgetShare(_)
+        | A::ForgetRemote(_)
+        | A::RequireSecure(_)
+        | A::MapDrive => 2,
+        A::OpenTerminal(_) | A::OpenInExplorer(_) | A::CopyPath(_) | A::Properties(..) => 3,
+        A::TogglePinTab(_) | A::DuplicateTab(_) => 4,
+        A::CloseTab(_) | A::CloseOtherTabs(_) | A::CloseAllTabs | A::ReopenClosedTab => 5,
+        A::Unsplit(_) | A::CloseSide(_) => 6,
+        A::WindowMinimize | A::WindowMaximize | A::WindowRestore | A::WindowClose => 7,
+        A::OpenSettings => 8,
+        A::ShelfToHere { .. } => 9,
+        A::ShelfClear | A::ShelfRemove(_) => 10,
+        A::HistoryJump { .. } | A::TimelineStep { .. } => 11,
+        A::SetSidebarPeek(_) => 12,
+    }
 }
 
 /// Whether `path` is the drive Windows runs from (`%SystemDrive%`).
@@ -187,25 +293,20 @@ fn is_system_drive(path: &Path) -> bool {
     })
 }
 
-/// The menu of a recent file on Home.
-pub(super) fn file_menu(path: &Path) -> Vec<(SharedString, SidebarAction)> {
+/// The menu of a recent file on Home. "Open file location" goes to it in Arke, as the same row
+/// does for a shortcut in the file list (File Explorer's rows say "Windows File Explorer").
+pub(super) fn file_menu(path: &Path) -> Vec<SidebarRow> {
     let path = path.to_path_buf();
     vec![
-        (
-            t!("menu.open").to_string().into(),
-            SidebarAction::OpenFile(path.clone()),
-        ),
-        (
-            t!("menu.open_file_location").to_string().into(),
+        row(t!("menu.open"), SidebarAction::OpenFile(path.clone())),
+        row(
+            t!("menu.open_file_location"),
             SidebarAction::RevealFile(path.clone()),
         ),
-        (
-            t!("menu.copy_path").to_string().into(),
-            SidebarAction::CopyPath(path.clone()),
-        ),
-        (
-            t!("menu.properties").to_string().into(),
-            SidebarAction::Properties(path),
+        row(t!("menu.copy_path"), SidebarAction::CopyPath(path.clone())),
+        row(
+            t!("menu.properties"),
+            SidebarAction::Properties(path, false),
         ),
     ]
 }
@@ -214,7 +315,7 @@ pub(super) fn file_menu(path: &Path) -> Vec<(SharedString, SidebarAction)> {
 pub(super) const TILE_LIFT: f32 = 1.1;
 
 /// A favorite tile's height: the large ones (three a row) are taller.
-fn tile_height(large: bool) -> Pixels {
+pub(super) fn tile_height(large: bool) -> Pixels {
     theme::scaled_px(if large { 56. } else { 48. })
 }
 
@@ -800,39 +901,6 @@ fn scroll_shadow() -> AnyElement {
         .into_any_element()
 }
 
-/// Context menu for folders in the tree or pinned list. `in_list` adds "Move to tiles"
-/// unless the tiles are full.
-fn folder_menu(
-    path: &Path,
-    pinned: bool,
-    in_list: bool,
-    tiles_full: bool,
-) -> Vec<(SharedString, SidebarAction)> {
-    let mut items = vec![
-        (
-            t!("sidebar.open_in_new_tab").to_string().into(),
-            SidebarAction::OpenInNewTab(path.to_path_buf()),
-        ),
-        (
-            if pinned {
-                t!("sidebar.remove_favorite")
-            } else {
-                t!("sidebar.add_favorite")
-            }
-            .to_string()
-            .into(),
-            SidebarAction::TogglePin(path.to_path_buf()),
-        ),
-    ];
-    if in_list && !tiles_full {
-        items.push((
-            t!("sidebar.move_to_tiles").to_string().into(),
-            SidebarAction::MoveToTiles(path.to_path_buf()),
-        ));
-    }
-    items
-}
-
 /// Toggles tabs between the sidebar and the top. `horizontal` is the current layout.
 pub(super) fn tab_layout_button(
     horizontal: bool,
@@ -1162,7 +1230,18 @@ impl Workspace {
             .debug_selector(move || format!("pin-row-{ix}"))
             .relative()
             .rounded(theme::r_8())
-            .when(gap, |d| d.debug_selector(|| "pin-row-gap".to_owned()))
+            .when(gap, |d| {
+                // Where it lands, drawn like the block that showed the list takes it.
+                // A row's height with its border, so the rows under it don't move when it opens.
+                d.debug_selector(|| "pin-row-gap".to_owned())
+                    .h(theme::h_row())
+                    .overflow_hidden()
+                    .mx(theme::s_4())
+                    .border_1()
+                    .border_dashed()
+                    .border_color(theme::signal_line())
+                    .bg(theme::signal_wash())
+            })
             .child(if gap {
                 div().invisible().child(row).into_any_element()
             } else {
@@ -1236,6 +1315,8 @@ impl Workspace {
         let tile_count = favorites.len();
         let mut tiles: Vec<AnyElement> = Vec::new();
         let mut long_rows: Vec<AnyElement> = Vec::new();
+        // Who each row is, so it slides to its new place when the favorites change under a drag.
+        let mut long_keys: Vec<PlaceRow> = Vec::new();
         for (ix, (path, label, icon)) in favorites.into_iter().enumerate() {
             if layout.on_tile.get(ix).copied().unwrap_or(true) {
                 let here = current == Some(path.as_path());
@@ -1259,9 +1340,12 @@ impl Workspace {
                 );
                 let row = long_rows.remove(at);
                 long_rows.insert(at, Self::favorite_row(ix, &path, label, icon, row, cx));
+                long_keys
+                    .extend((0..long_rows.len() - at).map(|n| PlaceRow::Favorite(path.clone(), n)));
             }
         }
         let mut pinned_rows = Vec::new();
+        let mut pinned_keys: Vec<PlaceRow> = Vec::new();
         for (ix, path) in pinned.iter().enumerate() {
             let row_at = pinned_rows.len();
             let label = own_names
@@ -1282,14 +1366,26 @@ impl Workspace {
             // The list row itself (not its expanded children) is draggable: reorder or drop onto tiles.
             let row = pinned_rows.remove(row_at);
             pinned_rows.insert(row_at, self.pin_list_row(ix, path, label, row, cx));
+            pinned_keys
+                .extend((0..pinned_rows.len() - row_at).map(|n| PlaceRow::Pinned(path.clone(), n)));
         }
         // A tile being dragged: the list shows it can go down there (a block under the heading,
-        // the heading shown for it even with nothing listed). Over the list it becomes a row.
-        let tile_dragged = self.dragging_pin && cx.has_active_drag() && self.tab_drag.is_tile_now();
+        // the heading shown for it even with nothing listed). Over the list it becomes a row, its
+        // gap drawn like the block. A list entry dragged up onto the tiles shows nothing here:
+        // the list only closes its gap.
+        let tile_dragged = self.dragging_pin
+            && cx.has_active_drag()
+            && self.tab_drag.is_tile_now()
+            && self.tab_drag.started_on_tile();
         let wants_list_drop = tile_dragged;
         // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
         // the last one (`workspace_pindrop.rs`).
-        let add_slot = self.render_add_favorite_slot(tile_count, large, cx);
+        let add_slot = self.render_add_favorite_slot(tile_count, tiles.len(), large, cx);
+        let tile_rows = tiles.len().div_ceil(if large { 3 } else { 4 });
+        self.sidebar_ui.tile_rows.set(tile_rows);
+        let slot_row = add_slot.as_ref().is_some_and(|(_, own_row)| *own_row);
+        self.keep_rows_under_tiles_still(tile_rows + usize::from(slot_row), large);
+        let add_slot = add_slot.map(|(slot, _)| slot);
         let mut out = vec![
             div()
                 .id("pin-tiles")
@@ -1355,6 +1451,7 @@ impl Workspace {
                     }))
                     .into_any_element(),
             );
+            pinned_keys.push(PlaceRow::Recycle);
         }
         // No pins, no section. "Pin to sidebar" makes it appear; no placeholder text.
         let heading = !long_rows.is_empty() || !pinned_rows.is_empty() || wants_list_drop;
@@ -1389,38 +1486,67 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        if tile_dragged {
-            out.push(Self::list_drop_block(cx));
-        }
         // Collapsed to its heading: the list goes, the Shelf under it too (the tiles stay, they
-        // belong to Home).
+        // belong to Home). The block stays, under the heading.
         if heading && collapsed {
+            if tile_dragged {
+                out.push(Self::list_drop_block(cx));
+            }
             return out;
         }
         let start = out.len();
         // Favorites too long for a tile come first: they are ahead of the list in the saved order.
         // Each in a parent of its own, so a favorite also shown under This PC doesn't repeat an
         // element id.
-        out.extend(long_rows.into_iter().enumerate().map(|(ix, row)| {
-            div()
-                .id(("favorite", ix))
-                .flex()
-                .flex_col()
-                .child(row)
-                .into_any_element()
-        }));
+        let flip = &self.tab_drag.rows;
+        out.extend(
+            long_rows
+                .into_iter()
+                .zip(long_keys)
+                .enumerate()
+                .map(|(ix, (row, key))| {
+                    flip.row(
+                        key,
+                        div()
+                            .id(("favorite", ix))
+                            .flex()
+                            .flex_col()
+                            .child(row)
+                            .into_any_element(),
+                    )
+                }),
+        );
+        // Where a tile dropped into the list lands (first of the pinned folders), so the block
+        // turns into its gap in place when it gets there.
+        if tile_dragged {
+            out.push(Self::list_drop_block(cx));
+        }
         // A parent for each pinned row, so a folder pinned and also shown under This PC doesn't
         // repeat an element id (the screen reader tree needs them unique). Each row stays its own
         // item of the scrolling list, so one cut off at its bottom is dimmed alone.
-        out.extend(pinned_rows.into_iter().enumerate().map(|(ix, row)| {
-            div()
-                .id(("pinned", ix))
-                .flex()
-                .flex_col()
-                .child(row)
-                .into_any_element()
-        }));
-        out.extend(self.render_shelf(cx));
+        out.extend(
+            pinned_rows
+                .into_iter()
+                .zip(pinned_keys)
+                .enumerate()
+                .map(|(ix, (row, key))| {
+                    flip.row(
+                        key,
+                        div()
+                            .id(("pinned", ix))
+                            .flex()
+                            .flex_col()
+                            .child(row)
+                            .into_any_element(),
+                    )
+                }),
+        );
+        out.extend(
+            self.render_shelf(cx)
+                .into_iter()
+                .enumerate()
+                .map(|(ix, row)| flip.row(PlaceRow::Shelf(ix), row)),
+        );
         self.drop_in(SidebarSection::Favorites, &mut out, start);
         out
     }
@@ -1436,8 +1562,38 @@ impl Workspace {
         }
     }
 
+    /// The tile grid is `rows` rows high now. Scrolled out of sight above, a change in its height
+    /// (the "Move to the tiles" slot opening a row while a list entry is dragged, a tile coming or
+    /// going) scrolls with it, so the rows in view stay where they are, under the pointer.
+    fn keep_rows_under_tiles_still(&self, rows: usize, large: bool) {
+        let height = if rows == 0 {
+            0.
+        } else {
+            let rows = rows as f32;
+            rows * f32::from(tile_height(large)) + (rows - 1.) * f32::from(theme::s_4())
+        };
+        let Some(was) = self.sidebar_ui.grid_height.replace(Some(height)) else {
+            return;
+        };
+        let grew = height - was;
+        if grew.abs() < 0.5 {
+            return;
+        }
+        let scroll = &self.sidebar_ui.places_scroll;
+        // Laid out unscrolled: the top of the view in those terms follows the scroll.
+        let view_top = scroll.bounds().top() - scroll.offset().y;
+        if scroll
+            .bounds_for_item(0)
+            .is_none_or(|grid| grid.bottom() > view_top + px(0.5))
+        {
+            return;
+        }
+        let offset = scroll.offset();
+        scroll.set_offset(gpui::point(offset.x, (offset.y - px(grew)).min(px(0.))));
+    }
+
     /// A tile's size in the grid, `large` ones three a row, the others four.
-    fn tile_size(&self, large: bool) -> gpui::Size<Pixels> {
+    pub(super) fn tile_size(&self, large: bool) -> gpui::Size<Pixels> {
         let per_row: f32 = if large { 3. } else { 4. };
         let gap = f32::from(theme::s_4());
         let width = (f32::from(self.places_width()) - gap * (per_row - 1.)) / per_row;
@@ -1525,47 +1681,166 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The menu of a favorite, on a tile or in the list: the usual entries and "Rename" (#259),
-    /// which names the favorite rather than the place.
-    pub(super) fn favorite_menu(
+    /// The menu of a favorite in the sidebar, on a tile or in the list.
+    pub(super) fn favorite_menu(&self, path: &Path, cx: &mut Context<Self>) -> Vec<SidebarRow> {
+        self.folder_menu(path, MenuFor::Favorite, cx)
+    }
+
+    /// The menu of a folder, wherever it is: the tree, a favorite (tile, list row or card on
+    /// Home), a drive or network card on Home. One builder, so the same folder has the same rows
+    /// in the same order everywhere, and drives only add their own:
+    /// open in a new tab | favorites (add or remove, move, rename) | drive or network place
+    /// (disconnect, eject, format, cleanup, search, forget) | Terminal, File Explorer, copy path,
+    /// properties.
+    /// Built when the menu opens, not each time the row is drawn.
+    #[allow(clippy::too_many_lines, reason = "the groups of rows, top to bottom")]
+    pub(super) fn folder_menu(
         &self,
         path: &Path,
+        at: MenuFor,
         cx: &mut Context<Self>,
-    ) -> Vec<(SharedString, SidebarAction)> {
-        let places = self.active_view().read(cx).places.clone();
-        let on_tiles = SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .tiles(&places)
-            .iter()
-            .any(|p| p == path);
-        let mut items = if on_tiles {
-            vec![
-                (
-                    t!("sidebar.open_in_new_tab").to_string().into(),
-                    SidebarAction::OpenInNewTab(path.to_path_buf()),
-                ),
-                (
-                    t!("sidebar.move_to_list").to_string().into(),
-                    SidebarAction::MoveToList(path.to_path_buf()),
-                ),
-                (
-                    t!("sidebar.remove_favorite").to_string().into(),
-                    SidebarAction::TogglePin(path.to_path_buf()),
-                ),
-            ]
-        } else {
-            // A pinned network place keeps its other entries; its row shows the favorite's name,
-            // so that is the one "Rename" changes.
-            self.tree_menu(path, 0, cx)
-                .into_iter()
-                .filter(|(_, action)| !matches!(action, SidebarAction::RenamePlace(_)))
-                .collect()
-        };
-        items.push((
-            t!("menu.rename").to_string().into(),
-            SidebarAction::RenameFavorite(path.to_path_buf()),
+    ) -> Vec<SidebarRow> {
+        let place = path.to_path_buf();
+        let store = SettingsStore::global(cx);
+        let view = self.active_view().read(cx);
+        let places = &view.places;
+        let settings = &store.read(cx).settings;
+        let favorite = matches!(at, MenuFor::Favorite | MenuFor::HomeFavorite);
+        // The place itself (a drive, a network place, a favorite), not a folder in its tree.
+        let top = !matches!(at, MenuFor::Tree { depth } if depth > 0);
+        let mut items = vec![row(
+            t!("sidebar.open_in_new_tab"),
+            SidebarAction::OpenInNewTab(place.clone()),
+        )];
+
+        // Favorites. "Add" and "Remove" take the same row, so it stays put either way.
+        items.push(row(
+            if settings.is_pinned(path, places) {
+                t!("sidebar.remove_favorite")
+            } else {
+                t!("sidebar.add_favorite")
+            },
+            SidebarAction::TogglePin(place.clone()),
         ));
+        let on_tiles = settings.tiles(places).iter().any(|p| p == path);
+        let in_list = settings.pinned.iter().any(|p| p == path);
+        if on_tiles && favorite {
+            items.push(row(
+                // Home shows the tiles only: there is no list below them there.
+                if at == MenuFor::HomeFavorite {
+                    t!("home.move_to_sidebar_list")
+                } else {
+                    t!("sidebar.move_to_list")
+                },
+                SidebarAction::MoveToList(place.clone()),
+            ));
+        } else if in_list && top && settings.tiles(places).len() < FAVORITES_MAX {
+            items.push(row(
+                t!("sidebar.move_to_tiles"),
+                SidebarAction::MoveToTiles(place.clone()),
+            ));
+        }
+        if favorite {
+            // The name the favorite shows (#259), not the place's.
+            items.push(row(
+                t!("menu.rename"),
+                SidebarAction::RenameFavorite(place.clone()),
+            ));
+        } else if top && place_default_name(settings, places, path).is_some() {
+            items.push(row(
+                t!("menu.rename"),
+                SidebarAction::RenamePlace(place.clone()),
+            ));
+        }
+
+        // A drive's or network place's own rows.
+        if top {
+            let kind = places.iter().find(|p| p.path == path).map(|p| p.kind);
+            let mapped = matches!(kind, Some(PlaceKind::Drive { remote: true, .. }));
+            let drive = matches!(kind, Some(PlaceKind::Drive { remote: false, .. }));
+            let net_place = settings.net_places.iter().any(|p| p == path);
+            if mapped {
+                items.push(row(
+                    t!("sidebar.disconnect_drive"),
+                    SidebarAction::DisconnectDrive(place.clone()),
+                ));
+            }
+            if drive && view.services.shell.is_ejectable(path) {
+                items.push(row(
+                    t!("sidebar.eject"),
+                    SidebarAction::EjectDrive(place.clone()),
+                ));
+            }
+            if drive {
+                if !is_system_drive(path) {
+                    items.push(row(
+                        t!("menu.format_drive"),
+                        SidebarAction::FormatDrive(place.clone()),
+                    ));
+                }
+                items.push(row(
+                    t!("menu.disk_cleanup"),
+                    SidebarAction::DiskCleanup(place.clone()),
+                ));
+            }
+            if mapped || net_place {
+                items.push(row(
+                    if crate::global_search::is_searched(settings, path) {
+                        t!("sidebar.unsearch_network")
+                    } else {
+                        t!("sidebar.search_network")
+                    },
+                    SidebarAction::ToggleSearchNetwork(place.clone()),
+                ));
+            }
+            if net_place {
+                items.push(row(
+                    t!("sidebar.forget_share"),
+                    SidebarAction::ForgetShare(place.clone()),
+                ));
+            }
+            if settings.remote_places.iter().any(|p| p.url == path) {
+                // Only offered once plain http was allowed for it, so the choice stays visible
+                // and can be taken back (#252).
+                if crate::remote_shell::insecure_http_allowed(&self.services.remotes, path) {
+                    items.push(row(
+                        t!("sidebar.require_secure"),
+                        SidebarAction::RequireSecure(place.clone()),
+                    ));
+                }
+                items.push(row(
+                    t!("sidebar.forget_share"),
+                    SidebarAction::ForgetRemote(place.clone()),
+                ));
+            }
+        }
+
+        // What the file list's menu has for a folder. An SFTP or WebDAV location is no folder
+        // Windows can open; a bare `\\server` only lists its shares (no Terminal or Properties).
+        let remote = arke_core::remote::is_remote(path);
+        let server = arke_core::net::bare_server(path).is_some();
+        if !remote && !server {
+            items.push(row(
+                t!("menu.open_terminal"),
+                SidebarAction::OpenTerminal(place.clone()),
+            ));
+        }
+        if !remote {
+            items.push(row(
+                t!("menu.open_in_explorer"),
+                SidebarAction::OpenInExplorer(place.clone()),
+            ));
+        }
+        items.push(row(
+            t!("menu.copy_path"),
+            SidebarAction::CopyPath(place.clone()),
+        ));
+        if !remote && !server {
+            items.push(row(
+                t!("menu.properties"),
+                SidebarAction::Properties(place, true),
+            ));
+        }
         items
     }
 
@@ -1658,6 +1933,7 @@ impl Workspace {
         if already {
             return;
         }
+        self.tab_drag.rows.moved();
         self.move_pin(&path, PinSlot::List(at), cx);
         self.tab_drag.mark_moved();
         self.tab_drag.set_tile(None);
@@ -1669,6 +1945,8 @@ impl Workspace {
         div()
             .id("pin-list-drop")
             .debug_selector(|| "pin-list-drop".to_owned())
+            // A row's height, as the gap it turns into: not squeezed by the list.
+            .flex_none()
             .h(theme::h_row())
             .mx(theme::s_4())
             .flex()
@@ -1723,6 +2001,8 @@ impl Workspace {
         let Some(origin) = self.tab_drag.origin.take() else {
             return;
         };
+        // The rows slide back with it.
+        self.tab_drag.rows.moved();
         SettingsStore::global(cx).update(cx, |s, cx| {
             s.update(
                 |st| {
@@ -1856,7 +2136,45 @@ impl Workspace {
             && let Some(ix) = self.sidebar_ui.here_row.get()
         {
             self.sidebar_ui.places_scroll.scroll_to_item(ix);
+            // Once it has scrolled: not leaving the tiles cut in half at the top.
+            self.sidebar_ui.snap_tiles.set(true);
+            self.sidebar_ui.frame_wanted.set(true);
         }
+    }
+
+    /// Right after the places scrolled to the current folder's row (the frame before): when
+    /// their top edge cuts through a row of favorite tiles, they scroll to a whole row
+    /// ([`tile_snap`]) if the current folder's row stays in view. Scrolling to a row only ever
+    /// moves as little as it needs, which often left the tiles under Home cut in half on start.
+    fn snap_tile_rows(&self) {
+        if !self.sidebar_ui.snap_tiles.replace(false) {
+            return;
+        }
+        let scroll = &self.sidebar_ui.places_scroll;
+        // The tiles are the first item; rows are laid out unscrolled, as in `scrolling`.
+        let (Some(tiles), Some(here)) = (
+            scroll.bounds_for_item(0),
+            self.sidebar_ui
+                .here_row
+                .get()
+                .and_then(|ix| scroll.bounds_for_item(ix)),
+        ) else {
+            return;
+        };
+        let view = scroll.bounds();
+        let view_top = f32::from(view.top());
+        let Some(top) = tile_snap(
+            view_top - f32::from(scroll.offset().y),
+            (f32::from(tiles.top()), f32::from(tiles.bottom())),
+            self.sidebar_ui.tile_rows.get(),
+            f32::from(theme::s_4()),
+            (f32::from(here.top()), f32::from(here.bottom())),
+            f32::from(view.size.height),
+            view_top + f32::from(scroll.max_offset().y),
+        ) else {
+            return;
+        };
+        scroll.set_offset(gpui::point(scroll.offset().x, px(view_top - top)));
     }
 
     #[allow(
@@ -1864,6 +2182,7 @@ impl Workspace {
         reason = "the places, then the tabs with their heading, read top to bottom"
     )]
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        self.snap_tile_rows();
         let current = self.sidebar_here(cx);
         let places = self.active_view().read(cx).places.clone();
         let (this_pc_collapsed, network_collapsed) = {
@@ -1883,7 +2202,9 @@ impl Workspace {
         // changes: the places take their height and the tabs follow right under them.
         let horizontal = Self::horizontal_tabs(cx);
         // The favorites, their list and the Shelf.
+        self.tab_drag.rows.frame();
         let mut items = self.render_pins(current.as_deref(), cx);
+        let pins_end = items.len();
         items.push(
             self.section_header(SidebarSection::ThisPc, this_pc_collapsed, Vec::new(), cx)
                 .into_any_element(),
@@ -1900,6 +2221,16 @@ impl Workspace {
             &mut items,
             cx,
         );
+        // Under the favorites, rows move with them: a row more or less in the list moves them all.
+        if self.tab_drag.rows.wanted() {
+            let after: Vec<AnyElement> = items.drain(pins_end..).collect();
+            items.extend(
+                after
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, row)| self.tab_drag.rows.row(PlaceRow::After(ix), row)),
+            );
+        }
         // The tiles and rows went under the Home row: a shadow there says so.
         let scrolled = self.sidebar_ui.places_scroll.offset().y < px(-0.5);
         let places = div()
@@ -2001,6 +2332,12 @@ impl Workspace {
         self.sidebar_ui.places_scroll.max_offset().y
     }
 
+    /// How far the sidebar's places are scrolled (tests).
+    #[cfg(test)]
+    pub(crate) fn places_offset_for_test(&self) -> Pixels {
+        self.sidebar_ui.places_scroll.offset().y
+    }
+
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
     fn tab_list_min_height(tabs: usize) -> Pixels {
         let shown = tabs.min(3) as f32;
@@ -2100,94 +2437,15 @@ impl Workspace {
         self.drop_in(SidebarSection::Network, out, start);
     }
 
-    /// Tree node context menu: the common folder entries, plus "Disconnect" for network drives
-    /// and "Remove from list" for shares.
+    /// The menu of a place's row in the tree (`depth` 0) or of a folder in its tree, and of a
+    /// drive or network card on Home.
     pub(super) fn tree_menu(
         &self,
         path: &Path,
         depth: usize,
         cx: &mut Context<Self>,
-    ) -> Vec<(SharedString, SidebarAction)> {
-        let places = self.active_view().read(cx).places.clone();
-        let settings = &SettingsStore::global(cx).read(cx).settings;
-        let in_list = depth == 0 && settings.pinned.iter().any(|p| p == path);
-        let tiles_full = settings.tiles(&places).len() >= FAVORITES_MAX;
-        let mut items = folder_menu(path, settings.is_pinned(path, &places), in_list, tiles_full);
-        if depth > 0 {
-            return items;
-        }
-        let net_place = settings.net_places.iter().any(|p| p == path);
-        let mapped = self
-            .active_view()
-            .read(cx)
-            .places
-            .iter()
-            .any(|p| p.path == path && matches!(p.kind, PlaceKind::Drive { remote: true, .. }));
-        if place_default_name(settings, &places, path).is_some() {
-            items.push((
-                t!("menu.rename").to_string().into(),
-                SidebarAction::RenamePlace(path.to_path_buf()),
-            ));
-        }
-        if mapped {
-            items.push((
-                t!("sidebar.disconnect_drive").to_string().into(),
-                SidebarAction::DisconnectDrive(path.to_path_buf()),
-            ));
-        }
-        let is_drive = places
-            .iter()
-            .any(|p| p.path == path && matches!(p.kind, PlaceKind::Drive { remote: false, .. }));
-        if is_drive || mapped {
-            let ejectable = is_drive
-                && self
-                    .active_view()
-                    .read(cx)
-                    .services
-                    .shell
-                    .is_ejectable(path);
-            items.extend(drive_items(path, is_drive, ejectable));
-        }
-        if mapped || net_place {
-            let searched = crate::global_search::is_searched(settings, path);
-            items.push((
-                if searched {
-                    t!("sidebar.unsearch_network")
-                } else {
-                    t!("sidebar.search_network")
-                }
-                .to_string()
-                .into(),
-                SidebarAction::ToggleSearchNetwork(path.to_path_buf()),
-            ));
-        }
-        if net_place {
-            items.push((
-                t!("sidebar.forget_share").to_string().into(),
-                SidebarAction::ForgetShare(path.to_path_buf()),
-            ));
-        }
-        if is_drive || mapped {
-            items.push((
-                t!("menu.properties").to_string().into(),
-                SidebarAction::Properties(path.to_path_buf()),
-            ));
-        }
-        if settings.remote_places.iter().any(|p| p.url == path) {
-            // Only offered once plain http was allowed for it, so the choice stays visible and
-            // can be taken back (#252).
-            if crate::remote_shell::insecure_http_allowed(&self.services.remotes, path) {
-                items.push((
-                    t!("sidebar.require_secure").to_string().into(),
-                    SidebarAction::RequireSecure(path.to_path_buf()),
-                ));
-            }
-            items.push((
-                t!("sidebar.forget_share").to_string().into(),
-                SidebarAction::ForgetRemote(path.to_path_buf()),
-            ));
-        }
-        items
+    ) -> Vec<SidebarRow> {
+        self.folder_menu(path, MenuFor::Tree { depth }, cx)
     }
 
     fn render_new_tab_row(cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -2247,7 +2505,7 @@ impl Workspace {
     ) -> gpui::Stateful<gpui::Div> {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
-        let menu = self.favorite_menu(path, cx);
+        let menu_path = path.to_path_buf();
         let renaming = self.favorite_rename_box(path);
         let renamed = renaming.is_some();
         // Renaming (#259): the name turns into the box, inside the tile.
@@ -2344,7 +2602,8 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    this.open_sidebar_menu(e.position, menu.clone(), cx);
+                    let menu = this.favorite_menu(&menu_path, cx);
+                    this.open_sidebar_menu(e.position, menu, cx);
                 }),
             )
             // Not over its own rename box.
@@ -2376,6 +2635,7 @@ impl Workspace {
             DriveSpace {
                 free: arke_core::format::format_size(free),
                 used: used.clamp(0., 1.),
+                bytes: (free, total),
             }
         });
         let label = crate::place_names::place_label(
@@ -2431,14 +2691,14 @@ impl Workspace {
             || self.tree_leaf.contains(path);
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
-        let (menu, renaming) = if favorite {
-            (self.favorite_menu(path, cx), self.favorite_rename_box(path))
+        let menu_path = path.to_path_buf();
+        let renaming = if favorite {
+            self.favorite_rename_box(path)
         } else {
-            (
-                self.tree_menu(path, depth, cx),
-                self.sidebar_rename_box(path),
-            )
+            self.sidebar_rename_box(path)
         };
+        // A drive: what the number on the right is, as File Explorer's navigation pane tells.
+        let space_tip = space.as_ref().map(|s| s.bytes);
         let indent = tree_indent() * depth as f32;
         out.push(
             div()
@@ -2498,9 +2758,24 @@ impl Workspace {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.open_sidebar_menu(e.position, menu.clone(), cx);
+                        let menu = if favorite {
+                            this.favorite_menu(&menu_path, cx)
+                        } else {
+                            this.tree_menu(&menu_path, depth, cx)
+                        };
+                        this.open_sidebar_menu(e.position, menu, cx);
                     }),
                 )
+                .when_some(space_tip, |d, (free, total)| {
+                    d.tooltip(move |_, cx| {
+                        let text = t!(
+                            "home.space",
+                            free = arke_core::format::format_size(free),
+                            total = arke_core::format::format_size(total)
+                        );
+                        cx.new(|_| Tooltip(text.into_owned().into())).into()
+                    })
+                })
                 .into_any_element(),
         );
         if !expanded {
@@ -2649,10 +2924,10 @@ impl Workspace {
         let places = self.active_view().read(cx).places.clone();
         // Followed again when This PC's places change too: they load after the first frame.
         let key = (here.clone(), this_pc_count(&places));
-        if SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .is_collapsed(SidebarSection::ThisPc)
+        let settings = &SettingsStore::global(cx).read(cx).settings;
+        // Turned off (#299), the tree is the user's alone.
+        if settings.is_collapsed(SidebarSection::ThisPc)
+            || !settings.sidebar_follow
             || self.sidebar_ui.followed.as_ref() == Some(&key)
         {
             return;
@@ -2687,14 +2962,14 @@ impl Workspace {
                 to_list.push(dir.clone());
             }
         }
-        // Already marked higher up, on a favorite or a pinned folder (one just clicked there):
-        // the tree opens under it but the sidebar doesn't scroll away from it.
-        let shown = self.favorites(cx).iter().any(|(p, ..)| *p == here)
-            || SettingsStore::global(cx)
-                .read(cx)
-                .settings
-                .pinned
-                .contains(&here);
+        // On a favorite or a pinned folder, or in one (#307): the tree opens under it but the
+        // sidebar doesn't scroll away from it, the favorite being where the user works.
+        let shown = self
+            .favorites(cx)
+            .iter()
+            .map(|(p, ..)| p)
+            .chain(SettingsStore::global(cx).read(cx).settings.pinned.iter())
+            .any(|p| arke_core::takeover::within(&here, p));
         self.sidebar_ui.reveal_wanted.set(!shown);
         self.sidebar_ui.reveal.set(to_list.is_empty() && !shown);
         cx.notify();
@@ -2964,6 +3239,55 @@ impl Workspace {
         self.run_sidebar_action(SidebarAction::RenamePlace(path.to_path_buf()), window, cx);
     }
 
+    /// Tests: `items` as their menu draws them: each label, its key on the right in brackets,
+    /// and `-` for a line between two groups.
+    #[cfg(test)]
+    fn drawn_for_test(&self, items: &[SidebarRow], cx: &App) -> Vec<String> {
+        let mut out = Vec::new();
+        for (ix, (label, action)) in items.iter().enumerate() {
+            if line_before(items, ix) {
+                out.push("-".to_owned());
+            }
+            out.push(match self.menu_shortcut(action, cx) {
+                Some(key) => format!("{label} [{key}]"),
+                None => label.to_string(),
+            });
+        }
+        out
+    }
+
+    /// Tests: the menu of folder `path` as drawn (`drawn_for_test`), opened from the tree at
+    /// `depth` (`Some`), from a favorite in the sidebar (`None`), or from a card on Home (`home`).
+    #[cfg(test)]
+    pub(crate) fn folder_menu_drawn_for_test(
+        &self,
+        path: &Path,
+        depth: Option<usize>,
+        home: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        let at = match (depth, home) {
+            (_, true) => MenuFor::HomeFavorite,
+            (None, false) => MenuFor::Favorite,
+            (Some(depth), false) => MenuFor::Tree { depth },
+        };
+        let items = self.folder_menu(path, at, cx);
+        self.drawn_for_test(&items, cx)
+    }
+
+    /// Tests: tab `ix`'s menu as drawn (`drawn_for_test`).
+    #[cfg(test)]
+    pub(crate) fn tab_menu_drawn_for_test(&self, ix: usize, cx: &App) -> Vec<String> {
+        self.drawn_for_test(&self.tab_menu(ix, cx), cx)
+    }
+
+    /// Tests: the open menu's rows as drawn (`drawn_for_test`).
+    #[cfg(test)]
+    pub(crate) fn open_menu_drawn_for_test(&self, cx: &App) -> Option<Vec<String>> {
+        let menu = self.sidebar_menu.as_ref()?;
+        Some(self.drawn_for_test(&menu.items, cx))
+    }
+
     #[cfg(test)]
     pub(super) fn sidebar_menu_labels_for_test(&self) -> Option<Vec<String>> {
         let menu = self.sidebar_menu.as_ref()?;
@@ -3099,8 +3423,7 @@ impl Workspace {
                     let _ = shell.set_clipboard_text(&path.display().to_string());
                 });
             }
-            SidebarAction::Properties(path) => {
-                let folder = path.parent().is_none() || path.is_dir();
+            SidebarAction::Properties(path, folder) => {
                 self.active_view()
                     .update(cx, |e, cx| e.open_properties(vec![(path, folder)], cx));
             }
@@ -3409,7 +3732,45 @@ impl Workspace {
         )
     }
 
-    /// The tab, sidebar or history menu's panel, drawn in its own window.
+    /// The key or click shown on the right of a menu row, as the file list's menu shows its
+    /// keys: Ctrl+click for "Open in new tab" (nothing else tells it), and the tab and window
+    /// keys as they are set in Settings.
+    fn menu_shortcut(&self, action: &SidebarAction, cx: &App) -> Option<SharedString> {
+        use SidebarAction as A;
+        let store = SettingsStore::try_global(cx);
+        let key = |id: &str| {
+            let overrides = store
+                .as_ref()
+                .map_or_else(Default::default, |s| s.read(cx).settings.shortcuts.clone());
+            crate::commands::find(id)
+                .and_then(|c| crate::commands::shown_key(c, &overrides))
+                .map(SharedString::from)
+        };
+        match action {
+            A::OpenInNewTab(_) | A::OpenRecycleInNewTab => {
+                Some(t!("menu.ctrl_click").into_owned().into())
+            }
+            // The key works on the active tab: the whole tab unless it is split, else its active
+            // side.
+            A::CloseTab(ix)
+                if *ix == self.active && !self.tabs.get(*ix).is_some_and(Tab::is_split) =>
+            {
+                key("close_tab")
+            }
+            A::CloseSide(ix) if *ix == self.active => key("close_tab"),
+            A::ReopenClosedTab => key("reopen_closed_tab"),
+            A::OpenSettings => key("open_settings"),
+            A::WindowClose => Some("Alt+F4".into()),
+            _ => None,
+        }
+    }
+
+    /// The tab, sidebar or history menu's panel, drawn in its own window. It looks like the file
+    /// list's menu: an icon on each row, the key on the right, lines between groups of rows.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one row builder, shared by every sidebar menu"
+    )]
     fn sidebar_menu_panel(
         &mut self,
         max_h: Pixels,
@@ -3418,33 +3779,67 @@ impl Workspace {
     ) -> Option<AnyElement> {
         let menu = self.sidebar_menu.as_ref()?;
         let owner = menu.popup.owner();
-        let rows: Vec<AnyElement> = menu
-            .items
-            .iter()
-            .enumerate()
-            .map(|(ix, (label, action))| {
-                let action = action.clone();
-                let folder = matches!(
-                    action,
-                    SidebarAction::HistoryJump { .. } | SidebarAction::TimelineStep { .. }
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(menu.items.len() * 2);
+        for (ix, (label, action)) in menu.items.iter().enumerate() {
+            if line_before(&menu.items, ix) {
+                rows.push(
+                    div()
+                        .h(px(1.))
+                        .my(theme::s_4())
+                        .mx(theme::s_8())
+                        .bg(theme::line())
+                        .into_any_element(),
                 );
-                // Where a history folder is, so two folders of the same name tell apart.
-                let detail = menu_detail(&action);
+            }
+            let action = action.clone();
+            let folder = matches!(
+                action,
+                SidebarAction::HistoryJump { .. } | SidebarAction::TimelineStep { .. }
+            );
+            // Where a history folder is, so two folders of the same name tell apart.
+            let detail = menu_detail(&action);
+            let shortcut = self.menu_shortcut(&action, cx);
+            // A history folder is drawn as a folder; the other rows get their command's icon.
+            let glyph = if folder { None } else { menu_glyph(&action) };
+            let mark = div()
+                .size(theme::icon())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(folder, |d| {
+                    d.child(kind_icon(FileKind::Folder, theme::icon()))
+                })
+                .children(glyph.map(|glyph| {
+                    svg()
+                        .path(glyph.path())
+                        .size(theme::icon())
+                        .text_color(theme::text_muted())
+                }));
+            rows.push(
                 div()
                     .id(("sidebar-menu-item", ix))
+                    .a11y_menu_item(label.clone(), true, false, false)
+                    .when_some(
+                        shortcut.clone(),
+                        gpui::StatefulInteractiveElement::aria_keyshortcuts,
+                    )
                     .h(theme::h_ctl_sm() + theme::s_4())
                     .mx(theme::s_4())
                     .px(theme::s_8())
                     .flex()
                     .items_center()
                     .gap(theme::s_8())
-                    .when(folder, |d| {
-                        d.child(kind_icon(FileKind::Folder, theme::icon()))
-                    })
                     .rounded(theme::r_8())
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::wash()))
-                    .child(div().flex_none().child(label.clone()))
+                    .child(mark)
+                    .child(
+                        div()
+                            .when(folder, gpui::Styled::flex_none)
+                            .when(!folder, |d| d.flex_1().min_w_0().truncate())
+                            .child(label.clone()),
+                    )
                     .when_some(detail, |d, detail| {
                         d.child(
                             div()
@@ -3454,6 +3849,16 @@ impl Workspace {
                                 .text_size(theme::fs_12())
                                 .text_color(theme::text_muted())
                                 .child(detail),
+                        )
+                    })
+                    .when_some(shortcut, |d, s| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .pl(theme::s_16())
+                                .text_size(theme::fs_12())
+                                .text_color(theme::text_subtle())
+                                .child(s),
                         )
                     })
                     .on_click(crate::popup::listener_in(
@@ -3467,20 +3872,22 @@ impl Workspace {
                             cx.notify();
                         },
                     ))
-                    .into_any_element()
-            })
-            .collect();
+                    .into_any_element(),
+            );
+        }
         Some(
             div()
                 .id("sidebar-menu")
+                .role(gpui::Role::Menu)
                 .occlude()
-                .min_w(crate::theme::scaled_px(200.))
+                // As wide as the file list's menu at least.
+                .min_w(crate::theme::scaled_px(240.))
                 .max_h(max_h)
                 .overflow_y_scroll()
                 .py(theme::s_4())
                 .rounded(theme::r_12())
                 .bg(theme::overlay())
-                .shadow(theme::elev_float())
+                .shadow(theme::elev_menu())
                 .ui_font()
                 .text_size(theme::fs_14())
                 .text_color(theme::text())
@@ -3570,17 +3977,8 @@ impl Workspace {
             ),
         ];
         items.extend(folder);
-        items.push((
-            // Ctrl+W closes the tab only when it isn't split (else the active side).
-            if split {
-                t!("sidebar.close_tab")
-            } else {
-                t!("sidebar.close_tab_key")
-            }
-            .to_string()
-            .into(),
-            SidebarAction::CloseTab(ix),
-        ));
+        // Its key (Ctrl+W) is on the right of the row (`menu_shortcut`).
+        items.push(row(t!("sidebar.close_tab"), SidebarAction::CloseTab(ix)));
         // Pinned tabs are spared by both, so offer them only when they would close something.
         let others = self
             .tabs
@@ -4015,12 +4413,21 @@ impl Workspace {
 /// starts at the label's left edge and fits inside the row (its height matches the other rows).
 fn tree_label(label: String, space: Option<DriveSpace>) -> impl IntoElement {
     let Some(space) = space else {
+        // Most rows are folders: one text box, as before. A drive keeps its letter in view.
+        if crate::place_names::letter_suffix(&label).is_none() {
+            return div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .pl(theme::s_4())
+                .child(label);
+        }
         return div()
             .flex_1()
             .min_w_0()
-            .truncate()
             .pl(theme::s_4())
-            .child(label);
+            .flex()
+            .child(crate::place_names::drive_name(label));
     };
     div()
         .flex_1()
@@ -4034,7 +4441,7 @@ fn tree_label(label: String, space: Option<DriveSpace>) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .gap(theme::s_8())
-                .child(div().flex_1().min_w_0().truncate().child(label))
+                .child(crate::place_names::drive_name(label).flex_1())
                 .child(
                     div()
                         .flex_none()
@@ -4178,6 +4585,30 @@ mod tests {
             pin_outside(sidebar, at(120., 910.), window),
             "below the window"
         );
+    }
+
+    #[test]
+    fn a_tile_row_cut_by_the_top_edge_is_shown_whole_or_scrolled_past() {
+        // Two rows of 56 px tiles 4 px apart (0 to 116), a view 652 px high that can start at
+        // most at 118.
+        let tiles = (0., 116.);
+        let snap = |top: f32, rows: usize, here: (f32, f32)| {
+            tile_snap(top, tiles, rows, 4., here, 652., 118.)
+        };
+        // The second row cut 18 px in: back to its start while the current row stays in view.
+        assert_eq!(snap(78., 2, (500., 532.)), Some(60.));
+        // The current row would drop out at the bottom (the start in German at S:\Studio): on
+        // past the last row, no half row left at the top.
+        assert_eq!(snap(78., 2, (698., 730.)), Some(116.));
+        // Three rows (0 to 176), the first cut: on to the second.
+        let three = tile_snap(30., (0., 176.), 3, 4., (658., 690.), 652., 200.);
+        assert_eq!(three, Some(60.));
+        // At a row's start, in the gap between rows, above or past the tiles: nothing to do.
+        assert_eq!(snap(60., 2, (500., 532.)), None);
+        assert_eq!(snap(57., 2, (500., 532.)), None);
+        assert_eq!(snap(0., 2, (500., 532.)), None);
+        assert_eq!(snap(116., 2, (500., 532.)), None);
+        assert_eq!(snap(78., 0, (500., 532.)), None);
     }
 
     #[test]

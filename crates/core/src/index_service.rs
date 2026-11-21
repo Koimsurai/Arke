@@ -617,13 +617,19 @@ impl IndexService {
     /// space on disk for `cluster`-byte clusters, and the size of each folder directly inside),
     /// answered from the index in one pass when it covers `dir` live, as
     /// [`Self::child_dir_sizes`] does. Folders the index has no contents for are walked and
-    /// added. `None`: not covered, or cancelled; walk instead. Background threads only.
+    /// added, other people's profiles too (`profiles`: the service lists them without contents).
+    /// `None`: not covered, inside one of those profiles, or cancelled; walk instead. Background
+    /// threads only.
     pub fn usage_below(
         &self,
         dir: &Path,
         cluster: u64,
+        profiles: Option<&crate::dirsize::Profiles>,
         cancel: &AtomicBool,
     ) -> Option<crate::dirsize::Space> {
+        if profiles.is_some_and(|p| p.hidden(dir)) {
+            return None;
+        }
         let (index, overlay) = self.live_index_for(dir)?;
         let (direct, children) = index.usage_below(dir, &overlay, cluster, cancel)?;
         let mut space = crate::dirsize::Space {
@@ -650,7 +656,61 @@ impl IndexService {
             space.usage += usage;
             space.children.push((dir.join(&child.name), usage.bytes));
         }
+        if let Some(profiles) = profiles
+            && let Some(way) = profiles.way_down(dir)
+        {
+            self.add_hidden_profiles(&index, profiles, &way, cluster, cancel, &mut space)?;
+        }
         Some(space)
+    }
+
+    /// Walks the profile folders below a count (`way`: from it down to the profiles folder) that
+    /// the index holds nothing in, as the service lists other people's: what can be read counts
+    /// (`Default`), the rest makes it partial, as a walk would. Only for a count of the profiles
+    /// folder or above it (a drive), so others pay nothing. `None` when cancelled.
+    fn add_hidden_profiles(
+        &self,
+        index: &Index,
+        profiles: &crate::dirsize::Profiles,
+        way: &[String],
+        cluster: u64,
+        cancel: &AtomicBool,
+        space: &mut crate::dirsize::Space,
+    ) -> Option<()> {
+        let fs = self.shared.fs.as_ref();
+        let Ok(listed) = fs.read_dir(&profiles.dir) else {
+            return Some(());
+        };
+        let hidden: Vec<PathBuf> = listed
+            .filter_map(Result::ok)
+            .filter(|e| e.kind == crate::entry::EntryKind::Dir && profiles.hides(&e.name))
+            .map(|e| profiles.dir.join(&*e.name))
+            .collect();
+        if hidden.is_empty() {
+            return Some(());
+        }
+        // In the index with nothing inside: listed without contents. (A folder that is really
+        // empty walks to nothing; one built by a walk has its contents and is left alone.)
+        for (path, inside) in index.children_of(&hidden, cancel) {
+            if !inside.is_empty() {
+                continue;
+            }
+            let walked = crate::dirsize::usage(fs, &path, cluster, cancel, &mut |_| {})?;
+            let child = way
+                .first()
+                .cloned()
+                .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+            if let Some(child) = child
+                && let Some(slot) = space.children.iter_mut().find(|(p, _)| {
+                    p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().to_lowercase() == child)
+                })
+            {
+                slot.1 += walked.usage.bytes;
+            }
+            space.usage += walked.usage;
+        }
+        (!cancel.load(Ordering::Relaxed)).then_some(())
     }
 
     /// Sizes of the subfolders of `dir` (name, size), when the index follows `dir`'s volume
@@ -2632,6 +2692,78 @@ mod tests {
         });
         assert_eq!(fs.read_dir_calls(), calls, "answered from the index");
         drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The service lists other people's profile folders without contents, so an index built from
+    /// its listing has nothing in them: a count of the profiles folder walks them (`Default` can
+    /// be read, Bob's can't: "at least"), one inside them is walked instead. An index built by a
+    /// walk has what could be read already and counts it once.
+    #[test]
+    fn hidden_profiles_count_from_the_index() {
+        use crate::dirsize::Profiles;
+        use crate::journal::{LISTED_ROOT, Listed};
+        let (dir, cache) = temp_cache("profiles");
+        let fs = FakeFs::new();
+        let file = |name: &str, size| Entry::new(name, EntryKind::File, size, None, 0);
+        let folder = |name: &str| Entry::new(name, EntryKind::Dir, 0, None, 0x10);
+        fs.insert_dir(
+            r"C:\Users",
+            vec![folder("me"), folder("Default"), folder("Bob")],
+        );
+        fs.insert_dir(r"C:\Users\me", vec![file("mine.txt", 10)]);
+        // Bob's folder can't be listed (not in the fake).
+        fs.insert_dir(r"C:\Users\Default", vec![file("NTUSER.DAT", 300)]);
+        let profiles = Profiles {
+            dir: PathBuf::from(r"C:\Users"),
+            mine: Some(PathBuf::from(r"C:\Users\me")),
+        };
+        let cancel = AtomicBool::new(false);
+        let item = |parent, name: &str, dir: bool, size| Listed {
+            parent,
+            name: name.into(),
+            attributes: if dir { 0x10 } else { 0x20 },
+            size,
+            mtime: 0,
+            link: false,
+        };
+        for listed in [true, false] {
+            let _ = std::fs::remove_dir_all(&dir);
+            let journal = FakeJournal::new(3);
+            if listed {
+                journal.set_listing(
+                    r"C:\",
+                    vec![
+                        item(LISTED_ROOT, "Users", true, 0),
+                        item(0, "me", true, 0),
+                        item(0, "Default", true, 0),
+                        item(0, "Bob", true, 0),
+                        item(1, "mine.txt", false, 10),
+                    ],
+                );
+            }
+            let svc = IndexService::start(
+                Arc::clone(&fs) as Arc<dyn Fs>,
+                journal_opts(&cache, &journal),
+                || {},
+            );
+            wait("journal caught up", || ready(&svc) && svc.status().live);
+            let users = svc
+                .usage_below(Path::new(r"C:\users"), 0, Some(&profiles), &cancel)
+                .expect("from the index");
+            assert_eq!(users.usage.bytes, 310, "listed: {listed}");
+            if listed {
+                assert!(users.usage.partial, "Bob's can't be read");
+            }
+            let mine = svc
+                .usage_below(Path::new(r"C:\Users\me"), 0, Some(&profiles), &cancel)
+                .expect("from the index");
+            assert_eq!((mine.usage.bytes, mine.usage.partial), (10, false));
+            let inside =
+                svc.usage_below(Path::new(r"C:\Users\Default"), 0, Some(&profiles), &cancel);
+            assert_eq!(inside, None, "walked instead");
+            drop(svc);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

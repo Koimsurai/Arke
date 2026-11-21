@@ -1836,6 +1836,12 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
                 st.sidebar_peek = !st.sidebar_peek;
             }),
         ))
+        .child(sub_row(
+            t!("settings.sidebar_follow"),
+            switch("sidebar-follow", s.sidebar_follow, |st| {
+                st.sidebar_follow = !st.sidebar_follow;
+            }),
+        ))
         .into_any_element()
 }
 

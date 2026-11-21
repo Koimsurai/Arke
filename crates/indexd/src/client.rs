@@ -364,6 +364,11 @@ impl Journal for ServiceJournal {
         .ok_or_else(|| io::Error::other("Arke index service unavailable"))?;
         // Receive on another thread so a stuck service times out here (falling back to a walk)
         // instead of stalling the index build.
+        let pipe = Arc::new(pipe);
+        // Leaving early (stopped, timed out) cancels the pending read: the reader thread then
+        // ends and closes the pipe, and the service stops reading the MFT for nobody. Dropping
+        // the receiver alone left the thread waiting in ReadFile until the first batch.
+        let _cancel = ListGuard(Arc::clone(&pipe));
         let (tx, rx) = flume::bounded::<io::Result<Reply>>(4);
         std::thread::Builder::new()
             .name("arke-indexd-list".into())
@@ -385,7 +390,7 @@ impl Journal for ServiceJournal {
                 match rx.recv_timeout(LIST_ASK_EVERY.min(timeout)) {
                     Ok(reply) => break reply,
                     Err(flume::RecvTimeoutError::Timeout) if waiting.elapsed() < timeout => {
-                        // Dropping the receiver closes the pipe: the service stops reading.
+                        // Stopped: `ListGuard` cancels the read, so the service stops reading.
                         if !sink(Vec::new()) {
                             return Err(io::ErrorKind::Interrupted.into());
                         }
@@ -473,6 +478,16 @@ impl Journal for ServiceJournal {
 struct Follow {
     pipe: OwnedHandle,
     stopped: AtomicBool,
+}
+
+/// Cancels a listing's pending read on drop (harmless once the reader has finished).
+struct ListGuard(Arc<OwnedHandle>);
+
+impl Drop for ListGuard {
+    fn drop(&mut self) {
+        // SAFETY: the handle is kept alive by the Arc; cancels all pending I/O on it.
+        let _ = unsafe { CancelIoEx(self.0.0, None) };
+    }
 }
 
 /// Stops following on drop by cancelling the pending read, which ends the reader thread.

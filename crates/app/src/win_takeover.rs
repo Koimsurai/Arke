@@ -70,6 +70,10 @@ const OPEN_TIMEOUT: Duration = Duration::from_millis(2500);
 const FAST_TICK_MS: u32 = 10;
 /// Safety net in case an event is missed or the shell's window list went away.
 const SLOW_TICK_MS: u32 = 2000;
+/// After `WindowRegistered`, how long to keep looking on the fast timer: the event comes before
+/// the new window is in the shell's list, and waiting for the slow scan left it on screen for up
+/// to two seconds (#285).
+const REGISTERED_LOOK: Duration = Duration::from_secs(2);
 
 /// Folders Arke itself handed to Explorer.
 static BYPASS: LazyLock<Mutex<Bypass>> = LazyLock::new(|| Mutex::new(Bypass::default()));
@@ -126,7 +130,10 @@ impl Drop for Watcher {
     }
 }
 
-/// Receives `WindowRegistered` and only notes it; the message loop does the work.
+/// Receives `WindowRegistered` and only notes it; the message loop does the work. COM calls it
+/// from inside `GetMessageW`, which then keeps waiting, so it also posts a message to wake the
+/// loop: otherwise the note was only seen at the next slow tick, up to two seconds later, with
+/// the Explorer window on screen all that time (#285).
 #[allow(
     clippy::ref_as_ptr,
     clippy::inline_always,
@@ -146,6 +153,8 @@ mod sink {
     #[implement(DShellWindowsEvents)]
     pub(super) struct Sink {
         pub(super) registered: Arc<AtomicBool>,
+        /// The watching thread, woken when a window is registered.
+        pub(super) thread: u32,
     }
 
     impl DShellWindowsEvents_Impl for Sink_Impl {}
@@ -183,6 +192,15 @@ mod sink {
         ) -> windows::core::Result<()> {
             if dispid == WINDOW_REGISTERED {
                 self.registered.store(true, Ordering::SeqCst);
+                // SAFETY: posts an empty message to the watching thread's queue.
+                let _ = unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                        self.thread,
+                        windows::Win32::UI::WindowsAndMessaging::WM_NULL,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(0),
+                    )
+                };
             }
             Ok(())
         }
@@ -226,6 +244,8 @@ struct Watch {
     tx: flume::Sender<OpenRequest>,
     test_root: Option<PathBuf>,
     fast_timer: usize,
+    /// A window was registered and isn't in the list yet: scan on the fast timer until then.
+    looking_until: Option<Instant>,
 }
 
 fn run(tx: &flume::Sender<OpenRequest>, thread_id: &AtomicU32, stopped: &AtomicBool) {
@@ -263,6 +283,7 @@ fn run(tx: &flume::Sender<OpenRequest>, thread_id: &AtomicU32, stopped: &AtomicB
         tx: tx.clone(),
         test_root,
         fast_timer: 0,
+        looking_until: None,
     };
     watch.seed();
     // SAFETY: a thread timer (no window): WM_TIMER arrives in this thread's queue.
@@ -294,6 +315,7 @@ fn run(tx: &flume::Sender<OpenRequest>, thread_id: &AtomicU32, stopped: &AtomicB
                     }
                 }
             } else {
+                watch.look();
                 watch.step();
             }
         } else {
@@ -304,7 +326,8 @@ fn run(tx: &flume::Sender<OpenRequest>, thread_id: &AtomicU32, stopped: &AtomicB
             }
         }
         if registered.swap(false, Ordering::SeqCst) {
-            let _ = watch.scan();
+            watch.looking_until = Some(Instant::now() + REGISTERED_LOOK);
+            watch.look();
         }
         watch.update_timer();
     }
@@ -353,6 +376,8 @@ fn connect(registered: &Arc<AtomicBool>) -> Option<(IShellWindows, Option<Subscr
         let point = unsafe { container.FindConnectionPoint(&DShellWindowsEvents::IID) }.ok()?;
         let sink: DShellWindowsEvents = sink::Sink {
             registered: Arc::clone(registered),
+            // SAFETY: plain Win32 call; this is the watching thread.
+            thread: unsafe { GetCurrentThreadId() },
         }
         .into();
         // SAFETY: see above.
@@ -518,8 +543,20 @@ impl Watch {
         out
     }
 
-    /// Picks up windows with a handle not seen before. Errors mean the shell's list is gone.
-    fn scan(&mut self) -> windows::core::Result<()> {
+    /// After `WindowRegistered`: scans until the new window is in the list, or the time is up.
+    fn look(&mut self) {
+        let Some(until) = self.looking_until else {
+            return;
+        };
+        let found = self.scan().unwrap_or(false);
+        if found || Instant::now() >= until {
+            self.looking_until = None;
+        }
+    }
+
+    /// Picks up windows with a handle not seen before; true when there was one. Errors mean the
+    /// shell's list is gone.
+    fn scan(&mut self) -> windows::core::Result<bool> {
         let shift = shift_down();
         // SAFETY: valid interface pointer.
         unsafe { self.windows.Count() }?;
@@ -528,8 +565,10 @@ impl Watch {
         self.seen
             .retain(|&h| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool());
         let now = Instant::now();
+        let mut found = false;
         for (hwnd, browser) in self.list() {
             if self.seen.insert(hwnd) {
+                found = true;
                 log::info!("takeover: new Explorer window {hwnd:x}");
                 self.candidates.push(Candidate {
                     hwnd,
@@ -541,7 +580,7 @@ impl Watch {
             }
         }
         self.step();
-        Ok(())
+        Ok(found)
     }
 
     /// Moves every candidate along; runs on the fast timer and right after a scan.
@@ -735,9 +774,9 @@ impl Watch {
         Some(target)
     }
 
-    /// The fast timer runs only while a window is being examined.
+    /// The fast timer runs only while a window is being examined or looked for.
     fn update_timer(&mut self) {
-        let busy = !self.candidates.is_empty();
+        let busy = !self.candidates.is_empty() || self.looking_until.is_some();
         if busy && self.fast_timer == 0 {
             // SAFETY: a thread timer; WM_TIMER arrives in this thread's queue.
             self.fast_timer = unsafe { SetTimer(None, 0, FAST_TICK_MS, None) };

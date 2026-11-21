@@ -1363,6 +1363,7 @@ fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
             settings.migrate_session();
             settings.migrate_single_window(bytes);
             settings.migrate_this_pc_collapsed(bytes);
+            settings.migrate_pin_owners(bytes);
             Some(settings)
         }
         Err(err) => {
@@ -1433,6 +1434,22 @@ impl Settings {
             && !self.is_collapsed(SidebarSection::ThisPc)
         {
             self.collapsed_sections.push(SidebarSection::ThisPc);
+        }
+    }
+
+    /// Before 0.8.0-rc.2 a pinned command in a cascading menu made in the registry was learned to
+    /// have no source of its own (`-`, left to the whole Windows menu) and waited for it on every
+    /// menu (#278). A file written before then (no `menu_pin_seen` yet) learns those again: an
+    /// empty owner is learned anew at the next menu.
+    fn migrate_pin_owners(&mut self, bytes: &[u8]) {
+        const SINCE: &str = "menu_pin_seen";
+        if bytes.windows(SINCE.len()).any(|w| w == SINCE.as_bytes()) {
+            return;
+        }
+        for owner in self.menu_pin_owners.values_mut() {
+            if owner == "-" {
+                owner.clear();
+            }
         }
     }
 
@@ -1619,6 +1636,26 @@ mod tests {
         assert_eq!(back.recent_commands, s.recent_commands);
         let old = parse_settings(br#"{"show_hidden": true}"#, Path::new("settings.json")).unwrap();
         assert!(old.shortcuts.is_empty() && old.recent_commands.is_empty());
+    }
+
+    /// #278: pinned commands learned to have no source of their own before 0.8.0-rc.2 (a file
+    /// without `menu_pin_seen`) are learned again; once it is written by this version, they keep it.
+    #[test]
+    fn ownerless_pins_are_learned_again_once() {
+        let path = Path::new("settings.json");
+        let old = parse_settings(
+            br#"{"menu_pin_owners": {"Tools / 01_one": "-", "Edit": "verb:Edit"}}"#,
+            path,
+        )
+        .unwrap();
+        assert_eq!(old.menu_pin_owners["Tools / 01_one"], "", "learned again");
+        assert_eq!(old.menu_pin_owners["Edit"], "verb:Edit", "kept");
+        let saved = serde_json::to_vec(&old).unwrap();
+        let mut back = parse_settings(&saved, path).unwrap();
+        back.menu_pin_owners
+            .insert("Tools / 01_one".into(), "-".into());
+        let again = parse_settings(&serde_json::to_vec(&back).unwrap(), path).unwrap();
+        assert_eq!(again.menu_pin_owners["Tools / 01_one"], "-", "only once");
     }
 
     /// Settings from before 0.5 get the new near-black dark theme; the gray one is a choice.

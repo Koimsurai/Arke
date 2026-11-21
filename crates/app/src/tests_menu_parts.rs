@@ -647,3 +647,25 @@ fn a_command_in_a_cascading_menu_shows_on_its_own(cx: &mut TestAppContext) {
     let _ = open_whole.send(());
     *shell.menu_gate.lock() = None;
 }
+
+/// A command pinned from the whole Windows menu learns its source right away, so the very next
+/// menu shows it on its own instead of waiting for the whole menu once more.
+#[gpui::test]
+fn pinning_learns_the_source_at_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options loaded", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(owners(cx).is_empty(), "nothing pinned, nothing learned");
+    view.update(cx, |v, cx| v.toggle_shell_pin("Compress with 7-Zip", cx));
+    wait_for(cx, "learned on pinning", |cx| {
+        owners(cx).contains_key("Compress with 7-Zip")
+    });
+    assert_eq!(owners(cx)["Compress with 7-Zip"], seven_zip().clsid);
+}

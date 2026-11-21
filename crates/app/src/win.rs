@@ -1635,6 +1635,16 @@ impl Shell for WinShell {
         crate::win_pdf::render_page(path, page, max)
     }
 
+    fn pdf_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::thumb_host::pdf_thumbnail(path, max_side)
+            .map_err(|e| ShellError::Host(e.to_string()))
+    }
+
     fn cloud_scan(&self, dir: &Path, items: &[std::sync::Arc<str>]) -> crate::shell::CloudScan {
         crate::win_cloud::scan(dir, items)
     }

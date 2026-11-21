@@ -352,17 +352,24 @@ impl MediaStore {
         let pdfs = {
             let shell = Arc::clone(&services.shell);
             let tx = tx.clone();
-            // Two at a time: the renderer works on its own thread pool per call and a page is a
-            // few tens of milliseconds, unlike a video frame. A failed or unsupported file
-            // (encrypted, damaged) stays a type icon: the store remembers the `None`.
+            // Rendered in the thumbnail host, like videos: a damaged file can stall or crash the
+            // renderer, and the host is ended after a timeout. A failed or unsupported file
+            // (encrypted, damaged) stays a type icon: the store remembers the `None`. A host that
+            // can't be asked at all says nothing about the file, so nothing is remembered.
             Loader::new("pdf-thumbnail", 2, move |key: &MediaKey| {
-                let side = key.px.max(1);
+                let mut unavailable = false;
                 let thumb = thumb_cache().load(&key.thumb_key(), || {
                     shell
-                        .render_pdf(&key.path, 0, (side, side))
-                        .ok()
-                        .map(|r| r.image)
+                        .pdf_thumbnail(&key.path, key.px.max(1))
+                        .unwrap_or_else(|_| {
+                            unavailable = true;
+                            None
+                        })
                 });
+                if unavailable {
+                    let _ = tx.send(MediaEvent::Unavailable(key.clone()));
+                    return;
+                }
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), thumb));
             })
         };
@@ -408,7 +415,10 @@ impl MediaStore {
                 self.evict(cx);
             }
             MediaEvent::Unavailable(key) => {
-                self.videos.acknowledge(&key);
+                match key.kind {
+                    MediaKind::Pdf => self.pdfs.acknowledge(&key),
+                    _ => self.videos.acknowledge(&key),
+                }
                 // Asked again with the next change of what's wanted.
                 self.last_wanted.clear();
             }

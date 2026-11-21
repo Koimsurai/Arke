@@ -27,7 +27,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ImpersonateNamedPipeClient,
-    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
 };
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentThread, OpenThreadToken, SetEvent,
@@ -38,6 +38,8 @@ use windows::core::{PCWSTR, PWSTR};
 use crate::changes::{Cached, Privacy, to_changes};
 use crate::usn::{ReadError, Volume, Wait, Waiter};
 
+/// While reading the MFT for a listing, how often to look whether the client is still there.
+const CLIENT_CHECK: Duration = Duration::from_millis(100);
 /// Max concurrent connections (one per drive from Arke, plus short cursor queries).
 const MAX_CLIENTS: usize = 16;
 /// Journal poll interval when there are no new changes and waiting reads aren't available.
@@ -313,7 +315,17 @@ impl Server {
     /// Reads the MFT and sends the whole root listing in batches, minus other users' profiles.
     fn list(&self, io: &mut PipeIo, root: &Path, privacy: &Privacy) -> io::Result<()> {
         let _one = self.listing.lock();
-        let mut table = match crate::mft::read_volume(root, &|| self.stopped()) {
+        // A client that has given up (Arke counted the folder another way, the window closed)
+        // closes the pipe: stop reading instead of reading the whole MFT for nobody.
+        let checked = std::cell::Cell::new(Instant::now());
+        let gone = || {
+            if checked.get().elapsed() < CLIENT_CHECK {
+                return false;
+            }
+            checked.set(Instant::now());
+            io.client_gone()
+        };
+        let mut table = match crate::mft::read_volume(root, &|| self.stopped() || gone()) {
             Ok(table) => table,
             Err(why) => {
                 log::info!("{}: cannot list the MFT: {why}", root.display());
@@ -515,6 +527,14 @@ fn profiles_dir() -> Option<PathBuf> {
 
 struct PipeIo<'a>(&'a OwnedHandle);
 
+impl PipeIo<'_> {
+    /// Whether the client has closed its end of the pipe.
+    fn client_gone(&self) -> bool {
+        // SAFETY: valid pipe handle; nothing is read, it only asks what is waiting.
+        unsafe { PeekNamedPipe(self.0.0, None, 0, None, None, None) }.is_err()
+    }
+}
+
 impl Read for PipeIo<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut read = 0u32;
@@ -676,6 +696,44 @@ mod tests {
             ));
         }
         server.stop();
+    }
+
+    /// A listing stops reading the MFT once the client has closed the pipe.
+    #[test]
+    fn a_closed_client_is_noticed() {
+        let name = wide(&test_pipe("gone"));
+        // SAFETY: name is NUL-terminated; default security.
+        let server = OwnedHandle(unsafe {
+            CreateNamedPipeW(
+                PCWSTR(name.as_ptr()),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        });
+        assert!(!server.0.is_invalid());
+        // SAFETY: name is NUL-terminated and valid for the call.
+        let client = OwnedHandle(
+            unsafe {
+                CreateFileW(
+                    PCWSTR(name.as_ptr()),
+                    FILE_GENERIC_READ.0 | FILE_WRITE_DATA.0,
+                    FILE_SHARE_MODE(0),
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    None,
+                )
+            }
+            .unwrap(),
+        );
+        assert!(!PipeIo(&server).client_gone());
+        drop(client);
+        assert!(PipeIo(&server).client_gone());
     }
 
     #[test]

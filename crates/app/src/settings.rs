@@ -476,6 +476,30 @@ pub(crate) enum Density {
     Comfortable,
 }
 
+/// How long reading a drive's whole file table through the index service took (Properties).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TableTime {
+    pub(crate) ms: u64,
+    /// Read to the end. Otherwise it was stopped after `ms` (counted another way first), so it
+    /// takes at least that long.
+    pub(crate) done: bool,
+}
+
+impl TableTime {
+    /// Keeps what is known best: a read to the end replaces anything, a stopped read only raises
+    /// a lower bound.
+    pub(crate) fn learn(
+        times: &mut std::collections::BTreeMap<String, Self>,
+        volume: String,
+        new: Self,
+    ) {
+        let known = times.get(&volume);
+        if new.done || known.is_none_or(|k| !k.done && new.ms > k.ms) {
+            times.insert(volume, new);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 #[allow(
@@ -669,10 +693,10 @@ pub(crate) struct Settings {
     /// Packaged apps' pinned commands (`command:{CLSID}` owners): the item kinds they are for,
     /// from the app's manifest and the menus they were seen in (`win_menu_parts::item_kind`).
     pub(crate) menu_pin_types: std::collections::BTreeMap<String, Vec<String>>,
-    /// How long reading each drive's whole file table through the index service took, in ms
-    /// (`C:\` keys), as last measured by Properties: a folder walk that has taken longer than that
-    /// is overtaken by a read of the table (`properties.rs`).
-    pub(crate) mft_list_ms: std::collections::BTreeMap<String, u64>,
+    /// How long reading each drive's whole file table through the index service took (`C:\`
+    /// keys), as last measured by Properties: a folder walk that has taken longer than that is
+    /// overtaken by a read of the table (`properties.rs`).
+    pub(crate) mft_list: std::collections::BTreeMap<String, TableTime>,
     /// Shortcuts changed in Settings: command id (`commands.rs`) to its keys, empty when the
     /// command has none. Only changes are stored; a command that is absent keeps its defaults.
     pub(crate) shortcuts: std::collections::BTreeMap<String, Vec<String>>,
@@ -801,7 +825,7 @@ impl Default for Settings {
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),
-            mft_list_ms: std::collections::BTreeMap::new(),
+            mft_list: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
             update_channel_choice: None,

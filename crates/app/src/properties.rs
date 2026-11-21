@@ -176,7 +176,7 @@ enum Msg {
     Hash(HashState),
     Unblocked(Result<(), String>),
     /// Reading this drive's file table took this long (ms): remembered for the next count.
-    TableTime(String, u64),
+    TableTime(String, crate::settings::TableTime),
     /// An action from the quick row that failed.
     Action(Result<(), String>),
 }
@@ -186,8 +186,8 @@ pub(crate) struct Properties {
     /// The search index, which answers a folder's space at once when it follows its drive live
     /// (`IndexService::usage_below`); otherwise the folder is walked.
     index: Option<Arc<arke_core::index_service::IndexService>>,
-    /// How long reading each drive's file table took before (`Settings::mft_list_ms`).
-    table_times: std::collections::BTreeMap<String, u64>,
+    /// How long reading each drive's file table took before (`Settings::mft_list`).
+    table_times: std::collections::BTreeMap<String, crate::settings::TableTime>,
     focus: FocusHandle,
     /// The items asked about, with whether each is a folder.
     targets: Vec<(PathBuf, bool)>,
@@ -386,7 +386,7 @@ impl Properties {
             table_times: crate::settings::SettingsStore::global(cx)
                 .read(cx)
                 .settings
-                .mft_list_ms
+                .mft_list
                 .clone(),
             focus,
             targets,
@@ -512,6 +512,7 @@ impl Properties {
                 index: index.as_deref(),
                 table: table.as_deref(),
                 table_times: &table_times,
+                seeks: crate::win_eject::seeks,
             };
             count_space(&services, &fast, &rows, details, cluster, &cancel, &tx);
         });
@@ -522,10 +523,11 @@ impl Properties {
             Msg::Loaded(loaded) => {
                 self.loaded = Some(*loaded);
             }
-            Msg::TableTime(volume, ms) => {
-                self.table_times.insert(volume.clone(), ms);
+            Msg::TableTime(volume, time) => {
+                use crate::settings::TableTime;
+                TableTime::learn(&mut self.table_times, volume.clone(), time);
                 crate::settings::SettingsStore::global(cx).update(cx, |store, cx| {
-                    store.update(|s| _ = s.mft_list_ms.insert(volume, ms), cx);
+                    store.update(|s| TableTime::learn(&mut s.mft_list, volume, time), cx);
                 });
             }
             Msg::Space(space, counting) => {
@@ -1527,7 +1529,10 @@ struct Fast<'a> {
     /// does (admin rights, which it has as a service).
     table: Option<&'a dyn arke_core::journal::Journal>,
     /// How long that took before, per drive (`C:\`).
-    table_times: &'a std::collections::BTreeMap<String, u64>,
+    table_times: &'a std::collections::BTreeMap<String, crate::settings::TableTime>,
+    /// Whether a drive is a spinning disk (`win_eject::seeks`), where two reads at once slow each
+    /// other down.
+    seeks: fn(&Path) -> bool,
 }
 
 /// The index service, when it is installed, for reading drives' file tables.
@@ -1549,10 +1554,14 @@ fn drive_root(path: &Path) -> Option<PathBuf> {
 /// - a drive itself from its file table (a whole drive in seconds instead of a minute or more);
 /// - a folder by walking it, overtaken by a read of the file table once the walk has taken as long
 ///   as reading the table took on that drive before (or from the start when that isn't known yet).
-///   Whichever is done first counts; the other stops. Nothing is a fixed time: a small folder is
-///   walked in less than the table takes, a big one is not.
+///   Whichever is done first counts; the other stops at once. Nothing is a fixed time: a small
+///   folder is walked in less than the table takes, a big one is not. A read stopped early still
+///   tells that the table takes at least that long, so small folders soon stop starting it.
+///
+/// On a spinning disk the walk stops when the table takes over (once its time is measured): the
+/// two would slow each other down, and at worst this takes twice as long as the faster one.
 fn count_folder(
-    services: &Services,
+    fs: &dyn arke_core::fs::Fs,
     fast: &Fast,
     dir: &Path,
     cluster: u64,
@@ -1560,6 +1569,7 @@ fn count_folder(
     tx: &flume::Sender<Msg>,
     progress: &mut dyn FnMut(&Space),
 ) -> Option<Space> {
+    use crate::settings::TableTime;
     if let Some(space) = fast
         .index
         .and_then(|ix| ix.usage_below(dir, cluster, cancel))
@@ -1568,15 +1578,20 @@ fn count_folder(
     }
     let table = fast.table.zip(drive_root(dir));
     let Some((table, root)) = table else {
-        return dirsize::usage(&*services.fs, dir, cluster, cancel, progress);
+        return dirsize::usage(fs, dir, cluster, cancel, progress);
     };
     let key = root.to_string_lossy().into_owned();
     let read_table = |stop: &AtomicBool| {
         let started = Instant::now();
-        let result = dirsize::usage_from_listing(table, &*services.fs, dir, cluster, stop);
-        if result.is_ok() {
-            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let _ = tx.send(Msg::TableTime(key.clone(), ms));
+        let result = dirsize::usage_from_listing(table, fs, dir, cluster, stop);
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let stopped = matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::Interrupted);
+        if result.is_ok() || stopped {
+            let time = TableTime {
+                ms,
+                done: result.is_ok(),
+            };
+            let _ = tx.send(Msg::TableTime(key.clone(), time));
         }
         result
     };
@@ -1586,13 +1601,13 @@ fn count_folder(
             Ok(space) => return Some(space),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return None,
             // No table (not NTFS, an older service): walk.
-            Err(_) => return dirsize::usage(&*services.fs, dir, cluster, cancel, progress),
+            Err(_) => return dirsize::usage(fs, dir, cluster, cancel, progress),
         }
     }
-    let overtake = fast
-        .table_times
-        .get(&key)
-        .map(|ms| std::time::Duration::from_millis(*ms));
+    let known = fast.table_times.get(&key).copied();
+    let overtake = known.map(|t| std::time::Duration::from_millis(t.ms));
+    // Hand over to the table on a spinning disk, when how long it takes is known.
+    let hand_over = known.is_some_and(|t| t.done) && (fast.seeks)(&root);
     let stop_walk = AtomicBool::new(false);
     let stop_table = AtomicBool::new(false);
     let (done_tx, done_rx) = flume::bounded::<std::io::Result<Space>>(1);
@@ -1600,7 +1615,7 @@ fn count_folder(
     std::thread::scope(|scope| {
         let mut table_started = false;
         let mut from_table: Option<Space> = None;
-        let walked = dirsize::usage(&*services.fs, dir, cluster, &stop_walk, &mut |so_far| {
+        let walked = dirsize::usage(fs, dir, cluster, &stop_walk, &mut |so_far| {
             if cancel.load(Ordering::Relaxed) {
                 stop_walk.store(true, Ordering::Relaxed);
                 return;
@@ -1612,6 +1627,10 @@ fn count_folder(
                 scope.spawn(move || {
                     let _ = done_tx.send(read_table(stop_table));
                 });
+                if hand_over {
+                    stop_walk.store(true, Ordering::Relaxed);
+                    return;
+                }
             }
             if let Ok(Ok(space)) = done_rx.try_recv() {
                 from_table = Some(space);
@@ -1620,6 +1639,22 @@ fn count_folder(
             }
             progress(so_far);
         });
+        if walked.is_none() && from_table.is_none() && table_started && hand_over {
+            // Handed over: wait for the table; walk after all if it can't be read.
+            loop {
+                match done_rx.recv_timeout(PROGRESS_EVERY) {
+                    Ok(Ok(space)) => return Some(space),
+                    Ok(Err(_)) | Err(flume::RecvTimeoutError::Disconnected) => break,
+                    Err(flume::RecvTimeoutError::Timeout) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            stop_table.store(true, Ordering::Relaxed);
+                            return None;
+                        }
+                    }
+                }
+            }
+            return dirsize::usage(fs, dir, cluster, cancel, progress);
+        }
         stop_table.store(true, Ordering::Relaxed);
         if cancel.load(Ordering::Relaxed) {
             return None;
@@ -1656,7 +1691,7 @@ fn count_space(
     for row in rows.iter().filter(|r| r.entry.is_dir_like()) {
         let before = done.clone();
         let walked = count_folder(
-            services,
+            &*services.fs,
             fast,
             &row.path,
             cluster,
@@ -2808,5 +2843,195 @@ impl Render for Properties {
                     ),
             )
             .child(self.footer(cx))
+    }
+}
+
+#[cfg(test)]
+mod count_folder_tests {
+    use super::*;
+    use crate::settings::TableTime;
+    use arke_core::entry::{Entry, EntryKind};
+    use arke_core::fake::FakeFs;
+    use arke_core::journal::{
+        Cursor, FakeJournal, Journal, JournalCallback, LISTED_ROOT, ListSink, Listed,
+    };
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    /// A file table that takes `wait` before its first batch, asking the sink meanwhile whether
+    /// to go on, as the service's client does.
+    struct Slow {
+        inner: Arc<FakeJournal>,
+        wait: Duration,
+    }
+
+    impl Journal for Slow {
+        fn cursor(&self, root: &Path) -> Option<Cursor> {
+            self.inner.cursor(root)
+        }
+        fn follow(
+            &self,
+            root: &Path,
+            from: Cursor,
+            on_event: JournalCallback,
+        ) -> std::io::Result<Box<dyn Send>> {
+            self.inner.follow(root, from, on_event)
+        }
+        fn list(&self, root: &Path, sink: ListSink) -> std::io::Result<()> {
+            let started = Instant::now();
+            while started.elapsed() < self.wait {
+                if !sink(Vec::new()) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            self.inner.list(root, sink)
+        }
+    }
+
+    /// C:\w holds a.txt (100 bytes); the file table also has big.bin (a million), so a count
+    /// tells which way it was made.
+    fn setup() -> (Arc<FakeFs>, Arc<FakeJournal>) {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\", vec![Entry::new("w", EntryKind::Dir, 0, None, 0x10)]);
+        fs.insert_dir(
+            r"C:\w",
+            vec![Entry::new("a.txt", EntryKind::File, 100, None, 0x20)],
+        );
+        let item = |parent, name: &str, dir: bool, size| Listed {
+            parent,
+            name: name.into(),
+            attributes: if dir { 0x10 } else { 0x20 },
+            size,
+            mtime: 0,
+            link: false,
+        };
+        let journal = FakeJournal::new(1);
+        journal.set_listing(
+            r"C:\",
+            vec![
+                item(LISTED_ROOT, "w", true, 0),
+                item(0, "a.txt", false, 100),
+                item(0, "big.bin", false, 1_000_000),
+            ],
+        );
+        (fs, journal)
+    }
+
+    fn count(
+        fs: &FakeFs,
+        table: &dyn Journal,
+        times: &BTreeMap<String, TableTime>,
+        seeks: fn(&Path) -> bool,
+        dir: &str,
+    ) -> (u64, Vec<TableTime>) {
+        let fast = Fast {
+            index: None,
+            table: Some(table),
+            table_times: times,
+            seeks,
+        };
+        let (tx, rx) = flume::unbounded();
+        let cancel = AtomicBool::new(false);
+        let space = count_folder(fs, &fast, Path::new(dir), 4096, &cancel, &tx, &mut |_| {})
+            .expect("counted");
+        drop(tx);
+        let learned = rx
+            .iter()
+            .filter_map(|m| match m {
+                Msg::TableTime(_, t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        (space.usage.bytes, learned)
+    }
+
+    const fn ssd(_: &Path) -> bool {
+        false
+    }
+
+    const fn hdd(_: &Path) -> bool {
+        true
+    }
+
+    fn known(ms: u64, done: bool) -> BTreeMap<String, TableTime> {
+        BTreeMap::from([(r"C:\".to_owned(), TableTime { ms, done })])
+    }
+
+    /// A drive is counted from its file table, and how long that took is remembered.
+    #[test]
+    fn a_drive_comes_from_the_file_table() {
+        let (fs, journal) = setup();
+        let (bytes, learned) = count(&fs, &*journal, &BTreeMap::new(), ssd, r"C:\");
+        assert_eq!(bytes, 1_000_100);
+        assert_eq!(journal.list_calls(), 1);
+        assert!(matches!(learned[..], [TableTime { done: true, .. }]));
+    }
+
+    /// A folder walked in less time than the table takes on that drive never starts the table.
+    #[test]
+    fn a_quick_walk_leaves_the_table_alone() {
+        let (fs, journal) = setup();
+        let (bytes, learned) = count(&fs, &*journal, &known(60_000, true), ssd, r"C:\w");
+        assert_eq!(bytes, 100);
+        assert_eq!(journal.list_calls(), 0);
+        assert!(learned.is_empty());
+    }
+
+    /// Not known yet: the table starts with the walk. The walk is done first: its count shows at
+    /// once (the table stops instead of being waited for), and the table is known to take at
+    /// least that long.
+    #[test]
+    fn the_walk_does_not_wait_for_the_table_it_beat() {
+        let (fs, journal) = setup();
+        let slow = Slow {
+            inner: journal,
+            wait: Duration::from_secs(5),
+        };
+        let started = Instant::now();
+        let (bytes, learned) = count(&fs, &slow, &BTreeMap::new(), ssd, r"C:\w");
+        assert_eq!(bytes, 100);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(learned[..], [TableTime { done: false, .. }]),
+            "{learned:?}"
+        );
+    }
+
+    /// On a spinning disk the walk hands over to the table (its time measured), instead of both
+    /// reading at once; a lower bound alone doesn't hand over (both run, as on an SSD).
+    #[test]
+    fn a_spinning_disk_hands_over_to_the_table() {
+        let (fs, journal) = setup();
+        let (bytes, _) = count(&fs, &*journal, &known(0, true), hdd, r"C:\w");
+        assert_eq!(bytes, 1_000_000 + 100, "from the table");
+        let (fs, journal) = setup();
+        let slow = Slow {
+            inner: journal,
+            wait: Duration::from_secs(5),
+        };
+        let (bytes, _) = count(&fs, &slow, &known(0, false), hdd, r"C:\w");
+        assert_eq!(bytes, 100, "walked");
+    }
+
+    /// A read to the end replaces what was known; a stopped one only raises a lower bound.
+    #[test]
+    fn table_times_keep_what_is_known_best() {
+        let mut times = BTreeMap::new();
+        let c = || r"C:\".to_owned();
+        let at_least = |ms| TableTime { ms, done: false };
+        let took = |ms| TableTime { ms, done: true };
+        TableTime::learn(&mut times, c(), at_least(30));
+        TableTime::learn(&mut times, c(), at_least(10));
+        assert_eq!(times[r"C:\"], at_least(30));
+        TableTime::learn(&mut times, c(), took(7000));
+        TableTime::learn(&mut times, c(), at_least(9000));
+        assert_eq!(times[r"C:\"], took(7000));
+        TableTime::learn(&mut times, c(), took(5000));
+        assert_eq!(times[r"C:\"], took(5000));
     }
 }

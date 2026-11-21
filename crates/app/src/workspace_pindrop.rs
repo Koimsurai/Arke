@@ -335,7 +335,7 @@ impl Workspace {
         drawn: usize,
         large: bool,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> Option<(AnyElement, bool)> {
         // One sign at a time: at a tile's edge the insertion mark says where it goes.
         let marked =
             self.pin_shown.is_some() && self.pin_mark.is_some_and(|m| m.area == PinArea::Tiles);
@@ -370,12 +370,14 @@ impl Workspace {
             .line_wrapper(theme::ui_font_at(gpui::FontWeight::NORMAL), theme::fs_11())
             .should_truncate_line(&label, room, "", gpui::TruncateFrom::End)
             .is_none();
-        Some(
+        // A row of its own when it doesn't fit beside the last tiles.
+        let own_row = !fits || free == per_row;
+        Some((
             div()
                 .id("tile-add-favorite")
                 .debug_selector(|| "tile-add-favorite".to_owned())
                 .col_span(if fits { free } else { per_row })
-                .h(if large { px(56.) } else { px(48.) })
+                .h(super::sidebar::tile_height(large))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -422,7 +424,8 @@ impl Workspace {
                 )
                 .with_pin_drops(cx)
                 .into_any_element(),
-        )
+            own_row,
+        ))
     }
 }
 

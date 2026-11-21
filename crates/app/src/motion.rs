@@ -395,6 +395,215 @@ impl Slide<(f32, f32)> {
     }
 }
 
+/// Rows of a list that slide to their new places when the list changes under a drag, wherever
+/// the change moved them (a reorder, a row coming or going above them). Each row is drawn through
+/// [`Flip::row`], which notes where it was drawn; [`Flip::moved`] says the list is about to
+/// change, and on the next frame each row that moved starts from where it was drawn before, as
+/// tiles and tabs do. Rows are laid out in their final place at once: only the drawing moves.
+///
+/// Off until [`Flip::start`] (and once [`Flip::stop`]ped, after its slides end): then rows are
+/// drawn as they are, with nothing noted.
+pub(crate) struct Flip<K> {
+    state: std::cell::RefCell<FlipState<K>>,
+}
+
+struct FlipState<K> {
+    on: bool,
+    /// Where each row was drawn last frame (its top, with its slide).
+    drawn: std::collections::HashMap<K, f32>,
+    /// Taken by [`Flip::moved`]: where the rows were before the change. Kept for one frame.
+    before: Option<(std::collections::HashMap<K, f32>, bool)>,
+    slides: std::collections::HashMap<K, Slide<f32>>,
+}
+
+impl<K> Default for Flip<K> {
+    fn default() -> Self {
+        Self {
+            state: std::cell::RefCell::new(FlipState {
+                on: false,
+                drawn: std::collections::HashMap::new(),
+                before: None,
+                slides: std::collections::HashMap::new(),
+            }),
+        }
+    }
+}
+
+impl<K: Eq + std::hash::Hash + Clone + 'static> Flip<K> {
+    /// A drag starts: rows note where they are drawn.
+    pub(crate) fn start(&self) {
+        let mut st = self.state.borrow_mut();
+        st.on = true;
+        st.drawn.clear();
+        st.before = None;
+        st.slides.clear();
+    }
+
+    /// The drag ended: slides still running finish, nothing new is noted.
+    pub(crate) fn stop(&self) {
+        self.state.borrow_mut().on = false;
+    }
+
+    /// The list is about to change: the rows that move slide from where they are drawn now.
+    pub(crate) fn moved(&self) {
+        if !enabled() {
+            return;
+        }
+        let mut st = self.state.borrow_mut();
+        if !st.drawn.is_empty() {
+            st.before = Some((st.drawn.clone(), false));
+        }
+    }
+
+    /// Called once a frame, before the rows are built: the positions taken by [`Self::moved`]
+    /// are used by the frame after it only, and finished slides go.
+    pub(crate) fn frame(&self) {
+        let mut st = self.state.borrow_mut();
+        match &mut st.before {
+            Some((_, seen)) if *seen => st.before = None,
+            Some((_, seen)) => *seen = true,
+            None => {}
+        }
+        let now = Instant::now();
+        st.slides.retain(|_, s| s.live(now));
+        if !st.on && st.before.is_none() && st.slides.is_empty() {
+            st.drawn.clear();
+        }
+    }
+
+    /// Whether rows are drawn through [`Self::row`] now: during a drag and while slides run.
+    pub(crate) fn wanted(&self) -> bool {
+        let st = self.state.borrow();
+        st.on || st.before.is_some() || !st.slides.is_empty()
+    }
+
+    /// `child`, the row known as `key`, drawn where it slides (or as it is when not [`Self::wanted`]).
+    pub(crate) fn row(self: &std::rc::Rc<Self>, key: K, child: AnyElement) -> AnyElement {
+        if !self.wanted() {
+            return child;
+        }
+        FlipRow {
+            key,
+            flip: std::rc::Rc::clone(self),
+            child,
+        }
+        .into_any_element()
+    }
+
+    /// The row `key` is laid out with its top at `y`: how far down from there it is drawn now.
+    fn place(&self, key: &K, y: f32) -> f32 {
+        let now = Instant::now();
+        let mut st = self.state.borrow_mut();
+        let was = st
+            .before
+            .as_mut()
+            .and_then(|(before, _)| before.remove(key));
+        if let Some(was) = was {
+            if (was - y).abs() > 0.5 {
+                st.slides.insert(
+                    key.clone(),
+                    Slide {
+                        from: was - y,
+                        started: now,
+                    },
+                );
+            } else {
+                st.slides.remove(key);
+            }
+        }
+        let dy = st
+            .slides
+            .get(key)
+            .filter(|s| s.live(now))
+            .map_or(0., |s| s.left(now));
+        if st.on {
+            st.drawn.insert(key.clone(), y + dy);
+        }
+        dy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sliding_from(&self, key: &K) -> Option<f32> {
+        let now = Instant::now();
+        self.state
+            .borrow()
+            .slides
+            .get(key)
+            .filter(|s| s.live(now))
+            .map(|s| s.from)
+    }
+}
+
+/// A row drawn through [`Flip::row`]: laid out as its child is, drawn moved by its slide.
+struct FlipRow<K> {
+    key: K,
+    flip: std::rc::Rc<Flip<K>>,
+    child: AnyElement,
+}
+
+impl<K: Eq + std::hash::Hash + Clone + 'static> IntoElement for FlipRow<K> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<K: Eq + std::hash::Hash + Clone + 'static> gpui::Element for FlipRow<K> {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        // The child's own layout: the row takes the same place as without the wrapper.
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let dy = self.flip.place(&self.key, f32::from(bounds.origin.y));
+        if dy != 0. {
+            window.request_animation_frame();
+        }
+        window.with_element_offset(gpui::point(px(0.), px(dy)), |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: gpui::Bounds<gpui::Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

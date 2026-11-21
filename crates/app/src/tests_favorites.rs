@@ -645,6 +645,108 @@ fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
+/// Rows of the list make room for a favorite dragged over them as the tiles do: they slide to
+/// their new places, a row at a time, and close up sliding when it leaves for the tiles.
+#[gpui::test]
+fn list_rows_slide_to_make_room(cx: &mut TestAppContext) {
+    crate::motion::force_for_test(true);
+    let (ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("b"), p("c"), p("d")];
+    });
+    refresh(cx);
+    let rows: Vec<Bounds<Pixels>> = (0..3)
+        .map(|ix| bounds(cx, &format!("pin-row-{ix}")))
+        .collect();
+    let pitch = f32::from(rows[1].top() - rows[0].top());
+    let from = |ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: Option<&str>| {
+        ws.update(cx, |ws, _| {
+            ws.list_row_slide_from_for_test(path.map(p).as_deref())
+        })
+    };
+    let close = |got: Option<f32>, want: f32| got.is_some_and(|got| (got - want).abs() < 1.);
+
+    pick_up(cx, rows[0]);
+    assert!(
+        near(bounds(cx, "pin-row-1").top(), rows[1].top()),
+        "its gap is a row high: the rows under it stay put"
+    );
+    cx.simulate_mouse_move(rows[2].center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).pinned, vec![p("c"), p("d"), p("b")]);
+    assert!(
+        close(from(&ws, cx, Some("c")), pitch),
+        "c slides up from a row down"
+    );
+    assert!(close(from(&ws, cx, Some("d")), pitch), "d too");
+    assert!(
+        close(from(&ws, cx, Some("b")), -2. * pitch),
+        "its gap from where it was"
+    );
+    assert_eq!(from(&ws, cx, None), None, "the Recycle Bin stays put");
+
+    // Up onto the tiles: the rows under its gap close up, sliding.
+    let tile = bounds(cx, "tile-slot-0");
+    cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).pinned, vec![p("c"), p("d")]);
+    assert!(
+        close(from(&ws, cx, None), pitch),
+        "the Recycle Bin closes up"
+    );
+    cx.simulate_mouse_up(tile.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    crate::motion::force_for_test(false);
+}
+
+/// A list row picked up with the tiles scrolled away above: the tiles open a row for it up there,
+/// and the rows in view stay where they are, the one picked up under the pointer.
+#[gpui::test]
+fn a_row_picked_up_under_tiles_scrolled_away_stays_put(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollEvent};
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b"), p("c")]);
+        st.pinned = vec![p("d"), p(LONG)];
+    });
+    cx.simulate_resize(gpui::size(px(1200.), px(360.)));
+    refresh(cx);
+    let grid = bounds(cx, "pin-tiles");
+    let over = bounds(cx, "sidebar-places-frame").center();
+    cx.simulate_event(ScrollEvent {
+        position: over,
+        delta: ScrollDelta::Pixels(point(px(0.), -(grid.size.height + px(12.)))),
+        ..ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    refresh(cx);
+    let frame = bounds(cx, "sidebar-places-frame");
+    assert!(
+        bounds(cx, "pin-tiles").bottom() <= frame.top(),
+        "the tiles are out of sight"
+    );
+    let row = bounds(cx, "pin-row-0");
+    pick_up(cx, row);
+    let slot = bounds(cx, "tile-add-favorite");
+    assert!(
+        slot.top() > bounds(cx, "tile-slot-0").bottom(),
+        "the tiles open a row for it"
+    );
+    assert!(
+        near(bounds(cx, "pin-row-gap").top(), row.top()),
+        "the row stays under the pointer"
+    );
+    let at = bounds(cx, "pin-row-gap").center();
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert!(
+        near(bounds(cx, "pin-row-0").top(), row.top()),
+        "and once let go, the row closing up above leaves it there"
+    );
+}
+
 /// Let go over the sidebar where nothing takes it (This PC), a list entry stays where the drag
 /// left it and nothing the drag showed stays behind.
 #[gpui::test]

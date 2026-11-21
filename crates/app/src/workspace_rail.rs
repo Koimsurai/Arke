@@ -63,6 +63,9 @@ pub(super) struct SidebarUi {
     pub(super) snap_tiles: std::cell::Cell<bool>,
     /// Rows of favorite tiles drawn last frame.
     pub(super) tile_rows: std::cell::Cell<usize>,
+    /// Height of the tile grid drawn last frame, with the "Move to the tiles" slot
+    /// (`Workspace::keep_rows_under_tiles_still`).
+    pub(super) grid_height: std::cell::Cell<Option<f32>>,
     /// A section heading was just clicked: its chevron turns and, expanding, its rows drop in.
     pub(super) section_cue: (Option<crate::settings::SidebarSection>, crate::motion::Cue),
     /// The Shelf row was just clicked: the same for its items.

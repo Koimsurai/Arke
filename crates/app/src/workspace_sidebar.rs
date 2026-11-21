@@ -23,6 +23,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::pindrop::{self, PinArea, PinDrops as _};
+use super::tabdrag::PlaceRow;
 use super::{DraggedTab, Tab, Workspace};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -314,7 +315,7 @@ pub(super) fn file_menu(path: &Path) -> Vec<SidebarRow> {
 pub(super) const TILE_LIFT: f32 = 1.1;
 
 /// A favorite tile's height: the large ones (three a row) are taller.
-fn tile_height(large: bool) -> Pixels {
+pub(super) fn tile_height(large: bool) -> Pixels {
     theme::scaled_px(if large { 56. } else { 48. })
 }
 
@@ -1231,7 +1232,10 @@ impl Workspace {
             .rounded(theme::r_8())
             .when(gap, |d| {
                 // Where it lands, drawn like the block that showed the list takes it.
+                // A row's height with its border, so the rows under it don't move when it opens.
                 d.debug_selector(|| "pin-row-gap".to_owned())
+                    .h(theme::h_row())
+                    .overflow_hidden()
                     .mx(theme::s_4())
                     .border_1()
                     .border_dashed()
@@ -1311,6 +1315,8 @@ impl Workspace {
         let tile_count = favorites.len();
         let mut tiles: Vec<AnyElement> = Vec::new();
         let mut long_rows: Vec<AnyElement> = Vec::new();
+        // Who each row is, so it slides to its new place when the favorites change under a drag.
+        let mut long_keys: Vec<PlaceRow> = Vec::new();
         for (ix, (path, label, icon)) in favorites.into_iter().enumerate() {
             if layout.on_tile.get(ix).copied().unwrap_or(true) {
                 let here = current == Some(path.as_path());
@@ -1334,9 +1340,12 @@ impl Workspace {
                 );
                 let row = long_rows.remove(at);
                 long_rows.insert(at, Self::favorite_row(ix, &path, label, icon, row, cx));
+                long_keys
+                    .extend((0..long_rows.len() - at).map(|n| PlaceRow::Favorite(path.clone(), n)));
             }
         }
         let mut pinned_rows = Vec::new();
+        let mut pinned_keys: Vec<PlaceRow> = Vec::new();
         for (ix, path) in pinned.iter().enumerate() {
             let row_at = pinned_rows.len();
             let label = own_names
@@ -1357,6 +1366,8 @@ impl Workspace {
             // The list row itself (not its expanded children) is draggable: reorder or drop onto tiles.
             let row = pinned_rows.remove(row_at);
             pinned_rows.insert(row_at, self.pin_list_row(ix, path, label, row, cx));
+            pinned_keys
+                .extend((0..pinned_rows.len() - row_at).map(|n| PlaceRow::Pinned(path.clone(), n)));
         }
         // A tile being dragged: the list shows it can go down there (a block under the heading,
         // the heading shown for it even with nothing listed). Over the list it becomes a row, its
@@ -1370,9 +1381,11 @@ impl Workspace {
         // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
         // the last one (`workspace_pindrop.rs`).
         let add_slot = self.render_add_favorite_slot(tile_count, tiles.len(), large, cx);
-        self.sidebar_ui
-            .tile_rows
-            .set(tiles.len().div_ceil(if large { 3 } else { 4 }));
+        let tile_rows = tiles.len().div_ceil(if large { 3 } else { 4 });
+        self.sidebar_ui.tile_rows.set(tile_rows);
+        let slot_row = add_slot.as_ref().is_some_and(|(_, own_row)| *own_row);
+        self.keep_rows_under_tiles_still(tile_rows + usize::from(slot_row), large);
+        let add_slot = add_slot.map(|(slot, _)| slot);
         let mut out = vec![
             div()
                 .id("pin-tiles")
@@ -1438,6 +1451,7 @@ impl Workspace {
                     }))
                     .into_any_element(),
             );
+            pinned_keys.push(PlaceRow::Recycle);
         }
         // No pins, no section. "Pin to sidebar" makes it appear; no placeholder text.
         let heading = !long_rows.is_empty() || !pinned_rows.is_empty() || wants_list_drop;
@@ -1484,14 +1498,24 @@ impl Workspace {
         // Favorites too long for a tile come first: they are ahead of the list in the saved order.
         // Each in a parent of its own, so a favorite also shown under This PC doesn't repeat an
         // element id.
-        out.extend(long_rows.into_iter().enumerate().map(|(ix, row)| {
-            div()
-                .id(("favorite", ix))
-                .flex()
-                .flex_col()
-                .child(row)
-                .into_any_element()
-        }));
+        let flip = &self.tab_drag.rows;
+        out.extend(
+            long_rows
+                .into_iter()
+                .zip(long_keys)
+                .enumerate()
+                .map(|(ix, (row, key))| {
+                    flip.row(
+                        key,
+                        div()
+                            .id(("favorite", ix))
+                            .flex()
+                            .flex_col()
+                            .child(row)
+                            .into_any_element(),
+                    )
+                }),
+        );
         // Where a tile dropped into the list lands (first of the pinned folders), so the block
         // turns into its gap in place when it gets there.
         if tile_dragged {
@@ -1500,15 +1524,29 @@ impl Workspace {
         // A parent for each pinned row, so a folder pinned and also shown under This PC doesn't
         // repeat an element id (the screen reader tree needs them unique). Each row stays its own
         // item of the scrolling list, so one cut off at its bottom is dimmed alone.
-        out.extend(pinned_rows.into_iter().enumerate().map(|(ix, row)| {
-            div()
-                .id(("pinned", ix))
-                .flex()
-                .flex_col()
-                .child(row)
-                .into_any_element()
-        }));
-        out.extend(self.render_shelf(cx));
+        out.extend(
+            pinned_rows
+                .into_iter()
+                .zip(pinned_keys)
+                .enumerate()
+                .map(|(ix, (row, key))| {
+                    flip.row(
+                        key,
+                        div()
+                            .id(("pinned", ix))
+                            .flex()
+                            .flex_col()
+                            .child(row)
+                            .into_any_element(),
+                    )
+                }),
+        );
+        out.extend(
+            self.render_shelf(cx)
+                .into_iter()
+                .enumerate()
+                .map(|(ix, row)| flip.row(PlaceRow::Shelf(ix), row)),
+        );
         self.drop_in(SidebarSection::Favorites, &mut out, start);
         out
     }
@@ -1522,6 +1560,36 @@ impl Workspace {
         } else {
             theme::sidebar_full_width() - theme::s_12() - theme::s_8()
         }
+    }
+
+    /// The tile grid is `rows` rows high now. Scrolled out of sight above, a change in its height
+    /// (the "Move to the tiles" slot opening a row while a list entry is dragged, a tile coming or
+    /// going) scrolls with it, so the rows in view stay where they are, under the pointer.
+    fn keep_rows_under_tiles_still(&self, rows: usize, large: bool) {
+        let height = if rows == 0 {
+            0.
+        } else {
+            let rows = rows as f32;
+            rows * f32::from(tile_height(large)) + (rows - 1.) * f32::from(theme::s_4())
+        };
+        let Some(was) = self.sidebar_ui.grid_height.replace(Some(height)) else {
+            return;
+        };
+        let grew = height - was;
+        if grew.abs() < 0.5 {
+            return;
+        }
+        let scroll = &self.sidebar_ui.places_scroll;
+        // Laid out unscrolled: the top of the view in those terms follows the scroll.
+        let view_top = scroll.bounds().top() - scroll.offset().y;
+        if scroll
+            .bounds_for_item(0)
+            .is_none_or(|grid| grid.bottom() > view_top + px(0.5))
+        {
+            return;
+        }
+        let offset = scroll.offset();
+        scroll.set_offset(gpui::point(offset.x, (offset.y - px(grew)).min(px(0.))));
     }
 
     /// A tile's size in the grid, `large` ones three a row, the others four.
@@ -1865,6 +1933,7 @@ impl Workspace {
         if already {
             return;
         }
+        self.tab_drag.rows.moved();
         self.move_pin(&path, PinSlot::List(at), cx);
         self.tab_drag.mark_moved();
         self.tab_drag.set_tile(None);
@@ -1932,6 +2001,8 @@ impl Workspace {
         let Some(origin) = self.tab_drag.origin.take() else {
             return;
         };
+        // The rows slide back with it.
+        self.tab_drag.rows.moved();
         SettingsStore::global(cx).update(cx, |s, cx| {
             s.update(
                 |st| {
@@ -2131,7 +2202,9 @@ impl Workspace {
         // changes: the places take their height and the tabs follow right under them.
         let horizontal = Self::horizontal_tabs(cx);
         // The favorites, their list and the Shelf.
+        self.tab_drag.rows.frame();
         let mut items = self.render_pins(current.as_deref(), cx);
+        let pins_end = items.len();
         items.push(
             self.section_header(SidebarSection::ThisPc, this_pc_collapsed, Vec::new(), cx)
                 .into_any_element(),
@@ -2148,6 +2221,16 @@ impl Workspace {
             &mut items,
             cx,
         );
+        // Under the favorites, rows move with them: a row more or less in the list moves them all.
+        if self.tab_drag.rows.wanted() {
+            let after: Vec<AnyElement> = items.drain(pins_end..).collect();
+            items.extend(
+                after
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, row)| self.tab_drag.rows.row(PlaceRow::After(ix), row)),
+            );
+        }
         // The tiles and rows went under the Home row: a shadow there says so.
         let scrolled = self.sidebar_ui.places_scroll.offset().y < px(-0.5);
         let places = div()

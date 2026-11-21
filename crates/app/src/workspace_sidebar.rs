@@ -207,6 +207,37 @@ const fn menu_glyph(action: &SidebarAction) -> Option<Icon> {
     })
 }
 
+/// Where the places' top edge goes so it doesn't cut a row of favorite tiles in half, all in the
+/// list's unscrolled terms: the edge at `top` now; the tiles from `tiles.0` to `tiles.1` in
+/// `rows` rows `gap` apart; the current folder's row from `here.0` to `here.1`, which must stay
+/// in a view `view_h` high; the edge going no further than `max_top`. Back to the start of the cut
+/// row first, else on to the next row, but never past the last one: that would scroll every tile
+/// away, and the tiles are what Home's part of the sidebar is for. `None`: leave it as it is.
+fn tile_snap(
+    top: f32,
+    tiles: (f32, f32),
+    rows: usize,
+    gap: f32,
+    here: (f32, f32),
+    view_h: f32,
+    max_top: f32,
+) -> Option<f32> {
+    if rows == 0 || top <= tiles.0 || top >= tiles.1 {
+        return None;
+    }
+    let period = (tiles.1 - tiles.0 + gap) / rows as f32;
+    let into = (top - tiles.0).rem_euclid(period);
+    // In the gap between two rows, or a hair into one: nothing is cut.
+    if into < 1. || into > period - gap - 1. {
+        return None;
+    }
+    let shows_here =
+        |t: f32| t <= max_top + 0.5 && here.0 >= t - 0.5 && here.1 <= t + view_h + 0.5;
+    [top - into, top + period - into]
+        .into_iter()
+        .find(|&t| t < tiles.1 - gap && shows_here(t))
+}
+
 /// A line goes above row `ix`: it starts another group than the row above.
 fn line_before(items: &[SidebarRow], ix: usize) -> bool {
     ix.checked_sub(1)
@@ -2015,19 +2046,17 @@ impl Workspace {
     }
 
     /// Right after the places scrolled to the current folder's row (the frame before): when
-    /// their top edge cuts through a row of favorite tiles, they scroll on to the next whole row
-    /// (or past the tiles), or back to the start of the cut one, whichever keeps the current
-    /// folder's row in view. Scrolling to a row only ever moves as little as it needs, which
-    /// often left the tiles under Home cut in half on start.
+    /// their top edge cuts through a row of favorite tiles, they scroll to a whole row
+    /// ([`tile_snap`]) if the current folder's row stays in view. Scrolling to a row only ever
+    /// moves as little as it needs, which often left the tiles under Home cut in half on start.
     fn snap_tile_rows(&self) {
         if !self.sidebar_ui.snap_tiles.replace(false) {
             return;
         }
         let scroll = &self.sidebar_ui.places_scroll;
-        let rows = self.sidebar_ui.tile_rows.get();
         // The tiles are the first item; rows are laid out unscrolled, as in `scrolling`.
         let (Some(tiles), Some(here)) = (
-            scroll.bounds_for_item(0).filter(|_| rows > 0),
+            scroll.bounds_for_item(0),
             self.sidebar_ui
                 .here_row
                 .get()
@@ -2035,36 +2064,20 @@ impl Workspace {
         ) else {
             return;
         };
-        let y = f32::from(scroll.offset().y);
-        let view_h = f32::from(scroll.bounds().size.height);
-        let top = f32::from(scroll.bounds().top()) - y;
-        let (tiles_top, tiles_bottom) = (f32::from(tiles.top()), f32::from(tiles.bottom()));
-        if top <= tiles_top || top >= tiles_bottom {
-            return;
-        }
-        let gap = f32::from(theme::s_4());
-        let period = (f32::from(tiles.size.height) + gap) / rows as f32;
-        let into = (top - tiles_top).rem_euclid(period);
-        // In the gap between two rows, or a hair into one: nothing is cut.
-        if into < 1. || into > period - gap - 1. {
-            return;
-        }
-        let max = f32::from(scroll.max_offset().y);
-        let here_bottom = f32::from(here.bottom());
-        let fits = |new_top: f32| {
-            new_top - f32::from(scroll.bounds().top()) <= max + 0.5
-                && here_bottom <= new_top + view_h + 0.5
-                && f32::from(here.top()) >= new_top - 0.5
-        };
-        let down = (top + period - into).min(tiles_bottom);
-        let up = top - into;
-        let Some(new_top) = [down, up].into_iter().find(|&t| fits(t)) else {
+        let view = scroll.bounds();
+        let view_top = f32::from(view.top());
+        let Some(top) = tile_snap(
+            view_top - f32::from(scroll.offset().y),
+            (f32::from(tiles.top()), f32::from(tiles.bottom())),
+            self.sidebar_ui.tile_rows.get(),
+            f32::from(theme::s_4()),
+            (f32::from(here.top()), f32::from(here.bottom())),
+            f32::from(view.size.height),
+            view_top + f32::from(scroll.max_offset().y),
+        ) else {
             return;
         };
-        scroll.set_offset(gpui::point(
-            scroll.offset().x,
-            px(f32::from(scroll.bounds().top()) - new_top),
-        ));
+        scroll.set_offset(gpui::point(scroll.offset().x, px(view_top - top)));
     }
 
     #[allow(
@@ -4447,6 +4460,30 @@ mod tests {
             pin_outside(sidebar, at(120., 910.), window),
             "below the window"
         );
+    }
+
+    #[test]
+    fn a_tile_row_cut_by_the_top_edge_is_shown_whole_or_left_alone() {
+        // Two rows of 56 px tiles 4 px apart (0 to 116), a view 652 px high that can start at
+        // most at 118.
+        let tiles = (0., 116.);
+        let snap = |top: f32, rows: usize, here: (f32, f32)| {
+            tile_snap(top, tiles, rows, 4., here, 652., 118.)
+        };
+        // The second row cut 18 px in: back to its start while the current row stays in view.
+        assert_eq!(snap(78., 2, (500., 532.)), Some(60.));
+        // The current row would drop out at the bottom, and going on would scroll every tile
+        // away (the start in German at S:\Studio): left as it is.
+        assert_eq!(snap(78., 2, (698., 730.)), None);
+        // Three rows (0 to 176), the first cut: on to the second.
+        let three = tile_snap(30., (0., 176.), 3, 4., (658., 690.), 652., 200.);
+        assert_eq!(three, Some(60.));
+        // At a row's start, in the gap between rows, above or past the tiles: nothing to do.
+        assert_eq!(snap(60., 2, (500., 532.)), None);
+        assert_eq!(snap(57., 2, (500., 532.)), None);
+        assert_eq!(snap(0., 2, (500., 532.)), None);
+        assert_eq!(snap(116., 2, (500., 532.)), None);
+        assert_eq!(snap(78., 0, (500., 532.)), None);
     }
 
     #[test]

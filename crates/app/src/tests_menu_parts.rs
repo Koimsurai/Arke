@@ -470,3 +470,89 @@ fn a_pinned_command_of_an_uninstalled_app_goes_away(cx: &mut TestAppContext) {
     let _ = open_whole.send(());
     *shell.menu_gate.lock() = None;
 }
+
+fn pin_seen(cx: &mut VisualTestContext) -> std::collections::BTreeMap<String, Vec<String>> {
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .menu_pin_seen
+            .clone()
+    })
+}
+
+/// Waits, running the app, until `done`.
+fn wait_for(
+    cx: &mut VisualTestContext,
+    what: &str,
+    mut done: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done(cx) {
+        assert!(Instant::now() < deadline, "{what}");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// #278: an extension's pinned command shows as soon as the menu opens where the extension
+/// showed it for this kind of item before, without waiting for the extension (a third-party
+/// DLL loaded and asked, up to a second on a slow PC). When it doesn't add it this time, the row
+/// goes once it answers, and isn't drawn ahead again.
+#[gpui::test]
+fn an_extension_row_shows_ahead_where_it_showed_before(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let key = "Compress with 7-Zip";
+    pin(cx, &[key]);
+
+    // First menu: learns 7-Zip has it, for a .txt file.
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "learned", |cx| {
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"])
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Next menu, 7-Zip and the whole menu slow: the row is there before either answers.
+    let (open_whole, whole_gate) = flume::unbounded();
+    let (open_parts, parts_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    *shell.part_gate.lock() = Some(parts_gate);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "row drawn ahead", |cx| {
+        rows_above_more_options(&view, cx).contains(&key.to_owned())
+    });
+    assert!(
+        shell.extensions_read.lock().is_empty(),
+        "7-Zip hasn't answered"
+    );
+    let _ = open_parts.send(());
+    wait_for(cx, "7-Zip answered", |_| {
+        !shell.extensions_read.lock().is_empty()
+    });
+    assert!(rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    let _ = open_whole.send(());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // 7-Zip no longer adds it here: drawn ahead, gone once 7-Zip answers, forgotten.
+    shell.extensions.lock()[0].1.clear();
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "row drawn ahead again", |cx| {
+        rows_above_more_options(&view, cx).contains(&key.to_owned())
+    });
+    let _ = open_parts.send(());
+    wait_for(cx, "row gone", |cx| {
+        !rows_above_more_options(&view, cx).contains(&key.to_owned())
+    });
+    wait_for(cx, "forgotten", |cx| !pin_seen(cx).contains_key(key));
+    *shell.part_gate.lock() = None;
+    let _ = open_whole.send(());
+    *shell.menu_gate.lock() = None;
+}

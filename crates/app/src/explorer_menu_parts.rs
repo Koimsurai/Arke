@@ -12,7 +12,10 @@
 //! The rows of registry and packaged commands are known to show before they answer (the
 //! registry says so, or the item kinds the app registered them for), so they are drawn right
 //! away with the label and icon they had, and a click before the source is in runs the command
-//! once it is. The whole menu still fills "Show more options", and once it is in, the pinned rows
+//! once it is. An extension's row is drawn ahead too where the extension showed it for the same
+//! kind of item last time (`menu_pin_seen`): loading a third-party DLL and asking it for its
+//! items takes it 40 ms to a second, and the row was waiting on that. If it turns out not to
+//! add it this time, the row goes away when it answers. The whole menu still fills "Show more options", and once it is in, the pinned rows
 //! come from it.
 //!
 //! Where a pinned command comes from isn't in the Windows menu's layout, but each of its items
@@ -57,8 +60,14 @@ pub(crate) enum ShellMenuEvent {
         name: String,
         /// The source's owner string (`MenuHandler::owner`), to match pinned commands to it.
         owner: String,
+        /// The kind of item the menu is for (`win_menu_parts::item_kind`), for an extension
+        /// to note where its pinned commands show.
+        kind: Option<String>,
         result: PartResult,
     },
+    /// Pinned commands of extensions that showed, or didn't, for a kind of item
+    /// (pin key, kind, shown).
+    PinSeen(Vec<(String, String, bool)>),
     /// Where pinned commands come from (pin key, owner).
     PinOwners(Vec<(String, String)>),
     /// Item kinds packaged commands are for (owner, kinds), added to what is known.
@@ -89,6 +98,7 @@ impl Explorer {
             })
             .collect();
         let types = settings.menu_pin_types.clone();
+        let seen = settings.menu_pin_seen.clone();
         let Some((paths, background)) = self.menu_paths(menu) else {
             return;
         };
@@ -123,12 +133,20 @@ impl Explorer {
                     wanted.push(MenuHandler::command(clsid));
                 }
             }
-            // Rows known to show; an extension decides for itself whether it adds its item.
+            // Rows known to show, and an extension's where it showed for this kind of item last
+            // time (it decides for itself whether it adds its item).
+            let shown_here = |key: &str| {
+                kind.as_ref().is_some_and(|kind| {
+                    seen.get(key)
+                        .is_some_and(|kinds| kinds.iter().any(|k| k.eq_ignore_ascii_case(kind)))
+                })
+            };
             let keys: Vec<String> = owned
                 .iter()
-                .filter(|(_, o)| {
+                .filter(|(key, o)| {
                     wanted.iter().any(|h| {
-                        h.kind != HandlerKind::Extension && h.owner().eq_ignore_ascii_case(o)
+                        h.owner().eq_ignore_ascii_case(o)
+                            && (h.kind != HandlerKind::Extension || shown_here(key))
                     })
                 })
                 .map(|(key, _)| key.clone())
@@ -141,6 +159,9 @@ impl Explorer {
             }
             for handler in wanted {
                 let (shell, tx, paths) = (Arc::clone(&shell), tx.clone(), paths.clone());
+                let kind = (handler.kind == HandlerKind::Extension)
+                    .then(|| kind.clone())
+                    .flatten();
                 spawn_thread("menu-extension", move || {
                     let result =
                         shell.shell_menu_handler(&paths, background, extended, &handler, request);
@@ -148,6 +169,7 @@ impl Explorer {
                         request,
                         owner: handler.owner(),
                         name: handler.name,
+                        kind,
                         result,
                     }));
                 });
@@ -181,6 +203,7 @@ impl Explorer {
         request: u64,
         name: &str,
         owner: &str,
+        kind: Option<String>,
         result: PartResult,
         cx: &mut Context<Self>,
     ) {
@@ -225,11 +248,19 @@ impl Explorer {
             .map(|e| MenuEntry::from_shell_in(e, &[], Some(part.session)))
             .collect();
         // Rows drawn ahead that this source turned out not to have (hidden for these items).
-        let missing: Vec<String> = expected
+        let (shown, missing): (Vec<String>, Vec<String>) = expected
             .into_iter()
-            .filter(|key| find_pinned(&entries, key).is_none())
-            .collect();
+            .partition(|key| find_pinned(&entries, key).is_some());
         menu.drop_coming(&missing);
+        // An extension: where its rows can be drawn ahead next time.
+        if let Some(kind) = kind {
+            let seen = shown
+                .into_iter()
+                .map(|key| (key, kind.clone(), true))
+                .chain(missing.into_iter().map(|key| (key, kind.clone(), false)))
+                .collect();
+            cx.defer(move |cx| note_pin_seen(seen, cx));
+        }
         menu.parts.push((part.session, entries));
         menu.sync_pinned(&pinned);
         self.run_pending_pin(cx);
@@ -277,6 +308,17 @@ impl Explorer {
             let kind = shell.shell_menu_kind(&paths, background);
             let (owners, mut types) =
                 find_owners(shell.as_ref(), &paths, background, &unknown, request);
+            if let Some(kind) = &kind {
+                // Extensions' commands learned in this menu showed for this kind of item.
+                let seen: Vec<(String, String, bool)> = owners
+                    .iter()
+                    .filter(|(_, o)| is_clsid(o))
+                    .map(|(key, _)| (key.clone(), kind.clone(), true))
+                    .collect();
+                if !seen.is_empty() {
+                    let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::PinSeen(seen)));
+                }
+            }
             if let Some(kind) = kind {
                 let learned = owners
                     .iter()
@@ -310,8 +352,10 @@ impl Explorer {
                 request,
                 name,
                 owner,
+                kind,
                 result,
-            } => self.handle_menu_part(request, &name, &owner, result, cx),
+            } => self.handle_menu_part(request, &name, &owner, kind, result, cx),
+            ShellMenuEvent::PinSeen(seen) => note_pin_seen(seen, cx),
             ShellMenuEvent::Submenu(filled) => self.handle_submenu_filled(filled, cx),
             // Remembers where pinned commands come from.
             ShellMenuEvent::PinOwners(owners) => {
@@ -337,6 +381,44 @@ impl Explorer {
         };
         (!paths.is_empty()).then_some((paths, background))
     }
+}
+
+/// Notes for which kinds of item extensions' pinned commands showed (pin key, kind, shown),
+/// saving only a change.
+fn note_pin_seen(seen: Vec<(String, String, bool)>, cx: &mut gpui::App) {
+    let known = &SettingsStore::global(cx).read(cx).settings.menu_pin_seen;
+    let has = |key: &str, kind: &str| {
+        known
+            .get(key)
+            .is_some_and(|kinds| kinds.iter().any(|k| k.eq_ignore_ascii_case(kind)))
+    };
+    let changes: Vec<(String, String, bool)> = seen
+        .into_iter()
+        .filter(|(key, kind, shown)| has(key, kind) != *shown)
+        .collect();
+    if changes.is_empty() {
+        return;
+    }
+    SettingsStore::global(cx).update(cx, |store, cx| {
+        store.update(
+            |s| {
+                for (key, kind, shown) in changes {
+                    // Only commands still pinned (one unpinned meanwhile is forgotten).
+                    if !s.menu_pinned.contains(&key) {
+                        continue;
+                    }
+                    let kinds = s.menu_pin_seen.entry(key.clone()).or_default();
+                    kinds.retain(|k| !k.eq_ignore_ascii_case(&kind));
+                    if shown {
+                        kinds.push(kind);
+                    } else if kinds.is_empty() {
+                        s.menu_pin_seen.remove(&key);
+                    }
+                }
+            },
+            cx,
+        );
+    });
 }
 
 /// Adds item kinds to what is known of packaged commands, each kind once.

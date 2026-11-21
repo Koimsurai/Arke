@@ -2836,6 +2836,14 @@ settings.sidebar_peek:
   es: Abrir la barra lateral contraída al dejar el puntero sobre ella
   pt-BR: Abrir a barra lateral recolhida ao pausar o ponteiro sobre ela
   ja: 折りたたんだサイドバーをポインターを置いたときに開く
+settings.sidebar_follow:
+  en: Open This PC to the current folder
+  zh-TW: 此電腦跟著目前資料夾展開
+  zh-CN: 此电脑随当前文件夹展开
+  de: Dieser PC bis zum aktuellen Ordner aufklappen
+  es: Expandir Este equipo hasta la carpeta actual
+  pt-BR: Expandir Este Computador até a pasta atual
+  ja: PC を現在のフォルダーまで展開する
 settings.list:
   en: List
   zh-TW: 清單

@@ -2200,6 +2200,7 @@ impl Explorer {
                 |s| {
                     if let Some(at) = s.menu_pinned.iter().position(|k| *k == key) {
                         s.menu_pinned.remove(at);
+                        s.menu_pin_seen.remove(&key);
                         if let Some(owner) = s.menu_pin_owners.remove(&key)
                             && !s.menu_pin_owners.values().any(|o| *o == owner)
                         {

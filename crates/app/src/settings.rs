@@ -580,6 +580,9 @@ pub(crate) struct Settings {
     pub(crate) sidebar_collapsed: bool,
     /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
     pub(crate) sidebar_peek: bool,
+    /// This PC's tree opens down to the current folder and scrolls to it (#241); off, the tree
+    /// only opens where the user opens it (#299).
+    pub(crate) sidebar_follow: bool,
     /// Sidebar sections collapsed to their heading. Before 0.8 only This PC could collapse
     /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
     #[serde(deserialize_with = "known_sections")]
@@ -703,6 +706,10 @@ pub(crate) struct Settings {
     /// Packaged apps' pinned commands (`command:{CLSID}` owners): the item kinds they are for,
     /// from the app's manifest and the menus they were seen in (`win_menu_parts::item_kind`).
     pub(crate) menu_pin_types: std::collections::BTreeMap<String, Vec<String>>,
+    /// Extensions' pinned commands, by pin key: the item kinds (`win_menu_parts::item_kind`) the
+    /// extension showed them for when last read. An extension decides for itself whether it adds
+    /// an item, so its row is drawn ahead only where it showed last time (#278).
+    pub(crate) menu_pin_seen: std::collections::BTreeMap<String, Vec<String>>,
     /// How long reading each drive's whole file table through the index service took (`C:\`
     /// keys), as last measured by Properties: a folder walk that has taken longer than that is
     /// overtaken by a read of the table (`properties.rs`).
@@ -782,6 +789,7 @@ impl Default for Settings {
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
             sidebar_peek: false,
+            sidebar_follow: true,
             collapsed_sections: Vec::new(),
             font: String::new(),
             background_image: None,
@@ -835,6 +843,7 @@ impl Default for Settings {
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),
+            menu_pin_seen: std::collections::BTreeMap::new(),
             mft_list: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),

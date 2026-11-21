@@ -2332,6 +2332,12 @@ impl Workspace {
         self.sidebar_ui.places_scroll.max_offset().y
     }
 
+    /// How far the sidebar's places are scrolled (tests).
+    #[cfg(test)]
+    pub(crate) fn places_offset_for_test(&self) -> Pixels {
+        self.sidebar_ui.places_scroll.offset().y
+    }
+
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
     fn tab_list_min_height(tabs: usize) -> Pixels {
         let shown = tabs.min(3) as f32;
@@ -2918,10 +2924,10 @@ impl Workspace {
         let places = self.active_view().read(cx).places.clone();
         // Followed again when This PC's places change too: they load after the first frame.
         let key = (here.clone(), this_pc_count(&places));
-        if SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .is_collapsed(SidebarSection::ThisPc)
+        let settings = &SettingsStore::global(cx).read(cx).settings;
+        // Turned off (#299), the tree is the user's alone.
+        if settings.is_collapsed(SidebarSection::ThisPc)
+            || !settings.sidebar_follow
             || self.sidebar_ui.followed.as_ref() == Some(&key)
         {
             return;
@@ -2956,14 +2962,14 @@ impl Workspace {
                 to_list.push(dir.clone());
             }
         }
-        // Already marked higher up, on a favorite or a pinned folder (one just clicked there):
-        // the tree opens under it but the sidebar doesn't scroll away from it.
-        let shown = self.favorites(cx).iter().any(|(p, ..)| *p == here)
-            || SettingsStore::global(cx)
-                .read(cx)
-                .settings
-                .pinned
-                .contains(&here);
+        // On a favorite or a pinned folder, or in one (#307): the tree opens under it but the
+        // sidebar doesn't scroll away from it, the favorite being where the user works.
+        let shown = self
+            .favorites(cx)
+            .iter()
+            .map(|(p, ..)| p)
+            .chain(SettingsStore::global(cx).read(cx).settings.pinned.iter())
+            .any(|p| arke_core::takeover::within(&here, p));
         self.sidebar_ui.reveal_wanted.set(!shown);
         self.sidebar_ui.reveal.set(to_list.is_empty() && !shown);
         cx.notify();

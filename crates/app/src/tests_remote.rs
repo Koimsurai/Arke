@@ -62,6 +62,22 @@ fn wait(cx: &mut VisualTestContext, what: &str, done: &dyn Fn(&mut VisualTestCon
     }
 }
 
+/// The app's shell is the local one wrapped for remote locations: what Windows says about Quick
+/// Access pins and recent files must come through it, not the trait's defaults.
+#[test]
+fn the_wrapped_shell_answers_like_the_local_one() {
+    let local = Arc::new(FakeShell::default());
+    *local.quick_access.lock() = Some(vec![PathBuf::from(r"C:\w\pinned")]);
+    local.recent_off.store(true, Ordering::Relaxed);
+    let shell = crate::remote_shell::RemoteShell::new(local, crate::remote_shell::test_remotes());
+    let (pins, recent) =
+        std::thread::spawn(move || (shell.quick_access_pinned(), shell.recent_files_enabled()))
+            .join()
+            .unwrap();
+    assert_eq!(pins, Some(vec![PathBuf::from(r"C:\w\pinned")]));
+    assert!(!recent);
+}
+
 #[gpui::test]
 fn adds_an_sftp_location_and_works_in_it(cx: &mut TestAppContext) {
     let root = temp_dir("root");

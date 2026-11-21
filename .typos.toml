@@ -1,6 +1,11 @@
 # typos (crate-ci/typos). Only words that were actually flagged go here, each with what it is,
 # so the list doesn't grow into something that lets real typos through.
 
+[default]
+# Translations in the locale files are other languages, not English typos (the English lines are
+# still checked).
+extend-ignore-re = ["(?m)^  (ja|de|es|pt-BR): .*$"]
+
 [default.extend-words]
 # Windows shell API: FOF_* flags of SHFILEOPSTRUCT, and the `fo` variable holding one
 FOF = "FOF"
@@ -24,4 +29,13 @@ PNGs = "PNGs"
 
 [files]
 # THIRD_PARTY_LICENSES.md is generated and quotes license texts and crate names verbatim
-extend-exclude = ["Cargo.lock", "THIRD_PARTY_LICENSES.md", "third_party"]
+# The README translations are prose in other languages.
+extend-exclude = [
+  "Cargo.lock",
+  "THIRD_PARTY_LICENSES.md",
+  "third_party",
+  "README.ja.md",
+  "README.de.md",
+  "README.es.md",
+  "README.pt-BR.md",
+]

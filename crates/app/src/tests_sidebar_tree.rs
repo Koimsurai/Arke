@@ -306,3 +306,36 @@ fn the_current_folder_is_scrolled_into_view(cx: &mut TestAppContext) {
         "the places had to scroll"
     );
 }
+
+/// The favorite tiles are drawn whole under Home while the tree opens to the current folder on
+/// start: following the folder doesn't scroll them away or leave them cut.
+#[gpui::test]
+fn the_tiles_stay_in_view_while_the_tree_follows(cx: &mut TestAppContext) {
+    let (_ws, cx) = window_at(cx, fs(), r"C:\work\reports\2026");
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.favorites =
+                        Some(vec![PathBuf::from(r"C:\music"), PathBuf::from(r"C:\work")]);
+                },
+                cx,
+            );
+        });
+    });
+    settle(cx, "the tree opened to 2026", |cx| shows(cx, "2026"));
+    refresh(cx);
+    let frame = cx
+        .debug_bounds("sidebar-places-frame")
+        .expect("the places are drawn");
+    let tiles = cx.debug_bounds("pin-tiles").expect("the tiles are drawn");
+    assert!(tiles.size.height > gpui::px(40.), "{tiles:?}");
+    for slot in ["tile-slot-0", "tile-slot-1"] {
+        let tile = cx.debug_bounds(slot).expect("a tile");
+        assert!(
+            tile.top() >= frame.top() - gpui::px(1.)
+                && tile.bottom() <= frame.bottom() + gpui::px(1.),
+            "{slot} {tile:?} in {frame:?}"
+        );
+    }
+}

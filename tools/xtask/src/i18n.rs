@@ -53,7 +53,7 @@ impl Entry {
 fn parse(lines: &[&str]) -> Result<Vec<Entry>> {
     let mut entries: Vec<Entry> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        if line.starts_with('#') || line.starts_with("_version") || line.trim().is_empty() {
+        if line.trim_start().starts_with('#') || line.starts_with("_version") || line.trim().is_empty() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("  ") {

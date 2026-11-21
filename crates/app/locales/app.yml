@@ -2828,6 +2828,14 @@ settings.last_tab_home:
   es: Abrir Inicio
   pt-BR: Abrir a Página Inicial
   ja: ホームを開く
+settings.sidebar_peek:
+  en: Open the collapsed sidebar when the pointer rests on it
+  zh-TW: 收起的側邊欄在滑鼠停住時展開
+  zh-CN: 收起的侧边栏在鼠标停住时展开
+  de: Eingeklappte Seitenleiste öffnen, wenn der Zeiger darauf verweilt
+  es: Abrir la barra lateral contraída al dejar el puntero sobre ella
+  pt-BR: Abrir a barra lateral recolhida ao pausar o ponteiro sobre ela
+  ja: 折りたたんだサイドバーをポインターを置いたときに開く
 settings.list:
   en: List
   zh-TW: 清單

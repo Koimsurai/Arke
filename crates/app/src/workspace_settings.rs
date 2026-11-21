@@ -1775,8 +1775,8 @@ fn sub_row(title: Cow<'static, str>, control: AnyElement) -> gpui::Div {
         .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
 }
 
-/// Tabs: where they go, then two lines under it for one tab per folder and what Ctrl+T does
-/// (#90), all in one card.
+/// Tabs: where they go, then lines under it for one tab per folder, what Ctrl+T and closing the
+/// last tab do (#90), and whether the collapsed sidebar opens on a rest, all in one card.
 fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
     div()
         .flex()
@@ -1828,6 +1828,13 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
                 |st, v| st.last_tab = v,
                 ui,
             ),
+        ))
+        // Also on the right-click menu of the collapsed sidebar; off by default.
+        .child(sub_row(
+            t!("settings.sidebar_peek"),
+            switch("sidebar-peek", s.sidebar_peek, |st| {
+                st.sidebar_peek = !st.sidebar_peek;
+            }),
         ))
         .into_any_element()
 }

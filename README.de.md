@@ -112,8 +112,9 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
   Formatieren, Datenträgerbereinigung und Eigenschaften).
 - Wischen Sie mit zwei Fingern auf dem Touchpad, um wie in einem Browser vor und zurück zu gehen.
 - Die Seitenleiste lässt sich durch Ziehen am Rand verbreitern und auf eine Spalte mit Symbolen
-  einklappen (Strg+B); diese kann sich über dem Inhalt öffnen, wenn Sie den Zeiger darauf ruhen
-  lassen. Favoriten, Dieser PC und Netzwerk klappen von selbst ein, und der Ordnerbaum folgt dem
+  einklappen (Strg+B); auf Wunsch öffnet sie sich über dem Inhalt, wenn Sie den Zeiger darauf
+  ruhen lassen (standardmäßig aus). Favoriten, Dieser PC und Netzwerk lassen sich mit einem Klick
+  auf ihre Überschrift einzeln einklappen, und der Ordnerbaum folgt dem
   Ordner, in dem Sie sich befinden. Die Spalten der Spaltenansicht lassen sich in der Größe ändern.
 - Oberflächenskalierung von 80 % bis 150 %, zusätzlich zur Skalierung von Windows.
 - Befehlspalette (Strg+Umschalt+P) für jeden Befehl und Tastenkombinationen, die Sie ändern können.

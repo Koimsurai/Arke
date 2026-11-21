@@ -101,9 +101,9 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
   menu (drives get eject, Format, Disk Cleanup and Properties).
 - Swipe with two fingers on a touchpad to go back and forward, like in a browser.
 - The sidebar can be made wider by dragging its edge and collapses to a column of icons (Ctrl+B),
-  which can open over the content when you rest the pointer on it. Favorites, This PC and Network
-  collapse on their own, and the folder tree follows the folder you're in. Columns in the columns
-  view can be resized.
+  which can be set to open over the content when you rest the pointer on it (off by default).
+  Favorites, This PC and Network each collapse with a click on their heading, and the folder tree
+  follows the folder you're in. Columns in the columns view can be resized.
 - Interface scale from 80% to 150%, on top of Windows' own scale.
 - Command palette (Ctrl+Shift+P) for every command, and shortcuts you can change.
 

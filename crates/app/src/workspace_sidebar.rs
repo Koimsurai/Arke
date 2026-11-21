@@ -464,20 +464,11 @@ fn start_pin_drag(
         ws.dragging_pin = true;
         ws.tab_drag
             .start_tile(dragged.path.clone(), dragged.from_tile, grab);
-        let places = ws.active_view().read(cx).places.clone();
         let settings = &SettingsStore::global(cx).read(cx).settings;
-        ws.tab_drag.origin = settings
-            .tiles(&places)
-            .iter()
-            .position(|p| *p == dragged.path)
-            .map(PinSlot::Tile)
-            .or_else(|| {
-                settings
-                    .pinned
-                    .iter()
-                    .position(|p| *p == dragged.path)
-                    .map(PinSlot::List)
-            });
+        ws.tab_drag.origin = Some(super::tabdrag::PinSnapshot {
+            favorites: settings.favorites.clone(),
+            pinned: settings.pinned.clone(),
+        });
         cx.notify();
     });
     cx.new(|_| PinPreview {
@@ -1059,6 +1050,7 @@ impl Workspace {
     /// Drops a dragged pin: reorders or moves it between tiles and list depending on the slot.
     fn place_pin(&mut self, path: &Path, slot: crate::settings::PinSlot, cx: &mut Context<Self>) {
         self.dragging_pin = false;
+        self.tab_drag.origin = None;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
         self.move_pin(path, slot, cx);
@@ -1095,6 +1087,7 @@ impl Workspace {
             _ => ix,
         };
         self.dragging_pin = false;
+        self.tab_drag.origin = None;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
         // Moved into the list on the way (`pin_over_list`): it is where it was let go.
@@ -1706,11 +1699,9 @@ impl Workspace {
         self.dragging_pin = false;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
-        // It may have become a list entry or a tile on its way out: Undo puts it back where the
-        // drag started.
-        if let Some(origin) = self.tab_drag.origin.take() {
-            self.move_pin(&path, origin, cx);
-        }
+        // It may have become a list entry or a tile on its way out, moving others: the order
+        // goes back to how it was, so Undo puts it back where the drag started.
+        self.restore_pins(cx);
         self.remove_favorite(&path, cx);
     }
 
@@ -1720,13 +1711,27 @@ impl Workspace {
         if !self.dragging_pin {
             return;
         }
-        let path = self.tab_drag.dragged_pin().map(Path::to_path_buf);
         self.dragging_pin = false;
         self.tab_drag.end_tile();
         pindrop::clear(cx);
-        if let (Some(path), Some(origin)) = (path, self.tab_drag.origin.take()) {
-            self.move_pin(&path, origin, cx);
-        }
+        self.restore_pins(cx);
+        cx.notify();
+    }
+
+    /// Puts the favorites back the way they were when the drag started (`TabDrag::origin`).
+    pub(super) fn restore_pins(&mut self, cx: &mut Context<Self>) {
+        let Some(origin) = self.tab_drag.origin.take() else {
+            return;
+        };
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.favorites = origin.favorites;
+                    st.pinned = origin.pinned;
+                },
+                cx,
+            );
+        });
         cx.notify();
     }
 

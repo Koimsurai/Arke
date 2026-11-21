@@ -109,8 +109,9 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   Propriedades).
 - Deslize com dois dedos no touchpad para voltar e avançar, como em um navegador.
 - A barra lateral pode ser alargada arrastando a borda e se recolhe em uma coluna de ícones
-  (Ctrl+B), que pode abrir sobre o conteúdo quando você pausa o ponteiro sobre ela. Favoritos,
-  Este Computador e Rede se recolhem sozinhos, e a árvore de pastas acompanha a pasta em que você
+  (Ctrl+B), que pode ser configurada para abrir sobre o conteúdo quando você pausa o ponteiro
+  sobre ela (desativado por padrão). Favoritos, Este Computador e Rede se recolhem separadamente
+  com um clique no título, e a árvore de pastas acompanha a pasta em que você
   está. As colunas da exibição de colunas podem ser redimensionadas.
 - Escala da interface de 80% a 150%, somada à escala do próprio Windows.
 - Paleta de comandos (Ctrl+Shift+P) para todos os comandos, e atalhos que você pode alterar.

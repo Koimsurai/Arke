@@ -55,6 +55,8 @@ pub(crate) enum ShellMenuEvent {
     Part {
         request: u64,
         name: String,
+        /// The source's owner string (`MenuHandler::owner`), to match pinned commands to it.
+        owner: String,
         result: PartResult,
     },
     /// Where pinned commands come from (pin key, owner).
@@ -144,6 +146,7 @@ impl Explorer {
                         shell.shell_menu_handler(&paths, background, extended, &handler, request);
                     let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Part {
                         request,
+                        owner: handler.owner(),
                         name: handler.name,
                         result,
                     }));
@@ -177,13 +180,33 @@ impl Explorer {
         &mut self,
         request: u64,
         name: &str,
+        owner: &str,
         result: PartResult,
         cx: &mut Context<Self>,
     ) {
+        // The pinned commands this source was expected to show.
+        let settings = &SettingsStore::global(cx).read(cx).settings;
+        let expected: Vec<String> = settings
+            .menu_pin_owners
+            .iter()
+            .filter(|(_, o)| o.eq_ignore_ascii_case(owner))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let pinned = settings.menu_pinned.clone();
         let (part, took) = match result {
             Ok(part) => part,
             Err(e) => {
                 log::info!("menu extension {name}: {e}");
+                // Gone (an app uninstalled) or failing: its rows drawn ahead go away.
+                if let Some(menu) = self
+                    .context_menu
+                    .as_mut()
+                    .filter(|m| m.parts_request == Some(request))
+                {
+                    menu.drop_coming(&expected);
+                    menu.sync_pinned(&pinned);
+                    cx.notify();
+                }
                 return;
             }
         };
@@ -196,17 +219,18 @@ impl Explorer {
             self.services.shell.release_shell_menu(part.session);
             return;
         };
-        let entries = part
+        let entries: Vec<MenuEntry> = part
             .entries
             .into_iter()
             .map(|e| MenuEntry::from_shell_in(e, &[], Some(part.session)))
             .collect();
+        // Rows drawn ahead that this source turned out not to have (hidden for these items).
+        let missing: Vec<String> = expected
+            .into_iter()
+            .filter(|key| find_pinned(&entries, key).is_none())
+            .collect();
+        menu.drop_coming(&missing);
         menu.parts.push((part.session, entries));
-        let pinned = SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .menu_pinned
-            .clone();
         menu.sync_pinned(&pinned);
         self.run_pending_pin(cx);
         self.fill_lazy_for_pins(cx);
@@ -285,8 +309,9 @@ impl Explorer {
             ShellMenuEvent::Part {
                 request,
                 name,
+                owner,
                 result,
-            } => self.handle_menu_part(request, &name, result, cx),
+            } => self.handle_menu_part(request, &name, &owner, result, cx),
             ShellMenuEvent::Submenu(filled) => self.handle_submenu_filled(filled, cx),
             // Remembers where pinned commands come from.
             ShellMenuEvent::PinOwners(owners) => {

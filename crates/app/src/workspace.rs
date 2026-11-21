@@ -2676,6 +2676,11 @@ impl Workspace {
             cx.defer(crate::spring::settle);
         }
         if !cx.has_active_drag() {
+            // A favorite drag that ended with no drop (Esc, or the window losing the mouse): the
+            // favorites go back the way they were.
+            if self.dragging_pin {
+                self.restore_pins(cx);
+            }
             self.dragging_pin = false;
             self.dragging_tab = None;
             self.close_tab_ghost(cx);

@@ -1642,7 +1642,7 @@ impl Index {
                 }
             }
         }
-        overlay.add_files_under(dir, detail, &mut out);
+        overlay.add_files_under(dir, detail, &mut direct, &mut out);
         Some((direct, out))
     }
 
@@ -2887,17 +2887,31 @@ impl Overlay {
         }
     }
 
-    /// Adds files recorded since the build to the subfolders of `dir` they are in (new
-    /// subfolders get an entry). Files in folders the caller walks anyway are skipped.
-    fn add_files_under(&self, dir: &Path, detail: Option<u64>, out: &mut Vec<IndexedDirSize>) {
+    /// Adds files recorded since the build (new or changed) to the subfolders of `dir` they are
+    /// in (new subfolders get an entry), and with `detail` those right in `dir` to `direct`.
+    /// Files in folders the caller walks anyway are skipped.
+    fn add_files_under(
+        &self,
+        dir: &Path,
+        detail: Option<u64>,
+        direct: &mut crate::dirsize::Usage,
+        out: &mut Vec<IndexedDirSize>,
+    ) {
         for (path, (seen, _)) in &self.added {
             if seen.is_dir {
                 continue;
             }
-            let Some(rel) = rel_components(path, dir).filter(|r| r.len() >= 2) else {
+            let Some(rel) = rel_components(path, dir).filter(|r| !r.is_empty()) else {
                 continue;
             };
             if self.is_removed(path) {
+                continue;
+            }
+            if rel.len() == 1 {
+                // Right in `dir`: the index's own copy (if any) was left out as replaced.
+                if let Some(cluster) = detail {
+                    count_indexed(direct, &rel[0], seen.size, cluster);
+                }
                 continue;
             }
             let slot = if let Some(slot) = out.iter().position(|c| eq_ignore_case(&c.name, &rel[0]))
@@ -4717,6 +4731,37 @@ mod tests {
             .collect();
         walked.sort();
         assert_eq!(sizes, walked, "each folder inside");
+    }
+
+    /// Files added or changed right in the folder after the build (a fresh download) count: the
+    /// index's old copy of a changed one is left out, the new size goes in.
+    #[test]
+    fn usage_from_the_index_counts_files_changed_since_the_build() {
+        let fs = size_tree();
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\w")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            true,
+        );
+        let seen = |size| Seen {
+            is_dir: false,
+            hidden: false,
+            size,
+            modified: 0,
+        };
+        let mut overlay = Overlay::default();
+        overlay.record(PathBuf::from(r"C:\w\download.iso"), Some(seen(2_000)));
+        overlay.record(PathBuf::from(r"C:\w\top.txt"), Some(seen(50)));
+        let cancel = AtomicBool::new(false);
+        let (direct, _) = index
+            .usage_below(Path::new(r"C:\w"), &overlay, 4096, &cancel)
+            .unwrap();
+        assert_eq!(direct.files, 2, "top.txt once, plus the download");
+        assert_eq!(direct.bytes, 2_050);
     }
 
     #[test]

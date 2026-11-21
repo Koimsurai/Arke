@@ -1210,8 +1210,8 @@ impl Shell for WinShell {
         let drive = u32::from(letter.to_ascii_uppercase()) - u32::from('A');
         let owner = windows::Win32::Foundation::HWND(owner.unwrap_or_default() as *mut _);
         // SAFETY: shows Windows' modal Format dialog for the drive; owner is Arke's window or null.
-        let _ = unsafe { SHFormatDrive(owner, drive, SHFMT_ID_DEFAULT, SHFMT_OPT_NONE) };
-        Ok(())
+        let code = unsafe { SHFormatDrive(owner, drive, SHFMT_ID_DEFAULT, SHFMT_OPT_NONE) };
+        format_drive_result(code)
     }
 
     fn disk_cleanup(&self, root: &Path) -> Result<(), ShellError> {
@@ -1899,10 +1899,32 @@ fn raise(hwnd: isize, also: Option<u32>) -> bool {
     }
 }
 
+/// What `SHFormatDrive` answered: a cancelled dialog is not a failure, the other special
+/// codes are; anything else is the drive's format result (success).
+fn format_drive_result(code: u32) -> Result<(), ShellError> {
+    const SHFMT_ERROR: u32 = 0xFFFF_FFFF;
+    const SHFMT_CANCEL: u32 = 0xFFFF_FFFE;
+    const SHFMT_NOFORMAT: u32 = 0xFFFF_FFFD;
+    match code {
+        SHFMT_CANCEL => Ok(()),
+        SHFMT_ERROR => Err(ShellError::Host("The drive could not be formatted.".into())),
+        SHFMT_NOFORMAT => Err(ShellError::Host("This drive cannot be formatted.".into())),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn format_drive_codes_map_to_errors() {
+        assert!(format_drive_result(0).is_ok());
+        assert!(format_drive_result(0xFFFF_FFFE).is_ok());
+        assert!(format_drive_result(0xFFFF_FFFF).is_err());
+        assert!(format_drive_result(0xFFFF_FFFD).is_err());
+    }
 
     /// Real shortcuts in a temp folder: the target reads back, and a name clash gets a number.
     #[test]

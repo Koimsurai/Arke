@@ -7442,6 +7442,40 @@ fn home_lists_the_ten_most_recent_files(cx: &mut TestAppContext) {
     assert_eq!(listed[9], PathBuf::from(r"C:\docs\file9.txt"));
 }
 
+/// #313: in a narrow window the column chips of Settings › Sorting and view wrap onto more
+/// lines; the card's title keeps a third of the row instead of being squeezed to a letter a line.
+#[gpui::test]
+fn column_chips_wrap_in_a_narrow_window(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(820.), gpui::px(900.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.sorting"), cx);
+    });
+    for _ in 0..3 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    let card = cx
+        .debug_bounds("columns-card")
+        .expect("the columns card is drawn");
+    let chips = cx
+        .debug_bounds("column-chips")
+        .expect("the chips are drawn");
+    assert!(
+        chips.left() - card.left() >= card.size.width / 3.,
+        "the title keeps its room: card {card:?}, chips {chips:?}"
+    );
+    assert!(chips.right() <= card.right(), "the chips stay in the card");
+    assert!(
+        chips.size.height > gpui::px(40.),
+        "the chips wrap onto more lines: {chips:?}"
+    );
+}
+
 /// Settings › Search: while "Search this PC" is off, the settings that depend on it are covered
 /// and clicks don't reach them; once it is on they work.
 #[gpui::test]

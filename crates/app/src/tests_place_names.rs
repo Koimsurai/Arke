@@ -367,6 +367,9 @@ fn a_drive_menu_has_drive_things(cx: &mut TestAppContext) {
 #[gpui::test]
 fn network_menus_keep_the_folder_order(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
+    // Not added to PC search by themselves: whether a mapped drive is would depend on the
+    // drives this PC has mapped (`win::network_drive_roots`).
+    change(cx, |st| st.search_network_auto = false);
     let drawn = |ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: &str| {
         let path = PathBuf::from(path);
         ws.update(cx, |ws, cx| {
@@ -419,5 +422,18 @@ fn network_menus_keep_the_folder_order(cx: &mut TestAppContext) {
             "menu.copy_path",
             "menu.properties",
         ])
+    );
+
+    // Added by themselves (the default): the recent network place is searched already, so its
+    // row takes it out instead.
+    change(cx, |st| st.search_network_auto = true);
+    let share = drawn(&ws, cx, SHARE);
+    assert!(
+        share.contains(&t!("sidebar.unsearch_network").into_owned()),
+        "{share:?}"
+    );
+    assert!(
+        !share.contains(&t!("sidebar.search_network").into_owned()),
+        "{share:?}"
     );
 }

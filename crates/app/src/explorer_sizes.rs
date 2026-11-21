@@ -391,7 +391,28 @@ impl Explorer {
             return;
         }
         let names: Vec<Arc<str>> = if self.sort.uses(arke_core::SortColumn::Size) {
-            self.folder_sizes.waiting.keys().cloned().collect()
+            // In the list's order (the worker takes one at a time): a map's order was random, so
+            // a slow folder could come first and hold up the rest at random.
+            let in_list: Vec<Arc<str>> = self.model.as_ref().map_or_default(|m| {
+                m.entries
+                    .iter()
+                    .filter(|e| self.folder_sizes.waiting.contains_key(&e.name))
+                    .map(|e| Arc::clone(&e.name))
+                    .collect()
+            });
+            // Anything waiting that the listing no longer has goes last.
+            let listed: std::collections::HashSet<&Arc<str>> = in_list.iter().collect();
+            let rest: Vec<Arc<str>> = self
+                .folder_sizes
+                .waiting
+                .keys()
+                .filter(|n| !listed.contains(n))
+                .cloned()
+                .collect();
+            drop(listed);
+            let mut names = in_list;
+            names.extend(rest);
+            names
         } else if self.selection.len() > super::view::SIZE_SUM_MAX {
             // No total is shown for that many.
             return;

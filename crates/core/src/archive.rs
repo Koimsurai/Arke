@@ -1115,6 +1115,11 @@ fn extract_zip(
     let mut progress = ExtractProgress::default();
     for i in 0..zip.len() {
         if let Ok(entry) = zip.by_index_raw(i) {
+            // A password-protected entry: say so instead of calling the archive damaged (#282),
+            // and before anything is written, so a mixed archive isn't left half extracted.
+            if entry.encrypted() && !entry.is_dir() {
+                return Err(ArchiveError::Encrypted);
+            }
             progress.total = progress.total.saturating_add(entry.size());
         }
     }
@@ -1123,10 +1128,6 @@ fn extract_zip(
         if cancelled(opts) {
             summary.cancelled = true;
             return Ok(summary);
-        }
-        // A password-protected entry: say so instead of calling the archive damaged (#282).
-        if zip.by_index_raw(i).is_ok_and(|e| e.encrypted()) {
-            return Err(ArchiveError::Encrypted);
         }
         let mut entry = zip.by_index(i).map_err(|source| match source {
             zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
@@ -1985,6 +1986,33 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ArchiveError::Encrypted), "{err:?}");
+    }
+
+    /// Only the second entry is password-protected: it fails before the first is written.
+    #[test]
+    fn a_zip_with_one_encrypted_entry_extracts_nothing() {
+        let sb = Sandbox::new("zip-mixed-password");
+        let path = sb.0.join("mixed.zip");
+        write_zip(&path, &[(b"a.txt", b"hello"), (b"b.txt", b"secret")]);
+        // Set the "encrypted" flag on the second entry's local and central headers only.
+        let mut bytes = fs::read(&path).unwrap();
+        for (signature, flags_at) in [(0x0403_4b50_u32, 6), (0x0201_4b50, 8)] {
+            let sig = signature.to_le_bytes();
+            let second = bytes
+                .windows(4)
+                .enumerate()
+                .filter(|(_, w)| *w == sig)
+                .nth(1)
+                .unwrap()
+                .0;
+            bytes[second + flags_at] |= 1;
+        }
+        fs::write(&path, bytes).unwrap();
+        let out = sb.0.join("out");
+        let cancel = AtomicBool::new(false);
+        let err = extract(&path, &out, ArchiveKind::Zip, &opts(&cancel, &|_| {})).unwrap_err();
+        assert!(matches!(err, ArchiveError::Encrypted), "{err:?}");
+        assert!(!out.join("a.txt").exists(), "nothing was written");
     }
 
     /// `System32\tar.exe`, or `None` (the test is then skipped).

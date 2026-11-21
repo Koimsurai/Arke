@@ -1047,6 +1047,11 @@ pub(crate) trait Shell: Send + Sync + 'static {
     fn packaged_item_types(&self, _clsid: &str) -> Vec<String> {
         Vec::new()
     }
+    /// Every packaged app's context menu command (`{...}`) registered for item kind `kind`
+    /// (`win_packaged::commands`). Background thread.
+    fn packaged_commands(&self, _kind: &str) -> Vec<String> {
+        Vec::new()
+    }
     /// Context menu extensions and registry commands that apply to `paths`, or the folder's
     /// empty space (`win_menu_parts.rs`). Background thread.
     fn shell_menu_handlers(

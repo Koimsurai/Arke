@@ -1077,6 +1077,15 @@ impl Shell for WinShell {
         crate::win_packaged::item_types(clsid)
     }
 
+    fn packaged_commands(&self, kind: &str) -> Vec<String> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_packaged::commands()
+            .into_iter()
+            .filter(|(_, types)| crate::win_menu_parts::kind_matches(types, kind))
+            .map(|(clsid, _)| clsid)
+            .collect()
+    }
+
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],

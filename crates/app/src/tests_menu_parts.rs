@@ -347,3 +347,81 @@ fn registry_and_packaged_commands_show_and_run_on_their_own(cx: &mut TestAppCont
     let _ = open_whole.send(());
     *shell.menu_gate.lock() = None;
 }
+
+/// #283: a command in a packaged app's own submenu (NanaZip's "Extract here") has no verb in the
+/// Windows menu. The first menu finds which packaged command holds it by reading those for this
+/// kind of item; from then on the pinned row shows from that command alone, before the whole
+/// Windows menu, and runs there.
+#[gpui::test]
+fn a_command_in_a_packaged_submenu_shows_on_its_own(cx: &mut TestAppContext) {
+    const NANA: &str = "{CAE3F1D4-7765-4D98-A060-52CD14D56EAB}";
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: None,
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    let nana_menu = || ShellMenuEntry::Submenu {
+        label: "NanaZip".into(),
+        enabled: true,
+        icon: None,
+        children: vec![item(2, "Open archive"), item(3, "Extract here")],
+        lazy: None,
+    };
+    *shell.extra_menu.lock() = vec![nana_menu()];
+    shell
+        .extensions
+        .lock()
+        .push((MenuHandler::command(NANA), vec![nana_menu()]));
+    *shell.packaged_types.lock() = vec![(NANA.into(), vec!["*".into()])];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    pin(cx, &["NanaZip › Extract here"]);
+
+    right_click(&view, cx, Some(0));
+    let owner = format!("command:{NANA}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while owners(cx).get("NanaZip › Extract here") != Some(&owner) {
+        assert!(
+            Instant::now() < deadline,
+            "owner not learned: {:?}",
+            owners(cx)
+        );
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // The whole menu slow: the row comes from NanaZip's command alone and runs there.
+    let (open_gate, gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(gate);
+    right_click(&view, cx, Some(0));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !rows_above_more_options(&view, cx).contains(&"Extract here".to_owned()) {
+        assert!(Instant::now() < deadline, "pinned row didn't show early");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let rows = rows_above_more_options(&view, cx);
+    let at = rows.iter().position(|r| r == "Extract here").unwrap();
+    view.update(cx, |v, cx| {
+        if let Some(menu) = v.context_menu.as_mut() {
+            menu.highlight_for_test(at);
+        }
+        cx.notify();
+    });
+    cx.simulate_keystrokes("enter");
+    wait_shell("ran in NanaZip's menu", || {
+        !shell.shell_invoked.lock().is_empty()
+    });
+    assert_eq!(*shell.shell_invoked.lock(), [(102, 3)]);
+    let _ = open_gate.send(());
+    *shell.menu_gate.lock() = None;
+}

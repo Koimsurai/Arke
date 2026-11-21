@@ -372,19 +372,7 @@ fn find_owners(
         .into_iter()
         .filter(|h| h.kind == HandlerKind::Extension)
         .collect();
-    let results: Vec<(MenuHandler, PartResult)> = std::thread::scope(|scope| {
-        let reads: Vec<_> = extensions
-            .into_iter()
-            .map(|handler| {
-                scope.spawn(move || {
-                    let result =
-                        shell.shell_menu_handler(paths, background, false, &handler, group);
-                    (handler, result)
-                })
-            })
-            .collect();
-        reads.into_iter().filter_map(|r| r.join().ok()).collect()
-    });
+    let results = read_parts(shell, paths, background, extensions, group);
     let mut times = Vec::new();
     for (handler, result) in results {
         match result {
@@ -402,6 +390,35 @@ fn find_owners(
             Err(e) => times.push(format!("{} failed ({e})", handler.name)),
         }
     }
+    // Still unknown: a command in a packaged command's own submenu (NanaZip, WinRAR), which has
+    // no verb in the Windows menu. Each packaged command for this kind of item is read once.
+    let left: Vec<&String> = rest
+        .iter()
+        .filter(|key| !owners.iter().any(|(k, _)| k == *key))
+        .collect();
+    if !left.is_empty()
+        && let Some(kind) = shell.shell_menu_kind(paths, background)
+    {
+        let commands: Vec<MenuHandler> = shell
+            .packaged_commands(&kind)
+            .iter()
+            .map(|clsid| MenuHandler::command(clsid))
+            .collect();
+        for (handler, result) in read_parts(shell, paths, background, commands, group) {
+            let Ok((menu, took)) = result else { continue };
+            times.push(format!("{} {} ms", handler.clsid, took.as_millis()));
+            let mut have = Vec::new();
+            pin_keys(&menu.entries, &[], &mut have);
+            for key in &left {
+                if have.contains(key) && !owners.iter().any(|(k, _)| k == *key) {
+                    let owner = handler.owner();
+                    types.push((owner.clone(), shell.packaged_item_types(&handler.clsid)));
+                    owners.push(((*key).clone(), owner));
+                }
+            }
+            shell.release_shell_menu(menu.session);
+        }
+    }
     log::info!(
         "menu extensions for {}: {}",
         paths
@@ -415,6 +432,29 @@ fn find_owners(
         }
     }
     (owners, types)
+}
+
+/// Reads each source's menu on its own, all at once.
+fn read_parts(
+    shell: &dyn crate::shell::Shell,
+    paths: &[PathBuf],
+    background: bool,
+    handlers: Vec<MenuHandler>,
+    group: u64,
+) -> Vec<(MenuHandler, PartResult)> {
+    std::thread::scope(|scope| {
+        let reads: Vec<_> = handlers
+            .into_iter()
+            .map(|handler| {
+                scope.spawn(move || {
+                    let result =
+                        shell.shell_menu_handler(paths, background, false, &handler, group);
+                    (handler, result)
+                })
+            })
+            .collect();
+        reads.into_iter().filter_map(|r| r.join().ok()).collect()
+    })
 }
 
 /// A `{...}` class id, as a packaged command's canonical verb.

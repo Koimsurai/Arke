@@ -8,7 +8,8 @@
 //!   %V and %W come out as the folder, as from File Explorer's menu;
 //! - a packaged command (or a registry one with an `ExplorerCommandHandler`) through
 //!   `IExplorerCommand`: created by its class id alone, it gives its title, icon and state, and
-//!   `Invoke` runs it.
+//!   `Invoke` runs it. One with commands of its own (NanaZip's "Extract here", ...) becomes its
+//!   submenu, each command in it run the same way, so a pinned one shows as quickly (#283).
 //!
 //! Measured: a registry command 9 to 20 ms, a packaged one 2 to 140 ms, against 0.25 to 1.8 s
 //! for the whole Windows menu, which waits for its slowest extension.
@@ -27,10 +28,10 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMINVOKECOMMANDINFO, ECF_HASSUBCOMMANDS, ECS_CHECKED, ECS_DISABLED, ECS_HIDDEN, IContextMenu,
-    IContextMenu_Impl, IExplorerCommand, IShellItemArray, SEE_MASK_CLASSKEY, SEE_MASK_NOASYNC,
-    SHCreateShellItemArrayFromIDLists, SHDefExtractIconW, SHELLEXECUTEINFOW, SHLoadIndirectString,
-    ShellExecuteExW,
+    CMINVOKECOMMANDINFO, ECF_HASSUBCOMMANDS, ECF_ISSEPARATOR, ECS_CHECKED, ECS_DISABLED,
+    ECS_HIDDEN, IContextMenu, IContextMenu_Impl, IExplorerCommand, IShellItemArray,
+    SEE_MASK_CLASSKEY, SEE_MASK_NOASYNC, SHCreateShellItemArrayFromIDLists, SHDefExtractIconW,
+    SHELLEXECUTEINFOW, SHLoadIndirectString, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, GetIconInfo, GetSystemMetrics, HICON, HMENU, ICONINFO, SM_CXSMICON, SW_SHOWNORMAL,
@@ -86,14 +87,17 @@ fn verb(
             .parent()
             .map_or_else(|| target.to_path_buf(), Path::to_path_buf)
     };
-    let menu: IContextMenu = Single(Action::Verb {
+    let menu: IContextMenu = Single(vec![Action::Verb {
         class: handler.key.clone(),
         verb: handler.name.clone(),
         file: target.to_path_buf(),
         folder,
-    })
+    }])
     .into();
-    (menu, vec![item(&handler.name, &label, true, false, icon)])
+    (
+        menu,
+        vec![item(1, &handler.name, &label, true, false, icon)],
+    )
 }
 
 /// An `IExplorerCommand` (a packaged app's command, or a registry command's
@@ -136,41 +140,117 @@ fn command(
             command.GetState(&items, true).unwrap_or(0),
         )
     };
-    let has = |bits: u32, flag: i32| bits & flag.cast_unsigned() != 0;
-    let menu: IContextMenu = Single(Action::Command {
-        command: command.clone(),
-        items: items.clone(),
-    })
-    .into();
-    // Hidden for these items, or a cascading one (left to the whole menu).
-    if has(state, ECS_HIDDEN.0) || has(flags, ECF_HASSUBCOMMANDS.0) {
-        return Ok((menu, Vec::new()));
-    }
-    // SAFETY: plain COM calls; the strings are ours to free.
-    let title = unsafe { command.GetTitle(&items) }.map_or_default(take);
-    if title.trim().is_empty() {
-        return Ok((menu, Vec::new()));
-    }
-    // SAFETY: as above.
-    let icon = unsafe { command.GetIcon(&items) }
-        .map(take)
-        .ok()
-        .and_then(|spec| icon_of(&spec));
     let verb = match handler.kind {
         HandlerKind::Command => &handler.clsid,
         _ => &handler.name,
     };
-    let entry = item(
+    let mut actions = Vec::new();
+    let entries = shown(&command, &items, verb, &mut actions, flags, state)
+        .into_iter()
+        .collect();
+    let menu: IContextMenu = Single(actions).into();
+    Ok((menu, entries))
+}
+
+/// `command`'s row, its action added to `actions` (the row's id is its place there plus one);
+/// `None` when it is hidden for these items or has no title. One with commands of its own is
+/// their submenu (one level: deeper ones are left to the whole menu).
+fn shown(
+    command: &IExplorerCommand,
+    items: &IShellItemArray,
+    verb: &str,
+    actions: &mut Vec<Action>,
+    flags: u32,
+    state: u32,
+) -> Option<ShellMenuEntry> {
+    let has = |bits: u32, flag: i32| bits & flag.cast_unsigned() != 0;
+    if has(state, ECS_HIDDEN.0) {
+        return None;
+    }
+    // SAFETY: plain COM calls; the strings are ours to free.
+    let title = unsafe { command.GetTitle(items) }.map_or_default(take);
+    if title.trim().is_empty() {
+        return None;
+    }
+    // SAFETY: as above.
+    let icon = unsafe { command.GetIcon(items) }
+        .map(take)
+        .ok()
+        .and_then(|spec| icon_of(&spec));
+    let enabled = !has(state, ECS_DISABLED.0);
+    if has(flags, ECF_HASSUBCOMMANDS.0) {
+        // Only the top command opens a submenu here.
+        if !actions.is_empty() {
+            return None;
+        }
+        let children = sub_commands(command, items, actions);
+        return (!children.is_empty()).then(|| ShellMenuEntry::Submenu {
+            label: clean_label(&title),
+            enabled,
+            icon,
+            children,
+            lazy: None,
+        });
+    }
+    actions.push(Action::Command {
+        command: command.clone(),
+        items: items.clone(),
+    });
+    let id = u32::try_from(actions.len()).unwrap_or(u32::MAX);
+    Some(item(
+        id,
         verb,
         &title,
-        !has(state, ECS_DISABLED.0),
+        enabled,
         has(state, ECS_CHECKED.0),
         icon,
-    );
-    Ok((menu, vec![entry]))
+    ))
+}
+
+/// The rows of a command's own commands (`EnumSubCommands`), separators included.
+fn sub_commands(
+    command: &IExplorerCommand,
+    items: &IShellItemArray,
+    actions: &mut Vec<Action>,
+) -> Vec<ShellMenuEntry> {
+    // Holds the submenu's place, so the rows below are never taken for the top command.
+    actions.push(Action::None);
+    let mut rows = Vec::new();
+    // SAFETY: plain COM call on this STA thread.
+    let Ok(list) = (unsafe { command.EnumSubCommands() }) else {
+        return rows;
+    };
+    loop {
+        let mut next = [None];
+        let mut fetched = 0u32;
+        // SAFETY: one slot to fill and a count, both ours.
+        let got = unsafe { list.Next(&mut next, Some(&raw mut fetched)) };
+        if got.is_err() || fetched == 0 {
+            break;
+        }
+        let Some(sub) = next[0].take() else { break };
+        // SAFETY: plain COM calls on this STA thread.
+        let (flags, state) = unsafe {
+            (
+                sub.GetFlags().unwrap_or(0),
+                sub.GetState(items, true).unwrap_or(0),
+            )
+        };
+        if flags & ECF_ISSEPARATOR.0.cast_unsigned() != 0 {
+            rows.push(ShellMenuEntry::Separator);
+            continue;
+        }
+        // SAFETY: as above; the canonical name is a GUID, the row's verb.
+        let verb = unsafe { sub.GetCanonicalName() }.map_or_default(|g| format!("{{{g:?}}}"));
+        if let Some(row) = shown(&sub, items, &verb, actions, flags, state) {
+            rows.push(row);
+        }
+    }
+    crate::shell::tidy_separators(rows)
 }
 
 fn item(
+    id: u32,
     verb: &str,
     label: &str,
     enabled: bool,
@@ -178,8 +258,9 @@ fn item(
     icon: Option<arke_core::thumbs::Thumbnail>,
 ) -> ShellMenuEntry {
     ShellMenuEntry::Item {
-        id: 1,
-        verb: Some(verb.to_string()),
+        id,
+        // A packaged command's own commands may have no canonical name.
+        verb: (!verb.is_empty()).then(|| verb.to_string()),
         label: clean_label(label),
         enabled,
         checked,
@@ -309,6 +390,8 @@ enum Action {
         command: IExplorerCommand,
         items: IShellItemArray,
     },
+    /// No row: a submenu's own place, so ids and places stay in step.
+    None,
 }
 
 /// Runs a registry verb from `class` alone: Windows reads that class's verb and runs it (its
@@ -369,8 +452,9 @@ mod single {
         IContextMenu_Impl, PSTR, run_verb,
     };
 
+    /// The rows' actions: row id `n` at place `n - 1`.
     #[windows::core::implement(IContextMenu)]
-    pub(super) struct Single(pub(super) Action);
+    pub(super) struct Single(pub(super) Vec<Action>);
 
     impl IContextMenu_Impl for Single_Impl {
         fn QueryContextMenu(&self, _: HMENU, _: u32, _: u32, _: u32, _: u32) -> HRESULT {
@@ -379,8 +463,14 @@ mod single {
 
         fn InvokeCommand(&self, info: *const CMINVOKECOMMANDINFO) -> windows::core::Result<()> {
             // SAFETY: the caller (`win_menu::invoke_in`) passes a valid structure for the call.
-            let owner = unsafe { info.as_ref() }.map_or_else(HWND::default, |i| i.hwnd);
-            match &self.0 {
+            let info = unsafe { info.as_ref() };
+            let owner = info.map_or_else(HWND::default, |i| i.hwnd);
+            // MAKEINTRESOURCE: the row's place (`win_menu::invoke_in`); a text verb isn't one.
+            let place = info.map_or(0, |i| i.lpVerb.0 as usize);
+            let Some(action) = self.0.get(place).filter(|_| place >> 16 == 0) else {
+                return Err(E_NOTIMPL.into());
+            };
+            match action {
                 Action::Verb {
                     class,
                     verb,
@@ -389,6 +479,7 @@ mod single {
                 } => run_verb(class, verb, file, folder, owner),
                 // SAFETY: plain COM call on the thread that created it.
                 Action::Command { command, items } => unsafe { command.Invoke(items, None) },
+                Action::None => Err(E_NOTIMPL.into()),
             }
         }
 

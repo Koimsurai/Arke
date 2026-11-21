@@ -743,6 +743,9 @@ impl Shell for RemoteShell {
     fn packaged_item_types(&self, clsid: &str) -> Vec<String> {
         self.inner.packaged_item_types(clsid)
     }
+    fn packaged_commands(&self, kind: &str) -> Vec<String> {
+        self.inner.packaged_commands(kind)
+    }
     fn shell_menu_handlers(
         &self,
         paths: &[PathBuf],

@@ -6,6 +6,10 @@
 //! `AppxManifest.xml` there, or inside the `.appx` an app installed as a sparse package keeps
 //! in its own folder (VS Code, Zed). Files and the registry are only read; nothing of the app
 //! runs. Background thread.
+//!
+//! The commands under a packaged command's own submenu (NanaZip's, WinRAR's) have no canonical
+//! verb in the Windows menu, so for those every packaged command is listed instead ([`commands`]:
+//! the manifests of the packages that registered COM classes) and read until one holds it (#283).
 
 use std::path::{Path, PathBuf};
 
@@ -22,16 +26,78 @@ pub(crate) fn item_types(clsid: &str) -> Vec<String> {
 fn manifest_of(clsid: &str) -> Option<String> {
     let index = format!(r"PackagedCom\ClassIndex\{clsid}");
     let packages = crate::win::reg_subkeys(HKEY_CLASSES_ROOT, &index);
-    packages.iter().find_map(|package| {
-        let root = crate::win::read_reg_string(
-            HKEY_CLASSES_ROOT,
-            &format!(
-                r"Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages\{package}"
-            ),
-            "PackageRootFolder",
-        )?;
-        read_manifest(Path::new(&root))
-    })
+    packages
+        .iter()
+        .find_map(|package| package_manifest(package))
+}
+
+/// A package's manifest, by its full name.
+fn package_manifest(package: &str) -> Option<String> {
+    let root = crate::win::read_reg_string(
+        HKEY_CLASSES_ROOT,
+        &format!(
+            r"Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages\{package}"
+        ),
+        "PackageRootFolder",
+    )?;
+    read_manifest(Path::new(&root))
+}
+
+/// Every packaged app's context menu command (`{...}`) with the item types it is for, from the
+/// manifests of the packages that registered COM classes (a few dozen on a typical PC).
+pub(crate) fn commands() -> Vec<(String, Vec<String>)> {
+    let mut packages: Vec<String> = Vec::new();
+    for class in crate::win::reg_subkeys(HKEY_CLASSES_ROOT, r"PackagedCom\ClassIndex") {
+        let index = format!(r"PackagedCom\ClassIndex\{class}");
+        for package in crate::win::reg_subkeys(HKEY_CLASSES_ROOT, &index) {
+            if !packages.contains(&package) {
+                packages.push(package);
+            }
+        }
+    }
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for xml in packages.iter().filter_map(|p| package_manifest(p)) {
+        for (clsid, types) in manifest_commands(&xml) {
+            if !out.iter().any(|(c, _)| bare(c) == bare(&clsid)) {
+                out.push((clsid, types));
+            }
+        }
+    }
+    out
+}
+
+/// The context menu commands in a manifest (`{...}`, as written there plus braces), each with
+/// the `Type` of every `ItemType` it is under.
+pub(crate) fn manifest_commands(xml: &str) -> Vec<(String, Vec<String>)> {
+    if !xml.contains("FileExplorerContextMenus") {
+        return Vec::new();
+    }
+    let mut reader = Reader::from_str(xml);
+    let mut current: Option<String> = None;
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == "ItemType" => {
+                current = attr(&e, "Type");
+            }
+            Ok(Event::End(e)) if e.local_name().as_ref() == "ItemType" => current = None,
+            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "Verb" => {
+                if let (Some(kind), Some(clsid)) = (&current, attr(&e, "Clsid")) {
+                    let clsid = format!("{{{}}}", clsid.trim_matches(['{', '}']));
+                    match out.iter_mut().find(|(c, _)| bare(c) == bare(&clsid)) {
+                        Some((_, types)) if !types.iter().any(|t| t.eq_ignore_ascii_case(kind)) => {
+                            types.push(kind.clone());
+                        }
+                        Some(_) => {}
+                        None => out.push((clsid, vec![kind.clone()])),
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    out
 }
 
 /// Largest manifest read (they are a few KB).
@@ -126,6 +192,42 @@ fn attr(e: &BytesStart, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every command a manifest registers, with its item types, as NanaZip registers its own
+    /// (one class for files, folders and drives, under three namespaces) (#283).
+    #[test]
+    fn lists_every_command_in_a_manifest() {
+        let xml = r#"<Package xmlns:desktop4="d4" xmlns:desktop5="d5" xmlns:desktop10="d10">
+          <desktop4:Extension Category="windows.fileExplorerContextMenus">
+            <desktop4:FileExplorerContextMenus>
+              <desktop4:ItemType Type="*">
+                <desktop4:Verb Id="Nana" Clsid="CAE3F1D4-7765-4D98-A060-52CD14D56EAB" />
+              </desktop4:ItemType>
+              <desktop5:ItemType Type="Directory">
+                <desktop5:Verb Id="Nana" Clsid="CAE3F1D4-7765-4D98-A060-52CD14D56EAB" />
+                <desktop5:Verb Id="Other" Clsid="{11111111-2222-3333-4444-555555555555}" />
+              </desktop5:ItemType>
+              <desktop10:ItemType Type="Drive">
+                <desktop10:Verb Id="Nana" Clsid="CAE3F1D4-7765-4D98-A060-52CD14D56EAB" />
+              </desktop10:ItemType>
+            </desktop4:FileExplorerContextMenus>
+          </desktop4:Extension>
+        </Package>"#;
+        assert_eq!(
+            manifest_commands(xml),
+            [
+                (
+                    "{CAE3F1D4-7765-4D98-A060-52CD14D56EAB}".to_owned(),
+                    vec!["*".to_owned(), "Directory".to_owned(), "Drive".to_owned()]
+                ),
+                (
+                    "{11111111-2222-3333-4444-555555555555}".to_owned(),
+                    vec!["Directory".to_owned()]
+                ),
+            ]
+        );
+        assert!(manifest_commands("<Package/>").is_empty());
+    }
 
     /// As Windows Terminal and Zed register their "Open in" commands.
     const MANIFEST: &str = r#"<?xml version="1.0" encoding="utf-8"?>

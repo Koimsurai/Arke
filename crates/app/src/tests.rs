@@ -747,6 +747,16 @@ impl Shell for FakeShell {
             .collect()
     }
 
+    fn packaged_commands(&self, kind: &str) -> Vec<String> {
+        assert!(!arke_core::fs::is_ui_thread());
+        self.packaged_types
+            .lock()
+            .iter()
+            .filter(|(_, types)| crate::win_menu_parts::kind_matches(types, kind))
+            .map(|(clsid, _)| clsid.clone())
+            .collect()
+    }
+
     fn shell_menu_handlers(
         &self,
         _paths: &[PathBuf],

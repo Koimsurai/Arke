@@ -1124,9 +1124,15 @@ fn extract_zip(
             summary.cancelled = true;
             return Ok(summary);
         }
-        let mut entry = zip
-            .by_index(i)
-            .map_err(|source| ArchiveError::CorruptZip { source })?;
+        // A password-protected entry: say so instead of calling the archive damaged (#282).
+        if zip.by_index_raw(i).is_ok_and(|e| e.encrypted()) {
+            return Err(ArchiveError::Encrypted);
+        }
+        let mut entry = zip.by_index(i).map_err(|source| match source {
+            zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
+            | zip::result::ZipError::InvalidPassword => ArchiveError::Encrypted,
+            source => ArchiveError::CorruptZip { source },
+        })?;
         let Some(rel) = safe_relative_path(entry.name_raw(), opts.decode_legacy) else {
             summary.skipped_unsafe += 1;
             continue;
@@ -1951,6 +1957,34 @@ mod tests {
         let err = list_path(ArchiveKind::SevenZip, &bad, 10, &fake_big5).unwrap_err();
         assert!(matches!(err, ArchiveError::NotSevenZip { .. }), "{err:?}");
         assert!(err.to_string().contains("7z"), "{err}");
+    }
+
+    /// A password-protected zip says so (as a 7z does), not that the archive is damaged (#282).
+    #[test]
+    fn a_zip_with_a_password_says_so() {
+        let sb = Sandbox::new("zip-password");
+        let path = sb.0.join("secret.zip");
+        write_zip(&path, &[(b"a.txt", b"hello")]);
+        // Set "encrypted" (general purpose flag bit 0) in the local and central headers, as an
+        // encrypting zip tool does.
+        let mut bytes = fs::read(&path).unwrap();
+        for (signature, flags_at) in [(0x0403_4b50_u32, 6), (0x0201_4b50, 8)] {
+            let at = bytes
+                .windows(4)
+                .position(|w| w == signature.to_le_bytes())
+                .unwrap();
+            bytes[at + flags_at] |= 1;
+        }
+        fs::write(&path, bytes).unwrap();
+        let cancel = AtomicBool::new(false);
+        let err = extract(
+            &path,
+            &sb.0.join("out"),
+            ArchiveKind::Zip,
+            &opts(&cancel, &|_| {}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArchiveError::Encrypted), "{err:?}");
     }
 
     /// `System32\tar.exe`, or `None` (the test is then skipped).

@@ -55,7 +55,7 @@ pub(crate) fn is_resident() -> bool {
 }
 
 /// Memory priority low (or normal) and EcoQoS on (or left to Windows) for the whole process.
-fn set_background_priority(background: bool) {
+pub(crate) fn set_background_priority(background: bool) {
     use windows::Win32::System::Threading::{
         GetCurrentProcess, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_LOW,
         MEMORY_PRIORITY_NORMAL, PROCESS_POWER_THROTTLING_CURRENT_VERSION,

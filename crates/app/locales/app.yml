@@ -2844,6 +2844,22 @@ settings.sidebar_follow:
   es: Expandir Este equipo hasta la carpeta actual
   pt-BR: Expandir Este Computador até a pasta atual
   ja: PC を現在のフォルダーまで展開する
+error.format_failed:
+  en: The drive could not be formatted.
+  zh-TW: 無法格式化這個磁碟機。
+  zh-CN: 无法格式化此驱动器。
+  de: Das Laufwerk konnte nicht formatiert werden.
+  es: No se pudo formatear la unidad.
+  pt-BR: Não foi possível formatar a unidade.
+  ja: ドライブをフォーマットできませんでした。
+error.format_unsupported:
+  en: This drive can't be formatted.
+  zh-TW: 這個磁碟機無法格式化。
+  zh-CN: 此驱动器无法格式化。
+  de: Dieses Laufwerk kann nicht formatiert werden.
+  es: Esta unidad no se puede formatear.
+  pt-BR: Esta unidade não pode ser formatada.
+  ja: このドライブはフォーマットできません。
 settings.list:
   en: List
   zh-TW: 清單

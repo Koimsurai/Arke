@@ -309,21 +309,6 @@ pub fn usage(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&Space),
 ) -> Option<Space> {
-    usage_pausable(fs, root, cluster, cancel, &AtomicBool::new(false), progress)
-}
-
-/// [`usage`], with the walkers listing no new folder while `pause` is set (what they found is
-/// kept; the walk goes on where it was once it is cleared). `progress` still runs meanwhile, so
-/// it can clear it: a spinning disk counted from its file table instead waits for the table
-/// without losing the walk if the table can't answer.
-pub fn usage_pausable(
-    fs: &dyn Fs,
-    root: &Path,
-    cluster: u64,
-    cancel: &AtomicBool,
-    pause: &AtomicBool,
-    progress: &mut dyn FnMut(&Space),
-) -> Option<Space> {
     crate::fs::debug_assert_not_ui_thread("usage", root);
     let mut space = Space::default();
     // The folder itself: its files count here, its folders are the children the rest is split by.
@@ -368,10 +353,9 @@ pub fn usage_pausable(
     std::thread::scope(|scope| {
         let mut walkers = Vec::with_capacity(WALKERS);
         for _ in 0..WALKERS {
-            walkers.push(scope.spawn(|| walker(fs, cluster, cancel, pause, &walk)));
+            walkers.push(scope.spawn(|| walker(fs, cluster, cancel, &walk)));
         }
         let mut state = walk.state.lock();
-        let mut paused = false;
         while !(cancel.load(Ordering::Relaxed)
             || (state.todo.is_empty() && state.busy == 0)
             || state.walkers == 0)
@@ -380,12 +364,6 @@ pub fn usage_pausable(
             let snapshot = state.space.clone();
             drop(state);
             progress(&snapshot);
-            // Resumed: the walkers go on now rather than at their next look.
-            let now = pause.load(Ordering::Relaxed);
-            if paused && !now {
-                walk.work.notify_all();
-            }
-            paused = now;
             state = walk.state.lock();
         }
         // No walker left with folders still to list (each one panicked): those weren't counted.
@@ -456,7 +434,7 @@ impl Drop for Leaving<'_> {
     clippy::significant_drop_tightening,
     reason = "the lock is taken back after each folder; waiting releases it"
 )]
-fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, pause: &AtomicBool, walk: &Walk) {
+fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
     let mut leaving = Leaving {
         walk,
         listing: false,
@@ -465,10 +443,6 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, pause: &AtomicBool, wa
     loop {
         if cancel.load(Ordering::Relaxed) {
             return;
-        }
-        if pause.load(Ordering::Relaxed) {
-            walk.work.wait_for(&mut state, PROGRESS_TICK);
-            continue;
         }
         let Some((dir, child)) = state.todo.pop() else {
             if state.busy == 0 {
@@ -996,32 +970,6 @@ mod tests {
         );
         assert_eq!(profiles.way_down(Path::new(r"C:\Users\me")), None);
         assert_eq!(profiles.way_down(Path::new(r"D:\")), None);
-    }
-
-    /// While `pause` is set no folder is listed; cleared, the walk goes on and counts it all.
-    #[test]
-    fn a_paused_walk_goes_on_where_it_was() {
-        let fs = FakeFs::new();
-        fs.insert_dir(r"C:\p", vec![dir("a"), dir("b"), file("top", 1)]);
-        fs.insert_dir(r"C:\p\a", vec![dir("deep"), file("x", 10)]);
-        fs.insert_dir(r"C:\p\a\deep", vec![file("y", 100)]);
-        fs.insert_dir(r"C:\p\b", vec![file("z", 1000)]);
-        let cancel = AtomicBool::new(false);
-        let pause = AtomicBool::new(false);
-        let mut calls = 0;
-        let mut listed_while_paused = Vec::new();
-        let space = usage_pausable(&*fs, Path::new(r"C:\p"), 0, &cancel, &pause, &mut |_| {
-            calls += 1;
-            match calls {
-                1 => pause.store(true, Ordering::Relaxed),
-                2 | 3 => listed_while_paused.push(fs.read_dir_calls()),
-                _ => pause.store(false, Ordering::Relaxed),
-            }
-        })
-        .unwrap();
-        assert_eq!(listed_while_paused, [1, 1], "only the folder itself");
-        assert_eq!(space.usage.bytes, 1111);
-        assert_eq!(fs.read_dir_calls(), 4, "each folder once");
     }
 
     /// A walker that panics (a bug, a driver's) doesn't hang the count nor take it down: what

@@ -372,6 +372,12 @@ impl Workspace {
             .is_none();
         // A row of its own when it doesn't fit beside the last tiles.
         let own_row = !fits || free == per_row;
+        // For a favorite taken from the list, a row of its own would push the list down under
+        // the pointer the moment it is taken: the tiles just wash over instead
+        // (`Workspace::list_invites_tiles`), and take it on any tile.
+        if from_list && own_row && !over_tiles(cx) {
+            return None;
+        }
         Some((
             div()
                 .id("tile-add-favorite")

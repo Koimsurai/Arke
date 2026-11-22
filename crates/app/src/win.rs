@@ -1920,8 +1920,10 @@ fn format_drive_result(code: u32) -> Result<(), ShellError> {
     const SHFMT_ERROR: u32 = 0xFFFF_FFFF;
     const SHFMT_NOFORMAT: u32 = 0xFFFF_FFFD;
     match code {
-        SHFMT_ERROR => Err(ShellError::Host("The drive could not be formatted.".into())),
-        SHFMT_NOFORMAT => Err(ShellError::Host("This drive cannot be formatted.".into())),
+        SHFMT_ERROR => Err(ShellError::Host(t!("error.format_failed").into_owned())),
+        SHFMT_NOFORMAT => Err(ShellError::Host(
+            t!("error.format_unsupported").into_owned(),
+        )),
         // Formatted, or SHFMT_CANCEL (0xFFFF_FFFE): the dialog was closed.
         _ => Ok(()),
     }

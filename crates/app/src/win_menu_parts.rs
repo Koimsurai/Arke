@@ -230,7 +230,10 @@ fn verbs(target: &Target, items: usize) -> Vec<MenuHandler> {
     for key in class_keys(target) {
         let shell = format!(r"{key}\shell");
         for verb in reg::subkeys(&shell) {
-            if out.iter().any(|h| h.name.eq_ignore_ascii_case(&verb)) {
+            if out
+                .iter()
+                .any(|h| h.parent.is_none() && h.name.eq_ignore_ascii_case(&verb))
+            {
                 continue;
             }
             let at = format!(r"{shell}\{verb}");
@@ -245,7 +248,10 @@ fn verbs(target: &Target, items: usize) -> Vec<MenuHandler> {
                 let sub_shell = format!(r"{sub}\shell");
                 for child in reg::subkeys(&sub_shell) {
                     let child_at = format!(r"{sub_shell}\{child}");
-                    if out.iter().any(|h| h.name.eq_ignore_ascii_case(&child))
+                    // Each child once; a top-level verb of the same name is still its own.
+                    if out
+                        .iter()
+                        .any(|h| h.parent.is_some() && h.name.eq_ignore_ascii_case(&child))
                         || !shown_alone(&child_at)
                         || reg::value_exists(&child_at, "ExtendedSubCommandsKey")
                     {

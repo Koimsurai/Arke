@@ -381,9 +381,9 @@ fn remove_badge() -> AnyElement {
 impl Render for PinPreview {
     #[allow(
         clippy::too_many_lines,
-        reason = "the row and the tile, each with the change of shape into it"
+        reason = "one card in two shapes, a tile and a row, and the change between them"
     )]
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (out, tile_now, morph, cell) =
             self.workspace
                 .upgrade()
@@ -399,153 +399,171 @@ impl Render for PinPreview {
         let pin = &self.pin;
         // The favorite is a tile while over the tiles, a row elsewhere: its copy takes that shape
         // (#278 follow-up). A list entry over the tiles takes a tile cell's size.
-        let look = if tile_now {
-            pin.look.or_else(|| {
-                cell.map(|size| TileLook {
-                    size,
-                    large: size.height >= tile_height(true) - px(1.),
-                    here: false,
-                })
+        let look = pin.look.or_else(|| {
+            cell.map(|size| TileLook {
+                size,
+                large: size.height >= tile_height(true) - px(1.),
+                here: false,
             })
-        } else {
-            None
-        };
-        // Changed shape since it was taken: grows into the new one (a shape it starts in shows
-        // at once).
-        let grows = morph > 0 && crate::motion::enabled();
-        let Some(look) = look else {
-            // Taken as a tile: the row is placed with the pointer on its icon.
-            let (left, top) = if pin.from_tile {
-                (
-                    self.grab.x - theme::s_16(),
-                    self.grab.y - theme::h_row() / 2.,
-                )
-            } else {
-                (px(0.), px(0.))
-            };
-            let chip = div()
-                .h(theme::h_row())
-                .px(theme::s_8())
-                .flex()
-                .items_center()
-                .gap(theme::s_8())
-                .rounded(theme::r_8())
-                .bg(theme::overlay())
-                .shadow(theme::elev_float())
-                .ui_font()
-                .text_size(theme::fs_14())
-                .text_color(theme::text())
-                .child(crate::assets::tinted(
-                    pin.icon,
-                    theme::icon(),
-                    theme::text_muted(),
-                ))
-                .child(pin.label.clone())
-                .when(out, |d| d.opacity(PIN_OUT_OPACITY));
-            let row = div()
-                .absolute()
-                .left(left)
-                .top(top)
-                .debug_selector(|| "pin-chip".to_owned())
-                .child(chip)
-                .children(out.then(remove_badge));
-            return if grows {
-                div()
-                    .relative()
-                    .child(row.with_animation(
-                        ("pin-morph", usize::try_from(morph).unwrap_or_default()),
-                        gpui::Animation::new(MORPH).with_easing(crate::motion::ease_out),
-                        gpui::Styled::opacity,
-                    ))
-                    .into_any_element()
-            } else {
-                div().relative().child(row).into_any_element()
-            };
-        };
+        });
         let lift = TILE_LIFT;
-        let (gap, icon) = if look.large {
+        // The row: as tall as a list row, as wide as its icon and name; taken as a tile, placed
+        // with the pointer on its icon.
+        let label_w = {
+            let run = gpui::TextRun {
+                len: pin.label.len(),
+                font: theme::ui_font_at(gpui::FontWeight::NORMAL),
+                color: gpui::Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(pin.label.clone(), theme::fs_14(), &[run], None)
+                .width
+        };
+        let row_w = (theme::s_8() * 2. + theme::icon() + theme::s_8() + label_w).min(px(280.));
+        let row_h = theme::h_row();
+        let (row_x, row_y) = if pin.from_tile {
+            (
+                self.grab.x - theme::s_16(),
+                self.grab.y - theme::h_row() / 2.,
+            )
+        } else {
+            (px(0.), px(0.))
+        };
+        // The tile: lifted a little bigger; taken as a tile, placed as it was taken hold of
+        // (growing around the grab point), a row turned tile centered on the pointer.
+        let tile = look.map(|look| {
+            let (w, h) = (look.size.width * lift, look.size.height * lift);
+            let (x, y) = if pin.from_tile {
+                (-(self.grab.x * (lift - 1.)), -(self.grab.y * (lift - 1.)))
+            } else {
+                (self.grab.x - w / 2., self.grab.y - h / 2.)
+            };
+            (look, x, y, w, h)
+        });
+        // How much of a tile it is: 1 a tile, 0 a row. Changing shape since it was taken, it
+        // moves from the other one over [`MORPH`]; a shape it starts in shows at once.
+        let target = if tile_now && tile.is_some() { 1. } else { 0. };
+        let animate = morph > 0 && crate::motion::enabled() && tile.is_some();
+        let (tx, ty, tw, th) =
+            tile.map_or((row_x, row_y, row_w, row_h), |(_, x, y, w, h)| (x, y, w, h));
+        let large = tile.is_some_and(|(look, ..)| look.large);
+        let here = tile.is_some_and(|(look, ..)| look.here);
+        let (gap, icon) = if large {
             (theme::s_4(), theme::s_20())
         } else {
             (theme::s_2(), theme::scaled_px(18.))
         };
-        // The preview is placed at the tile's top left corner as it was taken hold of; the
-        // bigger copy grows around the grab point, which stays under the pointer.
-        let body = div()
+        let icon_color = if here {
+            theme::signal()
+        } else {
+            theme::text_muted()
+        };
+        let lerp = |a: Pixels, b: Pixels, k: f32| a + (b - a) * k;
+        let radius = (theme::r_8() * lift, theme::r_8());
+        // One card, the same surface in both shapes; what is inside fades from one layout to
+        // the other while the card changes size.
+        // Both fill the card as it changes size, so what fades out stays centered in it.
+        let tile_face = div()
+            .absolute()
+            .top_0()
+            .left_0()
             .size_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
             .gap(gap * lift)
-            .rounded(theme::r_8() * lift)
-            // Opaque under the hover wash: it floats over rows, and a shadow under a see-through
-            // surface would darken it.
-            .bg(theme::frame_solid())
-            .shadow(theme::elev_float())
-            .ui_font()
             .text_size(theme::fs_12() * lift)
-            .text_color(theme::text())
             .debug_selector(|| "tile-lifted".to_owned())
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .rounded(theme::r_8() * lift)
-                    .bg(theme::wash_strong()),
-            )
-            .child(crate::assets::tinted(
-                pin.icon,
-                icon * lift,
-                if look.here {
-                    theme::signal()
-                } else {
-                    theme::text_muted()
-                },
-            ))
+            .child(crate::assets::tinted(pin.icon, icon * lift, icon_color))
             .child(
                 div()
                     .max_w_full()
                     .px(theme::s_4() * lift)
                     .truncate()
                     .child(pin.label.clone()),
-            )
-            .when(out, |d| d.opacity(PIN_OUT_OPACITY));
-        let (w, h) = (look.size.width * lift, look.size.height * lift);
-        // Taken as a tile: placed as it was taken hold of, the bigger copy growing around the
-        // grab point. A row turned tile: centered on the pointer.
-        let (x0, y0) = if pin.from_tile {
-            (-(self.grab.x * (lift - 1.)), -(self.grab.y * (lift - 1.)))
-        } else {
-            (self.grab.x - w / 2., self.grab.y - h / 2.)
-        };
-        let card = div()
+            );
+        let row_face = div()
             .absolute()
-            .left(x0)
-            .top(y0)
-            .w(w)
-            .h(h)
-            .child(body)
-            .children(out.then(remove_badge));
-        if !grows {
-            return div().relative().child(card).into_any_element();
-        }
-        // From a row into a tile: it grows from the row's height to the tile, around its center.
+            .top_0()
+            .left_0()
+            .size_full()
+            .px(theme::s_8())
+            .flex()
+            .items_center()
+            .gap(theme::s_8())
+            .text_size(theme::fs_14())
+            .debug_selector(|| "pin-chip".to_owned())
+            .child(crate::assets::tinted(pin.icon, theme::icon(), icon_color))
+            .child(div().min_w_0().truncate().child(pin.label.clone()));
+        let card = |k: f32| {
+            div()
+                .absolute()
+                .left(lerp(row_x, tx, k))
+                .top(lerp(row_y, ty, k))
+                .w(lerp(row_w, tw, k))
+                .h(lerp(row_h, th, k))
+                .overflow_hidden()
+                .rounded(lerp(radius.1, radius.0, k))
+                // Opaque under the hover wash: it floats over rows, and a shadow under a
+                // see-through surface would darken it.
+                .bg(theme::frame_solid())
+                .shadow(theme::elev_float())
+                .ui_font()
+                .text_color(theme::text())
+                .child(div().absolute().top_0().left_0().size_full().bg(theme::wash_strong()))
+                .when(out, |d| d.opacity(PIN_OUT_OPACITY))
+        };
+        let id = usize::try_from(morph).unwrap_or_default();
+        let shape = if animate {
+            let k_at = move |t: f32| if target > 0.5 { t } else { 1. - t };
+            let ease = || gpui::Animation::new(MORPH).with_easing(crate::motion::ease_out);
+            card(1. - target)
+                .child(
+                    tile_face.with_animation(("pin-morph-tile", id), ease(), move |el, t| {
+                        el.opacity(k_at(t))
+                    }),
+                )
+                .child(
+                    row_face.with_animation(("pin-morph-row", id), ease(), move |el, t| {
+                        el.opacity(1. - k_at(t))
+                    }),
+                )
+                .with_animation(("pin-morph", id), ease(), move |el, t| {
+                    let k = k_at(t);
+                    el.left(lerp(row_x, tx, k))
+                        .top(lerp(row_y, ty, k))
+                        .w(lerp(row_w, tw, k))
+                        .h(lerp(row_h, th, k))
+                        .rounded(lerp(radius.1, radius.0, k))
+                })
+                .into_any_element()
+        } else if target > 0.5 {
+            card(1.).child(tile_face).into_any_element()
+        } else {
+            card(0.).child(row_face).into_any_element()
+        };
+        // The trash badge sits on the corner of the shape it ends in.
+        let (bx, by, bw) = if target > 0.5 {
+            (tx, ty, tw)
+        } else {
+            (row_x, row_y, row_w)
+        };
         div()
             .relative()
-            .child(card.with_animation(
-                ("pin-morph", usize::try_from(morph).unwrap_or_default()),
-                gpui::Animation::new(MORPH).with_easing(crate::motion::ease_out),
-                move |el, t| {
-                    let k = 0.6 + 0.4 * t;
-                    el.left(x0 + w * (1. - k) / 2.)
-                        .top(y0 + h * (1. - k) / 2.)
-                        .w(w * k)
-                        .h(h * k)
-                        .opacity(0.4 + 0.6 * t)
-                },
-            ))
+            .child(shape)
+            .children(out.then(|| {
+                div()
+                    .absolute()
+                    .left(bx)
+                    .top(by)
+                    .w(bw)
+                    .child(remove_badge())
+            }))
             .into_any_element()
     }
 }
@@ -565,6 +583,10 @@ fn start_pin_drag(
         ws.dragging_pin = true;
         ws.tab_drag
             .start_tile(dragged.path.clone(), dragged.from_tile, grab);
+        ws.tab_drag.grid_hold = dragged
+            .from_tile
+            .then(|| ws.sidebar_ui.grid_height.get())
+            .flatten();
         let settings = &SettingsStore::global(cx).read(cx).settings;
         ws.tab_drag.origin = Some(super::tabdrag::PinSnapshot {
             favorites: settings.favorites.clone(),
@@ -1267,7 +1289,7 @@ impl Workspace {
             // takes this row's place at once, the rows making room: no insertion line.
             .on_drag_move(
                 cx.listener(move |this, e: &DragMoveEvent<DraggedPin>, _, cx| {
-                    this.pin_over_list(ix, e, cx);
+                    this.pin_over_row(ix, e, cx);
                 }),
             )
             .with_pin_drops(cx)
@@ -1390,15 +1412,28 @@ impl Workspace {
             div()
                 .id("pin-tiles")
                 .debug_selector(|| "pin-tiles".to_owned())
+                .when_some(
+                    self.tab_drag
+                        .grid_hold
+                        .filter(|_| self.dragging_pin && cx.has_active_drag()),
+                    |d, height| d.min_h(px(height)),
+                )
                 .grid()
                 .grid_cols(if large { 3 } else { 4 })
                 .gap(theme::s_4())
                 .rounded(theme::r_8())
-                .when(add_slot.is_some(), |d| d.bg(theme::signal_wash()))
+                .when(add_slot.is_some() || self.list_invites_tiles(cx), |d| {
+                    d.bg(theme::signal_wash())
+                        .child(div().absolute().debug_selector(|| "tiles-invite".to_owned()))
+                })
                 .children(tiles)
                 .children(add_slot)
                 .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
                     this.tiles_hover(e, cx);
+                }))
+                // A favorite from the list over the space after the last tile becomes one again.
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedPin>, _, cx| {
+                    this.pin_over_tiles(e, cx);
                 }))
                 .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
                     this.tiles_hover(e, cx);
@@ -1940,6 +1975,31 @@ impl Workspace {
         pindrop::clear(cx);
     }
 
+    /// A favorite dragged over the list row of slot `ix`. One already in the list takes its place
+    /// only once the pointer is past the row's middle, coming from where it is, as tabs do:
+    /// swapped at the row's edge, the rows would trade places back and forth under a pointer
+    /// resting between them.
+    fn pin_over_row(&mut self, ix: usize, e: &DragMoveEvent<DraggedPin>, cx: &mut Context<Self>) {
+        let at = e.event.position.y;
+        if !e.bounds.contains(&e.event.position) {
+            return;
+        }
+        let path = e.drag(cx).path.clone();
+        let from = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .pinned
+            .iter()
+            .position(|p| *p == path);
+        if let Some(from) = from {
+            let mid = e.bounds.center().y;
+            if !((from < ix && at > mid) || (from > ix && at < mid)) {
+                return;
+            }
+        }
+        self.pin_over_list(ix, e, cx);
+    }
+
     /// While a tile is dragged: a block under the Favorites heading, where it goes into the list.
     fn list_drop_block(cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -2238,6 +2298,9 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(theme::s_2());
+        // The line between the places and the tabs dragged (now, or before): the places take
+        // that height, as far as the tabs' three rows leave room.
+        let split = (!horizontal).then(|| self.places_split(cx)).flatten();
         let places_area = scrolling(
             places,
             items,
@@ -2246,7 +2309,10 @@ impl Workspace {
                 .debug_selector(|| "sidebar-places-frame".to_owned())
                 // With tabs on top there is nothing below, so the places fill the sidebar.
                 .when(horizontal, gpui::Styled::flex_1)
-                .when(!horizontal, gpui::Styled::flex_initial)
+                .when(!horizontal && split.is_none(), gpui::Styled::flex_initial)
+                .when_some(split, |d, height| {
+                    d.flex_basis(height).flex_grow(0.).flex_shrink(1.)
+                })
                 // At least two rows stay visible, so it's clear this part scrolls too.
                 .min_h(theme::h_row() * 2.),
         )
@@ -2269,6 +2335,7 @@ impl Workspace {
         if horizontal {
             return sidebar;
         }
+        let sidebar = sidebar.child(self.render_places_split(split.is_some(), cx));
         // The tabs don't collapse: they are what's open (hiding the whole sidebar makes room).
         let header = div()
             .debug_selector(|| "tabs-header".to_owned())
@@ -2324,6 +2391,67 @@ impl Workspace {
                 .min_h(theme::s_32())
                 .on_drop(cx.listener(Self::drop_tab_at_end)),
         )
+    }
+
+    /// A favorite taken from the list is dragged: the tiles show they take it.
+    fn list_invites_tiles(&self, cx: &App) -> bool {
+        self.dragging_pin
+            && cx.has_active_drag()
+            && self.tab_drag.pin_from_list()
+            && !self.tab_drag.started_on_tile()
+    }
+
+    /// The places' height set by dragging the line above the tabs: while dragged, else as saved.
+    /// `None`: the room is shared by itself.
+    fn places_split(&self, cx: &mut Context<Self>) -> Option<Pixels> {
+        if let Some((_, _, height)) = self.split_drag {
+            return Some(height);
+        }
+        let saved = SettingsStore::global(cx).read(cx).settings.sidebar_split;
+        (saved > 0.).then(|| px(saved * theme::scale_pct() as f32 / 100.))
+    }
+
+    /// The line between the places and the tabs (vertical tabs): dragged, it sets how tall the
+    /// places are, as the pinned tabs' line in Firefox does; double-clicked, the room is shared
+    /// by itself again. A faint line while it holds a height, so it shows there is one.
+    fn render_places_split(&self, set: bool, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.split_drag.is_some();
+        div()
+            .id("sidebar-split")
+            .debug_selector(|| "sidebar-split".to_owned())
+            .group("sidebar-split")
+            .flex_none()
+            // Easy to take hold of: the whole strip, not only the line drawn in it.
+            .h(px(9.))
+            .flex()
+            .items_center()
+            .cursor_row_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.split_drag = None;
+                        SettingsStore::global(cx)
+                            .update(cx, |s, cx| s.update(|st| st.sidebar_split = 0., cx));
+                    } else {
+                        let height = this.sidebar_ui.places_scroll.bounds().size.height;
+                        this.split_drag = Some((event.position.y, height, height));
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .mx(theme::s_8())
+                    .h(px(2.))
+                    .rounded(theme::R_FULL)
+                    .when(set && !active, |d| d.bg(theme::line()))
+                    .when(active, |d| d.bg(theme::signal()))
+                    .group_hover("sidebar-split", |s| s.bg(theme::signal_line())),
+            )
+            .into_any_element()
     }
 
     /// How far the sidebar's places scroll past what is shown (tests).

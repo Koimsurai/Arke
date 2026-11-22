@@ -624,7 +624,11 @@ mod tests {
             assert_eq!(up.compare(&d, &f), Ordering::Less, "{column:?} ascending");
             assert_eq!(up.compare(&f, &d), Ordering::Greater);
             let down = SortSpec::by(column, false, false);
-            assert_eq!(down.compare(&d, &f), Ordering::Greater, "{column:?} descending");
+            assert_eq!(
+                down.compare(&d, &f),
+                Ordering::Greater,
+                "{column:?} descending"
+            );
             assert_eq!(down.compare(&f, &d), Ordering::Less);
         }
     }
@@ -634,8 +638,14 @@ mod tests {
     fn dates_interleave_folders_and_files() {
         use std::time::{Duration, UNIX_EPOCH};
         let at = |name: &str, kind: EntryKind, secs: u64| {
-            Entry::new(name, kind, 1, Some(UNIX_EPOCH + Duration::from_secs(secs)), 0)
-                .with_created(Some(UNIX_EPOCH + Duration::from_secs(secs)))
+            Entry::new(
+                name,
+                kind,
+                1,
+                Some(UNIX_EPOCH + Duration::from_secs(secs)),
+                0,
+            )
+            .with_created(Some(UNIX_EPOCH + Duration::from_secs(secs)))
         };
         let mut v = vec![
             at("old.txt", EntryKind::File, 10),
@@ -659,12 +669,12 @@ mod tests {
     fn folder_placement_follows_the_primary_key() {
         let d = Entry::new("d", EntryKind::Dir, 0, None, 0);
         let f = Entry::new("f", EntryKind::File, 1, None, 0);
-        let dated_second = SortSpec::by(SortColumn::Name, true, false)
-            .shift_toggled(SortColumn::Modified);
+        let dated_second =
+            SortSpec::by(SortColumn::Name, true, false).shift_toggled(SortColumn::Modified);
         assert!(dated_second.folders_apart());
         assert_eq!(dated_second.compare(&d, &f), Ordering::Less);
-        let dated_first = SortSpec::by(SortColumn::Modified, false, false)
-            .shift_toggled(SortColumn::Name);
+        let dated_first =
+            SortSpec::by(SortColumn::Modified, false, false).shift_toggled(SortColumn::Name);
         assert!(!dated_first.folders_apart());
         // "Folders and files together" is always mixed.
         assert!(!SortSpec::by(SortColumn::Name, true, true).folders_apart());
@@ -1031,13 +1041,16 @@ mod tests {
             hit(r"file1.txt", 5, None),
             hit(r"a\sub\x.txt", 1, Some(20)),
         ];
-        let by = |column, ascending| {
-            sort_search_hits(&hits, SearchSort { column, ascending })
-        };
+        let by = |column, ascending| sort_search_hits(&hits, SearchSort { column, ascending });
         let name = by(SearchColumn::Name, true);
         assert_eq!(
             rels(&name),
-            [r"file1.txt", r"a\file2.txt", r"b\file10.txt", r"a\sub\x.txt"]
+            [
+                r"file1.txt",
+                r"a\file2.txt",
+                r"b\file10.txt",
+                r"a\sub\x.txt"
+            ]
         );
         let name = by(SearchColumn::Name, false);
         assert_eq!(rels(&name)[0], r"a\sub\x.txt");
@@ -1045,24 +1058,44 @@ mod tests {
         let place = by(SearchColumn::Location, true);
         assert_eq!(
             rels(&place),
-            [r"file1.txt", r"a\file2.txt", r"a\sub\x.txt", r"b\file10.txt"]
+            [
+                r"file1.txt",
+                r"a\file2.txt",
+                r"a\sub\x.txt",
+                r"b\file10.txt"
+            ]
         );
         // Unknown dates are the oldest.
         let date = by(SearchColumn::Modified, false);
         assert_eq!(
             rels(&date),
-            [r"b\file10.txt", r"a\sub\x.txt", r"a\file2.txt", r"file1.txt"]
+            [
+                r"b\file10.txt",
+                r"a\sub\x.txt",
+                r"a\file2.txt",
+                r"file1.txt"
+            ]
         );
         // The two 5-byte files tie: relevance order (file10 first) in both directions.
         let small = by(SearchColumn::Size, true);
         assert_eq!(
             rels(&small),
-            [r"a\sub\x.txt", r"b\file10.txt", r"file1.txt", r"a\file2.txt"]
+            [
+                r"a\sub\x.txt",
+                r"b\file10.txt",
+                r"file1.txt",
+                r"a\file2.txt"
+            ]
         );
         let big = by(SearchColumn::Size, false);
         assert_eq!(
             rels(&big),
-            [r"a\file2.txt", r"b\file10.txt", r"file1.txt", r"a\sub\x.txt"]
+            [
+                r"a\file2.txt",
+                r"b\file10.txt",
+                r"file1.txt",
+                r"a\sub\x.txt"
+            ]
         );
     }
 
@@ -1077,7 +1110,10 @@ mod tests {
         assert_eq!(SearchSort::after_click(second, Name), None);
         // Dates start newest first.
         let date = SearchSort::after_click(first, Modified);
-        assert_eq!(date.map(|s| (s.column, s.ascending)), Some((Modified, false)));
+        assert_eq!(
+            date.map(|s| (s.column, s.ascending)),
+            Some((Modified, false))
+        );
         assert_eq!(
             SearchSort::after_click(date, Modified).map(|s| s.ascending),
             Some(true)

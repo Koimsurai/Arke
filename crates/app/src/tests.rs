@@ -3624,17 +3624,20 @@ fn tab_in_the_rename_box_moves_to_the_next_item(cx: &mut TestAppContext) {
     wait_watcher(&fs, dir_path);
     let renaming = |v: &Explorer| v.renaming.as_ref().map(|r| r.name.to_string());
 
-    // Tab commits "first" and goes on to b.txt, which is the one selected.
+    // Tab commits "a2" and goes on to b.txt, which is the one selected.
     cx.simulate_keystrokes("home f2");
-    assert_eq!(view.update(cx, |v, _| renaming(v)).as_deref(), Some("a.txt"));
-    cx.simulate_input("first");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("a.txt")
+    );
+    cx.simulate_input("a2");
     cx.simulate_keystrokes("tab");
     view.update(cx, |v, _| {
         assert_eq!(renaming(v).as_deref(), Some("b.txt"));
         assert_eq!(selected_name(v).as_deref(), Some("b.txt"));
     });
-    wait_until(cx, &view, "first renamed", |v| {
-        names(v).contains(&"first.txt".to_string())
+    wait_until(cx, &view, "a renamed", |v| {
+        names(v).contains(&"a2.txt".to_string())
     });
     // The renamed row doesn't take the selection back when the rename is done.
     view.update(cx, |v, _| {
@@ -3650,49 +3653,52 @@ fn tab_in_the_rename_box_moves_to_the_next_item(cx: &mut TestAppContext) {
         assert!(v.renaming.as_ref().is_some_and(|r| r.problem.is_some()));
     });
     cx.simulate_keystrokes("ctrl-a");
-    cx.simulate_input("second.txt");
+    cx.simulate_input("b2.txt");
     cx.simulate_keystrokes("tab");
-    assert_eq!(view.update(cx, |v, _| renaming(v)).as_deref(), Some("c.txt"));
-    wait_until(cx, &view, "second renamed", |v| {
-        names(v).contains(&"second.txt".to_string())
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("c.txt")
+    );
+    wait_until(cx, &view, "b renamed", |v| {
+        names(v).contains(&"b2.txt".to_string())
     });
 
     // At the last item Tab only commits.
-    cx.simulate_input("third");
+    cx.simulate_input("c2");
     cx.simulate_keystrokes("tab");
     assert!(view.update(cx, |v, _| v.renaming.is_none()));
-    wait_until(cx, &view, "third renamed", |v| {
-        names(v).contains(&"third.txt".to_string())
+    wait_until(cx, &view, "c renamed", |v| {
+        names(v).contains(&"c2.txt".to_string())
     });
     assert_eq!(
         shell.ops(),
         [
             FileOp::Rename {
                 path: PathBuf::from(r"C:\r\a.txt"),
-                new_name: "first.txt".into(),
+                new_name: "a2.txt".into(),
             },
             FileOp::Rename {
                 path: PathBuf::from(r"C:\r\b.txt"),
-                new_name: "second.txt".into(),
+                new_name: "b2.txt".into(),
             },
             FileOp::Rename {
                 path: PathBuf::from(r"C:\r\c.txt"),
-                new_name: "third.txt".into(),
+                new_name: "c2.txt".into(),
             },
         ]
     );
 
-    // Shift+Tab goes back through the list as shown now (first, second, third), and at the first
+    // Shift+Tab goes back through the list as shown now (a2, b2, c2), and at the first
     // item it only commits. Nothing is typed, so no more renames.
     cx.simulate_keystrokes("end f2");
     assert_eq!(
         view.update(cx, |v, _| renaming(v)).as_deref(),
-        Some("third.txt")
+        Some("c2.txt")
     );
     cx.simulate_keystrokes("shift-tab");
     assert_eq!(
         view.update(cx, |v, _| renaming(v)).as_deref(),
-        Some("second.txt")
+        Some("b2.txt")
     );
     cx.simulate_keystrokes("shift-tab shift-tab");
     assert!(view.update(cx, |v, _| v.renaming.is_none()));

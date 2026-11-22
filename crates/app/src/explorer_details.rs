@@ -196,14 +196,22 @@ impl Explorer {
                 ),
             )
             .child(
-                self.search_header_cell(SearchColumn::Location, t!("col.location").into_owned(), cx)
-                    .w(theme::col_location())
-                    .flex_none(),
+                self.search_header_cell(
+                    SearchColumn::Location,
+                    t!("col.location").into_owned(),
+                    cx,
+                )
+                .w(theme::col_location())
+                .flex_none(),
             )
             .child(resizable(
-                self.search_header_cell(SearchColumn::Modified, t!("col.modified").into_owned(), cx)
-                    .w(crate::prefs::modified_width())
-                    .flex_none(),
+                self.search_header_cell(
+                    SearchColumn::Modified,
+                    t!("col.modified").into_owned(),
+                    cx,
+                )
+                .w(crate::prefs::modified_width())
+                .flex_none(),
                 Col::Modified,
                 cx,
             ))

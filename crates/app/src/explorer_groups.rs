@@ -216,12 +216,6 @@ impl Groups {
     pub(crate) fn row_of(&self, ix: usize) -> usize {
         self.row_of.get(ix).map_or(ix, |r| *r as usize)
     }
-
-    /// Items of the collapsed section holding `ix`.
-    pub(crate) fn hidden_at(&self, ix: usize) -> Option<Range<usize>> {
-        let p = self.hidden.partition_point(|r| r.end <= ix);
-        self.hidden.get(p).filter(|r| r.start <= ix).cloned()
-    }
 }
 
 /// "Today" for date buckets: local day number and the local offset from UTC in seconds.
@@ -760,7 +754,10 @@ impl Explorer {
                 _ => return false,
             }
         } else if let Some(grid) = self.grid_groups() {
-            match grid.hidden_at(ix).and_then(|(_, slot)| grid.slots.get(*slot)) {
+            match grid
+                .hidden_at(ix)
+                .and_then(|(_, slot)| grid.slots.get(*slot))
+            {
                 Some(Slot::Header { label, .. }) => label.clone(),
                 _ => return false,
             }
@@ -904,7 +901,14 @@ mod tests {
         for name in ["a1", "a2", "a3", "a4", "a5", "b1", "b2"] {
             entries.push(Entry::new(name, EntryKind::File, 1, None, 0));
         }
-        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today, &HashSet::new());
+        let (rows, _) = build(
+            &entries,
+            |_| 0,
+            SortColumn::Name,
+            true,
+            today,
+            &HashSet::new(),
+        );
         let grid = GridGroups::new((0, 0, SortColumn::Name, true, 0, 3), &rows, 3);
         // Folders 1 row, A two rows (3+2), B 1 row; a header slot before each section.
         let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
@@ -972,7 +976,14 @@ mod tests {
             // A non-ASCII first letter falls into "Other".
             Entry::new("報告.docx", EntryKind::File, 1, None, 0),
         ];
-        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today, &HashSet::new());
+        let (rows, row_of) = build(
+            &entries,
+            |_| 0,
+            SortColumn::Name,
+            true,
+            today,
+            &HashSet::new(),
+        );
         let headers: Vec<(String, usize)> = rows
             .iter()
             .filter_map(|r| match r {
@@ -1006,9 +1017,7 @@ mod tests {
             offset: 0,
         };
         let spec = arke_core::SortSpec::by(SortColumn::Modified, false, false);
-        let with_date = |name: &str, kind, ago| {
-            Entry::new(name, kind, 1, Some(at(today, ago)), 0)
-        };
+        let with_date = |name: &str, kind, ago| Entry::new(name, kind, 1, Some(at(today, ago)), 0);
         let entries = vec![
             with_date("new.txt", EntryKind::File, 0),
             with_date("new-dir", EntryKind::Dir, 0),
@@ -1016,14 +1025,21 @@ mod tests {
             with_date("old-dir", EntryKind::Dir, 400),
         ];
         let labels = |apart: bool| -> Vec<(String, usize)> {
-            build(&entries, |_| 0, SortColumn::Modified, apart, today, &HashSet::new())
-                .0
-                .iter()
-                .filter_map(|r| match r {
-                    Row::Header { label, count, .. } => Some((label.to_string(), *count)),
-                    Row::Item(_) => None,
-                })
-                .collect()
+            build(
+                &entries,
+                |_| 0,
+                SortColumn::Modified,
+                apart,
+                today,
+                &HashSet::new(),
+            )
+            .0
+            .iter()
+            .filter_map(|r| match r {
+                Row::Header { label, count, .. } => Some((label.to_string(), *count)),
+                Row::Item(_) => None,
+            })
+            .collect()
         };
         assert!(!spec.folders_apart());
         assert_eq!(
@@ -1062,7 +1078,7 @@ mod tests {
         ));
         // A's items point at their header, so scrolling to one lands there.
         assert_eq!(row_of, [1, 2, 2, 4]);
-        assert_eq!(hidden_ranges(&rows), [1..3]);
+        assert_eq!(hidden_ranges(&rows), [Range { start: 1, end: 3 }]);
     }
 
     #[test]

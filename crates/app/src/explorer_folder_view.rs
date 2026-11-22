@@ -58,6 +58,10 @@ pub(super) enum DefaultsPolicy {
 }
 
 /// A tab's state for the per-folder memory.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about where the current view came from"
+)]
 pub(super) struct State {
     /// The setting is on (and this isn't a benchmark, which must not be steered by saved views)
     enabled: bool,

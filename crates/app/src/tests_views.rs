@@ -341,12 +341,13 @@ fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
         ]
     );
 
-    // The expanded folder is deleted: its rows and its expansion go away.
+    // The expanded folder is deleted: its rows and its expansion go away (still descending, so
+    // the folder left trails the file).
     wait_watcher(&fs, Path::new(r"C:\t"));
     fs.remove(Path::new(r"C:\t"), "alpha");
     fs.emit_changed(Path::new(r"C:\t"), &["alpha"]);
     wait_until(cx, &view, "alpha gone", |v| {
-        view_names(v) == ["beta", "top.txt"] && v.tree_expanded().is_empty()
+        view_names(v) == ["top.txt", "beta"] && v.tree_expanded().is_empty()
     });
 }
 
@@ -966,9 +967,8 @@ fn collapsed_groups_hide_their_items(cx: &mut TestAppContext) {
         SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
     });
     cx.run_until_parked();
-    let rows = |cx: &mut gpui::VisualTestContext| {
-        view.update(cx, |v, _| v.groups().map(|g| g.rows.len()))
-    };
+    let rows =
+        |cx: &mut gpui::VisualTestContext| view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
     let toggle = |cx: &mut gpui::VisualTestContext, label: &str| {
         view.update(cx, |v, cx| {
             v.toggle_group(&SharedString::from(label.to_owned()), cx);
@@ -1047,9 +1047,8 @@ fn the_group_chevron_collapses_without_selecting(cx: &mut TestAppContext) {
         SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
     });
     cx.run_until_parked();
-    let rows = |cx: &mut gpui::VisualTestContext| {
-        view.update(cx, |v, _| v.groups().map(|g| g.rows.len()))
-    };
+    let rows =
+        |cx: &mut gpui::VisualTestContext| view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
     assert_eq!(rows(cx), Some(6), "3 items plus 3 headers");
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     // Rows: Folders header, docs, "A" header. The chevron sits after the list's and the header's

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tells each issue a release fixes that the fix is out. The issues are the "(#N)" a changeset ends
-# with, as they appear in the release notes; pull requests are skipped.
+# Tells each issue a release fixes that the fix is out. The issues are the "(#N)" or "(#N, #M)" a
+# changeset ends with, as they appear in the release notes; pull requests are skipped.
 #
 # Each issue gets one comment for the first RC of a version that has its fix and one for that
 # version's stable release; a hidden marker plus the release link in the comment keeps later RCs and
@@ -33,7 +33,8 @@ else
   ask="A fix is out in [Arke $version]($url). Arke updates itself, or you can get it from the release page. Could you try it and say here whether it works for you? This issue stays open until then."
 fi
 
-numbers="$( (grep -oE '\(#[0-9]+\)' <<<"$body" || true) | tr -dc '0-9\n' | sort -nu)"
+# "(#N)", or several fixed together: "(#253, #255)".
+numbers="$( { grep -oE '\(#[0-9]+(, #[0-9]+)*\)' <<<"$body" | grep -oE '[0-9]+' || true; } | sort -nu)"
 if [ -z "$numbers" ]; then
   echo "no issues in the notes of $TAG"
   exit 0

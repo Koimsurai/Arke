@@ -343,6 +343,10 @@ pub(crate) struct ShellMenu {
     /// doesn't count as gone (#278).
     #[serde(default)]
     pub(crate) partial: bool,
+    /// Submenus left still filling (their `lazy` number, label): not waited for while the menu
+    /// was read, filled right after it (#278).
+    #[serde(default)]
+    pub(crate) filling: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

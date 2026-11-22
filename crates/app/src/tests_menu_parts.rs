@@ -802,6 +802,10 @@ fn right_press() -> gpui::MouseDownEvent {
 /// before anything has been looked up for it, a registry command's (as "Run as administrator")
 /// as well as an extension's: the menu doesn't grow a row a moment later.
 #[gpui::test]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so its methods can't be named by path"
+)]
 fn seen_rows_are_in_the_menu_as_it_opens(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
@@ -836,7 +840,9 @@ fn seen_rows_are_in_the_menu_as_it_opens(cx: &mut TestAppContext) {
         view.update(cx, |v, cx| {
             v.on_row_right_down(0, &event, window, cx);
             v.right_press_released(event.position, window, cx);
-            v.context_menu.as_ref().map(|m| m.labels()).unwrap_or_default()
+            v.context_menu
+                .as_ref()
+                .map_or_else(Vec::new, |m| m.labels())
         })
     });
     assert!(labels.iter().any(|l| l == git), "{labels:?}");
@@ -854,6 +860,10 @@ fn seen_rows_are_in_the_menu_as_it_opens(cx: &mut TestAppContext) {
 /// while it is held: what came back by the time it is let go is in the menu as it shows. A press
 /// that goes away without a menu (a drag, a release elsewhere) lets go of what was read for it.
 #[gpui::test]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so its methods can't be named by path"
+)]
 fn the_menu_is_read_while_the_button_is_down(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1), file("b.txt", 1)]);
@@ -864,7 +874,9 @@ fn the_menu_is_read_while_the_button_is_down(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         view.update(cx, |v, cx| v.on_row_right_down(0, &event, window, cx));
     });
-    wait_for(cx, "read while held", |_| shell.system_menus.lock().len() == 1);
+    wait_for(cx, "read while held", |_| {
+        shell.system_menus.lock().len() == 1
+    });
     cx.run_until_parked();
     assert!(
         view.update(cx, |v, _| v.context_menu.is_none()),
@@ -899,6 +911,77 @@ fn the_menu_is_read_while_the_button_is_down(cx: &mut TestAppContext) {
         view.update(cx, |v, cx| v.right_press_moved(&moved, window, cx));
     });
     cx.run_until_parked();
-    assert!(view.update(cx, |v, _| v.context_menu.is_none() && v.early_menu.is_none()));
+    assert!(view.update(cx, |v, _| v.context_menu.is_none()
+        && v.early_menu.is_none()));
     assert!(!shell.shell_released.lock().is_empty(), "let go");
+}
+
+/// #278: a Windows submenu still filling when the whole menu was read isn't waited for; it is
+/// filled right after, without being opened, so it is usually in by the time it is.
+#[gpui::test]
+fn a_submenu_left_filling_is_filled_right_after(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: None,
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    *shell.lazy_submenus.lock() = vec![
+        ("Give access to".into(), vec![item(30, "Specific people")]),
+        ("Opened later".into(), vec![item(31, "Only when opened")]),
+    ];
+    // The first was still filling; the second, empty, is one filled when opened (as before).
+    *shell.filling_menu.lock() = vec![(0, "Give access to".into())];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "filled unopened", |v| {
+        v.context_menu
+            .as_ref()
+            .and_then(|m| m.shell_submenu_for_test("Give access to"))
+            .is_some_and(|(items, _)| items == ["Specific people"])
+    });
+    let filled: Vec<u32> = shell
+        .submenus_filled
+        .lock()
+        .iter()
+        .map(|(_, ix)| *ix)
+        .collect();
+    assert_eq!(filled, [0], "only the one left filling");
+    assert!(
+        view.update(cx, |v, _| v
+            .context_menu
+            .as_ref()
+            .and_then(|m| m.shell_submenu_for_test("Opened later")))
+            .is_some_and(|(items, lazy)| lazy && !items.iter().any(|i| i == "Only when opened"))
+    );
+}
+
+/// #278: a submenu left filling that comes back with nothing Arke can show (owner-drawn items)
+/// goes from "Show more options", rather than staying as an empty submenu.
+#[gpui::test]
+fn a_submenu_left_filling_with_nothing_goes(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    *shell.lazy_submenus.lock() = vec![("Drawn by its app".into(), Vec::new())];
+    *shell.filling_menu.lock() = vec![(0, "Drawn by its app".into())];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    wait_for(cx, "filled", |_| !shell.submenus_filled.lock().is_empty());
+    wait_until(cx, &view, "gone", |v| {
+        v.context_menu
+            .as_ref()
+            .is_some_and(|m| m.shell_submenu_for_test("Drawn by its app").is_none())
+    });
 }

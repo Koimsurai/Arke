@@ -605,6 +605,9 @@ pub(crate) struct ContextMenu {
     /// "Send to" as the menu host lists it (label, targets), put in place of Windows' own under
     /// "Show more options", which fills slowly and was often cut short (#278).
     send_to: Option<(SharedString, Vec<MenuEntry>)>,
+    /// Submenus of the whole Windows menu left still filling ([`ShellMenu::filling`]), by number:
+    /// one that comes back with nothing to show goes (#278).
+    left_filling: Vec<u32>,
     /// Top-level row index of the "Show more options" submenu.
     shell_slot: Option<usize>,
     /// Number of pinned Windows commands placed directly above "Show more options".
@@ -682,6 +685,7 @@ impl ContextMenu {
             shell_request: None,
             whole_partial: false,
             send_to: None,
+            left_filling: Vec::new(),
             shell_slot: None,
             pinned_rows: 0,
             parts: Vec::new(),
@@ -2412,7 +2416,22 @@ impl Explorer {
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("more-options", move || {
+            let started = Instant::now();
             let result = shell.shell_menu(&paths, background, extended);
+            // What a slow menu was waiting on can be named from the log (#278).
+            if let Ok(menu) = &result {
+                let names: Vec<&str> = menu.filling.iter().map(|(_, l)| l.as_str()).collect();
+                log::info!(
+                    "more options: {} ms{}{}",
+                    started.elapsed().as_millis(),
+                    if menu.partial { ", partly read" } else { "" },
+                    if names.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", filling after: {}", names.join(", "))
+                    }
+                );
+            }
             let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Whole {
                 request,
                 result,
@@ -2441,8 +2460,11 @@ impl Explorer {
         };
         menu.shell_request = None;
         menu.whole_request = Some(request);
+        let mut filling = Vec::new();
         let children = match result {
             Ok(shell_menu) => {
+                filling = shell_menu.filling.iter().map(|(ix, _)| *ix).collect();
+                menu.left_filling.clone_from(&filling);
                 menu.shell_session = Some(shell_menu.session);
                 menu.whole_partial = shell_menu.partial;
                 let entries: Vec<MenuEntry> = without_duplicates(shell_menu.entries, &menu.entries)
@@ -2489,6 +2511,7 @@ impl Explorer {
             self.learn_pin_owners(menu, request, cx);
         }
         self.fill_lazy_for_pins(cx);
+        self.fill_left_filling(&filling);
     }
 
     /// A pinned row clicked before its source answered: runs it now that it is in, or forgets it

@@ -158,6 +158,8 @@ struct FakeShell {
     extra_menu: Mutex<Vec<crate::shell::ShellMenuEntry>>,
     /// While set, reading one source's menu waits for a message on it (a slow source).
     part_gate: Mutex<Option<flume::Receiver<()>>>,
+    /// Submenus the whole menu says are still filling ([`crate::shell::ShellMenu::filling`]).
+    pub(crate) filling_menu: Mutex<Vec<(u32, String)>>,
     /// Context menu extensions and their menus, read on their own (sessions from 100).
     extensions: Mutex<
         Vec<(
@@ -691,6 +693,7 @@ impl Shell for FakeShell {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             entries,
             partial: self.partial_menu.load(std::sync::atomic::Ordering::Relaxed),
+            filling: self.filling_menu.lock().clone(),
         })
     }
 
@@ -809,6 +812,7 @@ impl Shell for FakeShell {
                 session: 100 + at as u64,
                 entries: extensions[at].1.clone(),
                 partial: self.partial_extensions.lock().contains(&handler.name),
+                filling: Vec::new(),
             },
             Duration::from_millis(5),
         ))

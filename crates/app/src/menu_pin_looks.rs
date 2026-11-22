@@ -136,8 +136,12 @@ fn encode(looks: &HashMap<String, Look>) -> Vec<u8> {
         };
         let pixels = look.icon.as_ref().and_then(|icon| {
             let size = icon.size(0);
-            let w = u16::try_from(size.width.0).ok().filter(|&w| w <= MAX_SIDE)?;
-            let h = u16::try_from(size.height.0).ok().filter(|&h| h <= MAX_SIDE)?;
+            let w = u16::try_from(size.width.0)
+                .ok()
+                .filter(|&w| w <= MAX_SIDE)?;
+            let h = u16::try_from(size.height.0)
+                .ok()
+                .filter(|&h| h <= MAX_SIDE)?;
             let bytes = icon.as_bytes(0)?;
             (bytes.len() == usize::from(w) * usize::from(h) * 4).then_some((w, h, bytes))
         });
@@ -163,7 +167,9 @@ fn decode(bytes: &[u8]) -> Option<Vec<(String, Look)>> {
     let mut out = Vec::new();
     while let Some(len) = take(2) {
         let len = u16::from_le_bytes([len[0], len[1]]);
-        let key = std::str::from_utf8(take(usize::from(len))?).ok()?.to_string();
+        let key = std::str::from_utf8(take(usize::from(len))?)
+            .ok()?
+            .to_string();
         let flags = take(1)?[0];
         let icon = if flags & 2 == 0 {
             None

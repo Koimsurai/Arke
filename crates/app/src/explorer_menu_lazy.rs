@@ -70,6 +70,45 @@ impl ContextMenu {
         Some(entries)
     }
 
+    /// The rows below the row path `path` (row indexes from the top level).
+    fn rows_at_mut(&mut self, path: &[usize]) -> Option<&mut Vec<MenuEntry>> {
+        let mut entries = &mut self.entries;
+        for &ix in path {
+            match entries.get_mut(ix) {
+                Some(MenuEntry::Submenu { children, .. }) => entries = children,
+                _ => return None,
+            }
+        }
+        Some(entries)
+    }
+
+    /// Takes away the row at `at` (row indexes from the top level), which isn't open, keeping
+    /// open submenus and the highlight on their rows.
+    fn remove_row(&mut self, at: &[usize]) {
+        let Some((&ix, parent)) = at.split_last() else {
+            return;
+        };
+        let Some(rows) = self.rows_at_mut(parent).filter(|rows| ix < rows.len()) else {
+            return;
+        };
+        rows.remove(ix);
+        let level = parent.len();
+        if self.open.len() < level || self.open[..level] != *parent {
+            return;
+        }
+        if let Some(open) = self.open.get_mut(level) {
+            if *open > ix {
+                *open -= 1;
+            }
+        } else if let Some(h) = self.highlighted {
+            self.highlighted = match h.cmp(&ix) {
+                std::cmp::Ordering::Less => Some(h),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(h - 1),
+            };
+        }
+    }
+
     /// Pinned commands not in the menu yet (`pinned` in pin order).
     fn missing_pins(&self, pinned: &[String]) -> Vec<String> {
         let Some(MenuEntry::Submenu { children, .. }) =
@@ -166,6 +205,18 @@ fn mark_asked(entries: &mut [MenuEntry], whole: Option<u64>, session: u64, index
             mark_asked(children, whole, session, index);
         }
     }
+}
+
+/// Whether a submenu below `entries` waits for `session`/`index` and hasn't been asked for yet.
+fn unasked(entries: &[MenuEntry], whole: Option<u64>, session: u64, index: u32) -> bool {
+    entries.iter().any(|entry| match entry {
+        MenuEntry::Submenu { children, lazy, .. } => {
+            lazy.is_some_and(|l| {
+                l.index == index && l.session.or(whole) == Some(session) && !l.asked
+            }) || unasked(children, whole, session, index)
+        }
+        _ => false,
+    })
 }
 
 /// Where the submenu waiting for `session`/`index` is below `entries`: row indexes down to it.
@@ -280,6 +331,28 @@ impl Explorer {
         }
     }
 
+    /// The whole Windows menu came with submenus still filling, not waited for (`indexes`,
+    /// #278): filled now, in the background, so they are usually in by the time they open.
+    pub(super) fn fill_left_filling(&mut self, indexes: &[u32]) {
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
+        let (Some(session), serial) = (menu.shell_session, menu.serial) else {
+            return;
+        };
+        let mut asks = Vec::new();
+        for &index in indexes {
+            // One a pinned command is in is asked for already.
+            if unasked(&menu.entries, Some(session), session, index) {
+                mark_asked(&mut menu.entries, Some(session), session, index);
+                asks.push(index);
+            }
+        }
+        for index in asks {
+            self.ask_fill(serial, session, index);
+        }
+    }
+
     fn ask_fill(&self, serial: u64, session: u64, index: u32) {
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
@@ -315,12 +388,20 @@ impl Explorer {
             _ => None,
         };
         if let Some(path) = in_whole {
-            if let Some(MenuEntry::Submenu { children, .. }) = menu.entries.get_mut(slot) {
+            let mut open_path = vec![slot];
+            open_path.extend(&path);
+            // Left filling and now in with nothing Arke can show (owner-drawn items): it goes,
+            // unless it is open.
+            let nothing = matches!(&filled.result, Ok(rows) if rows.is_empty());
+            if nothing
+                && menu.left_filling.contains(&filled.index)
+                && !menu.open.starts_with(&open_path)
+            {
+                menu.remove_row(&open_path);
+            } else if let Some(MenuEntry::Submenu { children, .. }) = menu.entries.get_mut(slot) {
                 put_filled(children, &path, filled.result);
             }
             // Keyboard already went in while it held only "Loading…": select its first item.
-            let mut open_path = vec![slot];
-            open_path.extend(&path);
             if menu.keyboard && menu.highlighted.is_none() && menu.open == open_path {
                 menu.highlighted = menu
                     .level(menu.open.len())

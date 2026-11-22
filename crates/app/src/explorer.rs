@@ -797,6 +797,9 @@ pub(crate) struct Explorer {
     owner: Option<isize>,
     pub(crate) renaming: Option<ops::Renaming>,
     pub(crate) context_menu: Option<menu::ContextMenu>,
+    /// The menu for a right press on an item, made on the press so the Windows menu is read
+    /// while the button is still down; shown on release (#278).
+    pub(crate) early_menu: Option<menu::EarlyMenu>,
     /// A dismissed context menu fading out (drawn inert, see `motion::Leaving`).
     pub(crate) closing_menu: Option<crate::motion::Leaving<menu::ContextMenu>>,
     pub(crate) extract_job: Option<menu::ExtractJob>,
@@ -1146,6 +1149,7 @@ impl Explorer {
             owner: Self::owner_from(window),
             renaming: None,
             context_menu: None,
+            early_menu: None,
             closing_menu: None,
             extract_job: None,
             rename_when_appears: None,

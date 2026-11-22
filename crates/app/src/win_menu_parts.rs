@@ -117,6 +117,33 @@ pub(crate) fn item_kind(paths: &[PathBuf], background: bool) -> Option<String> {
     })
 }
 
+/// [`item_kind`] from what the list already knows of the first item (its path, whether it is a
+/// folder), reading nothing: for drawing pinned rows the moment the menu opens. `None` on a
+/// server, where the Windows menu isn't read.
+pub(crate) fn item_kind_known(first: Option<&(PathBuf, bool)>, background: bool) -> Option<String> {
+    if background {
+        return Some(r"Directory\Background".to_string());
+    }
+    let (path, folder) = first?;
+    if arke_core::remote::is_remote(path) {
+        return None;
+    }
+    Some(if path.parent().is_none() {
+        "Drive".into()
+    } else if *folder {
+        "Directory".into()
+    } else {
+        file_ext(path).unwrap_or_else(|| "*".into())
+    })
+}
+
+/// `.txt`, lowercased.
+fn file_ext(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e.to_lowercase()))
+}
+
 fn kind_of(target: &Target) -> String {
     match target {
         Target::Background => r"Directory\Background".into(),
@@ -341,10 +368,7 @@ fn target_of(path: &Path) -> Target {
     if path.is_dir() {
         return Target::Folder;
     }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| format!(".{}", e.to_lowercase()));
+    let ext = file_ext(path);
     let mut classes = Vec::new();
     let mut perceived = None;
     if let Some(ext) = &ext {

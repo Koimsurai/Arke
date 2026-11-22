@@ -111,6 +111,20 @@ impl Explorer {
         }
         let extended = menu.extended;
         menu.parts_request = Some(request);
+        // Rows known to show for this kind of item are drawn now, with the menu, from what was
+        // seen before (#325: they came a moment after it, once the registry had been read).
+        // The sources still say, and a row that doesn't show this time goes.
+        let now = crate::win_menu_parts::item_kind_known(menu.targets.first(), background)
+            .map_or_else(Vec::new, |kind| drawn_now(&owned, &types, &seen, &kind));
+        if !now.is_empty() {
+            menu.coming = now;
+            let pinned = SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .menu_pinned
+                .clone();
+            menu.sync_pinned(&pinned);
+        }
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("menu-extensions", move || {
@@ -142,12 +156,7 @@ impl Explorer {
             }
             // Rows known to show, and an extension's where it showed for this kind of item last
             // time (it decides for itself whether it adds its item).
-            let shown_here = |key: &str| {
-                kind.as_ref().is_some_and(|kind| {
-                    seen.get(key)
-                        .is_some_and(|kinds| kinds.iter().any(|k| k.eq_ignore_ascii_case(kind)))
-                })
-            };
+            let shown_here = |key: &str| kind.as_ref().is_some_and(|kind| seen_for(&seen, key, kind));
             let keys: Vec<String> = owned
                 .iter()
                 .filter(|(key, o)| {
@@ -158,17 +167,19 @@ impl Explorer {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            if !keys.is_empty() {
-                let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Coming {
-                    request,
-                    keys,
-                }));
-            }
+            // Sent even when empty: it also takes away rows drawn when the menu opened that
+            // have no source here this time.
+            let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Coming { request, keys }));
             for handler in wanted {
                 let (shell, tx, paths) = (Arc::clone(&shell), tx.clone(), paths.clone());
-                let kind = (handler.kind == HandlerKind::Extension)
-                    .then(|| kind.clone())
-                    .flatten();
+                // Where its pinned rows show, to draw them with the menu next time: an
+                // extension's, and a registry command's (not one shown only with Shift held).
+                let noted = match handler.kind {
+                    HandlerKind::Extension => true,
+                    HandlerKind::Verb { extended: only } => !only && !extended,
+                    HandlerKind::Command => false,
+                };
+                let kind = noted.then(|| kind.clone()).flatten();
                 spawn_thread("menu-extension", move || {
                     let result =
                         shell.shell_menu_handler(&paths, background, extended, &handler, request);
@@ -193,7 +204,19 @@ impl Explorer {
         else {
             return;
         };
-        menu.coming = keys;
+        // Rows drawn with the menu stay where they still have a source; the others go.
+        let gone: Vec<String> = menu
+            .coming
+            .iter()
+            .filter(|k| !keys.contains(k))
+            .cloned()
+            .collect();
+        menu.drop_coming(&gone);
+        for key in keys {
+            if !menu.coming.contains(&key) {
+                menu.coming.push(key);
+            }
+        }
         let pinned = SettingsStore::global(cx)
             .read(cx)
             .settings
@@ -367,6 +390,9 @@ impl Explorer {
         event: ShellMenuEvent,
         cx: &mut Context<Self>,
     ) {
+        let Some(event) = self.keep_for_early_menu(event) else {
+            return;
+        };
         match event {
             ShellMenuEvent::Whole { request, result } => {
                 self.handle_shell_menu(request, result, cx);
@@ -405,6 +431,37 @@ impl Explorer {
         };
         (!paths.is_empty()).then_some((paths, background))
     }
+}
+
+/// Pinned commands (pin key, owner) to draw as a menu for items of `kind` opens: a packaged
+/// command registered for that kind, any other seen there last time.
+fn drawn_now(
+    owned: &[(String, String)],
+    types: &std::collections::BTreeMap<String, Vec<String>>,
+    seen: &std::collections::BTreeMap<String, Vec<String>>,
+    kind: &str,
+) -> Vec<String> {
+    owned
+        .iter()
+        .filter(|(key, owner)| {
+            if owner.starts_with(COMMAND_OWNER) {
+                types.get(owner).is_some_and(|t| kind_matches(t, kind))
+            } else {
+                seen_for(seen, key, kind)
+            }
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// Whether pinned command `key` showed for items of `kind` last time.
+fn seen_for(
+    seen: &std::collections::BTreeMap<String, Vec<String>>,
+    key: &str,
+    kind: &str,
+) -> bool {
+    seen.get(key)
+        .is_some_and(|kinds| kinds.iter().any(|k| k.eq_ignore_ascii_case(kind)))
 }
 
 /// Notes for which kinds of item extensions' pinned commands showed (pin key, kind, shown),

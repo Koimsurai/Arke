@@ -329,6 +329,21 @@ pub(crate) fn query_handler(
     }
 }
 
+/// Reads "Send to" once for `path`, so its label, targets and icons are known before the first
+/// menu asks (the first read in a process takes about 0.3 s, later ones a few ms).
+pub(crate) fn warm_send_to(path: &Path) {
+    if let Ok(menu) = query_handler(
+        &[path.to_path_buf()],
+        false,
+        false,
+        &MenuHandler::send_to(),
+        0,
+    ) && let Some(part) = take_part(menu.session)
+    {
+        let _ = part.thread.send(Request::Release(part.session));
+    }
+}
+
 fn release_parts_before(group: u64) {
     let old: Vec<Part> = {
         let mut parts = PARTS.lock();
@@ -753,6 +768,7 @@ fn fill_single(
     let result = ShellMenu {
         session: session.id,
         entries,
+        partial: false,
     };
     CURRENT.with(|c| *c.borrow_mut() = Some(session));
     Ok(result)
@@ -794,6 +810,7 @@ fn fill(
     let result = ShellMenu {
         session: session.id,
         entries,
+        partial: reader.partial,
     };
     CURRENT.with(|c| *c.borrow_mut() = Some(session));
     Ok(result)
@@ -814,6 +831,13 @@ fn build_handler(
     }
     if handler.kind != HandlerKind::Extension {
         return one::build(paths, background, handler, window);
+    }
+    // Send To with its label known: no need to create Windows' extension at all (#278).
+    if !background
+        && handler.is_send_to()
+        && let Some(label) = one::cached_send_to_label()
+    {
+        return one::send_to(paths, label, window);
     }
     let mut pidls = parse_pidls(paths)?;
     let owner = window;
@@ -872,6 +896,11 @@ fn build_handler(
     }
     initialized?;
     let menu: IContextMenu = init.cast()?;
+    // Send To: listed from its folder, not filled by the extension (`one.rs`, #278).
+    if !background && handler.is_send_to() {
+        let label = one::send_to_label(&menu).unwrap_or_else(|| handler.name.clone());
+        return one::send_to(paths, label, owner);
+    }
     if background {
         set_background_site(&menu, &paths[0]);
     }
@@ -932,6 +961,8 @@ struct Reader<'a> {
     /// Empty submenus found, numbered from `first_lazy`.
     lazy: Vec<Lazy>,
     first_lazy: usize,
+    /// Something wasn't read in full ([`ShellMenu::partial`]).
+    partial: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -941,6 +972,7 @@ impl<'a> Reader<'a> {
             budget: MAX_ITEMS,
             lazy: Vec::new(),
             first_lazy,
+            partial: false,
         }
     }
 
@@ -953,6 +985,7 @@ impl<'a> Reader<'a> {
         let mut seen = std::collections::HashSet::new();
         for pos in 0..u32::try_from(count).unwrap_or(0) {
             if self.budget == 0 {
+                self.partial = true;
                 break;
             }
             let Some(entry) = self.read_item(hmenu, pos, depth) else {
@@ -1009,14 +1042,25 @@ impl<'a> Reader<'a> {
             if depth + 1 >= MAX_DEPTH {
                 return None;
             }
-            init_submenu(menu, info.hSubMenu, pos, false);
-            let children = self.read_menu(info.hSubMenu, depth + 1);
+            // "Send to" is listed by Arke itself, beside this menu (`one.rs`): not waited for
+            // here, where it took 0.7 to 1.6 s to fill and was often cut short. Kept to fill
+            // when it opens, should that list not be there (#278).
+            let send_to = one::cached_send_to_label().is_some_and(|l| l == label);
+            let settled = send_to || init_submenu(menu, info.hSubMenu, pos, false);
+            self.partial |= !settled;
+            let children = if send_to {
+                Vec::new()
+            } else {
+                self.read_menu(info.hSubMenu, depth + 1)
+            };
             // Items there that can't be read (owner-drawn, bitmaps, submenus past the depth
             // limit) leave nothing to show, now or later: dropped. Only a submenu with no items
             // at all is one its extension fills on opening.
-            if children.is_empty() && !keeps_for_opening(item_count(info.hSubMenu)) {
+            if children.is_empty() && !send_to && !keeps_for_opening(item_count(info.hSubMenu)) {
                 return None;
             }
+            // Left to fill when it opens: not read yet (Send To aside, read on its own).
+            self.partial |= children.is_empty() && !send_to;
             let lazy = children.is_empty().then(|| {
                 self.lazy.push(Lazy {
                     hmenu: info.hSubMenu,
@@ -1076,17 +1120,20 @@ fn item_verb(menu: &IContextMenu, id: u32) -> Option<String> {
 /// all (not even a placeholder) isn't waited for: it is kept and asked again when the user opens
 /// it ([`fill_lazy`], `opening` true). Windows' Sharing did that to "Give access to" on a
 /// folder's empty space, which held that menu up for the whole 1.5 s.
-fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
+///
+/// Returns whether the submenu settled: false when the wait ran out (or gave way to a command)
+/// while it was still filling.
+fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) -> bool {
     let lparam = LPARAM(isize::try_from(pos).unwrap_or_default());
     let init = || {
         let _ = forward_menu_msg(menu, WM_INITMENUPOPUP, WPARAM(submenu.0 as usize), lparam);
     };
     init();
     if has_text(submenu) {
-        return;
+        return true;
     }
     if !opening && item_count(submenu) <= 0 {
-        return;
+        return true;
     }
     // Slow submenus like "Send to" fill gradually; done once the item count is stable for a
     // few rounds. Only these get the message again (they refill fully each time).
@@ -1096,7 +1143,7 @@ fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
         // A command picked (or the menu closed) meanwhile goes first; this fill ends with what
         // is there.
         if opening && urgent_waiting() {
-            return;
+            return false;
         }
         pump_messages();
         std::thread::sleep(Duration::from_millis(30));
@@ -1104,7 +1151,7 @@ fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
         if !has_text(submenu) {
             // Opened and still without a single item: not much longer.
             if opening && round + 1 >= EMPTY_TRIES && item_count(submenu) <= 0 {
-                return;
+                return false;
             }
             continue;
         }
@@ -1112,13 +1159,14 @@ fn init_submenu(menu: &IContextMenu, submenu: HMENU, pos: u32, opening: bool) {
         if count == last {
             stable += 1;
             if stable >= 3 {
-                return;
+                return true;
             }
         } else {
             last = count;
             stable = 0;
         }
     }
+    false
 }
 
 /// Items in `hmenu`, of any kind (-1 if it isn't a menu).
@@ -1234,6 +1282,73 @@ fn invoke_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #278: once the menu host knows "Send to" (it lists it itself), reading the whole Windows
+    /// menu doesn't wait for Windows' own to fill: it is left to fill when opened. Prints how
+    /// long the whole menu took both ways.
+    #[test]
+    #[ignore = "reads this machine's Windows menu; run by hand"]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a by-hand measurement prints what it found"
+    )]
+    fn the_whole_menu_doesnt_wait_for_send_to() {
+        let file = crate::win::long_temp_dir()
+            .join(format!("arke-whole-sendto-{}.txt", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        let read = || {
+            let started = std::time::Instant::now();
+            let menu = query(std::slice::from_ref(&file), false, false).unwrap();
+            let took = started.elapsed();
+            release(menu.session);
+            (menu, took)
+        };
+        let (_, cold) = read();
+        let (before, waited) = read();
+        warm_send_to(&file);
+        let label = one::cached_send_to_label().expect("Send To's label");
+        let (after, took) = read();
+        let _ = std::fs::remove_file(&file);
+        let send_to = |menu: &ShellMenu| {
+            menu.entries.iter().find_map(|e| match e {
+                ShellMenuEntry::Submenu {
+                    label: l,
+                    children,
+                    lazy,
+                    ..
+                } if *l == label => Some((children.len(), lazy.is_some())),
+                _ => None,
+            })
+        };
+        eprintln!(
+            "cold {cold:?}; waiting for Send To {waited:?} {:?}; not waiting {took:?} {:?}",
+            send_to(&before),
+            send_to(&after)
+        );
+        let names: Vec<String> = before
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                ShellMenuEntry::Submenu {
+                    label: l, children, ..
+                } if *l == label => Some(
+                    children
+                        .iter()
+                        .map(|c| match c {
+                            ShellMenuEntry::Item { label, verb, .. } => {
+                                format!("{label} [{verb:?}]")
+                            }
+                            ShellMenuEntry::Submenu { label, .. } => format!("{label} ›"),
+                            ShellMenuEntry::Separator => "---".into(),
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
+        eprintln!("Windows' own: {names:?}");
+        assert_eq!(send_to(&after), Some((0, true)));
+    }
 
     /// A folder background's command registered only for backgrounds (`Directory\Background\shell`,
     /// like Everything's "Search Everything...") runs (#184). Needs such a command:

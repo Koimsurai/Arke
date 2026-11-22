@@ -581,6 +581,12 @@ pub(crate) struct ContextMenu {
     /// The request the whole Windows menu came in for, once it is in: a command pinned from it
     /// learns its source at once (`toggle_shell_pin`).
     whole_request: Option<u64>,
+    /// The whole Windows menu came in only partly read ([`ShellMenu::partial`]): a pinned command
+    /// missing from it may still be there, so it doesn't decide which pinned rows go (#278).
+    whole_partial: bool,
+    /// "Send to" as the menu host lists it (label, targets), put in place of Windows' own under
+    /// "Show more options", which fills slowly and was often cut short (#278).
+    send_to: Option<(SharedString, Vec<MenuEntry>)>,
     /// Top-level row index of the "Show more options" submenu.
     shell_slot: Option<usize>,
     /// Number of pinned Windows commands placed directly above "Show more options".
@@ -632,6 +638,8 @@ impl ContextMenu {
             targets,
             shell_session: None,
             shell_request: None,
+            whole_partial: false,
+            send_to: None,
             shell_slot: None,
             pinned_rows: 0,
             parts: Vec::new(),
@@ -683,12 +691,38 @@ impl ContextMenu {
         }
     }
 
+    /// Puts the host's own "Send to" under "Show more options" in place of Windows', once both
+    /// are in. Its rows run in their own menu (their session), like a pinned command's.
+    pub(super) fn apply_send_to(&mut self) {
+        let Some((label, targets)) = &self.send_to else {
+            return;
+        };
+        let Some(MenuEntry::Submenu { children, .. }) =
+            self.shell_slot.and_then(|ix| self.entries.get_mut(ix))
+        else {
+            return;
+        };
+        for entry in children.iter_mut() {
+            if let MenuEntry::Submenu {
+                label: l,
+                children: c,
+                lazy,
+                ..
+            } = entry
+                && l == label
+            {
+                c.clone_from(targets);
+                *lazy = None;
+            }
+        }
+    }
+
     pub(super) fn sync_pinned(&mut self, pinned: &[String]) {
         let Some(slot) = self.shell_slot else {
             return;
         };
         let start = slot - self.pinned_rows;
-        let whole_in = self.shell_session.is_some();
+        let whole_in = self.shell_session.is_some() && !self.whole_partial;
         let mut found: Vec<MenuItem> = Vec::new();
         if let Some(MenuEntry::Submenu { children, .. }) = self.entries.get(slot) {
             // From the whole Windows menu once it's in, until then from the sources read on
@@ -766,6 +800,35 @@ impl ContextMenu {
     #[cfg(test)]
     pub(crate) fn labels(&self) -> Vec<String> {
         self.labels_at(0)
+    }
+
+    /// Test helper: the items of Windows submenu `label` under "Show more options", and whether
+    /// it is still left to fill when opened.
+    #[cfg(test)]
+    pub(crate) fn shell_submenu_for_test(&self, label: &str) -> Option<(Vec<String>, bool)> {
+        let MenuEntry::Submenu { children, .. } =
+            self.shell_slot.and_then(|ix| self.entries.get(ix))?
+        else {
+            return None;
+        };
+        children.iter().find_map(|e| match e {
+            MenuEntry::Submenu {
+                label: l,
+                children,
+                lazy,
+                ..
+            } if l.as_ref() == label => Some((
+                children
+                    .iter()
+                    .filter_map(|c| match c {
+                        MenuEntry::Item(i) => Some(i.label.to_string()),
+                        _ => None,
+                    })
+                    .collect(),
+                lazy.is_some(),
+            )),
+            _ => None,
+        })
     }
 
     /// Test helper: labels at `level`.
@@ -2106,6 +2169,7 @@ impl Explorer {
         let children = match result {
             Ok(shell_menu) => {
                 menu.shell_session = Some(shell_menu.session);
+                menu.whole_partial = shell_menu.partial;
                 let entries: Vec<MenuEntry> = without_duplicates(shell_menu.entries, &menu.entries)
                     .into_iter()
                     .map(|e| MenuEntry::from_shell_in(e, &[], None))
@@ -2123,6 +2187,7 @@ impl Explorer {
         {
             *c = children;
         }
+        menu.apply_send_to();
         let pinned = SettingsStore::global(cx)
             .read(cx)
             .settings
@@ -2182,7 +2247,7 @@ impl Explorer {
                     });
                 });
             }
-            None if menu.shell_request.is_none() => menu.pending = None,
+            None if menu.shell_request.is_none() && !menu.whole_partial => menu.pending = None,
             None => {}
         }
     }

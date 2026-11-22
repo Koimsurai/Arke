@@ -338,6 +338,11 @@ pub(crate) enum KnownFolder {
 pub(crate) struct ShellMenu {
     pub(crate) session: u64,
     pub(crate) entries: Vec<ShellMenuEntry>,
+    /// Not everything was read: a submenu still filling when the wait ran out, one left to fill
+    /// when it opens, or the item limit. A command missing from it may still be there, so it
+    /// doesn't count as gone (#278).
+    #[serde(default)]
+    pub(crate) partial: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

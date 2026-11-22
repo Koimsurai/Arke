@@ -70,6 +70,22 @@ impl MenuHandler {
         }
     }
 
+    /// Windows' Send To extension, which the menu host lists from its folder itself (#278).
+    pub(crate) fn send_to() -> Self {
+        Self {
+            key: "AllFilesystemObjects".into(),
+            clsid: SEND_TO.into(),
+            name: "SendTo".into(),
+            kind: HandlerKind::Extension,
+            parent: None,
+        }
+    }
+
+    /// Whether this is Windows' Send To extension.
+    pub(crate) fn is_send_to(&self) -> bool {
+        self.kind == HandlerKind::Extension && self.clsid.eq_ignore_ascii_case(SEND_TO)
+    }
+
     /// A packaged app's command, `clsid` `{...}`.
     pub(crate) fn command(clsid: &str) -> Self {
         Self {
@@ -81,6 +97,9 @@ impl MenuHandler {
         }
     }
 }
+
+/// Windows' Send To extension's class.
+pub(crate) const SEND_TO: &str = "{7BA4C740-9E81-11CF-99D3-00AA004AE837}";
 
 /// Owner prefixes (see [`MenuHandler::owner`]).
 pub(crate) const VERB_OWNER: &str = "verb:";

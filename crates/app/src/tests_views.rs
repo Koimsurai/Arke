@@ -596,17 +596,17 @@ fn tree_folder_menu_creates_inside_nested_folders(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("home right");
     wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
 
-    // alpha\inner, collapsed: the group sits right under Open, as at the top of VS Code's menu.
+    // alpha\inner, collapsed: the group sits right under Open, as at the top of VS Code's menu,
+    // with "New file…" and "New folder…" in "New" (#190).
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).unwrap();
     assert_eq!(
-        labels[..6],
+        labels[..5],
         [
             tr("menu.open"),
             tr("menu.open_in_new_tab"),
             "—".into(),
-            tr("menu.new_file_in"),
-            tr("menu.new_folder_in"),
+            format!("{} ›", tr("menu.new")),
             tr("menu.search_in_folder"),
         ]
     );

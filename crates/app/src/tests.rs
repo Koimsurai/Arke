@@ -42,6 +42,8 @@ mod lazy_submenus;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
+#[path = "tests_menu_customize.rs"]
+mod menu_customize;
 #[path = "tests_menu_parts.rs"]
 mod menu_parts;
 #[path = "tests_motion.rs"]
@@ -3784,13 +3786,31 @@ fn background_menu_new_text_file_and_more_options(cx: &mut TestAppContext) {
 
     right_click(&view, cx, None);
     let labels = menu_labels(&view, cx).unwrap();
+    // New folder and New text document are in "New", at the top (#190).
+    assert_eq!(labels[0], format!("{} ›", t!("menu.new")));
+    view.update(cx, |v, cx| {
+        if let Some(menu) = v.context_menu.as_mut() {
+            menu.highlight_for_test(0);
+        }
+        cx.notify();
+    });
+    cx.simulate_keystrokes("right");
     assert_eq!(
-        &labels[..2],
-        [
+        view.update(cx, |v, _| v.context_menu.as_ref().map(|m| m.labels_at(1))),
+        Some(vec![
             t!("menu.new_folder").into_owned(),
             t!("menu.new_text_file").into_owned()
-        ]
+        ])
     );
+    assert_eq!(
+        view.update(cx, |v, _| v
+            .context_menu
+            .as_ref()
+            .and_then(|m| m.shortcut_at(1, 0))),
+        Some("Ctrl+Shift+N"),
+        "the shortcut stays on New folder"
+    );
+    cx.simulate_keystrokes("left");
     let more_options = format!("{} ›", t!("menu.more_options"));
     assert_eq!(labels.last(), Some(&more_options));
     wait_shell("background menu", || {
@@ -4886,7 +4906,7 @@ fn details_rows_end_with_their_columns(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(view.update(cx, |v, _| v.selection.is_empty()));
     let labels = menu_labels(&view, cx).expect("a menu opens");
-    assert_eq!(labels.first(), Some(&t!("menu.new_folder").into_owned()));
+    assert_eq!(labels.first(), Some(&format!("{} ›", t!("menu.new"))));
     // A marquee started there selects the rows it reaches into, not the ones it doesn't.
     cx.simulate_keystrokes("escape");
     let from = point(end + px(40.), bounds.top() + row * 0.5);
@@ -5440,7 +5460,7 @@ fn context_menu_items_selection_and_keyboard(cx: &mut TestAppContext) {
     right_click(&view, cx, None);
     assert!(view.update(cx, |v, _| v.selection.is_empty()));
     let labels = menu_labels(&view, cx).unwrap();
-    assert_eq!(labels.first(), Some(&t!("menu.new_folder").into_owned()));
+    assert_eq!(labels.first(), Some(&format!("{} ›", t!("menu.new"))));
     cx.simulate_keystrokes("escape");
 
     // Keyboard: Shift+F10 opens the menu; Down x6 then Enter runs the sixth enabled item (after

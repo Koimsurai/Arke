@@ -349,14 +349,19 @@ pub(crate) enum MenuEntry {
         label: SharedString,
         enabled: bool,
         icon: Option<Arc<RenderImage>>,
+        /// Arke's own icon for its own submenus (`icon` is the one Windows gives its submenus).
+        glyph: Option<Icon>,
         children: Vec<Self>,
         /// "Show more options" and the submenus read from Windows inside it; `false` for Arke's
-        /// own View submenu.
+        /// own View and New submenus.
         shell: bool,
         /// A Windows submenu filled only when it is opened (`explorer_menu_lazy.rs`).
         lazy: Option<lazy::LazySubmenu>,
+        /// Arke's own submenus: which entry of Settings › Context menu it is (`view`, `new`).
+        key: Option<&'static str>,
     },
-    /// Row of icon buttons (cut, copy, rename, delete) at the bottom, as in the Windows 11 menu.
+    /// Row of icon buttons (a folder's new folder, cut, copy, rename, delete) at the bottom, as in
+    /// the Windows 11 menu.
     Actions(Vec<MenuItem>),
     Separator,
 }
@@ -366,7 +371,7 @@ impl MenuEntry {
         match self {
             Self::Item(i) => i.enabled,
             Self::Submenu { enabled, .. } => *enabled,
-            // Icon buttons are mouse-only; the keyboard has Ctrl+X, Ctrl+C, F2 and Delete.
+            // Icon buttons are mouse-only; the keyboard has Ctrl+X, Ctrl+C, F2, Delete and "New".
             Self::Actions(_) | Self::Separator => false,
         }
     }
@@ -374,7 +379,7 @@ impl MenuEntry {
     const fn has_mark(&self) -> bool {
         match self {
             Self::Item(i) => i.icon.is_some() || i.glyph.is_some() || i.checked,
-            Self::Submenu { icon, .. } => icon.is_some(),
+            Self::Submenu { icon, glyph, .. } => icon.is_some() || glyph.is_some(),
             Self::Actions(_) | Self::Separator => false,
         }
     }
@@ -438,9 +443,11 @@ impl MenuEntry {
                     label: label.into(),
                     enabled,
                     icon: icon(i),
+                    glyph: None,
                     children,
                     shell: true,
                     lazy,
+                    key: None,
                 }
             }
             ShellMenuEntry::Separator => Self::Separator,
@@ -748,6 +755,15 @@ impl ContextMenu {
             MenuEntry::Item(i) if i.label.as_ref() == label => i.shortcut,
             _ => None,
         })
+    }
+
+    /// Test helper: the shortcut shown on row `ix` of `level`.
+    #[cfg(test)]
+    pub(crate) fn shortcut_at(&self, level: usize, ix: usize) -> Option<&'static str> {
+        match self.level(level).get(ix)? {
+            MenuEntry::Item(i) => i.shortcut,
+            _ => None,
+        }
     }
 
     /// Test helper: checked items at the top level.
@@ -1060,6 +1076,7 @@ impl Explorer {
             label: t!("menu.view").into(),
             enabled: true,
             icon: None,
+            glyph: None,
             children: vec![
                 checked_item(
                     t!("menu.view_details"),
@@ -1082,6 +1099,23 @@ impl Explorer {
             ],
             shell: false,
             lazy: None,
+            key: Some("view"),
+        }
+    }
+
+    /// "New": a folder and a file, as in Windows' own New submenu, instead of two rows of their
+    /// own (#190). Its rows keep their shortcuts and the keyboard goes in with Right.
+    fn new_submenu(mut children: Vec<MenuEntry>) -> MenuEntry {
+        decorate(&mut children);
+        MenuEntry::Submenu {
+            label: t!("menu.new").into(),
+            enabled: true,
+            icon: None,
+            glyph: Some(Icon::Plus),
+            children,
+            shell: false,
+            lazy: None,
+            key: Some("new"),
         }
     }
 
@@ -1100,8 +1134,10 @@ impl Explorer {
         use MenuCommand as C;
         if targets.is_empty() {
             let mut entries = vec![
-                item(t!("menu.new_folder"), Some("Ctrl+Shift+N"), C::NewFolder),
-                item(t!("menu.new_text_file"), None, C::NewTextFile),
+                Self::new_submenu(vec![
+                    item(t!("menu.new_folder"), Some("Ctrl+Shift+N"), C::NewFolder),
+                    item(t!("menu.new_text_file"), None, C::NewTextFile),
+                ]),
                 item_if(
                     self.services.shell.clipboard_has_files(),
                     t!("menu.paste"),
@@ -1142,6 +1178,9 @@ impl Explorer {
         }
         let single = targets.len() == 1;
         let (path, is_dir) = &targets[0];
+        // Inside this folder, as at the top of VS Code's explorer menu. A server's shares are
+        // only listed, so nothing can be made in `\\server` itself.
+        let new_in = single && *is_dir && arke_core::net::bare_server(path).is_none();
         let mut entries = vec![item(t!("menu.open"), Some("Enter"), C::Open)];
         if single && *is_dir {
             entries.push(item(
@@ -1149,12 +1188,12 @@ impl Explorer {
                 Some("Ctrl+Enter"),
                 C::OpenInNewTab,
             ));
-            // Inside this folder, as at the top of VS Code's explorer menu. A server's shares are
-            // only listed, so nothing can be made in `\\server` itself.
             entries.push(MenuEntry::Separator);
-            if arke_core::net::bare_server(path).is_none() {
-                entries.push(item(t!("menu.new_file_in"), None, C::NewFileIn));
-                entries.push(item(t!("menu.new_folder_in"), None, C::NewFolderIn));
+            if new_in {
+                entries.push(Self::new_submenu(vec![
+                    item(t!("menu.new_file_in"), None, C::NewFileIn),
+                    item(t!("menu.new_folder_in"), None, C::NewFolderIn),
+                ]));
             }
             entries.push(item(t!("menu.search_in_folder"), None, C::SearchInFolder));
             entries.push(MenuEntry::Separator);
@@ -1275,19 +1314,28 @@ impl Explorer {
                 C::CopyRelativePath,
             ));
         }
+        // A folder's "New folder…" is a button here too, a click away (#190); the keyboard has it
+        // in "New".
+        let new_folder = new_in.then(|| action(t!("menu.new_folder"), C::NewFolderIn, true));
         entries.extend([
             item(t!("menu.reveal_in_explorer"), None, C::RevealInExplorer),
             item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
             MenuEntry::Separator,
             more_options(),
             MenuEntry::Separator,
-            MenuEntry::Actions(vec![
-                action(t!("menu.cut"), C::Cut, true),
-                action(t!("menu.copy"), C::Copy, true),
-                // Works on multiple items too: renames all selected to "name (1)", "name (2)", ...
-                action(t!("menu.rename"), C::Rename, !self.search_mode),
-                action(t!("menu.delete"), C::Delete, true),
-            ]),
+            MenuEntry::Actions(
+                new_folder
+                    .into_iter()
+                    .chain([
+                        action(t!("menu.cut"), C::Cut, true),
+                        action(t!("menu.copy"), C::Copy, true),
+                        // Works on multiple items too: renames all selected to "name (1)",
+                        // "name (2)", ...
+                        action(t!("menu.rename"), C::Rename, !self.search_mode),
+                        action(t!("menu.delete"), C::Delete, true),
+                    ])
+                    .collect(),
+            ),
         ]);
         entries
     }
@@ -3019,6 +3067,7 @@ impl RowParts {
                 label,
                 enabled,
                 icon,
+                glyph,
                 ..
             } => Some(Self {
                 label: label.clone(),
@@ -3030,7 +3079,7 @@ impl RowParts {
                 shortcut: None,
                 submenu: true,
                 command: None,
-                glyph: None,
+                glyph: *glyph,
                 pin: None,
             }),
         }
@@ -3106,7 +3155,7 @@ fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<She
 
 /// Which "Context menu" setting toggles this entry (`workspace_menuprefs.rs`). Basic entries have
 /// none and can't be hidden.
-const fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
+fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
     use MenuCommand as C;
     match entry {
         MenuEntry::Item(item) => match item.command {
@@ -3126,10 +3175,12 @@ const fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
             C::ViewDetails | C::ViewIcons | C::ViewColumns | C::Refresh => Some("view"),
             C::KeepOnDevice | C::FreeUpSpace => Some("cloud"),
             C::AddToShelf => Some("shelf"),
+            C::MoveToNewFolder => Some("move_new_folder"),
             _ => None,
         },
         MenuEntry::Submenu { shell: true, .. } => Some("more_options"),
-        MenuEntry::Submenu { shell: false, .. } => Some("view"),
+        // "New" is a basic entry: always shown.
+        MenuEntry::Submenu { key, .. } => (*key).filter(|k| *k != "new"),
         MenuEntry::Actions(_) | MenuEntry::Separator => None,
     }
 }
@@ -3317,9 +3368,11 @@ fn more_options() -> MenuEntry {
         label: t!("menu.more_options").into(),
         enabled: true,
         icon: None,
+        glyph: None,
         children: vec![placeholder(t!("menu.loading"))],
         shell: true,
         lazy: None,
+        key: None,
     }
 }
 

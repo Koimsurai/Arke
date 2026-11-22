@@ -4074,6 +4074,14 @@ toast.undo:
   ja: 元に戻す
 
 # ─── Context menu
+menu.new:
+  en: New
+  zh-TW: 新增
+  zh-CN: 新建
+  de: Neu
+  es: Nuevo
+  pt-BR: Novo
+  ja: 新規作成
 menu.new_folder:
   en: New folder
   zh-TW: 新增資料夾

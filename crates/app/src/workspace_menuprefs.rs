@@ -100,6 +100,13 @@ pub(crate) const MENU_PREFS: &[MenuPref] = &[
         note: None,
     },
     MenuPref {
+        key: "move_new_folder",
+        switch_id: "menu-pref-move_new_folder",
+        icon: Icon::FolderPlus,
+        label: "menu.move_to_new_folder",
+        note: None,
+    },
+    MenuPref {
         key: "open_with",
         switch_id: "menu-pref-open_with",
         icon: Icon::OpenWith,
@@ -558,175 +565,185 @@ impl Workspace {
     }
 }
 
-/// Icon of a preview row: the theme icon, or an app's own image drawn instead of it.
-type PreviewIcon = (Option<Icon>, Option<Arc<RenderImage>>);
-
 fn label(pref: &MenuPref) -> String {
     t!(pref.label).into_owned()
 }
 
-/// Preview of the folder context menu: same order and look as the real one, hidden entries omitted.
-#[allow(
-    clippy::too_many_lines,
-    reason = "Rows mirror the real menu order in one place; splitting them up makes that harder to compare"
-)]
-fn preview_menu(s: &Settings) -> AnyElement {
+/// A row of the preview (`None` in a list of them is a separator).
+struct PreviewRow {
+    /// Its key in settings; `None`: always shown.
+    key: Option<&'static str>,
+    icon: Option<Icon>,
+    /// An app's own image, drawn instead of `icon`.
+    image: Option<Arc<RenderImage>>,
+    text: String,
+    submenu: bool,
+}
+
+const fn preview_row(key: Option<&'static str>, icon: Icon, text: String) -> PreviewRow {
+    PreviewRow {
+        key,
+        icon: Some(icon),
+        image: None,
+        text,
+        submenu: false,
+    }
+}
+
+/// The folder context menu's rows in their built-in order, as `build_menu` makes them for one
+/// folder.
+fn preview_rows(s: &Settings) -> Vec<Option<PreviewRow>> {
     // The "Open with" row shows the first editor the real menu would list, with its own icon, so
     // the preview matches the menu; "VS Code" with the generic icon when none is found.
     let editor = crate::explorer::open_with_list(s).into_iter().next();
     let editor_name = editor.as_ref().map_or("VS Code", |app| app.name.as_str());
     let editor_icon = editor.as_ref().and_then(|app| app.icon.clone());
-    // (key, icon, label). Rows with key `None` are always shown; an empty label is a separator.
-    let rows: [(Option<&str>, Option<Icon>, String); 21] = [
-        (None, Some(Icon::Open), t!("menu.open").into_owned()),
-        (
-            Some("new_tab"),
-            Some(Icon::TabOpen),
-            t!("menu.open_in_new_tab").into_owned(),
-        ),
-        (None, None, String::new()),
-        (None, Some(Icon::Plus), t!("menu.new_file_in").into_owned()),
-        (
-            None,
-            Some(Icon::FolderPlus),
-            t!("menu.new_folder_in").into_owned(),
-        ),
-        (
-            Some("search_folder"),
-            Some(Icon::Search),
-            t!("menu.search_in_folder").into_owned(),
-        ),
-        (None, None, String::new()),
-        (
-            Some("pin"),
-            Some(Icon::Pin),
-            t!("sidebar.add_favorite").into_owned(),
-        ),
-        (
-            Some("terminal"),
-            Some(Icon::Terminal),
-            t!("menu.open_terminal").into_owned(),
-        ),
-        (None, None, String::new()),
-        (
+    let row = |key: &'static str, icon: Icon, label: &str| {
+        Some(preview_row(Some(key), icon, t!(label).into_owned()))
+    };
+    vec![
+        Some(preview_row(None, Icon::Open, t!("menu.open").into_owned())),
+        row("new_tab", Icon::TabOpen, "menu.open_in_new_tab"),
+        None,
+        Some(PreviewRow {
+            submenu: true,
+            ..preview_row(None, Icon::Plus, t!("menu.new").into_owned())
+        }),
+        row("search_folder", Icon::Search, "menu.search_in_folder"),
+        None,
+        row("pin", Icon::Pin, "sidebar.add_favorite"),
+        row("terminal", Icon::Terminal, "menu.open_terminal"),
+        None,
+        Some(preview_row(
             Some("archive"),
-            Some(Icon::Zip),
+            Icon::Zip,
             t!("menu.compress", name = "Photos.zip").into_owned(),
-        ),
-        (None, None, String::new()),
-        (
-            Some("new_window"),
-            Some(Icon::External),
-            t!("menu.open_new_window").into_owned(),
-        ),
-        (
-            Some("open_with"),
-            Some(Icon::OpenWith),
-            t!("menu.open_with", name = editor_name).into_owned(),
-        ),
-        (
-            Some("copy_path"),
-            Some(Icon::CopyPath),
-            t!("menu.copy_path").into_owned(),
-        ),
-        (
-            Some("relative_path"),
-            Some(Icon::CopyPath),
-            t!("menu.copy_relative_path").into_owned(),
-        ),
-        (
-            Some("reveal"),
-            Some(Icon::Explorer),
-            t!("menu.reveal_in_explorer").into_owned(),
-        ),
-        (
-            Some("properties"),
-            Some(Icon::Info),
-            t!("menu.properties").into_owned(),
-        ),
-        (None, None, String::new()),
-        (
-            Some("more_options"),
-            None,
-            t!("menu.more_options").into_owned(),
-        ),
-        (None, None, String::new()),
-    ];
-    let mut kept: Vec<(PreviewIcon, String, bool)> = Vec::new();
-    for (key, icon, text) in rows {
-        if key.is_some_and(|k| hidden(s, k)) {
+        )),
+        row("move_new_folder", Icon::FolderPlus, "menu.move_to_new_folder"),
+        None,
+        row("new_window", Icon::External, "menu.open_new_window"),
+        Some(PreviewRow {
+            image: editor_icon,
+            ..preview_row(
+                Some("open_with"),
+                Icon::OpenWith,
+                t!("menu.open_with", name = editor_name).into_owned(),
+            )
+        }),
+        row("shelf", Icon::Shelf, "menu.add_to_shelf"),
+        row("copy_path", Icon::CopyPath, "menu.copy_path"),
+        row("relative_path", Icon::CopyPath, "menu.copy_relative_path"),
+        row("reveal", Icon::Explorer, "menu.reveal_in_explorer"),
+        row("properties", Icon::Info, "menu.properties"),
+        None,
+        Some(PreviewRow {
+            key: Some("more_options"),
+            icon: None,
+            image: None,
+            text: t!("menu.more_options").into_owned(),
+            submenu: true,
+        }),
+    ]
+}
+
+/// Preview of the folder context menu: same order and look as the real one, hidden entries
+/// omitted.
+fn preview_menu(s: &Settings) -> AnyElement {
+    let mut kept: Vec<Option<PreviewRow>> = Vec::new();
+    for row in preview_rows(s) {
+        if row
+            .as_ref()
+            .is_some_and(|r| r.key.is_some_and(|k| hidden(s, k)))
+        {
             continue;
         }
-        // Pinned Windows commands go right above "More options", showing only the last path segment like the real menu.
-        if key == Some("more_options") {
+        // Pinned Windows commands go right above "More options", showing only the last path
+        // segment like the real menu.
+        if row.as_ref().is_some_and(|r| r.key == Some("more_options")) {
             for pin in &s.menu_pinned {
                 let name = pin.rsplit(" › ").next().unwrap_or(pin).to_string();
-                kept.push(((Some(Icon::Pin), None), name, false));
+                kept.push(Some(preview_row(None, Icon::Pin, name)));
             }
         }
-        let separator = text.is_empty();
         // No leading or repeated separators.
-        if separator && kept.last().is_none_or(|(_, _, sep)| *sep) {
+        if row.is_none() && kept.last().is_none_or(Option::is_none) {
             continue;
         }
-        let image = (key == Some("open_with"))
-            .then(|| editor_icon.clone())
-            .flatten();
-        kept.push(((icon, image), text, separator));
+        kept.push(row);
     }
-    let more = !hidden(s, "more_options");
-    let items = kept.into_iter().map(|((icon, image), text, separator)| {
-        if separator {
-            return div()
-                .my(theme::s_4())
-                .mx(theme::s_8())
-                .h(px(1.))
-                .bg(theme::line())
-                .into_any_element();
-        }
-        let is_more = more && text == t!("menu.more_options");
-        div()
-            .h(crate::theme::scaled_px(30.))
-            .mx(theme::s_4())
-            .px(theme::s_8())
-            .flex()
-            .items_center()
-            .gap(theme::s_8())
-            .rounded(theme::r_4())
-            .text_size(theme::fs_12())
-            .child(
-                div()
+    while kept.last().is_some_and(Option::is_none) {
+        kept.pop();
+    }
+    div()
+        .py(theme::s_4())
+        .rounded(theme::r_12())
+        .bg(theme::overlay())
+        .shadow(theme::elev_2())
+        .border_1()
+        .border_color(theme::line())
+        .children(kept.into_iter().map(preview_item))
+        .child(preview_actions())
+        .into_any_element()
+}
+
+/// One row of the preview, or a separator.
+fn preview_item(row: Option<PreviewRow>) -> AnyElement {
+    let Some(row) = row else {
+        return div()
+            .my(theme::s_4())
+            .mx(theme::s_8())
+            .h(px(1.))
+            .bg(theme::line())
+            .into_any_element();
+    };
+    let mark = div().size(theme::icon_sm()).flex_none();
+    let mark = match row.image {
+        Some(image) => mark.child(img(image).size(theme::icon_sm())),
+        None => mark.children(row.icon.map(|i| {
+            svg()
+                .path(i.path())
+                .size(theme::icon_sm())
+                .text_color(theme::text_muted())
+        })),
+    };
+    div()
+        .h(crate::theme::scaled_px(30.))
+        .mx(theme::s_4())
+        .px(theme::s_8())
+        .flex()
+        .items_center()
+        .gap(theme::s_8())
+        .rounded(theme::r_4())
+        .text_size(theme::fs_12())
+        .child(mark)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(SharedString::from(row.text)),
+        )
+        .when(row.submenu, |d| {
+            d.child(
+                svg()
+                    .path(Icon::ChevronRight.path())
                     .size(theme::icon_sm())
-                    .flex_none()
-                    .map(|d| match image {
-                        Some(image) => d.child(img(image).size(theme::icon_sm())),
-                        None => d.children(icon.map(|i| {
-                            svg()
-                                .path(i.path())
-                                .size(theme::icon_sm())
-                                .text_color(theme::text_muted())
-                        })),
-                    }),
+                    .text_color(theme::text_subtle()),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(SharedString::from(text)),
-            )
-            .when(is_more, |d| {
-                d.child(
-                    svg()
-                        .path(Icon::ChevronRight.path())
-                        .size(theme::icon_sm())
-                        .text_color(theme::text_subtle()),
-                )
-            })
-            .into_any_element()
-    });
-    // The icon button row at the bottom (cut, copy, rename, delete) is always shown.
-    let actions = div()
+        })
+        .into_any_element()
+}
+
+/// The icon button row at the bottom (new folder, cut, copy, rename, delete), always shown.
+fn preview_actions() -> AnyElement {
+    let icons = [
+        Icon::FolderPlus,
+        Icon::Cut,
+        Icon::Copy,
+        Icon::Rename,
+        Icon::Trash,
+    ];
+    div()
         .mt(theme::s_4())
         .mx(theme::s_4())
         .pt(theme::s_4())
@@ -734,7 +751,7 @@ fn preview_menu(s: &Settings) -> AnyElement {
         .border_color(theme::line())
         .flex()
         .justify_around()
-        .children([Icon::Cut, Icon::Copy, Icon::Rename, Icon::Trash].map(|i| {
+        .children(icons.map(|i| {
             div()
                 .size(crate::theme::scaled_px(28.))
                 .flex()
@@ -746,15 +763,6 @@ fn preview_menu(s: &Settings) -> AnyElement {
                         .size(theme::icon_sm())
                         .text_color(theme::text_muted()),
                 )
-        }));
-    div()
-        .py(theme::s_4())
-        .rounded(theme::r_12())
-        .bg(theme::overlay())
-        .shadow(theme::elev_2())
-        .border_1()
-        .border_color(theme::line())
-        .children(items)
-        .child(actions)
+        }))
         .into_any_element()
 }

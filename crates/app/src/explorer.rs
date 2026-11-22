@@ -92,7 +92,9 @@ pub(crate) use dnd::{
 };
 pub(crate) use icons::IconSize;
 pub(crate) use layout::{SharedPreview, shared_preview};
-pub(crate) use menu::{app_name, menu_open_with_found, open_with_list, set_open_with};
+pub(crate) use menu::{
+    app_name, menu_open_with_found, open_with_list, pin_is_submenu, set_open_with,
+};
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
 pub(crate) use top_bar::TitleLayout;

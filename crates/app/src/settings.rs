@@ -703,6 +703,10 @@ pub(crate) struct Settings {
     pub(crate) tray_icon: bool,
     /// Arke context menu entries turned off (keys from `workspace_menuprefs.rs`).
     pub(crate) menu_hidden: Vec<String>,
+    /// Arke context menu entries in the order dragged to in Settings › Context menu (keys from
+    /// `menu_order::DEFAULT`), empty for the built-in order. Unknown keys are ignored and missing
+    /// entries keep their built-in place, so files from other versions still load (#263).
+    pub(crate) menu_order: Vec<String>,
     /// Windows commands pinned to the main menu from "More options" (`explorer_menu::pin_key` keys, in pin order).
     pub(crate) menu_pinned: Vec<String>,
     /// Where each pinned command comes from, learned from the menus seen
@@ -850,6 +854,7 @@ impl Default for Settings {
             decimal_sizes: false,
             tray_icon: true,
             menu_hidden: Vec::new(),
+            menu_order: Vec::new(),
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),

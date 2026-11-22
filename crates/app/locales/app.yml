@@ -1877,13 +1877,13 @@ menupref.pinned_title:
   pt-BR: Comandos do Windows fixados
   ja: ピン留めした Windows コマンド
 menupref.pinned_desc:
-  en: "In More options, click the pin next to a command to show it in the main menu"
-  zh-TW: "在「更多選項」中按命令旁的圖釘，就會顯示在主選單"
-  zh-CN: "在“更多选项”中单击命令旁的图钉，即可显示在主菜单中"
-  de: Klicken Sie unter „Weitere Optionen“ auf die Stecknadel neben einem Befehl, um ihn im Hauptmenü anzuzeigen
-  es: En Mostrar más opciones, haga clic en la chincheta junto a un comando para mostrarlo en el menú principal
-  pt-BR: Em Mostrar mais opções, clique no alfinete ao lado de um comando para exibi-lo no menu principal
-  ja: "[その他のオプション] でコマンドの横のピンをクリックすると、メイン メニューに表示されます"
+  en: "In More options, click the pin next to a command or submenu to show it in the main menu"
+  zh-TW: "在「更多選項」中按命令或子選單旁的圖釘，就會顯示在主選單"
+  zh-CN: "在“更多选项”中单击命令或子菜单旁的图钉，即可显示在主菜单中"
+  de: Klicken Sie unter „Weitere Optionen“ auf die Stecknadel neben einem Befehl oder Untermenü, um es im Hauptmenü anzuzeigen
+  es: En Mostrar más opciones, haga clic en la chincheta junto a un comando o submenú para mostrarlo en el menú principal
+  pt-BR: Em Mostrar mais opções, clique no alfinete ao lado de um comando ou submenu para exibi-lo no menu principal
+  ja: "[その他のオプション] でコマンドやサブメニューの横のピンをクリックすると、メイン メニューに表示されます"
 menupref.pinned_empty:
   en: Nothing pinned yet
   zh-TW: 還沒有釘選的命令
@@ -1893,13 +1893,13 @@ menupref.pinned_empty:
   pt-BR: Nada fixado ainda
   ja: ピン留めされた項目はありません
 menupref.intro:
-  en: "Turn off what you don't use. Open, cut, copy, paste, rename, delete and new are always shown."
-  zh-TW: "關掉用不到的項目。開啟、剪下、複製、貼上、重新命名、刪除與新增一定會顯示。"
-  zh-CN: "关闭用不到的项。打开、剪切、复制、粘贴、重命名、删除和新建始终显示。"
-  de: Schalten Sie aus, was Sie nicht brauchen. Öffnen, Ausschneiden, Kopieren, Einfügen, Umbenennen, Löschen und Neu werden immer angezeigt.
-  es: Desactive lo que no use. Abrir, cortar, copiar, pegar, cambiar nombre, eliminar y nuevo siempre se muestran.
-  pt-BR: Desative o que você não usa. Abrir, recortar, copiar, colar, renomear, excluir e novo são sempre exibidos.
-  ja: 使わない項目をオフにします。開く、切り取り、コピー、貼り付け、名前の変更、削除、新規作成は常に表示されます。
+  en: "Drag to reorder, and turn off what you don't use. Open, cut, copy, paste, rename, delete and new are always shown."
+  zh-TW: "拖曳可調整順序，也可以關掉用不到的項目。開啟、剪下、複製、貼上、重新命名、刪除與新增一定會顯示。"
+  zh-CN: "拖动可调整顺序，也可以关闭用不到的项。打开、剪切、复制、粘贴、重命名、删除和新建始终显示。"
+  de: Ziehen Sie Einträge, um sie umzusortieren, und schalten Sie aus, was Sie nicht brauchen. Öffnen, Ausschneiden, Kopieren, Einfügen, Umbenennen, Löschen und Neu werden immer angezeigt.
+  es: Arrastre para reordenar y desactive lo que no use. Abrir, cortar, copiar, pegar, cambiar nombre, eliminar y nuevo siempre se muestran.
+  pt-BR: Arraste para reordenar e desative o que você não usa. Abrir, recortar, copiar, colar, renomear, excluir e novo são sempre exibidos.
+  ja: ドラッグで並べ替え、使わない項目はオフにできます。開く、切り取り、コピー、貼り付け、名前の変更、削除、新規作成は常に表示されます。
 menupref.preview:
   en: Right-clicking a folder
   zh-TW: 對資料夾按右鍵時
@@ -1909,13 +1909,13 @@ menupref.preview:
   pt-BR: Ao clicar com o botão direito em uma pasta
   ja: フォルダーを右クリックしたとき
 menupref.reset:
-  en: Turn all back on
-  zh-TW: "全部開啟"
-  zh-CN: 全部开启
-  de: Alle wieder einschalten
-  es: Activar todo de nuevo
-  pt-BR: Reativar tudo
-  ja: すべてオンに戻す
+  en: Reset
+  zh-TW: 重設
+  zh-CN: 重置
+  de: Zurücksetzen
+  es: Restablecer
+  pt-BR: Redefinir
+  ja: リセット
 menupref.pin:
   en: Pin / Unpin
   zh-TW: 釘選／取消釘選
@@ -4082,6 +4082,14 @@ toast.undo:
   ja: 元に戻す
 
 # ─── Context menu
+menu.new:
+  en: New
+  zh-TW: 新增
+  zh-CN: 新建
+  de: Neu
+  es: Nuevo
+  pt-BR: Novo
+  ja: 新規作成
 menu.new_folder:
   en: New folder
   zh-TW: 新增資料夾

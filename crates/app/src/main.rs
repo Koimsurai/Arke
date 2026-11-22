@@ -58,6 +58,7 @@ mod global_search;
 mod home;
 mod instance;
 mod media;
+mod menu_order;
 mod motion;
 mod net_dialog;
 mod op_center;

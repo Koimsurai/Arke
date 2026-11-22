@@ -6,9 +6,10 @@
 //! options" submenu with icons and nested submenus, and a chosen item is sent back to that
 //! process to run. No native Windows menu is ever shown.
 //!
-//! Commands pinned from "Show more options" to the top don't wait for the whole Windows menu:
-//! their extensions are read on their own beside it (`explorer_menu_parts.rs`). Windows submenus
-//! that are filled only when opened are filled then (`explorer_menu_lazy.rs`).
+//! Commands pinned from "Show more options" to the top (or whole submenus, #88) don't wait for
+//! the whole Windows menu: their extensions are read on their own beside it
+//! (`explorer_menu_parts.rs`). Windows submenus that are filled only when opened are filled then
+//! (`explorer_menu_lazy.rs`).
 //!
 //! Extraction runs on a background thread (`arke_core::archive`) with cancellable progress in the
 //! status bar. The extracted folder is selected when done.
@@ -347,20 +348,29 @@ pub(crate) struct MenuItem {
     verb: Option<String>,
 }
 
+#[derive(Clone)]
 pub(crate) enum MenuEntry {
     Item(MenuItem),
     Submenu {
         label: SharedString,
         enabled: bool,
         icon: Option<Arc<RenderImage>>,
+        /// Arke's own icon for its own submenus (`icon` is the one Windows gives its submenus).
+        glyph: Option<Icon>,
         children: Vec<Self>,
         /// "Show more options" and the submenus read from Windows inside it; `false` for Arke's
-        /// own View submenu.
+        /// own View and New submenus.
         shell: bool,
         /// A Windows submenu filled only when it is opened (`explorer_menu_lazy.rs`).
         lazy: Option<lazy::LazySubmenu>,
+        /// Arke's own submenus: which entry of Settings › Context menu it is (`view`, `new`).
+        key: Option<&'static str>,
+        /// Windows submenus: key used to pin the whole submenu to the main menu (see
+        /// [`pin_key`]), as for an item (#88).
+        pin: Option<String>,
     },
-    /// Row of icon buttons (cut, copy, rename, delete) at the bottom, as in the Windows 11 menu.
+    /// Row of icon buttons (a folder's new folder, cut, copy, rename, delete) at the bottom, as in
+    /// the Windows 11 menu.
     Actions(Vec<MenuItem>),
     Separator,
 }
@@ -370,7 +380,7 @@ impl MenuEntry {
         match self {
             Self::Item(i) => i.enabled,
             Self::Submenu { enabled, .. } => *enabled,
-            // Icon buttons are mouse-only; the keyboard has Ctrl+X, Ctrl+C, F2 and Delete.
+            // Icon buttons are mouse-only; the keyboard has Ctrl+X, Ctrl+C, F2, Delete and "New".
             Self::Actions(_) | Self::Separator => false,
         }
     }
@@ -378,7 +388,7 @@ impl MenuEntry {
     const fn has_mark(&self) -> bool {
         match self {
             Self::Item(i) => i.icon.is_some() || i.glyph.is_some() || i.checked,
-            Self::Submenu { icon, .. } => icon.is_some(),
+            Self::Submenu { icon, glyph, .. } => icon.is_some() || glyph.is_some(),
             Self::Actions(_) | Self::Separator => false,
         }
     }
@@ -429,6 +439,7 @@ impl MenuEntry {
             } => {
                 let mut path = parent.to_vec();
                 path.push(&label);
+                let pin = Some(pin_key(&path));
                 let lazy = index.map(|index| lazy::LazySubmenu::new(session, index));
                 let children = if lazy.is_some() && children.is_empty() {
                     vec![placeholder(t!("menu.loading"))]
@@ -442,9 +453,12 @@ impl MenuEntry {
                     label: label.into(),
                     enabled,
                     icon: icon(i),
+                    glyph: None,
                     children,
                     shell: true,
                     lazy,
+                    key: None,
+                    pin,
                 }
             }
             ShellMenuEntry::Separator => Self::Separator,
@@ -693,18 +707,19 @@ impl ContextMenu {
         };
         let start = slot - self.pinned_rows;
         let whole_in = self.shell_session.is_some();
-        let mut found: Vec<MenuItem> = Vec::new();
+        let mut found: Vec<MenuEntry> = Vec::new();
         if let Some(MenuEntry::Submenu { children, .. }) = self.entries.get(slot) {
             // From the whole Windows menu once it's in, until then from the sources read on
-            // their own, and for the ones known to be coming, their row ahead of them.
+            // their own, and for the ones known to be coming, their row ahead of them. A pinned
+            // submenu comes whole, its rows filled the same way as under "More options" (#88).
             for key in pinned {
-                if let Some(item) = find_pinned(children, key).or_else(|| {
+                if let Some(entry) = find_pinned(children, key).or_else(|| {
                     self.parts
                         .iter()
                         .find_map(|(_, entries)| find_pinned(entries, key))
                 }) {
-                    remember_pin_icon(key, item);
-                    found.push(item.clone());
+                    remember_pin(key, entry);
+                    found.push(entry.clone());
                 } else if !whole_in
                     && let Some(ix) = self.coming.iter().position(|k| k == key)
                     && let Some(row) = coming_row(key, ix)
@@ -713,29 +728,56 @@ impl ContextMenu {
                 }
             }
         }
+        // The pinned rows before, by key, so an open pinned submenu or the highlight stays on
+        // its row.
+        let before: Vec<Option<String>> = self.entries[start..slot]
+            .iter()
+            .map(|e| entry_pin(e).map(str::to_owned))
+            .collect();
+        let after: Vec<Option<String>> = found
+            .iter()
+            .map(|e| entry_pin(e).map(str::to_owned))
+            .collect();
         let added = found.len();
-        self.entries
-            .splice(start..slot, found.into_iter().map(MenuEntry::Item));
+        self.entries.splice(start..slot, found);
         let new_slot = start + added;
+        // Where a row now is; `None` for a pinned row that went away.
         let shift = |ix: usize| {
             if ix >= slot {
-                ix + new_slot - slot
+                Some(ix + new_slot - slot)
             } else if ix >= start {
-                // Highlight was on a replaced pinned row: move it to the first pinned row (or "Show
-                // more options").
-                start
+                let key = before.get(ix - start).cloned().flatten();
+                key.and_then(|key| after.iter().position(|k| k.as_ref() == Some(&key)))
+                    .map(|at| start + at)
             } else {
-                ix
+                Some(ix)
             }
         };
-        if let Some(first) = self.open.first_mut() {
-            *first = shift(*first);
-        }
-        if self.open.is_empty() {
-            self.highlighted = self.highlighted.map(shift);
+        if let Some(&first) = self.open.first() {
+            match shift(first) {
+                Some(first) => self.open[0] = first,
+                // Its pinned submenu went away: closed.
+                None => {
+                    self.open.clear();
+                    self.highlighted = Some(start);
+                }
+            }
+        } else {
+            // Highlight was on a pinned row that went away: on the first pinned row (or "Show
+            // more options").
+            self.highlighted = self.highlighted.map(|ix| shift(ix).unwrap_or(start));
         }
         self.shell_slot = Some(new_slot);
         self.pinned_rows = added;
+        // The keyboard went into a pinned submenu while it still showed "Loading…": its first
+        // row once it has one.
+        if self.keyboard
+            && self.highlighted.is_none()
+            && self.open.len() == 1
+            && (start..new_slot).contains(&self.open[0])
+        {
+            self.highlighted = self.level(1).iter().position(MenuEntry::selectable);
+        }
     }
 
     /// Test helper: highlight top-level row `ix`, as the keyboard would.
@@ -752,6 +794,25 @@ impl ContextMenu {
             MenuEntry::Item(i) if i.label.as_ref() == label => i.shortcut,
             _ => None,
         })
+    }
+
+    /// Test helper: the shortcut shown on row `ix` of `level`.
+    #[cfg(test)]
+    pub(crate) fn shortcut_at(&self, level: usize, ix: usize) -> Option<&'static str> {
+        match self.level(level).get(ix)? {
+            MenuEntry::Item(i) => i.shortcut,
+            _ => None,
+        }
+    }
+
+    /// Test helper: the pin key of row `ix` of `level`, an item's or a whole submenu's (the row
+    /// has a pin button).
+    #[cfg(test)]
+    pub(crate) fn pin_at(&self, level: usize, ix: usize) -> Option<String> {
+        self.level(level)
+            .get(ix)
+            .and_then(entry_pin)
+            .map(str::to_owned)
     }
 
     /// Test helper: checked items at the top level.
@@ -996,11 +1057,13 @@ impl Explorer {
             .map(|e| t!("menu.undo_op", op = t!(e.verb)).into_owned());
         let redo = crate::explorer::RedoStack::last(cx)
             .map(|e| t!("menu.redo_op", op = t!(e.verb)).into_owned());
-        let hidden = SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .menu_hidden
-            .clone();
+        let (hidden, order) = {
+            let settings = &SettingsStore::global(cx).read(cx).settings;
+            (
+                settings.menu_hidden.clone(),
+                crate::menu_order::ranks(&settings.menu_order),
+            )
+        };
         let apps = open_with_list(&SettingsStore::global(cx).read(cx).settings);
         let cloud = self.cloud_state(&targets);
         // A single folder can be added to or removed from whole-PC search (network: add, local:
@@ -1019,6 +1082,11 @@ impl Explorer {
         let mut entries = self.build_menu(&targets, pinned, (undo, redo), &apps, net_search);
         if let Some(kept) = cloud {
             add_cloud_items(&mut entries, kept);
+        }
+        // The order dragged to in Settings › Context menu (#263); the built-in one as built.
+        if let Some(ranks) = order {
+            entries =
+                crate::menu_order::arrange(entries, ranks, order_slot, || MenuEntry::Separator);
         }
         let entries = hide_entries(entries, &hidden);
         let on_server = targets.first().map_or_else(
@@ -1070,6 +1138,7 @@ impl Explorer {
             label: t!("menu.view").into(),
             enabled: true,
             icon: None,
+            glyph: None,
             children: vec![
                 checked_item(
                     t!("menu.view_details"),
@@ -1092,6 +1161,25 @@ impl Explorer {
             ],
             shell: false,
             lazy: None,
+            key: Some("view"),
+            pin: None,
+        }
+    }
+
+    /// "New": a folder and a file, as in Windows' own New submenu, instead of two rows of their
+    /// own (#190). Its rows keep their shortcuts and the keyboard goes in with Right.
+    fn new_submenu(mut children: Vec<MenuEntry>) -> MenuEntry {
+        decorate(&mut children);
+        MenuEntry::Submenu {
+            label: t!("menu.new").into(),
+            enabled: true,
+            icon: None,
+            glyph: Some(Icon::Plus),
+            children,
+            shell: false,
+            lazy: None,
+            key: Some("new"),
+            pin: None,
         }
     }
 
@@ -1151,8 +1239,10 @@ impl Explorer {
         use MenuCommand as C;
         if targets.is_empty() {
             let mut entries = vec![
-                item(t!("menu.new_folder"), Some("Ctrl+Shift+N"), C::NewFolder),
-                item(t!("menu.new_text_file"), None, C::NewTextFile),
+                Self::new_submenu(vec![
+                    item(t!("menu.new_folder"), Some("Ctrl+Shift+N"), C::NewFolder),
+                    item(t!("menu.new_text_file"), None, C::NewTextFile),
+                ]),
                 item_if(
                     self.services.shell.clipboard_has_files(),
                     t!("menu.paste"),
@@ -1197,6 +1287,9 @@ impl Explorer {
         }
         let single = targets.len() == 1;
         let (path, is_dir) = &targets[0];
+        // Inside this folder, as at the top of VS Code's explorer menu. A server's shares are
+        // only listed, so nothing can be made in `\\server` itself.
+        let new_in = single && *is_dir && arke_core::net::bare_server(path).is_none();
         let mut entries = vec![item(t!("menu.open"), Some("Enter"), C::Open)];
         if single && *is_dir {
             entries.push(item(
@@ -1204,12 +1297,12 @@ impl Explorer {
                 Some("Ctrl+Enter"),
                 C::OpenInNewTab,
             ));
-            // Inside this folder, as at the top of VS Code's explorer menu. A server's shares are
-            // only listed, so nothing can be made in `\\server` itself.
             entries.push(MenuEntry::Separator);
-            if arke_core::net::bare_server(path).is_none() {
-                entries.push(item(t!("menu.new_file_in"), None, C::NewFileIn));
-                entries.push(item(t!("menu.new_folder_in"), None, C::NewFolderIn));
+            if new_in {
+                entries.push(Self::new_submenu(vec![
+                    item(t!("menu.new_file_in"), None, C::NewFileIn),
+                    item(t!("menu.new_folder_in"), None, C::NewFolderIn),
+                ]));
             }
             entries.push(item(t!("menu.search_in_folder"), None, C::SearchInFolder));
             entries.push(MenuEntry::Separator);
@@ -1330,19 +1423,28 @@ impl Explorer {
                 C::CopyRelativePath,
             ));
         }
+        // A folder's "New folder…" is a button here too, a click away (#190); the keyboard has it
+        // in "New".
+        let new_folder = new_in.then(|| action(t!("menu.new_folder"), C::NewFolderIn, true));
         entries.extend([
             item(t!("menu.reveal_in_explorer"), None, C::RevealInExplorer),
             item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
             MenuEntry::Separator,
             more_options(),
             MenuEntry::Separator,
-            MenuEntry::Actions(vec![
-                action(t!("menu.cut"), C::Cut, true),
-                action(t!("menu.copy"), C::Copy, true),
-                // Works on multiple items too: renames all selected to "name (1)", "name (2)", ...
-                action(t!("menu.rename"), C::Rename, !self.search_mode),
-                action(t!("menu.delete"), C::Delete, true),
-            ]),
+            MenuEntry::Actions(
+                new_folder
+                    .into_iter()
+                    .chain([
+                        action(t!("menu.cut"), C::Cut, true),
+                        action(t!("menu.copy"), C::Copy, true),
+                        // Works on multiple items too: renames all selected to "name (1)",
+                        // "name (2)", ...
+                        action(t!("menu.rename"), C::Rename, !self.search_mode),
+                        action(t!("menu.delete"), C::Delete, true),
+                    ])
+                    .collect(),
+            ),
         ]);
         entries
     }
@@ -3076,6 +3178,8 @@ impl RowParts {
                 label,
                 enabled,
                 icon,
+                glyph,
+                pin,
                 ..
             } => Some(Self {
                 label: label.clone(),
@@ -3087,8 +3191,8 @@ impl RowParts {
                 shortcut: None,
                 submenu: true,
                 command: None,
-                glyph: None,
-                pin: None,
+                glyph: *glyph,
+                pin: pin.clone(),
             }),
         }
     }
@@ -3163,7 +3267,7 @@ fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<She
 
 /// Which "Context menu" setting toggles this entry (`workspace_menuprefs.rs`). Basic entries have
 /// none and can't be hidden.
-const fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
+fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
     use MenuCommand as C;
     match entry {
         MenuEntry::Item(item) => match item.command {
@@ -3188,15 +3292,30 @@ const fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
             | C::Refresh => Some("view"),
             C::KeepOnDevice | C::FreeUpSpace => Some("cloud"),
             C::AddToShelf => Some("shelf"),
+            C::MoveToNewFolder => Some("move_new_folder"),
             _ => None,
         },
         MenuEntry::Submenu { shell: true, .. } => Some("more_options"),
-        MenuEntry::Submenu { shell: false, .. } => Some("view"),
+        // "New" is a basic entry: always shown.
+        MenuEntry::Submenu { key, .. } => (*key).filter(|k| *k != "new"),
         MenuEntry::Actions(_) | MenuEntry::Separator => None,
     }
 }
 
-/// Removes entries disabled in settings, then tidies separators (none at the ends, no repeats).
+/// Where an entry goes in the order set in Settings › Context menu (`menu_order.rs`): its key
+/// there, or staying with the entry before it.
+fn order_slot(entry: &MenuEntry) -> crate::menu_order::Slot {
+    use crate::menu_order::Slot;
+    match entry {
+        MenuEntry::Separator => Slot::Separator,
+        MenuEntry::Actions(_) => Slot::Last,
+        MenuEntry::Submenu { shell: true, .. } => Slot::Key("more_options"),
+        MenuEntry::Submenu { key: Some(key), .. } => Slot::Key(*key),
+        MenuEntry::Item(item) if item.command == MenuCommand::Open => Slot::Key("open"),
+        entry => pref_key(entry).map_or(Slot::Follow, Slot::Key),
+    }
+}
+
 /// Commands that need a file on this PC (Windows shell, other apps, archives, search index).
 const fn local_only(command: &MenuCommand) -> bool {
     use MenuCommand as C;
@@ -3235,6 +3354,7 @@ pub(crate) fn remote_menu(entries: Vec<MenuEntry>) -> Vec<MenuEntry> {
     hide_entries(kept, &[])
 }
 
+/// Removes entries disabled in settings, then tidies separators (none at the ends, no repeats).
 fn hide_entries(entries: Vec<MenuEntry>, hidden: &[String]) -> Vec<MenuEntry> {
     let mut out: Vec<MenuEntry> = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -3313,44 +3433,95 @@ thread_local! {
     /// answers (`coming_row`) shows it already.
     static PIN_ICONS: RefCell<std::collections::HashMap<String, Arc<RenderImage>>> =
         RefCell::default();
+    /// Pin keys last seen as a whole submenu: drawn ahead as one (`coming_row`), and in the
+    /// settings preview.
+    static PIN_SUBMENUS: RefCell<std::collections::HashSet<String>> = RefCell::default();
 }
 
-fn remember_pin_icon(key: &str, item: &MenuItem) {
-    if let Some(icon) = &item.icon {
+/// Remembers how pinned row `key` looked, for drawing it ahead next time.
+fn remember_pin(key: &str, entry: &MenuEntry) {
+    let (icon, submenu) = match entry {
+        MenuEntry::Item(item) => (item.icon.as_ref(), false),
+        MenuEntry::Submenu { icon, .. } => (icon.as_ref(), true),
+        MenuEntry::Actions(_) | MenuEntry::Separator => return,
+    };
+    if let Some(icon) = icon {
         PIN_ICONS.with(|icons| {
             icons.borrow_mut().insert(key.to_string(), Arc::clone(icon));
         });
     }
+    PIN_SUBMENUS.with(|submenus| {
+        let mut submenus = submenus.borrow_mut();
+        if submenu {
+            submenus.insert(key.to_string());
+        } else {
+            submenus.remove(key);
+        }
+    });
+}
+
+/// Whether pinned row `key` was last seen as a whole submenu.
+pub(crate) fn pin_is_submenu(key: &str) -> bool {
+    PIN_SUBMENUS.with(|submenus| submenus.borrow().contains(key))
 }
 
 /// The row of a pinned command known to show, before its source answers: its label from the
-/// pin key (left out when the key shortened a quoted part), its icon as last seen.
-fn coming_row(key: &str, ix: usize) -> Option<MenuItem> {
+/// pin key (left out when the key shortened a quoted part), its icon as last seen. A pinned
+/// submenu shows "Loading…" inside until it is in.
+fn coming_row(key: &str, ix: usize) -> Option<MenuEntry> {
     let label = key.rsplit(" › ").next()?.trim();
     if label.is_empty() || label.contains('…') {
         return None;
     }
-    Some(MenuItem {
+    let icon = PIN_ICONS.with(|icons| icons.borrow().get(key).cloned());
+    if pin_is_submenu(key) {
+        return Some(MenuEntry::Submenu {
+            label: label.to_string().into(),
+            enabled: true,
+            icon,
+            glyph: None,
+            children: vec![placeholder(t!("menu.loading"))],
+            shell: true,
+            lazy: None,
+            key: None,
+            pin: Some(key.to_string()),
+        });
+    }
+    Some(MenuEntry::Item(MenuItem {
         label: label.to_string().into(),
         shortcut: None,
         command: MenuCommand::PinPending(ix),
         enabled: true,
-        icon: PIN_ICONS.with(|icons| icons.borrow().get(key).cloned()),
+        icon,
         glyph: None,
         checked: false,
         bold: false,
         danger: false,
         pin: Some(key.to_string()),
         verb: None,
-    })
+    }))
 }
 
-/// Finds the item with pin key `key` in a Windows menu, including submenus.
-fn find_pinned<'a>(entries: &'a [MenuEntry], key: &str) -> Option<&'a MenuItem> {
-    entries.iter().find_map(|entry| match entry {
-        MenuEntry::Item(item) if item.pin.as_deref() == Some(key) => Some(item),
-        MenuEntry::Submenu { children, .. } => find_pinned(children, key),
-        _ => None,
+/// Pin key of a Windows menu row, an item's or a whole submenu's.
+fn entry_pin(entry: &MenuEntry) -> Option<&str> {
+    match entry {
+        MenuEntry::Item(item) => item.pin.as_deref(),
+        MenuEntry::Submenu { pin, .. } => pin.as_deref(),
+        MenuEntry::Actions(_) | MenuEntry::Separator => None,
+    }
+}
+
+/// Finds the row with pin key `key` in a Windows menu, an item or a whole submenu, including
+/// inside submenus.
+fn find_pinned<'a>(entries: &'a [MenuEntry], key: &str) -> Option<&'a MenuEntry> {
+    entries.iter().find_map(|entry| {
+        if entry_pin(entry) == Some(key) {
+            return Some(entry);
+        }
+        match entry {
+            MenuEntry::Submenu { children, .. } => find_pinned(children, key),
+            _ => None,
+        }
     })
 }
 
@@ -3379,9 +3550,12 @@ fn more_options() -> MenuEntry {
         label: t!("menu.more_options").into(),
         enabled: true,
         icon: None,
+        glyph: None,
         children: vec![placeholder(t!("menu.loading"))],
         shell: true,
         lazy: None,
+        key: None,
+        pin: None,
     }
 }
 

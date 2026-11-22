@@ -895,6 +895,12 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = owner;
         false
     }
+    /// Whether the left mouse button (the primary one, with Windows' button swap applied) is
+    /// physically down right now. A press Arke was told is over because another program took the
+    /// mouse can still be going on: Alt+Tab in the middle of a drag (#326). UI thread.
+    fn primary_button_down(&self) -> bool {
+        false
+    }
     /// The top-level window under the cursor and where the cursor is in its client area
     /// (physical pixels), for a tab dropped outside its window. `None` when unknown: the caller
     /// then works it out from window bounds. UI thread, no file system access.

@@ -199,6 +199,8 @@ struct FakeShell {
     drag_returns: std::sync::atomic::AtomicBool,
     /// Another program's window is on top of Arke at the cursor.
     covered: std::sync::atomic::AtomicBool,
+    /// The primary mouse button is physically down (`Shell::primary_button_down`).
+    button_down: std::sync::atomic::AtomicBool,
     /// Extra places (e.g. Downloads pointing at a temp folder).
     extra_places: Mutex<Vec<Place>>,
     /// Drag images built (request, whether a cached thumbnail existed).
@@ -456,6 +458,10 @@ impl Shell for FakeShell {
 
     fn covered_at_cursor(&self, _owner: Option<isize>) -> bool {
         self.covered.load(Ordering::Relaxed)
+    }
+
+    fn primary_button_down(&self) -> bool {
+        self.button_down.load(Ordering::Relaxed)
     }
 
     fn drag_image(
@@ -2341,6 +2347,64 @@ fn dragging_over_a_window_on_top_of_arke_hands_off_to_windows(cx: &mut TestAppCo
         [vec![PathBuf::from(r"C:\o\b.txt")]]
     );
     cx.update(|_, cx| assert!(!cx.has_active_drag(), "Arke's own drag should have ended"));
+    assert!(shell.ops().is_empty(), "nothing moved inside Arke");
+}
+
+/// #326: Alt+Tab in the middle of a drag. Another program takes the mouse, and the window is told
+/// the press is over (our GPUI patch sends a release far outside), but the button is still down:
+/// the files go to Windows drag and drop, which goes on across the switch.
+#[gpui::test]
+fn alt_tab_mid_drag_hands_the_files_to_windows(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let start = point(bounds.left() + px(60.), bounds.top() + row * 1.5);
+    let lost = MouseUpEvent {
+        button: MouseButton::Left,
+        position: point(px(-100_000.), px(-100_000.)),
+        modifiers: Modifiers::none(),
+        click_count: 0,
+    };
+
+    // A press lost for real (released over another window): no drag goes to Windows.
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        start + point(px(30.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    cx.simulate_event(lost.clone());
+    cx.run_until_parked();
+    assert!(shell.dragged_out.lock().is_empty(), "the button was up");
+    cx.update(|_, cx| assert!(!cx.has_active_drag()));
+
+    // Alt+Tab: the button is still down.
+    shell.button_down.store(true, Ordering::Relaxed);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        start + point(px(30.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    wait_for_drag_image(cx);
+    cx.simulate_event(lost);
+    cx.run_until_parked();
+    assert_eq!(
+        *shell.dragged_out.lock(),
+        [vec![PathBuf::from(r"C:\o\b.txt")]]
+    );
+    cx.update(|_, cx| {
+        assert!(!cx.has_active_drag());
+        assert!(!cx.has_global::<crate::explorer::DraggingOutside>());
+    });
     assert!(shell.ops().is_empty(), "nothing moved inside Arke");
 }
 

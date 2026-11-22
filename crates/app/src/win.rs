@@ -913,6 +913,23 @@ impl Shell for WinShell {
         })
     }
 
+    fn primary_button_down(&self) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+        // SAFETY: plain state queries. GetAsyncKeyState reads the physical buttons, so the
+        // primary one is the right button when they are swapped.
+        unsafe {
+            let key = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+                VK_RBUTTON
+            } else {
+                VK_LBUTTON
+            };
+            GetAsyncKeyState(i32::from(key.0)) < 0
+        }
+    }
+
     fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {
         win_fileops::window_at_cursor()
     }

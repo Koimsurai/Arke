@@ -662,6 +662,8 @@ pub(crate) struct Explorer {
     /// Group details view by sort column (settings), plus the computed sections.
     pub(crate) group_rows: bool,
     group_cache: groups::GroupCache,
+    /// Labels of the collapsed sections of the folder on show (#287); not saved.
+    collapsed_groups: std::collections::HashSet<SharedString>,
     pub(crate) show_thumbnails: bool,
     /// Read images and exe icons on network locations too (settings, off by default).
     pub(crate) network_thumbnails: bool,
@@ -739,6 +741,12 @@ pub(crate) struct Explorer {
     /// instead of the folder shown. Cleared when search mode ends.
     search_in: Option<PathBuf>,
     pub(crate) search_results: Option<SearchResults>,
+    /// The order a header click chose for the results (#55); `None` keeps the relevance order.
+    /// Ends with search mode.
+    pub(crate) search_sort: Option<arke_core::SearchSort>,
+    /// The hits of `search_results` in relevance order, kept while `search_sort` reorders them
+    /// (a click back to relevance doesn't search again).
+    search_relevance: Option<Arc<Vec<Arc<arke_core::SearchHit>>>>,
     /// Deleted or moved away since the walk started: the walk doesn't watch for changes, so
     /// hits at or below these are left out of every result until the next fresh walk.
     search_gone: Vec<PathBuf>,
@@ -1053,6 +1061,7 @@ impl Explorer {
             right_press: None,
             group_rows: settings.read(cx).settings.group_rows,
             group_cache: groups::GroupCache::default(),
+            collapsed_groups: std::collections::HashSet::new(),
             show_thumbnails: settings.read(cx).settings.show_thumbnails,
             network_thumbnails: settings.read(cx).settings.network_thumbnails,
             place_names: settings.read(cx).settings.place_names.clone(),
@@ -1096,6 +1105,8 @@ impl Explorer {
             search_root: None,
             search_in: None,
             search_results: None,
+            search_sort: None,
+            search_relevance: None,
             search_gone: Vec::new(),
             search_cursor: None,
             search_global: false,
@@ -1453,6 +1464,7 @@ impl Explorer {
             // Filter and search belong to the old folder, and so does a folder comparison.
             self.reset_filter(cx);
             self.compare = None;
+            self.reset_collapsed_groups();
 
             // So does Quick Look: left open, it would pop up again over the new folder.
             self.close_quick_look(cx);
@@ -2616,6 +2628,8 @@ impl Explorer {
             self.search_root = None;
             self.search_in = None;
             self.search_results = None;
+            self.search_sort = None;
+            self.search_relevance = None;
             self.search_gone.clear();
             self.search_cursor = None;
             // Back to "this folder": the next search starts with subfolders.
@@ -2672,6 +2686,7 @@ impl Explorer {
             return;
         }
         let results = self.without_gone(results);
+        let results = self.arrange_results(results);
         let len = results.hits.len();
         self.search_cursor = match self.search_cursor {
             _ if len == 0 => None,
@@ -2682,17 +2697,70 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Fresh results in the order the header chose (they arrive in relevance order). Sorting a
+    /// few thousand hits takes about a millisecond, and only happens once a header was clicked.
+    pub(super) fn arrange_results(&mut self, mut results: SearchResults) -> SearchResults {
+        self.search_relevance = None;
+        if let Some(sort) = self.search_sort {
+            self.search_relevance = Some(Arc::clone(&results.hits));
+            results.hits = Arc::new(arke_core::sort_search_hits(&results.hits, sort));
+        }
+        results
+    }
+
+    /// A search results header was clicked: sort by that column, flip it, or (a third click) go
+    /// back to relevance. The results on screen are reordered without searching again, and the
+    /// cursor stays on its hit.
+    pub(super) fn click_search_header(
+        &mut self,
+        column: arke_core::SearchColumn,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_sort = arke_core::SearchSort::after_click(self.search_sort, column);
+        let Some(results) = self.search_results.as_mut() else {
+            cx.notify();
+            return;
+        };
+        let at = self
+            .search_cursor
+            .and_then(|ix| results.hits.get(ix).cloned());
+        let relevance = self
+            .search_relevance
+            .take()
+            .unwrap_or_else(|| Arc::clone(&results.hits));
+        match self.search_sort {
+            Some(sort) => {
+                results.hits = Arc::new(arke_core::sort_search_hits(&relevance, sort));
+                self.search_relevance = Some(relevance);
+            }
+            None => results.hits = relevance,
+        }
+        if let Some(hit) = at
+            && let Some(ix) = results.hits.iter().position(|h| Arc::ptr_eq(h, &hit))
+        {
+            self.search_cursor = Some(ix);
+            self.search_scroll
+                .scroll_to_item(ix, ScrollStrategy::Nearest);
+        } else {
+            self.search_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        }
+        cx.notify();
+    }
+
+    /// Whether the hit (below `root`) was deleted or moved away.
+    fn hit_gone(&self, root: &Path, hit: &arke_core::SearchHit) -> bool {
+        let path = root.join(&*hit.rel);
+        self.search_gone
+            .iter()
+            .any(|g| arke_core::path::is_same_or_inside(&path, g))
+    }
+
     /// `results` without hits that were deleted or moved away (see `search_gone`).
     pub(crate) fn without_gone(&self, mut results: SearchResults) -> SearchResults {
         if self.search_gone.is_empty() {
             return results;
         }
-        let gone = |hit: &arke_core::SearchHit| {
-            let path = results.root.join(&*hit.rel);
-            self.search_gone
-                .iter()
-                .any(|g| arke_core::path::is_same_or_inside(&path, g))
-        };
+        let gone = |hit: &arke_core::SearchHit| self.hit_gone(&results.root, hit);
         if results.hits.iter().any(|hit| gone(hit)) {
             let kept: Vec<_> = results
                 .hits
@@ -2718,6 +2786,15 @@ impl Explorer {
         self.search_gone.extend(removed.iter().cloned());
         if let Some(results) = self.search_results.take() {
             let results = self.without_gone(results);
+            // The relevance order loses them too.
+            if let Some(relevance) = self.search_relevance.take() {
+                let kept: Vec<_> = relevance
+                    .iter()
+                    .filter(|hit| !self.hit_gone(&results.root, hit))
+                    .cloned()
+                    .collect();
+                self.search_relevance = Some(Arc::new(kept));
+            }
             let len = results.hits.len();
             self.search_cursor = self
                 .search_cursor
@@ -2838,6 +2915,8 @@ impl Explorer {
             self.search_scroll
                 .scroll_to_item(ix, ScrollStrategy::Nearest);
         } else if let Some(view) = self.view() {
+            // Arrow keys never land in a collapsed section; type to select and the like open it.
+            self.reveal_item(ix);
             self.selection.select_only(&view, ix);
             self.cursor = Some(ix);
             self.scroll_to_cursor = None;
@@ -2861,6 +2940,7 @@ impl Explorer {
         }
         let ix = ix.min(view.len() - 1);
         self.selection.extend_to(&view, ix, false);
+        self.drop_hidden_selection();
         self.cursor = Some(ix);
         self.scroll_to_index(ix, ScrollStrategy::Nearest);
         cx.notify();
@@ -3057,7 +3137,22 @@ impl Explorer {
         ((height / self.row_height()).floor() as usize).max(1)
     }
 
+    /// Where `step` goes, skipping the items of collapsed sections.
     fn target(&self, step: Step, window: &Window) -> usize {
+        let to = self.target_unchecked(step, window);
+        if self.collapsed_groups.is_empty() || self.search_mode {
+            return to;
+        }
+        let forward = matches!(
+            step,
+            Step::Next | Step::Right | Step::PageDown | Step::First
+        );
+        self.skip_collapsed(to, forward)
+            .or_else(|| self.skip_collapsed(to, !forward))
+            .unwrap_or_else(|| self.current_cursor().unwrap_or(0))
+    }
+
+    fn target_unchecked(&self, step: Step, window: &Window) -> usize {
         let cur = self.current_cursor();
         // Grid view: up/down moves a whole row; page moves a screen of rows.
         let (stride, page) = if self.grid_active() {
@@ -3149,6 +3244,7 @@ impl Explorer {
         }
         if let Some(view) = self.view() {
             self.selection.select_all(&view);
+            self.drop_hidden_selection();
             cx.notify();
         }
     }
@@ -3322,6 +3418,7 @@ impl Explorer {
             self.click_select = None;
             if m.shift {
                 self.selection.extend_to(&view, ix, m.control);
+                self.drop_hidden_selection();
             } else if m.control {
                 // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
                 // selected, whether the first one selected it or (already selected) unselected it.

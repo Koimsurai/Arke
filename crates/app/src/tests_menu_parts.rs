@@ -985,3 +985,62 @@ fn a_submenu_left_filling_with_nothing_goes(cx: &mut TestAppContext) {
             .is_some_and(|m| m.shell_submenu_for_test("Drawn by its app").is_none())
     });
 }
+
+/// #325: "Run as administrator" has no label in the registry (Windows names it), so read on its
+/// own it comes back called by its verb. It is still the pinned command: its row stays when that
+/// answer comes, and it is noted to show for the kind of item, to be drawn as the menu opens.
+#[gpui::test]
+fn a_command_windows_names_keeps_its_row(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: Some("runas".into()),
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    let key = "Run as administrator";
+    *shell.extra_menu.lock() = vec![item(22, key)];
+    shell.extensions.lock().push((
+        MenuHandler {
+            key: "txtfile".into(),
+            clsid: String::new(),
+            name: "runas".into(),
+            kind: HandlerKind::Verb { extended: false },
+            parent: None,
+        },
+        vec![item(1, "runas")],
+    ));
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    pin(cx, &[key]);
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "owner", |cx| {
+        owners(cx).get(key).is_some_and(|o| o == "verb:runas")
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // The whole menu slow: the row comes from the verb read on its own, and stays.
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "verb answered", |_| {
+        !shell.extensions_read.lock().is_empty()
+    });
+    wait_for(cx, "noted", |cx| {
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"])
+    });
+    assert!(rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    *shell.menu_gate.lock() = None;
+    for _ in 0..4 {
+        let _ = open_whole.send(());
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+}

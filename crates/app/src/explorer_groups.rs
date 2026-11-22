@@ -51,8 +51,26 @@ pub(crate) enum Row {
     Item(usize),
 }
 
+/// The list a layout was built for. Held weakly: while it is, the list can't be changed in place
+/// (`Arc::make_mut` moves it out, as a rename does in `DirModel::apply_delta`) nor its memory
+/// handed to a new list, so the same address always means the same items (#335: the sections of
+/// the list before a rename were drawn over the list after it).
+#[derive(Clone)]
+pub(crate) struct ListOf(std::sync::Weak<Vec<Entry>>);
+
+impl ListOf {
+    fn new(list: &Arc<Vec<Entry>>) -> Self {
+        Self(Arc::downgrade(list))
+    }
+
+    fn is(&self, list: &Arc<Vec<Entry>>) -> bool {
+        std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(list))
+    }
+}
+
 pub(crate) struct Groups {
-    key: (usize, usize, SortColumn, bool, i64),
+    list: ListOf,
+    key: (SortColumn, bool, i64),
     pub(crate) rows: Vec<Row>,
     /// Row index of each item; an item of a collapsed section maps to the section's header.
     row_of: Vec<u32>,
@@ -90,7 +108,8 @@ pub(crate) enum Slot {
 
 /// Layout of the grouped grid.
 pub(crate) struct GridGroups {
-    key: (usize, usize, SortColumn, bool, i64, usize),
+    list: ListOf,
+    key: (SortColumn, bool, i64, usize),
     pub(crate) slots: Vec<Slot>,
     /// Each tile row: item range and first slot.
     pub(crate) rows: Vec<(std::ops::Range<usize>, usize)>,
@@ -101,7 +120,7 @@ pub(crate) struct GridGroups {
 }
 
 impl GridGroups {
-    fn new(key: (usize, usize, SortColumn, bool, i64, usize), detail: &[Row], cols: usize) -> Self {
+    fn new(list: ListOf, key: (SortColumn, bool, i64, usize), detail: &[Row], cols: usize) -> Self {
         let cols = cols.max(1);
         let mut slots = Vec::new();
         let mut rows = Vec::new();
@@ -145,6 +164,7 @@ impl GridGroups {
             }
         }
         Self {
+            list,
             key,
             slots,
             rows,
@@ -407,20 +427,13 @@ impl Explorer {
         let view = self.view()?;
         let (today, folders_apart) = self.section_basis()?;
         let cols = self.grid_cols.max(1);
-        let key = (
-            Arc::as_ptr(&view) as usize,
-            view.len(),
-            self.sort.column,
-            folders_apart,
-            today.day,
-            cols,
-        );
+        let key = (self.sort.column, folders_apart, today.day, cols);
         if let Some(cached) = self
             .group_cache
             .1
             .borrow()
             .as_ref()
-            .filter(|g| g.key == key)
+            .filter(|g| g.key == key && g.list.is(&view))
         {
             return Some(Rc::clone(cached));
         }
@@ -432,7 +445,7 @@ impl Explorer {
             today,
             &self.collapsed_groups,
         );
-        let grid = Rc::new(GridGroups::new(key, &rows, cols));
+        let grid = Rc::new(GridGroups::new(ListOf::new(&view), key, &rows, cols));
         *self.group_cache.1.borrow_mut() = Some(Rc::clone(&grid));
         Some(grid)
     }
@@ -512,19 +525,13 @@ impl Explorer {
         }
         let view = self.view()?;
         let (today, folders_apart) = self.section_basis()?;
-        let key = (
-            Arc::as_ptr(&view) as usize,
-            view.len(),
-            self.sort.column,
-            folders_apart,
-            today.day,
-        );
+        let key = (self.sort.column, folders_apart, today.day);
         if let Some(cached) = self
             .group_cache
             .0
             .borrow()
             .as_ref()
-            .filter(|g| g.key == key)
+            .filter(|g| g.key == key && g.list.is(&view))
         {
             return Some(Rc::clone(cached));
         }
@@ -548,6 +555,7 @@ impl Explorer {
         );
         let hidden = hidden_ranges(&rows);
         let groups = Rc::new(Groups {
+            list: ListOf::new(&view),
             key,
             rows,
             row_of,
@@ -870,7 +878,12 @@ mod tests {
             today,
             &HashSet::new(),
         );
-        let grid = GridGroups::new((0, 0, SortColumn::Name, true, 0, 3), &rows, 3);
+        let grid = GridGroups::new(
+            ListOf(std::sync::Weak::new()),
+            (SortColumn::Name, true, 0, 3),
+            &rows,
+            3,
+        );
         // Folders 1 row, A two rows (3+2), B 1 row; a header slot before each section.
         let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
         assert_eq!(ranges, [0..1, 1..4, 4..6, 6..8]);
@@ -1046,7 +1059,12 @@ mod tests {
         }
         let collapsed: HashSet<SharedString> = [SharedString::from("A")].into_iter().collect();
         let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today, &collapsed);
-        let grid = GridGroups::new((0, 0, SortColumn::Name, true, 0, 3), &rows, 3);
+        let grid = GridGroups::new(
+            ListOf(std::sync::Weak::new()),
+            (SortColumn::Name, true, 0, 3),
+            &rows,
+            3,
+        );
         // Folders: header + row; A: header only; B: header + row.
         let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
         assert_eq!(ranges, [0..1, 4..5]);

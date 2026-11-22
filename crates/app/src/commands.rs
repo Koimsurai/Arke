@@ -117,6 +117,12 @@ pub(crate) static COMMANDS: &[Command] = &[
     ),
     command!("new_tab", WORKSPACE, [], crate::workspace::NewTab),
     command!(
+        "new_window",
+        WORKSPACE,
+        ["ctrl-n"],
+        crate::workspace::NewWindow
+    ),
+    command!(
         "close_tab",
         WORKSPACE,
         ["ctrl-w", "ctrl-f4"],

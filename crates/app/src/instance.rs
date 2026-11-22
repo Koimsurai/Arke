@@ -636,6 +636,42 @@ pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Opens a new window by launching Arke again, on a background thread: at `path`, or where a new
+/// window starts without one. In background mode the running process takes it over, so it's fast.
+/// Marked as a new window, so single window mode doesn't turn it into a tab.
+pub(crate) fn open_new_window(path: Option<PathBuf>) {
+    // Tests run inside the test binary, which must not launch itself: they read what was asked.
+    #[cfg(test)]
+    NEW_WINDOWS.with(|asked| asked.borrow_mut().push(path));
+    #[cfg(not(test))]
+    crate::explorer::spawn_thread("new-window", move || {
+        let spawned = std::env::current_exe().and_then(|exe| {
+            let mut command = std::process::Command::new(exe);
+            command.arg(NEW_WINDOW_ARG);
+            if let Some(path) = &path {
+                command.arg(path);
+            }
+            command.spawn()
+        });
+        if let Err(err) = spawned {
+            log::warn!("failed to open a new window: {err}");
+        }
+    });
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What `open_new_window` was asked for, in order.
+    static NEW_WINDOWS: std::cell::RefCell<Vec<Option<PathBuf>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the new windows asked for since the last call.
+#[cfg(test)]
+pub(crate) fn take_new_windows() -> Vec<Option<PathBuf>> {
+    NEW_WINDOWS.with(|asked| std::mem::take(&mut *asked.borrow_mut()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

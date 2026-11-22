@@ -9453,6 +9453,14 @@ cmd.new_tab:
   es: Nueva pestaña
   pt-BR: Nova guia
   ja: 新しいタブ
+cmd.new_window:
+  en: New window
+  zh-TW: 新增視窗
+  zh-CN: 新建窗口
+  de: Neues Fenster
+  es: Nueva ventana
+  pt-BR: Nova janela
+  ja: 新しいウィンドウ
 cmd.close_tab:
   en: Close tab
   zh-TW: 關閉分頁

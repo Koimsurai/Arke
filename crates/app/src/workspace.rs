@@ -91,6 +91,8 @@ actions!(
     workspace,
     [
         NewTab,
+        /// Ctrl+N: another Arke window, on the folder of this tab.
+        NewWindow,
         OpenPalette,
         /// Ctrl+Shift+P: the same box, searching commands.
         OpenCommandPalette,
@@ -137,6 +139,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let ctx = Some("Workspace");
     cx.bind_keys([
         KeyBinding::new("ctrl-t", OpenPalette, ctx),
+        KeyBinding::new("ctrl-n", NewWindow, ctx),
         KeyBinding::new("ctrl-shift-p", OpenCommandPalette, ctx),
         KeyBinding::new("ctrl-w", CloseTab, ctx),
         KeyBinding::new("ctrl-shift-t", ReopenClosedTab, ctx),
@@ -1699,6 +1702,22 @@ impl Workspace {
         self.open_tab(path, at, true, window, cx);
     }
 
+    /// Ctrl+N: opens another window on this tab's folder. On a page (Home, Settings...) there is
+    /// no folder to show, so the new window starts where any new window does.
+    fn new_window(&mut self, _: &NewWindow, _: &mut Window, cx: &mut Context<Self>) {
+        crate::instance::open_new_window(self.new_window_folder(cx));
+    }
+
+    fn new_window_folder(&self, cx: &App) -> Option<PathBuf> {
+        if self.page_shown() {
+            return None;
+        }
+        self.active_view()
+            .read(cx)
+            .display_path()
+            .map(Path::to_path_buf)
+    }
+
     fn current_dir(&self, cx: &App) -> PathBuf {
         self.active_view()
             .read(cx)
@@ -2819,6 +2838,7 @@ impl Render for Workspace {
             )
             .when(self.split_drag.is_some(), gpui::Styled::cursor_row_resize)
             .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::new_window))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
                 this.peek_pointer_moved(e, cx);

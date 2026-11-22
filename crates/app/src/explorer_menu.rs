@@ -1617,7 +1617,7 @@ impl Explorer {
             C::CopyToPeer | C::MoveToPeer => self.transfer_to_peer(command == C::MoveToPeer, cx),
             C::OpenInNewWindow => {
                 if let Some((path, true)) = targets.first().cloned() {
-                    open_in_new_window(path);
+                    crate::instance::open_new_window(Some(path));
                 }
             }
             C::OpenWith(ix) => {
@@ -3369,23 +3369,6 @@ fn is_backdrop_image(name: &str) -> bool {
                 .iter()
                 .any(|known| ext.eq_ignore_ascii_case(known))
         })
-}
-
-/// Opens the folder in a new window by launching Arke again, on a background thread. In
-/// background mode the running process takes it over, so it's fast. Marked as a new window, so
-/// single window mode doesn't turn it into a tab.
-fn open_in_new_window(path: PathBuf) {
-    crate::explorer::spawn_thread("new-window", move || {
-        let spawned = std::env::current_exe().and_then(|exe| {
-            std::process::Command::new(exe)
-                .arg(crate::instance::NEW_WINDOW_ARG)
-                .arg(&path)
-                .spawn()
-        });
-        if let Err(err) = spawned {
-            log::warn!("failed to open {} in a new window: {err}", path.display());
-        }
-    });
 }
 
 #[cfg(test)]

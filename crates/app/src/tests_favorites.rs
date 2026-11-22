@@ -98,6 +98,12 @@ fn bounds(cx: &mut VisualTestContext, selector: &str) -> Bounds<Pixels> {
         .unwrap_or_else(|| panic!("{selector} is drawn"))
 }
 
+/// The tiles show a favorite dragged from the list can go up there: the "Move to the tiles" slot
+/// where it fits beside the last tiles, else their wash.
+fn invited(cx: &mut VisualTestContext) -> bool {
+    drawn(cx, "tile-add-favorite") || drawn(cx, "tiles-invite")
+}
+
 fn near(a: Pixels, b: Pixels) -> bool {
     (a - b).abs() <= px(1.)
 }
@@ -570,14 +576,11 @@ fn the_tiles_invite_a_list_entry_being_dragged(cx: &mut TestAppContext) {
         Modifiers::none(),
     );
     refresh(cx);
-    assert!(
-        drawn(cx, "tile-add-favorite"),
-        "shown while it is still over the list"
-    );
+    assert!(invited(cx), "shown while it is still over the list");
     cx.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     refresh(cx);
-    assert!(!drawn(cx, "tile-add-favorite"), "gone with the drag");
+    assert!(!invited(cx), "gone with the drag");
 }
 
 /// A tile dragged down: the list shows a block where it can go; over a list row it becomes a list
@@ -630,10 +633,7 @@ fn a_favorite_takes_the_shape_of_where_it_is(cx: &mut TestAppContext) {
     // shows nothing.
     let row = bounds(cx, "pin-row-0");
     pick_up(cx, row);
-    assert!(
-        drawn(cx, "tile-add-favorite"),
-        "the tiles show it can go there"
-    );
+    assert!(invited(cx), "the tiles show it can go there");
     let tile = bounds(cx, "tile-slot-0");
     cx.simulate_mouse_move(tile.center(), Some(MouseButton::Left), Modifiers::none());
     refresh(cx);
@@ -672,7 +672,11 @@ fn list_rows_slide_to_make_room(cx: &mut TestAppContext) {
         near(bounds(cx, "pin-row-1").top(), rows[1].top()),
         "its gap is a row high: the rows under it stay put"
     );
-    cx.simulate_mouse_move(rows[2].center(), Some(MouseButton::Left), Modifiers::none());
+    cx.simulate_mouse_move(
+        rows[2].center() + point(px(0.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
     refresh(cx);
     assert_eq!(current(cx).pinned, vec![p("c"), p("d"), p("b")]);
     assert!(
@@ -728,11 +732,7 @@ fn a_row_picked_up_under_tiles_scrolled_away_stays_put(cx: &mut TestAppContext) 
     );
     let row = bounds(cx, "pin-row-0");
     pick_up(cx, row);
-    let slot = bounds(cx, "tile-add-favorite");
-    assert!(
-        slot.top() > bounds(cx, "tile-slot-0").bottom(),
-        "the tiles open a row for it"
-    );
+    assert!(invited(cx), "the tiles show they take it");
     assert!(
         near(bounds(cx, "pin-row-gap").top(), row.top()),
         "the row stays under the pointer"
@@ -745,6 +745,144 @@ fn a_row_picked_up_under_tiles_scrolled_away_stays_put(cx: &mut TestAppContext) 
         near(bounds(cx, "pin-row-0").top(), row.top()),
         "and once let go, the row closing up above leaves it there"
     );
+}
+
+/// A list entry dragged over the next row takes its place only once past the row's middle: a
+/// pointer resting near the line between two rows doesn't make them trade places back and forth.
+#[gpui::test]
+fn list_rows_swap_past_the_middle_only(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("b"), p("c"), p("d")];
+    });
+    refresh(cx);
+    let rows: Vec<Bounds<Pixels>> = (0..3)
+        .map(|ix| bounds(cx, &format!("pin-row-{ix}")))
+        .collect();
+    pick_up(cx, rows[0]);
+    let at = |cx: &mut VisualTestContext, y: Pixels| {
+        cx.simulate_mouse_move(
+            point(rows[1].center().x, y),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        refresh(cx);
+        current(cx).pinned
+    };
+    // Into the next row but short of its middle: nothing moves.
+    assert_eq!(at(cx, rows[1].top() + px(3.)), vec![p("b"), p("c"), p("d")]);
+    // Past it: they trade places once.
+    assert_eq!(
+        at(cx, rows[1].center().y + px(3.)),
+        vec![p("c"), p("b"), p("d")]
+    );
+    // Wobbling around that line now stays put.
+    for y in [
+        rows[1].top() + px(2.),
+        rows[1].center().y - px(2.),
+        rows[1].top() - px(1.),
+    ] {
+        assert_eq!(at(cx, y), vec![p("c"), p("b"), p("d")], "at {y:?}");
+    }
+    let end = rows[1].center();
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// A tile dragged down into the list and back up over the tiles' empty space (where it was)
+/// becomes a tile again, the last one, instead of staying a list entry over the tiles.
+#[gpui::test]
+fn a_tile_back_over_the_empty_cell_is_a_tile_again(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a"), p("b"), p("c"), p("d")]);
+        st.pinned = vec![p(LONG)];
+    });
+    refresh(cx);
+    let cells: Vec<Bounds<Pixels>> = (0..4)
+        .map(|ix| bounds(cx, &format!("tile-slot-{ix}")))
+        .collect();
+    let last = cells[3];
+    pick_up(cx, last);
+    let row = bounds(cx, "pin-row-0");
+    cx.simulate_mouse_move(row.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b"), p("c")]));
+    assert!(current(cx).pinned.contains(&p("d")), "a list entry now");
+    // Back where it was: that cell is empty now (no tile there to take it).
+    cx.simulate_mouse_move(last.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert_eq!(
+        current(cx).favorites,
+        Some(vec![p("a"), p("b"), p("c"), p("d")]),
+        "a tile again, in its place"
+    );
+    assert_eq!(current(cx).pinned, vec![p(LONG)]);
+    assert!(
+        drawn(cx, "tile-gap"),
+        "its cell is the gap under the pointer"
+    );
+    cx.simulate_mouse_up(last.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        current(cx).favorites,
+        Some(vec![p("a"), p("b"), p("c"), p("d")])
+    );
+}
+
+/// The line between the places and the tabs: dragged down, the places take that much more room
+/// (saved, at 100% scale); double-clicked, the room is shared by itself again.
+#[gpui::test]
+fn the_line_above_the_tabs_sets_the_places_height(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.pinned = vec![p("a"), p("b"), p("c"), p("d")];
+    });
+    cx.simulate_resize(gpui::size(px(1200.), px(700.)));
+    refresh(cx);
+    let before = bounds(cx, "sidebar-places-frame");
+    let line = bounds(cx, "sidebar-split");
+    cx.simulate_mouse_down(line.center(), MouseButton::Left, Modifiers::none());
+    let down = line.center() + point(px(0.), px(-60.));
+    cx.simulate_mouse_move(down, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    let during = bounds(cx, "sidebar-places-frame");
+    assert!(
+        near(during.size.height, before.size.height - px(60.)),
+        "{before:?} -> {during:?}"
+    );
+    cx.simulate_mouse_up(down, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    let saved = current(cx).sidebar_split;
+    assert!(
+        (saved - f32::from(during.size.height)).abs() < 1.,
+        "saved {saved}"
+    );
+    assert!(near(
+        bounds(cx, "sidebar-places-frame").size.height,
+        during.size.height
+    ));
+    // Double-click: shared by itself again.
+    let line = bounds(cx, "sidebar-split").center();
+    cx.simulate_mouse_down(line, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(line, MouseButton::Left, Modifiers::none());
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: MouseButton::Left,
+        position: line,
+        modifiers: Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_mouse_up(line, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    assert_eq!(current(cx).sidebar_split, 0.);
+    assert!(near(
+        bounds(cx, "sidebar-places-frame").size.height,
+        before.size.height
+    ));
 }
 
 /// Let go over the sidebar where nothing takes it (This PC), a list entry stays where the drag
@@ -765,7 +903,7 @@ fn a_pin_drag_let_go_elsewhere_in_the_sidebar_leaves_nothing_behind(cx: &mut Tes
         Modifiers::none(),
     );
     refresh(cx);
-    assert!(drawn(cx, "tile-add-favorite"));
+    assert!(invited(cx));
     let below = row.center() + point(px(0.), px(200.));
     cx.simulate_mouse_move(below, Some(MouseButton::Left), Modifiers::none());
     refresh(cx);

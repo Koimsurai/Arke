@@ -452,10 +452,20 @@ fn svg_is_self_contained(bytes: &[u8]) -> bool {
         if tags > SVG_MAX_TAGS {
             return false;
         }
-        let rest = &bytes[at..];
-        if !(rest.starts_with(b"image") || rest.starts_with(b"feImage")) {
+        // The tag's name after any namespace prefix (`<svg:image`).
+        let name_len = bytes[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
+            .count();
+        let name = &bytes[at..at + name_len];
+        let local = name
+            .iter()
+            .rposition(|&b| b == b':')
+            .map_or(name, |colon| &name[colon + 1..]);
+        if !(local == b"image" || local == b"feImage") {
             continue;
         }
+        let rest = &bytes[at..];
         // The tag's attributes, up to the `>` outside quotes.
         let mut quote = None;
         let end = rest
@@ -4776,6 +4786,12 @@ mod svg_guard_tests {
         assert!(!ok(b"<svg><feImage href=\"..\\x.png\"/></svg>"));
         assert!(!ok(b"<svg><image id=\">\" href=\"x.png\"/></svg>"));
         assert!(!ok(b"<svg><image href=\"&h;\"/></svg>"));
+        // A namespace prefix is the same tag.
+        assert!(!ok(
+            b"<svg xmlns:s=\"http://www.w3.org/2000/svg\"><s:image href=\"x.png\"/></svg>"
+        ));
+        assert!(!ok(b"<svg><svg:feImage href=\"x.png\"/></svg>"));
+        assert!(ok(b"<svg><imageset/><s:images href=\"x\"/></svg>"));
     }
 
     #[test]

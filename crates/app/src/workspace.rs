@@ -368,6 +368,9 @@ pub(crate) struct Workspace {
     /// middle click asked for is already open there.
     /// Dragging the sidebar edge: the live width is kept in the theme and saved on release.
     pub(crate) sidebar_resizing: bool,
+    /// The line between the sidebar's places and its tabs is dragged: where the pointer took it
+    /// and how tall the places were then (pixels), and how tall they are now.
+    pub(super) split_drag: Option<(gpui::Pixels, gpui::Pixels, gpui::Pixels)>,
     tab_flash: Option<(u64, u32)>,
     pub(crate) palette: Option<(Entity<LocationPalette>, Subscription)>,
     /// The dismissed palette fading out (see `motion::Leaving`).
@@ -751,6 +754,7 @@ impl Workspace {
                 Startup::Done
             },
             sidebar_resizing: false,
+            split_drag: None,
             resizing: false,
             title_layout: crate::explorer::TitleLayout::default(),
             held_buttons: crate::press_guard::HeldButtons::default(),
@@ -2118,6 +2122,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Saves the places' height the drag of the line above the tabs ended on (at 100% scale), as
+    /// tall as they were drawn: a drag past what the tabs leave stops where they stopped.
+    pub(crate) fn finish_split_drag(&mut self, cx: &mut Context<Self>) {
+        if self.split_drag.take().is_none() {
+            return;
+        }
+        let drawn = f32::from(self.sidebar_ui.places_scroll.bounds().size.height);
+        let base = drawn * 100. / theme::scale_pct() as f32;
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_split = base, cx));
+        cx.notify();
+    }
+
     /// Double-click on the sidebar edge: back to the default width.
     pub(crate) fn reset_sidebar_width(cx: &mut Context<Self>) {
         theme::set_sidebar_base(0.);
@@ -2171,6 +2187,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((from_y, from_h, _)) = self.split_drag {
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.finish_split_drag(cx);
+                return;
+            }
+            let height = (from_h + event.position.y - from_y).max(px(0.));
+            self.split_drag = Some((from_y, from_h, height));
+            cx.notify();
+            return;
+        }
         if self.sidebar_resizing {
             if event.pressed_button != Some(MouseButton::Left) {
                 self.finish_sidebar_drag(cx);
@@ -2791,6 +2817,7 @@ impl Render for Workspace {
                 self.resizing || self.sidebar_resizing,
                 gpui::Styled::cursor_col_resize,
             )
+            .when(self.split_drag.is_some(), gpui::Styled::cursor_row_resize)
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
@@ -2903,6 +2930,9 @@ impl Render for Workspace {
                     }
                     if this.sidebar_resizing {
                         this.finish_sidebar_drag(cx);
+                    }
+                    if this.split_drag.is_some() {
+                        this.finish_split_drag(cx);
                     }
                 }),
             )

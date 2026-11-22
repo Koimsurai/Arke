@@ -77,6 +77,10 @@ pub(super) struct TabDrag {
     pub(super) origin: Option<PinSnapshot>,
     /// The dragged favorite started on the tiles (`start_tile`).
     from_tile: bool,
+    /// The tiles' height when a tile was taken: kept while it is dragged, so a tile gone to the
+    /// list leaves the tiles no shorter (the rows under them don't jump up) and the place it left
+    /// is still there to take it back.
+    pub(super) grid_hold: Option<f32>,
     /// The rows of the places list (the favorites' list and everything under it) slide to their
     /// new places as the favorites change under the drag, like the tiles.
     pub(super) rows: std::rc::Rc<crate::motion::Flip<PlaceRow>>,
@@ -129,6 +133,7 @@ impl TabDrag {
         self.tile = None;
         self.pin = None;
         self.pin_out = false;
+        self.grid_hold = None;
         self.rows.stop();
     }
 
@@ -584,6 +589,46 @@ impl Workspace {
             let new_tiles = self.tile_favorites(cx);
             self.slide_tiles(&slots, &old_tiles, &new_tiles);
         }
+    }
+
+    /// A favorite from the list over the tiles' empty space, past the last tile (where one that
+    /// left for the list was): it becomes a tile again, the last one, as over a tile it would
+    /// take that tile's place.
+    pub(super) fn pin_over_tiles(&mut self, e: &DragMoveEvent<DraggedPin>, cx: &mut Context<Self>) {
+        let at = e.event.position;
+        if !e.bounds.contains(&at)
+            || self.tab_drag.moved
+            || self.tab_drag.tile.is_some()
+            || self.tab_drag.pin.is_none()
+        {
+            return;
+        }
+        let old_tiles = self.tile_favorites(cx);
+        // Over a tile, that tile takes it (`on_tile_drag_move`). Only the cells drawn now count
+        // (the one a tile left for the list keeps its last bounds), and only once all of them
+        // have said where they are: before, any of them may be under the pointer.
+        let Some(cells) = self.tile_slots(old_tiles.len()) else {
+            return;
+        };
+        if cells.iter().any(|cell| cell.contains(&at)) {
+            return;
+        }
+        let places = self.active_view().read(cx).places.clone();
+        if crate::settings::SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .tiles(&places)
+            .len()
+            >= crate::settings::FAVORITES_MAX
+        {
+            return;
+        }
+        let dragged = e.drag(cx).path.clone();
+        let end = self.favorites(cx).len();
+        self.tab_drag.rows.moved();
+        self.move_pin(&dragged, crate::settings::PinSlot::Tile(end), cx);
+        self.tab_drag.moved = true;
+        self.tab_drag.set_tile(Some(dragged));
     }
 
     /// Where the first `count` cells of the tile grid are, in grid order. `None` until every one

@@ -2400,7 +2400,7 @@ fn reg_key_exists(root: windows::Win32::System::Registry::HKEY, key: &str) -> bo
 }
 
 /// A `REG_DWORD` value, or `None`.
-fn read_reg_dword(
+pub(crate) fn read_reg_dword(
     root: windows::Win32::System::Registry::HKEY,
     key: &str,
     value: &str,

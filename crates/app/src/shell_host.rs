@@ -347,11 +347,14 @@ fn serve_extension(request: HostRequest, send_reply: impl Fn(&HostReply) + Send 
 
 /// Reads the menu for arke.exe once so extensions load and "Send to" builds its list.
 fn warm_up() {
-    if let Ok(exe) = std::env::current_exe()
-        && let Ok(menu) = crate::win_menu::query(&[exe], false, false)
-    {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if let Ok(menu) = crate::win_menu::query(std::slice::from_ref(&exe), false, false) {
         crate::win_menu::release(menu.session);
     }
+    // Send To, which Arke lists itself (#278).
+    crate::win_menu::warm_send_to(&exe);
 }
 
 /// Whether this process still has a visible window (extension dialogs, progress windows).
@@ -1015,9 +1018,11 @@ mod tests {
                     rgba: vec![0, 15, 16, 255, 1, 2, 3, 4],
                 }),
             }],
+            partial: true,
         };
         let json = serde_json::to_string(&menu).unwrap();
         let back: ShellMenu = serde_json::from_str(&json).unwrap();
+        assert!(back.partial);
         match &back.entries[0] {
             ShellMenuEntry::Item { icon: Some(t), .. } => {
                 assert_eq!((t.width, t.height), (1, 2));

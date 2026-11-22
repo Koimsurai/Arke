@@ -167,6 +167,10 @@ struct FakeShell {
     >,
     /// Names of the extensions read on their own.
     extensions_read: Mutex<Vec<String>>,
+    /// Names of extensions whose menu comes back only partly read (#278).
+    partial_extensions: Mutex<Vec<String>>,
+    /// Whether the whole Windows menu comes back only partly read.
+    partial_menu: std::sync::atomic::AtomicBool,
     /// Submenus added to the end of the whole Windows menu empty, filled only when opened
     /// (lazy index is the position here): label and what filling it gives.
     lazy_submenus: Mutex<Vec<(String, Vec<crate::shell::ShellMenuEntry>)>>,
@@ -686,6 +690,7 @@ impl Shell for FakeShell {
                 .shell_sessions
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             entries,
+            partial: self.partial_menu.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -784,6 +789,11 @@ impl Shell for FakeShell {
         _group: u64,
     ) -> Result<(crate::shell::ShellMenu, Duration), ShellError> {
         assert!(!arke_core::fs::is_ui_thread());
+        // A source this shell doesn't have (Send To, asked for on every menu) answers at once,
+        // so a gated test's messages go to the sources it set up.
+        if !self.extensions.lock().iter().any(|(h, _)| h == handler) {
+            return Err(ShellError::Unsupported);
+        }
         let gate = self.part_gate.lock().clone();
         if let Some(gate) = gate {
             let _ = gate.recv_timeout(Duration::from_secs(20));
@@ -798,6 +808,7 @@ impl Shell for FakeShell {
             crate::shell::ShellMenu {
                 session: 100 + at as u64,
                 entries: extensions[at].1.clone(),
+                partial: self.partial_extensions.lock().contains(&handler.name),
             },
             Duration::from_millis(5),
         ))

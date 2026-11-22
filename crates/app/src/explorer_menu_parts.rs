@@ -102,7 +102,11 @@ impl Explorer {
         let Some((paths, background)) = self.menu_paths(menu) else {
             return;
         };
-        if owned.is_empty() {
+        // "Send to" is read on its own for every menu on items: the host lists it from its
+        // folder in a few ms, and it takes the place of Windows' own under "Show more options"
+        // (#278).
+        let send_to = !background;
+        if owned.is_empty() && !send_to {
             return;
         }
         let extended = menu.extended;
@@ -120,8 +124,11 @@ impl Explorer {
                     HandlerKind::Verb { extended: only } => !only || extended,
                     _ => true,
                 })
-                .filter(|h| is_owner(&h.owner()))
+                .filter(|h| is_owner(&h.owner()) || (send_to && h.is_send_to()))
                 .collect();
+            if send_to && !wanted.iter().any(MenuHandler::is_send_to) {
+                wanted.push(MenuHandler::send_to());
+            }
             // Packaged commands: by the item kinds they are for.
             let kind = shell.shell_menu_kind(&paths, background);
             for (_, owner) in &owned {
@@ -248,9 +255,12 @@ impl Explorer {
             .map(|e| MenuEntry::from_shell_in(e, &[], Some(part.session)))
             .collect();
         // Rows drawn ahead that this source turned out not to have (hidden for these items).
+        // Only a source read in full says so: one cut short may still have them, and taking
+        // that for "not shown here" kept them from being drawn ahead next time (#278).
         let (shown, missing): (Vec<String>, Vec<String>) = expected
             .into_iter()
             .partition(|key| find_pinned(&entries, key).is_some());
+        let missing = if part.partial { Vec::new() } else { missing };
         menu.drop_coming(&missing);
         // An extension: where its rows can be drawn ahead next time.
         if let Some(kind) = kind {
@@ -260,6 +270,14 @@ impl Explorer {
                 .chain(missing.into_iter().map(|key| (key, kind.clone(), false)))
                 .collect();
             cx.defer(move |cx| note_pin_seen(seen, cx));
+        }
+        if owner.eq_ignore_ascii_case(crate::win_menu_parts::SEND_TO)
+            && let Some(MenuEntry::Submenu {
+                label, children, ..
+            }) = entries.first()
+        {
+            menu.send_to = Some((label.clone(), children.clone()));
+            menu.apply_send_to();
         }
         menu.parts.push((part.session, entries));
         menu.sync_pinned(&pinned);

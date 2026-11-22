@@ -669,3 +669,120 @@ fn pinning_learns_the_source_at_once(cx: &mut TestAppContext) {
     });
     assert_eq!(owners(cx)["Compress with 7-Zip"], seven_zip().clsid);
 }
+
+/// #278: a source read only in part (a submenu still filling when the wait ran out) doesn't
+/// count as not having a pinned command. Its row, drawn ahead, stays, and it is still drawn
+/// ahead next time: taking a short read for "not here" made rows come and go.
+#[gpui::test]
+fn a_source_read_short_keeps_its_row(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let key = "Compress with 7-Zip";
+    pin(cx, &[key]);
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "learned", |cx| {
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"])
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // 7-Zip comes back cut short and without the command; the whole menu too.
+    shell.extensions.lock()[0].1.clear();
+    shell.partial_extensions.lock().push("7-Zip".into());
+    shell
+        .partial_menu
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "7-Zip answered", |_| {
+        !shell.extensions_read.lock().is_empty()
+    });
+    wait_until(cx, &view, "more options loaded", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(
+        rows_above_more_options(&view, cx).contains(&key.to_owned()),
+        "the row stays"
+    );
+    assert!(
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"]),
+        "still known to show for a .txt file"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Read in full and still without it: now it goes, and is forgotten (the whole menu, which
+    // this shell gives with the command, held back).
+    shell.partial_extensions.lock().clear();
+    shell
+        .partial_menu
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "row gone", |cx| {
+        !rows_above_more_options(&view, cx).contains(&key.to_owned())
+    });
+    wait_for(cx, "forgotten", |cx| !pin_seen(cx).contains_key(key));
+    let _ = open_whole.send(());
+    *shell.menu_gate.lock() = None;
+}
+
+/// #278: "Send to" under "Show more options" is the menu host's own list, read on its own,
+/// in place of Windows' one, which fills slowly and was often cut short. Its rows run in that
+/// list's own menu.
+#[gpui::test]
+fn send_to_comes_from_the_hosts_own_list(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: None,
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    // Windows' own, as the whole menu has it: left to fill (it is never waited for).
+    *shell.lazy_submenus.lock() = vec![("Send to".into(), vec![item(40, "Only the first")])];
+    // The host's list.
+    shell.extensions.lock().push((
+        MenuHandler::send_to(),
+        vec![ShellMenuEntry::Submenu {
+            label: "Send to".into(),
+            enabled: true,
+            icon: None,
+            children: vec![
+                item(1, "Compressed folder"),
+                item(2, "Desktop"),
+                item(3, "Notes"),
+            ],
+            lazy: None,
+        }],
+    ));
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    let want = (
+        vec![
+            "Compressed folder".to_owned(),
+            "Desktop".to_owned(),
+            "Notes".to_owned(),
+        ],
+        false,
+    );
+    wait_until(cx, &view, "the host's Send to", |v| {
+        v.context_menu
+            .as_ref()
+            .and_then(|m| m.shell_submenu_for_test("Send to"))
+            .as_ref()
+            == Some(&want)
+    });
+    assert!(shell.extensions_read.lock().contains(&"SendTo".to_owned()));
+}

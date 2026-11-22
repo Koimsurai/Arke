@@ -321,23 +321,23 @@ fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
         ]
     );
 
-    // Name descending: children reverse too (folders still first).
+    // Name descending: children reverse too, and folders trail the files at every level.
     view.update(cx, |v, cx| {
         v.set_sort(SortSpec::by(SortColumn::Name, false, false), cx);
     });
     wait_until(cx, &view, "resorted", |v| {
-        view_names(v).first().map(String::as_str) == Some("beta")
+        view_names(v).first().map(String::as_str) == Some("top.txt")
             && view_names(v).get(4) == Some(&sep(&["alpha", "a0.txt"]))
     });
     assert_eq!(
         view.update(cx, |v, _| view_names(v)),
         [
-            "beta".to_string(),
+            "top.txt".to_string(),
+            "beta".into(),
             "alpha".into(),
-            sep(&["alpha", "inner"]),
             sep(&["alpha", "a1.txt"]),
             sep(&["alpha", "a0.txt"]),
-            "top.txt".into(),
+            sep(&["alpha", "inner"]),
         ]
     );
 

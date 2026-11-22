@@ -2,8 +2,9 @@
 //! each with a header row.
 //!
 //! - Date modified uses relative buckets (today, yesterday, earlier this week, ...), then years.
-//!   Size uses the same buckets as Windows. Name groups by first letter. Folders sorted first
-//!   get their own section.
+//!   Size uses the same buckets as Windows. Name groups by first letter. Folders kept apart (first
+//!   when ascending, last when descending) get their own section; sorted by a date, or mixed with
+//!   files, folders go into the section of their date like any file.
 //! - Grouping by the sort column means sections are already contiguous, so one linear pass is
 //!   enough (a few ms for tens of thousands of items). Cached by (list, sort, today).
 //! - Rows mix headers and items. Selection, cursor and keyboard only see items; rows are
@@ -283,8 +284,8 @@ fn name_group(entry: &Entry) -> String {
     }
 }
 
-/// Section label for an entry. `folders_apart`: folders are sorted first and form their own
-/// section.
+/// Section label for an entry. `folders_apart`: folders are kept apart from files and form their
+/// own section.
 fn group_of(entry: &Entry, column: SortColumn, folders_apart: bool, today: Today) -> String {
     let dir = entry.is_dir_like();
     if dir && (folders_apart || !matches!(column, SortColumn::Modified | SortColumn::Created)) {
@@ -363,7 +364,7 @@ impl Explorer {
         }
         let view = self.view()?;
         let today = Today::now(self.services.shell.as_ref());
-        let folders_apart = !self.sort.mixed;
+        let folders_apart = self.sort.folders_apart();
         let cols = self.grid_cols.max(1);
         let key = (
             Arc::as_ptr(&view) as usize,
@@ -455,7 +456,7 @@ impl Explorer {
         }
         let view = self.view()?;
         let today = Today::now(self.services.shell.as_ref());
-        let folders_apart = !self.sort.mixed;
+        let folders_apart = self.sort.folders_apart();
         let key = (
             Arc::as_ptr(&view) as usize,
             view.len(),
@@ -730,5 +731,43 @@ mod tests {
         for (ix, row) in row_of.iter().enumerate() {
             assert_eq!(rows[*row as usize], Row::Item(ix));
         }
+    }
+
+    /// #286: sorted by a date, folders are not kept apart and land in the section of their date;
+    /// by name they keep their own section.
+    #[test]
+    fn folders_go_by_date_when_not_kept_apart() {
+        rust_i18n::set_locale("en");
+        let today = Today {
+            day: days_from_civil(2026, 11, 10),
+            offset: 0,
+        };
+        let spec = arke_core::SortSpec::by(SortColumn::Modified, false, false);
+        let with_date = |name: &str, kind, ago| {
+            Entry::new(name, kind, 1, Some(at(today, ago)), 0)
+        };
+        let entries = vec![
+            with_date("new.txt", EntryKind::File, 0),
+            with_date("new-dir", EntryKind::Dir, 0),
+            with_date("old.txt", EntryKind::File, 400),
+            with_date("old-dir", EntryKind::Dir, 400),
+        ];
+        let labels = |apart: bool| -> Vec<(String, usize)> {
+            build(&entries, |_| 0, SortColumn::Modified, apart, today)
+                .0
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Header { label, count, .. } => Some((label.to_string(), *count)),
+                    Row::Item(_) => None,
+                })
+                .collect()
+        };
+        assert!(!spec.folders_apart());
+        assert_eq!(
+            labels(spec.folders_apart()),
+            [(t!("group.today").into_owned(), 2), ("2025".into(), 2)]
+        );
+        // Forced apart (Name sort): the folders form sections of their own.
+        assert_eq!(labels(true).len(), 4);
     }
 }

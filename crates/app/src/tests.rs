@@ -4419,11 +4419,11 @@ fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
         Some("c-mid")
     );
 
-    // Largest first; folders still sort before files.
+    // Largest first: folders trail a descending sort, like File Explorer.
     let mut spec = SortSpec::by(SortColumn::Size, false, false);
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "sort by size", |v| {
-        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
+        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
     });
     assert_eq!(
         view.update(cx, |v, _| selected_name(v)).as_deref(),

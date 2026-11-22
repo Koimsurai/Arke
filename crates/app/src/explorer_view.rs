@@ -2761,6 +2761,8 @@ fn name_cell(
     match rename {
         Some((input, problem)) => div()
             .debug_selector(|| "rename-box".to_owned())
+            // Tab and Shift+Tab here go to the next and previous item (`explorer_ops.rs`).
+            .key_context("RenameBox")
             // Presses stay in the box: the row under it would take focus back to the list, which
             // commits the rename, and a double-click would open the file (#69).
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -3184,6 +3186,8 @@ impl Explorer {
             .on_action(cx.listener(Self::undo_file_op))
             .on_action(cx.listener(Self::redo_file_op))
             .on_action(cx.listener(Self::rename_file))
+            .on_action(cx.listener(Self::rename_next))
+            .on_action(cx.listener(Self::rename_prev))
             .on_action(cx.listener(Self::new_folder))
             .map(|d| Self::view_actions(d, cx))
             .on_action(cx.listener(Self::copy_to_peer))

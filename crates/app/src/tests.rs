@@ -3607,6 +3607,98 @@ fn inline_rename_validates_names(cx: &mut TestAppContext) {
     );
 }
 
+/// Tab in the rename box commits and renames the next item, Shift+Tab the previous one, in the
+/// order shown (#310).
+#[gpui::test]
+fn tab_in_the_rename_box_moves_to_the_next_item(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let dir_path = Path::new(r"C:\r");
+    fs.insert_dir(
+        dir_path,
+        vec![file("a.txt", 1), file("b.txt", 1), file("c.txt", 1)],
+    );
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\r");
+    wait_until(cx, &view, "load", loaded(r"C:\r"));
+    wait_watcher(&fs, dir_path);
+    let renaming = |v: &Explorer| v.renaming.as_ref().map(|r| r.name.to_string());
+
+    // Tab commits "first" and goes on to b.txt, which is the one selected.
+    cx.simulate_keystrokes("home f2");
+    assert_eq!(view.update(cx, |v, _| renaming(v)).as_deref(), Some("a.txt"));
+    cx.simulate_input("first");
+    cx.simulate_keystrokes("tab");
+    view.update(cx, |v, _| {
+        assert_eq!(renaming(v).as_deref(), Some("b.txt"));
+        assert_eq!(selected_name(v).as_deref(), Some("b.txt"));
+    });
+    wait_until(cx, &view, "first renamed", |v| {
+        names(v).contains(&"first.txt".to_string())
+    });
+    // The renamed row doesn't take the selection back when the rename is done.
+    view.update(cx, |v, _| {
+        assert_eq!(renaming(v).as_deref(), Some("b.txt"));
+        assert_eq!(selected_name(v).as_deref(), Some("b.txt"));
+    });
+
+    // A name the box refuses keeps it on this item, with the reason under it.
+    cx.simulate_input("x|y");
+    cx.simulate_keystrokes("tab");
+    view.update(cx, |v, _| {
+        assert_eq!(renaming(v).as_deref(), Some("b.txt"));
+        assert!(v.renaming.as_ref().is_some_and(|r| r.problem.is_some()));
+    });
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input("second.txt");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(view.update(cx, |v, _| renaming(v)).as_deref(), Some("c.txt"));
+    wait_until(cx, &view, "second renamed", |v| {
+        names(v).contains(&"second.txt".to_string())
+    });
+
+    // At the last item Tab only commits.
+    cx.simulate_input("third");
+    cx.simulate_keystrokes("tab");
+    assert!(view.update(cx, |v, _| v.renaming.is_none()));
+    wait_until(cx, &view, "third renamed", |v| {
+        names(v).contains(&"third.txt".to_string())
+    });
+    assert_eq!(
+        shell.ops(),
+        [
+            FileOp::Rename {
+                path: PathBuf::from(r"C:\r\a.txt"),
+                new_name: "first.txt".into(),
+            },
+            FileOp::Rename {
+                path: PathBuf::from(r"C:\r\b.txt"),
+                new_name: "second.txt".into(),
+            },
+            FileOp::Rename {
+                path: PathBuf::from(r"C:\r\c.txt"),
+                new_name: "third.txt".into(),
+            },
+        ]
+    );
+
+    // Shift+Tab goes back through the list as shown now (first, second, third), and at the first
+    // item it only commits. Nothing is typed, so no more renames.
+    cx.simulate_keystrokes("end f2");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("third.txt")
+    );
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("second.txt")
+    );
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    assert!(view.update(cx, |v, _| v.renaming.is_none()));
+    assert_eq!(shell.ops().len(), 3);
+}
+
 /// The profile folder under This PC is named after the account, so it isn't a second "Home".
 #[test]
 fn profile_folder_is_named_after_the_account() {

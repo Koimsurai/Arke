@@ -3476,7 +3476,13 @@ impl Explorer {
         // open again here: the second click would land on whatever is under the cursor in the new
         // folder.
         if event.click_count >= 2 && !m.control && !m.shift && !crate::prefs::single_click() {
-            self.open_index(ix, cx);
+            if m.alt {
+                // Alt+double-click: Properties of the selection it is in, as in File Explorer
+                // (#337).
+                self.open_properties(self.menu_targets(), cx);
+            } else {
+                self.open_index(ix, cx);
+            }
         }
         // Ctrl+double-click on a folder: a new tab, in the background; with Shift too, in front, as
         // Ctrl+click on a link in a browser (#291). Ctrl+click alone selects, as in File Explorer.

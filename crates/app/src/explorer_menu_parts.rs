@@ -156,7 +156,8 @@ impl Explorer {
             }
             // Rows known to show, and an extension's where it showed for this kind of item last
             // time (it decides for itself whether it adds its item).
-            let shown_here = |key: &str| kind.as_ref().is_some_and(|kind| seen_for(&seen, key, kind));
+            let shown_here =
+                |key: &str| kind.as_ref().is_some_and(|kind| seen_for(&seen, key, kind));
             let keys: Vec<String> = owned
                 .iter()
                 .filter(|(key, o)| {
@@ -169,7 +170,10 @@ impl Explorer {
                 .collect();
             // Sent even when empty: it also takes away rows drawn when the menu opened that
             // have no source here this time.
-            let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Coming { request, keys }));
+            let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Coming {
+                request,
+                keys,
+            }));
             for handler in wanted {
                 let (shell, tx, paths) = (Arc::clone(&shell), tx.clone(), paths.clone());
                 // Where its pinned rows show, to draw them with the menu next time: an
@@ -449,11 +453,7 @@ fn drawn_now(
 }
 
 /// Whether pinned command `key` showed for items of `kind` last time.
-fn seen_for(
-    seen: &std::collections::BTreeMap<String, Vec<String>>,
-    key: &str,
-    kind: &str,
-) -> bool {
+fn seen_for(seen: &std::collections::BTreeMap<String, Vec<String>>, key: &str, kind: &str) -> bool {
     seen.get(key)
         .is_some_and(|kinds| kinds.iter().any(|k| k.eq_ignore_ascii_case(kind)))
 }

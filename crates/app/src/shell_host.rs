@@ -1019,10 +1019,12 @@ mod tests {
                 }),
             }],
             partial: true,
+            filling: vec![(2, "Give access to".into())],
         };
         let json = serde_json::to_string(&menu).unwrap();
         let back: ShellMenu = serde_json::from_str(&json).unwrap();
         assert!(back.partial);
+        assert_eq!(back.filling, menu.filling);
         match &back.entries[0] {
             ShellMenuEntry::Item { icon: Some(t), .. } => {
                 assert_eq!((t.width, t.height), (1, 2));

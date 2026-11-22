@@ -12,14 +12,17 @@
 //!   A crash looks the same to Arke: the read just fails.
 //! - An invoked item runs in the host that read it (some commands open dialogs or keep
 //!   working in the background). That host then retires: it takes no new requests and
-//!   exits once its windows have been closed for a while. A fresh standby replaces it.
+//!   exits once its windows have been closed for a while. A spare takes its place at once.
+//! - The spare starts a moment after the first menu read, warms up the same way at low priority
+//!   (EcoQoS, low memory priority), then gives its memory back to Windows until it takes over:
+//!   about 0 MB in use instead of about 10 MB, and its first read is only a few ms slower than a
+//!   warm host's, against about 1.2 s for a host started then (#278).
 //! - A host that only read menus exits as soon as Arke closes it (Arke quitting, the installer
 //!   replacing the exe): nothing of the user's is running in it.
 //! - A host is replaced after [`RECYCLE_AFTER`] menus: some Windows extensions leave a thread
 //!   behind every time they are loaded (Work Folders, `WorkfoldersShell.dll`, on a PC where it
-//!   isn't set up), so a host kept for days would collect hundreds. The new one starts and warms
-//!   up in the background and takes over when the next menu opens; the old one stays a minute
-//!   for menus it still holds.
+//!   isn't set up), so a host kept for days would collect hundreds. The spare takes over when the
+//!   next menu opens; the old one stays a minute for menus it still holds.
 //!
 //! - Single extensions (`win_menu_parts.rs`) are found and read as soon as they are asked for,
 //!   each on a thread of its own, and answer as each one is ready, even while a whole menu is
@@ -36,7 +39,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -53,6 +56,8 @@ use crate::win_menu_parts::MenuHandler;
 
 /// Starts arke.exe as a menu host only: no window, no tray, no settings.
 pub(crate) const HOST_ARG: &str = "--shell-host";
+/// Second argument of a spare host, one waiting to take over.
+const SPARE_ARG: &str = "--spare";
 /// A menu read longer than this counts as hung (a cold "Send to" takes about 0.7 s).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// A retired host exits after its windows have been closed this long; some extensions
@@ -136,6 +141,9 @@ struct HostReply {
 
 /// Entry point of `arke.exe --shell-host`. Serves requests from stdin until Arke closes it.
 pub(crate) fn run() {
+    if std::env::args_os().nth(2).is_some_and(|a| a == SPARE_ARG) {
+        spare::begin();
+    }
     serve(
         BufReader::new(std::io::stdin()),
         std::io::stdout(),
@@ -157,6 +165,7 @@ where
     start_reader(input, tx, send_reply.clone());
     if warm {
         warm_up();
+        spare::give_memory_back();
     }
     let mut invoked = false;
     while let Ok(first) = rx.recv() {
@@ -278,6 +287,8 @@ fn start_reader<R: BufRead + Send + 'static>(
         .spawn(move || {
             for line in input.lines() {
                 let Ok(line) = line else { break };
+                // A spare taking over, even while it is still warming up.
+                spare::take_over();
                 let Ok(request) = serde_json::from_str::<HostRequest>(&line) else {
                     continue;
                 };
@@ -357,6 +368,121 @@ fn warm_up() {
     crate::win_menu::warm_send_to(&exe);
 }
 
+/// A spare host, one waiting to take over, until it is asked anything: it warms up at low
+/// priority (EcoQoS, low memory priority), then gives its memory back to Windows and stays under
+/// [`CAP`] until it takes over. Unlike Arke itself (`resident.rs`), a spare may never be used, and
+/// its next read pays only a few ms for it.
+mod spare {
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+    use windows::Win32::System::Memory::{
+        GetProcessWorkingSetSizeEx, QUOTA_LIMITS_HARDWS_MAX_DISABLE,
+        QUOTA_LIMITS_HARDWS_MAX_ENABLE, QUOTA_LIMITS_HARDWS_MIN_DISABLE,
+        SetProcessWorkingSetSizeEx,
+    };
+    use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    enum State {
+        Serving,
+        /// Asked nothing yet; with the working set limits it had before [`CAP`], once capped.
+        Idle {
+            before_cap: Option<(usize, usize)>,
+        },
+    }
+
+    /// Locked across each change, so a cap never lands after the host has taken over.
+    static STATE: Mutex<State> = Mutex::new(State::Serving);
+    /// Most memory an idle spare keeps. Measured: nothing touched it anymore once capped.
+    const CAP: usize = 1 << 20;
+    /// When memory is handed back, after warming up: right away, and again once the extensions it
+    /// loaded are done setting themselves up on threads of their own (about 2.8 MB came back within
+    /// 40 s of the first). The cap goes on with the second.
+    const AFTER: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(57)];
+
+    pub(super) fn begin() {
+        *STATE.lock() = State::Idle { before_cap: None };
+        crate::resident::set_background_priority(true);
+    }
+
+    /// A request came in: normal priority and memory again.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "held across the change, so a cap never lands after the host has taken over"
+    )]
+    pub(super) fn take_over() {
+        let mut state = STATE.lock();
+        let State::Idle { before_cap } = *state else {
+            return;
+        };
+        *state = State::Serving;
+        if let Some((min, max)) = before_cap {
+            // SAFETY: GetCurrentProcess is a pseudo handle that needs no closing.
+            let lifted = unsafe {
+                SetProcessWorkingSetSizeEx(
+                    GetCurrentProcess(),
+                    min,
+                    max,
+                    QUOTA_LIMITS_HARDWS_MAX_DISABLE | QUOTA_LIMITS_HARDWS_MIN_DISABLE,
+                )
+            };
+            if let Err(e) = lifted {
+                log::warn!("spare menu host: memory limit not lifted: {e}");
+            }
+        }
+        crate::resident::set_background_priority(false);
+    }
+
+    /// Hands memory back on a thread of its own, per [`AFTER`], while still idle.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "held across the change, so a cap never lands after the host has taken over"
+    )]
+    pub(super) fn give_memory_back() {
+        if !matches!(*STATE.lock(), State::Idle { .. }) {
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("shell-host-trim".into())
+            .spawn(|| {
+                for (step, wait) in AFTER.into_iter().enumerate() {
+                    std::thread::sleep(wait);
+                    let mut state = STATE.lock();
+                    let State::Idle { before_cap } = &mut *state else {
+                        return;
+                    };
+                    // SAFETY: returns a pseudo handle that needs no closing.
+                    let process = unsafe { GetCurrentProcess() };
+                    if step + 1 == AFTER.len() {
+                        *before_cap = cap(process);
+                    }
+                    // SAFETY: the pseudo handle above.
+                    let _ = unsafe { K32EmptyWorkingSet(process) };
+                }
+            });
+    }
+
+    /// Puts a hard limit of [`CAP`] on the working set; the limits it had before.
+    fn cap(process: windows::Win32::Foundation::HANDLE) -> Option<(usize, usize)> {
+        let (mut min, mut max, mut flags) = (0usize, 0usize, 0u32);
+        // SAFETY: a pseudo handle that needs no closing; valid out pointers.
+        unsafe {
+            GetProcessWorkingSetSizeEx(process, &raw mut min, &raw mut max, &raw mut flags)
+                .ok()
+                .ok()?;
+            SetProcessWorkingSetSizeEx(
+                process,
+                min.min(CAP / 2),
+                CAP,
+                QUOTA_LIMITS_HARDWS_MAX_ENABLE | QUOTA_LIMITS_HARDWS_MIN_DISABLE,
+            )
+            .ok()?;
+        }
+        Some((min, max))
+    }
+}
+
 /// Whether this process still has a visible window (extension dialogs, progress windows).
 fn has_visible_window() -> bool {
     unsafe extern "system" fn check(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -399,8 +525,13 @@ struct Host {
 
 /// The current standby host.
 static HOST: Mutex<Option<Host>> = Mutex::new(None);
-/// A replacement warming up, once the current host has read [`RECYCLE_AFTER`] menus.
+/// The spare: it takes over when the current host retires (a command ran in it, or it read
+/// [`RECYCLE_AFTER`] menus), is killed or stops.
 static NEXT: Mutex<Option<Host>> = Mutex::new(None);
+/// A spare is on its way.
+static SPARE_STARTING: AtomicBool = AtomicBool::new(false);
+/// A spare starts this long after the menu read that asks for one, out of its way.
+const SPARE_AFTER: Duration = Duration::from_secs(3);
 /// The host last replaced, kept [`RETIRED_LINGER`] for menus it still holds.
 static RETIRED: Mutex<Option<Host>> = Mutex::new(None);
 /// Whole menus a host reads before it is replaced.
@@ -448,7 +579,7 @@ enum SpawnError {
     Thread(#[source] std::io::Error),
 }
 
-fn spawn_host() -> Result<Host, SpawnError> {
+fn spawn_host(spare: bool) -> Result<Host, SpawnError> {
     // ARKE_TEST_HOST_BLOCKED simulates a machine that blocks child processes.
     if std::env::var_os("ARKE_TEST_HOST_BLOCKED").is_some() {
         return Err(SpawnError::TestBlocked);
@@ -456,6 +587,7 @@ fn spawn_host() -> Result<Host, SpawnError> {
     let exe = std::env::current_exe().map_err(SpawnError::Exe)?;
     let mut child = Command::new(exe)
         .arg(HOST_ARG)
+        .args(spare.then_some(SPARE_ARG))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -542,14 +674,29 @@ fn recycle_if_due() {
     }
 }
 
-/// Starts the replacement host in the background; it warms itself up.
-fn start_replacement() {
-    let _ = std::thread::Builder::new()
-        .name("shell-host-next".into())
-        .spawn(|| match spawn_host() {
-            Ok(host) => *NEXT.lock() = Some(host),
-            Err(e) => log::warn!("replacement menu host failed to start: {e}"),
+/// Starts a spare in the background, [`SPARE_AFTER`] from now, unless one is there or on its way.
+fn ensure_spare() {
+    if NEXT.lock().is_some() || SPARE_STARTING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let started = std::thread::Builder::new()
+        .name("shell-host-spare".into())
+        .spawn(|| {
+            std::thread::sleep(SPARE_AFTER);
+            match spawn_host(true) {
+                Ok(host) => {
+                    let mut next = NEXT.lock();
+                    if next.is_none() {
+                        *next = Some(host);
+                    }
+                }
+                Err(e) => log::warn!("spare menu host failed to start: {e}"),
+            }
+            SPARE_STARTING.store(false, Ordering::Release);
         });
+    if started.is_err() {
+        SPARE_STARTING.store(false, Ordering::Release);
+    }
 }
 
 /// Keeps `host` a while for the menus it still holds, then closes it (dropping it closes its
@@ -577,6 +724,9 @@ fn with_host<T>(f: impl FnOnce(&mut Host) -> Result<T, ShellError>) -> Result<T,
     }
     if slot.is_none() {
         *slot = NEXT.lock().take();
+        if slot.is_some() {
+            log::info!("menu host: the spare took over");
+        }
     }
     if slot.is_none() {
         // Check-then-set on SPAWN_FAILED is safe without holding its lock: `HOST` is held.
@@ -586,7 +736,7 @@ fn with_host<T>(f: impl FnOnce(&mut Host) -> Result<T, ShellError>) -> Result<T,
         {
             return Err(ShellError::HostBlocked);
         }
-        match spawn_host() {
+        match spawn_host(false) {
             Ok(host) => {
                 *SPAWN_FAILED.lock() = None;
                 *slot = Some(host);
@@ -661,11 +811,9 @@ fn query_host(
             extended,
         })?;
         h.reads += 1;
-        if h.reads == recycle_after() {
-            start_replacement();
-        }
         Ok((h.generation, wait))
     })?;
+    ensure_spare();
     match wait.recv_timeout(QUERY_TIMEOUT) {
         Ok(Ok(Reply::Menu(mut menu))) => {
             menu.session = (generation << 32) | (menu.session & 0xFFFF_FFFF);
@@ -774,8 +922,8 @@ pub(crate) fn fill_submenu(session: u64, index: u32) -> Result<Vec<ShellMenuEntr
     }
 }
 
-/// Invokes a menu item in the host that read it. That host then retires and a new
-/// standby starts. Call from a background thread.
+/// Invokes a menu item in the host that read it. That host then retires and the spare takes its
+/// place. Call from a background thread.
 pub(crate) fn invoke(
     session: u64,
     item: u32,
@@ -802,6 +950,7 @@ pub(crate) fn invoke(
         owner,
     })?;
     prewarm();
+    ensure_spare();
     let result = match wait.recv() {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(e),

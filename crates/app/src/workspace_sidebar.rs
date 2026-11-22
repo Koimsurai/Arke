@@ -2372,6 +2372,7 @@ impl Workspace {
                 .map(|ix| self.render_tab(ix, cx))
                 .collect();
             let tab_count = tabs.len();
+            self.reveal_active_tab();
             sidebar
                 // Dragging an unpinned tab turns the New tab row into the pin zone (same
                 // height, so the tabs under the cursor don't move).
@@ -2398,12 +2399,24 @@ impl Workspace {
                         .flex_initial()
                         .flex_shrink(TABS_GIVE_WAY)
                         .min_h(Self::tab_list_min_height(tab_count)),
+                )
+                .relative()
+                // The file list's scrollbar (#323), only while the tabs don't fit. It sits in the
+                // gutter between the tabs and the sidebar's edge, so it doesn't cover their close
+                // buttons.
+                .child(
+                    crate::scrollbar::scrollbar(
+                        self.sidebar_ui.tabs_scroll.clone(),
+                        std::rc::Rc::clone(&self.sidebar_ui.tabs_bar),
+                    )
+                    .right(px(2.) - theme::s_8()),
                 ))
         };
         // Dropping in the empty space below the last tab moves it to the end.
         sidebar.child(
             div()
                 .id("tab-list-end")
+                .debug_selector(|| "tab-list-end".to_owned())
                 .relative()
                 .child(self.tab_area_recorder(super::tabmove::AreaPart::ListEnd))
                 .flex_1()
@@ -2483,6 +2496,33 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn places_offset_for_test(&self) -> Pixels {
         self.sidebar_ui.places_scroll.offset().y
+    }
+
+    /// The active tab is scrolled into view in the vertical tab list each time it changes (opened,
+    /// switched to with keys), and again when the list changes height. Only as far as needed: a
+    /// tab already in view stays where it is. Uses last frame's layout, like the tab strip on top.
+    fn reveal_active_tab(&self) {
+        let scroll = &self.sidebar_ui.tabs_scroll;
+        let reveal = (self.active, scroll.bounds().size.height);
+        if self.sidebar_ui.tabs_revealed.get() == Some(reveal) || reveal.1 <= px(0.) {
+            return;
+        }
+        if scroll.bounds_for_item(self.active).is_some() {
+            self.sidebar_ui.tabs_revealed.set(Some(reveal));
+            scroll.scroll_to_item(self.active);
+        } else {
+            // Just opened, so not laid out yet: once more next frame (the list is drawn, so it
+            // will be, and this doesn't repeat).
+            self.sidebar_ui.frame_wanted.set(true);
+        }
+    }
+
+    /// How far the vertical tab list scrolls past what is shown, and how far it is scrolled
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn tabs_scroll_for_test(&self) -> (Pixels, Pixels) {
+        let scroll = &self.sidebar_ui.tabs_scroll;
+        (scroll.max_offset().y, scroll.offset().y)
     }
 
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.

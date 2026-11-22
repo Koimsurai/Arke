@@ -286,3 +286,67 @@ fn the_home_row_casts_a_shadow_only_when_scrolled(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(!drawn(cx, "sidebar-scroll-shadow"), "back at the top");
 }
+
+/// Opens a tab for each of `p00` on, `count` of them, the last one active.
+fn open_tabs(ws: &Entity<Workspace>, cx: &mut VisualTestContext, count: usize) {
+    for i in 0..count {
+        let path = format!(r"C:\w\p{i:02}");
+        ws.update_in(cx, |ws, window, cx| {
+            let at = ws.tab_views().count();
+            ws.open_tab(PathBuf::from(&path), at, true, window, cx);
+        });
+        let view = ws.update(cx, |ws, _| ws.active_view().clone());
+        wait_until(cx, &view, "load", loaded(&path));
+    }
+    refresh(cx);
+}
+
+/// Tab `ix` is drawn with its whole height inside the vertical tab list.
+fn tab_shown(cx: &mut VisualTestContext, ix: usize) -> bool {
+    let list = bounds(cx, "sidebar-tabs-frame");
+    let id: &'static str = Box::leak(format!("tab-{ix}").into_boxed_str());
+    cx.debug_bounds(id)
+        .is_some_and(|b| b.top() >= list.top() - px(1.) && b.bottom() <= list.bottom() + px(1.))
+}
+
+/// A spot on the tab list's scrollbar, near the bottom: right of the tabs, short of the sidebar's
+/// edge.
+fn tab_track(cx: &mut VisualTestContext) -> gpui::Point<Pixels> {
+    let list = bounds(cx, "sidebar-tabs-frame");
+    point(list.right() + px(2.), list.bottom() - px(8.))
+}
+
+fn tabs_scroll(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (Pixels, Pixels) {
+    ws.update(cx, |ws, _| ws.tabs_scroll_for_test())
+}
+
+/// The vertical tabs get the file list's scrollbar once they don't fit, and only then: a press on
+/// its track below the thumb pages down (#323). The active tab is scrolled into view each time it
+/// changes.
+#[gpui::test]
+fn the_tab_list_has_a_scrollbar_once_full(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    // One tab: nothing to scroll, and nothing there takes the press.
+    let at = tab_track(cx);
+    click(cx, at);
+    assert_eq!(tabs_scroll(&ws, cx), (px(0.), px(0.)));
+
+    open_tabs(&ws, cx, 30);
+    let (overflow, offset) = tabs_scroll(&ws, cx);
+    assert!(overflow > px(0.), "the tabs don't fit");
+    assert!(offset < px(0.), "scrolled down");
+    assert!(tab_shown(cx, 30), "to the active tab, the last one");
+
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    refresh(cx);
+    assert!(tab_shown(cx, 0), "back up to the first once it is active");
+    assert!(tabs_scroll(&ws, cx).1 > px(-0.5));
+
+    let at = tab_track(cx);
+    click(cx, at);
+    assert!(tabs_scroll(&ws, cx).1 < px(-40.), "paged down");
+    assert!(!tab_shown(cx, 0));
+    // The active tab didn't change, so it isn't scrolled back to.
+    refresh(cx);
+    assert!(!tab_shown(cx, 0), "stays where it was paged to");
+}

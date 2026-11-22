@@ -4,9 +4,11 @@
 //! The tree under This PC follows the active pane's folder (#241): the folders down to it expand
 //! by themselves and close again once it moves elsewhere.
 //! Favorites, This PC, Network and Tabs each collapse to their heading (remembered); Home and its
-//! tiles don't. Tiles drag like app icons on a phone (`workspace_tabdrag.rs`). A favorite (tile
-//! or list entry) dragged out of the sidebar and let go there leaves the favorites, like an app
-//! dragged off the macOS Dock, with Undo on a toast.
+//! tiles don't. Home, Favorites and This PC can be hidden from their heading's menu (Home's from
+//! its row's) and shown again from the menu of the sidebar's empty space (#323). Tiles drag like
+//! app icons on a phone (`workspace_tabdrag.rs`). A favorite (tile or list entry) dragged out of
+//! the sidebar and let go there leaves the favorites, like an app dragged off the macOS Dock, with
+//! Undo on a toast.
 //! The context menu is the sidebar's own small menu (open in new tab, pin, favorites, ...).
 
 use std::path::{Path, PathBuf};
@@ -118,6 +120,11 @@ pub(super) enum SidebarAction {
     SetRecyclePinned(bool),
     /// The collapsed sidebar opens over the content on hover (#122).
     SetSidebarPeek(bool),
+    /// Hide a section of the sidebar (its heading's menu, #323).
+    HideSection(SidebarSection),
+    /// A section's row in the menu of the sidebar's empty space, checked while it is shown
+    /// (`true`): picked, it is hidden or shown again (#323).
+    ShowSection(SidebarSection, bool),
     /// Copy or move the shelf's items into the active tab's folder.
     ShelfToHere {
         is_move: bool,
@@ -203,7 +210,9 @@ const fn menu_glyph(action: &SidebarAction) -> Option<Icon> {
         A::WindowClose => Icon::WinClose,
         A::OpenSettings => Icon::Settings,
         A::SetSidebarPeek(_) => Icon::Sidebar,
-        A::CloseOtherTabs(_) | A::CloseAllTabs => return None,
+        A::HideSection(_) => Icon::EyeOff,
+        A::ShowSection(_, true) => Icon::Check,
+        A::ShowSection(_, false) | A::CloseOtherTabs(_) | A::CloseAllTabs => return None,
     })
 }
 
@@ -281,6 +290,7 @@ const fn menu_group(action: &SidebarAction) -> u8 {
         A::ShelfClear | A::ShelfRemove(_) => 10,
         A::HistoryJump { .. } | A::TimelineStep { .. } => 11,
         A::SetSidebarPeek(_) => 12,
+        A::HideSection(_) | A::ShowSection(..) => 13,
     }
 }
 
@@ -911,12 +921,35 @@ fn section_label(text: impl Into<SharedString>) -> impl IntoElement {
 /// A section heading's element id (also its debug selector and hover group) and title.
 fn section_id(section: SidebarSection) -> (&'static str, SharedString) {
     let (id, title) = match section {
+        // Home has its row, not a heading.
+        SidebarSection::Home => ("open-home", t!("home.title")),
         // Kept from when the heading only labelled the pinned list.
         SidebarSection::Favorites => ("pin-list-label", t!("sidebar.favorites")),
         SidebarSection::ThisPc => ("this-pc-header", t!("sidebar.this_pc")),
         SidebarSection::Network => ("network-header", t!("sidebar.network")),
     };
     (id, title.into_owned().into())
+}
+
+/// The sections that can be hidden (#323), in the order the menu of the sidebar's empty space
+/// lists them.
+const HIDEABLE: [SidebarSection; 3] = [
+    SidebarSection::Home,
+    SidebarSection::Favorites,
+    SidebarSection::ThisPc,
+];
+
+/// The menu of a hideable section's heading (or Home's row): Hide.
+pub(super) fn section_menu(section: SidebarSection) -> Vec<SidebarRow> {
+    vec![row(
+        t!("sidebar.hide_section"),
+        SidebarAction::HideSection(section),
+    )]
+}
+
+/// Whether a section of the sidebar is hidden (#323).
+pub(super) fn section_hidden(section: SidebarSection, cx: &App) -> bool {
+    SettingsStore::try_global(cx).is_some_and(|s| s.read(cx).settings.is_hidden(section))
 }
 
 /// Under the sticky Home row while the places are scrolled down: a hairline with a soft shadow
@@ -1349,7 +1382,15 @@ impl Workspace {
         let recycle_pinned = settings.recycle_pinned;
         let own_names = settings.favorite_names.clone();
         let collapsed = settings.is_collapsed(SidebarSection::Favorites);
-        let favorites = self.favorites(cx);
+        // Hidden (#323): Home takes its tiles with it, Favorites its list (with the favorites too
+        // long for a tile, listed there) and the Recycle Bin. The Shelf stays.
+        let home_hidden = settings.is_hidden(SidebarSection::Home);
+        let list_hidden = settings.is_hidden(SidebarSection::Favorites);
+        let favorites = if home_hidden && list_hidden {
+            Vec::new()
+        } else {
+            self.favorites(cx)
+        };
         let layout = self.tile_layout(&favorites, cx);
         let large = layout.large;
         // Slots count every favorite, tiles or rows: drops and the saved order use them.
@@ -1359,7 +1400,12 @@ impl Workspace {
         // Who each row is, so it slides to its new place when the favorites change under a drag.
         let mut long_keys: Vec<PlaceRow> = Vec::new();
         for (ix, (path, label, icon)) in favorites.into_iter().enumerate() {
-            if layout.on_tile.get(ix).copied().unwrap_or(true) {
+            let on_tile = layout.on_tile.get(ix).copied().unwrap_or(true);
+            let hidden = if on_tile { home_hidden } else { list_hidden };
+            if hidden {
+                continue;
+            }
+            if on_tile {
                 let here = current == Some(path.as_path());
                 let tile = self.render_tile(ix, &path, label, icon, here, large, cx);
                 let cell = tiles.len();
@@ -1387,7 +1433,8 @@ impl Workspace {
         }
         let mut pinned_rows = Vec::new();
         let mut pinned_keys: Vec<PlaceRow> = Vec::new();
-        for (ix, path) in pinned.iter().enumerate() {
+        let listed: &[PathBuf] = if list_hidden { &[] } else { &pinned };
+        for (ix, path) in listed.iter().enumerate() {
             let row_at = pinned_rows.len();
             let label = own_names
                 .get(&crate::place_names::key(path))
@@ -1414,63 +1461,23 @@ impl Workspace {
         // the heading shown for it even with nothing listed). Over the list it becomes a row, its
         // gap drawn like the block. A list entry dragged up onto the tiles shows nothing here:
         // the list only closes its gap.
-        let tile_dragged = self.dragging_pin
+        let tile_dragged = !list_hidden
+            && self.dragging_pin
             && cx.has_active_drag()
             && self.tab_drag.is_tile_now()
             && self.tab_drag.started_on_tile();
         let wants_list_drop = tile_dragged;
-        // A folder or tab over the tiles: they wash over, and an "Add to favorites" slot follows
-        // the last one (`workspace_pindrop.rs`).
-        let add_slot = self.render_add_favorite_slot(tile_count, tiles.len(), large, cx);
-        let tile_rows = tiles.len().div_ceil(if large { 3 } else { 4 });
-        self.sidebar_ui.tile_rows.set(tile_rows);
-        let slot_row = add_slot.as_ref().is_some_and(|(_, own_row)| *own_row);
-        self.keep_rows_under_tiles_still(tile_rows + usize::from(slot_row), large);
-        let add_slot = add_slot.map(|(slot, _)| slot);
-        let mut out = vec![
-            div()
-                .id("pin-tiles")
-                .debug_selector(|| "pin-tiles".to_owned())
-                .when_some(
-                    self.tab_drag
-                        .grid_hold
-                        .filter(|_| self.dragging_pin && cx.has_active_drag()),
-                    |d, height| d.min_h(px(height)),
-                )
-                .grid()
-                .grid_cols(if large { 3 } else { 4 })
-                .gap(theme::s_4())
-                .rounded(theme::r_8())
-                .when(add_slot.is_some() || self.list_invites_tiles(cx), |d| {
-                    d.bg(theme::signal_wash())
-                        .child(div().absolute().debug_selector(|| "tiles-invite".to_owned()))
-                })
-                .children(tiles)
-                .children(add_slot)
-                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
-                    this.tiles_hover(e, cx);
-                }))
-                // A favorite from the list over the space after the last tile becomes one again.
-                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedPin>, _, cx| {
-                    this.pin_over_tiles(e, cx);
-                }))
-                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
-                    this.tiles_hover(e, cx);
-                }))
-                .on_drag_move(
-                    cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
-                        this.tiles_hover(e, cx);
-                    }),
-                )
-                .with_pin_drops(cx)
-                .on_drop(cx.listener(move |this, dragged: &DraggedPin, window, cx| {
-                    this.drop_pin_between_tiles(dragged, tile_count, window, cx);
-                }))
-                .into_any_element(),
-        ];
+        let mut out = Vec::new();
+        if home_hidden {
+            // No grid to keep still or snap to; drawn again, it starts afresh.
+            self.sidebar_ui.tile_rows.set(0);
+            self.sidebar_ui.grid_height.set(None);
+        } else {
+            out.push(self.render_tile_grid(tiles, tile_count, large, cx));
+        }
         // The Recycle Bin is pinned by default and always sits last; it cannot be dragged. A
         // favorite or folder dragged over it goes in last in the list, just above it.
-        if recycle_pinned {
+        if recycle_pinned && !list_hidden {
             let end = pinned.len();
             let marked = self.pin_shown == Some(PinSlot::List(end)) && self.pin_mark.is_none();
             pinned_rows.push(
@@ -1603,6 +1610,60 @@ impl Workspace {
         );
         self.drop_in(SidebarSection::Favorites, &mut out, start);
         out
+    }
+
+    /// The favorite tiles' grid, Home's. A folder or tab over it washes it over, and an "Add to
+    /// favorites" slot follows the last tile (`workspace_pindrop.rs`).
+    fn render_tile_grid(
+        &self,
+        tiles: Vec<AnyElement>,
+        tile_count: usize,
+        large: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let add_slot = self.render_add_favorite_slot(tile_count, tiles.len(), large, cx);
+        let tile_rows = tiles.len().div_ceil(if large { 3 } else { 4 });
+        self.sidebar_ui.tile_rows.set(tile_rows);
+        let slot_row = add_slot.as_ref().is_some_and(|(_, own_row)| *own_row);
+        self.keep_rows_under_tiles_still(tile_rows + usize::from(slot_row), large);
+        let add_slot = add_slot.map(|(slot, _)| slot);
+        div()
+            .id("pin-tiles")
+            .debug_selector(|| "pin-tiles".to_owned())
+            .when_some(
+                self.tab_drag
+                    .grid_hold
+                    .filter(|_| self.dragging_pin && cx.has_active_drag()),
+                |d, height| d.min_h(px(height)),
+            )
+            .grid()
+            .grid_cols(if large { 3 } else { 4 })
+            .gap(theme::s_4())
+            .rounded(theme::r_8())
+            .when(add_slot.is_some() || self.list_invites_tiles(cx), |d| {
+                d.bg(theme::signal_wash())
+                    .child(div().absolute().debug_selector(|| "tiles-invite".to_owned()))
+            })
+            .children(tiles)
+            .children(add_slot)
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedTab>, _, cx| {
+                this.tiles_hover(e, cx);
+            }))
+            // A favorite from the list over the space after the last tile becomes one again.
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedPin>, _, cx| {
+                this.pin_over_tiles(e, cx);
+            }))
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFiles>, _, cx| {
+                this.tiles_hover(e, cx);
+            }))
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                this.tiles_hover(e, cx);
+            }))
+            .with_pin_drops(cx)
+            .on_drop(cx.listener(move |this, dragged: &DraggedPin, window, cx| {
+                this.drop_pin_between_tiles(dragged, tile_count, window, cx);
+            }))
+            .into_any_element()
     }
 
     /// The width of the places list last frame (an estimate from the sidebar's width before the
@@ -2264,14 +2325,15 @@ impl Workspace {
         self.snap_tile_rows();
         let current = self.sidebar_here(cx);
         let places = self.active_view().read(cx).places.clone();
-        let (this_pc_collapsed, network_collapsed) = {
+        let (this_pc_collapsed, this_pc_hidden, network_collapsed) = {
             let settings = &SettingsStore::global(cx).read(cx).settings;
             (
                 settings.is_collapsed(SidebarSection::ThisPc),
+                settings.is_hidden(SidebarSection::ThisPc),
                 settings.is_collapsed(SidebarSection::Network),
             )
         };
-        if !this_pc_collapsed {
+        if !this_pc_collapsed && !this_pc_hidden {
             self.schedule_follow(current.as_ref(), &places, cx);
         }
         // Places (pins, This PC, Network) and the vertical tab list each scroll on their own. When
@@ -2284,14 +2346,19 @@ impl Workspace {
         self.tab_drag.rows.frame();
         let mut items = self.render_pins(current.as_deref(), cx);
         let pins_end = items.len();
-        items.push(
-            self.section_header(SidebarSection::ThisPc, this_pc_collapsed, Vec::new(), cx)
-                .into_any_element(),
-        );
-        if !this_pc_collapsed {
-            let start = items.len();
-            self.render_this_pc(&places, current.as_deref(), &mut items, cx);
-            self.drop_in(SidebarSection::ThisPc, &mut items, start);
+        if this_pc_hidden {
+            // Hidden (#323): no row of the current folder to scroll to.
+            self.sidebar_ui.here_row.set(None);
+        } else {
+            items.push(
+                self.section_header(SidebarSection::ThisPc, this_pc_collapsed, Vec::new(), cx)
+                    .into_any_element(),
+            );
+            if !this_pc_collapsed {
+                let start = items.len();
+                self.render_this_pc(&places, current.as_deref(), &mut items, cx);
+                self.drop_in(SidebarSection::ThisPc, &mut items, start);
+            }
         }
         self.render_network(
             &places,
@@ -2350,6 +2417,15 @@ impl Workspace {
             .pr(theme::s_8())
             .pb(theme::s_8())
             .gap(theme::s_2())
+            // A right click that no row, tab or heading takes (the space below the tabs, between
+            // rows, the Network and Tabs headings): shows hidden sections again (#323).
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                    let items = Self::sidebar_space_menu(cx);
+                    this.open_sidebar_menu(e.position, items, cx);
+                }),
+            )
             .child(places_area);
         if horizontal {
             return sidebar;
@@ -3114,6 +3190,7 @@ impl Workspace {
         let settings = &SettingsStore::global(cx).read(cx).settings;
         // Turned off (#299), the tree is the user's alone.
         if settings.is_collapsed(SidebarSection::ThisPc)
+            || settings.is_hidden(SidebarSection::ThisPc)
             || !settings.sidebar_follow
             || self.sidebar_ui.followed.as_ref() == Some(&key)
         {
@@ -3289,6 +3366,37 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_section(section, cx);
             }))
+            // Favorites and This PC can be hidden (#323); a right click elsewhere on the
+            // sidebar brings them back.
+            .when(HIDEABLE.contains(&section), |d| {
+                d.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        this.open_sidebar_menu(e.position, section_menu(section), cx);
+                    }),
+                )
+            })
+    }
+
+    /// Hides a section of the sidebar or shows it again (#323). Its room goes to the tabs below.
+    fn show_section(section: SidebarSection, shown: bool, cx: &mut App) {
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.set_hidden(section, !shown), cx);
+        });
+    }
+
+    /// The menu of the sidebar's empty space (#323): the sections that can be hidden, checked
+    /// while shown.
+    fn sidebar_space_menu(cx: &App) -> Vec<SidebarRow> {
+        HIDEABLE
+            .into_iter()
+            .map(|section| {
+                (
+                    section_id(section).1,
+                    SidebarAction::ShowSection(section, !section_hidden(section, cx)),
+                )
+            })
+            .collect()
     }
 
     /// Collapses a section or expands it again. This PC expanded again catches up with the
@@ -3592,6 +3700,8 @@ impl Workspace {
                 }
             }
             SidebarAction::SetSidebarPeek(on) => Self::set_sidebar_peek(on, cx),
+            SidebarAction::HideSection(section) => Self::show_section(section, false, cx),
+            SidebarAction::ShowSection(section, shown) => Self::show_section(section, !shown, cx),
             SidebarAction::OpenFile(path) => {
                 crate::search_history::SearchHistory::record(&path, false, cx);
                 let shell = Arc::clone(&self.services.shell);
@@ -3986,6 +4096,8 @@ impl Workspace {
             // Where a history folder is, so two folders of the same name tell apart.
             let detail = menu_detail(&action);
             let shortcut = self.menu_shortcut(&action, cx);
+            // A shown section's row in the menu of the sidebar's empty space has its check.
+            let checked = matches!(action, SidebarAction::ShowSection(_, true));
             // A history folder is drawn as a folder; the other rows get their command's icon.
             let glyph = if folder { None } else { menu_glyph(&action) };
             let mark = div()
@@ -4006,7 +4118,7 @@ impl Workspace {
             rows.push(
                 div()
                     .id(("sidebar-menu-item", ix))
-                    .a11y_menu_item(label.clone(), true, false, false)
+                    .a11y_menu_item(label.clone(), true, checked, false)
                     .when_some(
                         shortcut.clone(),
                         gpui::StatefulInteractiveElement::aria_keyshortcuts,
@@ -4580,6 +4692,33 @@ impl Workspace {
     /// "Remove from sidebar" picked from the Recycle Bin row's menu.
     pub(crate) fn unpin_recycle_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.run_sidebar_action(SidebarAction::SetRecyclePinned(false), window, cx);
+    }
+
+    /// Picks the row labeled `label` in the open sidebar menu.
+    pub(crate) fn run_open_menu_for_test(
+        &mut self,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let action = self
+            .sidebar_menu
+            .as_ref()
+            .and_then(|m| m.items.iter().find(|(l, _)| l.as_ref() == label))
+            .map(|(_, action)| action.clone())
+            .unwrap_or_else(|| panic!("no {label:?} in the open menu"));
+        self.run_sidebar_action(action, window, cx);
+    }
+
+    /// Which rows of the open sidebar menu have a check.
+    pub(crate) fn open_menu_checks_for_test(&self) -> Option<Vec<bool>> {
+        let menu = self.sidebar_menu.as_ref()?;
+        Some(
+            menu.items
+                .iter()
+                .map(|(_, a)| matches!(a, SidebarAction::ShowSection(_, true)))
+                .collect(),
+        )
     }
 
     /// How much bigger a dragged tile is drawn under the pointer.

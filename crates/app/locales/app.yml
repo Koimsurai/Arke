@@ -6748,6 +6748,14 @@ sidebar.favorites:
   es: Favoritos
   pt-BR: Favoritos
   ja: お気に入り
+sidebar.hide_section:
+  en: Hide
+  zh-TW: 隱藏
+  zh-CN: 隐藏
+  de: Ausblenden
+  es: Ocultar
+  pt-BR: Ocultar
+  ja: 非表示
 sidebar.pinned_hint:
   en: "Right-click a folder › Add to favorites"
   zh-TW: 在資料夾上按右鍵 →「加入最愛」

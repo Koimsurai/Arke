@@ -996,7 +996,15 @@ impl Workspace {
         if startup == Startup::AroundAsked {
             // Opened on a folder before the settings were read: the last session comes back
             // around it, as when they are read in time (`open_explorer_window`).
-            if start != crate::settings::StartLocation::LastSession || other_explorer_windows(cx) {
+            if other_explorer_windows(cx) {
+                return;
+            }
+            if start != crate::settings::StartLocation::LastSession {
+                // Only the pinned tabs come back, in front of the folder asked for.
+                let pinned = store.settings.last_pinned_tabs();
+                if !pinned.tabs.is_empty() {
+                    self.restore_session_before(&pinned, window, cx);
+                }
                 return;
             }
             let mut others = store.settings.last_windows();
@@ -1018,6 +1026,12 @@ impl Workspace {
                 cx.defer(move |cx| crate::open_session_windows(cx, &services, others, handle));
             }
             return;
+        }
+        // Pinned tabs come back whatever the start location is; with the last tabs they are part
+        // of the session, and another open window has them already.
+        let mut pinned = None;
+        if start != crate::settings::StartLocation::LastSession && !other_explorer_windows(cx) {
+            pinned = Some(store.settings.last_pinned_tabs()).filter(|s| !s.tabs.is_empty());
         }
         match start {
             crate::settings::StartLocation::Home => {}
@@ -1057,6 +1071,11 @@ impl Workspace {
                     cx.defer(move |cx| crate::open_session_windows(cx, &services, others, handle));
                 }
             }
+        }
+        // The start tab is in place (Home page, last folder...): the pinned tabs go in front of it
+        // and it stays the active one.
+        if let Some(pinned) = pinned {
+            self.restore_session_before(&pinned, window, cx);
         }
     }
 

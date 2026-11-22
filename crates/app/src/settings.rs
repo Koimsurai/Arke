@@ -1482,6 +1482,27 @@ impl Settings {
             .collect()
     }
 
+    /// The pinned tabs of the last session's windows, in order: they come back at every start,
+    /// whatever the start location is, as in a browser (#298). A tab pinned in two windows on the
+    /// same folders comes back once, and none of them reopens Home over its folder.
+    pub(crate) fn last_pinned_tabs(&self) -> Session {
+        let mut tabs: Vec<SessionTab> = Vec::new();
+        for tab in self
+            .last_windows()
+            .iter()
+            .flat_map(|w| w.session.tabs.iter())
+            .filter(|t| t.pinned)
+        {
+            if !tabs.iter().any(|t| t.panes == tab.panes) {
+                tabs.push(SessionTab {
+                    home: false,
+                    ..tab.clone()
+                });
+            }
+        }
+        Session { tabs, active: 0 }
+    }
+
     /// Network locations global search actually indexes: user-added ones plus, when auto is on, network
     /// drives `drives` and recent shares, minus exclusions.
     pub(crate) fn searched_network(&self, drives: &[PathBuf]) -> Vec<PathBuf> {

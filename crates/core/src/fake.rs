@@ -282,12 +282,32 @@ impl Fs for FakeFs {
             return Err(io::ErrorKind::NotFound.into());
         };
         let name = name.to_string_lossy();
+        // As on NTFS: found in any case, under the name asked for.
         self.state
             .lock()
             .dirs
             .get(dir)
-            .and_then(|list| list.iter().find(|e| *e.name == *name).cloned())
+            .and_then(|list| {
+                list.iter().find(|e| *e.name == *name).cloned().or_else(|| {
+                    list.iter()
+                        .find(|e| e.name.eq_ignore_ascii_case(&name))
+                        .map(|e| e.renamed(&name))
+                })
+            })
             .ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+
+    fn listed_name(&self, path: &Path) -> Option<String> {
+        let (dir, name) = (path.parent()?, path.file_name()?.to_string_lossy());
+        let listed = self
+            .state
+            .lock()
+            .dirs
+            .get(dir)?
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(&name))
+            .map(|e| Arc::clone(&e.name))?;
+        (*listed != *name).then(|| listed.to_string())
     }
 
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>> {

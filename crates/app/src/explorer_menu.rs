@@ -1002,11 +1002,13 @@ impl Explorer {
             .map(|e| t!("menu.undo_op", op = t!(e.verb)).into_owned());
         let redo = crate::explorer::RedoStack::last(cx)
             .map(|e| t!("menu.redo_op", op = t!(e.verb)).into_owned());
-        let hidden = SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .menu_hidden
-            .clone();
+        let (hidden, order) = {
+            let settings = &SettingsStore::global(cx).read(cx).settings;
+            (
+                settings.menu_hidden.clone(),
+                crate::menu_order::ranks(&settings.menu_order),
+            )
+        };
         let apps = open_with_list(&SettingsStore::global(cx).read(cx).settings);
         let cloud = self.cloud_state(&targets);
         // A single folder can be added to or removed from whole-PC search (network: add, local:
@@ -1025,6 +1027,11 @@ impl Explorer {
         let mut entries = self.build_menu(&targets, pinned, (undo, redo), &apps, net_search);
         if let Some(kept) = cloud {
             add_cloud_items(&mut entries, kept);
+        }
+        // The order dragged to in Settings › Context menu (#263); the built-in one as built.
+        if let Some(ranks) = order {
+            entries =
+                crate::menu_order::arrange(entries, ranks, order_slot, || MenuEntry::Separator);
         }
         let entries = hide_entries(entries, &hidden);
         let on_server = targets.first().map_or_else(
@@ -3185,7 +3192,20 @@ fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
     }
 }
 
-/// Removes entries disabled in settings, then tidies separators (none at the ends, no repeats).
+/// Where an entry goes in the order set in Settings › Context menu (`menu_order.rs`): its key
+/// there, or staying with the entry before it.
+fn order_slot(entry: &MenuEntry) -> crate::menu_order::Slot {
+    use crate::menu_order::Slot;
+    match entry {
+        MenuEntry::Separator => Slot::Separator,
+        MenuEntry::Actions(_) => Slot::Last,
+        MenuEntry::Submenu { shell: true, .. } => Slot::Key("more_options"),
+        MenuEntry::Submenu { key: Some(key), .. } => Slot::Key(*key),
+        MenuEntry::Item(item) if item.command == MenuCommand::Open => Slot::Key("open"),
+        entry => pref_key(entry).map_or(Slot::Follow, Slot::Key),
+    }
+}
+
 /// Commands that need a file on this PC (Windows shell, other apps, archives, search index).
 const fn local_only(command: &MenuCommand) -> bool {
     use MenuCommand as C;
@@ -3224,6 +3244,7 @@ pub(crate) fn remote_menu(entries: Vec<MenuEntry>) -> Vec<MenuEntry> {
     hide_entries(kept, &[])
 }
 
+/// Removes entries disabled in settings, then tidies separators (none at the ends, no repeats).
 fn hide_entries(entries: Vec<MenuEntry>, hidden: &[String]) -> Vec<MenuEntry> {
     let mut out: Vec<MenuEntry> = Vec::with_capacity(entries.len());
     for entry in entries {

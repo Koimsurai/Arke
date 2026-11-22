@@ -459,3 +459,31 @@ fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "open-home") && drawn(cx, "tile-slot-0"));
 }
+
+/// The Recycle Bin, once removed from the favorites, comes back from the menu of the sidebar's
+/// empty space, the favorites with it when they were hidden (#308).
+#[gpui::test]
+fn the_recycle_bin_comes_back_from_the_sidebars_menu(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let add = t!("sidebar.add_recycle").into_owned();
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    let rows = menu(&ws, cx).expect("a menu");
+    assert!(!rows.contains(&add), "it is there already: {rows:?}");
+
+    ws.update_in(cx, |ws, window, cx| ws.unpin_recycle_for_test(window, cx));
+    change(cx, |st| st.set_hidden(SidebarSection::Favorites, true));
+    refresh(cx);
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    let rows = menu(&ws, cx).expect("a menu");
+    assert_eq!(rows.last(), Some(&add));
+    assert_eq!(rows[rows.len() - 2], "-", "apart from the sections");
+    pick(&ws, cx, &add);
+    let settings = current(cx);
+    assert!(settings.recycle_pinned);
+    assert!(
+        !settings.is_hidden(SidebarSection::Favorites),
+        "the favorites show, with it"
+    );
+}

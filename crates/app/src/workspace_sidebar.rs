@@ -3386,9 +3386,10 @@ impl Workspace {
     }
 
     /// The menu of the sidebar's empty space (#323): the sections that can be hidden, checked
-    /// while shown.
+    /// while shown, then the Recycle Bin once it was removed from the favorites, which had no
+    /// way back there but its page's pin button (#308).
     fn sidebar_space_menu(cx: &App) -> Vec<SidebarRow> {
-        HIDEABLE
+        let mut items: Vec<SidebarRow> = HIDEABLE
             .into_iter()
             .map(|section| {
                 (
@@ -3396,7 +3397,14 @@ impl Workspace {
                     SidebarAction::ShowSection(section, !section_hidden(section, cx)),
                 )
             })
-            .collect()
+            .collect();
+        if SettingsStore::try_global(cx).is_some_and(|s| !s.read(cx).settings.recycle_pinned) {
+            items.push(row(
+                t!("sidebar.add_recycle"),
+                SidebarAction::SetRecyclePinned(true),
+            ));
+        }
+        items
     }
 
     /// Collapses a section or expands it again. This PC expanded again catches up with the
@@ -3691,8 +3699,11 @@ impl Workspace {
             SidebarAction::OpenRecycleInNewTab => self.open_recycle(true, window, cx),
             SidebarAction::SetRecyclePinned(pinned) => {
                 Self::set_recycle_pinned(pinned, cx);
-                // Off the sidebar it is still a click away, on Home among the drives (#31).
-                if !pinned {
+                if pinned {
+                    // Back among the favorites: they show, so it does (#308).
+                    Self::show_section(SidebarSection::Favorites, true, cx);
+                } else {
+                    // Off the sidebar it is still a click away, on Home among the drives (#31).
                     self.active_view().update(cx, |e, cx| {
                         e.notice = Some(t!("sidebar.recycle_on_home").into_owned());
                         cx.notify();

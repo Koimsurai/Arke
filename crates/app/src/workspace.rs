@@ -834,7 +834,7 @@ impl Workspace {
 
     /// Restores the last session's tabs before the tabs open now, which stay in front: the
     /// window was opened on a folder before the settings were read.
-    fn restore_session_before(
+    pub(crate) fn restore_session_before(
         &mut self,
         session: &crate::settings::Session,
         window: &mut Window,

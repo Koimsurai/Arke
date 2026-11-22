@@ -656,6 +656,40 @@ fn pinned_tabs_come_back_when_last_tabs_is_off(cx: &mut TestAppContext) {
     });
 }
 
+/// Opened on a folder (Win+E with Arke as the default, "Open in Arke"), the pinned tabs come back
+/// in front of it too, and the folder asked for is the active tab (#298).
+#[gpui::test]
+fn pinned_tabs_come_back_around_a_folder_asked_for(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    no_window_yet(cx);
+    settings(cx, |s| {
+        s.start_location = StartLocation::Home;
+        s.session_windows = vec![saved_window_with_pins(
+            &[r"C:\a", r"C:\b", r"C:\c"],
+            &[r"C:\a", r"C:\c"],
+        )];
+    });
+    let services = services(&fs);
+    let opened =
+        cx.update(|cx| crate::open_explorer(cx, &services, Some(p(r"C:\d")), None, Instant::now()));
+    assert!(opened);
+    settle(cx);
+    let windows = workspaces(cx);
+    assert_eq!(windows.len(), 1);
+    let window = windows[0];
+    let tabs = tabs_of(window, cx);
+    assert_eq!(
+        tabs,
+        [Some(p(r"C:\a")), Some(p(r"C:\c")), Some(p(r"C:\d"))],
+        "pinned tabs, then the folder asked for"
+    );
+    cx.update(|cx| {
+        let ws = window.read(cx).unwrap();
+        assert_eq!(ws.pinned_for_test(), [true, true, false]);
+        assert_eq!(ws.active, 2, "the folder asked for is the active tab");
+    });
+}
+
 /// Without a pinned tab in the last session, the start location alone decides, as before.
 #[gpui::test]
 fn no_pinned_tabs_leaves_the_start_alone(cx: &mut TestAppContext) {

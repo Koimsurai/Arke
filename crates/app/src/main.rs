@@ -1806,7 +1806,7 @@ fn open_explorer_window(
     // touch locations that might block. No path given: if settings say "last location/last tabs",
     // open there (switching once settings finish loading).
     let first_window = cx.windows().is_empty();
-    let (last, mut sessions, place, single_window, loaded) = {
+    let (last, mut sessions, pinned, place, single_window, loaded) = {
         let store = settings::SettingsStore::global(cx).read(cx);
         let start = update::start_location(store.settings.start_location);
         let last =
@@ -1824,6 +1824,14 @@ fn open_explorer_window(
         } else {
             Vec::new()
         };
+        // Pinned tabs come back in front of a folder asked for whatever the start location is
+        // (#298); with the last tabs they are part of the session.
+        let pinned = (store.loaded
+            && first_window
+            && bench.is_none()
+            && start != settings::StartLocation::LastSession)
+            .then(|| store.settings.last_pinned_tabs())
+            .filter(|s| !s.tabs.is_empty());
         // Window position: the first window uses the last one; later windows are centered instead
         // of stacking.
         let place = (first_window && bench.is_none())
@@ -1835,6 +1843,7 @@ fn open_explorer_window(
         (
             last,
             sessions,
+            pinned,
             place,
             store.settings.single_window,
             store.loaded,
@@ -1864,6 +1873,9 @@ fn open_explorer_window(
         let handle = open_workspace_window(cx, services, start, bench, started_at, received)?;
         let _ = handle.update(cx, |workspace, window, cx| {
             workspace.show_taken_over(asked.target, asked.select, window, cx);
+            if let Some(pinned) = &pinned {
+                workspace.restore_session_before(pinned, window, cx);
+            }
             // Settings not read yet: the last session may still come back around this window.
             if wait_for_session {
                 workspace.restore_session_when_read();

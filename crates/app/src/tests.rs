@@ -76,6 +76,8 @@ mod sidebar_sections;
 mod sidebar_tree;
 #[path = "tests_small_behaviors.rs"]
 mod small_behaviors;
+#[path = "tests_sort_options.rs"]
+mod sort_options;
 #[path = "tests_stuck_drag.rs"]
 mod stuck_drag;
 #[path = "tests_tab_drag.rs"]

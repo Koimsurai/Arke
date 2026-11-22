@@ -285,7 +285,7 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// View tools: details/icons/columns with the view options flyout, preview pane, split.
+    /// View tools: sort, details/icons/columns with the view options flyout, preview pane, split.
     pub(super) fn render_view_controls(
         &self,
         window: &Window,
@@ -296,6 +296,10 @@ impl Explorer {
             .flex_none()
             .items_center()
             .gap(theme::s_4())
+            // Search results keep their own order (relevance, or their headers).
+            .when(!self.search_mode, |d| {
+                d.child(self.render_sort_options(window, cx))
+            })
             // Split panes are half width: the switcher folds into the view options button (the
             // flyout has the same choices), leaving room for Copy to/Move to.
             .when(!self.pane.split, |d| {

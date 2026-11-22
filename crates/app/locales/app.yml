@@ -804,6 +804,14 @@ view.options:
   es: Opciones de vista
   pt-BR: Opções de exibição
   ja: 表示オプション
+view.sort:
+  en: Sort
+  zh-TW: 排序
+  zh-CN: 排序
+  de: Sortieren
+  es: Ordenar
+  pt-BR: Ordenar
+  ja: 並べ替え
 view.layout:
   en: Layout
   zh-TW: 版面配置
@@ -1941,13 +1949,13 @@ menupref.open_with_note:
   pt-BR: Somente editores instalados neste computador
   ja: このコンピューターにインストールされているエディターのみ
 menupref.view:
-  en: "View and refresh"
-  zh-TW: 檢視方式與重新整理
-  zh-CN: 查看方式和刷新
-  de: Ansicht und Aktualisieren
-  es: Ver y actualizar
-  pt-BR: Exibir e atualizar
-  ja: 表示と更新
+  en: "View, sort and refresh"
+  zh-TW: 檢視方式、排序與重新整理
+  zh-CN: 查看方式、排序和刷新
+  de: Ansicht, Sortierung und Aktualisieren
+  es: Ver, ordenar y actualizar
+  pt-BR: Exibir, ordenar e atualizar
+  ja: 表示、並べ替え、更新
 menupref.folders:
   en: On folders
   zh-TW: 在資料夾上

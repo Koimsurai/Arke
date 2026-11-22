@@ -73,6 +73,8 @@ pub(crate) mod scope;
 mod shelf_ops;
 #[path = "explorer_sizes.rs"]
 mod sizes;
+#[path = "explorer_sortopts.rs"]
+mod sortopts;
 #[path = "explorer_topbar.rs"]
 mod top_bar;
 #[path = "explorer_tree.rs"]
@@ -776,6 +778,10 @@ pub(crate) struct Explorer {
     view_options_open: bool,
     /// The view options flyout was just closed and is fading out.
     pub(crate) closing_view_options: Option<crate::motion::Leaving<()>>,
+    /// The sort flyout is open (`explorer_sortopts.rs`).
+    sort_options_open: bool,
+    /// The sort flyout was just closed and is fading out.
+    pub(crate) closing_sort_options: Option<crate::motion::Leaving<()>>,
     /// Its icon size slider is being dragged.
     icon_slider_drag: std::rc::Rc<std::cell::Cell<bool>>,
     /// Display scale at the last render, for thumbnail decode sizes.
@@ -1128,6 +1134,8 @@ impl Explorer {
             zoom_accum: 0.,
             view_options_open: false,
             closing_view_options: None,
+            sort_options_open: false,
+            closing_sort_options: None,
             icon_slider_drag: std::rc::Rc::default(),
             ui_scale: 1.,
             tree: tree::Tree::new(settings.read(cx).settings.details_tree),
@@ -3258,7 +3266,7 @@ impl Explorer {
 
     /// Esc: clears the filter first, then the selection.
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
-        if self.close_view_options(cx) {
+        if self.close_view_options(cx) || self.close_sort_options(cx) {
             return;
         }
         if self.quick_look {

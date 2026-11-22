@@ -137,6 +137,10 @@ pub(crate) enum MenuCommand {
     /// Icons view at the folder's icon size.
     ViewIcons,
     ViewColumns,
+    /// Background menu "Sort by": sort by this column, as the Sort button's flyout does.
+    SortBy(arke_core::SortColumn),
+    /// Background menu "Sort by": ascending (`true`) or descending.
+    SortDirection(bool),
     RevealInExplorer,
     MoreOptions,
     /// Pin or unpin (the current folder if nothing is selected). Goes to the tiles if one is free,
@@ -753,7 +757,13 @@ impl ContextMenu {
     /// Test helper: checked items at the top level.
     #[cfg(test)]
     pub(crate) fn checked_labels(&self) -> Vec<String> {
-        self.entries
+        self.checked_labels_at(0)
+    }
+
+    /// Test helper: checked items at `level`.
+    #[cfg(test)]
+    pub(crate) fn checked_labels_at(&self, level: usize) -> Vec<String> {
+        self.level(level)
             .iter()
             .filter_map(|e| match e {
                 MenuEntry::Item(i) if i.checked => Some(i.label.to_string()),
@@ -1085,6 +1095,47 @@ impl Explorer {
         }
     }
 
+    /// Background menu "Sort by": the Sort button's choices (#179), so Icons and Columns, which
+    /// have no headers, can be sorted from here too.
+    fn sort_submenu(&self) -> MenuEntry {
+        use MenuCommand as C;
+        let sort = self.sort;
+        let mut children: Vec<MenuEntry> = super::sortopts::SORT_COLUMNS
+            .into_iter()
+            .map(|column| {
+                checked_item(
+                    super::sortopts::column_label(column),
+                    None,
+                    C::SortBy(column),
+                    sort.column == column,
+                )
+            })
+            .collect();
+        children.extend([
+            MenuEntry::Separator,
+            checked_item(
+                t!("settings.ascending"),
+                None,
+                C::SortDirection(true),
+                sort.ascending,
+            ),
+            checked_item(
+                t!("settings.descending"),
+                None,
+                C::SortDirection(false),
+                !sort.ascending,
+            ),
+        ]);
+        MenuEntry::Submenu {
+            label: t!("settings.sort_by").into(),
+            enabled: true,
+            icon: None,
+            children,
+            shell: false,
+            lazy: None,
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "One section per menu kind (background, single, multi), listed top to bottom as on screen"
@@ -1117,9 +1168,13 @@ impl Explorer {
                 MenuEntry::Separator,
                 // Icon size, grouping and the other view switches are in the view options flyout.
                 self.view_submenu(),
-                item(t!("menu.refresh"), Some("F5"), C::Refresh),
             ];
+            // Search results keep their own order (relevance, or their headers).
+            if !self.search_mode {
+                entries.push(self.sort_submenu());
+            }
             entries.extend([
+                item(t!("menu.refresh"), Some("F5"), C::Refresh),
                 MenuEntry::Separator,
                 item(t!("menu.copy_path"), None, C::CopyPath),
                 item(t!("menu.open_in_explorer"), None, C::RevealInExplorer),
@@ -1583,6 +1638,8 @@ impl Explorer {
             C::ViewDetails => self.view_details(&ViewDetails, window, cx),
             C::ViewIcons => self.show_icons(cx),
             C::ViewColumns => self.view_columns(&crate::explorer::ViewColumns, window, cx),
+            C::SortBy(column) => self.pick_sort_column(column, cx),
+            C::SortDirection(ascending) => self.pick_sort_direction(ascending, cx),
             C::CopyPath => self.copy_paths(&targets),
             C::CopyRelativePath => self.copy_relative_paths(&targets),
             C::CopyAddress => self.copy_address(&targets),
@@ -3123,7 +3180,12 @@ const fn pref_key(entry: &MenuEntry) -> Option<&'static str> {
             C::Properties => Some("properties"),
             C::SetBackground => Some("set_background"),
             C::ImportSettings => Some("import_settings"),
-            C::ViewDetails | C::ViewIcons | C::ViewColumns | C::Refresh => Some("view"),
+            C::ViewDetails
+            | C::ViewIcons
+            | C::ViewColumns
+            | C::SortBy(_)
+            | C::SortDirection(_)
+            | C::Refresh => Some("view"),
             C::KeepOnDevice | C::FreeUpSpace => Some("cloud"),
             C::AddToShelf => Some("shelf"),
             _ => None,

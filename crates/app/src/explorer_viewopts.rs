@@ -39,6 +39,8 @@ impl Explorer {
     /// Opens or closes the flyout.
     pub(super) fn toggle_view_options(&mut self, cx: &mut Context<Self>) {
         if !self.close_view_options(cx) {
+            // One flyout at a time.
+            self.close_sort_options(cx);
             self.view_options_open = true;
             self.closing_view_options = None;
             cx.notify();
@@ -151,8 +153,9 @@ impl Explorer {
         root.into_any_element()
     }
 
-    /// The flyout's place under its button, right-aligned and kept inside the window.
-    fn view_options_flyout(panel: AnyElement) -> impl IntoElement + use<> {
+    /// The flyout's place under its button, right-aligned and kept inside the window (the sort
+    /// flyout's too).
+    pub(super) fn view_options_flyout(panel: AnyElement) -> impl IntoElement + use<> {
         div()
             .absolute()
             .top(theme::h_ctl_sm() + theme::s_6())
@@ -328,7 +331,7 @@ const fn view_icon(mode: ViewMode) -> Icon {
     }
 }
 
-fn section_label(text: impl Into<String>) -> impl IntoElement {
+pub(super) fn section_label(text: impl Into<String>) -> impl IntoElement {
     div()
         .px(theme::s_8())
         .pt(theme::s_4())

@@ -942,3 +942,128 @@ fn expanding_a_folder_keeps_the_sections(cx: &mut TestAppContext) {
     let rows = view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
     assert_eq!(rows, Some(8), "5 items plus 3 headers");
 }
+
+/// Collapsing a group (#287): the header stays with its count, the items lose their rows, and the
+/// keyboard, Ctrl+A and Shift ranges skip them.
+#[gpui::test]
+fn collapsed_groups_hide_their_items(cx: &mut TestAppContext) {
+    use crate::explorer::groups::Row;
+    use gpui::SharedString;
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\g",
+        vec![
+            dir("docs"),
+            file("apple.txt", 1),
+            file("avocado.txt", 1),
+            file("banana.txt", 1),
+            file("cherry.txt", 1),
+        ],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\g");
+    wait_until(cx, &view, "load", loaded(r"C:\g"));
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
+    });
+    cx.run_until_parked();
+    let rows = |cx: &mut gpui::VisualTestContext| {
+        view.update(cx, |v, _| v.groups().map(|g| g.rows.len()))
+    };
+    let toggle = |cx: &mut gpui::VisualTestContext, label: &str| {
+        view.update(cx, |v, cx| {
+            v.toggle_group(&SharedString::from(label.to_owned()), cx);
+        });
+    };
+    assert_eq!(rows(cx), Some(9), "5 items plus 4 headers");
+    toggle(cx, "A");
+    assert_eq!(rows(cx), Some(7), "A's two items lose their rows");
+    let header = view.update(cx, |v, _| {
+        v.groups().and_then(|g| {
+            g.rows.iter().find_map(|r| match r {
+                Row::Header {
+                    label,
+                    count,
+                    collapsed,
+                    ..
+                } if label.as_ref() == "A" => Some((*count, *collapsed)),
+                _ => None,
+            })
+        })
+    });
+    assert_eq!(header, Some((2, true)), "the header keeps its count");
+
+    // Down from docs jumps over A, and up comes back.
+    cx.update(|_, cx| view.update(cx, |v, cx| v.select_index(0, cx)));
+    cx.simulate_keystrokes("down");
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["banana.txt"]);
+    cx.simulate_keystrokes("up");
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["docs"]);
+    // Shift+Down selects across the collapsed section without taking its items.
+    cx.simulate_keystrokes("shift-down");
+    assert_eq!(
+        view.update(cx, |v, _| selected_names(v)),
+        ["docs", "banana.txt"]
+    );
+    // Ctrl+A leaves them out too.
+    cx.simulate_keystrokes("ctrl-a");
+    assert_eq!(
+        view.update(cx, |v, _| selected_names(v)),
+        ["docs", "banana.txt", "cherry.txt"]
+    );
+    // End lands on the last visible item when the last section is collapsed.
+    toggle(cx, "C");
+    cx.simulate_keystrokes("end");
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["banana.txt"]);
+    toggle(cx, "C");
+
+    // Selecting a hidden item by index (type to select, a pasted file) opens its section.
+    cx.update(|_, cx| view.update(cx, |v, cx| v.select_index(2, cx)));
+    assert_eq!(rows(cx), Some(9));
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["avocado.txt"]);
+    // Collapsing deselects what it hides.
+    toggle(cx, "A");
+    assert_eq!(rows(cx), Some(7));
+    assert!(view.update(cx, |v, _| selected_names(v)).is_empty());
+
+    // A new folder starts with every section open.
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\g"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "reload", loaded(r"C:\g"));
+    assert_eq!(rows(cx), Some(9));
+}
+
+/// The chevron in a group header collapses it without selecting the section (#287).
+#[gpui::test]
+fn the_group_chevron_collapses_without_selecting(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\g",
+        vec![dir("docs"), file("apple.txt", 1), file("banana.txt", 1)],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\g");
+    wait_until(cx, &view, "load", loaded(r"C:\g"));
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
+    });
+    cx.run_until_parked();
+    let rows = |cx: &mut gpui::VisualTestContext| {
+        view.update(cx, |v, _| v.groups().map(|g| g.rows.len()))
+    };
+    assert_eq!(rows(cx), Some(6), "3 items plus 3 headers");
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    // Rows: Folders header, docs, "A" header. The chevron sits after the list's and the header's
+    // padding.
+    let chevron = point(
+        bounds.left() + crate::theme::s_8() + crate::theme::s_12() + px(8.),
+        bounds.top() + row * 2.5,
+    );
+    cx.simulate_click(chevron, Modifiers::none());
+    assert_eq!(rows(cx), Some(5), "apple.txt is hidden");
+    assert!(
+        view.update(cx, |v, _| selected_names(v)).is_empty(),
+        "the chevron doesn't select the section"
+    );
+    cx.simulate_click(chevron, Modifiers::none());
+    assert_eq!(rows(cx), Some(6));
+}

@@ -142,6 +142,7 @@ impl Explorer {
                             this.cursor = None;
                         } else {
                             this.selection.select_all(&view);
+                            this.drop_hidden_selection();
                         }
                         cx.notify();
                     }

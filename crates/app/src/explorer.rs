@@ -662,6 +662,8 @@ pub(crate) struct Explorer {
     /// Group details view by sort column (settings), plus the computed sections.
     pub(crate) group_rows: bool,
     group_cache: groups::GroupCache,
+    /// Labels of the collapsed sections of the folder on show (#287); not saved.
+    collapsed_groups: std::collections::HashSet<SharedString>,
     pub(crate) show_thumbnails: bool,
     /// Read images and exe icons on network locations too (settings, off by default).
     pub(crate) network_thumbnails: bool,
@@ -1053,6 +1055,7 @@ impl Explorer {
             right_press: None,
             group_rows: settings.read(cx).settings.group_rows,
             group_cache: groups::GroupCache::default(),
+            collapsed_groups: std::collections::HashSet::new(),
             show_thumbnails: settings.read(cx).settings.show_thumbnails,
             network_thumbnails: settings.read(cx).settings.network_thumbnails,
             place_names: settings.read(cx).settings.place_names.clone(),
@@ -1453,6 +1456,7 @@ impl Explorer {
             // Filter and search belong to the old folder, and so does a folder comparison.
             self.reset_filter(cx);
             self.compare = None;
+            self.reset_collapsed_groups();
 
             // So does Quick Look: left open, it would pop up again over the new folder.
             self.close_quick_look(cx);
@@ -2837,6 +2841,8 @@ impl Explorer {
             self.search_scroll
                 .scroll_to_item(ix, ScrollStrategy::Nearest);
         } else if let Some(view) = self.view() {
+            // Arrow keys never land in a collapsed section; type to select and the like open it.
+            self.reveal_item(ix);
             self.selection.select_only(&view, ix);
             self.cursor = Some(ix);
             self.scroll_to_cursor = None;
@@ -2860,6 +2866,7 @@ impl Explorer {
         }
         let ix = ix.min(view.len() - 1);
         self.selection.extend_to(&view, ix, false);
+        self.drop_hidden_selection();
         self.cursor = Some(ix);
         self.scroll_to_index(ix, ScrollStrategy::Nearest);
         cx.notify();
@@ -3056,7 +3063,22 @@ impl Explorer {
         ((height / self.row_height()).floor() as usize).max(1)
     }
 
+    /// Where `step` goes, skipping the items of collapsed sections.
     fn target(&self, step: Step, window: &Window) -> usize {
+        let to = self.target_unchecked(step, window);
+        if self.collapsed_groups.is_empty() || self.search_mode {
+            return to;
+        }
+        let forward = matches!(
+            step,
+            Step::Next | Step::Right | Step::PageDown | Step::First
+        );
+        self.skip_collapsed(to, forward)
+            .or_else(|| self.skip_collapsed(to, !forward))
+            .unwrap_or_else(|| self.current_cursor().unwrap_or(0))
+    }
+
+    fn target_unchecked(&self, step: Step, window: &Window) -> usize {
         let cur = self.current_cursor();
         // Grid view: up/down moves a whole row; page moves a screen of rows.
         let (stride, page) = if self.grid_active() {
@@ -3148,6 +3170,7 @@ impl Explorer {
         }
         if let Some(view) = self.view() {
             self.selection.select_all(&view);
+            self.drop_hidden_selection();
             cx.notify();
         }
     }
@@ -3321,6 +3344,7 @@ impl Explorer {
             self.click_select = None;
             if m.shift {
                 self.selection.extend_to(&view, ix, m.control);
+                self.drop_hidden_selection();
             } else if m.control {
                 // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
                 // selected, whether the first one selected it or (already selected) unselected it.

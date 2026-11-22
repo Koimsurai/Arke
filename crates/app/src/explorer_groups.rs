@@ -8,33 +8,42 @@
 //!   enough (a few ms for tens of thousands of items). Cached by (list, sort, today).
 //! - Rows mix headers and items. Selection, cursor and keyboard only see items; rows are
 //!   converted only for scrolling and marquee selection. Clicking a header selects its section.
+//! - A section can be collapsed (#287, chevron or double-click on the header): it keeps its header
+//!   and count but contributes no item rows, so marquee and scrolling need no special case. The
+//!   keyboard skips its items, and selecting everything or a range leaves them out. The set of
+//!   collapsed labels lives on the tab and is cleared when it opens another folder.
 //! - Grid view groups too. List rows must have uniform height, so the unit is a smaller slot:
 //!   a header takes one slot, a row of tiles takes [`TILE_SLOTS`] (drawn in its first slot and
 //!   overflowing down; when scrolled mid-row, the top slot draws the row upward).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use arke_core::{Entry, SortColumn};
-use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;
 
 use super::{Explorer, ViewMode};
 use crate::a11y::A11yExt as _;
+use crate::assets::Icon;
 use crate::theme;
 
 /// One row in the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
     /// Section header: label, first item, item count, and the items it covers (more than the
-    /// count when expanded folders list their items under themselves).
+    /// count when expanded folders list their items under themselves). `collapsed`: the items
+    /// get no rows.
     Header {
         label: SharedString,
         start: usize,
         count: usize,
         span: usize,
+        collapsed: bool,
     },
     /// An item, by index in the list.
     Item(usize),
@@ -43,13 +52,23 @@ pub(crate) enum Row {
 pub(crate) struct Groups {
     key: (usize, usize, SortColumn, bool, i64),
     pub(crate) rows: Vec<Row>,
-    /// Row index of each item.
+    /// Row index of each item; an item of a collapsed section maps to the section's header.
     row_of: Vec<u32>,
+    /// Items of the collapsed sections, in order.
+    pub(crate) hidden: Vec<Range<usize>>,
 }
 
 /// Cached layouts, queried on every render.
 #[derive(Default)]
 pub(crate) struct GroupCache(RefCell<Option<Rc<Groups>>>, RefCell<Option<Rc<GridGroups>>>);
+
+impl GroupCache {
+    /// Forgets both layouts (the collapsed sections changed).
+    fn clear(&self) {
+        self.0.borrow_mut().take();
+        self.1.borrow_mut().take();
+    }
+}
 
 /// Slots taken by one row of tiles when grouping in grid view (a header takes one).
 pub(crate) const TILE_SLOTS: usize = 4;
@@ -61,6 +80,7 @@ pub(crate) enum Slot {
         label: SharedString,
         start: usize,
         count: usize,
+        collapsed: bool,
     },
     /// Tile row and slot within it (0 is where the row is drawn).
     Row(usize, usize),
@@ -72,8 +92,10 @@ pub(crate) struct GridGroups {
     pub(crate) slots: Vec<Slot>,
     /// Each tile row: item range and first slot.
     pub(crate) rows: Vec<(std::ops::Range<usize>, usize)>,
-    /// Tile row of each item.
+    /// Tile row of each item (`u32::MAX` in a collapsed section).
     row_of_item: Vec<u32>,
+    /// Items of each collapsed section, with the slot of its header.
+    pub(crate) hidden: Vec<(Range<usize>, usize)>,
 }
 
 impl GridGroups {
@@ -82,22 +104,32 @@ impl GridGroups {
         let mut slots = Vec::new();
         let mut rows = Vec::new();
         let mut row_of_item = Vec::new();
+        let mut hidden = Vec::new();
         for row in detail {
             let Row::Header {
                 label,
                 start,
                 count,
+                collapsed,
                 ..
             } = row
             else {
                 continue;
             };
+            let end = start + count;
+            if *collapsed {
+                hidden.push((*start..end, slots.len()));
+                row_of_item.resize(row_of_item.len() + count, u32::MAX);
+            }
             slots.push(Slot::Header {
                 label: label.clone(),
                 start: *start,
                 count: *count,
+                collapsed: *collapsed,
             });
-            let end = start + count;
+            if *collapsed {
+                continue;
+            }
             let mut at = *start;
             while at < end {
                 let stop = (at + cols).min(end);
@@ -115,25 +147,48 @@ impl GridGroups {
             slots,
             rows,
             row_of_item,
+            hidden,
         }
     }
 
-    /// Tile row containing the item.
+    /// Tile row containing the item; `None` for an item of a collapsed section.
     pub(crate) fn row_of(&self, ix: usize) -> Option<usize> {
-        self.row_of_item.get(ix).map(|r| *r as usize)
+        self.row_of_item
+            .get(ix)
+            .filter(|r| **r != u32::MAX)
+            .map(|r| *r as usize)
     }
 
-    /// First slot of the item's row, for scrolling.
+    /// The collapsed section holding the item: its items and header slot.
+    pub(crate) fn hidden_at(&self, ix: usize) -> Option<&(Range<usize>, usize)> {
+        let p = self.hidden.partition_point(|(r, _)| r.end <= ix);
+        self.hidden.get(p).filter(|(r, _)| r.start <= ix)
+    }
+
+    /// First slot of the item's row, for scrolling (the header's, for a hidden item).
     pub(crate) fn slot_of(&self, ix: usize) -> usize {
         self.row_of(ix)
             .and_then(|r| self.rows.get(r))
-            .map_or(0, |r| r.1)
+            .map_or_else(|| self.hidden_at(ix).map_or(0, |h| h.1), |r| r.1)
     }
 
     /// Moves `delta` rows, keeping the column (clamped to the last item of a shorter row).
     pub(crate) fn step(&self, ix: usize, delta: isize) -> usize {
         let Some(row) = self.row_of(ix) else {
-            return ix;
+            // In a collapsed section: the nearest row before or after its header.
+            let Some((_, slot)) = self.hidden_at(ix) else {
+                return ix;
+            };
+            let next = self.rows.partition_point(|r| r.1 < *slot);
+            let target = if delta > 0 {
+                next
+            } else {
+                match next.checked_sub(1) {
+                    Some(t) => t,
+                    None => return ix,
+                }
+            };
+            return self.rows.get(target).map_or(ix, |r| r.0.start);
         };
         let col = ix - self.rows[row].0.start;
         let target = row
@@ -159,6 +214,12 @@ impl GridGroups {
 impl Groups {
     pub(crate) fn row_of(&self, ix: usize) -> usize {
         self.row_of.get(ix).map_or(ix, |r| *r as usize)
+    }
+
+    /// Items of the collapsed section holding `ix`.
+    pub(crate) fn hidden_at(&self, ix: usize) -> Option<Range<usize>> {
+        let p = self.hidden.partition_point(|r| r.end <= ix);
+        self.hidden.get(p).filter(|r| r.start <= ix).cloned()
     }
 }
 
@@ -316,22 +377,27 @@ fn build(
     column: SortColumn,
     folders_apart: bool,
     today: Today,
+    collapsed: &HashSet<SharedString>,
 ) -> (Vec<Row>, Vec<u32>) {
     let mut rows = Vec::with_capacity(entries.len() + 16);
     let mut row_of = Vec::with_capacity(entries.len());
     let mut current: Option<String> = None;
     let mut header_at = 0usize;
+    let mut hide = false;
     for (ix, entry) in entries.iter().enumerate() {
         let nested = depth(ix) > 0 && current.is_some();
         if !nested {
             let group = group_of(entry, column, folders_apart, today);
             if current.as_deref() != Some(group.as_str()) {
                 header_at = rows.len();
+                let label = SharedString::from(group.clone());
+                hide = collapsed.contains(&label);
                 rows.push(Row::Header {
-                    label: SharedString::from(group.clone()),
+                    label,
                     start: ix,
                     count: 0,
                     span: 0,
+                    collapsed: hide,
                 });
                 current = Some(group);
             }
@@ -340,10 +406,29 @@ fn build(
             *count += usize::from(!nested);
             *span += 1;
         }
-        row_of.push(u32::try_from(rows.len()).unwrap_or(u32::MAX));
-        rows.push(Row::Item(ix));
+        if hide {
+            row_of.push(u32::try_from(header_at).unwrap_or(u32::MAX));
+        } else {
+            row_of.push(u32::try_from(rows.len()).unwrap_or(u32::MAX));
+            rows.push(Row::Item(ix));
+        }
     }
     (rows, row_of)
+}
+
+/// Items covered by the collapsed sections.
+fn hidden_ranges(rows: &[Row]) -> Vec<Range<usize>> {
+    rows.iter()
+        .filter_map(|r| match r {
+            Row::Header {
+                start,
+                span,
+                collapsed: true,
+                ..
+            } => Some(*start..start + span),
+            _ => None,
+        })
+        .collect()
 }
 
 impl Explorer {
@@ -382,7 +467,14 @@ impl Explorer {
         {
             return Some(Rc::clone(cached));
         }
-        let (rows, _) = build(&view, |_| 0, self.sort.column, folders_apart, today);
+        let (rows, _) = build(
+            &view,
+            |_| 0,
+            self.sort.column,
+            folders_apart,
+            today,
+            &self.collapsed_groups,
+        );
         let grid = Rc::new(GridGroups::new(key, &rows, cols));
         *self.group_cache.1.borrow_mut() = Some(Rc::clone(&grid));
         Some(grid)
@@ -421,9 +513,17 @@ impl Explorer {
                     label,
                     start,
                     count,
+                    collapsed,
                 }) => {
                     let n = *count;
-                    self.group_header(slot, label.clone(), *start, (n, n), Some(slot_h), cx)
+                    self.group_header(
+                        slot,
+                        label.clone(),
+                        *start,
+                        (n, n, *collapsed),
+                        Some(slot_h),
+                        cx,
+                    )
                 }
                 Some(Slot::Row(r, k)) if wanted.peek() == Some(&(*r, *k)) => {
                     wanted.next();
@@ -482,8 +582,21 @@ impl Explorer {
                 .and_then(|rows| rows.get(ix))
                 .map_or(0, |r| r.depth)
         };
-        let (rows, row_of) = build(&view, depth, self.sort.column, folders_apart, today);
-        let groups = Rc::new(Groups { key, rows, row_of });
+        let (rows, row_of) = build(
+            &view,
+            depth,
+            self.sort.column,
+            folders_apart,
+            today,
+            &self.collapsed_groups,
+        );
+        let hidden = hidden_ranges(&rows);
+        let groups = Rc::new(Groups {
+            key,
+            rows,
+            row_of,
+            hidden,
+        });
         *self.group_cache.0.borrow_mut() = Some(Rc::clone(&groups));
         Some(groups)
     }
@@ -537,12 +650,20 @@ impl Explorer {
                     start,
                     count,
                     span,
+                    collapsed,
                 }) => {
                     if let Some(r) = run.take() {
                         out.extend(self.render_rows(r, focused, &[], cx));
                     }
                     let (start, count, span) = (*start, *count, *span);
-                    out.push(self.group_header(row, label.clone(), start, (count, span), None, cx));
+                    out.push(self.group_header(
+                        row,
+                        label.clone(),
+                        start,
+                        (count, span, *collapsed),
+                        None,
+                        cx,
+                    ));
                 }
                 None => {}
             }
@@ -553,21 +674,122 @@ impl Explorer {
         out
     }
 
+    /// Flips a section between collapsed and expanded. Collapsing deselects its items, so nothing
+    /// the user can't see stays selected.
+    pub(crate) fn toggle_group(&mut self, label: &SharedString, cx: &mut Context<Self>) {
+        if !self.collapsed_groups.remove(label) {
+            self.collapsed_groups.insert(label.clone());
+        }
+        self.group_cache.clear();
+        self.drop_hidden_selection();
+        cx.notify();
+    }
+
+    /// Expands every section again (a new folder starts with all sections open).
+    pub(super) fn reset_collapsed_groups(&mut self) {
+        if !self.collapsed_groups.is_empty() {
+            self.collapsed_groups.clear();
+            self.group_cache.clear();
+        }
+    }
+
+    /// Items inside collapsed sections, in order. Empty when nothing is collapsed or the list
+    /// isn't grouped.
+    fn hidden_items(&self) -> Vec<Range<usize>> {
+        if self.collapsed_groups.is_empty() {
+            return Vec::new();
+        }
+        if let Some(groups) = self.groups() {
+            groups.hidden.clone()
+        } else if let Some(grid) = self.grid_groups() {
+            grid.hidden.iter().map(|(r, _)| r.clone()).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Deselects items of collapsed sections (after Ctrl+A or a Shift range).
+    pub(super) fn drop_hidden_selection(&mut self) {
+        let hidden = self.hidden_items();
+        if hidden.is_empty() || self.selection.is_empty() {
+            return;
+        }
+        let Some(view) = self.view() else { return };
+        let names: Vec<Arc<str>> = hidden
+            .iter()
+            .flat_map(|r| view[r.start.min(view.len())..r.end.min(view.len())].iter())
+            .map(|e| Arc::clone(&e.name))
+            .collect();
+        self.selection.remove_names(&names);
+    }
+
+    /// The nearest item at or after (`forward`) or before `ix` that isn't in a collapsed section.
+    pub(super) fn skip_collapsed(&self, ix: usize, forward: bool) -> Option<usize> {
+        let len = self.list_len();
+        let mut at = ix.min(len.checked_sub(1)?);
+        let hidden = self.hidden_items();
+        loop {
+            let p = hidden.partition_point(|r| r.end <= at);
+            match hidden.get(p).filter(|r| r.start <= at) {
+                None => return Some(at),
+                Some(r) if forward => {
+                    at = r.end;
+                    if at >= len {
+                        return None;
+                    }
+                }
+                Some(r) => at = r.start.checked_sub(1)?,
+            }
+        }
+    }
+
+    /// Expands the section holding `ix` if it is collapsed, for something that selects an item by
+    /// name or index (type to select, a pasted file). Returns whether it did.
+    pub(super) fn reveal_item(&mut self, ix: usize) -> bool {
+        if self.collapsed_groups.is_empty() {
+            return false;
+        }
+        let label = if let Some(groups) = self.groups() {
+            match groups.rows.get(groups.row_of(ix)) {
+                Some(Row::Header {
+                    label,
+                    collapsed: true,
+                    ..
+                }) => label.clone(),
+                _ => return false,
+            }
+        } else if let Some(grid) = self.grid_groups() {
+            match grid.hidden_at(ix).and_then(|(_, slot)| grid.slots.get(*slot)) {
+                Some(Slot::Header { label, .. }) => label.clone(),
+                _ => return false,
+            }
+        } else {
+            return false;
+        };
+        self.collapsed_groups.remove(&label);
+        self.group_cache.clear();
+        true
+    }
+
     /// Section header with label, count and a rule. Clicking selects the section: `span` items
-    /// from `start` (expanded folders' items included).
+    /// from `start` (expanded folders' items included). The chevron, or a double click, collapses
+    /// and expands it.
     fn group_header(
         &self,
         row: usize,
         label: SharedString,
         start: usize,
-        (count, span): (usize, usize),
+        (count, span, collapsed): (usize, usize, bool),
         height: Option<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let on_chevron = label.clone();
+        let on_double = label.clone();
         div()
             .id(("group-header", row))
             .a11y_lazy(gpui::Role::Heading, || format!("{label} ({count})"))
             .aria_level(1)
+            .aria_expanded(!collapsed)
             // Full width, and at least as wide as Details rows when they scroll sideways.
             .w_full()
             .when_some(self.cols, |d, c| d.min_w(c.row))
@@ -580,6 +802,39 @@ impl Explorer {
             .cursor_pointer()
             .rounded(theme::r_8())
             .hover(|s| s.bg(theme::wash()))
+            .child(
+                div()
+                    .id(("group-chevron", row))
+                    .size(theme::tree_chevron())
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::r_4())
+                    .hover(|s| s.bg(theme::wash_strong()))
+                    // Toggles without selecting the section or starting a marquee.
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            window.focus(&this.list_focus, cx);
+                            this.toggle_group(&on_chevron, cx);
+                        }),
+                    )
+                    .child(
+                        svg()
+                            .path(Icon::ChevronRight.path())
+                            .size(theme::icon_sm())
+                            .text_color(theme::text_subtle())
+                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                if collapsed {
+                                    0.
+                                } else {
+                                    std::f32::consts::FRAC_PI_2
+                                },
+                            ))),
+                    ),
+            )
             // A heading, not a caption: item size, semibold, full ink.
             .child(
                 div()
@@ -603,6 +858,14 @@ impl Explorer {
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 window.focus(&this.list_focus, cx);
+                if event.click_count() >= 2 {
+                    this.toggle_group(&on_double, cx);
+                    return;
+                }
+                // A collapsed section has nothing on screen to select.
+                if collapsed {
+                    return;
+                }
                 let Some(view) = this.view() else {
                     return;
                 };
@@ -640,7 +903,7 @@ mod tests {
         for name in ["a1", "a2", "a3", "a4", "a5", "b1", "b2"] {
             entries.push(Entry::new(name, EntryKind::File, 1, None, 0));
         }
-        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today);
+        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today, &HashSet::new());
         let grid = GridGroups::new((0, 0, SortColumn::Name, true, 0, 3), &rows, 3);
         // Folders 1 row, A two rows (3+2), B 1 row; a header slot before each section.
         let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
@@ -708,7 +971,7 @@ mod tests {
             // A non-ASCII first letter falls into "Other".
             Entry::new("報告.docx", EntryKind::File, 1, None, 0),
         ];
-        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today);
+        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today, &HashSet::new());
         let headers: Vec<(String, usize)> = rows
             .iter()
             .filter_map(|r| match r {
@@ -730,5 +993,66 @@ mod tests {
         for (ix, row) in row_of.iter().enumerate() {
             assert_eq!(rows[*row as usize], Row::Item(ix));
         }
+    }
+
+    #[test]
+    fn collapsed_sections_keep_their_header_and_lose_their_rows() {
+        rust_i18n::set_locale("en");
+        let today = Today {
+            day: 20_000,
+            offset: 0,
+        };
+        let entries = vec![
+            Entry::new("docs", EntryKind::Dir, 0, None, 0),
+            Entry::new("apple.txt", EntryKind::File, 1, None, 0),
+            Entry::new("avocado.txt", EntryKind::File, 1, None, 0),
+            Entry::new("banana.txt", EntryKind::File, 1, None, 0),
+        ];
+        let collapsed: HashSet<SharedString> = [SharedString::from("A")].into_iter().collect();
+        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today, &collapsed);
+        // Three headers and the two items outside A.
+        assert_eq!(rows.len(), 5);
+        assert!(matches!(
+            &rows[2],
+            Row::Header {
+                count: 2,
+                span: 2,
+                collapsed: true,
+                ..
+            }
+        ));
+        // A's items point at their header, so scrolling to one lands there.
+        assert_eq!(row_of, [1, 2, 2, 4]);
+        assert_eq!(hidden_ranges(&rows), [1..3]);
+    }
+
+    #[test]
+    fn grid_skips_collapsed_sections() {
+        rust_i18n::set_locale("en");
+        let today = Today {
+            day: 20_000,
+            offset: 0,
+        };
+        let mut entries = vec![Entry::new("docs", EntryKind::Dir, 0, None, 0)];
+        for name in ["a1", "a2", "a3", "b1"] {
+            entries.push(Entry::new(name, EntryKind::File, 1, None, 0));
+        }
+        let collapsed: HashSet<SharedString> = [SharedString::from("A")].into_iter().collect();
+        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today, &collapsed);
+        let grid = GridGroups::new((0, 0, SortColumn::Name, true, 0, 3), &rows, 3);
+        // Folders: header + row; A: header only; B: header + row.
+        let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(ranges, [0..1, 4..5]);
+        assert_eq!(grid.slots.len(), 3 + 2 * TILE_SLOTS);
+        assert_eq!(grid.hidden, [(1..4, 5)]);
+        assert_eq!(grid.row_of(2), None);
+        assert_eq!(grid.row_of(4), Some(1));
+        assert_eq!(grid.slot_of(2), 5, "a hidden item scrolls to its header");
+        // Down from docs goes over A to b1; up comes back.
+        assert_eq!(grid.step(0, 1), 4);
+        assert_eq!(grid.step(4, -1), 0);
+        // From inside the collapsed section too.
+        assert_eq!(grid.step(2, 1), 4);
+        assert_eq!(grid.step(2, -1), 0);
     }
 }

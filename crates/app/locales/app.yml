@@ -1869,13 +1869,13 @@ menupref.pinned_title:
   pt-BR: Comandos do Windows fixados
   ja: ピン留めした Windows コマンド
 menupref.pinned_desc:
-  en: "In More options, click the pin next to a command to show it in the main menu"
-  zh-TW: "在「更多選項」中按命令旁的圖釘，就會顯示在主選單"
-  zh-CN: "在“更多选项”中单击命令旁的图钉，即可显示在主菜单中"
-  de: Klicken Sie unter „Weitere Optionen“ auf die Stecknadel neben einem Befehl, um ihn im Hauptmenü anzuzeigen
-  es: En Mostrar más opciones, haga clic en la chincheta junto a un comando para mostrarlo en el menú principal
-  pt-BR: Em Mostrar mais opções, clique no alfinete ao lado de um comando para exibi-lo no menu principal
-  ja: "[その他のオプション] でコマンドの横のピンをクリックすると、メイン メニューに表示されます"
+  en: "In More options, click the pin next to a command or submenu to show it in the main menu"
+  zh-TW: "在「更多選項」中按命令或子選單旁的圖釘，就會顯示在主選單"
+  zh-CN: "在“更多选项”中单击命令或子菜单旁的图钉，即可显示在主菜单中"
+  de: Klicken Sie unter „Weitere Optionen“ auf die Stecknadel neben einem Befehl oder Untermenü, um es im Hauptmenü anzuzeigen
+  es: En Mostrar más opciones, haga clic en la chincheta junto a un comando o submenú para mostrarlo en el menú principal
+  pt-BR: Em Mostrar mais opções, clique no alfinete ao lado de um comando ou submenu para exibi-lo no menu principal
+  ja: "[その他のオプション] でコマンドやサブメニューの横のピンをクリックすると、メイン メニューに表示されます"
 menupref.pinned_empty:
   en: Nothing pinned yet
   zh-TW: 還沒有釘選的命令

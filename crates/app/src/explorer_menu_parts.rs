@@ -285,11 +285,17 @@ impl Explorer {
         let mut unknown: Vec<(String, Option<String>)> = Vec::new();
         let mut packaged: Vec<String> = Vec::new();
         for key in &settings.menu_pinned {
-            let Some(item) = find_pinned(children, key) else {
+            let Some(entry) = find_pinned(children, key) else {
                 continue;
             };
+            // A whole submenu has no verb: the extension whose menu has it is found by reading
+            // them, as for an extension's item.
+            let verb = match entry {
+                MenuEntry::Item(item) => item.verb.clone(),
+                _ => None,
+            };
             match settings.menu_pin_owners.get(key).map(String::as_str) {
-                None | Some("") => unknown.push((key.clone(), item.verb.clone())),
+                None | Some("") => unknown.push((key.clone(), verb)),
                 Some(owner) if owner.starts_with(COMMAND_OWNER) => {
                     packaged.push(owner.to_string());
                 }
@@ -592,7 +598,8 @@ fn is_clsid(s: &str) -> bool {
     s.len() == 38 && s.starts_with('{') && s.ends_with('}')
 }
 
-/// Pin keys of every command in `entries` (as [`MenuEntry::from_shell_in`] makes them).
+/// Pin keys of every command and submenu in `entries` (as [`MenuEntry::from_shell_in`] makes
+/// them).
 fn pin_keys(entries: &[ShellMenuEntry], parent: &[&str], out: &mut Vec<String>) {
     for entry in entries {
         match entry {
@@ -606,6 +613,7 @@ fn pin_keys(entries: &[ShellMenuEntry], parent: &[&str], out: &mut Vec<String>) 
             } => {
                 let mut path = parent.to_vec();
                 path.push(label);
+                out.push(pin_key(&path));
                 pin_keys(children, &path, out);
             }
             ShellMenuEntry::Separator => {}

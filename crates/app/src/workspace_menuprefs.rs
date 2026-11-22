@@ -267,10 +267,7 @@ impl Render for MenuRowPreview {
             .ui_font()
             .text_size(theme::fs_14())
             .text_color(theme::text())
-            .child(super::settings_panel::row_icon(
-                self.row.icon,
-                theme::text_muted(),
-            ))
+            .child(super::settings_panel::row_icon(self.row.icon, theme::text_muted()))
             .child(
                 div()
                     .flex_1()
@@ -289,8 +286,7 @@ fn draggable(
     cx: &App,
 ) -> gpui::Stateful<gpui::Div> {
     let (key, pinned) = (drag.key.clone(), drag.pinned);
-    let lifted =
-        cx.has_active_drag() && DRAGGING.with_borrow(|d| d.as_deref() == Some(&*key));
+    let lifted = cx.has_active_drag() && DRAGGING.with_borrow(|d| d.as_deref() == Some(&*key));
     row.cursor_grab()
         .when(lifted, |d| d.opacity(0.4))
         .on_drag(drag, |row, _, _, cx| {
@@ -866,15 +862,21 @@ fn preview_menu(s: &Settings) -> AnyElement {
     let shown = |k: &str| menu_order::CORE.contains(&k) || !hidden(s, k);
     let mut kept: Vec<Option<PreviewRow>> = Vec::new();
     for row in rows {
-        if row.as_ref().is_some_and(|r| r.key.is_some_and(|k| !shown(k))) {
+        if row
+            .as_ref()
+            .is_some_and(|r| r.key.is_some_and(|k| !shown(k)))
+        {
             continue;
         }
         // Pinned Windows commands go right above "More options", showing only the last path
-        // segment like the real menu.
+        // segment like the real menu; a whole submenu as one (#88).
         if row.as_ref().is_some_and(|r| r.key == Some("more_options")) {
             for pin in &s.menu_pinned {
                 let name = pin.rsplit(" › ").next().unwrap_or(pin).to_string();
-                kept.push(Some(preview_row(None, Icon::Pin, name)));
+                kept.push(Some(PreviewRow {
+                    submenu: crate::explorer::pin_is_submenu(pin),
+                    ..preview_row(None, Icon::Pin, name)
+                }));
             }
         }
         // No leading or repeated separators.

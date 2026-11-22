@@ -6,9 +6,10 @@
 //! options" submenu with icons and nested submenus, and a chosen item is sent back to that
 //! process to run. No native Windows menu is ever shown.
 //!
-//! Commands pinned from "Show more options" to the top don't wait for the whole Windows menu:
-//! their extensions are read on their own beside it (`explorer_menu_parts.rs`). Windows submenus
-//! that are filled only when opened are filled then (`explorer_menu_lazy.rs`).
+//! Commands pinned from "Show more options" to the top (or whole submenus, #88) don't wait for
+//! the whole Windows menu: their extensions are read on their own beside it
+//! (`explorer_menu_parts.rs`). Windows submenus that are filled only when opened are filled then
+//! (`explorer_menu_lazy.rs`).
 //!
 //! Extraction runs on a background thread (`arke_core::archive`) with cancellable progress in the
 //! status bar. The extracted folder is selected when done.
@@ -343,6 +344,7 @@ pub(crate) struct MenuItem {
     verb: Option<String>,
 }
 
+#[derive(Clone)]
 pub(crate) enum MenuEntry {
     Item(MenuItem),
     Submenu {
@@ -359,6 +361,9 @@ pub(crate) enum MenuEntry {
         lazy: Option<lazy::LazySubmenu>,
         /// Arke's own submenus: which entry of Settings › Context menu it is (`view`, `new`).
         key: Option<&'static str>,
+        /// Windows submenus: key used to pin the whole submenu to the main menu (see
+        /// [`pin_key`]), as for an item (#88).
+        pin: Option<String>,
     },
     /// Row of icon buttons (a folder's new folder, cut, copy, rename, delete) at the bottom, as in
     /// the Windows 11 menu.
@@ -430,6 +435,7 @@ impl MenuEntry {
             } => {
                 let mut path = parent.to_vec();
                 path.push(&label);
+                let pin = Some(pin_key(&path));
                 let lazy = index.map(|index| lazy::LazySubmenu::new(session, index));
                 let children = if lazy.is_some() && children.is_empty() {
                     vec![placeholder(t!("menu.loading"))]
@@ -448,6 +454,7 @@ impl MenuEntry {
                     shell: true,
                     lazy,
                     key: None,
+                    pin,
                 }
             }
             ShellMenuEntry::Separator => Self::Separator,
@@ -696,18 +703,19 @@ impl ContextMenu {
         };
         let start = slot - self.pinned_rows;
         let whole_in = self.shell_session.is_some();
-        let mut found: Vec<MenuItem> = Vec::new();
+        let mut found: Vec<MenuEntry> = Vec::new();
         if let Some(MenuEntry::Submenu { children, .. }) = self.entries.get(slot) {
             // From the whole Windows menu once it's in, until then from the sources read on
-            // their own, and for the ones known to be coming, their row ahead of them.
+            // their own, and for the ones known to be coming, their row ahead of them. A pinned
+            // submenu comes whole, its rows filled the same way as under "More options" (#88).
             for key in pinned {
-                if let Some(item) = find_pinned(children, key).or_else(|| {
+                if let Some(entry) = find_pinned(children, key).or_else(|| {
                     self.parts
                         .iter()
                         .find_map(|(_, entries)| find_pinned(entries, key))
                 }) {
-                    remember_pin_icon(key, item);
-                    found.push(item.clone());
+                    remember_pin(key, entry);
+                    found.push(entry.clone());
                 } else if !whole_in
                     && let Some(ix) = self.coming.iter().position(|k| k == key)
                     && let Some(row) = coming_row(key, ix)
@@ -716,29 +724,56 @@ impl ContextMenu {
                 }
             }
         }
+        // The pinned rows before, by key, so an open pinned submenu or the highlight stays on
+        // its row.
+        let before: Vec<Option<String>> = self.entries[start..slot]
+            .iter()
+            .map(|e| entry_pin(e).map(str::to_owned))
+            .collect();
+        let after: Vec<Option<String>> = found
+            .iter()
+            .map(|e| entry_pin(e).map(str::to_owned))
+            .collect();
         let added = found.len();
-        self.entries
-            .splice(start..slot, found.into_iter().map(MenuEntry::Item));
+        self.entries.splice(start..slot, found);
         let new_slot = start + added;
+        // Where a row now is; `None` for a pinned row that went away.
         let shift = |ix: usize| {
             if ix >= slot {
-                ix + new_slot - slot
+                Some(ix + new_slot - slot)
             } else if ix >= start {
-                // Highlight was on a replaced pinned row: move it to the first pinned row (or "Show
-                // more options").
-                start
+                let key = before.get(ix - start).cloned().flatten();
+                key.and_then(|key| after.iter().position(|k| k.as_ref() == Some(&key)))
+                    .map(|at| start + at)
             } else {
-                ix
+                Some(ix)
             }
         };
-        if let Some(first) = self.open.first_mut() {
-            *first = shift(*first);
-        }
-        if self.open.is_empty() {
-            self.highlighted = self.highlighted.map(shift);
+        if let Some(&first) = self.open.first() {
+            match shift(first) {
+                Some(first) => self.open[0] = first,
+                // Its pinned submenu went away: closed.
+                None => {
+                    self.open.clear();
+                    self.highlighted = Some(start);
+                }
+            }
+        } else {
+            // Highlight was on a pinned row that went away: on the first pinned row (or "Show
+            // more options").
+            self.highlighted = self.highlighted.map(|ix| shift(ix).unwrap_or(start));
         }
         self.shell_slot = Some(new_slot);
         self.pinned_rows = added;
+        // The keyboard went into a pinned submenu while it still showed "Loading…": its first
+        // row once it has one.
+        if self.keyboard
+            && self.highlighted.is_none()
+            && self.open.len() == 1
+            && (start..new_slot).contains(&self.open[0])
+        {
+            self.highlighted = self.level(1).iter().position(MenuEntry::selectable);
+        }
     }
 
     /// Test helper: highlight top-level row `ix`, as the keyboard would.
@@ -764,6 +799,16 @@ impl ContextMenu {
             MenuEntry::Item(i) => i.shortcut,
             _ => None,
         }
+    }
+
+    /// Test helper: the pin key of row `ix` of `level`, an item's or a whole submenu's (the row
+    /// has a pin button).
+    #[cfg(test)]
+    pub(crate) fn pin_at(&self, level: usize, ix: usize) -> Option<String> {
+        self.level(level)
+            .get(ix)
+            .and_then(entry_pin)
+            .map(str::to_owned)
     }
 
     /// Test helper: checked items at the top level.
@@ -1107,6 +1152,7 @@ impl Explorer {
             shell: false,
             lazy: None,
             key: Some("view"),
+            pin: None,
         }
     }
 
@@ -1123,6 +1169,7 @@ impl Explorer {
             shell: false,
             lazy: None,
             key: Some("new"),
+            pin: None,
         }
     }
 
@@ -3075,6 +3122,7 @@ impl RowParts {
                 enabled,
                 icon,
                 glyph,
+                pin,
                 ..
             } => Some(Self {
                 label: label.clone(),
@@ -3087,7 +3135,7 @@ impl RowParts {
                 submenu: true,
                 command: None,
                 glyph: *glyph,
-                pin: None,
+                pin: pin.clone(),
             }),
         }
     }
@@ -3323,44 +3371,95 @@ thread_local! {
     /// answers (`coming_row`) shows it already.
     static PIN_ICONS: RefCell<std::collections::HashMap<String, Arc<RenderImage>>> =
         RefCell::default();
+    /// Pin keys last seen as a whole submenu: drawn ahead as one (`coming_row`), and in the
+    /// settings preview.
+    static PIN_SUBMENUS: RefCell<std::collections::HashSet<String>> = RefCell::default();
 }
 
-fn remember_pin_icon(key: &str, item: &MenuItem) {
-    if let Some(icon) = &item.icon {
+/// Remembers how pinned row `key` looked, for drawing it ahead next time.
+fn remember_pin(key: &str, entry: &MenuEntry) {
+    let (icon, submenu) = match entry {
+        MenuEntry::Item(item) => (item.icon.as_ref(), false),
+        MenuEntry::Submenu { icon, .. } => (icon.as_ref(), true),
+        MenuEntry::Actions(_) | MenuEntry::Separator => return,
+    };
+    if let Some(icon) = icon {
         PIN_ICONS.with(|icons| {
             icons.borrow_mut().insert(key.to_string(), Arc::clone(icon));
         });
     }
+    PIN_SUBMENUS.with(|submenus| {
+        let mut submenus = submenus.borrow_mut();
+        if submenu {
+            submenus.insert(key.to_string());
+        } else {
+            submenus.remove(key);
+        }
+    });
+}
+
+/// Whether pinned row `key` was last seen as a whole submenu.
+pub(crate) fn pin_is_submenu(key: &str) -> bool {
+    PIN_SUBMENUS.with(|submenus| submenus.borrow().contains(key))
 }
 
 /// The row of a pinned command known to show, before its source answers: its label from the
-/// pin key (left out when the key shortened a quoted part), its icon as last seen.
-fn coming_row(key: &str, ix: usize) -> Option<MenuItem> {
+/// pin key (left out when the key shortened a quoted part), its icon as last seen. A pinned
+/// submenu shows "Loading…" inside until it is in.
+fn coming_row(key: &str, ix: usize) -> Option<MenuEntry> {
     let label = key.rsplit(" › ").next()?.trim();
     if label.is_empty() || label.contains('…') {
         return None;
     }
-    Some(MenuItem {
+    let icon = PIN_ICONS.with(|icons| icons.borrow().get(key).cloned());
+    if pin_is_submenu(key) {
+        return Some(MenuEntry::Submenu {
+            label: label.to_string().into(),
+            enabled: true,
+            icon,
+            glyph: None,
+            children: vec![placeholder(t!("menu.loading"))],
+            shell: true,
+            lazy: None,
+            key: None,
+            pin: Some(key.to_string()),
+        });
+    }
+    Some(MenuEntry::Item(MenuItem {
         label: label.to_string().into(),
         shortcut: None,
         command: MenuCommand::PinPending(ix),
         enabled: true,
-        icon: PIN_ICONS.with(|icons| icons.borrow().get(key).cloned()),
+        icon,
         glyph: None,
         checked: false,
         bold: false,
         danger: false,
         pin: Some(key.to_string()),
         verb: None,
-    })
+    }))
 }
 
-/// Finds the item with pin key `key` in a Windows menu, including submenus.
-fn find_pinned<'a>(entries: &'a [MenuEntry], key: &str) -> Option<&'a MenuItem> {
-    entries.iter().find_map(|entry| match entry {
-        MenuEntry::Item(item) if item.pin.as_deref() == Some(key) => Some(item),
-        MenuEntry::Submenu { children, .. } => find_pinned(children, key),
-        _ => None,
+/// Pin key of a Windows menu row, an item's or a whole submenu's.
+fn entry_pin(entry: &MenuEntry) -> Option<&str> {
+    match entry {
+        MenuEntry::Item(item) => item.pin.as_deref(),
+        MenuEntry::Submenu { pin, .. } => pin.as_deref(),
+        MenuEntry::Actions(_) | MenuEntry::Separator => None,
+    }
+}
+
+/// Finds the row with pin key `key` in a Windows menu, an item or a whole submenu, including
+/// inside submenus.
+fn find_pinned<'a>(entries: &'a [MenuEntry], key: &str) -> Option<&'a MenuEntry> {
+    entries.iter().find_map(|entry| {
+        if entry_pin(entry) == Some(key) {
+            return Some(entry);
+        }
+        match entry {
+            MenuEntry::Submenu { children, .. } => find_pinned(children, key),
+            _ => None,
+        }
     })
 }
 
@@ -3394,6 +3493,7 @@ fn more_options() -> MenuEntry {
         shell: true,
         lazy: None,
         key: None,
+        pin: None,
     }
 }
 

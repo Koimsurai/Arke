@@ -1,11 +1,13 @@
 //! GPUI tests for the context menu as customized in Settings › Context menu: the shorter New
-//! entries (#190) and the order dragged to (#263).
+//! entries (#190), the order dragged to (#263) and whole Windows submenus pinned to the main
+//! menu (#88).
 
 use gpui::{Bounds, Modifiers, MouseButton, Pixels, point, px, size};
 
 use super::*;
 use crate::menu_order::{DEFAULT, moved};
 use crate::settings::{Settings, SettingsStore};
+use crate::shell::ShellMenuEntry;
 
 fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut Settings) + 'static) {
     cx.update(|_, cx| SettingsStore::global(cx).update(cx, |s, cx| s.update(f, cx)));
@@ -241,4 +243,154 @@ fn the_menu_follows_the_order_set_in_settings(cx: &mut TestAppContext) {
     assert_eq!(labels.first(), Some(&open));
     assert!(!labels.contains(&properties), "{labels:?}");
     cx.simulate_keystrokes("escape");
+}
+
+fn wait_more_options(view: &Entity<Explorer>, cx: &mut VisualTestContext) {
+    wait_until(cx, view, "more options loaded", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+}
+
+/// Index of the top-level row labeled `label`.
+fn row_of(view: &Entity<Explorer>, cx: &mut VisualTestContext, label: &str) -> usize {
+    let labels = menu_labels(view, cx).unwrap_or_default();
+    labels
+        .iter()
+        .position(|l| l == label)
+        .unwrap_or_else(|| panic!("{label} in {labels:?}"))
+}
+
+fn wait_level(view: &Entity<Explorer>, cx: &mut VisualTestContext, level: usize, want: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while labels_at(view, cx, level) != want {
+        assert!(
+            Instant::now() < deadline,
+            "level {level}: {:?}",
+            labels_at(view, cx, level)
+        );
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A whole Windows submenu under "More options" has a pin button, as its commands do; pinned, it
+/// shows right above "More options" as a submenu, and its rows run in the Windows menu. It is
+/// there again in the next menu, and unpinning takes it away (#88).
+#[gpui::test]
+fn a_whole_windows_submenu_can_be_pinned(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let more = format!("{} ›", t!("menu.more_options"));
+
+    right_click(&view, cx, Some(0));
+    wait_more_options(&view, cx);
+    let slot = row_of(&view, cx, &more);
+    highlight(&view, cx, slot);
+    cx.simulate_keystrokes("right");
+    let rows = labels_at(&view, cx, 1);
+    let send_to = rows.iter().position(|l| l == "Send to ›").unwrap();
+    let pin = view.update(cx, |v, _| {
+        v.context_menu.as_ref().and_then(|m| m.pin_at(1, send_to))
+    });
+    assert_eq!(pin.as_deref(), Some("Send to"));
+
+    // Its pin button.
+    view.update(cx, |v, cx| v.toggle_shell_pin("Send to", cx));
+    cx.simulate_keystrokes("escape");
+    let at = row_of(&view, cx, &more) - 1;
+    assert_eq!(menu_labels(&view, cx).unwrap()[at], "Send to ›");
+    highlight(&view, cx, at);
+    cx.simulate_keystrokes("right");
+    assert_eq!(labels_at(&view, cx, 1), ["Desktop", "Mail recipient"]);
+    let session = view
+        .update(cx, |v, _| v.context_menu.as_ref().unwrap().shell_state().1)
+        .unwrap();
+    cx.simulate_keystrokes("down enter");
+    wait_shell("ran the pinned submenu's command", || {
+        !shell.shell_invoked.lock().is_empty()
+    });
+    assert_eq!(*shell.shell_invoked.lock(), [(session, 3)]);
+    assert!(view.update(cx, |v, _| v.context_menu.is_none()));
+
+    right_click(&view, cx, Some(0));
+    wait_more_options(&view, cx);
+    let at = row_of(&view, cx, &more) - 1;
+    assert_eq!(menu_labels(&view, cx).unwrap()[at], "Send to ›");
+    view.update(cx, |v, cx| v.toggle_shell_pin("Send to", cx));
+    let labels = menu_labels(&view, cx).unwrap();
+    assert!(!labels.contains(&"Send to ›".to_owned()), "{labels:?}");
+    assert!(settings(cx).menu_pinned.is_empty());
+    cx.simulate_keystrokes("escape");
+}
+
+/// A pinned submenu that Windows fills only when it is opened fills as it opens up top, once: the
+/// same submenu under "More options" isn't asked again. The keyboard, already in it, gets its
+/// first row as it comes in (#88).
+#[gpui::test]
+fn a_pinned_submenu_filled_on_opening_fills_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    *shell.lazy_submenus.lock() = vec![(
+        "Give access to".into(),
+        vec![ShellMenuEntry::Item {
+            id: 30,
+            verb: None,
+            label: "Remove access".into(),
+            enabled: true,
+            checked: false,
+            default: false,
+            icon: None,
+        }],
+    )];
+    let (open_gate, gate) = flume::unbounded();
+    *shell.fill_gate.lock() = Some(gate);
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    change(cx, |st| st.menu_pinned = vec!["Give access to".into()]);
+    let more = format!("{} ›", t!("menu.more_options"));
+
+    right_click(&view, cx, None);
+    wait_more_options(&view, cx);
+    let at = row_of(&view, cx, "Give access to ›");
+    assert_eq!(at + 1, row_of(&view, cx, &more));
+    assert!(
+        shell.submenus_filled.lock().is_empty(),
+        "nothing fills before it opens"
+    );
+    highlight(&view, cx, at);
+    cx.simulate_keystrokes("right");
+    assert_eq!(labels_at(&view, cx, 1), [t!("menu.loading").into_owned()]);
+    let _ = open_gate.send(());
+    wait_level(&view, cx, 1, &["Remove access"]);
+    let session = view
+        .update(cx, |v, _| v.context_menu.as_ref().unwrap().shell_state().1)
+        .unwrap();
+    assert_eq!(*shell.submenus_filled.lock(), [(session, 0)]);
+
+    // Under "More options" it is filled already.
+    cx.simulate_keystrokes("left");
+    highlight(&view, cx, row_of(&view, cx, &more));
+    cx.simulate_keystrokes("right");
+    let give = labels_at(&view, cx, 1)
+        .iter()
+        .position(|l| l == "Give access to ›")
+        .unwrap();
+    highlight(&view, cx, give);
+    cx.simulate_keystrokes("right");
+    assert_eq!(labels_at(&view, cx, 2), ["Remove access"]);
+    cx.run_until_parked();
+    assert_eq!(shell.submenus_filled.lock().len(), 1);
+    cx.simulate_keystrokes("left left");
+
+    // Back up top: the keyboard goes in and the first row runs in the Windows menu.
+    highlight(&view, cx, at);
+    cx.simulate_keystrokes("right enter");
+    wait_shell("ran the pinned submenu's command", || {
+        !shell.shell_invoked.lock().is_empty()
+    });
+    assert_eq!(*shell.shell_invoked.lock(), [(session, 30)]);
 }

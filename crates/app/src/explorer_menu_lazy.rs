@@ -153,6 +153,21 @@ fn lazy_under<'a>(
     }
 }
 
+/// Marks every submenu below `entries` still to be filled as `session`'s number `index` as asked.
+fn mark_asked(entries: &mut [MenuEntry], whole: Option<u64>, session: u64, index: u32) {
+    for entry in entries {
+        if let MenuEntry::Submenu { children, lazy, .. } = entry {
+            if let Some(lazy) = lazy
+                && lazy.index == index
+                && lazy.session.or(whole) == Some(session)
+            {
+                lazy.asked = true;
+            }
+            mark_asked(children, whole, session, index);
+        }
+    }
+}
+
 /// Where the submenu waiting for `session`/`index` is below `entries`: row indexes down to it.
 fn find(entries: &[MenuEntry], whole: Option<u64>, session: u64, index: u32) -> Option<Vec<usize>> {
     entries.iter().enumerate().find_map(|(ix, entry)| {
@@ -226,12 +241,27 @@ impl Explorer {
         };
         lazy.asked = true;
         let index = lazy.index;
+        // A submenu pinned up top is the same Windows submenu as the one it was copied from
+        // (#88): that one isn't asked again.
+        mark_asked(&mut menu.entries, whole, session, index);
+        for (_, entries) in &mut menu.parts {
+            mark_asked(entries, None, session, index);
+        }
         self.ask_fill(serial, session, index);
     }
 
     /// The menu or one of its parts was read, or a submenu filled: fill the submenus pinned
     /// commands are still hidden in, without waiting for them to be opened.
     pub(super) fn fill_lazy_for_pins(&mut self, cx: &mut Context<Self>) {
+        // A pinned submenu opened while it was drawn ahead of its source, now in: filled as if
+        // it had just been opened (#88).
+        let open_pin = self.context_menu.as_ref().and_then(|m| {
+            let (ix, slot) = (*m.open.first()?, m.shell_slot?);
+            (ix < slot && ix + m.pinned_rows >= slot).then_some(ix)
+        });
+        if let Some(ix) = open_pin {
+            self.fill_lazy_submenu(0, ix);
+        }
         let pinned = SettingsStore::global(cx)
             .read(cx)
             .settings

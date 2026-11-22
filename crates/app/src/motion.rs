@@ -111,6 +111,21 @@ pub(crate) fn ease_out_soft(t: f32) -> f32 {
     1. - (1. - t).powi(3)
 }
 
+/// A spring a little under critical damping: it passes the target by about a tenth, comes back
+/// a hair short and settles, as a soft thing that is pushed into a new shape (a dragged favorite
+/// changing between a tile and a row). 0 at the start, 1 at the end; between, it may leave
+/// [0, 1], so use it only for sizes and places, never for opacity.
+pub(crate) fn spring(t: f32) -> f32 {
+    const ZETA: f32 = 0.55;
+    const OMEGA: f32 = 11.;
+    if t >= 1. {
+        return 1.;
+    }
+    let damped = OMEGA * (1. - ZETA * ZETA).sqrt();
+    let decay = (-ZETA * OMEGA * t).exp();
+    1. - decay * ((damped * t).cos() + ZETA * OMEGA / damped * (damped * t).sin())
+}
+
 /// Accelerating curve for leaving: starts gently, then goes (quadratic).
 pub(crate) fn ease_in(t: f32) -> f32 {
     t * t
@@ -607,6 +622,20 @@ impl<K: Eq + std::hash::Hash + Clone + 'static> gpui::Element for FlipRow<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_spring_overshoots_and_settles() {
+        assert!(spring(0.).abs() < 1e-6, "starts at 0");
+        assert!((spring(1.) - 1.).abs() < 1e-6, "ends at 1");
+        let peak = (0..=100)
+            .map(|i| spring(i as f32 / 100.))
+            .fold(0., f32::max);
+        assert!(
+            peak > 1.05 && peak < 1.2,
+            "passes the target a little: {peak}"
+        );
+        assert!((spring(0.9) - 1.).abs() < 0.02, "settled near the end");
+    }
 
     #[test]
     fn easings_run_from_zero_to_one() {

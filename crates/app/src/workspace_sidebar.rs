@@ -520,27 +520,45 @@ impl Render for PinPreview {
         };
         let id = usize::try_from(morph).unwrap_or_default();
         let shape = if animate {
-            let k_at = move |t: f32| if target > 0.5 { t } else { 1. - t };
+            // How much of a tile it is at `t`: the faces fade evenly, the card springs into its
+            // new shape like jelly, its height a moment ahead of its width (squashed, then
+            // stretched) and both passing the shape a little before they settle. Kept around the
+            // same center, so it wobbles in place under the pointer.
+            let toward = move |k: f32| if target > 0.5 { k } else { 1. - k };
+            let fade = move |t: f32| toward(crate::motion::ease_out(t));
+            let lag = |t: f32| ((t - 0.08) / 0.92).max(0.);
             let ease = || gpui::Animation::new(MORPH).with_easing(crate::motion::ease_out);
+            let from_c = (row_x + row_w / 2., row_y + row_h / 2.);
+            let to_c = (tx + tw / 2., ty + th / 2.);
             card(1. - target)
                 .child(
                     tile_face.with_animation(("pin-morph-tile", id), ease(), move |el, t| {
-                        el.opacity(k_at(t))
+                        el.opacity(fade(t))
                     }),
                 )
                 .child(
                     row_face.with_animation(("pin-morph-row", id), ease(), move |el, t| {
-                        el.opacity(1. - k_at(t))
+                        el.opacity(1. - fade(t))
                     }),
                 )
-                .with_animation(("pin-morph", id), ease(), move |el, t| {
-                    let k = k_at(t);
-                    el.left(lerp(row_x, tx, k))
-                        .top(lerp(row_y, ty, k))
-                        .w(lerp(row_w, tw, k))
-                        .h(lerp(row_h, th, k))
-                        .rounded(lerp(radius.1, radius.0, k))
-                })
+                .with_animation(
+                    ("pin-morph", id),
+                    gpui::Animation::new(MORPH),
+                    move |el, t| {
+                        let kh = toward(crate::motion::spring(t));
+                        let kw = toward(crate::motion::spring(lag(t)));
+                        let place = toward(crate::motion::ease_out(t));
+                        let w = lerp(row_w, tw, kw).max(px(8.));
+                        let h = lerp(row_h, th, kh).max(px(8.));
+                        let center_x = lerp(from_c.0, to_c.0, place);
+                        let center_y = lerp(from_c.1, to_c.1, place);
+                        el.left(center_x - w / 2.)
+                            .top(center_y - h / 2.)
+                            .w(w)
+                            .h(h)
+                            .rounded(lerp(radius.1, radius.0, kh.clamp(0., 1.)))
+                    },
+                )
                 .into_any_element()
         } else if target > 0.5 {
             card(1.).child(tile_face).into_any_element()
@@ -568,8 +586,9 @@ impl Render for PinPreview {
     }
 }
 
-/// How long a dragged favorite takes to change shape between a row and a tile.
-const MORPH: std::time::Duration = std::time::Duration::from_millis(160);
+/// How long a dragged favorite takes to change shape between a row and a tile, wobble included
+/// (`motion::spring` has settled well before the end).
+const MORPH: std::time::Duration = std::time::Duration::from_millis(340);
 
 /// Starts a pin drag, taken hold of at `grab`: records it (an empty list needs a drop target, and
 /// the sidebar watches for it leaving) and returns the drag preview.

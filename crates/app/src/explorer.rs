@@ -1844,6 +1844,7 @@ impl Explorer {
                 // The first places of a window: Quick Access pins from File Explorer (#45).
                 crate::quick_access::refresh(&self.services.shell, places.clone(), cx);
                 self.places = places;
+                self.folder_view_on_places(cx);
                 cx.notify();
             }
             AppEvent::DiskSpace(spaces) => {
@@ -3006,10 +3007,10 @@ impl Explorer {
             let follow_sort = match policy {
                 DefaultsPolicy::Follow => true,
                 DefaultsPolicy::FollowUnchanged => self.sort.same_order(&old_sort),
-                DefaultsPolicy::Keep => false,
+                DefaultsPolicy::Keep | DefaultsPolicy::KeepSort => false,
             };
             let follow_view = match policy {
-                DefaultsPolicy::Follow => true,
+                DefaultsPolicy::Follow | DefaultsPolicy::KeepSort => true,
                 DefaultsPolicy::FollowUnchanged => self.view_mode == old_view,
                 DefaultsPolicy::Keep => false,
             };

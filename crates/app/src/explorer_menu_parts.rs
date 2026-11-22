@@ -37,7 +37,7 @@ use super::{ContextMenu, MenuEntry, find_pinned, pin_key};
 use crate::explorer::{AppEvent, Explorer, spawn_thread};
 use crate::settings::SettingsStore;
 use crate::shell::{ShellError, ShellMenu, ShellMenuEntry};
-use crate::win_menu_parts::{COMMAND_OWNER, HandlerKind, MenuHandler, kind_matches};
+use crate::win_menu_parts::{COMMAND_OWNER, HandlerKind, MenuHandler, VERB_OWNER, kind_matches};
 
 /// A pinned command learned to come from none of the sources read on their own.
 pub(crate) const NO_OWNER: &str = "-";
@@ -276,8 +276,7 @@ impl Explorer {
             self.services.shell.release_shell_menu(part.session);
             return;
         };
-        let entries: Vec<MenuEntry> = part
-            .entries
+        let entries: Vec<MenuEntry> = named_as_pinned(part.entries, owner, &expected)
             .into_iter()
             .map(|e| MenuEntry::from_shell_in(e, &[], Some(part.session)))
             .collect();
@@ -435,6 +434,31 @@ impl Explorer {
         };
         (!paths.is_empty()).then_some((paths, background))
     }
+}
+
+/// A registry command Windows names itself, as "Run as administrator" (`runas`): the registry
+/// has no label for it, so its own menu calls it by the verb. It is the pinned command learned
+/// to come from it, named as in the whole Windows menu (#325: taken for missing, its row went
+/// until the whole menu was in).
+fn named_as_pinned(
+    mut entries: Vec<ShellMenuEntry>,
+    owner: &str,
+    expected: &[String],
+) -> Vec<ShellMenuEntry> {
+    let (Some(verb), [key]) = (owner.strip_prefix(VERB_OWNER), expected) else {
+        return entries;
+    };
+    if key.contains(" › ") {
+        return entries;
+    }
+    for entry in &mut entries {
+        if let ShellMenuEntry::Item { label, .. } = entry
+            && label.eq_ignore_ascii_case(verb)
+        {
+            label.clone_from(key);
+        }
+    }
+    entries
 }
 
 /// Pinned commands (pin key, owner) to draw as a menu for items of `kind` opens: a packaged

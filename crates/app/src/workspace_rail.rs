@@ -81,7 +81,7 @@ pub(super) struct SidebarUi {
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, kind_icon};
-use crate::settings::SettingsStore;
+use crate::settings::{SettingsStore, SidebarSection};
 use crate::shell::PlaceKind;
 use crate::theme;
 use arke_core::filetype::FileKind;
@@ -243,9 +243,20 @@ impl Workspace {
         let home_open = self.home_open();
         let settings_open = self.settings_open();
         let peek = SettingsStore::global(cx).read(cx).settings.sidebar_peek;
+        // Hidden sections (#323) leave the rail as they leave the full sidebar.
+        let hidden = |section| super::sidebar::section_hidden(section, cx);
+        let (home_hidden, this_pc_hidden) =
+            (hidden(SidebarSection::Home), hidden(SidebarSection::ThisPc));
         let mut places = self.rail_tiles(cx);
+        if !places.is_empty() {
+            places.push(divider());
+        }
         places.extend(self.rail_pins(cx));
-        let drives = self.rail_drives(cx);
+        let drives = if this_pc_hidden {
+            Vec::new()
+        } else {
+            self.rail_drives(cx)
+        };
         if !drives.is_empty() {
             places.push(divider());
             places.extend(drives);
@@ -304,21 +315,7 @@ impl Workspace {
             )
             // Back and forward, which the full sidebar has in its title row.
             .child(self.rail_nav(cx))
-            .child(
-                rail_button(
-                    "rail-home",
-                    icon(Icon::KfHome, home_open),
-                    &t!("home.title"),
-                    home_open,
-                )
-                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                    if home_open {
-                        this.close_home(window, cx);
-                    } else {
-                        this.open_home(e.modifiers().control, window, cx);
-                    }
-                })),
-            )
+            .when(!home_hidden, |d| d.child(Self::rail_home(home_open, cx)))
             // Places and tabs each scroll on their own when the window is short, like the full
             // sidebar.
             .child(super::sidebar::scrolling(
@@ -341,6 +338,24 @@ impl Workspace {
             })
             .child(div().flex_1().min_h(theme::s_8()))
             .child(Self::rail_settings(settings_open, cx))
+    }
+
+    /// Home: open (Ctrl: in a new tab), or closed again while it is open.
+    fn rail_home(home_open: bool, cx: &mut Context<Self>) -> AnyElement {
+        rail_button(
+            "rail-home",
+            icon(Icon::KfHome, home_open),
+            &t!("home.title"),
+            home_open,
+        )
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            if home_open {
+                this.close_home(window, cx);
+            } else {
+                this.open_home(e.modifiers().control, window, cx);
+            }
+        }))
+        .into_any_element()
     }
 
     /// Settings, with a dot for a new version where the full sidebar shows "Update available".
@@ -403,12 +418,34 @@ impl Workspace {
         ]
     }
 
-    /// The quick access folders, the current one lit.
+    /// The quick access folders, the current one lit. Those the full sidebar draws as tiles go
+    /// with Home when it is hidden, the others with Favorites (#323).
     fn rail_tiles(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let current = self.rail_here(cx);
-        self.favorites(cx)
+        let (home_hidden, list_hidden) = (
+            super::sidebar::section_hidden(SidebarSection::Home, cx),
+            super::sidebar::section_hidden(SidebarSection::Favorites, cx),
+        );
+        let favorites = if home_hidden && list_hidden {
+            Vec::new()
+        } else {
+            self.favorites(cx)
+        };
+        let on_tile = if home_hidden || list_hidden {
+            self.tile_layout(&favorites, cx).on_tile
+        } else {
+            Vec::new()
+        };
+        favorites
             .into_iter()
             .enumerate()
+            .filter(|(ix, _)| {
+                if on_tile.get(*ix).copied().unwrap_or(true) {
+                    !home_hidden
+                } else {
+                    !list_hidden
+                }
+            })
             .map(|(ix, (path, label, kf_icon))| {
                 let here = current.as_deref() == Some(path.as_path());
                 let tint = crate::assets::tinted(
@@ -466,14 +503,19 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The pinned list: pinned folders, then the Recycle Bin (when pinned) and the Shelf.
+    /// The pinned list: pinned folders, then the Recycle Bin (when pinned) and the Shelf. With
+    /// Favorites hidden (#323) only the Shelf stays, as in the full sidebar.
     fn rail_pins(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let settings = &SettingsStore::global(cx).read(cx).settings;
-        let (pinned, recycle_pinned) = (settings.pinned.clone(), settings.recycle_pinned);
+        let (pinned, recycle_pinned) = if settings.is_hidden(SidebarSection::Favorites) {
+            (Vec::new(), false)
+        } else {
+            (settings.pinned.clone(), settings.recycle_pinned)
+        };
         // A favorite's own name (#259) shows here too.
         let names = settings.favorite_names.clone();
         let current = self.rail_here(cx);
-        let mut out = vec![divider()];
+        let mut out = Vec::new();
         for (ix, path) in pinned.into_iter().enumerate() {
             let here = current.as_deref() == Some(path.as_path());
             let label = names

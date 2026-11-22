@@ -56,6 +56,7 @@ icons![
     Rename => "rename",
     Trash => "trash",
     More => "more",
+    Grip => "grip",
     Restore => "restore",
     ViewList => "view-list",
     ViewGrid => "view-grid",

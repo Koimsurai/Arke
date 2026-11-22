@@ -1468,6 +1468,43 @@ fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
     let at = cx.debug_bounds("rail work").unwrap().center();
     cx.simulate_click(at, gpui::Modifiers::none());
     wait_until(cx, &view, "work", loaded(r"C:\work"));
+
+    // #323: the hidden sections leave the column too. Home takes Home and the tiles, Favorites
+    // the pinned folders and the Recycle Bin, This PC the drives; the Shelf stays.
+    let [_, bin, kept_shelf, letter] = wanted[..] else {
+        unreachable!()
+    };
+    let home: &'static str = Box::leak(format!("rail {}", t!("home.title")).into_boxed_str());
+    change(cx, |st| {
+        st.favorites = Some(vec![p(r"C:\a")]);
+        st.pinned = vec![p(r"C:\kept")];
+    });
+    let pin = "rail kept";
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let tile = "rail a";
+    assert!(cx.debug_bounds(home).is_some(), "home in the rail");
+    assert!(cx.debug_bounds(tile).is_some(), "the tile in the rail");
+    change(cx, |st| {
+        use crate::settings::SidebarSection as S;
+        st.hidden_sections = vec![S::Home, S::Favorites, S::ThisPc];
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    for gone in [home, tile, pin, bin, letter] {
+        assert!(cx.debug_bounds(gone).is_none(), "{gone} is hidden");
+    }
+    assert!(cx.debug_bounds(kept_shelf).is_some(), "the Shelf stays");
+
+    change(cx, |st| {
+        st.hidden_sections = vec![crate::settings::SidebarSection::Home];
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds(home).is_none());
+    for shown in [pin, bin, letter, kept_shelf] {
+        assert!(cx.debug_bounds(shown).is_some(), "{shown} is back");
+    }
 }
 
 /// #122: resting the pointer on the collapsed column opens the full sidebar over the content; it

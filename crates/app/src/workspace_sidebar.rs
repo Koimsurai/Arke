@@ -739,9 +739,9 @@ fn follow_chain(places: &[Place], here: &Path) -> Vec<PathBuf> {
 
 /// Which favorites get a tile, and whether the tiles are the large ones (three a row).
 #[derive(Debug, PartialEq, Eq)]
-struct TileLayout {
+pub(super) struct TileLayout {
     large: bool,
-    on_tile: Vec<bool>,
+    pub(super) on_tile: Vec<bool>,
 }
 
 /// Lays out the favorites (#174): a name that doesn't fit on a large tile is listed as a row below
@@ -1717,7 +1717,11 @@ impl Workspace {
 
     /// Which favorites fit on a tile (`split_tiles`), measured with the tiles' font in the width
     /// the places list had last frame (an estimate from the sidebar's width before the first).
-    fn tile_layout(&self, favorites: &[(PathBuf, String, Icon)], cx: &App) -> TileLayout {
+    pub(super) fn tile_layout(
+        &self,
+        favorites: &[(PathBuf, String, Icon)],
+        cx: &App,
+    ) -> TileLayout {
         let list = self.places_width();
         let mut wrapper = cx
             .text_system()

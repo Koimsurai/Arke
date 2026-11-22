@@ -281,7 +281,8 @@ impl Render for MenuRowPreview {
 }
 
 /// `row` dragged as `drag`: it takes the place of the rows of its list it is dragged over, saved
-/// as it goes, so the preview follows. While dragged, its place in the list is dimmed.
+/// as it goes, so the preview follows. While dragged, its place in the list is dimmed. A grip in
+/// the row's left padding shows on hover, so the rows read as draggable.
 fn draggable(
     row: gpui::Stateful<gpui::Div>,
     drag: DraggedMenuRow,
@@ -289,7 +290,30 @@ fn draggable(
 ) -> gpui::Stateful<gpui::Div> {
     let (key, pinned) = (drag.key.clone(), drag.pinned);
     let lifted = cx.has_active_drag() && DRAGGING.with_borrow(|d| d.as_deref() == Some(&*key));
-    row.cursor_grab()
+    let group = SharedString::from(format!("menu-drag-{}-{key}", u8::from(pinned)));
+    let grip = div()
+        .absolute()
+        .left_0()
+        .top_0()
+        .bottom_0()
+        .flex()
+        .items_center()
+        .debug_selector(|| "menu-row-grip".to_owned())
+        .child(
+            svg()
+                .path(Icon::Grip.path())
+                .flex_none()
+                .size(theme::icon())
+                .text_color(theme::text_muted()),
+        )
+        .when(!lifted, |d| {
+            d.invisible()
+                .group_hover(group.clone(), gpui::Styled::visible)
+        });
+    row.relative()
+        .group(group)
+        .child(grip)
+        .cursor_grab()
         .when(lifted, |d| d.opacity(0.4))
         .on_drag(drag, |row, _, _, cx| {
             DRAGGING.with_borrow_mut(|d| *d = Some(row.key.clone()));

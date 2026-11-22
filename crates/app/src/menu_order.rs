@@ -90,10 +90,7 @@ pub(crate) struct Ranks([u8; DEFAULT.len()]);
 
 impl Ranks {
     fn of(self, key: &str) -> Option<u8> {
-        DEFAULT
-            .iter()
-            .position(|k| *k == key)
-            .map(|ix| self.0[ix])
+        DEFAULT.iter().position(|k| *k == key).map(|ix| self.0[ix])
     }
 }
 
@@ -242,11 +239,12 @@ mod tests {
         assert_eq!(order.len(), DEFAULT.len());
         assert_eq!(order.last(), Some(&"reveal"));
         // An entry added in a later version: right after the one before it, wherever that went.
-        let mut older: Vec<&str> = DEFAULT.iter().copied().filter(|k| *k != "shelf").collect();
-        let open_with = older.iter().position(|k| *k == "open_with").unwrap();
-        let key = older.remove(open_with);
-        older.insert(0, key);
-        let order = resolve(&keys(&older));
+        let mut saved_before: Vec<&str> =
+            DEFAULT.iter().copied().filter(|k| *k != "shelf").collect();
+        let open_with = saved_before.iter().position(|k| *k == "open_with").unwrap();
+        let key = saved_before.remove(open_with);
+        saved_before.insert(0, key);
+        let order = resolve(&keys(&saved_before));
         assert_eq!(&order[..2], ["open_with", "shelf"]);
         assert_eq!(order.len(), DEFAULT.len());
     }
@@ -260,7 +258,11 @@ mod tests {
         // Moved back: nothing to store again.
         assert!(stored(&moved(&order, 0, DEFAULT.len() - 2)).is_empty());
         assert_eq!(ranks(&[]), None);
-        assert_eq!(ranks(&keys(&DEFAULT)), None, "the built-in order, spelled out");
+        assert_eq!(
+            ranks(&keys(&DEFAULT)),
+            None,
+            "the built-in order, spelled out"
+        );
         assert_eq!(ranks(&keys(&order)), ranks_of(&order));
         assert!(ranks(&keys(&order)).is_some());
     }

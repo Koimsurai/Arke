@@ -49,7 +49,6 @@ const EXTRA_IDS: [&str; 12] = [
     "ow-extra-11",
 ];
 
-
 /// One of Arke's menu entries in the list: dragged to reorder the menu, and with a switch to turn
 /// it off unless it is a basic entry.
 pub(crate) struct MenuPref {
@@ -267,7 +266,10 @@ impl Render for MenuRowPreview {
             .ui_font()
             .text_size(theme::fs_14())
             .text_color(theme::text())
-            .child(super::settings_panel::row_icon(self.row.icon, theme::text_muted()))
+            .child(super::settings_panel::row_icon(
+                self.row.icon,
+                theme::text_muted(),
+            ))
             .child(
                 div()
                     .flex_1()
@@ -820,7 +822,11 @@ fn preview_rows(s: &Settings) -> Vec<Option<PreviewRow>> {
             Icon::Zip,
             t!("menu.compress", name = "Photos.zip").into_owned(),
         )),
-        row("move_new_folder", Icon::FolderPlus, "menu.move_to_new_folder"),
+        row(
+            "move_new_folder",
+            Icon::FolderPlus,
+            "menu.move_to_new_folder",
+        ),
         None,
         row("new_window", Icon::External, "menu.open_new_window"),
         Some(PreviewRow {

@@ -754,13 +754,12 @@ impl ContextMenu {
             }
         };
         if let Some(&first) = self.open.first() {
-            match shift(first) {
-                Some(first) => self.open[0] = first,
+            if let Some(first) = shift(first) {
+                self.open[0] = first;
+            } else {
                 // Its pinned submenu went away: closed.
-                None => {
-                    self.open.clear();
-                    self.highlighted = Some(start);
-                }
+                self.open.clear();
+                self.highlighted = Some(start);
             }
         } else {
             // Highlight was on a pinned row that went away: on the first pinned row (or "Show
@@ -1218,9 +1217,13 @@ impl Explorer {
             label: t!("settings.sort_by").into(),
             enabled: true,
             icon: None,
+            glyph: Some(Icon::Sort),
             children,
             shell: false,
             lazy: None,
+            // No entry of its own in Settings › Context menu: it goes with View.
+            key: None,
+            pin: None,
         }
     }
 
@@ -3310,7 +3313,7 @@ fn order_slot(entry: &MenuEntry) -> crate::menu_order::Slot {
         MenuEntry::Separator => Slot::Separator,
         MenuEntry::Actions(_) => Slot::Last,
         MenuEntry::Submenu { shell: true, .. } => Slot::Key("more_options"),
-        MenuEntry::Submenu { key: Some(key), .. } => Slot::Key(*key),
+        MenuEntry::Submenu { key: Some(key), .. } => Slot::Key(key),
         MenuEntry::Item(item) if item.command == MenuCommand::Open => Slot::Key("open"),
         entry => pref_key(entry).map_or(Slot::Follow, Slot::Key),
     }

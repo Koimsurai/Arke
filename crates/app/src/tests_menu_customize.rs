@@ -158,11 +158,17 @@ fn menu_entries_reorder_by_drag_in_settings(cx: &mut TestAppContext) {
     assert_eq!(settings(cx).menu_order, first("properties"));
     assert!(above(cx, "menu-row", "properties", "open"));
     assert!(above(cx, "menu-preview", "properties", "open"));
-    assert!(above(cx, "menu-preview", "open", "new_tab"), "the rest stay");
+    assert!(
+        above(cx, "menu-preview", "open", "new_tab"),
+        "the rest stay"
+    );
 
     // Dragged back down onto the row it came after: the built-in order again, so nothing is
     // stored.
-    let (from, to) = (drawn(cx, "menu-row properties"), drawn(cx, "menu-row reveal"));
+    let (from, to) = (
+        drawn(cx, "menu-row properties"),
+        drawn(cx, "menu-row reveal"),
+    );
     drag(cx, from, to);
     assert!(settings(cx).menu_order.is_empty());
 
@@ -226,12 +232,18 @@ fn the_menu_follows_the_order_set_in_settings(cx: &mut TestAppContext) {
         1,
         "{labels:?}"
     );
-    assert!(labels.last().is_some_and(|l| l.starts_with('[')), "{labels:?}");
+    assert!(
+        labels.last().is_some_and(|l| l.starts_with('[')),
+        "{labels:?}"
+    );
     cx.simulate_keystrokes("escape");
 
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).unwrap();
-    assert_eq!(labels[..3], [properties.clone(), open.clone(), "—".to_owned()]);
+    assert_eq!(
+        labels[..3],
+        [properties.clone(), open.clone(), "—".to_owned()]
+    );
     cx.simulate_keystrokes("escape");
 
     change(cx, |st| {
@@ -373,7 +385,8 @@ fn a_pinned_submenu_filled_on_opening_fills_once(cx: &mut TestAppContext) {
 
     // Under "More options" it is filled already.
     cx.simulate_keystrokes("left");
-    highlight(&view, cx, row_of(&view, cx, &more));
+    let more_at = row_of(&view, cx, &more);
+    highlight(&view, cx, more_at);
     cx.simulate_keystrokes("right");
     let give = labels_at(&view, cx, 1)
         .iter()

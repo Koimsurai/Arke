@@ -1453,7 +1453,7 @@ impl Explorer {
         let generation = self.dir_service.navigate(
             path.clone(),
             ListOptions {
-                sort: self.sort,
+                sort: self.list_sort(),
                 show_hidden: self.show_hidden,
                 watch: true,
             },
@@ -2318,6 +2318,21 @@ impl Explorer {
         self.remember_folder_view(cx);
     }
 
+    /// The order the list is kept in: the chosen sort, plus the date sections while the list is
+    /// grouped by a date with folders kept apart, so folders go into their date's section (#286).
+    pub(crate) fn list_sort(&self) -> SortSpec {
+        let grouped = self.group_rows && self.view_mode != ViewMode::Columns;
+        let spec = SortSpec {
+            sections: grouped.then(|| groups::day_buckets(self.services.shell.as_ref())),
+            ..self.sort
+        };
+        if spec.date_sections().is_some() {
+            spec
+        } else {
+            self.sort
+        }
+    }
+
     /// Shows the list in `sort` without recording it anywhere (defaults, remembered views).
     fn apply_sort(&mut self, sort: SortSpec, cx: &mut Context<Self>) {
         self.sort = sort;
@@ -2347,9 +2362,10 @@ impl Explorer {
             .sort
             .uses(SortColumn::Type)
             .then(arke_core::format::type_names_version);
-        let key = (model.generation, model.version, self.sort, want, want_type);
+        let list_sort = self.list_sort();
+        let key = (model.generation, model.version, list_sort, want, want_type);
         // Column and direction already match; only folder sizes (or type names) are out of date.
-        let only_sizes = model.sorted_by == self.sort;
+        let only_sizes = model.sorted_by == list_sort;
         if (only_sizes && have == want && self.type_order == want_type)
             || self.sort_inflight == Some(key)
         {
@@ -2371,7 +2387,7 @@ impl Explorer {
             // name order): that sorts once now with the sizes known so far.
             return;
         }
-        let spec = self.sort;
+        let spec = list_sort;
         let sizes = want.map(|_| self.folder_sizes.snapshot());
         let (generation, version) = (model.generation, model.version);
         if only_sizes && model.entries.len() <= INLINE_SORT_MAX {
@@ -2392,7 +2408,7 @@ impl Explorer {
                 if let Some(model) = this.model.as_ref()
                     && model.generation == generation
                     && model.version == version
-                    && this.sort == spec
+                    && this.list_sort() == spec
                 {
                     this.apply_sorted(sorted, spec, want, want_type, cx);
                     // The user changed the sort: keep the selected item on screen. Don't scroll
@@ -2974,7 +2990,7 @@ impl Explorer {
     }
 
     /// The user picked a view mode: show it and remember it for this folder.
-    fn pick_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+    pub(crate) fn pick_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
         if self.view_mode == mode {
             return;
         }
@@ -2989,6 +3005,8 @@ impl Explorer {
             return;
         }
         self.view_mode = mode;
+        // Grouped by a date, folders go into the date sections only outside column view.
+        self.ensure_sorted(cx);
         self.recenter_grid |= mode == ViewMode::Icons;
         if mode != ViewMode::Details {
             self.tree_clear();
@@ -3074,7 +3092,10 @@ impl Explorer {
         self.preview_pane = settings.preview_pane;
         self.show_extensions = settings.show_extensions;
         self.show_checkboxes = settings.show_checkboxes;
-        self.group_rows = settings.group_rows;
+        if self.group_rows != settings.group_rows {
+            self.group_rows = settings.group_rows;
+            self.ensure_sorted(cx);
+        }
         self.show_thumbnails = settings.show_thumbnails;
         self.network_thumbnails = settings.network_thumbnails;
         self.place_names = settings.place_names.clone();

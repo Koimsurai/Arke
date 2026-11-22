@@ -24,6 +24,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use arke_core::sort::days_from_civil;
 use arke_core::{Entry, SortColumn};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;
@@ -218,97 +219,44 @@ impl Groups {
     }
 }
 
-/// "Today" for date buckets: local day number and the local offset from UTC in seconds.
-#[derive(Clone, Copy)]
-pub(crate) struct Today {
-    day: i64,
-    offset: i64,
-}
+/// "Today" for date sections: local day number and the local offset from UTC in seconds.
+pub(crate) type Today = arke_core::DayBuckets;
 
-impl Today {
-    pub(crate) fn now(shell: &dyn crate::shell::Shell) -> Self {
-        let now = SystemTime::now();
-        let utc = unix_secs(now);
-        let offset = shell.local_parts(now).map_or(0, |[y, m, d, h, mi, s]| {
-            let local = days_from_civil(i64::from(y), i64::from(m), i64::from(d)) * 86_400
-                + i64::from(h) * 3600
-                + i64::from(mi) * 60
-                + i64::from(s);
-            // Round to whole minutes.
-            ((local - utc) as f64 / 60.).round() as i64 * 60
-        });
-        Self {
-            day: (utc + offset).div_euclid(86_400),
-            offset,
-        }
-    }
-
-    fn local_day(self, t: SystemTime) -> i64 {
-        (unix_secs(t) + self.offset).div_euclid(86_400)
-    }
-}
-
-fn unix_secs(t: SystemTime) -> i64 {
-    match t.duration_since(SystemTime::UNIX_EPOCH) {
+/// Today's day and the local offset, for date sections.
+pub(crate) fn day_buckets(shell: &dyn crate::shell::Shell) -> Today {
+    let now = SystemTime::now();
+    let utc = match now.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
-        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+        Err(_) => 0,
+    };
+    let offset = shell.local_parts(now).map_or(0, |[y, m, d, h, mi, s]| {
+        let local = days_from_civil(i64::from(y), i64::from(m), i64::from(d)) * 86_400
+            + i64::from(h) * 3600
+            + i64::from(mi) * 60
+            + i64::from(s);
+        // Round to whole minutes.
+        ((local - utc) as f64 / 60.).round() as i64 * 60
+    });
+    Today {
+        day: (utc + offset).div_euclid(86_400),
+        offset,
     }
 }
 
-/// Civil date to days since 1970-01-01 (Howard Hinnant's algorithm).
-const fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Day number to (year, month).
-fn year_month(days: i64) -> (i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    (y, m)
-}
-
-/// Date-modified section label.
+/// Date section label.
 fn date_group(t: Option<SystemTime>, today: Today) -> String {
-    let Some(t) = t else {
-        return t!("group.unknown").into_owned();
-    };
-    let day = today.local_day(t);
-    let now = today.day;
-    // Weeks start on Monday (0 = Monday).
-    let weekday = (now + 3).rem_euclid(7);
-    let week_start = now - weekday;
-    let (y, m) = year_month(day);
-    let (ny, nm) = year_month(now);
-    let key = if day > now {
-        "group.future"
-    } else if day == now {
-        "group.today"
-    } else if day == now - 1 {
-        "group.yesterday"
-    } else if day >= week_start {
-        "group.this_week"
-    } else if day >= week_start - 7 {
-        "group.last_week"
-    } else if (y, m) == (ny, nm) {
-        "group.this_month"
-    } else if (y * 12 + m) == (ny * 12 + nm - 1) {
-        "group.last_month"
-    } else if y == ny {
-        "group.this_year"
-    } else {
-        return t!("group.year", year = y).into_owned();
+    use arke_core::DateSection as D;
+    let key = match today.section(t) {
+        D::Unknown => "group.unknown",
+        D::Future => "group.future",
+        D::Today => "group.today",
+        D::Yesterday => "group.yesterday",
+        D::ThisWeek => "group.this_week",
+        D::LastWeek => "group.last_week",
+        D::ThisMonth => "group.this_month",
+        D::LastMonth => "group.last_month",
+        D::ThisYear => "group.this_year",
+        D::Year(year) => return t!("group.year", year = year).into_owned(),
     };
     t!(key).into_owned()
 }
@@ -427,6 +375,21 @@ fn hidden_ranges(rows: &[Row]) -> Vec<Range<usize>> {
 }
 
 impl Explorer {
+    /// What the sections are counted from: the day the list was sorted for, when it is sorted
+    /// into date sections (#286, folders go into them then; labels from that same day keep the
+    /// sections whole until it is sorted again), otherwise today. And whether folders form a
+    /// section of their own.
+    fn section_basis(&self) -> Option<(Today, bool)> {
+        let sorted = self.model.as_ref()?.sorted_by;
+        Some(match sorted.date_sections() {
+            Some(days) => (days, false),
+            None => (
+                day_buckets(self.services.shell.as_ref()),
+                self.sort.folders_apart(),
+            ),
+        })
+    }
+
     /// Whether to group: setting on, details view, not search results or column view. Expanded
     /// folders keep their items under themselves, in the folder's section (#279).
     pub(super) fn grouping(&self) -> bool {
@@ -442,8 +405,7 @@ impl Explorer {
             return None;
         }
         let view = self.view()?;
-        let today = Today::now(self.services.shell.as_ref());
-        let folders_apart = self.sort.folders_apart();
+        let (today, folders_apart) = self.section_basis()?;
         let cols = self.grid_cols.max(1);
         let key = (
             Arc::as_ptr(&view) as usize,
@@ -549,8 +511,7 @@ impl Explorer {
             return None;
         }
         let view = self.view()?;
-        let today = Today::now(self.services.shell.as_ref());
-        let folders_apart = self.sort.folders_apart();
+        let (today, folders_apart) = self.section_basis()?;
         let key = (
             Arc::as_ptr(&view) as usize,
             view.len(),
@@ -932,15 +893,6 @@ mod tests {
     fn at(today: Today, days_ago: i64) -> SystemTime {
         let secs = today.day * 86_400 - today.offset + 12 * 3600 - days_ago * 86_400;
         SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap())
-    }
-
-    #[test]
-    fn civil_dates_round_trip() {
-        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2026, 11, 10), (2026, 12, 31)] {
-            let days = days_from_civil(y, m, d);
-            assert_eq!(year_month(days), (y, m));
-        }
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
     }
 
     #[test]

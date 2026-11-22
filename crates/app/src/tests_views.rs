@@ -1133,3 +1133,85 @@ fn search_results_sort_by_header_clicks(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     view.update(cx, |v, _| assert!(v.search_sort.is_none()));
 }
+
+/// #286: grouped by a date, folders go into the section of their date, after the files when
+/// newest first and before them when oldest first, as in File Explorer. Not grouped, they stay a
+/// block of their own; column view never groups.
+#[gpui::test]
+fn grouped_by_date_folders_join_their_sections(cx: &mut TestAppContext) {
+    use std::time::{Duration, SystemTime};
+    let now = SystemTime::now();
+    let old = now - Duration::from_hours(400 * 24);
+    let at = |name: &str, kind, t| Entry::new(name, kind, 1, Some(t), 0);
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\d",
+        vec![
+            at("new.txt", EntryKind::File, now),
+            at("new-dir", EntryKind::Dir, now),
+            at("old.txt", EntryKind::File, old),
+            at("old-dir", EntryKind::Dir, old),
+        ],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\d");
+    wait_until(cx, &view, "load", loaded(r"C:\d"));
+    let sort = |cx: &mut gpui::VisualTestContext, ascending: bool| {
+        view.update(cx, |v, cx| {
+            v.set_sort(SortSpec::by(SortColumn::Modified, ascending, false), cx);
+        });
+        cx.run_until_parked();
+    };
+    let group = |cx: &mut gpui::VisualTestContext, on: bool| {
+        cx.update(|_, cx| {
+            SettingsStore::global(cx)
+                .update(cx, |s, cx| s.update(move |st| st.group_rows = on, cx));
+        });
+        cx.run_until_parked();
+    };
+    let headers = |cx: &mut gpui::VisualTestContext| {
+        view.update(cx, |v, _| {
+            v.groups().map_or_default(|g| {
+                g.rows
+                    .iter()
+                    .filter_map(|r| match r {
+                        crate::explorer::groups::Row::Header { count, .. } => Some(*count),
+                        crate::explorer::groups::Row::Item(_) => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+
+    sort(cx, false);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["new.txt", "old.txt", "new-dir", "old-dir"]
+    );
+    group(cx, true);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["new.txt", "new-dir", "old.txt", "old-dir"]
+    );
+    assert_eq!(headers(cx), [2, 2], "today and the year, two items each");
+    sort(cx, true);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["old-dir", "old.txt", "new-dir", "new.txt"]
+    );
+    assert_eq!(headers(cx), [2, 2]);
+
+    // Column view doesn't group: the folders go back to a block of their own.
+    view.update(cx, |v, cx| v.pick_view_mode(ViewMode::Columns, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["old-dir", "new-dir", "old.txt", "new.txt"]
+    );
+    view.update(cx, |v, cx| v.pick_view_mode(ViewMode::Details, cx));
+    cx.run_until_parked();
+    group(cx, false);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["old-dir", "new-dir", "old.txt", "new.txt"]
+    );
+}

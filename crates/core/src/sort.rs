@@ -66,6 +66,114 @@ pub struct SortSpec {
     /// front: a `None` is never followed by a key. A fixed array keeps the spec `Copy` and the
     /// comparison free of allocation.
     pub then: [Option<SortKey>; MAX_SORT_KEYS - 1],
+    /// The list is grouped by its date column (#286): with folders kept apart, they still go into
+    /// the section of their date, as in File Explorer, so the sections come first and the folder
+    /// block applies within each. `None` when not grouping by a date.
+    pub sections: Option<DayBuckets>,
+}
+
+/// The day the date sections (today, yesterday, ..., years) are counted from: the local day
+/// number and the local offset from UTC in seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DayBuckets {
+    /// Today's local day number (days since 1970-01-01).
+    pub day: i64,
+    /// Local offset from UTC, in seconds.
+    pub offset: i64,
+}
+
+/// A date section, in time order (oldest first): unknown dates, then years, then the relative
+/// sections of this year up to today, then dates in the future. Weeks start on Monday.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DateSection {
+    /// No date.
+    Unknown,
+    /// An earlier year.
+    Year(i64),
+    /// Earlier this year.
+    ThisYear,
+    /// Last month.
+    LastMonth,
+    /// Earlier this month.
+    ThisMonth,
+    /// Last week.
+    LastWeek,
+    /// Earlier this week.
+    ThisWeek,
+    /// Yesterday.
+    Yesterday,
+    /// Today.
+    Today,
+    /// After today.
+    Future,
+}
+
+impl DayBuckets {
+    /// The section `t` falls in.
+    #[must_use]
+    pub fn section(self, t: Option<std::time::SystemTime>) -> DateSection {
+        let Some(t) = t else {
+            return DateSection::Unknown;
+        };
+        let day = (unix_secs(t) + self.offset).div_euclid(86_400);
+        let now = self.day;
+        let week_start = now - (now + 3).rem_euclid(7);
+        let (y, m) = year_month(day);
+        let (ny, nm) = year_month(now);
+        if day > now {
+            DateSection::Future
+        } else if day == now {
+            DateSection::Today
+        } else if day == now - 1 {
+            DateSection::Yesterday
+        } else if day >= week_start {
+            DateSection::ThisWeek
+        } else if day >= week_start - 7 {
+            DateSection::LastWeek
+        } else if (y, m) == (ny, nm) {
+            DateSection::ThisMonth
+        } else if y * 12 + m == ny * 12 + nm - 1 {
+            DateSection::LastMonth
+        } else if y == ny {
+            DateSection::ThisYear
+        } else {
+            DateSection::Year(y)
+        }
+    }
+}
+
+/// Seconds since the Unix epoch, negative before it.
+fn unix_secs(t: std::time::SystemTime) -> i64 {
+    match t.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+    }
+}
+
+/// Civil date to days since 1970-01-01 (Howard Hinnant's algorithm).
+#[must_use]
+pub const fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Day number to (year, month).
+#[must_use]
+pub const fn year_month(days: i64) -> (i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    (y, m)
 }
 
 impl Default for SortSpec {
@@ -83,7 +191,18 @@ impl SortSpec {
             ascending,
             mixed,
             then: [None; MAX_SORT_KEYS - 1],
+            sections: None,
         }
+    }
+
+    /// The date sections the list is grouped in, when folders go into them (#286): grouping by
+    /// the primary column, which is a date, with folders kept apart (mixed, they already do).
+    #[must_use]
+    pub fn date_sections(&self) -> Option<DayBuckets> {
+        self.sections.filter(|_| {
+            self.folders_apart()
+                && matches!(self.column, SortColumn::Modified | SortColumn::Created)
+        })
     }
 
     /// All keys in order, the primary first.
@@ -116,7 +235,7 @@ impl SortSpec {
         self.keys().any(|k| k.column == column)
     }
 
-    /// Same keys and directions (where folders go aside).
+    /// Same keys and directions (where folders go and the date sections aside).
     #[must_use]
     pub fn same_order(&self, other: &Self) -> bool {
         self.keys().eq(other.keys())
@@ -200,6 +319,14 @@ impl SortSpec {
         size_b: u64,
         types: &TypeKeys,
     ) -> Ordering {
+        if let Some(days) = self.date_sections() {
+            let ord = days
+                .section(self.date_of(a))
+                .cmp(&days.section(self.date_of(b)));
+            if ord != Ordering::Equal {
+                return if self.ascending { ord } else { ord.reverse() };
+            }
+        }
         if self.folders_apart() {
             let lead = self.folders_lead();
             match (a.is_dir_like(), b.is_dir_like()) {
@@ -234,11 +361,65 @@ impl SortSpec {
         if self.ascending { ord } else { ord.reverse() }
     }
 
+    /// The date the date sections go by: the primary column's.
+    const fn date_of(&self, e: &Entry) -> Option<std::time::SystemTime> {
+        if matches!(self.column, SortColumn::Created) {
+            e.created
+        } else {
+            e.modified
+        }
+    }
+
     /// Sorts `entries` in place by [`Self::compare`].
     pub fn sort(&self, entries: &mut [Entry]) {
         // Unstable sort is faster, and the comparator is a total order, so the result is
         // deterministic.
         let types = TypeKeys::for_entries(self, &*entries);
+        if let Some(days) = self.date_sections() {
+            // Sorted as usual, the folder block and the file block are each in date order, so
+            // one merge by section puts the folders into their sections: the section of each
+            // item is worked out once, and the sort costs about what it does ungrouped.
+            let rest = Self {
+                sections: None,
+                ..*self
+            };
+            entries.sort_unstable_by(|a, b| rest.compare_with(a, b, &types));
+            let split = entries
+                .iter()
+                .position(|e| e.is_dir_like() != entries[0].is_dir_like())
+                .unwrap_or(entries.len());
+            let sections: Vec<DateSection> = entries
+                .iter()
+                .map(|e| days.section(self.date_of(e)))
+                .collect();
+            let first = |a: DateSection, b: DateSection| {
+                if self.ascending { a <= b } else { a >= b }
+            };
+            let (mut i, mut j) = (0, split);
+            let mut from = Vec::with_capacity(entries.len());
+            while i < split || j < entries.len() {
+                // Same section: the leading block's items first.
+                if j == entries.len() || (i < split && first(sections[i], sections[j])) {
+                    from.push(i);
+                    i += 1;
+                } else {
+                    from.push(j);
+                    j += 1;
+                }
+            }
+            // Into place by following the permutation's cycles: swaps, no copies.
+            for start in 0..from.len() {
+                let mut at = start;
+                while from[at] != start {
+                    let next = from[at];
+                    entries.swap(at, next);
+                    from[at] = at;
+                    at = next;
+                }
+                from[at] = at;
+            }
+            return;
+        }
         entries.sort_unstable_by(|a, b| self.compare_with(a, b, &types));
     }
 
@@ -707,6 +888,122 @@ mod tests {
         spec.sort(&mut v);
         let names: Vec<&str> = v.iter().map(|e| &*e.name).collect();
         assert_eq!(names, ["new", "mid", "old"]);
+    }
+
+    #[test]
+    fn civil_dates_round_trip() {
+        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2026, 11, 10), (2026, 12, 31)] {
+            assert_eq!(year_month(days_from_civil(y, m, d)), (y, m));
+        }
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+    }
+
+    /// The sections follow time: every later day is in the same section or a later one.
+    #[test]
+    fn date_sections_run_in_time_order() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2026-11-10 is a Tuesday.
+        let days = DayBuckets {
+            day: days_from_civil(2026, 11, 10),
+            offset: 8 * 3600,
+        };
+        let day = |n: i64| {
+            let secs = n * 86_400 - days.offset + 12 * 3600;
+            Some(UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap()))
+        };
+        let mut last = DateSection::Unknown;
+        for n in days.day - 800..=days.day + 2 {
+            let section = days.section(day(n));
+            assert!(section >= last, "day {n}: {section:?} after {last:?}");
+            last = section;
+        }
+        assert_eq!(days.section(day(days.day)), DateSection::Today);
+        assert_eq!(days.section(day(days.day - 3)), DateSection::LastWeek);
+        assert_eq!(days.section(None), DateSection::Unknown);
+    }
+
+    /// #286: grouped by a date, folders go into their date's section, and the folder block
+    /// applies within it: after the files newest first, before them oldest first.
+    #[test]
+    fn date_sections_take_the_folders_in() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let days = DayBuckets {
+            day: days_from_civil(2026, 11, 10),
+            offset: 0,
+        };
+        let at = |name: &str, kind, ago: u64| {
+            let today = u64::try_from(days.day).unwrap() * 86_400 + 12 * 3600;
+            Entry::new(
+                name,
+                kind,
+                1,
+                Some(UNIX_EPOCH + Duration::from_secs(today - ago * 86_400)),
+                0,
+            )
+        };
+        let entries = vec![
+            at("old-dir", EntryKind::Dir, 400),
+            at("new.txt", EntryKind::File, 0),
+            at("old.txt", EntryKind::File, 401),
+            at("new-dir", EntryKind::Dir, 0),
+        ];
+        let order = |spec: SortSpec| {
+            let mut v = entries.clone();
+            spec.sort(&mut v);
+            v.iter().map(|e| e.name.to_string()).collect::<Vec<_>>()
+        };
+        let newest = SortSpec::by(SortColumn::Modified, false, false);
+        let grouped = SortSpec {
+            sections: Some(days),
+            ..newest
+        };
+        assert_eq!(order(newest), ["new.txt", "old.txt", "new-dir", "old-dir"]);
+        assert_eq!(order(grouped), ["new.txt", "new-dir", "old.txt", "old-dir"]);
+        let oldest = SortSpec {
+            ascending: true,
+            ..grouped
+        };
+        assert_eq!(order(oldest), ["old-dir", "old.txt", "new-dir", "new.txt"]);
+        // The merge in `sort` gives what the comparison does, for many items in both directions.
+        let many: Vec<Entry> = (0..500u64)
+            .map(|i| {
+                let kind = if i % 3 == 0 {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                };
+                at(&format!("n{}", i % 17), kind, i * 7 % 900)
+            })
+            .collect();
+        for ascending in [true, false] {
+            let spec = SortSpec {
+                ascending,
+                ..grouped
+            };
+            let mut merged = many.clone();
+            spec.sort(&mut merged);
+            let mut compared = many.clone();
+            compared.sort_by(|a, b| spec.compare(a, b));
+            let names = |v: &[Entry]| {
+                v.iter()
+                    .map(|e| (e.name.to_string(), e.modified))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(names(&merged), names(&compared));
+        }
+        // By name, or with folders and files together, the sections change nothing.
+        for spec in [
+            SortSpec {
+                sections: Some(days),
+                ..SortSpec::default()
+            },
+            SortSpec {
+                mixed: true,
+                ..grouped
+            },
+        ] {
+            assert!(spec.date_sections().is_none());
+        }
     }
 
     #[test]

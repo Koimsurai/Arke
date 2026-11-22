@@ -147,5 +147,8 @@ pub use model::{Delta, DeltaOutcome, DirModel};
 pub use search::{SearchHit, SearchResults, SearchService};
 pub use selection::Selection;
 pub use service::{DirService, Gen, IoEvent, ListOptions, ListTiming};
-pub use sort::{SearchColumn, SearchSort, SortColumn, SortKey, SortSpec, sort_search_hits};
+pub use sort::{
+    DateSection, DayBuckets, SearchColumn, SearchSort, SortColumn, SortKey, SortSpec,
+    sort_search_hits,
+};
 pub use typeahead::TypeAhead;

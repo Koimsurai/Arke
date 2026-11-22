@@ -95,6 +95,7 @@ impl Explorer {
             // Where folders go is one setting for every folder
             mixed: self.seen_defaults.0.mixed,
             then: view.then,
+            sections: None,
         }
     }
 

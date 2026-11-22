@@ -115,10 +115,7 @@ fn scroll_to(
 
 /// Scrollbar overlaid on the right of a list. Place it in a `relative()` container after the list;
 /// its edge can be moved (`right`) to sit in a gutter beside the rows.
-pub(crate) fn scrollbar(
-    handle: ScrollHandle,
-    drag: ScrollbarDrag,
-) -> gpui::Canvas<Bounds<Pixels>> {
+pub(crate) fn scrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> gpui::Canvas<Bounds<Pixels>> {
     bar(handle, drag, Axis::Vertical)
         .absolute()
         .top_0()

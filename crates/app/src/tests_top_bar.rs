@@ -412,7 +412,10 @@ fn the_sort_button_sits_before_the_view_switcher(cx: &mut TestAppContext) {
     let sort = bounds(cx, "sort-options");
     let options = bounds(cx, "view-options");
     assert!(sort.top() >= row.top() && sort.bottom() <= row.bottom());
-    assert!(sort.right() <= options.left(), "{sort:?} before {options:?}");
+    assert!(
+        sort.right() <= options.left(),
+        "{sort:?} before {options:?}"
+    );
 
     let right = split(&ws, &left, cx);
     let sort = bounds(cx, "sort-options");

@@ -59,8 +59,7 @@ fn submenu_checks(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Vec<St
     view.update(cx, |v, _| {
         v.context_menu
             .as_ref()
-            .map(|m| m.checked_labels_at(1))
-            .unwrap_or_default()
+            .map_or_default(|m| m.checked_labels_at(1))
     })
 }
 

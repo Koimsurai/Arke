@@ -1007,8 +1007,8 @@ mod tests {
         }
     }
 
-    /// #286: sorted by a date, folders are not kept apart and land in the section of their date;
-    /// by name they keep their own section.
+    /// #276: with folders and files together, a date sort puts folders in the section of their
+    /// date; kept apart they have a section of their own.
     #[test]
     fn folders_go_by_date_when_not_kept_apart() {
         rust_i18n::set_locale("en");
@@ -1016,7 +1016,7 @@ mod tests {
             day: days_from_civil(2026, 11, 10),
             offset: 0,
         };
-        let spec = arke_core::SortSpec::by(SortColumn::Modified, false, false);
+        let spec = arke_core::SortSpec::by(SortColumn::Modified, false, true);
         let with_date = |name: &str, kind, ago| Entry::new(name, kind, 1, Some(at(today, ago)), 0);
         let entries = vec![
             with_date("new.txt", EntryKind::File, 0),
@@ -1046,7 +1046,7 @@ mod tests {
             labels(spec.folders_apart()),
             [(t!("group.today").into_owned(), 2), ("2025".into(), 2)]
         );
-        // Forced apart (Name sort): the folders form sections of their own.
+        // Kept apart: the folders form sections of their own.
         assert_eq!(labels(true).len(), 4);
     }
 

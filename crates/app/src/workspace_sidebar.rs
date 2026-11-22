@@ -4716,8 +4716,10 @@ impl Workspace {
             .sidebar_menu
             .as_ref()
             .and_then(|m| m.items.iter().find(|(l, _)| l.as_ref() == label))
-            .map(|(_, action)| action.clone())
-            .unwrap_or_else(|| panic!("no {label:?} in the open menu"));
+            .map_or_else(
+                || panic!("no {label:?} in the open menu"),
+                |(_, action)| action.clone(),
+            );
         self.run_sidebar_action(action, window, cx);
     }
 

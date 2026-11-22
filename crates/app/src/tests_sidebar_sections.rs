@@ -368,7 +368,9 @@ fn checks(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Vec<bool
 }
 
 fn pick(ws: &Entity<Workspace>, cx: &mut VisualTestContext, label: &str) {
-    ws.update_in(cx, |ws, window, cx| ws.run_open_menu_for_test(label, window, cx));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.run_open_menu_for_test(label, window, cx);
+    });
     refresh(cx);
 }
 
@@ -391,7 +393,10 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
     pick(&ws, cx, &hide);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::ThisPc]);
-    assert!(!collapsed(cx, SidebarSection::ThisPc), "hidden, not collapsed");
+    assert!(
+        !collapsed(cx, SidebarSection::ThisPc),
+        "hidden, not collapsed"
+    );
     assert!(!drawn(cx, "this-pc-header"), "gone, heading and all");
     assert!(drawn(cx, "network-header"), "Network stays");
 
@@ -417,10 +422,7 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     );
     assert_eq!(checks(&ws, cx), Some(vec![true, false, false]));
     pick(&ws, cx, &this_pc);
-    assert_eq!(
-        current(cx).hidden_sections,
-        vec![SidebarSection::Favorites]
-    );
+    assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Favorites]);
     assert!(drawn(cx, "this-pc-header"), "back");
 
     let at = bounds(cx, "tab-list-end").center();
@@ -428,7 +430,10 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     assert_eq!(checks(&ws, cx), Some(vec![true, false, true]));
     pick(&ws, cx, &favorites);
     assert!(current(cx).hidden_sections.is_empty());
-    assert!(drawn(cx, "pin-list-label") && drawn(cx, "pin-row-0"), "listed again");
+    assert!(
+        drawn(cx, "pin-list-label") && drawn(cx, "pin-row-0"),
+        "listed again"
+    );
 }
 
 /// Home hides from its row's menu, its tiles with it; the list under Favorites stays. A right
@@ -471,7 +476,10 @@ fn the_recycle_bin_comes_back_from_the_sidebars_menu(cx: &mut TestAppContext) {
     let rows = menu(&ws, cx).expect("a menu");
     assert!(!rows.contains(&add), "it is there already: {rows:?}");
 
-    ws.update_in(cx, |ws, window, cx| ws.unpin_recycle_for_test(window, cx));
+    ws.update_in(
+        cx,
+        super::super::workspace::Workspace::unpin_recycle_for_test,
+    );
     change(cx, |st| st.set_hidden(SidebarSection::Favorites, true));
     refresh(cx);
     let at = bounds(cx, "tab-list-end").center();

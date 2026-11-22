@@ -6756,6 +6756,14 @@ sidebar.favorites:
   es: Favoritos
   pt-BR: Favoritos
   ja: お気に入り
+sidebar.hide_section:
+  en: Hide
+  zh-TW: 隱藏
+  zh-CN: 隐藏
+  de: Ausblenden
+  es: Ocultar
+  pt-BR: Ocultar
+  ja: 非表示
 sidebar.pinned_hint:
   en: "Right-click a folder › Add to favorites"
   zh-TW: 在資料夾上按右鍵 →「加入最愛」
@@ -7961,6 +7969,14 @@ sidebar.add_favorite:
   es: Agregar a favoritos
   pt-BR: Adicionar aos favoritos
   ja: お気に入りに追加
+sidebar.add_recycle:
+  en: Add Recycle Bin to favorites
+  zh-TW: 將資源回收筒加入最愛
+  zh-CN: 将回收站添加到收藏夹
+  de: Papierkorb zu Favoriten hinzufügen
+  es: Agregar Papelera de reciclaje a favoritos
+  pt-BR: Adicionar a Lixeira aos favoritos
+  ja: ごみ箱をお気に入りに追加
 sidebar.remove_favorite:
   en: Remove from favorites
   zh-TW: 從最愛移除

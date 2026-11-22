@@ -29,6 +29,10 @@ pub(super) struct SidebarUi {
     /// sidebar and in the column of icons.
     pub(super) places_scroll: gpui::ScrollHandle,
     pub(super) tabs_scroll: gpui::ScrollHandle,
+    /// The vertical tab list's scrollbar (#323), and the tab last scrolled into view there (the
+    /// active one, once each time it changes or the list changes height).
+    pub(super) tabs_bar: crate::scrollbar::ScrollbarDrag,
+    pub(super) tabs_revealed: std::cell::Cell<Option<(usize, gpui::Pixels)>>,
     rail_places_scroll: gpui::ScrollHandle,
     rail_tabs_scroll: gpui::ScrollHandle,
     /// Tabs on top: the strip, which scrolls sideways when the tabs don't fit, and the tab last
@@ -863,7 +867,7 @@ impl Workspace {
             .border_color(theme::line())
             .shadow(theme::elev_float())
             .child(self.render_brand_row(cx))
-            .child(self.render_home_button(cx))
+            .children(self.render_home_button(cx))
             .child(self.render_sidebar(cx))
             .child(self.render_sidebar_footer(cx))
     }

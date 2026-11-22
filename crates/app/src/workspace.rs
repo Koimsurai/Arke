@@ -3070,7 +3070,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .child(self.render_brand_row(cx))
-            .child(self.render_home_button(cx))
+            .children(self.render_home_button(cx))
             .child(self.render_sidebar(cx))
             .child(self.render_sidebar_footer(cx));
         self.sidebar_ui.expand_cue.slide(

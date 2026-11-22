@@ -49,11 +49,12 @@ pub(crate) enum PinSlot {
     List(usize),
 }
 
-/// A sidebar section that collapses to its heading. Home and its tiles never collapse, nor do the
-/// tabs.
+/// A sidebar section. Favorites, This PC and Network collapse to their heading; Home (its row and
+/// tiles) never collapses, nor do the tabs. Home, Favorites and This PC can be hidden (#323).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SidebarSection {
+    Home,
     Favorites,
     ThisPc,
     Network,
@@ -587,6 +588,10 @@ pub(crate) struct Settings {
     /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
     #[serde(deserialize_with = "known_sections")]
     pub(crate) collapsed_sections: Vec<SidebarSection>,
+    /// Sidebar sections hidden from their heading's menu, shown again from the menu of the
+    /// sidebar's empty space (#323).
+    #[serde(deserialize_with = "known_sections")]
+    pub(crate) hidden_sections: Vec<SidebarSection>,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -794,6 +799,7 @@ impl Default for Settings {
             sidebar_peek: false,
             sidebar_follow: true,
             collapsed_sections: Vec::new(),
+            hidden_sections: Vec::new(),
             font: String::new(),
             background_image: None,
             background_opacity: 20,
@@ -1471,6 +1477,23 @@ impl Settings {
         }
     }
 
+    /// Whether a sidebar section is hidden (#323).
+    pub(crate) fn is_hidden(&self, section: SidebarSection) -> bool {
+        self.hidden_sections.contains(&section)
+    }
+
+    /// Hides a sidebar section, or shows it again.
+    pub(crate) fn set_hidden(&mut self, section: SidebarSection, hidden: bool) {
+        let at = self.hidden_sections.iter().position(|s| *s == section);
+        match (hidden, at) {
+            (true, None) => self.hidden_sections.push(section),
+            (false, Some(ix)) => {
+                self.hidden_sections.remove(ix);
+            }
+            _ => {}
+        }
+    }
+
     /// The windows of the last session that have something to restore, the one used last first;
     /// at most [`RESTORED_WINDOWS_MAX`].
     pub(crate) fn last_windows(&self) -> Vec<SessionWindow> {
@@ -1791,6 +1814,35 @@ mod tests {
         assert!(!s.is_collapsed(SidebarSection::ThisPc));
         s.toggle_collapsed(SidebarSection::Favorites);
         assert!(s.collapsed_sections.is_empty());
+    }
+
+    /// Hidden sidebar sections are kept, once each; a name from a later version is skipped.
+    #[test]
+    fn hidden_sections_are_kept() {
+        let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
+        assert!(Settings::default().hidden_sections.is_empty());
+        let later = read(br#"{"hidden_sections": ["home", "someday", "this_pc", "home"]}"#);
+        assert_eq!(
+            later.hidden_sections,
+            vec![SidebarSection::Home, SidebarSection::ThisPc]
+        );
+        let json = serde_json::to_string(&later).unwrap();
+        assert!(
+            json.contains(r#""hidden_sections":["home","this_pc"]"#),
+            "{json}"
+        );
+
+        let mut s = Settings::default();
+        s.set_hidden(SidebarSection::Favorites, true);
+        s.set_hidden(SidebarSection::Favorites, true);
+        assert_eq!(s.hidden_sections, vec![SidebarSection::Favorites]);
+        assert!(s.is_hidden(SidebarSection::Favorites));
+        assert!(
+            !s.is_collapsed(SidebarSection::Favorites),
+            "hidden isn't collapsed"
+        );
+        s.set_hidden(SidebarSection::Favorites, false);
+        assert!(s.hidden_sections.is_empty());
     }
 
     /// A file with both the old switch and single window mode (an older Arke ran after 0.7 and

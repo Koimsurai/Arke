@@ -1,7 +1,8 @@
 //! GPUI tests for the sidebar's sections (`workspace_sidebar.rs`): Favorites, This PC and Network
 //! each collapse to their heading and expand again with a click (remembered in the
 //! settings), a drop on a collapsed heading still lands, and a shadow under the Home row shows
-//! while the places are scrolled.
+//! while the places are scrolled. Home, Favorites and This PC hide and come back from the
+//! sidebar's menus, and the vertical tabs get a scrollbar once they don't fit (#323).
 
 use gpui::{Bounds, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, point, px};
 
@@ -285,4 +286,204 @@ fn the_home_row_casts_a_shadow_only_when_scrolled(cx: &mut TestAppContext) {
     ws.update(cx, |ws, cx| ws.scroll_places_for_test(px(0.), cx));
     refresh(cx);
     assert!(!drawn(cx, "sidebar-scroll-shadow"), "back at the top");
+}
+
+/// Opens a tab for each of `p00` on, `count` of them, the last one active.
+fn open_tabs(ws: &Entity<Workspace>, cx: &mut VisualTestContext, count: usize) {
+    for i in 0..count {
+        let path = format!(r"C:\w\p{i:02}");
+        ws.update_in(cx, |ws, window, cx| {
+            let at = ws.tab_views().count();
+            ws.open_tab(PathBuf::from(&path), at, true, window, cx);
+        });
+        let view = ws.update(cx, |ws, _| ws.active_view().clone());
+        wait_until(cx, &view, "load", loaded(&path));
+    }
+    refresh(cx);
+}
+
+/// Tab `ix` is drawn with its whole height inside the vertical tab list.
+fn tab_shown(cx: &mut VisualTestContext, ix: usize) -> bool {
+    let list = bounds(cx, "sidebar-tabs-frame");
+    let id: &'static str = Box::leak(format!("tab-{ix}").into_boxed_str());
+    cx.debug_bounds(id)
+        .is_some_and(|b| b.top() >= list.top() - px(1.) && b.bottom() <= list.bottom() + px(1.))
+}
+
+/// A spot on the tab list's scrollbar, near the bottom: right of the tabs, short of the sidebar's
+/// edge.
+fn tab_track(cx: &mut VisualTestContext) -> gpui::Point<Pixels> {
+    let list = bounds(cx, "sidebar-tabs-frame");
+    point(list.right() + px(2.), list.bottom() - px(8.))
+}
+
+fn tabs_scroll(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (Pixels, Pixels) {
+    ws.update(cx, |ws, _| ws.tabs_scroll_for_test())
+}
+
+/// The vertical tabs get the file list's scrollbar once they don't fit, and only then: a press on
+/// its track below the thumb pages down (#323). The active tab is scrolled into view each time it
+/// changes.
+#[gpui::test]
+fn the_tab_list_has_a_scrollbar_once_full(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    // One tab: nothing to scroll, and nothing there takes the press.
+    let at = tab_track(cx);
+    click(cx, at);
+    assert_eq!(tabs_scroll(&ws, cx), (px(0.), px(0.)));
+
+    open_tabs(&ws, cx, 30);
+    let (overflow, offset) = tabs_scroll(&ws, cx);
+    assert!(overflow > px(0.), "the tabs don't fit");
+    assert!(offset < px(0.), "scrolled down");
+    assert!(tab_shown(cx, 30), "to the active tab, the last one");
+
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    refresh(cx);
+    assert!(tab_shown(cx, 0), "back up to the first once it is active");
+    assert!(tabs_scroll(&ws, cx).1 > px(-0.5));
+
+    let at = tab_track(cx);
+    click(cx, at);
+    assert!(tabs_scroll(&ws, cx).1 < px(-40.), "paged down");
+    assert!(!tab_shown(cx, 0));
+    // The active tab didn't change, so it isn't scrolled back to.
+    refresh(cx);
+    assert!(!tab_shown(cx, 0), "stays where it was paged to");
+}
+
+fn right_click(cx: &mut VisualTestContext, at: gpui::Point<Pixels>) {
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// The open sidebar menu's rows, as drawn.
+fn menu(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Vec<String>> {
+    ws.update(cx, |ws, cx| ws.open_menu_drawn_for_test(cx))
+}
+
+fn checks(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Vec<bool>> {
+    ws.update(cx, |ws, _| ws.open_menu_checks_for_test())
+}
+
+fn pick(ws: &Entity<Workspace>, cx: &mut VisualTestContext, label: &str) {
+    ws.update_in(cx, |ws, window, cx| ws.run_open_menu_for_test(label, window, cx));
+    refresh(cx);
+}
+
+/// Favorites and This PC hide from their heading's menu, and a right click on the sidebar's empty
+/// space (below the tabs) shows them again, checked while shown; kept in the settings (#323).
+#[gpui::test]
+fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let hide = t!("sidebar.hide_section").into_owned();
+    let this_pc = t!("sidebar.this_pc").into_owned();
+    let favorites = t!("sidebar.favorites").into_owned();
+
+    let at = bounds(cx, "this-pc-header").center();
+    right_click(cx, at);
+    assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
+    pick(&ws, cx, &hide);
+    assert_eq!(current(cx).hidden_sections, vec![SidebarSection::ThisPc]);
+    assert!(!collapsed(cx, SidebarSection::ThisPc), "hidden, not collapsed");
+    assert!(!drawn(cx, "this-pc-header"), "gone, heading and all");
+    assert!(drawn(cx, "network-header"), "Network stays");
+
+    let at = bounds(cx, "pin-list-label").center();
+    right_click(cx, at);
+    pick(&ws, cx, &hide);
+    assert!(!drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"));
+    assert!(drawn(cx, "tile-slot-0"), "the tiles are Home's");
+    assert_eq!(
+        current(cx).hidden_sections,
+        vec![SidebarSection::ThisPc, SidebarSection::Favorites]
+    );
+
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    assert_eq!(
+        menu(&ws, cx),
+        Some(vec![
+            t!("home.title").into_owned(),
+            favorites.clone(),
+            this_pc.clone()
+        ])
+    );
+    assert_eq!(checks(&ws, cx), Some(vec![true, false, false]));
+    pick(&ws, cx, &this_pc);
+    assert_eq!(
+        current(cx).hidden_sections,
+        vec![SidebarSection::Favorites]
+    );
+    assert!(drawn(cx, "this-pc-header"), "back");
+
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    assert_eq!(checks(&ws, cx), Some(vec![true, false, true]));
+    pick(&ws, cx, &favorites);
+    assert!(current(cx).hidden_sections.is_empty());
+    assert!(drawn(cx, "pin-list-label") && drawn(cx, "pin-row-0"), "listed again");
+}
+
+/// Home hides from its row's menu, its tiles with it; the list under Favorites stays. A right
+/// click on a heading that can't be hidden (Network) is the sidebar's: it brings Home back.
+#[gpui::test]
+fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    let hide = t!("sidebar.hide_section").into_owned();
+    let home = t!("home.title").into_owned();
+
+    let at = bounds(cx, "open-home").center();
+    right_click(cx, at);
+    assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
+    pick(&ws, cx, &hide);
+    assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Home]);
+    assert!(!drawn(cx, "open-home") && !drawn(cx, "tile-slot-0"));
+    assert!(drawn(cx, "pin-row-0"), "the list stays");
+
+    let at = bounds(cx, "network-header").center();
+    right_click(cx, at);
+    assert_eq!(checks(&ws, cx), Some(vec![false, true, true]));
+    pick(&ws, cx, &home);
+    assert!(current(cx).hidden_sections.is_empty());
+    assert!(drawn(cx, "open-home") && drawn(cx, "tile-slot-0"));
+}
+
+/// The Recycle Bin, once removed from the favorites, comes back from the menu of the sidebar's
+/// empty space, the favorites with it when they were hidden (#308).
+#[gpui::test]
+fn the_recycle_bin_comes_back_from_the_sidebars_menu(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let add = t!("sidebar.add_recycle").into_owned();
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    let rows = menu(&ws, cx).expect("a menu");
+    assert!(!rows.contains(&add), "it is there already: {rows:?}");
+
+    ws.update_in(cx, |ws, window, cx| ws.unpin_recycle_for_test(window, cx));
+    change(cx, |st| st.set_hidden(SidebarSection::Favorites, true));
+    refresh(cx);
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    let rows = menu(&ws, cx).expect("a menu");
+    assert_eq!(rows.last(), Some(&add));
+    assert_eq!(rows[rows.len() - 2], "-", "apart from the sections");
+    pick(&ws, cx, &add);
+    let settings = current(cx);
+    assert!(settings.recycle_pinned);
+    assert!(
+        !settings.is_hidden(SidebarSection::Favorites),
+        "the favorites show, with it"
+    );
 }

@@ -1618,6 +1618,8 @@ fn sidebar_with_tabs(
     wait_until(cx, &view, "load", loaded(&paths[0]));
     let rest: Vec<&str> = paths[1..].iter().map(String::as_str).collect();
     open_tabs(&ws, cx, &rest);
+    // The first tab active, so the list starts at the top (the active tab is scrolled to).
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
     cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(height)));
     for _ in 0..3 {
         cx.update(|window, _| window.refresh());

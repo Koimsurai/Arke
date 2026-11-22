@@ -2932,6 +2932,14 @@ settings.single_click_desc:
   es: Ctrl+clic o Mayús+clic para seleccionar
   pt-BR: Ctrl+clique ou Shift+clique para selecionar
   ja: Ctrl+クリックまたは Shift+クリックで選択
+settings.point_to_select:
+  en: Select an item when the pointer rests on it
+  zh-TW: 滑鼠停在項目上時選取
+  zh-CN: 鼠标停在项目上时选择
+  de: Element auswählen, wenn der Zeiger darauf verweilt
+  es: Seleccionar un elemento al dejar el puntero sobre él
+  pt-BR: Selecionar um item ao pausar o ponteiro sobre ele
+  ja: ポインターを置いた項目を選択する
 settings.preview:
   en: Preview pane
   zh-TW: 預覽窗格

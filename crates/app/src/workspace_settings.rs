@@ -1259,14 +1259,7 @@ impl Workspace {
                     st.show_checkboxes = !st.show_checkboxes;
                 }),
             ),
-            card(
-                Icon::ArrowRight,
-                t!("settings.single_click"),
-                Some(t!("settings.single_click_desc")),
-                switch("single-click", s.single_click, |st| {
-                    st.single_click = !st.single_click;
-                }),
-            ),
+            single_click_card(s),
             card(
                 Icon::FileExt,
                 t!("settings.show_extensions"),
@@ -1755,6 +1748,30 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
             cx.listener(|_, _: &ClickEvent, _, cx| Workspace::clear_thumbnail_cache(cx)),
         ))
         .child(toggle)
+        .into_any_element()
+}
+
+/// Single-click opening, and under it while on, whether resting the pointer selects (#46).
+fn single_click_card(s: &Settings) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .child(card(
+            Icon::ArrowRight,
+            t!("settings.single_click"),
+            Some(t!("settings.single_click_desc")),
+            switch("single-click", s.single_click, |st| {
+                st.single_click = !st.single_click;
+            }),
+        ))
+        .when(s.single_click, |d| {
+            d.child(sub_row(
+                t!("settings.point_to_select"),
+                switch("point-to-select", s.point_to_select, |st| {
+                    st.point_to_select = !st.point_to_select;
+                }),
+            ))
+        })
         .into_any_element()
 }
 

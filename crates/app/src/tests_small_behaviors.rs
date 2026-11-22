@@ -13,6 +13,15 @@ fn single_click(on: bool) {
     });
 }
 
+/// Single-click mode with pointing not selecting (#46: Windows 11's File Explorer).
+fn single_click_without_pointing() {
+    crate::prefs::apply(&Settings {
+        single_click: true,
+        point_to_select: false,
+        ..Settings::default()
+    });
+}
+
 /// Closing the only tab keeps the window and shows Home when the setting says so; the default
 /// still closes the window.
 #[gpui::test]
@@ -89,6 +98,12 @@ fn resting_on_an_item_selects_it_in_single_click_mode(cx: &mut TestAppContext) {
 
     // A move with the button down (a drag or marquee) doesn't select either.
     cx.simulate_mouse_move(over(0.), Some(MouseButton::Left), Modifiers::none());
+    rest(cx);
+    assert_eq!(selected(cx), ["c.txt"]);
+
+    // Pointing set not to select (#46): resting only hovers.
+    single_click_without_pointing();
+    cx.simulate_mouse_move(over(0.), None, Modifiers::none());
     rest(cx);
     assert_eq!(selected(cx), ["c.txt"]);
     single_click(false);

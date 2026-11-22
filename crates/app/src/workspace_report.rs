@@ -110,8 +110,8 @@ fn settings_summary(s: &Settings) -> String {
         "- theme {:?}, material {:?}, density {:?}, tabs {:?}\n\
          - view {:?}, sort {:?}{}, folders {:?}, groups {}, per-folder views {}\n\
          - hidden {}, protected {}, extensions {}, thumbnails {} (network {}), folder sizes {}\n\
-         - single click {}, check boxes {}, preview {}, search this PC {}, keep running {}\n\
-         - start {:?}\n",
+         - single click {} (point to select {}), check boxes {}, preview {}, search this PC {}\n\
+         - keep running {}, start {:?}\n",
         s.theme,
         s.material,
         s.density,
@@ -133,6 +133,7 @@ fn settings_summary(s: &Settings) -> String {
         s.network_thumbnails,
         s.folder_sizes,
         s.single_click,
+        s.point_to_select,
         s.show_checkboxes,
         s.preview_pane,
         s.global_search,
@@ -636,7 +637,7 @@ mod tests {
         assert_eq!(encode("a b/中"), "a%20b%2F%E4%B8%AD");
         let report = compose(&crate::settings::Settings::default(), false, false);
         assert!(
-            report.contains("- start Home\n"),
+            report.contains(", start Home\n"),
             "the start location (#116)"
         );
         assert!(

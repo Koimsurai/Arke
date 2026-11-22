@@ -666,6 +666,10 @@ pub(crate) struct Settings {
     pub(crate) show_protected: bool,
     /// Open with a single click instead of double.
     pub(crate) single_click: bool,
+    /// With [`single_click`](Self::single_click): resting the pointer on an item selects it, as
+    /// Windows' "Single-click to open an item (point to select)" (#46). Off: it only highlights,
+    /// as File Explorer on Windows 11 does.
+    pub(crate) point_to_select: bool,
     /// Selection checkboxes to the left of items.
     pub(crate) show_checkboxes: bool,
     /// Group rows in details view by the sort column.
@@ -838,6 +842,7 @@ impl Default for Settings {
             hide_dotfiles: false,
             show_protected: false,
             single_click: false,
+            point_to_select: true,
             full_dates: false,
             show_modified: true,
             show_created: false,

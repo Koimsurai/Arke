@@ -3528,7 +3528,7 @@ impl Explorer {
 
     /// Single-click mode (point to select, as in File Explorer): the pointer moved over item `ix`.
     /// Starts the hover timer unless the item already waits for it or the move is a drag, a
-    /// press or a modifier chord (#46).
+    /// press, a modifier chord, or a finger or pen (#46).
     pub(super) fn on_row_pointer_move(
         &mut self,
         ix: usize,
@@ -3537,7 +3537,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         let m = event.modifiers;
-        if !crate::prefs::single_click()
+        if !crate::prefs::point_to_select()
             || event.pressed_button.is_some()
             || m.control
             || m.shift
@@ -3547,6 +3547,7 @@ impl Explorer {
             || self.renaming.is_some()
             || self.marquee.is_some()
             || cx.has_active_drag()
+            || crate::win::pointer_is_touch_or_pen()
         {
             // Not a resting pointer: whatever was pending is off.
             self.hover_pick = None;
@@ -3591,7 +3592,7 @@ impl Explorer {
     /// and list can change while the timer runs.
     fn pick_hovered(&mut self, ix: usize, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let m = window.modifiers();
-        if !crate::prefs::single_click()
+        if !crate::prefs::point_to_select()
             || m.control
             || m.shift
             || m.alt

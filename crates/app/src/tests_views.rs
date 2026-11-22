@@ -1067,3 +1067,70 @@ fn the_group_chevron_collapses_without_selecting(cx: &mut TestAppContext) {
     cx.simulate_click(chevron, Modifiers::none());
     assert_eq!(rows(cx), Some(6));
 }
+
+/// Search results (here the subfolder search; the whole-computer one shares the view) sort by a
+/// clicked header without searching again, and a third click goes back to relevance (#55).
+#[gpui::test]
+fn search_results_sort_by_header_clicks(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\sr",
+        vec![dir("docs"), dir("src"), file("report_mid.txt", 20)],
+    );
+    fs.insert_dir(r"C:\sr\docs", vec![file("report_big.txt", 900)]);
+    fs.insert_dir(r"C:\sr\src", vec![file("report_small.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\sr");
+    wait_until(cx, &view, "load", loaded(r"C:\sr"));
+    cx.dispatch_action(FocusSearch);
+    cx.simulate_input("report");
+    wait_until(cx, &view, "results", |v| final_hits(v).len() == 3);
+    let relevance = view.update(cx, |v, _| final_hits(v));
+    let hits = |cx: &mut gpui::VisualTestContext| view.update(cx, |v, _| final_hits(v));
+
+    // Size starts largest first, then flips.
+    click_drawn(cx, "search-header-size");
+    assert_eq!(
+        hits(cx),
+        [
+            r"docs\report_big.txt",
+            "report_mid.txt",
+            r"src\report_small.txt"
+        ]
+    );
+    click_drawn(cx, "search-header-size");
+    assert_eq!(
+        hits(cx),
+        [
+            r"src\report_small.txt",
+            "report_mid.txt",
+            r"docs\report_big.txt"
+        ]
+    );
+    // A third click is back to the order the search gave.
+    click_drawn(cx, "search-header-size");
+    assert_eq!(hits(cx), relevance);
+
+    // Name: report_big, report_mid, report_small.
+    click_drawn(cx, "search-header-name");
+    assert_eq!(
+        hits(cx),
+        [
+            r"docs\report_big.txt",
+            "report_mid.txt",
+            r"src\report_small.txt"
+        ]
+    );
+    // Location: the folder searched itself first, then docs, then src.
+    click_drawn(cx, "search-header-location");
+    assert_eq!(
+        hits(cx),
+        [
+            "report_mid.txt",
+            r"docs\report_big.txt",
+            r"src\report_small.txt"
+        ]
+    );
+    // The sort ends with the search: a new one starts in relevance order again.
+    cx.simulate_keystrokes("escape");
+    view.update(cx, |v, _| assert!(v.search_sort.is_none()));
+}

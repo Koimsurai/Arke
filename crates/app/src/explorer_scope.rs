@@ -586,6 +586,7 @@ impl Explorer {
                     return;
                 }
                 let results = this.without_gone(to_results(hits, this.search.current_gen()));
+                let results = this.arrange_results(results);
                 let len = results.hits.len();
                 this.search_cursor = match this.search_cursor {
                     _ if len == 0 => None,

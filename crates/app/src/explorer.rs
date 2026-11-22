@@ -741,6 +741,12 @@ pub(crate) struct Explorer {
     /// instead of the folder shown. Cleared when search mode ends.
     search_in: Option<PathBuf>,
     pub(crate) search_results: Option<SearchResults>,
+    /// The order a header click chose for the results (#55); `None` keeps the relevance order.
+    /// Ends with search mode.
+    pub(crate) search_sort: Option<arke_core::SearchSort>,
+    /// The hits of `search_results` in relevance order, kept while `search_sort` reorders them
+    /// (a click back to relevance doesn't search again).
+    search_relevance: Option<Arc<Vec<Arc<arke_core::SearchHit>>>>,
     /// Deleted or moved away since the walk started: the walk doesn't watch for changes, so
     /// hits at or below these are left out of every result until the next fresh walk.
     search_gone: Vec<PathBuf>,
@@ -1099,6 +1105,8 @@ impl Explorer {
             search_root: None,
             search_in: None,
             search_results: None,
+            search_sort: None,
+            search_relevance: None,
             search_gone: Vec::new(),
             search_cursor: None,
             search_global: false,
@@ -2619,6 +2627,8 @@ impl Explorer {
             self.search_root = None;
             self.search_in = None;
             self.search_results = None;
+            self.search_sort = None;
+            self.search_relevance = None;
             self.search_gone.clear();
             self.search_cursor = None;
             // Back to "this folder": the next search starts with subfolders.
@@ -2675,6 +2685,7 @@ impl Explorer {
             return;
         }
         let results = self.without_gone(results);
+        let results = self.arrange_results(results);
         let len = results.hits.len();
         self.search_cursor = match self.search_cursor {
             _ if len == 0 => None,
@@ -2685,17 +2696,70 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Fresh results in the order the header chose (they arrive in relevance order). Sorting a
+    /// few thousand hits takes about a millisecond, and only happens once a header was clicked.
+    pub(super) fn arrange_results(&mut self, mut results: SearchResults) -> SearchResults {
+        self.search_relevance = None;
+        if let Some(sort) = self.search_sort {
+            self.search_relevance = Some(Arc::clone(&results.hits));
+            results.hits = Arc::new(arke_core::sort_search_hits(&results.hits, sort));
+        }
+        results
+    }
+
+    /// A search results header was clicked: sort by that column, flip it, or (a third click) go
+    /// back to relevance. The results on screen are reordered without searching again, and the
+    /// cursor stays on its hit.
+    pub(super) fn click_search_header(
+        &mut self,
+        column: arke_core::SearchColumn,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_sort = arke_core::SearchSort::after_click(self.search_sort, column);
+        let Some(results) = self.search_results.as_mut() else {
+            cx.notify();
+            return;
+        };
+        let at = self
+            .search_cursor
+            .and_then(|ix| results.hits.get(ix).cloned());
+        let relevance = self
+            .search_relevance
+            .take()
+            .unwrap_or_else(|| Arc::clone(&results.hits));
+        match self.search_sort {
+            Some(sort) => {
+                results.hits = Arc::new(arke_core::sort_search_hits(&relevance, sort));
+                self.search_relevance = Some(relevance);
+            }
+            None => results.hits = relevance,
+        }
+        if let Some(hit) = at
+            && let Some(ix) = results.hits.iter().position(|h| Arc::ptr_eq(h, &hit))
+        {
+            self.search_cursor = Some(ix);
+            self.search_scroll
+                .scroll_to_item(ix, ScrollStrategy::Nearest);
+        } else {
+            self.search_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        }
+        cx.notify();
+    }
+
+    /// Whether the hit (below `root`) was deleted or moved away.
+    fn hit_gone(&self, root: &Path, hit: &arke_core::SearchHit) -> bool {
+        let path = root.join(&*hit.rel);
+        self.search_gone
+            .iter()
+            .any(|g| arke_core::path::is_same_or_inside(&path, g))
+    }
+
     /// `results` without hits that were deleted or moved away (see `search_gone`).
     pub(crate) fn without_gone(&self, mut results: SearchResults) -> SearchResults {
         if self.search_gone.is_empty() {
             return results;
         }
-        let gone = |hit: &arke_core::SearchHit| {
-            let path = results.root.join(&*hit.rel);
-            self.search_gone
-                .iter()
-                .any(|g| arke_core::path::is_same_or_inside(&path, g))
-        };
+        let gone = |hit: &arke_core::SearchHit| self.hit_gone(&results.root, hit);
         if results.hits.iter().any(|hit| gone(hit)) {
             let kept: Vec<_> = results
                 .hits
@@ -2721,6 +2785,15 @@ impl Explorer {
         self.search_gone.extend(removed.iter().cloned());
         if let Some(results) = self.search_results.take() {
             let results = self.without_gone(results);
+            // The relevance order loses them too.
+            if let Some(relevance) = self.search_relevance.take() {
+                let kept: Vec<_> = relevance
+                    .iter()
+                    .filter(|hit| !self.hit_gone(&results.root, hit))
+                    .cloned()
+                    .collect();
+                self.search_relevance = Some(Arc::new(kept));
+            }
             let len = results.hits.len();
             self.search_cursor = self
                 .search_cursor

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::entry::{Entry, EntryKind};
+use crate::search::SearchHit;
 
 /// Column a listing is sorted by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -380,6 +381,112 @@ const fn char_rank(c: u8) -> (u8, u8) {
         2
     };
     (group, c)
+}
+
+/// A column of the search results that can be sorted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchColumn {
+    /// Name in natural order.
+    Name,
+    /// The folder the item is in.
+    Location,
+    /// Last write time.
+    Modified,
+    /// Size in bytes.
+    Size,
+}
+
+impl SearchColumn {
+    /// Direction a column starts in when first picked (see [`SortColumn::starts_ascending`]).
+    #[must_use]
+    pub const fn starts_ascending(self) -> bool {
+        matches!(self, Self::Name | Self::Location)
+    }
+
+    /// Short stable name, for test selectors.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Location => "location",
+            Self::Modified => "modified",
+            Self::Size => "size",
+        }
+    }
+}
+
+/// How the search results are ordered when a header was clicked. Without one they stay in the
+/// search's own relevance order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchSort {
+    /// Column compared.
+    pub column: SearchColumn,
+    /// Ascending (A to Z, oldest, smallest first).
+    pub ascending: bool,
+}
+
+impl SearchSort {
+    /// `column` in the direction it starts in.
+    #[must_use]
+    pub const fn new(column: SearchColumn) -> Self {
+        Self {
+            column,
+            ascending: column.starts_ascending(),
+        }
+    }
+
+    /// The same column the other way round.
+    #[must_use]
+    pub const fn flipped(self) -> Self {
+        Self {
+            column: self.column,
+            ascending: !self.ascending,
+        }
+    }
+
+    /// What a click on `column`'s header leads to: its first direction, then the other, then back
+    /// to relevance (`None`).
+    #[must_use]
+    pub fn after_click(current: Option<Self>, column: SearchColumn) -> Option<Self> {
+        match current {
+            Some(sort) if sort.column == column => {
+                (sort.ascending == column.starts_ascending()).then(|| sort.flipped())
+            }
+            _ => Some(Self::new(column)),
+        }
+    }
+}
+
+/// The folder part of a hit's path, lowercase, for the Location column.
+fn hit_location(hit: &SearchHit) -> String {
+    hit.rel
+        .rsplit_once(['\\', '/'])
+        .map_or_else(String::new, |(parent, _)| parent.to_lowercase())
+}
+
+/// `hits` ordered by `sort`. Hits that tie keep the order they came in (relevance), in either
+/// direction. Folders are mixed with files, as in the relevance order.
+#[must_use]
+pub fn sort_search_hits(hits: &[Arc<SearchHit>], sort: SearchSort) -> Vec<Arc<SearchHit>> {
+    let directed = |ord: Ordering| if sort.ascending { ord } else { ord.reverse() };
+    let mut out = hits.to_vec();
+    match sort.column {
+        SearchColumn::Name => out.sort_by(|a, b| directed(name_cmp(&a.entry, &b.entry))),
+        SearchColumn::Modified => {
+            out.sort_by(|a, b| directed(a.entry.modified.cmp(&b.entry.modified)));
+        }
+        SearchColumn::Size => out.sort_by(|a, b| directed(a.entry.size.cmp(&b.entry.size))),
+        SearchColumn::Location => {
+            // Each folder text is built once, not on every comparison.
+            let mut keyed: Vec<(String, Arc<SearchHit>)> = out
+                .into_iter()
+                .map(|hit| (hit_location(&hit), hit))
+                .collect();
+            keyed.sort_by(|a, b| directed(natural_cmp(&a.0, &b.0)));
+            out = keyed.into_iter().map(|(_, hit)| hit).collect();
+        }
+    }
+    out
 }
 
 fn trim_zeros(s: &[u8]) -> &[u8] {
@@ -820,5 +927,81 @@ mod tests {
         }
         // Generous even for an unoptimized test build; release sorts this in a few ms.
         assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    }
+
+    fn hit(rel: &str, size: u64, secs: Option<u64>) -> Arc<SearchHit> {
+        let name = rel.rsplit(['\\', '/']).next().unwrap_or(rel);
+        let modified = secs.map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
+        Arc::new(SearchHit {
+            rel: Arc::from(rel),
+            entry: Entry::new(name, EntryKind::File, size, modified, 0),
+            snippet: None,
+        })
+    }
+
+    fn rels(hits: &[Arc<SearchHit>]) -> Vec<&str> {
+        hits.iter().map(|h| &*h.rel).collect()
+    }
+
+    #[test]
+    fn search_results_sort_by_each_column_and_keep_ties_in_relevance_order() {
+        // In relevance order.
+        let hits = vec![
+            hit(r"b\file10.txt", 5, Some(30)),
+            hit(r"a\file2.txt", 9, Some(10)),
+            hit(r"file1.txt", 5, None),
+            hit(r"a\sub\x.txt", 1, Some(20)),
+        ];
+        let by = |column, ascending| {
+            sort_search_hits(&hits, SearchSort { column, ascending })
+        };
+        let name = by(SearchColumn::Name, true);
+        assert_eq!(
+            rels(&name),
+            [r"file1.txt", r"a\file2.txt", r"b\file10.txt", r"a\sub\x.txt"]
+        );
+        let name = by(SearchColumn::Name, false);
+        assert_eq!(rels(&name)[0], r"a\sub\x.txt");
+        // Files in no folder come first; "a" before "a\sub" before "b".
+        let place = by(SearchColumn::Location, true);
+        assert_eq!(
+            rels(&place),
+            [r"file1.txt", r"a\file2.txt", r"a\sub\x.txt", r"b\file10.txt"]
+        );
+        // Unknown dates are the oldest.
+        let date = by(SearchColumn::Modified, false);
+        assert_eq!(
+            rels(&date),
+            [r"b\file10.txt", r"a\sub\x.txt", r"a\file2.txt", r"file1.txt"]
+        );
+        // The two 5-byte files tie: relevance order (file10 first) in both directions.
+        let small = by(SearchColumn::Size, true);
+        assert_eq!(
+            rels(&small),
+            [r"a\sub\x.txt", r"b\file10.txt", r"file1.txt", r"a\file2.txt"]
+        );
+        let big = by(SearchColumn::Size, false);
+        assert_eq!(
+            rels(&big),
+            [r"a\file2.txt", r"b\file10.txt", r"file1.txt", r"a\sub\x.txt"]
+        );
+    }
+
+    #[test]
+    fn search_header_clicks_go_first_direction_then_back_then_relevance() {
+        use SearchColumn::{Modified, Name};
+        let first = SearchSort::after_click(None, Name);
+        assert_eq!(first, Some(SearchSort::new(Name)));
+        assert!(first.is_some_and(|s| s.ascending));
+        let second = SearchSort::after_click(first, Name);
+        assert_eq!(second.map(|s| s.ascending), Some(false));
+        assert_eq!(SearchSort::after_click(second, Name), None);
+        // Dates start newest first.
+        let date = SearchSort::after_click(first, Modified);
+        assert_eq!(date.map(|s| (s.column, s.ascending)), Some((Modified, false)));
+        assert_eq!(
+            SearchSort::after_click(date, Modified).map(|s| s.ascending),
+            Some(true)
+        );
     }
 }

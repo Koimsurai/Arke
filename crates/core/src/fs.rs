@@ -62,6 +62,14 @@ pub trait Fs: Send + Sync + 'static {
     fn read_dir(&self, path: &Path) -> io::Result<DirIter>;
     /// Stats a single entry without following symlinks.
     fn stat(&self, path: &Path) -> io::Result<Entry>;
+    /// The name `path`'s item has in its folder, when it differs from the last part of `path`: a
+    /// change notification can name an item in another case than it now has (renamed to only
+    /// change the case) or by its short 8.3 name, and the item is found either way (#310).
+    /// `None` when it is the same, or unknown.
+    fn listed_name(&self, path: &Path) -> Option<String> {
+        let _ = path;
+        None
+    }
     /// Watches a directory (non-recursive). Dropping the returned value stops watching.
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>>;
     /// Reads a whole file (for thumbnails). Errors without reading if larger than `max_len`.
@@ -178,6 +186,14 @@ impl Fs for RealFs {
             .file_name()
             .map_or_default(|n| n.to_string_lossy().into_owned());
         Ok(Entry::from_metadata(&name, &meta))
+    }
+
+    #[cfg(windows)]
+    fn listed_name(&self, path: &Path) -> Option<String> {
+        debug_assert_not_ui_thread("listed_name", path);
+        let listed = crate::winfs::listed_name(path)?;
+        (path.file_name() != Some(listed.as_os_str()))
+            .then(|| listed.to_string_lossy().into_owned())
     }
 
     fn read(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {

@@ -1412,6 +1412,15 @@ impl Shared {
                     // Access denied etc.: unknown, don't record.
                     Err(_) => continue,
                 };
+                // Found under another spelling (the case changed, or a short 8.3 name): nothing is
+                // left under this one, and the item is recorded under the name it has (#310).
+                let path = match self.fs.listed_name(&path) {
+                    Some(listed) => {
+                        self.overlay.lock().record(path.clone(), None);
+                        path.with_file_name(listed)
+                    }
+                    None => path,
+                };
                 let walk = moved_in && descends_into(&entry);
                 self.overlay
                     .lock()
@@ -2412,6 +2421,29 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(50));
         assert!(found(&svc, "$R1").is_empty());
+    }
+
+    /// #310: renamed to change only the case, reported under the old spelling (which Windows
+    /// still finds). Search shows the name it has now, once.
+    #[test]
+    fn a_case_only_rename_is_found_under_its_new_name() {
+        let fs = FakeFs::new();
+        let me = Path::new(r"C:\Users\me");
+        fs.insert_dir(
+            me,
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
+        wait("index built", || ready(&svc));
+        fs.remove(me, "report.docx");
+        fs.add_file(me, "Report.docx", 1);
+        fs.emit(
+            Path::new(r"C:\"),
+            &WatchEvent::Changed(vec![me.join("report.docx")]),
+        );
+        wait("the new spelling", || {
+            found(&svc, "report") == [r"C:\Users\me\Report.docx"]
+        });
     }
 
     #[test]

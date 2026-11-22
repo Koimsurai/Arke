@@ -4466,8 +4466,14 @@ mod tests {
         };
         let base = walk(&fs);
         let mut overlay = Overlay::default();
+        // As the index service records a change: an item found under another spelling (the
+        // case changed) leaves the old one and goes in under its own.
         let mut record = |path: &str, fs: &FakeFs| {
-            let path = PathBuf::from(path);
+            let mut path = PathBuf::from(path);
+            if let Some(listed) = fs.listed_name(&path) {
+                overlay.record(path.clone(), None);
+                path.set_file_name(listed);
+            }
             let seen = fs.stat(&path).ok().map(|e| Seen::of(&e));
             overlay.record(path, seen);
         };

@@ -613,6 +613,30 @@ pub(crate) struct ContextMenu {
     hover_task: Option<Task<()>>,
 }
 
+/// A menu made on a right press, before it shows on release: what comes back for it meanwhile
+/// waits here (#278).
+pub(crate) struct EarlyMenu {
+    menu: ContextMenu,
+    events: Vec<ShellMenuEvent>,
+    made: std::time::Instant,
+}
+
+/// An early menu older than this isn't shown: the press was let go somewhere unheard of.
+const EARLY_MENU_FOR: Duration = Duration::from_secs(3);
+
+impl EarlyMenu {
+    /// Whether `event` is for this menu's Windows menu or its sources.
+    fn wants(&self, event: &ShellMenuEvent) -> bool {
+        match event {
+            ShellMenuEvent::Whole { request, .. } => self.menu.shell_request == Some(*request),
+            ShellMenuEvent::Coming { request, .. } | ShellMenuEvent::Part { request, .. } => {
+                self.menu.parts_request == Some(*request)
+            }
+            _ => false,
+        }
+    }
+}
+
 impl ContextMenu {
     fn new(
         position: Point<Pixels>,
@@ -733,7 +757,7 @@ impl ContextMenu {
                         .iter()
                         .find_map(|(_, entries)| find_pinned(entries, key))
                 }) {
-                    remember_pin_icon(key, item);
+                    remember_pin(key, item);
                     found.push(item.clone());
                 } else if !whole_in
                     && let Some(ix) = self.coming.iter().position(|k| k == key)
@@ -959,8 +983,11 @@ impl Explorer {
             self.cursor = Some(ix);
         }
         // The menu opens on release (`right_press_released`), so the press can still become a
-        // right-button drag.
+        // right-button drag. It is made now, so what it reads from Windows is under way (#278).
         self.note_right_press(event.position, cx);
+        if !self.search_mode {
+            self.make_early_menu(event.modifiers.shift, cx);
+        }
     }
 
     /// Right-click on empty space: clear the selection and show the folder menu.
@@ -1033,6 +1060,95 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let extended = window.modifiers().shift;
+        let targets = self.menu_targets();
+        let (mut menu, early_events) = match self.early_menu.take() {
+            Some(early)
+                if early.menu.targets == targets
+                    && early.menu.extended == extended
+                    && early.made.elapsed() < EARLY_MENU_FOR =>
+            {
+                (early.menu, early.events)
+            }
+            other => {
+                if let Some(early) = other {
+                    self.drop_early_menu(early);
+                }
+                (self.make_context_menu(position, extended, cx), Vec::new())
+            }
+        };
+        menu.position = position;
+        window.focus(&menu.focus, cx);
+        self.release_shell_menu();
+        self.show_menu(menu, window, cx);
+        // What came back while the button was down.
+        for event in early_events {
+            self.handle_shell_menu_event(event, cx);
+        }
+    }
+
+    /// A right press on items: makes their menu now, reading the Windows menu while the button
+    /// is down, to show on release (`open_context_menu`). Replaces one made before.
+    pub(super) fn make_early_menu(&mut self, shift: bool, cx: &mut Context<Self>) {
+        if let Some(early) = self.early_menu.take() {
+            self.drop_early_menu(early);
+        }
+        if !self.services.shell.shell_menu_prefetch() {
+            return;
+        }
+        let menu = self.make_context_menu(Point::default(), shift, cx);
+        if menu.shell_request.is_some() {
+            self.early_menu = Some(EarlyMenu {
+                menu,
+                events: Vec::new(),
+                made: std::time::Instant::now(),
+            });
+        }
+    }
+
+    /// The right press became a drag, or went away: its early menu isn't shown, and the Windows
+    /// menus read for it are let go.
+    pub(super) fn cancel_early_menu(&mut self) {
+        if let Some(early) = self.early_menu.take() {
+            self.drop_early_menu(early);
+        }
+    }
+
+    fn drop_early_menu(&self, early: EarlyMenu) {
+        let shell = &self.services.shell;
+        for event in early.events {
+            match event {
+                ShellMenuEvent::Whole {
+                    result: Ok(menu), ..
+                }
+                | ShellMenuEvent::Part {
+                    result: Ok((menu, _)),
+                    ..
+                } => shell.release_shell_menu(menu.session),
+                _ => {}
+            }
+        }
+    }
+
+    /// What comes back for an early menu (`make_early_menu`) waits for it to show.
+    pub(super) fn keep_for_early_menu(&mut self, event: ShellMenuEvent) -> Option<ShellMenuEvent> {
+        match self.early_menu.as_mut() {
+            Some(early) if early.wants(&event) => {
+                early.events.push(event);
+                None
+            }
+            _ => Some(event),
+        }
+    }
+
+    /// The menu for the selected items (or the folder background), with its Windows menu and
+    /// pinned commands' sources asked for.
+    fn make_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        extended: bool,
+        cx: &mut Context<Self>,
+    ) -> ContextMenu {
         let targets = self.menu_targets();
         let pinned = {
             let store = SettingsStore::global(cx);
@@ -1083,13 +1199,10 @@ impl Explorer {
         } else {
             entries
         };
-        let focus = cx.focus_handle();
-        window.focus(&focus, cx);
-        self.release_shell_menu();
-        let mut menu = ContextMenu::new(position, entries, focus, targets);
+        let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);
         // Shift held, as File Explorer: the Windows menu includes commands registered to show
         // only then (#272).
-        menu.extended = window.modifiers().shift;
+        menu.extended = extended;
         menu.shell_slot = menu
             .entries
             .iter()
@@ -1100,7 +1213,7 @@ impl Explorer {
                 self.request_menu_parts(&mut menu, request, cx);
             }
         }
-        self.show_menu(menu, window, cx);
+        menu
     }
 
     /// Shows `menu`, opened in `window`: its levels open in windows of their own owned by it
@@ -3311,19 +3424,9 @@ pub(crate) fn pin_key(path: &[&str]) -> String {
         .join(" › ")
 }
 
-thread_local! {
-    /// Icons of pinned Windows commands as last seen, by pin key: a row drawn before its source
-    /// answers (`coming_row`) shows it already.
-    static PIN_ICONS: RefCell<std::collections::HashMap<String, Arc<RenderImage>>> =
-        RefCell::default();
-}
-
-fn remember_pin_icon(key: &str, item: &MenuItem) {
-    if let Some(icon) = &item.icon {
-        PIN_ICONS.with(|icons| {
-            icons.borrow_mut().insert(key.to_string(), Arc::clone(icon));
-        });
-    }
+/// Remembers how pinned row `key` looked, for drawing it ahead next time (`menu_pin_looks`).
+fn remember_pin(key: &str, item: &MenuItem) {
+    crate::menu_pin_looks::remember(key, item.icon.as_ref(), false);
 }
 
 /// The row of a pinned command known to show, before its source answers: its label from the
@@ -3338,7 +3441,7 @@ fn coming_row(key: &str, ix: usize) -> Option<MenuItem> {
         shortcut: None,
         command: MenuCommand::PinPending(ix),
         enabled: true,
-        icon: PIN_ICONS.with(|icons| icons.borrow().get(key).cloned()),
+        icon: crate::menu_pin_looks::icon(key),
         glyph: None,
         checked: false,
         bold: false,

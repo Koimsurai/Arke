@@ -786,3 +786,119 @@ fn send_to_comes_from_the_hosts_own_list(cx: &mut TestAppContext) {
     });
     assert!(shell.extensions_read.lock().contains(&"SendTo".to_owned()));
 }
+
+/// A right press, as the list gets it on a row.
+fn right_press() -> gpui::MouseDownEvent {
+    gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: gpui::point(gpui::px(300.), gpui::px(200.)),
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    }
+}
+
+/// #325: a pinned command seen for this kind of item before is in the menu the moment it opens,
+/// before anything has been looked up for it, a registry command's (as "Run as administrator")
+/// as well as an extension's: the menu doesn't grow a row a moment later.
+#[gpui::test]
+fn seen_rows_are_in_the_menu_as_it_opens(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_commands();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let (git, zip) = ("Open Git Bash here", "Compress with 7-Zip");
+    pin(cx, &[git, zip]);
+
+    // Where they come from, then (their sources read on their own) where they show.
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "owners", |cx| owners(cx).len() >= 2);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "seen", |cx| {
+        let seen = pin_seen(cx);
+        [git, zip]
+            .iter()
+            .all(|key| seen.get(*key).is_some_and(|k| k == &[".txt"]))
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Nothing answers; the rows are there as it opens, before any event is handled.
+    let (open_whole, whole_gate) = flume::unbounded();
+    let (open_parts, parts_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    *shell.part_gate.lock() = Some(parts_gate);
+    let event = right_press();
+    let labels = cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.on_row_right_down(0, &event, window, cx);
+            v.right_press_released(event.position, window, cx);
+            v.context_menu.as_ref().map(|m| m.labels()).unwrap_or_default()
+        })
+    });
+    assert!(labels.iter().any(|l| l == git), "{labels:?}");
+    assert!(labels.iter().any(|l| l == zip), "{labels:?}");
+    *shell.part_gate.lock() = None;
+    *shell.menu_gate.lock() = None;
+    for _ in 0..4 {
+        let _ = open_parts.send(());
+        let _ = open_whole.send(());
+    }
+    cx.run_until_parked();
+}
+
+/// #278: an item's menu is made when the right button goes down, so the Windows menu is read
+/// while it is held: what came back by the time it is let go is in the menu as it shows. A press
+/// that goes away without a menu (a drag, a release elsewhere) lets go of what was read for it.
+#[gpui::test]
+fn the_menu_is_read_while_the_button_is_down(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let event = right_press();
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.on_row_right_down(0, &event, window, cx));
+    });
+    wait_for(cx, "read while held", |_| shell.system_menus.lock().len() == 1);
+    cx.run_until_parked();
+    assert!(
+        view.update(cx, |v, _| v.context_menu.is_none()),
+        "not shown while held"
+    );
+    // Let go: "Show more options" is in already.
+    let loaded = cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.right_press_released(event.position, window, cx);
+            v.context_menu.as_ref().map(|m| m.shell_state())
+        })
+    });
+    assert!(loaded.is_some_and(|(done, session)| done && session.is_some()));
+    assert_eq!(shell.system_menus.lock().len(), 1, "read once");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // A press that goes away: its menu isn't shown, and what was read is let go.
+    shell.shell_released.lock().clear();
+    let event = right_press();
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.on_row_right_down(1, &event, window, cx));
+    });
+    wait_for(cx, "read again", |_| shell.system_menus.lock().len() == 2);
+    cx.run_until_parked();
+    let moved = gpui::MouseMoveEvent {
+        position: gpui::point(gpui::px(320.), gpui::px(240.)),
+        pressed_button: None,
+        modifiers: gpui::Modifiers::default(),
+    };
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.right_press_moved(&moved, window, cx));
+    });
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| v.context_menu.is_none() && v.early_menu.is_none()));
+    assert!(!shell.shell_released.lock().is_empty(), "let go");
+}

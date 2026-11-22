@@ -58,6 +58,7 @@ mod global_search;
 mod home;
 mod instance;
 mod media;
+mod menu_pin_looks;
 mod motion;
 mod net_dialog;
 mod op_center;
@@ -640,6 +641,15 @@ fn app_main(mut args: Args) {
         }
         if !benchmarking {
             prewarm_shell_host();
+            // How pinned Windows commands looked, for the first menu (#278).
+            let pinned = settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .menu_pinned
+                .clone();
+            let _ = std::thread::Builder::new()
+                .name("menu-icons-load".into())
+                .spawn(move || menu_pin_looks::load(&pinned));
         }
         if !background {
             cx.activate(true);

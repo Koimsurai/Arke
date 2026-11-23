@@ -540,6 +540,9 @@ pub(crate) struct Metrics {
     pub(crate) clock: StartClock,
     /// First frame, timed by `clock`.
     pub(crate) clock_first_frame: Option<Duration>,
+    /// The listing the first frame waited for. A listing of another one (the window started on
+    /// Home, and a folder was opened minutes later) isn't the start's (#343).
+    timed_listing: Option<Gen>,
 }
 
 /// How a pane's first frame and first full listing are logged. A window hands its timing to the
@@ -1981,6 +1984,11 @@ impl Explorer {
                 if complete {
                     self.last_timing = Some(timing);
                     if self.metrics.first_listing.is_none() {
+                        if self.metrics.first_frame.is_some()
+                            && self.metrics.timed_listing != Some(generation)
+                        {
+                            self.metrics.clock = StartClock::Untimed;
+                        }
                         self.metrics.listing_ready = true;
                     }
                     // Full content replaced: drop selections that no longer exist (nested tree
@@ -3722,6 +3730,11 @@ impl Explorer {
         let ms = |d: Duration| d.as_secs_f64() * 1e3;
         if self.metrics.first_frame.is_none() {
             self.metrics.first_frame = Some(since_start);
+            self.metrics.timed_listing = self
+                .pending
+                .as_ref()
+                .map(|p| p.generation)
+                .or_else(|| self.model.as_ref().map(|m| m.generation));
             if let StartClock::Cold(at) | StartClock::Request(at) = self.metrics.clock {
                 self.metrics.clock_first_frame = Some(at.elapsed());
             }

@@ -633,8 +633,9 @@ struct PaneKey {
     location: Location,
     selected: usize,
     cursor: Option<Arc<str>>,
-    /// The listing (its order is the selection's order)
-    entries: usize,
+    /// The listing (its order is the selection's order): its generation and version, which every
+    /// change bumps (the list itself can change in place, at the same address).
+    entries: (u64, u64),
     /// Which names are selected, for selections up to [`HASHED_MAX`] items
     names: usize,
     search: Option<(usize, Option<usize>)>,
@@ -726,7 +727,7 @@ fn pane_key(pane: &PaneInput<'_>) -> PaneKey {
         entries: explorer
             .model
             .as_ref()
-            .map_or(0, |m| Arc::as_ptr(&m.entries) as usize),
+            .map_or((0, 0), |m| (m.generation, m.version)),
         names,
         search: explorer
             .search_results

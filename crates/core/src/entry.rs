@@ -23,6 +23,9 @@ pub struct Entry {
     /// Windows' sort key for the name, made when first needed ([`Self::collation`]). Whatever
     /// builds an entry under another name starts this afresh.
     pub(crate) collation: OnceLock<Arc<[u8]>>,
+    /// The name File Explorer shows for a folder whose `desktop.ini` names it (#370), such as
+    /// "文件" for Documents; it sorts, filters and jumps by that name. Paths use [`Self::name`].
+    pub shown: Option<Arc<str>>,
 }
 
 /// What an [`Entry`] is.
@@ -145,14 +148,38 @@ impl Entry {
             created: None,
             attributes,
             collation: OnceLock::new(),
+            shown: None,
         }
     }
 
     /// The name's place in File Explorer's name order (`collate.rs`), made the first time it's
-    /// asked for.
+    /// asked for: the name shown, as there.
     pub fn collation(&self) -> &[u8] {
         self.collation
-            .get_or_init(|| crate::collate::key(&self.name))
+            .get_or_init(|| crate::collate::key(self.shown_name()))
+    }
+
+    /// The name shown: the one `desktop.ini` gives (#370), else the file name.
+    pub fn shown_name(&self) -> &str {
+        self.shown.as_deref().unwrap_or(&self.name)
+    }
+
+    /// [`Self::shown_name`] in lowercase, as [`Self::sort_key`] is for the file name.
+    pub fn shown_key(&self) -> std::borrow::Cow<'_, str> {
+        match &self.shown {
+            Some(shown) => std::borrow::Cow::Owned(shown.to_lowercase()),
+            None => std::borrow::Cow::Borrowed(&self.sort_key),
+        }
+    }
+
+    /// The same item shown as `shown` (`None`: by its file name); it sorts by that name.
+    #[must_use]
+    pub fn with_shown(&self, shown: Option<Arc<str>>) -> Self {
+        Self {
+            shown,
+            collation: OnceLock::new(),
+            ..self.clone()
+        }
     }
 
     /// The same item under another name (the lowercase sort key follows it).

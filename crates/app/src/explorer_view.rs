@@ -717,8 +717,8 @@ impl Explorer {
             .map_or_default(|t| self.services.shell.format_time(t));
         // Nested tree rows are named by relative path; read the file name. A folder's localized
         // name is read as it is shown (#370).
-        let localized = self.localized.get(&entry.name).cloned();
-        let name = localized
+        let name = entry
+            .shown
             .as_deref()
             .unwrap_or_else(|| arke_core::tree::leaf(&entry.name));
         crate::a11y::item_label(

@@ -546,7 +546,7 @@ fn name_cmp(a: &Entry, b: &Entry) -> Ordering {
     let ord = if crate::collate::available() {
         a.collation().cmp(b.collation())
     } else {
-        natural_cmp(&a.sort_key, &b.sort_key)
+        natural_cmp(&a.shown_key(), &b.shown_key())
     };
     ord.then_with(|| a.name.cmp(&b.name))
 }

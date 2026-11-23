@@ -2079,9 +2079,10 @@ impl Explorer {
     fn apply_folder_delta(
         &mut self,
         generation: Gen,
-        delta: arke_core::Delta,
+        mut delta: arke_core::Delta,
         cx: &mut Context<Self>,
     ) {
+        self.keep_localized_names(&mut delta);
         // A merge is running: this one follows it, in order.
         if let Some(merge) = self
             .delta_merge

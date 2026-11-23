@@ -71,7 +71,7 @@ pub fn find_prefix(entries: &[Entry], prefix: &str, start: usize) -> Option<usiz
     let start = start % n;
     (start..n)
         .chain(0..start)
-        .find(|&i| entries[i].sort_key.starts_with(prefix))
+        .find(|&i| entries[i].shown_key().starts_with(prefix))
 }
 
 #[cfg(test)]

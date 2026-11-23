@@ -25,7 +25,7 @@ pub fn filter_entries(entries: &[Entry], query: &str) -> Option<Vec<Entry>> {
             .iter()
             .filter(|e| {
                 pattern
-                    .score(Utf32Str::new(&e.name, &mut buf), &mut matcher)
+                    .score(Utf32Str::new(e.shown_name(), &mut buf), &mut matcher)
                     .is_some()
             })
             .cloned()
@@ -51,7 +51,7 @@ pub fn filter_by_query(entries: &[Entry], query: &Query) -> Option<Vec<Entry>> {
             .filter(|e| entry_accepted(query, e))
             .filter(|e| {
                 pattern.as_ref().is_none_or(|p| {
-                    p.score(Utf32Str::new(&e.name, &mut buf), &mut matcher)
+                    p.score(Utf32Str::new(e.shown_name(), &mut buf), &mut matcher)
                         .is_some()
                 })
             })
@@ -182,6 +182,25 @@ mod tests {
 
     fn names(list: &[Entry]) -> Vec<&str> {
         list.iter().map(|e| &*e.name).collect()
+    }
+
+    /// A folder named by its desktop.ini is found by the name shown, not the one on disk (#370).
+    #[test]
+    fn a_shown_name_is_what_the_filter_matches() {
+        let list = vec![
+            Entry::new("Documents", EntryKind::Dir, 0, None, 1).with_shown(Some("文件".into())),
+            Entry::new("Docs backup", EntryKind::Dir, 0, None, 0),
+        ];
+        assert_eq!(
+            names(&filter_entries(&list, "文件").unwrap()),
+            ["Documents"]
+        );
+        let by_file_name = filter_entries(&list, "documents").unwrap();
+        assert!(
+            !names(&by_file_name).contains(&"Documents"),
+            "{:?}",
+            names(&by_file_name)
+        );
     }
 
     #[test]

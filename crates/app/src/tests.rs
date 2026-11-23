@@ -9292,3 +9292,47 @@ fn the_recycle_bin_stays_open_when_its_tabs_drive_is_removed(cx: &mut TestAppCon
     wait_until(cx, &view, "moved off the drive", loaded(&home_str));
     assert_eq!(shown(cx), bin, "the Recycle Bin is still open");
 }
+
+/// A folder named by its desktop.ini sorts and jumps by that name, as in File Explorer, and F2
+/// edits that name (#370).
+#[gpui::test]
+fn a_localized_folder_sorts_jumps_and_renames_by_its_shown_name(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\u",
+        vec![
+            Entry::new("Alpha", EntryKind::Dir, 0, None, 0),
+            Entry::new("Beta", EntryKind::Dir, 0, None, 0),
+            Entry::new("Documents", EntryKind::Dir, 0, None, 0x1),
+        ],
+    );
+    let text = "[.ShellClassInfo]\r\nLocalizedResourceName=Aardvark\r\n";
+    let mut ini = vec![0xFF, 0xFE];
+    ini.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    fs.set_content(r"C:\u\Documents\desktop.ini", ini);
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\u");
+    wait_until(cx, &view, "sorted by the shown name", |v| {
+        loaded(r"C:\u")(v) && names(v) == ["Documents", "Alpha", "Beta"]
+    });
+
+    // Typing jumps by the shown name.
+    cx.simulate_input("aar");
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| selected_name(v)).as_deref(),
+        Some("Documents")
+    );
+
+    cx.simulate_keystrokes("f2");
+    cx.run_until_parked();
+    let edited = view.update(cx, |v, cx| {
+        v.renaming
+            .as_ref()
+            .map(|r| (r.name.to_string(), r.input.read(cx).text().to_owned()))
+    });
+    assert_eq!(
+        edited,
+        Some(("Documents".to_owned(), "Aardvark".to_owned())),
+        "the shown name is edited"
+    );
+}

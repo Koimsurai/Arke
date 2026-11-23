@@ -27,6 +27,67 @@ pub(crate) fn read(fs: &dyn arke_core::Fs, dir: &Path) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
+/// Renames the folder `dir` as File Explorer does when its name comes from `desktop.ini`: the
+/// folder keeps its own name (programs find Documents by it) and `LocalizedResourceName` becomes
+/// `name`; the rest of the file stays. Writes the disk: background thread.
+pub(crate) fn write_name(dir: &Path, name: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let path = dir.join("desktop.ini");
+    let text = std::fs::read(&path).map_or_else(|_| String::new(), |b| decode(&b));
+    let text = with_name(&text, name);
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    // Opened for writing, not created anew: Windows refuses to replace a hidden system file.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)?;
+    file.write_all(&bytes)
+}
+
+/// `ini` with `LocalizedResourceName` in `[.ShellClassInfo]` set to `name` (the section added if
+/// it isn't there).
+fn with_name(ini: &str, name: &str) -> String {
+    let line = format!("LocalizedResourceName={name}");
+    let mut out: Vec<String> = Vec::new();
+    let mut in_section = false;
+    let mut section_seen = false;
+    let mut done = false;
+    for raw in ini.lines() {
+        let trimmed = raw.trim();
+        if let Some(section) = trimmed.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if in_section && !done {
+                out.push(line.clone());
+                done = true;
+            }
+            in_section = section.trim().eq_ignore_ascii_case(".ShellClassInfo");
+            section_seen |= in_section;
+            out.push(raw.to_owned());
+            continue;
+        }
+        if in_section
+            && let Some((key, _)) = trimmed.split_once('=')
+            && key.trim().eq_ignore_ascii_case("LocalizedResourceName")
+        {
+            if !done {
+                out.push(line.clone());
+                done = true;
+            }
+            continue;
+        }
+        out.push(raw.to_owned());
+    }
+    if !done {
+        if !section_seen {
+            out.push("[.ShellClassInfo]".to_owned());
+        }
+        out.push(line);
+    }
+    let mut text = out.join("\r\n");
+    text.push_str("\r\n");
+    text
+}
+
 /// `desktop.ini` as text: UTF-16 with a byte order mark (what Windows writes), UTF-8, or the
 /// ANSI code page read leniently.
 fn decode(bytes: &[u8]) -> String {
@@ -135,6 +196,24 @@ mod tests {
     }
 
     #[test]
+    fn a_new_name_replaces_the_old_one_and_keeps_the_rest() {
+        let ini = "[.ShellClassInfo]\r\nLocalizedResourceName=@shell32.dll,-21770\r\nIconResource=x,1\r\n[ViewState]\r\nMode=\r\n";
+        assert_eq!(
+            with_name(ini, "報告"),
+            "[.ShellClassInfo]\r\nLocalizedResourceName=報告\r\nIconResource=x,1\r\n[ViewState]\r\nMode=\r\n"
+        );
+        assert_eq!(
+            with_name("[.ShellClassInfo]\r\nIconResource=x,1\r\n", "A"),
+            "[.ShellClassInfo]\r\nIconResource=x,1\r\nLocalizedResourceName=A\r\n"
+        );
+        assert_eq!(
+            with_name("", "A"),
+            "[.ShellClassInfo]\r\nLocalizedResourceName=A\r\n"
+        );
+        assert_eq!(name_in(&with_name(ini, "報告")).as_deref(), Some("報告"));
+    }
+
+    #[test]
     fn only_marked_folders_are_read() {
         assert!(may_have_name(0x1 | 0x10));
         assert!(may_have_name(0x4 | 0x10));
@@ -167,6 +246,24 @@ mod tests {
             "{docs_name:?}"
         );
         assert_eq!(read(&fs, &root), None, "no desktop.ini");
+        // Renamed: hidden and system as Windows keeps it, rewritten in place.
+        let ini = plain.join("desktop.ini");
+        let hide = |on: bool| {
+            let flag = if on { "+" } else { "-" };
+            std::process::Command::new("attrib")
+                .args([
+                    format!("{flag}h"),
+                    format!("{flag}s"),
+                    ini.display().to_string(),
+                ])
+                .status()
+                .unwrap();
+        };
+        hide(true);
+        write_name(&plain, "新名字").unwrap();
+        assert_eq!(read(&fs, &plain).as_deref(), Some("新名字"));
+        assert!(plain.exists(), "the folder keeps its own name");
+        hide(false);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

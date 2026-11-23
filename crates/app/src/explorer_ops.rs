@@ -1169,9 +1169,13 @@ impl Explorer {
         else {
             return;
         };
-        // Nested tree rows are named by their relative path; only the file name is edited.
-        let leaf = arke_core::tree::leaf(&name);
-        let range = if fresh {
+        // Nested tree rows are named by their relative path; only the file name is edited. A
+        // folder named by its desktop.ini is renamed by that name, as in File Explorer (#370).
+        let leaf = entry
+            .shown
+            .as_deref()
+            .unwrap_or_else(|| arke_core::tree::leaf(&name));
+        let range = if fresh || entry.shown.is_some() {
             0..leaf.len()
         } else {
             arke_core::path::rename_selection(leaf, entry.is_dir_like())
@@ -1302,6 +1306,20 @@ impl Explorer {
         };
         let typed = renaming.input.read(cx).text().to_owned();
         let new_name = typed.trim().to_owned();
+        if renaming.batch.len() <= 1
+            && let Some(shown) = self.view().and_then(|v| {
+                v.iter()
+                    .find(|e| e.name == renaming.name)
+                    .and_then(|e| e.shown.clone())
+            })
+        {
+            window.focus(&self.list_focus, cx);
+            if !new_name.is_empty() && new_name != *shown {
+                self.rename_shown(Arc::clone(&renaming.name), new_name, cx);
+            }
+            cx.notify();
+            return true;
+        }
         let old_leaf = arke_core::tree::leaf(&renaming.name);
         if new_name.is_empty() || new_name == old_leaf {
             window.focus(&self.list_focus, cx);

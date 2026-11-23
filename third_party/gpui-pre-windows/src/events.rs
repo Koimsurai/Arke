@@ -605,6 +605,12 @@ impl WindowsWindowInner {
         {
             return None;
         }
+        // Arke: a press cut short by another program (Alt+Tab, a window popping up) is worth a line
+        // in a problem report.
+        log::info!(
+            "mouse capture taken by another window ({:?}) with buttons {pressed:#x} down",
+            to.0
+        );
         let mut func = self.state.callbacks.input.take()?;
         self.state.pressed_buttons.set(0);
         for button in [

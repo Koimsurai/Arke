@@ -205,8 +205,8 @@ struct FakeShell {
     drag_returns: std::sync::atomic::AtomicBool,
     /// Another program's window is on top of Arke at the cursor.
     covered: std::sync::atomic::AtomicBool,
-    /// The primary mouse button is physically down (`Shell::primary_button_down`).
-    button_down: std::sync::atomic::AtomicBool,
+    /// For each drag out, whether it was handed over after a lost press (`Shell::drag_out`).
+    dragged_out_after_lost_press: Mutex<Vec<bool>>,
     /// Extra places (e.g. Downloads pointing at a temp folder).
     extra_places: Mutex<Vec<Place>>,
     /// Drag images built (request, whether a cached thumbnail existed).
@@ -446,8 +446,12 @@ impl Shell for FakeShell {
         &self,
         paths: &[PathBuf],
         image: Option<&crate::shell::DragImage>,
+        after_lost_press: bool,
     ) -> Result<crate::shell::DragOutEnd, ShellError> {
         self.dragged_out.lock().push(paths.to_vec());
+        self.dragged_out_after_lost_press
+            .lock()
+            .push(after_lost_press);
         // Fake image: width holds the item count, pixels hold the path.
         self.dragged_images.lock().push(image.map(|i| {
             (
@@ -464,10 +468,6 @@ impl Shell for FakeShell {
 
     fn covered_at_cursor(&self, _owner: Option<isize>) -> bool {
         self.covered.load(Ordering::Relaxed)
-    }
-
-    fn primary_button_down(&self) -> bool {
-        self.button_down.load(Ordering::Relaxed)
     }
 
     fn drag_image(
@@ -2357,8 +2357,10 @@ fn dragging_over_a_window_on_top_of_arke_hands_off_to_windows(cx: &mut TestAppCo
 }
 
 /// #326: Alt+Tab in the middle of a drag. Another program takes the mouse, and the window is told
-/// the press is over (our GPUI patch sends a release far outside), but the button is still down:
-/// the files go to Windows drag and drop, which goes on across the switch.
+/// the press is over (our GPUI patch sends a release far outside): the files go to Windows drag
+/// and drop, which goes on across the switch. It is marked as handed over after a lost press, so
+/// it drops only once Windows has seen the button down (Arke can't tell from the background).
+/// A press lost before any drag started hands nothing over.
 #[gpui::test]
 fn alt_tab_mid_drag_hands_the_files_to_windows(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, MouseUpEvent, point, px};
@@ -2378,21 +2380,15 @@ fn alt_tab_mid_drag_hands_the_files_to_windows(cx: &mut TestAppContext) {
         click_count: 0,
     };
 
-    // A press lost for real (released over another window): no drag goes to Windows.
+    // A press lost before it became a drag: nothing to hand over.
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
-    cx.simulate_mouse_move(
-        start + point(px(30.), px(4.)),
-        Some(MouseButton::Left),
-        Modifiers::none(),
-    );
     cx.run_until_parked();
     cx.simulate_event(lost.clone());
     cx.run_until_parked();
-    assert!(shell.dragged_out.lock().is_empty(), "the button was up");
+    assert!(shell.dragged_out.lock().is_empty(), "no drag yet");
     cx.update(|_, cx| assert!(!cx.has_active_drag()));
 
-    // Alt+Tab: the button is still down.
-    shell.button_down.store(true, Ordering::Relaxed);
+    // Alt+Tab mid-drag.
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
     cx.simulate_mouse_move(
         start + point(px(30.), px(4.)),
@@ -2407,6 +2403,7 @@ fn alt_tab_mid_drag_hands_the_files_to_windows(cx: &mut TestAppContext) {
         *shell.dragged_out.lock(),
         [vec![PathBuf::from(r"C:\o\b.txt")]]
     );
+    assert_eq!(*shell.dragged_out_after_lost_press.lock(), [true]);
     cx.update(|_, cx| {
         assert!(!cx.has_active_drag());
         assert!(!cx.has_global::<crate::explorer::DraggingOutside>());

@@ -2680,22 +2680,27 @@ impl Workspace {
                             && e.position.y < size.height
                             && !moved.covered_at_cursor(Explorer::owner_from(window));
                         if !inside {
-                            hand_drag_to_windows(&moved, window, cx);
+                            hand_drag_to_windows(&moved, window, cx, false);
                         }
                     });
                     // Another program took the mouse in the middle of the drag (Alt+Tab, #326):
                     // the window is told the press is over (`handle_capture_changed_msg` in our
-                    // GPUI patch), but the button is still down. Windows' drag goes on across the
-                    // switch, as File Explorer's does; Arke's own can't (GPUI ends it on this
-                    // release), so there is nothing to come back to.
+                    // GPUI patch), though the button may still be down. Windows' drag goes on
+                    // across the switch, as File Explorer's does; Arke's own can't (GPUI ends it
+                    // on this release), so there is nothing to come back to. Arke, now in the
+                    // background, can't read the button (`GetAsyncKeyState` says up), so Windows'
+                    // drag drops only once it has seen the button down itself.
                     window.on_mouse_event(move |e: &gpui::MouseUpEvent, phase, window, cx| {
                         let lost = e.click_count == 0 && e.position.x < px(-50_000.);
                         if phase == gpui::DispatchPhase::Capture
                             && lost
                             && e.button == MouseButton::Left
-                            && shell.primary_button_down()
+                            && cx.has_global::<crate::explorer::PendingDragOut>()
                         {
-                            hand_drag_to_windows(&shell, window, cx);
+                            log::info!(
+                                "press lost mid-drag: the files go to Windows drag and drop"
+                            );
+                            hand_drag_to_windows(&shell, window, cx, true);
                         }
                     });
                 },
@@ -2713,8 +2718,13 @@ impl Workspace {
 }
 
 /// Hands the files of the current drag to Windows drag and drop, once (the drag-out data is taken):
-/// the cursor left the window, or another program took the mouse mid-drag.
-fn hand_drag_to_windows(shell: &Arc<dyn crate::shell::Shell>, window: &mut Window, cx: &mut App) {
+/// the cursor left the window, or another program took the mouse mid-drag (`after_lost_press`).
+fn hand_drag_to_windows(
+    shell: &Arc<dyn crate::shell::Shell>,
+    window: &mut Window,
+    cx: &mut App,
+    after_lost_press: bool,
+) {
     use crate::explorer::PendingDragOut;
     if !cx.has_global::<PendingDragOut>() {
         return;
@@ -2728,7 +2738,7 @@ fn hand_drag_to_windows(shell: &Arc<dyn crate::shell::Shell>, window: &mut Windo
     // Enter the Windows drag loop only after this mouse event is handled, outside GPUI's event
     // dispatch.
     cx.spawn(async move |cx| {
-        let end = shell.drag_out(&pending.paths, pending.image.as_ref());
+        let end = shell.drag_out(&pending.paths, pending.image.as_ref(), after_lost_press);
         if let Err(err) = &end {
             log::warn!("drag out to another program failed: {err}");
         }

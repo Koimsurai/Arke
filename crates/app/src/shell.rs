@@ -880,12 +880,17 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// Drags files into another program via Windows drag and drop; returns on drop or cancel with how it ended.
     /// Call on the UI thread while the left button is down (the drag loop needs a thread with a window). No file system access.
     /// `image` is the cursor image from [`Shell::drag_image`]; if it is not ready only the cursor shows.
+    /// `after_lost_press`: another program took the mouse in the middle of Arke's drag (Alt+Tab,
+    /// #326). Arke, now in the background, can't read whether the button is still down, so the
+    /// drag drops only once Windows has seen the button down (otherwise it is cancelled), and
+    /// coming back over Arke doesn't hand it back (Arke's own drag is over).
     fn drag_out(
         &self,
         paths: &[PathBuf],
         image: Option<&DragImage>,
+        after_lost_press: bool,
     ) -> Result<DragOutEnd, ShellError> {
-        let _ = (paths, image);
+        let _ = (paths, image, after_lost_press);
         Ok(DragOutEnd::Finished)
     }
     /// Whether another program's window is on top of `owner` at the cursor, such as a launcher
@@ -893,12 +898,6 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// inside Arke's bounds (#128). UI thread, no file system access.
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         let _ = owner;
-        false
-    }
-    /// Whether the left mouse button (the primary one, with Windows' button swap applied) is
-    /// physically down right now. A press Arke was told is over because another program took the
-    /// mouse can still be going on: Alt+Tab in the middle of a drag (#326). UI thread.
-    fn primary_button_down(&self) -> bool {
         false
     }
     /// The top-level window under the cursor and where the cursor is in its client area

@@ -3030,7 +3030,7 @@ impl Explorer {
             self.render_path_overlays(window, cx),
             self.render_context_menu(cx),
             self.render_quick_look(window, cx),
-            self.render_confirm(cx),
+            self.render_confirm(window, cx),
         ]
         .into_iter()
         .flatten()

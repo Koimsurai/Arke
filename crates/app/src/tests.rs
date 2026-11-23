@@ -3357,6 +3357,28 @@ fn failed_delete_names_the_program_and_retries_only_what_failed(cx: &mut TestApp
     );
 }
 
+/// While a confirmation is open, nothing behind it can be clicked: a click on another file
+/// neither selects it nor closes the dialog's question about the first one (#368).
+#[gpui::test]
+fn a_confirmation_blocks_the_list_behind_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\cv", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\cv");
+    wait_until(cx, &view, "load", loaded(r"C:\cv"));
+    cx.run_until_parked();
+    let b = cx.debug_bounds("name:b.txt").expect("b.txt is drawn");
+    cx.simulate_keystrokes("home shift-delete");
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| v.confirm_title().is_some()), "asks");
+    // A click outside the dialog cancels it, and that is all it does.
+    cx.simulate_click(b.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    view.update(cx, |v, _| {
+        assert!(v.confirm_title().is_none(), "cancelled");
+        assert_eq!(selected_names(v), ["a.txt"], "the list behind never saw it");
+    });
+}
+
 /// Items on a drive without a Recycle Bin are never deleted silently: Arke asks like a
 /// permanent delete and says why; the others still go to the Recycle Bin.
 #[gpui::test]

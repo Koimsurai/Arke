@@ -645,6 +645,9 @@ pub(crate) struct Settings {
     /// Same-drive Recycle Bin moves done directly instead of through the Windows
     /// engine (`win_fast_recycle.rs`).
     pub(crate) fast_recycle: bool,
+    /// Copies of new items on local SSDs done by Arke, several files at once, instead of the
+    /// Windows engine (`win_fast_copy.rs`).
+    pub(crate) fast_copy: bool,
     pub(crate) language: Language,
     /// Ask before moving to the Recycle Bin. Permanent deletes are always confirmed by Windows.
     pub(crate) confirm_recycle: bool,
@@ -831,6 +834,7 @@ impl Default for Settings {
             nav_scope: NavScope::AcrossTabs,
             swipe_nav: true,
             fast_recycle: true,
+            fast_copy: true,
             language: Language::default(),
             confirm_recycle: false,
             warn_extension_change: true,
@@ -2119,7 +2123,11 @@ mod tests {
         assert_eq!(old.pinned, [PathBuf::from(r"D:\x")]);
         assert_eq!(old.tab_layout, TabLayout::Vertical);
         assert!(
-            old.show_extensions && old.show_thumbnails && old.keep_running && old.fast_recycle,
+            old.show_extensions
+                && old.show_thumbnails
+                && old.keep_running
+                && old.fast_recycle
+                && old.fast_copy,
             "new switches default to on"
         );
         assert!(

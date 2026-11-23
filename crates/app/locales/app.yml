@@ -3508,6 +3508,14 @@ settings.fast_recycle_desc:
   es: En unidades locales, las carpetas grandes van a la Papelera de reciclaje de una vez, sin que Windows compruebe antes cada archivo. Restaurar funciona como siempre; el resto lo gestiona Windows
   pt-BR: Em unidades locais, pastas grandes vão para a Lixeira de uma vez, em vez de o Windows verificar cada arquivo antes. Restaurar funciona normalmente; o resto fica com o Windows
   ja: ローカル ドライブでは、Windows が全ファイルを確認する代わりに、大きなフォルダーをすぐごみ箱に移動します。復元は通常どおり。それ以外は Windows に任せます
+settings.fast_copy:
+  en: "Fast copy"
+  zh-TW: "快速複製"
+  zh-CN: "快速复制"
+  de: Schnelles Kopieren
+  es: Copia rápida
+  pt-BR: Cópia rápida
+  ja: 高速コピー
 settings.language_zh:
   en: "繁體中文"
   zh-TW: "繁體中文"

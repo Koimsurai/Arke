@@ -1343,14 +1343,25 @@ impl Workspace {
                     st.swipe_nav = !st.swipe_nav;
                 }),
             ),
-            card(
-                Icon::Trash,
-                t!("settings.fast_recycle"),
-                Some(t!("settings.fast_recycle_desc")),
-                switch("fast-recycle", s.fast_recycle, |st| {
-                    st.fast_recycle = !st.fast_recycle;
-                }),
-            ),
+            // One card: the Recycle Bin, and under it copies, both done by Arke on local drives.
+            div()
+                .flex()
+                .flex_col()
+                .child(card(
+                    Icon::Trash,
+                    t!("settings.fast_recycle"),
+                    Some(t!("settings.fast_recycle_desc")),
+                    switch("fast-recycle", s.fast_recycle, |st| {
+                        st.fast_recycle = !st.fast_recycle;
+                    }),
+                ))
+                .child(sub_row(
+                    t!("settings.fast_copy"),
+                    switch("fast-copy", s.fast_copy, |st| {
+                        st.fast_copy = !st.fast_copy;
+                    }),
+                ))
+                .into_any_element(),
         ];
         let sorting = vec![
             wrapping_card(

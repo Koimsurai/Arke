@@ -396,6 +396,7 @@ pub(crate) fn apply(settings: &Settings) {
     SINGLE_CLICK.store(settings.single_click, Ordering::Relaxed);
     POINT_TO_SELECT.store(settings.point_to_select, Ordering::Relaxed);
     crate::win_fast_recycle::set_enabled(settings.fast_recycle);
+    crate::win_fast_copy::set_enabled(settings.fast_copy);
     for col in Col::ALL {
         let value = settings.column_widths.get(col).map_or(0, u32::from);
         changed |= col.slot().swap(value, Ordering::Relaxed) != value;

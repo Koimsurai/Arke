@@ -1194,7 +1194,7 @@ impl Explorer {
             parent_column: None,
             preview_gen: 0,
             zoom: preview::Zoom::default(),
-            pdf_cache: preview::PdfCache::default(),
+            pdf_cache: preview::PdfCache,
             screen: (
                 gpui::size(
                     crate::theme::scaled_px(1280.),

@@ -319,7 +319,10 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("Arke").join("arke.log")).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!status.success(), "the child should end with the panic");
-        assert!(text.contains("before the panic 1999"), "lines before the panic are lost");
+        assert!(
+            text.contains("before the panic 1999"),
+            "lines before the panic are lost"
+        );
         assert!(
             text.contains("panic (thread ") && text.contains("boom in a callback"),
             "the panic line is lost"

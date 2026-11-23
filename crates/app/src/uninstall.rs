@@ -270,6 +270,9 @@ pub(crate) enum Step {
     /// `%APPDATA%\Arke`: settings, workspaces, trusted host keys.
     DeleteSettings(PathBuf),
     KeepSettings(PathBuf),
+    /// `%APPDATA%\Arke` kept although it was to be deleted: handing folders back failed, and the
+    /// backup of what to put back is in it. Running the removal again can then finish (#360).
+    KeepForRetry(PathBuf),
     DeleteExe(PathBuf),
     KeepExe(PackageManager),
     /// The installer's uninstaller removes the files and the Start menu shortcut.
@@ -520,6 +523,7 @@ pub(crate) fn label(step: &Step) -> String {
         Step::DeleteData(p) => t!("uninstall.step_data", path = path(p)),
         Step::DeleteSettings(p) => t!("uninstall.step_settings", path = path(p)),
         Step::KeepSettings(p) => t!("uninstall.step_keep_settings", path = path(p)),
+        Step::KeepForRetry(p) => t!("uninstall.step_keep_for_retry", path = path(p)),
         Step::DeleteExe(p) => t!("uninstall.step_exe", path = path(p)),
         Step::KeepExe(m) => t!(
             "uninstall.step_keep_exe",
@@ -530,6 +534,16 @@ pub(crate) fn label(step: &Step) -> String {
         Step::KeepShared(other) => t!("uninstall.step_keep_shared", path = path(other)),
     }
     .into_owned()
+}
+
+/// The step to run in place of `step`. When handing folders back failed earlier, the settings
+/// folder holds the backup that step restores from, so it stays for running the removal again
+/// instead of being deleted (#360).
+fn after_restore(step: Step, restore_failed: bool) -> Step {
+    match step {
+        Step::DeleteSettings(folder) if restore_failed => Step::KeepForRetry(folder),
+        other => other,
+    }
 }
 
 fn io_error(err: &std::io::Error) -> Outcome {
@@ -595,6 +609,7 @@ fn run_step(step: &Step, exe: &Path) -> Outcome {
         Step::KeepSettings(_) | Step::KeepExe(_) | Step::LeaveToSetup | Step::KeepShared(_) => {
             Outcome::Done(None)
         }
+        Step::KeepForRetry(_) => Outcome::Skipped(t!("uninstall.kept_for_retry").into_owned()),
         Step::DeleteExe(path) => match check_exe(path) {
             Err(refused) => Outcome::Failed(refused.to_string()),
             Ok(()) => schedule_exe_deletion(path).map_or_else(
@@ -726,10 +741,14 @@ pub(crate) fn run_cli(args: &[String]) -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     console::stdout(lead);
+    let mut restore_failed = false;
     let results: Vec<(Step, Outcome)> = steps
         .into_iter()
         .map(|step| {
+            let step = after_restore(step, restore_failed);
             let outcome = run_step(&step, &machine.exe);
+            restore_failed |= matches!(step, Step::RestoreFolderHandler { .. })
+                && matches!(outcome, Outcome::Failed(_));
             console::stdout(&format!("{}\n", report_line(&step, &outcome)));
             (step, outcome)
         })
@@ -1096,5 +1115,31 @@ mod tests {
         )));
         assert!(text.contains(&format!("✗ {}: declined", label(&Step::RemoveService))));
         assert!(summary(&results[..2]).1);
+    }
+
+    /// #360: when handing folders back failed, the settings folder that holds its backup isn't
+    /// deleted (even with --purge): running the removal again can still finish. Otherwise it goes
+    /// as planned, and nothing else changes.
+    #[test]
+    fn the_settings_stay_when_folders_were_not_handed_back() {
+        let settings = PathBuf::from(r"C:\Users\me\AppData\Roaming\Arke");
+        assert_eq!(
+            after_restore(Step::DeleteSettings(settings.clone()), true),
+            Step::KeepForRetry(settings.clone())
+        );
+        assert_eq!(
+            after_restore(Step::DeleteSettings(settings.clone()), false),
+            Step::DeleteSettings(settings.clone())
+        );
+        let data = PathBuf::from(r"C:\Users\me\AppData\Local\Arke");
+        assert_eq!(
+            after_restore(Step::DeleteData(data.clone()), true),
+            Step::DeleteData(data)
+        );
+        assert!(label(&Step::KeepForRetry(settings.clone())).contains(r"Roaming\Arke"));
+        assert!(matches!(
+            run_step(&Step::KeepForRetry(settings), Path::new(r"C:\x\arke.exe")),
+            Outcome::Skipped(_)
+        ));
     }
 }

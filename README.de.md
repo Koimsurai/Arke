@@ -335,6 +335,21 @@ ausschalten oder zurücksetzen.
 
 </details>
 
+## Barrierefreiheit
+
+Arke arbeitet über UI Automation mit Windows-Screenreadern zusammen, der Schnittstelle von Narrator
+und NVDA; JAWS sollte ebenfalls funktionieren. Bisher wurde es mit UI-Automation-Werkzeugen geprüft,
+noch nicht von Menschen, die täglich einen Screenreader nutzen. Hilfe beim Testen ist willkommen.
+
+Das funktioniert: Dateiliste, Seitenleiste, Tabs, Pfadleiste, Suche, Einstellungen, Menüs und das
+Eigenschaften-Fenster. Noch unvollständig: Die Schaltflächen der Symbolleiste sind noch nicht mit der
+Tab-Taste erreichbar (nutzen Sie stattdessen F6 und die Tastenkombinationen), und einige Dialoge
+wurden noch nicht geprüft.
+
+Die [Tastaturanleitung](docs/keyboard.md) (auf Englisch) listet alle Tastenkombinationen nach Bereich.
+Wenn etwas nicht erreichbar ist oder nicht vorgelesen wird, [eröffnen Sie bitte ein
+Issue](https://github.com/Koimsurai/Arke/issues) und nennen Sie Ihren Screenreader samt Version.
+
 ## FAQ
 
 <details>

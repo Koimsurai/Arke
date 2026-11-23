@@ -306,6 +306,20 @@ ranks higher; turn it off or clear it in Settings › Search.
 
 </details>
 
+## Accessibility
+
+Arke works with Windows screen readers through UI Automation, the interface Narrator and NVDA use;
+JAWS should work too. So far it has been checked with UI Automation tools, not yet by people who
+use a screen reader every day, so help with testing is welcome.
+
+What works: the file list, the sidebar, tabs, the path bar, search, Settings, menus and the
+Properties window. What is still incomplete: the toolbar buttons can't be reached with Tab yet
+(use F6 and the shortcuts instead), and some dialogs haven't been checked.
+
+The [keyboard guide](docs/keyboard.md) lists every shortcut by area. If something can't be reached
+or isn't announced, please [open an issue](https://github.com/Koimsurai/Arke/issues) and mention
+your screen reader and its version.
+
 ## FAQ
 
 <details>

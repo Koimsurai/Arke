@@ -262,6 +262,17 @@ Arke 一天最多向 GitHub 檢查一次新版本，要你同意才會安裝（�
 
 </details>
 
+## 無障礙
+
+Arke 透過 UI Automation 支援 Windows 的螢幕閱讀器（Narrator 和 NVDA 使用的介面），JAWS 應該也能用。
+目前只用 UI Automation 工具檢查過，還沒有每天使用螢幕閱讀器的人實際測試，歡迎協助測試。
+
+可用的部分：檔案清單、側邊欄、分頁、路徑列、搜尋、設定、選單和內容（屬性）視窗。尚未完成的部分：
+工具列按鈕還不能用 Tab 到達（請改用 F6 和快速鍵），部分對話方塊也還沒檢查。
+
+[鍵盤指南](docs/keyboard.md)（英文）依區域列出所有快速鍵。如果有地方無法操作或沒有被唸出來，
+請[開一個 issue](https://github.com/Koimsurai/Arke/issues)，並註明使用的螢幕閱讀器與版本。
+
 ## 常見問題
 
 <details>

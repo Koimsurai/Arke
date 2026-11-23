@@ -327,6 +327,22 @@ limpe em Configurações › Pesquisa.
 
 </details>
 
+## Acessibilidade
+
+O Arke funciona com os leitores de tela do Windows por meio do UI Automation, a interface usada pelo
+Narrator e pelo NVDA; o JAWS também deve funcionar. Até agora foi verificado com ferramentas de UI
+Automation, ainda não por pessoas que usam leitor de tela no dia a dia, então ajuda nos testes é
+bem-vinda.
+
+O que funciona: a lista de arquivos, a barra lateral, as guias, a barra de caminho, a pesquisa, as
+Configurações, os menus e a janela de Propriedades. O que ainda está incompleto: os botões da barra de
+ferramentas ainda não são alcançados com Tab (use F6 e os atalhos) e alguns diálogos não foram
+verificados.
+
+O [guia de teclado](docs/keyboard.md) (em inglês) lista todos os atalhos por área. Se algo não puder
+ser alcançado ou não for anunciado, [abra uma issue](https://github.com/Koimsurai/Arke/issues) e
+informe seu leitor de tela e a versão.
+
 ## Perguntas frequentes
 
 <details>

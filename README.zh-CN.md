@@ -262,6 +262,17 @@ Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（�
 
 </details>
 
+## 无障碍
+
+Arke 通过 UI Automation 支持 Windows 的屏幕阅读器（Narrator 和 NVDA 使用的接口），JAWS 应该也能用。
+目前只用 UI Automation 工具检查过，还没有每天使用屏幕阅读器的人实际测试，欢迎协助测试。
+
+可用的部分：文件列表、侧边栏、标签页、路径栏、搜索、设置、菜单和属性窗口。尚未完成的部分：
+工具栏按钮还不能用 Tab 到达（请改用 F6 和快捷键），部分对话框也还没检查。
+
+[键盘指南](docs/keyboard.md)（英文）按区域列出所有快捷键。如果有地方无法操作或没有被读出来，
+请[提交 issue](https://github.com/Koimsurai/Arke/issues)，并注明使用的屏幕阅读器及其版本。
+
 ## 常见问题
 
 <details>

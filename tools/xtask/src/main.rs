@@ -573,10 +573,39 @@ fn sign(file: &Path, asset: &str, version: &str, key: &minisign::SecretKey) -> R
         Some("arke update signature"),
     )
     .map_err(|e| anyhow!("signing {}: {e}", file.display()))?;
+    // A key that isn't the one built into Arke would publish a release no Arke can update to.
+    let keys = arke_keys()?;
+    let checks = keys.iter().any(|key| {
+        std::fs::File::open(file)
+            .is_ok_and(|data| minisign::verify(key, &signature, data, true, false, false).is_ok())
+    });
+    ensure!(
+        checks,
+        "the signing key doesn't match the update keys in {UPDATE_KEYS_FILE}"
+    );
     let path = root().join("dist").join(format!("{asset}.minisig"));
     std::fs::write(&path, signature.to_string())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
+}
+
+/// Where Arke's update public keys are (`KEYS`).
+const UPDATE_KEYS_FILE: &str = "crates/app/src/update_sig.rs";
+
+/// The update public keys built into Arke, read from its source.
+fn arke_keys() -> Result<Vec<minisign::PublicKey>> {
+    let source = std::fs::read_to_string(root().join(UPDATE_KEYS_FILE))
+        .with_context(|| format!("reading {UPDATE_KEYS_FILE}"))?;
+    let keys: Vec<minisign::PublicKey> = source
+        .split('"')
+        .filter(|part| part.starts_with("RW"))
+        .filter_map(|part| minisign::PublicKey::from_base64(part).ok())
+        .collect();
+    ensure!(
+        !keys.is_empty(),
+        "no update keys found in {UPDATE_KEYS_FILE}"
+    );
+    Ok(keys)
 }
 
 /// Release asset name of the notes in `lang`: the English release notes, or the changelog in
@@ -928,5 +957,36 @@ mod tests {
     fn dates_are_civil() {
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(20_402), (2025, 11, 10));
+    }
+
+    #[test]
+    fn finds_the_update_key_built_into_arke() {
+        assert_eq!(arke_keys().unwrap().len(), 1);
+    }
+
+    /// A key Arke doesn't know stops the release before anything is uploaded.
+    #[test]
+    fn signing_with_another_key_stops_the_release() {
+        let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let file = std::env::temp_dir().join(format!("xtask-sign-{}.txt", std::process::id()));
+        std::fs::write(&file, "notes").unwrap();
+        let signed = sign(&file, "arke-0.0.1-notes.md", "0.0.1", &pair.sk);
+        let _ = std::fs::remove_file(&file);
+        let err = signed.unwrap_err().to_string();
+        assert!(err.contains("doesn't match"), "{err}");
+        assert!(!root().join("dist/arke-0.0.1-notes.md.minisig").exists());
+    }
+
+    #[test]
+    fn notes_have_an_asset_per_language() {
+        assert_eq!(notes_asset("0.9.0", "en"), "arke-0.9.0-notes.md");
+        assert_eq!(
+            notes_asset("0.9.0", "zh-TW"),
+            "arke-0.9.0-changelog.zh-TW.md"
+        );
+        assert_eq!(
+            trusted_comment("arke-0.9.0.exe", "0.9.0"),
+            "file:arke-0.9.0.exe version:0.9.0"
+        );
     }
 }

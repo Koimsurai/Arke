@@ -63,6 +63,46 @@ fn pending_changesets(manifest: &std::path::Path, channel: &str) {
     }
 }
 
+/// DLLs that only the window (graphics, text, accessibility, networking, devices) needs are
+/// loaded on first use instead of at start. A short-lived `arke.exe` that only hands a folder to
+/// the running Arke (Win+E, opening a folder from another program, `--api`) then skips them.
+/// Every one ships with all supported Windows versions, so a delayed load can't fail.
+const DELAY_LOADED: &[&str] = &[
+    "d3d11.dll",
+    "dxgi.dll",
+    "dcomp.dll",
+    "dwrite.dll",
+    "dwmapi.dll",
+    "uiautomationcore.dll",
+    "winhttp.dll",
+    "winmm.dll",
+    "setupapi.dll",
+    "cfgmgr32.dll",
+    "rstrtmgr.dll",
+    "netapi32.dll",
+    "mpr.dll",
+    "cldapi.dll",
+    "crypt32.dll",
+    "secur32.dll",
+    "ws2_32.dll",
+    "comctl32.dll",
+    "propsys.dll",
+    "psapi.dll",
+    "userenv.dll",
+    "version.dll",
+    "icuuc.dll",
+];
+
+fn delay_load() {
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+    for dll in DELAY_LOADED {
+        println!("cargo:rustc-link-arg-bin=arke=/DELAYLOAD:{dll}");
+    }
+    println!("cargo:rustc-link-arg-bin=arke=delayimp.lib");
+}
+
 fn main() {
     // Arke uses Windows APIs throughout: say so up front instead of failing deep in the build.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -92,6 +132,7 @@ fn main() {
     );
 
     pending_changesets(&manifest, &channel);
+    delay_load();
 
     println!("cargo:rerun-if-changed=arke.rc");
     println!("cargo:rerun-if-changed=assets/brand/arke.ico");

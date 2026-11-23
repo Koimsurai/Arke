@@ -19,6 +19,9 @@
 //!   arke --shell-host           (internal) hidden context menu process, see `shell_host.rs`
 //!   arke --thumb-host           (internal) hidden video thumbnail process, see `thumb_host.rs`
 //!   arke --pick-file            (internal) one file dialog for Settings, see `win_picker.rs`
+//!   arke -Embedding             (internal) COM starts Arke for the folder verbs, see
+//!                               `win_folder_com.rs`
+//!   arke --com-check            (internal) whether COM reaches that class
 //!
 //! By default the first Arke stays in the background after its last window closes, so later
 //! launches only open a window without reinitializing the GPU. See `instance.rs`.
@@ -111,6 +114,7 @@ mod win_eject;
 mod win_fast_copy;
 mod win_fast_recycle;
 mod win_fileops;
+mod win_folder_com;
 mod win_http;
 mod win_icons;
 mod win_inuse;
@@ -185,6 +189,9 @@ struct Args {
     new_window: bool,
     /// Search the whole computer for this text in the window that opens (`--search <text>`)
     search: Option<String>,
+    /// Started by COM for the folder verbs (`-Embedding`, `win_folder_com.rs`): like
+    /// `--background`, and when another Arke is resident, pass the calls on to it
+    embedding: bool,
 }
 
 fn parse_args() -> Args {
@@ -215,6 +222,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
         restore_explorer: false,
         new_window: false,
         search: None,
+        embedding: false,
     };
     while let Some(arg) = it.next() {
         match arg.to_str() {
@@ -249,6 +257,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
                 let _ = it.next();
                 update::mark_just_updated();
             }
+            Some(flag) if win_folder_com::is_embedding_arg(flag) => args.embedding = true,
             // An empty argument (`arke.exe ""`, a shortcut with an empty %1) names no folder.
             _ if arg.is_empty() => {}
             _ => args.path = Some(path_arg(&arg)),
@@ -341,6 +350,10 @@ fn main() -> std::process::ExitCode {
     if args.get(1).map(String::as_str) == Some(win_picker::PICK_ARG) {
         win_picker::run();
         return std::process::ExitCode::SUCCESS;
+    }
+    // Whether the shell would reach Arke's folder-open COM class (`win_folder_com.rs`).
+    if args.get(1).map(String::as_str) == Some(win_folder_com::CHECK_ARG) {
+        return win_folder_com::check_cli();
     }
     let mut args = parse_args();
     // As the folder handler the shell hands over every folder, virtual ones included: what Arke
@@ -436,11 +449,15 @@ fn app_main(mut args: Args) {
         return;
     }
     let linger = shell_window(&args);
-    let listener = if args.background {
+    let listener = if args.background || args.embedding {
         // Background launch: if a resident process exists we're not needed; otherwise become
-        // resident without a window.
+        // resident without a window. Started by COM, the folders come through the class.
         match instance::listen() {
             Some(listener) => Some(listener),
+            None if args.embedding => {
+                win_folder_com::forward_until_idle();
+                return;
+            }
             None => return,
         }
     } else if args.resident || args.quit {
@@ -478,7 +495,7 @@ fn app_main(mut args: Args) {
         return;
     }
 
-    let background = args.background;
+    let background = args.background || args.embedding;
     let bench = args
         .window_bench()
         .map(|mode| Bench::new(mode, args.bench_out));
@@ -486,6 +503,10 @@ fn app_main(mut args: Args) {
     let start_page = args.page;
     let start_search = args.search;
     let resident = listener.is_some();
+    // The folder verbs may call the resident Arke over COM (#340).
+    if resident && bench.is_none() && folder_handler::shell_allowed() {
+        let _ = win_folder_com::serve();
+    }
     log::info!(
         "{}",
         if resident {
@@ -596,9 +617,15 @@ fn app_main(mut args: Args) {
         }
         // The shell registration follows the setting in every process that is running, resident
         // or not (a standalone Arke started through the folder verb keeps it repaired too).
+        // Only the resident Arke answers COM, so only it decides whether the verbs use it.
         if bench.is_none()
             && let Some(handler) = folder_handler::Handler::real()
         {
+            let handler = if resident {
+                handler.with_com_check(Arc::new(win_folder_com::works))
+            } else {
+                handler
+            };
             folder_handler::follow_setting(&store, handler, cx);
         }
         if bench.is_none() {

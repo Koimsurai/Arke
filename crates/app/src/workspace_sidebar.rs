@@ -4546,6 +4546,15 @@ fn on_drive(path: &Path, drive: &Path) -> bool {
 
 /// Windows is removing or dismounting `drive` (from the taskbar or another app): every window moves
 /// its tabs off it.
+/// A drive came or went: every window's sidebar reads its drives again (#330).
+pub(crate) fn reload_places_everywhere(cx: &mut App) {
+    for window in cx.windows() {
+        if let Some(workspace) = window.downcast::<Workspace>() {
+            let _ = workspace.update(cx, |ws, _, cx| ws.reload_all_places(cx));
+        }
+    }
+}
+
 pub(crate) fn leave_drive_everywhere(drive: &Path, cx: &mut App) {
     for window in cx.windows() {
         if let Some(workspace) = window.downcast::<Workspace>() {

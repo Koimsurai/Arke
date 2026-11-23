@@ -77,7 +77,7 @@ mod welcome;
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
-pub(crate) use sidebar::leave_drive_everywhere;
+pub(crate) use sidebar::{leave_drive_everywhere, reload_places_everywhere};
 pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no

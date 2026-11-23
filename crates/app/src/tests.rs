@@ -9060,3 +9060,32 @@ fn ctrl_double_click_opens_a_folder_in_a_new_tab(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// #330: a drive plugged in while Arke runs shows in the sidebar of every window right away,
+/// not only after a restart, and goes away when pulled out.
+#[gpui::test]
+fn a_drive_plugged_in_shows_in_the_sidebar(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\d", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\d");
+    cx.run_until_parked();
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    let has_usb = |v: &Explorer| v.places.iter().any(|p| p.path == Path::new(r"E:\"));
+    assert!(!view.update(cx, |v, _| has_usb(v)));
+
+    shell.extra_places.lock().push(Place {
+        label: "USB Drive (E:)".into(),
+        path: PathBuf::from(r"E:\"),
+        kind: PlaceKind::Drive {
+            remote: false,
+            space: None,
+        },
+    });
+    cx.cx.update(crate::workspace::reload_places_everywhere);
+    wait_until(cx, &view, "the new drive", has_usb);
+
+    shell.extra_places.lock().clear();
+    cx.cx.update(crate::workspace::reload_places_everywhere);
+    wait_until(cx, &view, "the drive gone", |v| !has_usb(v));
+}

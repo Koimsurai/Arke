@@ -1111,7 +1111,6 @@ fn same_refs_volume(src: &Path, dst: &Path) -> bool {
 fn copy_one(src: &Path, dst: &Path, size: u64, chunks: &Chunks<'_>) -> windows::core::Result<()> {
     let mut flags = COPY_FILE_FAIL_IF_EXISTS;
     // Only the rare huge file asks about the volume (cached), so small files pay nothing.
-    // Only the rare huge file asks about the volume (cached), so small files pay nothing.
     if size >= UNBUFFERED_FILE && no_buffering(size, same_refs_volume(src, dst)) {
         flags |= COPY_FILE_NO_BUFFERING;
     }

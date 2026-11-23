@@ -269,10 +269,18 @@ fn route_row(
         Ok(_) => (t!("update.route_desc").into_owned(), theme::text_subtle()),
         Err(err) => (err.to_string(), theme::danger()),
     };
+    let a11y = crate::a11y::active();
+    let spoken = SharedString::from(desc.clone());
     div()
         .flex()
         .items_center()
         .gap(theme::s_12())
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(
+                t!("update.route").into_owned().into(),
+                Some(spoken),
+            ))
+        })
         .child(
             div()
                 .flex_1()
@@ -289,6 +297,7 @@ fn route_row(
                 ),
         )
         .child(div().flex_none().child(field))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()
 }
 
@@ -357,10 +366,19 @@ fn row(
     desc: Option<Cow<'static, str>>,
     control: AnyElement,
 ) -> AnyElement {
+    // The control on the right is named after the row for screen readers (#322).
+    let a11y = crate::a11y::active();
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
     div()
         .flex()
         .items_center()
         .gap(theme::s_12())
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(
+                SharedString::from(title.to_string()),
+                spoken,
+            ))
+        })
         .child(
             div()
                 .flex_1()
@@ -377,6 +395,7 @@ fn row(
                 })),
         )
         .child(div().flex_none().child(control))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()
 }
 

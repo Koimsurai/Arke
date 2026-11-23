@@ -526,6 +526,17 @@ impl Explorer {
                             .text_color(theme::text_muted()),
                     )
                     .tooltip_below(t!("sel.more").to_string())
+                    // A screen reader's Enter: opens where Shift+F10 would (#322).
+                    .a11y_on_click({
+                        let this = cx.entity().downgrade();
+                        move |window, cx| {
+                            let size = window.viewport_size();
+                            let at = gpui::point(size.width / 2., size.height / 3.);
+                            let _ = this.update(cx, |this, cx| {
+                                this.open_context_menu(at, window, cx);
+                            });
+                        }
+                    })
                     // Opens on press, like the other menus.
                     .on_mouse_down(
                         MouseButton::Left,
@@ -715,7 +726,14 @@ impl Explorer {
     /// Screen reader name of the file list: the folder shown, or the search.
     fn list_a11y_label(&self) -> String {
         if self.search_mode {
-            return t!("filter.search_placeholder").into_owned();
+            return if self.scope() == super::scope::Scope::Computer {
+                t!("filter.computer_placeholder").into_owned()
+            } else {
+                self.search_in_name().map_or_else(
+                    || t!("filter.search_placeholder").into_owned(),
+                    |name| t!("filter.search_in_placeholder", name = name).into_owned(),
+                )
+            };
         }
         self.display_path().map_or_default(|p| {
             p.file_name().map_or_else(

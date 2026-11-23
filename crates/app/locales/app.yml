@@ -8933,6 +8933,14 @@ a11y.context_menu:
   es: Menú contextual
   pt-BR: Menu de contexto
   ja: コンテキスト メニュー
+a11y.results:
+  en: Results
+  zh-TW: 結果
+  zh-CN: 结果
+  de: Ergebnisse
+  es: Resultados
+  pt-BR: Resultados
+  ja: 結果
 a11y.subfolders_of:
   en: "Subfolders of %{name}"
   zh-TW: "%{name} 的子資料夾"

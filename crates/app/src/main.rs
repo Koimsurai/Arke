@@ -661,12 +661,19 @@ fn app_main(mut args: Args) {
 
 /// Drives removed, locked or dismounted from outside Arke: watchers on them were already closed
 /// on the notification thread (`win_devnotify.rs`); here every window moves its tabs off the drive.
+/// A drive plugged in or pulled out also has every sidebar read its drives again.
 fn follow_drive_removals(cx: &mut App) {
     let events = win_devnotify::start();
     cx.spawn(async move |cx| {
         while let Ok(event) = events.recv_async().await {
-            let win_devnotify::DriveEvent::Leaving(drive) = event;
-            cx.update(|cx| workspace::leave_drive_everywhere(&drive, cx));
+            match event {
+                win_devnotify::DriveEvent::Leaving(drive) => {
+                    cx.update(|cx| workspace::leave_drive_everywhere(&drive, cx));
+                }
+                win_devnotify::DriveEvent::Changed => {
+                    cx.update(workspace::reload_places_everywhere);
+                }
+            }
         }
     })
     .detach();

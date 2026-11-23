@@ -41,6 +41,9 @@ const DRIVE_CDROM: u32 = 5;
 pub(crate) enum DriveEvent {
     /// The drive is being removed or dismounted: tabs showing it should move away.
     Leaving(PathBuf),
+    /// A drive letter came or went (a USB drive plugged in or pulled out): the sidebar's drive
+    /// list is read again (#330).
+    Changed,
 }
 
 /// A device message about one volume.
@@ -326,6 +329,9 @@ fn on_device_change(wparam: WPARAM, lparam: LPARAM) {
                     DBT_DEVICEREMOVECOMPLETE => watcher.apply(letter, DevEvent::Removed),
                     _ => {}
                 }
+            }
+            if matches!(kind, DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE) {
+                let _ = watcher.events.send(DriveEvent::Changed);
             }
         } else if header.dbch_devicetype == DBT_DEVTYP_HANDLE {
             // SAFETY: the header says this is a DEV_BROADCAST_HANDLE.

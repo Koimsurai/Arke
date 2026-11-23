@@ -28,7 +28,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -44,8 +44,13 @@ use crate::rank::Stat;
 /// Rebuild once the overlay exceeds this many records.
 #[cfg(not(test))]
 const OVERLAY_MAX: usize = 100_000;
+/// Removal records looked over again once this many more have piled up ([`Shared::drop_needless_removals`]).
+#[cfg(not(test))]
+const NEEDLESS_REMOVALS_EVERY: usize = 4096;
 #[cfg(test)]
 const OVERLAY_MAX: usize = 20;
+#[cfg(test)]
+const NEEDLESS_REMOVALS_EVERY: usize = 4;
 /// List at most this many items in a moved-in folder; more means rebuild.
 #[cfg(not(test))]
 const MOVED_IN_MAX: usize = 50_000;
@@ -289,6 +294,8 @@ struct Shared {
     merging: AtomicBool,
     /// Merges done so far.
     merges: std::sync::atomic::AtomicU64,
+    /// Removal records left after [`Shared::drop_needless_removals`] last looked them over.
+    removals_looked_at: AtomicUsize,
     /// Rebuilds (walks or MFT listings) started so far.
     rebuilds: std::sync::atomic::AtomicU64,
     /// Cache of which folders are Rust projects (their `target` is build output).
@@ -386,6 +393,7 @@ impl IndexService {
             last_rebuild: Mutex::new(None),
             merging: AtomicBool::new(false),
             merges: std::sync::atomic::AtomicU64::new(0),
+            removals_looked_at: AtomicUsize::new(0),
             rebuilds: std::sync::atomic::AtomicU64::new(0),
             cargo_targets: Mutex::new(std::collections::HashMap::new()),
             pending: Mutex::new(Vec::new()),
@@ -1433,11 +1441,82 @@ impl Shared {
                 }
             }
             self.forget_what_is_gone(&dirs, &listed);
+            self.drop_needless_removals();
             let recorded = self.overlay.lock().len();
             if recorded > OVERLAY_MAX {
                 self.request_build(Rebuild::OverlayFull(recorded));
             }
         }
+    }
+
+    /// Each temporary file made and deleted since the index was built leaves a removal record that
+    /// changes nothing, and they pile up until the next merge (tens of thousands, over 10 MB). Once
+    /// [`NEEDLESS_REMOVALS_EVERY`] more are in, drops those whose path the index doesn't have, in
+    /// one pass over the index. Not while a walk or a merge is making a new index: that one may
+    /// still have them.
+    fn drop_needless_removals(&self) {
+        let count = self.overlay.lock().removed_count();
+        let looked_at = self.removals_looked_at.load(Ordering::Relaxed);
+        if count < looked_at {
+            // A merge or build took records away since.
+            self.removals_looked_at.store(count, Ordering::Relaxed);
+            return;
+        }
+        if count < looked_at + NEEDLESS_REMOVALS_EVERY {
+            return;
+        }
+        let state = || {
+            (
+                self.building.load(Ordering::Acquire) || self.merging.load(Ordering::Acquire),
+                self.rebuilds.load(Ordering::Acquire),
+                self.merges.load(Ordering::Acquire),
+            )
+        };
+        let before = state();
+        if before.0 {
+            return;
+        }
+        let Some(index) = self.index.read().clone() else {
+            return;
+        };
+        let candidates = self.overlay.lock().removed_hiding_nothing_added();
+        let mut parents: Vec<PathBuf> = candidates
+            .iter()
+            .filter_map(|p| p.parent().map(Path::to_path_buf))
+            .collect();
+        parents.sort_unstable();
+        parents.dedup();
+        let indexed: HashMap<PathBuf, HashSet<String>> = index
+            .children_of(&parents, &self.stopped)
+            .into_iter()
+            .map(|(dir, names)| {
+                (
+                    dir,
+                    names.into_iter().map(|(n, _)| n.to_lowercase()).collect(),
+                )
+            })
+            .collect();
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let needless: Vec<PathBuf> = candidates
+            .into_iter()
+            .filter(|path| {
+                let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+                    return false;
+                };
+                !indexed
+                    .get(dir)
+                    .is_some_and(|names| names.contains(&name.to_string_lossy().to_lowercase()))
+            })
+            .collect();
+        let mut overlay = self.overlay.lock();
+        // A new index came, or is being made, meanwhile: it was looked at for the old one.
+        if state() == before {
+            overlay.forget_removed(&needless);
+        }
+        self.removals_looked_at
+            .store(overlay.removed_count(), Ordering::Relaxed);
     }
 
     /// Moved-in (or renamed) folder: record its contents in the overlay too (the index has the old
@@ -2421,6 +2500,65 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(50));
         assert!(found(&svc, "$R1").is_empty());
+    }
+
+    /// Temporary files made and deleted since the build leave no removal records behind; a file
+    /// the index has stays gone, and a new folder removed with what it held leaves nothing in
+    /// search.
+    #[test]
+    fn removals_of_what_the_index_never_had_are_dropped() {
+        let fs = FakeFs::new();
+        let me = Path::new(r"C:\Users\me");
+        fs.insert_dir(
+            me,
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
+        wait("index built", || ready(&svc));
+        let removed = || svc.shared.overlay.lock().removed_count();
+        let emit = |paths: Vec<PathBuf>| fs.emit(Path::new(r"C:\"), &WatchEvent::Changed(paths));
+
+        // A folder made after the build, with a file in it, then removed: its record stays, so the
+        // file inside isn't found.
+        let made = me.join("made");
+        fs.add_entry(me, Entry::new("made", EntryKind::Dir, 0, None, 0));
+        fs.insert_dir(
+            &made,
+            vec![Entry::new("inside.txt", EntryKind::File, 1, None, 0)],
+        );
+        emit(vec![made.clone(), made.join("inside.txt")]);
+        wait("inside found", || found(&svc, "inside").len() == 1);
+        fs.remove(me, "made");
+        fs.remove_dir(&made);
+        emit(vec![made]);
+        wait("the removed folder's file gone", || {
+            found(&svc, "inside").is_empty()
+        });
+        // The indexed file is deleted too.
+        fs.remove(me, "report.docx");
+        emit(vec![me.join("report.docx")]);
+        wait("the indexed file gone", || found(&svc, "report").is_empty());
+
+        // Temporary files: made, seen, deleted.
+        for i in 0..6 {
+            let name = format!("~tmp{i}.tmp");
+            fs.add_file(me, &name, 1);
+            emit(vec![me.join(&name)]);
+            wait("seen", || found(&svc, &format!("~tmp{i}")).len() == 1);
+            fs.remove(me, &name);
+            emit(vec![me.join(&name)]);
+            wait("gone", || found(&svc, &format!("~tmp{i}")).is_empty());
+        }
+        wait("the temporary ones forgotten", || removed() <= 2);
+        assert!(
+            found(&svc, "report").is_empty(),
+            "the indexed file stays gone"
+        );
+        assert!(
+            found(&svc, "inside").is_empty(),
+            "nothing of the removed folder"
+        );
+        assert!(found(&svc, "~tmp").is_empty());
     }
 
     /// #310: renamed to change only the case, reported under the old spelling (which Windows

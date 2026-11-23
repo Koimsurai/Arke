@@ -1300,6 +1300,7 @@ pub(crate) fn drag_out(
         let source = drag_source::ReturnAware::new(home);
         let returned = Rc::clone(&source.returned);
         let source: windows::Win32::System::Ole::IDropSource = source.into();
+        let _modal = gpui_windows::begin_modal_drag();
         let effect = SHDoDragDrop(
             None,
             &data,

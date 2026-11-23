@@ -103,3 +103,11 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   before the message returns `TRUE`. This runs before the window state is looked at, and the
   handler must not touch GPUI (Arke answers from a snapshot, see `crates/app/src/api.rs` and
   `docs/integration.md`). Other `WM_COPYDATA` messages get the default handling. (#193)
+- `src/direct_write.rs` `get_name`: a font with no name in the UI locale or in en-us (a Chinese
+  font named only in zh-TW, on a zh-CN system) takes its first name instead of failing, so it is
+  no longer left out of the font list with a "No localised string" error per font. (#343)
+- `src/window.rs` `begin_modal_drag` and `src/events.rs` `handle_hit_test_msg`: while the app runs
+  Windows' modal drag loop (`SHDoDragDrop`, started from inside event dispatch, so the app is
+  borrowed), `WM_NCHITTEST` doesn't ask the app where the window controls are. Asking could only
+  fail, and logged a "RefCell already borrowed" error on every mouse move over the window. Arke's
+  `crates/app/src/win_fileops.rs` `drag_out` holds the guard. (#338, #343)

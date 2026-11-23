@@ -1745,6 +1745,35 @@ pub fn set_popup_mouse_passthrough(hwnd: isize, passthrough: bool) {
     }
 }
 
+thread_local! {
+    /// Arke: an OLE drag started from inside GPUI's event dispatch is running on this thread.
+    static IN_MODAL_DRAG: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Arke: marks this thread as running Windows' modal drag loop (`DoDragDrop`) until the guard is
+/// dropped. The loop is entered from inside GPUI's event dispatch, so the app is borrowed and
+/// asking it where the window controls are can only fail: each `WM_NCHITTEST` (every mouse move
+/// over the window) logged a "RefCell already borrowed" error (#338, #343). Meanwhile the hit
+/// test answers without asking; nothing during a drag is a title bar or a caption button.
+pub fn begin_modal_drag() -> ModalDragGuard {
+    IN_MODAL_DRAG.with(|d| d.set(true));
+    ModalDragGuard(())
+}
+
+/// Ends the modal drag mark when dropped (see [`begin_modal_drag`]).
+#[must_use]
+pub struct ModalDragGuard(());
+
+impl Drop for ModalDragGuard {
+    fn drop(&mut self) {
+        IN_MODAL_DRAG.with(|d| d.set(false));
+    }
+}
+
+pub(crate) fn in_modal_drag() -> bool {
+    IN_MODAL_DRAG.with(Cell::get)
+}
+
 pub(crate) fn window_from_hwnd(hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {
     if hwnd.is_invalid() {
         return None;

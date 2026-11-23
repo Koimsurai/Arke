@@ -1935,7 +1935,15 @@ fn get_name(string: IDWriteLocalizedStrings, locale: &HSTRING) -> Result<String>
                 &mut exists as _,
             )?
         };
-        anyhow::ensure!(exists.as_bool(), "No localised string for {locale}");
+        // Arke patch (#343): a font named only in other languages (a Chinese font with just a
+        // zh-TW name on a zh-CN system) was skipped with an error; take its first name instead.
+        if !exists.as_bool() {
+            anyhow::ensure!(
+                unsafe { string.GetCount() } > 0,
+                "No localised string for {locale}"
+            );
+            locale_name_index = 0;
+        }
     }
 
     let name_length = unsafe { string.GetStringLength(locale_name_index) }? as usize;

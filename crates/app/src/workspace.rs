@@ -388,7 +388,7 @@ pub(crate) struct Workspace {
     /// Saved workspaces panel.
     workspaces: Option<(Entity<saved::WorkspacesPanel>, Subscription)>,
     /// The saved workspace this window was opened from or saved as last (#269).
-    shown_workspace: Option<saved::ShownWorkspace>,
+    saved_shown: Option<saved::ShownWorkspace>,
     _saved_workspaces: Subscription,
     /// Open Settings page (holds focus).
     settings_panel: Option<settings_panel::SettingsPage>,
@@ -754,7 +754,7 @@ impl Workspace {
             closing_palette: None,
             net_dialog: None,
             workspaces: None,
-            shown_workspace: None,
+            saved_shown: None,
             _saved_workspaces: saved_workspaces,
             settings_panel: None,
             recycle_page: None,

@@ -215,7 +215,7 @@ impl Workspace {
         let events = cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
             if let PanelEvent::Renamed { from, to } = event {
                 // The panel stays open; the name shown beside the tabs follows.
-                if let Some(shown) = this.shown_workspace.as_mut()
+                if let Some(shown) = this.saved_shown.as_mut()
                     && shown.name.to_lowercase() == from.to_lowercase()
                 {
                     shown.name.clone_from(to);
@@ -227,7 +227,7 @@ impl Workspace {
             match event {
                 PanelEvent::Open(name) => this.open_saved_workspace(name, window, cx),
                 PanelEvent::Saved(name) => {
-                    this.shown_workspace = Some(ShownWorkspace {
+                    this.saved_shown = Some(ShownWorkspace {
                         name: name.clone(),
                         tabs: this.tabs.iter().map(|t| t.id).collect(),
                     });
@@ -307,7 +307,7 @@ impl Workspace {
             }
         }
         self.keep_pins_first();
-        self.shown_workspace = (!opened.is_empty()).then(|| ShownWorkspace {
+        self.saved_shown = (!opened.is_empty()).then(|| ShownWorkspace {
             name: saved.name.clone(),
             tabs: opened,
         });
@@ -385,7 +385,7 @@ impl Workspace {
     /// The name of the saved workspace this window shows, while one of its tabs is open and it
     /// is still saved.
     fn shown_workspace_name(&self, cx: &mut App) -> Option<String> {
-        let shown = self.shown_workspace.as_ref()?;
+        let shown = self.saved_shown.as_ref()?;
         if !self.tabs.iter().any(|t| shown.tabs.contains(&t.id)) {
             return None;
         }

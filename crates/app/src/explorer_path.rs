@@ -747,6 +747,45 @@ impl Explorer {
             .into_any_element()
     }
 
+    /// The › before the first segment: Home, Documents, the drives and network shares (#354).
+    fn roots_chevron(open: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        chevron("crumb-roots", open, t!("a11y.roots"))
+            .debug_selector(|| "crumb-roots".to_owned())
+            .a11y_on_expand(crumb_roots(cx.entity().downgrade()))
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                let root = this.current_root();
+                if this.reopens_dismissed(Menu::Roots, root.as_deref(), e) {
+                    return;
+                }
+                this.show_roots(e.position().x, e.is_keyboard(), window, cx);
+            }))
+    }
+
+    /// The › after the last segment: the subfolders of the folder shown.
+    fn tail_chevron(dir: PathBuf, open: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        chevron_button("crumb-tail", open, Some(&dir))
+            .a11y_on_expand(crumb_folders(
+                cx.entity().downgrade(),
+                Some(dir.clone()),
+                None,
+            ))
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                if this.reopens_dismissed(Menu::Tail, None, e) {
+                    return;
+                }
+                this.show_folders(
+                    dir.clone(),
+                    None,
+                    e.position().x,
+                    e.is_keyboard(),
+                    window,
+                    cx,
+                );
+            }))
+    }
+
     fn render_path_bar(
         &mut self,
         compact: bool,
@@ -808,43 +847,13 @@ impl Explorer {
         let open_menu = self.path_popup.as_ref().map(|p| p.menu);
         // Leading ›: Home, Documents, the drives and network shares (left out while the bar is
         // shrunk).
-        let lead = (current_dir.is_some() && !compact).then(|| {
-            chevron("crumb-roots", open_menu == Some(Menu::Roots), t!("a11y.roots"))
-                .debug_selector(|| "crumb-roots".to_owned())
-                .a11y_on_expand(crumb_roots(cx.entity().downgrade()))
-                .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    let root = this.current_root();
-                    if this.reopens_dismissed(Menu::Roots, root.as_deref(), e) {
-                        return;
-                    }
-                    this.show_roots(e.position().x, e.is_keyboard(), window, cx);
-                }))
-        });
+        let lead = (current_dir.is_some() && !compact)
+            .then(|| Self::roots_chevron(open_menu == Some(Menu::Roots), cx));
         // Trailing ›: subfolders of the current folder (left out while the bar is shrunk).
         let tail_open = open_menu == Some(Menu::Tail);
-        let tail = current_dir.filter(|_| !compact).map(|dir| {
-            chevron_button("crumb-tail", tail_open, Some(&dir))
-                .a11y_on_expand(crumb_folders(
-                    cx.entity().downgrade(),
-                    Some(dir.clone()),
-                    None,
-                ))
-                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    if this.reopens_dismissed(Menu::Tail, None, e) {
-                        return;
-                    }
-                    this.show_folders(
-                        dir.clone(),
-                        None,
-                        e.position().x,
-                        e.is_keyboard(),
-                        window,
-                        cx,
-                    );
-                }))
-        });
+        let tail = current_dir
+            .filter(|_| !compact)
+            .map(|dir| Self::tail_chevron(dir, tail_open, cx));
         // The bar fills its slot, so its highlight covers all of it.
         bar.cursor_text()
             .hover(|s| s.bg(theme::wash()))

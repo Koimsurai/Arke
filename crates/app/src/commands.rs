@@ -374,6 +374,28 @@ pub(crate) fn find(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
 }
 
+/// Commands that move keyboard focus into Arke's window (a box, the palette, a page). When one is
+/// run through the integration API the window comes to the front, so typing goes where the
+/// caller expects; the others leave the foreground alone.
+const MOVES_FOCUS: &[&str] = &[
+    "command_palette",
+    "go_to_folder",
+    "open_workspaces",
+    "open_settings",
+    "focus_next_region",
+    "focus_prev_region",
+    "focus_path_bar",
+    "focus_filter",
+    "focus_search",
+    "focus_computer_search",
+    "focus_other_pane",
+];
+
+/// Whether running command `id` moves keyboard focus into Arke's window.
+pub(crate) fn moves_focus(id: &str) -> bool {
+    MOVES_FOCUS.contains(&id)
+}
+
 /// The commands the integration API may run (`api.rs`): all but the ones that change files.
 pub(crate) fn runnable() -> impl Iterator<Item = &'static Command> {
     COMMANDS.iter().filter(|c| !c.changes_files)
@@ -598,4 +620,21 @@ fn apply(store: &Entity<SettingsStore>, cx: &mut App) {
     }
     rebuild(&overrides, cx);
     cx.set_global(Applied(overrides));
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn focus_moving_commands_are_real_and_runnable() {
+        for id in MOVES_FOCUS {
+            let command = find(id).unwrap_or_else(|| panic!("no command {id}"));
+            assert!(!command.changes_files, "{id} changes files");
+        }
+        assert!(moves_focus("focus_search"));
+        assert!(!moves_focus("refresh"));
+        assert!(!moves_focus("copy_as_path"));
+        assert!(!moves_focus("toggle_hidden"));
+    }
 }

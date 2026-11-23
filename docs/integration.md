@@ -149,7 +149,9 @@ its `kind` is `folder` and treats every other kind as no folder.
 
 `ok` means the request was accepted: the path exists (or couldn't be checked in time, a share
 that doesn't answer, say) and the command is known and allowed. Opening and running then happen
-right after the reply.
+right after the reply. A `run` of a command that moves keyboard focus into Arke (the command
+palette, the path bar, the search boxes, Settings...) also brings the window to the front; other
+commands leave the foreground alone.
 
 ### `commands`
 

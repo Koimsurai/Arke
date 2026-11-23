@@ -1611,9 +1611,16 @@ fn apply_api(cx: &mut App, services: &Services, action: api::Action) {
                     .flatten()
             });
             if let Some(host) = host {
+                let front = commands::moves_focus(command.id);
                 let _ = host.update(cx, |workspace, window, cx| {
+                    if front {
+                        bring_to_front(window, None);
+                    }
                     workspace.api_run(command, window, cx);
                 });
+                if front {
+                    cx.activate(true);
+                }
             }
         }
     }

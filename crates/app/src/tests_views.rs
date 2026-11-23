@@ -942,3 +942,53 @@ fn expanding_a_folder_keeps_the_sections(cx: &mut TestAppContext) {
     let rows = view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
     assert_eq!(rows, Some(8), "5 items plus 3 headers");
 }
+
+/// #335: a rename changes the list in place, at the same length. The sections are made again
+/// from the new list, not drawn from the one before it.
+#[gpui::test]
+fn sections_follow_a_rename(cx: &mut TestAppContext) {
+    use crate::explorer::groups::Row;
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\g",
+        vec![
+            file("apple.txt", 1),
+            file("banana.zip", 1),
+            file("zebra.part", 1),
+        ],
+    );
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\g");
+    wait_until(cx, &view, "load", loaded(r"C:\g"));
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
+    });
+    cx.run_until_parked();
+    let headers = |cx: &mut gpui::VisualTestContext| {
+        view.update(cx, |v, _| {
+            v.groups()
+                .expect("grouped")
+                .rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Header { label, count, .. } => Some((label.to_string(), *count)),
+                    Row::Item(_) => None,
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let names = |list: &[(&str, usize)]| {
+        list.iter()
+            .map(|(l, n)| ((*l).to_owned(), *n))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(headers(cx), names(&[("A", 1), ("B", 1), ("Z", 1)]));
+    // A download finishing: "zebra.part" becomes "banana2.zip".
+    let dir = std::path::Path::new(r"C:\g");
+    fs.remove(dir, "zebra.part");
+    fs.add_file(dir, "banana2.zip", 1);
+    fs.emit_changed(dir, &["zebra.part", "banana2.zip"]);
+    wait_until(cx, &view, "renamed", |v| {
+        view_names(v).iter().any(|n| n == "banana2.zip")
+    });
+    assert_eq!(headers(cx), names(&[("A", 1), ("B", 2)]));
+}

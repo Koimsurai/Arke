@@ -25,7 +25,7 @@ pub(crate) enum HttpError {
         url: String,
     },
     /// A WinHTTP call failed (no network, TLS, proxy, timeout, ...).
-    #[error("{}", .0.message())]
+    #[error("{}", describe(.0))]
     Windows(#[from] windows::core::Error),
     /// The server answered with a status other than 200.
     #[error("HTTP {0}")]
@@ -39,6 +39,44 @@ pub(crate) enum HttpError {
     /// The caller stopped the download.
     #[error("stopped")]
     Stopped,
+}
+
+/// The text for a failed WinHTTP call. WinHTTP's own codes (12001–12999: timeout, name not
+/// resolved, can't connect, TLS) aren't in the system message table, so `message()` is empty for
+/// them; their text is in winhttp.dll, in the Windows display language. The code if neither has it.
+fn describe(error: &windows::core::Error) -> String {
+    let system = error.message();
+    if !system.trim().is_empty() {
+        return system;
+    }
+    let code = error.code().0.cast_unsigned();
+    if code >> 16 == 0x8007 && (12001..13000).contains(&(code & 0xFFFF)) {
+        use windows::Win32::System::Diagnostics::Debug::{
+            FORMAT_MESSAGE_FROM_HMODULE, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
+        };
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        // SAFETY: winhttp.dll is loaded (the failed call came from it); the buffer outlives the
+        // call and its length is passed.
+        unsafe {
+            if let Ok(module) = GetModuleHandleW(w!("winhttp.dll")) {
+                let mut buf = [0u16; 512];
+                let n = FormatMessageW(
+                    FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_IGNORE_INSERTS,
+                    Some(module.0.cast_const()),
+                    code & 0xFFFF,
+                    0,
+                    windows::core::PWSTR(buf.as_mut_ptr()),
+                    buf.len() as u32,
+                    None,
+                ) as usize;
+                let text = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+                if !text.trim().is_empty() {
+                    return format!("{} ({})", text.trim(), code & 0xFFFF);
+                }
+            }
+        }
+    }
+    format!("0x{code:08X}")
 }
 
 /// WinHTTP handle, closed on drop.
@@ -305,6 +343,20 @@ mod tests {
             split_url("http://example.com/x"),
             Err(super::HttpError::NotHttps { .. })
         ));
+    }
+
+    /// #343: a WinHTTP failure (here "name not resolved") says what went wrong instead of
+    /// nothing; the system message table doesn't have WinHTTP's codes.
+    #[test]
+    fn a_winhttp_error_has_text() {
+        let error =
+            windows::core::Error::from(windows::core::HRESULT(0x8007_2EE7_u32.cast_signed()));
+        // A real failure comes after a WinHTTP call, so winhttp.dll is loaded; same here.
+        // SAFETY: takes no arguments.
+        let _ = unsafe { windows::Win32::Networking::WinHttp::WinHttpCheckPlatform() };
+        let text = super::HttpError::Windows(error).to_string();
+        assert!(text.contains("12007"), "{text}");
+        assert!(text.len() > "(12007)".len(), "{text}");
     }
 }
 

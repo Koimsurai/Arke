@@ -594,12 +594,13 @@ impl Shell for RemoteShell {
         &self,
         paths: &[PathBuf],
         image: Option<&DragImage>,
+        after_lost_press: bool,
     ) -> Result<DragOutEnd, ShellError> {
         // Remote drags hand over staged local copies (see explorer_dnd), never URLs.
         if paths.iter().any(|p| remote(p).is_some()) {
             return Ok(DragOutEnd::Finished);
         }
-        self.inner.drag_out(paths, image)
+        self.inner.drag_out(paths, image, after_lost_press)
     }
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         self.inner.covered_at_cursor(owner)

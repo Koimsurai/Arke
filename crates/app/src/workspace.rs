@@ -77,7 +77,7 @@ mod welcome;
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, switch};
-pub(crate) use sidebar::leave_drive_everywhere;
+pub(crate) use sidebar::{leave_drive_everywhere, reload_places_everywhere};
 pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
@@ -2618,6 +2618,7 @@ impl Workspace {
                 |_, _, _| (),
                 move |_, (), window, _| {
                     let shell = Arc::clone(&shell);
+                    let moved = Arc::clone(&shell);
                     window.on_mouse_event(move |e: &gpui::MouseMoveEvent, phase, window, cx| {
                         if phase != gpui::DispatchPhase::Bubble
                             || e.pressed_button != Some(MouseButton::Left)
@@ -2631,36 +2632,30 @@ impl Workspace {
                             && e.position.y >= px(0.)
                             && e.position.x < size.width
                             && e.position.y < size.height
-                            && !shell.covered_at_cursor(Explorer::owner_from(window));
-                        if inside || !cx.has_global::<PendingDragOut>() {
-                            return;
+                            && !moved.covered_at_cursor(Explorer::owner_from(window));
+                        if !inside {
+                            hand_drag_to_windows(&moved, window, cx, false);
                         }
-                        let pending = cx.remove_global::<PendingDragOut>();
-                        // Keep Arke's drag alive (just hidden) so it can resume if the cursor comes back.
-                        cx.set_global(crate::explorer::DraggingOutside);
-                        window.refresh();
-                        let shell = Arc::clone(&shell);
-                        let handle = window.window_handle();
-                        // Enter the Windows drag loop only after this mouse event is handled, outside GPUI's event dispatch.
-                        cx.spawn(async move |cx| {
-                            let end = shell.drag_out(&pending.paths, pending.image.as_ref());
-                            if let Err(err) = &end {
-                                log::warn!("drag out to another program failed: {err}");
-                            }
-                            let _ = cx.update_window(handle, |_, window, cx| {
-                                if cx.has_global::<crate::explorer::DraggingOutside>() {
-                                    cx.remove_global::<crate::explorer::DraggingOutside>();
-                                }
-                                if matches!(end, Ok(crate::shell::DragOutEnd::Returned)) {
-                                    // Dragged back in: Arke's drag continues, and leaving again hands off to Windows again.
-                                    cx.set_global(pending);
-                                } else {
-                                    crate::explorer::stop_drag(window, cx);
-                                }
-                                window.refresh();
-                            });
-                        })
-                        .detach();
+                    });
+                    // Another program took the mouse in the middle of the drag (Alt+Tab, #326):
+                    // the window is told the press is over (`handle_capture_changed_msg` in our
+                    // GPUI patch), though the button may still be down. Windows' drag goes on
+                    // across the switch, as File Explorer's does; Arke's own can't (GPUI ends it
+                    // on this release), so there is nothing to come back to. Arke, now in the
+                    // background, can't read the button (`GetAsyncKeyState` says up), so Windows'
+                    // drag drops only once it has seen the button down itself.
+                    window.on_mouse_event(move |e: &gpui::MouseUpEvent, phase, window, cx| {
+                        let lost = e.click_count == 0 && e.position.x < px(-50_000.);
+                        if phase == gpui::DispatchPhase::Capture
+                            && lost
+                            && e.button == MouseButton::Left
+                            && cx.has_global::<crate::explorer::PendingDragOut>()
+                        {
+                            log::info!(
+                                "press lost mid-drag: the files go to Windows drag and drop"
+                            );
+                            hand_drag_to_windows(&shell, window, cx, true);
+                        }
                     });
                 },
             )
@@ -2674,6 +2669,48 @@ impl Workspace {
     fn panes_width_hint(&self) -> gpui::Pixels {
         self.last_viewport_width - theme::sidebar_width()
     }
+}
+
+/// Hands the files of the current drag to Windows drag and drop, once (the drag-out data is taken):
+/// the cursor left the window, or another program took the mouse mid-drag (`after_lost_press`).
+fn hand_drag_to_windows(
+    shell: &Arc<dyn crate::shell::Shell>,
+    window: &mut Window,
+    cx: &mut App,
+    after_lost_press: bool,
+) {
+    use crate::explorer::PendingDragOut;
+    if !cx.has_global::<PendingDragOut>() {
+        return;
+    }
+    let pending = cx.remove_global::<PendingDragOut>();
+    // Keep Arke's drag alive (just hidden) so it can resume if the cursor comes back.
+    cx.set_global(crate::explorer::DraggingOutside);
+    window.refresh();
+    let shell = Arc::clone(shell);
+    let handle = window.window_handle();
+    // Enter the Windows drag loop only after this mouse event is handled, outside GPUI's event
+    // dispatch.
+    cx.spawn(async move |cx| {
+        let end = shell.drag_out(&pending.paths, pending.image.as_ref(), after_lost_press);
+        if let Err(err) = &end {
+            log::warn!("drag out to another program failed: {err}");
+        }
+        let _ = cx.update_window(handle, |_, window, cx| {
+            if cx.has_global::<crate::explorer::DraggingOutside>() {
+                cx.remove_global::<crate::explorer::DraggingOutside>();
+            }
+            if matches!(end, Ok(crate::shell::DragOutEnd::Returned)) && cx.has_active_drag() {
+                // Dragged back in: Arke's drag continues, and leaving again hands off to Windows
+                // again.
+                cx.set_global(pending);
+            } else {
+                crate::explorer::stop_drag(window, cx);
+            }
+            window.refresh();
+        });
+    })
+    .detach();
 }
 
 /// Where `window` is, in logical pixels; when maximized, the size it restores to.

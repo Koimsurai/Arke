@@ -582,11 +582,17 @@ pub fn handled_by(reg: &dyn Registry, exe: &Path) -> bool {
         .any(|path| same_exe(&path, exe))
 }
 
-/// Windows paths compare without case.
+/// The same exe: the same path without case, or the same file through a link. Scoop registers
+/// `apps\arke\current\arke.exe` (a junction) but runs a manifest's uninstall script from the
+/// version folder (`apps\arke\0.8.0\arke.exe`), so "Remove Arke" didn't see the registration as
+/// its own and left folders pointing at the deleted exe.
 fn same_exe(a: &Path, b: &Path) -> bool {
-    a.as_os_str()
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+    let text = |p: &Path| p.as_os_str().to_string_lossy().to_lowercase();
+    text(a) == text(b)
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if text(&a) == text(&b)
+        )
 }
 
 /// Who handles each command Arke can register, one line each, for problem reports: Win+E and the
@@ -869,6 +875,36 @@ mod tests {
         // Win+E alone is enough, and case doesn't matter.
         reg.put(WIN_E_CMD, "", &format!("\"{}\" --home", EXE.to_uppercase()));
         assert!(handled_by(&reg, exe()));
+    }
+
+    /// Scoop registers through its `current` junction and runs the uninstall from the version
+    /// folder: the same exe, so "Remove Arke" hands folders back to File Explorer.
+    #[test]
+    fn a_registration_through_a_junction_is_this_exe() {
+        let base = std::env::temp_dir().join(format!("arke-test-junction-{}", std::process::id()));
+        let version = base.join("0.8.0");
+        std::fs::create_dir_all(&version).unwrap();
+        std::fs::write(version.join("arke.exe"), b"x").unwrap();
+        let current = base.join("current");
+        let linked = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&current)
+            .arg(&version)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(linked, "junction");
+        let reg = MemoryRegistry::default();
+        reg.put(
+            OPEN_CMD,
+            "",
+            &cmd(&current.join("arke.exe").display().to_string()),
+        );
+        let mine = handled_by(&reg, &version.join("arke.exe"));
+        let other = handled_by(&reg, &base.join("other").join("arke.exe"));
+        let _ = std::fs::remove_dir(&current);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(mine);
+        assert!(!other);
     }
 
     fn cmd(exe: &str) -> String {

@@ -28,7 +28,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -44,8 +44,13 @@ use crate::rank::Stat;
 /// Rebuild once the overlay exceeds this many records.
 #[cfg(not(test))]
 const OVERLAY_MAX: usize = 100_000;
+/// Removal records looked over again once this many more have piled up ([`Shared::drop_needless_removals`]).
+#[cfg(not(test))]
+const NEEDLESS_REMOVALS_EVERY: usize = 4096;
 #[cfg(test)]
 const OVERLAY_MAX: usize = 20;
+#[cfg(test)]
+const NEEDLESS_REMOVALS_EVERY: usize = 4;
 /// List at most this many items in a moved-in folder; more means rebuild.
 #[cfg(not(test))]
 const MOVED_IN_MAX: usize = 50_000;
@@ -81,6 +86,19 @@ const GAP_BACKOFF: Duration = Duration::from_millis(300);
 const GAP_BACKOFF_MAX: Duration = Duration::from_mins(30);
 #[cfg(test)]
 const GAP_BACKOFF_MAX: Duration = Duration::from_millis(1200);
+/// After the index service went away, when to try following again (it restarts within seconds
+/// when updated); about a minute in all before treating it as a journal gap.
+#[cfg(not(test))]
+const REFOLLOW_WAITS: &[Duration] = &[
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+];
+#[cfg(test)]
+const REFOLLOW_WAITS: &[Duration] = &[Duration::from_millis(10), Duration::from_millis(20)];
 /// How often to check whether the index is stale while running.
 const REFRESH_CHECK: Duration = Duration::from_mins(10);
 /// A root that couldn't be listed (offline share) is tried again after this.
@@ -289,6 +307,8 @@ struct Shared {
     merging: AtomicBool,
     /// Merges done so far.
     merges: std::sync::atomic::AtomicU64,
+    /// Removal records left after [`Shared::drop_needless_removals`] last looked them over.
+    removals_looked_at: AtomicUsize,
     /// Rebuilds (walks or MFT listings) started so far.
     rebuilds: std::sync::atomic::AtomicU64,
     /// Cache of which folders are Rust projects (their `target` is build output).
@@ -386,6 +406,7 @@ impl IndexService {
             last_rebuild: Mutex::new(None),
             merging: AtomicBool::new(false),
             merges: std::sync::atomic::AtomicU64::new(0),
+            removals_looked_at: AtomicUsize::new(0),
             rebuilds: std::sync::atomic::AtomicU64::new(0),
             cargo_targets: Mutex::new(std::collections::HashMap::new()),
             pending: Mutex::new(Vec::new()),
@@ -1029,18 +1050,7 @@ impl Shared {
                 fallback.push(i);
                 continue;
             };
-            let weak = Arc::downgrade(self);
-            let caught_up = AtomicBool::new(false);
-            let followed = journal.follow(
-                root,
-                cursor,
-                Box::new(move |event| {
-                    if let Some(shared) = weak.upgrade() {
-                        shared.on_journal(i, event, &caught_up);
-                    }
-                }),
-            );
-            match followed {
+            match self.follow_root(journal.as_ref(), i, cursor) {
                 Ok(f) => followers.push(f),
                 Err(err) => {
                     log::warn!("can't follow journal {}: {err}", root.display());
@@ -1057,6 +1067,67 @@ impl Shared {
                 }
             }
             self.watch_roots_at(&Arc::downgrade(self), &fallback);
+        }
+    }
+
+    /// Follows the journal of root `i` from `cursor`; its events go to [`Self::on_journal`].
+    fn follow_root(
+        self: &Arc<Self>,
+        journal: &dyn Journal,
+        i: usize,
+        cursor: Cursor,
+    ) -> std::io::Result<Box<dyn Send>> {
+        let root = self.opts.roots.get(i).cloned().unwrap_or_default();
+        let weak = Arc::downgrade(self);
+        let caught_up = AtomicBool::new(false);
+        journal.follow(
+            &root,
+            cursor,
+            Box::new(move |event| {
+                if let Some(shared) = weak.upgrade() {
+                    shared.on_journal(i, event, &caught_up);
+                }
+            }),
+        )
+    }
+
+    /// The index service went away (stopped, or being updated): once it's back, root `i` is
+    /// followed again from its last position, which misses nothing, instead of rebuilding the
+    /// whole index (#343). Only if it doesn't come back is it a journal gap. A rebuild that
+    /// starts meanwhile follows every root itself.
+    fn follow_again(self: &Arc<Self>, i: usize) {
+        let weak = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("arke-index-refollow".into())
+            .spawn(move || {
+                for wait in REFOLLOW_WAITS {
+                    std::thread::sleep(*wait);
+                    let Some(shared) = weak.upgrade() else { return };
+                    if shared.stopped.load(Ordering::Relaxed)
+                        || shared.building.load(Ordering::Acquire)
+                    {
+                        return;
+                    }
+                    let (Some(journal), Some(cursor)) = (
+                        shared.opts.journal.clone(),
+                        shared.latest.lock().get(i).copied().flatten(),
+                    ) else {
+                        break;
+                    };
+                    match shared.follow_root(journal.as_ref(), i, cursor) {
+                        Ok(follower) => {
+                            shared.followers.lock().push(follower);
+                            return;
+                        }
+                        Err(err) => log::info!("global search: index service not back yet: {err}"),
+                    }
+                }
+                if let Some(shared) = weak.upgrade() {
+                    shared.journal_gap();
+                }
+            });
+        if spawned.is_err() {
+            self.journal_gap();
         }
     }
 
@@ -1101,6 +1172,22 @@ impl Shared {
                         .map_or_default(|r| r.display().to_string())
                 );
                 self.journal_gap();
+            }
+            JournalEvent::Disconnected => {
+                if let Some(slot) = self.caught_up.lock().get_mut(root) {
+                    *slot = false;
+                }
+                if caught_up.swap(false, Ordering::Relaxed) {
+                    self.live.fetch_sub(1, Ordering::Relaxed);
+                }
+                log::info!(
+                    "global search: index service gone while following {}, following again once it's back",
+                    self.opts
+                        .roots
+                        .get(root)
+                        .map_or_default(|r| r.display().to_string())
+                );
+                self.follow_again(root);
             }
         }
     }
@@ -1412,6 +1499,15 @@ impl Shared {
                     // Access denied etc.: unknown, don't record.
                     Err(_) => continue,
                 };
+                // Found under another spelling (the case changed, or a short 8.3 name): nothing is
+                // left under this one, and the item is recorded under the name it has (#310).
+                let path = match self.fs.listed_name(&path) {
+                    Some(listed) => {
+                        self.overlay.lock().record(path.clone(), None);
+                        path.with_file_name(listed)
+                    }
+                    None => path,
+                };
                 let walk = moved_in && descends_into(&entry);
                 self.overlay
                     .lock()
@@ -1424,11 +1520,82 @@ impl Shared {
                 }
             }
             self.forget_what_is_gone(&dirs, &listed);
+            self.drop_needless_removals();
             let recorded = self.overlay.lock().len();
             if recorded > OVERLAY_MAX {
                 self.request_build(Rebuild::OverlayFull(recorded));
             }
         }
+    }
+
+    /// Each temporary file made and deleted since the index was built leaves a removal record that
+    /// changes nothing, and they pile up until the next merge (tens of thousands, over 10 MB). Once
+    /// [`NEEDLESS_REMOVALS_EVERY`] more are in, drops those whose path the index doesn't have, in
+    /// one pass over the index. Not while a walk or a merge is making a new index: that one may
+    /// still have them.
+    fn drop_needless_removals(&self) {
+        let count = self.overlay.lock().removed_count();
+        let looked_at = self.removals_looked_at.load(Ordering::Relaxed);
+        if count < looked_at {
+            // A merge or build took records away since.
+            self.removals_looked_at.store(count, Ordering::Relaxed);
+            return;
+        }
+        if count < looked_at + NEEDLESS_REMOVALS_EVERY {
+            return;
+        }
+        let state = || {
+            (
+                self.building.load(Ordering::Acquire) || self.merging.load(Ordering::Acquire),
+                self.rebuilds.load(Ordering::Acquire),
+                self.merges.load(Ordering::Acquire),
+            )
+        };
+        let before = state();
+        if before.0 {
+            return;
+        }
+        let Some(index) = self.index.read().clone() else {
+            return;
+        };
+        let candidates = self.overlay.lock().removed_hiding_nothing_added();
+        let mut parents: Vec<PathBuf> = candidates
+            .iter()
+            .filter_map(|p| p.parent().map(Path::to_path_buf))
+            .collect();
+        parents.sort_unstable();
+        parents.dedup();
+        let indexed: HashMap<PathBuf, HashSet<String>> = index
+            .children_of(&parents, &self.stopped)
+            .into_iter()
+            .map(|(dir, names)| {
+                (
+                    dir,
+                    names.into_iter().map(|(n, _)| n.to_lowercase()).collect(),
+                )
+            })
+            .collect();
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let needless: Vec<PathBuf> = candidates
+            .into_iter()
+            .filter(|path| {
+                let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+                    return false;
+                };
+                !indexed
+                    .get(dir)
+                    .is_some_and(|names| names.contains(&name.to_string_lossy().to_lowercase()))
+            })
+            .collect();
+        let mut overlay = self.overlay.lock();
+        // A new index came, or is being made, meanwhile: it was looked at for the old one.
+        if state() == before {
+            overlay.forget_removed(&needless);
+        }
+        self.removals_looked_at
+            .store(overlay.removed_count(), Ordering::Relaxed);
     }
 
     /// Moved-in (or renamed) folder: record its contents in the overlay too (the index has the old
@@ -2414,6 +2581,88 @@ mod tests {
         assert!(found(&svc, "$R1").is_empty());
     }
 
+    /// Temporary files made and deleted since the build leave no removal records behind; a file
+    /// the index has stays gone, and a new folder removed with what it held leaves nothing in
+    /// search.
+    #[test]
+    fn removals_of_what_the_index_never_had_are_dropped() {
+        let fs = FakeFs::new();
+        let me = Path::new(r"C:\Users\me");
+        fs.insert_dir(
+            me,
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
+        wait("index built", || ready(&svc));
+        let removed = || svc.shared.overlay.lock().removed_count();
+        let emit = |paths: Vec<PathBuf>| fs.emit(Path::new(r"C:\"), &WatchEvent::Changed(paths));
+
+        // A folder made after the build, with a file in it, then removed: its record stays, so the
+        // file inside isn't found.
+        let made = me.join("made");
+        fs.add_entry(me, Entry::new("made", EntryKind::Dir, 0, None, 0));
+        fs.insert_dir(
+            &made,
+            vec![Entry::new("inside.txt", EntryKind::File, 1, None, 0)],
+        );
+        emit(vec![made.clone(), made.join("inside.txt")]);
+        wait("inside found", || found(&svc, "inside").len() == 1);
+        fs.remove(me, "made");
+        fs.remove_dir(&made);
+        emit(vec![made]);
+        wait("the removed folder's file gone", || {
+            found(&svc, "inside").is_empty()
+        });
+        // The indexed file is deleted too.
+        fs.remove(me, "report.docx");
+        emit(vec![me.join("report.docx")]);
+        wait("the indexed file gone", || found(&svc, "report").is_empty());
+
+        // Temporary files: made, seen, deleted.
+        for i in 0..6 {
+            let name = format!("~tmp{i}.tmp");
+            fs.add_file(me, &name, 1);
+            emit(vec![me.join(&name)]);
+            wait("seen", || found(&svc, &format!("~tmp{i}")).len() == 1);
+            fs.remove(me, &name);
+            emit(vec![me.join(&name)]);
+            wait("gone", || found(&svc, &format!("~tmp{i}")).is_empty());
+        }
+        wait("the temporary ones forgotten", || removed() <= 2);
+        assert!(
+            found(&svc, "report").is_empty(),
+            "the indexed file stays gone"
+        );
+        assert!(
+            found(&svc, "inside").is_empty(),
+            "nothing of the removed folder"
+        );
+        assert!(found(&svc, "~tmp").is_empty());
+    }
+
+    /// #310: renamed to change only the case, reported under the old spelling (which Windows
+    /// still finds). Search shows the name it has now, once.
+    #[test]
+    fn a_case_only_rename_is_found_under_its_new_name() {
+        let fs = FakeFs::new();
+        let me = Path::new(r"C:\Users\me");
+        fs.insert_dir(
+            me,
+            vec![Entry::new("report.docx", EntryKind::File, 1, None, 0)],
+        );
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, opts(None), || {});
+        wait("index built", || ready(&svc));
+        fs.remove(me, "report.docx");
+        fs.add_file(me, "Report.docx", 1);
+        fs.emit(
+            Path::new(r"C:\"),
+            &WatchEvent::Changed(vec![me.join("report.docx")]),
+        );
+        wait("the new spelling", || {
+            found(&svc, "report") == [r"C:\Users\me\Report.docx"]
+        });
+    }
+
     #[test]
     fn serves_the_cached_index_while_rebuilding() {
         let dir = std::env::temp_dir().join(format!("arke-index-test-{}", std::process::id()));
@@ -2854,6 +3103,44 @@ mod tests {
         journal.recreate(3);
         wait("second rebuild", || found(&svc, "second-report").len() == 1);
         wait("journal refollowed", || journal.follow_calls() > calls);
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #343: the index service going away (stopped, updated) isn't a journal gap. Following
+    /// starts again from the last position, which still gets the changes made meanwhile, and
+    /// nothing is walked again.
+    #[test]
+    fn the_service_going_away_is_followed_again_not_rebuilt() {
+        let (dir, cache) = temp_cache("refollow");
+        let fs = FakeFs::new();
+        let a = Path::new(r"C:\a");
+        fs.insert_dir(
+            a,
+            vec![Entry::new("old-report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let journal = FakeJournal::new(1);
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
+        wait("first build", || ready(&svc) && svc.status().live);
+        let walked = fs.read_dir_calls();
+        let calls = journal.follow_calls();
+        let rebuilds = svc.rebuilds();
+
+        journal.disconnect();
+        // Changed while the service is away: still in the journal.
+        fs.add_file(a, "meanwhile-report.txt", 1);
+        journal.push(a.join("meanwhile-report.txt"), false);
+        wait("followed again", || journal.follow_calls() > calls);
+        wait("the change made meanwhile", || {
+            found(&svc, "meanwhile-report").len() == 1
+        });
+        wait("live again", || svc.status().live);
+        assert_eq!(fs.read_dir_calls(), walked, "nothing walked again");
+        assert_eq!(svc.rebuilds(), rebuilds, "no rebuild");
         drop(svc);
         let _ = std::fs::remove_dir_all(&dir);
     }

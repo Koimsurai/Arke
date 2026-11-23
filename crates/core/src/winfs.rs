@@ -514,6 +514,44 @@ fn entry_of(data: &WIN32_FIND_DATAW) -> Option<crate::entry::Entry> {
     )
 }
 
+/// The name the item at `path` is listed under in its folder (see
+/// [`crate::fs::Fs::listed_name`]). `None` when it can't be found this way: gone, a drive root,
+/// a path too long for a plain one, or a name with wildcard characters.
+pub(crate) fn listed_name(path: &Path) -> Option<OsString> {
+    let name = path.file_name()?;
+    if name
+        .encode_wide()
+        .any(|c| c == u16::from(b'*') || c == u16::from(b'?') || c == 0)
+    {
+        return None;
+    }
+    let wide_path = wide(path);
+    if wide_path.len() > FIND_PATTERN_MAX + 1 {
+        return None;
+    }
+    let mut data = WIN32_FIND_DATAW::default();
+    // SAFETY: `wide_path` is NUL-terminated; `data` is a WIN32_FIND_DATAW as FindExInfoBasic
+    // wants.
+    let find = unsafe {
+        FindFirstFileExW(
+            PCWSTR(wide_path.as_ptr()),
+            FindExInfoBasic,
+            (&raw mut data).cast(),
+            FindExSearchNameMatch,
+            None,
+            windows::Win32::Storage::FileSystem::FIND_FIRST_EX_FLAGS(0),
+        )
+    }
+    .ok()?;
+    drop(Find(find));
+    let len = data
+        .cFileName
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(data.cFileName.len());
+    Some(OsString::from_wide(&data.cFileName[..len]))
+}
+
 /// Lists `dir` for a folder size walk (see [`crate::fs::Fs::scan_sizes`]).
 pub(crate) fn scan_sizes(dir: &Path, each: &mut dyn FnMut(SizeItem)) -> io::Result<()> {
     let pattern = wide(&dir.join("*"));

@@ -1075,8 +1075,13 @@ impl PlatformWindow for WindowsWindow {
         self.state.frames.wake();
     }
 
-    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
-        self.state.callbacks.input.set(Some(callback));
+    fn on_input(&self, mut callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
+        // Arke: noted while it runs, so a hit test arriving meanwhile doesn't ask the app (see
+        // `begin_modal_drag`).
+        self.state.callbacks.input.set(Some(Box::new(move |input| {
+            let _dispatching = DispatchingInput::enter();
+            callback(input)
+        })));
     }
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
@@ -1743,6 +1748,61 @@ pub fn set_popup_mouse_passthrough(hwnd: isize, passthrough: bool) {
     {
         window.mouse_passthrough.set(passthrough);
     }
+}
+
+thread_local! {
+    /// Arke: an OLE drag started from inside GPUI's event dispatch is running on this thread.
+    static IN_MODAL_DRAG: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Arke: marks this thread as running Windows' modal drag loop (`DoDragDrop`) until the guard is
+/// dropped. The loop is entered from inside GPUI's event dispatch, so the app is borrowed and
+/// asking it where the window controls are can only fail: each `WM_NCHITTEST` (every mouse move
+/// over the window) logged a "RefCell already borrowed" error (#338, #343). Meanwhile the hit
+/// test answers without asking; nothing during a drag is a title bar or a caption button.
+pub fn begin_modal_drag() -> ModalDragGuard {
+    IN_MODAL_DRAG.with(|d| d.set(true));
+    ModalDragGuard(())
+}
+
+/// Ends the modal drag mark when dropped (see [`begin_modal_drag`]).
+#[must_use]
+pub struct ModalDragGuard(());
+
+impl Drop for ModalDragGuard {
+    fn drop(&mut self) {
+        IN_MODAL_DRAG.with(|d| d.set(false));
+    }
+}
+
+thread_local! {
+    /// Arke: how many input callbacks are running on this thread (nested ones included).
+    static DISPATCHING_INPUT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Arke: marks an input callback as running. The app is borrowed for as long as one runs, so a
+/// `WM_NCHITTEST` that something inside it lets through (a message loop run by a handler, such as
+/// Windows' drag loop) can't ask the app where the window controls are: that only failed and
+/// logged a "RefCell already borrowed" error on every mouse move (#338, #343).
+struct DispatchingInput;
+
+impl DispatchingInput {
+    fn enter() -> Self {
+        DISPATCHING_INPUT.with(|n| n.set(n.get() + 1));
+        Self
+    }
+}
+
+impl Drop for DispatchingInput {
+    fn drop(&mut self) {
+        DISPATCHING_INPUT.with(|n| n.set(n.get().saturating_sub(1)));
+    }
+}
+
+/// Whether asking the app for a hit test now could only fail: in Windows' modal drag loop, or
+/// inside an input callback.
+pub(crate) fn in_modal_drag() -> bool {
+    IN_MODAL_DRAG.with(Cell::get) || DISPATCHING_INPUT.with(Cell::get) > 0
 }
 
 pub(crate) fn window_from_hwnd(hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {

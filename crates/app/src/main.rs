@@ -552,7 +552,7 @@ fn app_main(mut args: Args) {
         // The integration API (`api.rs`): `WM_COPYDATA` to any window, and the resident pipe.
         let api_queue = start_api(cx, &services);
         if bench.is_none() {
-            follow_drive_removals(cx);
+            follow_drive_removals(cx, Arc::clone(&services.remotes));
             teracopy::detect_in_background();
             quicklook::detect_in_background();
         }
@@ -667,8 +667,10 @@ fn app_main(mut args: Args) {
 /// Drives removed, locked or dismounted from outside Arke: watchers on them were already closed
 /// on the notification thread (`win_devnotify.rs`); here every window moves its tabs off the drive.
 /// A drive plugged in or pulled out also has every sidebar read its drives again.
-fn follow_drive_removals(cx: &mut App) {
+fn follow_drive_removals(cx: &mut App, remotes: Arc<arke_remote::Remotes>) {
     let events = win_devnotify::start();
+    // Phones already connected (#292); later ones arrive as `Phones` below.
+    remote_shell::refresh_phones(Arc::clone(&remotes), cx);
     cx.spawn(async move |cx| {
         while let Ok(event) = events.recv_async().await {
             match event {
@@ -677,6 +679,10 @@ fn follow_drive_removals(cx: &mut App) {
                 }
                 win_devnotify::DriveEvent::Changed => {
                     cx.update(workspace::reload_places_everywhere);
+                }
+                win_devnotify::DriveEvent::Phones => {
+                    let remotes = Arc::clone(&remotes);
+                    cx.update(|cx| remote_shell::refresh_phones(remotes, cx));
                 }
             }
         }

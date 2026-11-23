@@ -709,6 +709,7 @@ const fn in_this_pc(kind: PlaceKind) -> bool {
             | PlaceKind::Cloud
             | PlaceKind::Drive { remote: false, .. }
             | PlaceKind::Wsl
+            | PlaceKind::Phone
     )
 }
 
@@ -836,6 +837,7 @@ pub(crate) const fn place_icon(kind: PlaceKind) -> Icon {
         PlaceKind::Drive { remote: true, .. } => Icon::NetDrive,
         PlaceKind::Drive { .. } => Icon::Drive,
         PlaceKind::Wsl => Icon::Terminal,
+        PlaceKind::Phone => Icon::Phone,
         PlaceKind::Cloud => Icon::Cloud,
     }
 }
@@ -2827,6 +2829,7 @@ impl Workspace {
             }
             PlaceKind::Folder(kf) => (known_icon(kf), None),
             PlaceKind::Wsl => (Icon::Terminal, None),
+            PlaceKind::Phone => (Icon::Phone, None),
             PlaceKind::Cloud => (Icon::Cloud, None),
         };
         // Drives get free space on the right and a thin usage bar under the label.

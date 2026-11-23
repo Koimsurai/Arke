@@ -308,6 +308,8 @@ pub(crate) enum PlaceKind {
     Wsl,
     /// Cloud sync folders such as OneDrive (sync roots registered with Windows).
     Cloud,
+    /// A phone or other portable device (`mtp://`, #292).
+    Phone,
 }
 
 /// How cloud files are kept on this machine (`Shell::set_cloud_pin`).

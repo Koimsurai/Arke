@@ -798,7 +798,17 @@ impl Job {
             let full = dir.join(&name);
             let name = name.to_string_lossy();
             match self.fs.stat(&full) {
-                Ok(entry) if !entry.concealed(show_hidden) => delta.upserts.push(entry),
+                Ok(entry) if !entry.concealed(show_hidden) => {
+                    // Found under another spelling (the case changed, or a short 8.3 name): the
+                    // item goes in under the name it has, and nothing stays under this one (#310).
+                    match self.fs.listed_name(&full) {
+                        Some(listed) => {
+                            delta.upserts.push(entry.renamed(&listed));
+                            delta.removed.push(name.into());
+                        }
+                        None => delta.upserts.push(entry),
+                    }
+                }
                 // Gone, or now hidden: remove from the list.
                 _ => delta.removed.push(name.into()),
             }
@@ -828,8 +838,10 @@ pub fn resort(entries: &[Entry], spec: SortSpec) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entry::EntryKind;
     use crate::fake::FakeFs;
     use crate::fs::RealFs;
+    use crate::model::DirModel;
 
     type Events = Arc<Mutex<Vec<IoEvent>>>;
 
@@ -1444,6 +1456,89 @@ mod tests {
         crate::fs::mark_ui_thread();
         let fs = FakeFs::new();
         let _ = fs.read_dir(Path::new(r"C:\"));
+    }
+
+    /// The list shown after everything received so far: the complete listing, then each delta.
+    fn shown(events: &Events) -> Vec<String> {
+        let mut model = DirModel::new(PathBuf::new(), 1, SortSpec::default());
+        for e in events.lock().iter() {
+            match e {
+                IoEvent::Listing {
+                    complete: true,
+                    entries,
+                    ..
+                } => {
+                    model.set_snapshot(Arc::clone(entries), SortSpec::default(), true);
+                }
+                IoEvent::Delta { delta, .. } => {
+                    model.apply_delta(delta.clone());
+                }
+                _ => {}
+            }
+        }
+        model.entries.iter().map(|e| e.name.to_string()).collect()
+    }
+
+    /// Waits until the list shown is `want`; whether it got there.
+    fn shows(events: &Events, want: &[&str]) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if shown(events) == want {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// #310: renamed to change only the case. Windows still finds the old spelling, so the item
+    /// must go in under the name it has now, and the old spelling must leave the list.
+    #[test]
+    fn a_rename_that_only_changes_case_leaves_one_item() {
+        let fs = FakeFs::new();
+        let dir = PathBuf::from(r"C:\w");
+        fs.insert_dir(
+            &dir,
+            vec![Entry::new("report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let (svc, events) = service(Arc::clone(&fs) as Arc<dyn Fs>);
+        svc.navigate(dir.clone(), opts(true));
+        assert!(shows(&events, &["report.txt"]));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fs.watcher_count(&dir) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        fs.remove(&dir, "report.txt");
+        fs.add_file(&dir, "Report.txt", 1);
+        // Only the old spelling is reported: the item is found under it all the same.
+        fs.emit_changed(&dir, &["report.txt"]);
+        assert!(
+            shows(&events, &["Report.txt"]),
+            "shown: {:?}",
+            shown(&events)
+        );
+        svc.cancel();
+    }
+
+    /// The same on the real file system, in the temp directory.
+    #[test]
+    fn real_fs_case_only_rename_leaves_one_item() {
+        let dir = std::env::temp_dir().join(format!("arke-core-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.txt"), b"x").unwrap();
+        let (svc, events) = service(Arc::new(RealFs));
+        svc.navigate(dir.clone(), opts(true));
+        assert!(shows(&events, &["report.txt"]));
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::rename(dir.join("report.txt"), dir.join("Report.txt")).unwrap();
+        assert!(
+            shows(&events, &["Report.txt"]),
+            "shown: {:?}",
+            shown(&events)
+        );
+        svc.cancel();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Real file system: only touches the temp directory.

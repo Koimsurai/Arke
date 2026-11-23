@@ -13,6 +13,14 @@
 //!
 //! Measured: a registry command 9 to 20 ms, a packaged one 2 to 140 ms, against 0.25 to 1.8 s
 //! for the whole Windows menu, which waits for its slowest extension.
+//!
+//! "Send to" is listed here too, from its folder, instead of through Windows' own Send To
+//! extension (#278). That extension fills its submenu in the background a few items at a time,
+//! with no sign when it is done, taking 0.5 to 1.6 s: read too early it gave only its first
+//! items, and pinned ones went missing. Its folder holds every target (shortcuts, and Windows'
+//! own "Compressed folder", "Desktop", "Documents" files), listed in a few ms; a target runs the
+//! way File Explorer runs it, the selection dropped on that item's drop target. Removable drives
+//! follow, as in File Explorer.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -42,6 +50,28 @@ use super::{Pidls, clean_label, fill_single, menu_directory, parse_pidls};
 use crate::shell::{ShellError, ShellMenu, ShellMenuEntry};
 use crate::win_fileops::wide;
 use crate::win_menu_parts::{HandlerKind, MenuHandler};
+use windows::Win32::Foundation::{E_FAIL, POINTL};
+use windows::Win32::Storage::FileSystem::{
+    FILE_FLAGS_AND_ATTRIBUTES, GetDriveTypeW, GetLogicalDrives,
+};
+use windows::Win32::System::Com::IDataObject;
+use windows::Win32::System::Ole::{
+    DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE, IDropTarget,
+};
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
+use windows::Win32::System::WindowsProgramming::{DRIVE_REMOTE, DRIVE_REMOVABLE};
+use windows::Win32::UI::Shell::Common::STRRET;
+use windows::Win32::UI::Shell::{
+    BHID_DataObject, CMF_NORMAL, FOLDERID_SendTo, IEnumIDList, ILFindLastID, ILFree, IShellFolder,
+    KF_FLAG_DEFAULT, SHBindToParent, SHCONTF_FOLDERS, SHCONTF_NONFOLDERS, SHFILEINFOW,
+    SHGDN_FORPARSING, SHGDN_NORMAL, SHGDNF, SHGFI_DISPLAYNAME, SHGFI_ICON, SHGFI_SMALLICON,
+    SHGetDesktopFolder, SHGetFileInfoW, SHGetKnownFolderPath, SHParseDisplayName, StrCmpLogicalW,
+    StrRetToStrW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreatePopupMenu, DestroyMenu, GetMenuStringW, MF_BYPOSITION,
+};
 
 /// Reads `handler` (a registry or packaged command) for `paths` as a menu of its own: one item,
 /// or none when it doesn't show for them. Runs on the part's own thread.
@@ -363,6 +393,11 @@ fn icon_of(spec: &str) -> Option<arke_core::thumbs::Thumbnail> {
     }
     .ok()
     .ok()?;
+    icon_pixels_of(icon)
+}
+
+/// `icon`'s pixels; the icon is destroyed.
+fn icon_pixels_of(icon: HICON) -> Option<arke_core::thumbs::Thumbnail> {
     // SAFETY: icon is ours; both bitmaps from GetIconInfo are freed, then the icon.
     unsafe {
         let mut parts = ICONINFO::default();
@@ -434,6 +469,11 @@ enum Action {
         command: IExplorerCommand,
         items: IShellItemArray,
     },
+    /// A "Send to" target: the items dropped on it.
+    Drop {
+        target: PathBuf,
+        items: IShellItemArray,
+    },
     /// No row: a submenu's own place, so ids and places stay in step.
     None,
 }
@@ -484,6 +524,291 @@ fn run_verb(
     result
 }
 
+/// The "Send to" label once read: it only changes with the display language, which takes a new
+/// session (so a new menu host).
+static SEND_TO_LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The targets as last listed, with their icons: kept while the folder is unchanged (adding,
+/// removing or renaming a target changes its time), so a menu doesn't read them again.
+type Targets = Vec<(String, PathBuf, Option<arke_core::thumbs::Thumbnail>)>;
+static SEND_TO_TARGETS: parking_lot::Mutex<Option<(PathBuf, std::time::SystemTime, Targets)>> =
+    parking_lot::Mutex::new(None);
+
+/// The "Send to" label read before, without creating Windows' Send To extension.
+pub(super) fn cached_send_to_label() -> Option<String> {
+    SEND_TO_LABEL.get().cloned()
+}
+
+/// The "Send to" submenu's label as Windows shows it: its extension, initialized for the items
+/// (`menu`), adds the submenu but fills it only when it opens. Read once.
+pub(super) fn send_to_label(menu: &IContextMenu) -> Option<String> {
+    if let Some(label) = SEND_TO_LABEL.get() {
+        return Some(label.clone());
+    }
+    let label = read_send_to_label(menu)?;
+    Some(SEND_TO_LABEL.get_or_init(|| label).clone())
+}
+
+fn read_send_to_label(menu: &IContextMenu) -> Option<String> {
+    // SAFETY: a popup menu of our own, destroyed below; the extension adds its submenu to it.
+    unsafe {
+        let hmenu = CreatePopupMenu().ok()?;
+        let added = menu
+            .QueryContextMenu(hmenu, 0, 1, 0x7FFF, CMF_NORMAL)
+            .is_ok();
+        let mut text = [0u16; 260];
+        let len = if added {
+            GetMenuStringW(hmenu, 0, Some(&mut text), MF_BYPOSITION)
+        } else {
+            0
+        };
+        let _ = DestroyMenu(hmenu);
+        let len = usize::try_from(len).unwrap_or(0).min(text.len());
+        let label = clean_label(&String::from_utf16_lossy(&text[..len]));
+        (!label.is_empty()).then_some(label)
+    }
+}
+
+/// "Send to" for `paths` as a menu of its own: the submenu `label` with every target.
+pub(super) fn send_to(
+    paths: &[PathBuf],
+    label: String,
+    window: HWND,
+) -> Result<ShellMenu, ShellError> {
+    let pidls = parse_pidls(paths)?;
+    let ids: Vec<*const ITEMIDLIST> = pidls.0.iter().map(|p| p.cast_const()).collect();
+    // SAFETY: the PIDLs are valid absolute ones, owned by `pidls` for the call.
+    let items: IShellItemArray = unsafe { SHCreateShellItemArrayFromIDLists(&ids) }?;
+    let mut actions = Vec::new();
+    let mut children = Vec::new();
+    let drives = removable_drives().into_iter().map(|(name, root)| {
+        let icon = file_icon(&root);
+        (name, root, icon)
+    });
+    for (name, target, icon) in cached_targets().into_iter().chain(drives) {
+        actions.push(Action::Drop {
+            target,
+            items: items.clone(),
+        });
+        let id = u32::try_from(actions.len()).unwrap_or(u32::MAX);
+        children.push(item(id, "", &name, true, false, icon));
+    }
+    let entries = if children.is_empty() {
+        Vec::new()
+    } else {
+        vec![ShellMenuEntry::Submenu {
+            label,
+            enabled: true,
+            icon: None,
+            children,
+            lazy: None,
+        }]
+    };
+    let menu: IContextMenu = Single(actions, None).into();
+    fill_single(menu, window, pidls, menu_directory(paths, false), entries)
+}
+
+/// The targets in the SendTo folder with their icons, from the cache while the folder is
+/// unchanged.
+fn cached_targets() -> Targets {
+    let Some(folder) = send_to_folder() else {
+        return Vec::new();
+    };
+    let changed = std::fs::metadata(&folder).and_then(|m| m.modified()).ok();
+    if let Some(changed) = changed
+        && let Some((at, time, targets)) = SEND_TO_TARGETS.lock().as_ref()
+        && *at == folder
+        && *time == changed
+    {
+        return targets.clone();
+    }
+    let targets: Targets = send_to_targets(&folder)
+        .into_iter()
+        .map(|(name, path)| {
+            let icon = file_icon(&path);
+            (name, path, icon)
+        })
+        .collect();
+    if let Some(changed) = changed {
+        *SEND_TO_TARGETS.lock() = Some((folder, changed, targets.clone()));
+    }
+    targets
+}
+
+/// The user's SendTo folder.
+fn send_to_folder() -> Option<PathBuf> {
+    // SAFETY: the returned string is freed by `take`.
+    let path = unsafe { SHGetKnownFolderPath(&FOLDERID_SendTo, KF_FLAG_DEFAULT, None) }.ok()?;
+    Some(PathBuf::from(take(path)))
+}
+
+/// The targets in `folder` as File Explorer names them (no ".lnk", the localized names of
+/// Windows' own) and orders them; hidden files (desktop.ini) left out.
+fn send_to_targets(folder: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let Ok(pidls) = parse_pidls(&[folder.to_path_buf()]) else {
+        return out;
+    };
+    // SAFETY: plain COM calls on this STA thread; every child PIDL is freed after use.
+    unsafe {
+        let Ok(desktop) = SHGetDesktopFolder() else {
+            return out;
+        };
+        let Ok(shell_folder) = desktop.BindToObject::<_, IShellFolder>(pidls.0[0], None) else {
+            return out;
+        };
+        let mut list: Option<IEnumIDList> = None;
+        let flags = (SHCONTF_FOLDERS.0 | SHCONTF_NONFOLDERS.0).cast_unsigned();
+        if shell_folder
+            .EnumObjects(HWND::default(), flags, &raw mut list)
+            .is_err()
+        {
+            return out;
+        }
+        let Some(list) = list else {
+            return out;
+        };
+        loop {
+            let mut child = [std::ptr::null_mut::<ITEMIDLIST>()];
+            let mut got = 0u32;
+            if list.Next(&mut child, Some(&raw mut got)).is_err() || got == 0 {
+                break;
+            }
+            let name = display_name(&shell_folder, child[0], SHGDN_NORMAL);
+            let path = display_name(&shell_folder, child[0], SHGDN_FORPARSING);
+            CoTaskMemFree(Some(child[0].cast_const().cast()));
+            if let (Some(name), Some(path)) = (name, path) {
+                out.push((name, PathBuf::from(path)));
+            }
+        }
+    }
+    // In the display language's order, as File Explorer sorts them (by strokes on zh-TW).
+    out.sort_by(|(a, _), (b, _)| {
+        let (a, b) = (wide(OsStr::new(a)), wide(OsStr::new(b)));
+        // SAFETY: both NUL-terminated.
+        unsafe { StrCmpLogicalW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr())) }.cmp(&0)
+    });
+    out
+}
+
+/// A child's name in `folder` (`how`: as shown, or its full path).
+///
+/// # Safety
+/// `child` is a valid child PIDL of `folder`.
+unsafe fn display_name(
+    folder: &IShellFolder,
+    child: *mut ITEMIDLIST,
+    how: SHGDNF,
+) -> Option<String> {
+    // SAFETY: per the contract; StrRetToStrW frees the STRRET's own string.
+    unsafe {
+        let mut name = STRRET::default();
+        folder.GetDisplayNameOf(child, how, &raw mut name).ok()?;
+        let mut text = PWSTR::null();
+        StrRetToStrW(&raw mut name, Some(child.cast_const()), &raw mut text).ok()?;
+        let text = take(text);
+        (!text.is_empty()).then_some(text)
+    }
+}
+
+/// Removable and mapped network drives, as File Explorer adds them to "Send to" (not when policy
+/// turns that off).
+fn removable_drives() -> Vec<(String, PathBuf)> {
+    let policy = |root| {
+        crate::win::read_reg_dword(
+            root,
+            r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+            "NoDrivesInSendToMenu",
+        )
+        .is_some_and(|v| v != 0)
+    };
+    if policy(HKEY_CURRENT_USER) || policy(HKEY_LOCAL_MACHINE) {
+        return Vec::new();
+    }
+    // SAFETY: plain query.
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|bit| mask & (1 << bit) != 0)
+        .filter_map(|bit| {
+            let root = PathBuf::from(format!("{}:\\", char::from(b'A' + bit)));
+            let text = wide(root.as_os_str());
+            // SAFETY: NUL-terminated.
+            let kind = unsafe { GetDriveTypeW(PCWSTR(text.as_ptr())) };
+            if kind != DRIVE_REMOVABLE && kind != DRIVE_REMOTE {
+                return None;
+            }
+            let mut info = SHFILEINFOW::default();
+            // SAFETY: info is sized for the call; asks for the display name only.
+            let ok = unsafe {
+                SHGetFileInfoW(
+                    PCWSTR(text.as_ptr()),
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    Some(&raw mut info),
+                    size_of::<SHFILEINFOW>() as u32,
+                    SHGFI_DISPLAYNAME,
+                )
+            } != 0;
+            let len = info.szDisplayName.iter().position(|&c| c == 0).unwrap_or(0);
+            let name = String::from_utf16_lossy(&info.szDisplayName[..len]);
+            (ok && !name.is_empty()).then_some((name, root))
+        })
+        .collect()
+}
+
+/// A target's small icon, as the shell draws it.
+fn file_icon(path: &Path) -> Option<arke_core::thumbs::Thumbnail> {
+    let text = wide(path.as_os_str());
+    let mut info = SHFILEINFOW::default();
+    // SAFETY: info is sized for the call; the icon it returns is destroyed by icon_pixels_of.
+    let ok = unsafe {
+        SHGetFileInfoW(
+            PCWSTR(text.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&raw mut info),
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_SMALLICON,
+        )
+    } != 0;
+    (ok && !info.hIcon.is_invalid())
+        .then(|| icon_pixels_of(info.hIcon))
+        .flatten()
+}
+
+/// Runs a "Send to" target: `items` dropped on `target`'s drop target, as File Explorer's Send
+/// To does. A copy where the target offers one (a folder on the same drive would otherwise take a
+/// move); a program's shortcut gets the files as arguments, the "Compressed folder" target zips
+/// them (in the background: the menu host lingers after a command).
+fn drop_on(target: &Path, items: &IShellItemArray, owner: HWND) -> windows::core::Result<()> {
+    let name = wide(target.as_os_str());
+    let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+    // SAFETY: plain COM calls on this STA thread; name is NUL-terminated; the PIDL is freed below
+    // and `child` points into it.
+    unsafe {
+        let data: IDataObject = items.BindToHandler(None, &BHID_DataObject)?;
+        SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut pidl, 0, None)?;
+        let result = (|| {
+            let folder: IShellFolder = SHBindToParent(pidl, None)?;
+            let child = [ILFindLastID(pidl).cast_const()];
+            let target: IDropTarget = folder.GetUIObjectOf(owner, &child, None)?;
+            let keys = MODIFIERKEYS_FLAGS(MK_LBUTTON.0);
+            let mut effect = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+            target.DragEnter(&data, keys, POINTL::default(), &raw mut effect)?;
+            if effect == DROPEFFECT_NONE {
+                let _ = target.DragLeave();
+                return Err(E_FAIL.into());
+            }
+            let mut effect = if effect.0 & DROPEFFECT_COPY.0 == 0 {
+                effect
+            } else {
+                DROPEFFECT_COPY
+            };
+            target.Drop(&data, keys, POINTL::default(), &raw mut effect)
+        })();
+        ILFree(Some(pidl.cast_const()));
+        result
+    }
+}
+
 /// The one-item menu's object: what runs the command when the item is invoked.
 #[allow(
     clippy::inline_always,
@@ -493,7 +818,7 @@ fn run_verb(
 mod single {
     use super::{
         Action, CMINVOKECOMMANDINFO, E_NOTIMPL, HMENU, HRESULT, HWND, IContextMenu,
-        IContextMenu_Impl, IObjectWithSite, PSTR, run_verb,
+        IContextMenu_Impl, IObjectWithSite, PSTR, drop_on, run_verb,
     };
 
     /// The rows' actions: row id `n` at place `n - 1`, and the command given a view site, whose
@@ -533,6 +858,7 @@ mod single {
                 } => run_verb(class, verb, file, folder, owner),
                 // SAFETY: plain COM call on the thread that created it.
                 Action::Command { command, items } => unsafe { command.Invoke(items, None) },
+                Action::Drop { target, items } => drop_on(target, items, owner),
                 Action::None => Err(E_NOTIMPL.into()),
             }
         }
@@ -554,6 +880,139 @@ use single::Single;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This machine's own Send To, read the way a pinned command's source is: the submenu with
+    /// Windows' label and every target, quickly. Prints what it found.
+    #[test]
+    #[ignore = "reads this machine's Send To; run by hand"]
+    #[allow(
+        clippy::print_stderr,
+        reason = "a by-hand measurement prints what it found"
+    )]
+    fn this_machines_send_to_reads_quickly() {
+        let _com = crate::win_fileops::Com::init().unwrap();
+        let file = crate::win::long_temp_dir()
+            .join(format!("arke-sendto-real-{}.txt", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        let handler = MenuHandler::send_to();
+        let read = || {
+            let started = std::time::Instant::now();
+            let menu = super::super::build_handler(
+                std::slice::from_ref(&file),
+                false,
+                false,
+                &handler,
+                HWND::default(),
+            )
+            .unwrap();
+            (menu, started.elapsed())
+        };
+        let (_, first) = read();
+        let (menu, took) = read();
+        eprintln!("first {first:?}, again {took:?}");
+        let _ = std::fs::remove_file(&file);
+        let Some(ShellMenuEntry::Submenu {
+            label, children, ..
+        }) = menu.entries.first()
+        else {
+            panic!("no submenu: {:?}", menu.entries.len());
+        };
+        let names: Vec<String> = children
+            .iter()
+            .filter_map(|c| match c {
+                ShellMenuEntry::Item { label, icon, .. } => Some(format!(
+                    "{label}{}",
+                    if icon.is_some() { "" } else { " (no icon)" }
+                )),
+                _ => None,
+            })
+            .collect();
+        eprintln!("{label}: {names:?} in {took:?}");
+        assert!(!names.is_empty());
+        assert!(took < std::time::Duration::from_millis(50), "{took:?}");
+    }
+
+    /// A Send To folder stand-in: a program's shortcut (named without ".lnk", as File Explorer
+    /// shows it) and a hidden desktop.ini, which stays out (#278).
+    fn send_to_folder_with_shortcut(dir: &Path) -> PathBuf {
+        let _ = std::fs::remove_dir_all(dir);
+        let send_to = dir.join("SendTo");
+        std::fs::create_dir_all(&send_to).unwrap();
+        let script = dir.join("args.cmd");
+        std::fs::write(&script, "@echo %*> \"%~dp0args.txt\"\r\n").unwrap();
+        let ini = send_to.join("desktop.ini");
+        std::fs::write(&ini, "[.ShellClassInfo]\r\n").unwrap();
+        let ini_w = wide(ini.as_os_str());
+        // SAFETY: NUL-terminated path; hidden and system, as Windows keeps desktop.ini.
+        unsafe {
+            windows::Win32::Storage::FileSystem::SetFileAttributesW(
+                PCWSTR(ini_w.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN
+                    | windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM,
+            )
+            .unwrap();
+        }
+        let shortcut = send_to.join("Args tool.lnk");
+        // SAFETY: a ShellLink object saved through IPersistFile; strings are NUL-terminated.
+        unsafe {
+            use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, IPersistFile};
+            use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+            let link: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+            let target = wide(script.as_os_str());
+            link.SetPath(PCWSTR(target.as_ptr())).unwrap();
+            let save = wide(shortcut.as_os_str());
+            link.cast::<IPersistFile>()
+                .unwrap()
+                .Save(PCWSTR(save.as_ptr()), true)
+                .unwrap();
+        }
+        send_to
+    }
+
+    #[test]
+    fn send_to_lists_its_folder_as_explorer_names_it() {
+        let dir = crate::win::long_temp_dir().join(format!("arke-sendto-{}", std::process::id()));
+        let _com = crate::win_fileops::Com::init().unwrap();
+        let send_to = send_to_folder_with_shortcut(&dir);
+        let names: Vec<String> = send_to_targets(&send_to)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(names, ["Args tool"]);
+    }
+
+    /// The real thing: a file sent to a program's shortcut reaches the program as an argument,
+    /// through the drop the way File Explorer's Send To runs it.
+    #[test]
+    #[ignore = "starts cmd.exe through the shell; run by hand"]
+    fn a_file_sent_to_a_shortcut_reaches_its_program() {
+        let dir =
+            crate::win::long_temp_dir().join(format!("arke-sendto-run-{}", std::process::id()));
+        let _com = crate::win_fileops::Com::init().unwrap();
+        let send_to = send_to_folder_with_shortcut(&dir);
+        let file = dir.join("sent.txt");
+        std::fs::write(&file, "x").unwrap();
+        let pidls = parse_pidls(std::slice::from_ref(&file)).unwrap();
+        let ids: Vec<*const ITEMIDLIST> = pidls.0.iter().map(|p| p.cast_const()).collect();
+        // SAFETY: the PIDLs are valid for the call.
+        let items: IShellItemArray = unsafe { SHCreateShellItemArrayFromIDLists(&ids) }.unwrap();
+        let (_, target) = send_to_targets(&send_to).remove(0);
+        drop_on(&target, &items, HWND::default()).unwrap();
+        let out = dir.join("args.txt");
+        let mut got = None;
+        for _ in 0..50 {
+            if let Ok(text) = std::fs::read_to_string(&out) {
+                got = Some(text);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let got = got.expect("the program never ran");
+        assert!(got.contains("sent.txt"), "{got:?}");
+    }
 
     #[test]
     fn icon_specs_split_into_path_and_index() {

@@ -605,6 +605,12 @@ impl WindowsWindowInner {
         {
             return None;
         }
+        // Arke: a press cut short by another program (Alt+Tab, a window popping up) is worth a line
+        // in a problem report.
+        log::info!(
+            "mouse capture taken by another window ({:?}) with buttons {pressed:#x} down",
+            to.0
+        );
         let mut func = self.state.callbacks.input.take()?;
         self.state.pressed_buttons.set(0);
         for button in [
@@ -1069,7 +1075,12 @@ impl WindowsWindowInner {
             return None;
         }
 
-        let callback = self.state.callbacks.hit_test_window_control.take();
+        // Arke: not asked during a modal drag, when the app can't answer (see `begin_modal_drag`).
+        let callback = if in_modal_drag() {
+            None
+        } else {
+            self.state.callbacks.hit_test_window_control.take()
+        };
         let drag_area = if let Some(mut callback) = callback {
             let area = callback();
             self.state

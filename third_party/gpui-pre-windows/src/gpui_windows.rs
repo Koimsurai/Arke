@@ -46,6 +46,8 @@ pub use platform::WindowsPlatform;
 pub use virtual_drop::{VIRTUAL_DROP_ROOT, drop_paths, is_virtual_drop, take_dropped_data_object};
 // Arke: menus in popup windows (see `WindowKind::AnchoredPopup` in `window.rs`).
 pub use window::set_popup_mouse_passthrough;
+// Arke: Windows' modal drag loop runs inside event dispatch (see `begin_modal_drag`).
+pub use window::{ModalDragGuard, begin_modal_drag};
 // Arke: the integration API's `WM_COPYDATA` channel and window classes (see `window.rs`).
 pub use window::{COPYDATA_ID, set_copydata_handler};
 

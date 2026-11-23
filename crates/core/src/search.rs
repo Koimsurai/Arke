@@ -105,10 +105,20 @@ enum Cmd {
 pub struct SearchService {
     cmd: flume::Sender<Cmd>,
     generation: AtomicU64,
+    /// What the coordinator thread takes, until the first search starts it: each tab has a
+    /// search, and most tabs never search.
+    unstarted: parking_lot::Mutex<Option<Unstarted>>,
+}
+
+struct Unstarted {
+    fs: Arc<dyn Fs>,
+    sink: SearchSink,
+    index: Option<TreeSource>,
+    rx: flume::Receiver<Cmd>,
 }
 
 impl SearchService {
-    /// Spawns the coordinator thread; nothing is walked until [`Self::start`].
+    /// A search with no thread yet; the first [`Self::start`] starts it.
     pub fn new(fs: Arc<dyn Fs>, sink: SearchSink) -> Self {
         Self::with_index(fs, sink, None)
     }
@@ -117,16 +127,35 @@ impl SearchService {
     /// folder's items from it instead of walking the share.
     pub fn with_index(fs: Arc<dyn Fs>, sink: SearchSink, index: Option<TreeSource>) -> Self {
         let (cmd, rx) = flume::unbounded();
-        let wake_tx = cmd.downgrade();
+        Self {
+            cmd,
+            generation: AtomicU64::new(0),
+            unstarted: parking_lot::Mutex::new(Some(Unstarted {
+                fs,
+                sink,
+                index,
+                rx,
+            })),
+        }
+    }
+
+    /// Starts the coordinator thread, the first time. Commands sent before wait in its channel.
+    fn run(&self) {
+        let Some(Unstarted {
+            fs,
+            sink,
+            index,
+            rx,
+        }) = self.unstarted.lock().take()
+        else {
+            return;
+        };
+        let wake_tx = self.cmd.downgrade();
         let spawned = std::thread::Builder::new()
             .name("search".into())
             .spawn(move || coordinator(&fs, index, &sink, &rx, &wake_tx));
         if let Err(err) = spawned {
             log::error!("failed to spawn search thread: {err}");
-        }
-        Self {
-            cmd,
-            generation: AtomicU64::new(0),
         }
     }
 
@@ -142,6 +171,7 @@ impl SearchService {
     /// Starts a new search from `root` (fresh walk). `clock` is for date filters. Returns
     /// immediately.
     pub fn start(&self, root: PathBuf, show_hidden: bool, query: &str, clock: Clock) -> Gen {
+        self.run();
         let generation = self.next_gen();
         let _ = self.cmd.send(Cmd::Start {
             generation,
@@ -156,6 +186,10 @@ impl SearchService {
     /// rewalk. Returns immediately.
     pub fn set_query(&self, query: &str, clock: Clock) -> Gen {
         let generation = self.next_gen();
+        if self.unstarted.lock().is_some() {
+            // No search ran yet: nothing to change.
+            return generation;
+        }
         let _ = self.cmd.send(Cmd::Query {
             generation,
             query: Query::parse(query, clock),
@@ -166,6 +200,10 @@ impl SearchService {
     /// Stops walking and matching; results already sent become stale.
     pub fn stop(&self) {
         self.next_gen();
+        if self.unstarted.lock().is_some() {
+            // No search ran yet: nothing to stop.
+            return;
+        }
         let _ = self.cmd.send(Cmd::Stop);
     }
 }
@@ -826,6 +864,23 @@ mod tests {
         // Blank query shows nothing.
         let g = svc.set_query("", Clock::default());
         assert!(settle(&rx, g).hits.is_empty());
+    }
+
+    /// A tab that never searches has no search thread, and what it is told before its first search
+    /// (stop on leaving a folder, a query) queues nothing.
+    #[test]
+    fn no_thread_until_the_first_search() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\p", vec![file("notes.md")]);
+        let (sink, rx) = collect();
+        let svc = SearchService::new(fs, sink);
+        svc.stop();
+        svc.set_query("notes", Clock::default());
+        assert!(svc.unstarted.lock().is_some(), "no thread yet");
+        assert!(svc.cmd.is_empty(), "nothing queued");
+        let g = svc.start(PathBuf::from(r"C:\p"), false, "notes", Clock::default());
+        assert!(svc.unstarted.lock().is_none());
+        assert_eq!(rels(&settle(&rx, g)), ["notes.md"]);
     }
 
     /// The point of the design: a permanently hung folder under the root (dead network drive)

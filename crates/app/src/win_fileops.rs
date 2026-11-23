@@ -973,23 +973,27 @@ fn undo_with(
     }
 }
 
-/// Whether `path` is a top-level Recycle Bin item, `X:/$Recycle.Bin/<SID>/$R...`. Neither
-/// the bin folder itself nor anything nested inside an item matches.
+/// Whether `path` is a top-level Recycle Bin item: `X:/$Recycle.Bin/<SID>/$R...` on NTFS, or
+/// `X:/$Recycle.Bin/$R...` on exFAT and FAT drives, whose bin has no folder per user (#330).
+/// Neither the bin folders themselves nor anything nested inside an item matches.
 pub(crate) fn in_recycle_bin(path: &Path) -> bool {
     use std::path::Component;
     let mut parts = path.components();
-    matches!(parts.next(), Some(Component::Prefix(_)))
+    let in_bin = matches!(parts.next(), Some(Component::Prefix(_)))
         && matches!(parts.next(), Some(Component::RootDir))
         && parts
             .next()
-            .is_some_and(|c| c.as_os_str().eq_ignore_ascii_case("$Recycle.Bin"))
-        && matches!(parts.next(), Some(Component::Normal(_)))
-        && parts.next().is_some_and(|c| {
-            c.as_os_str()
-                .to_str()
-                .is_some_and(|name| name.starts_with("$R") && name.len() > 2)
-        })
-        && parts.next().is_none()
+            .is_some_and(|c| c.as_os_str().eq_ignore_ascii_case("$Recycle.Bin"));
+    if !in_bin {
+        return false;
+    }
+    let rest: Vec<&str> = parts.filter_map(|c| c.as_os_str().to_str()).collect();
+    let item = |name: &str| name.starts_with("$R") && name.len() > 2;
+    match rest.as_slice() {
+        [name] => item(name),
+        [sid, name] => sid.starts_with("S-1-") && item(name),
+        _ => false,
+    }
 }
 
 /// Permanently deletes Recycle Bin items (Arke has already asked) with Arke's own walk, not
@@ -1227,10 +1231,11 @@ pub(crate) fn hdrop_bytes(paths: &[PathBuf]) -> Vec<u8> {
 /// Call on the UI thread (GPUI has called OleInitialize) while the left button is down.
 /// Runs Windows' modal drag loop until drop or cancel; the window keeps repainting.
 /// Returns what the target did, or `None` if nothing was dropped. `image` is the
-/// precomputed drag image.
+/// precomputed drag image. `after_lost_press`: see [`crate::shell::Shell::drag_out`].
 pub(crate) fn drag_out(
     paths: &[PathBuf],
     image: Option<&crate::shell::DragImage>,
+    after_lost_press: bool,
 ) -> Result<Option<DragOutcome>, ShellError> {
     use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
     use windows::Win32::UI::Shell::SHDoDragDrop;
@@ -1248,9 +1253,10 @@ pub(crate) fn drag_out(
         // Custom drop source: cancel when the cursor returns to the Arke window so Arke's
         // internal drag can take over.
         let home = drag_home();
-        let source = drag_source::ReturnAware::new(home);
+        let source = drag_source::ReturnAware::new(home, after_lost_press);
         let returned = Rc::clone(&source.returned);
         let source: windows::Win32::System::Ole::IDropSource = source.into();
+        let _modal = gpui_windows::begin_modal_drag();
         let effect = SHDoDragDrop(
             None,
             &data,
@@ -1511,17 +1517,54 @@ mod drag_source {
     /// window isn't caught again immediately.
     const INSET: i32 = 8;
 
+    /// [`ReturnAware::answer`].
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Answer {
+        Drop,
+        Cancel,
+        /// Back over Arke: cancel, and Arke's own drag goes on.
+        Home,
+        Go,
+    }
+
     #[windows::core::implement(IDropSource)]
     pub(super) struct ReturnAware {
         home: HWND,
         pub(super) returned: Rc<Cell<bool>>,
+        /// Handed over after another program took the mouse (Alt+Tab, #326): see
+        /// [`crate::shell::Shell::drag_out`].
+        after_lost_press: bool,
+        /// Windows has reported the button down in this drag.
+        seen_down: Cell<bool>,
     }
 
     impl ReturnAware {
-        pub(super) fn new(home: HWND) -> Self {
+        pub(super) fn new(home: HWND, after_lost_press: bool) -> Self {
             Self {
                 home,
                 returned: Rc::default(),
+                after_lost_press,
+                seen_down: Cell::new(false),
+            }
+        }
+
+        /// What to do with the button state Windows reports. Released: drop, unless the drag
+        /// was handed over after a lost press and the button was never seen down in it (then
+        /// it may have been released before the hand-over, and nothing was aimed: cancel).
+        /// Held over Arke: hand back to Arke's own drag, which a lost press has ended.
+        pub(super) fn answer(&self, button_down: bool, over_home: impl FnOnce() -> bool) -> Answer {
+            if !button_down {
+                return if self.after_lost_press && !self.seen_down.get() {
+                    Answer::Cancel
+                } else {
+                    Answer::Drop
+                };
+            }
+            self.seen_down.set(true);
+            if !self.after_lost_press && over_home() {
+                Answer::Home
+            } else {
+                Answer::Go
             }
         }
 
@@ -1556,14 +1599,16 @@ mod drag_source {
             if escape.as_bool() {
                 return DRAGDROP_S_CANCEL;
             }
-            if keys.0 & (MK_LBUTTON.0 | MK_RBUTTON.0) == 0 {
-                return DRAGDROP_S_DROP;
+            let down = keys.0 & (MK_LBUTTON.0 | MK_RBUTTON.0) != 0;
+            match self.answer(down, || self.cursor_home()) {
+                Answer::Drop => DRAGDROP_S_DROP,
+                Answer::Cancel => DRAGDROP_S_CANCEL,
+                Answer::Home => {
+                    self.returned.set(true);
+                    DRAGDROP_S_CANCEL
+                }
+                Answer::Go => HRESULT(0),
             }
-            if self.cursor_home() {
-                self.returned.set(true);
-                return DRAGDROP_S_CANCEL;
-            }
-            HRESULT(0)
         }
 
         fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
@@ -2187,6 +2232,28 @@ mod tests {
         assert_eq!(none, None);
     }
 
+    /// #326: a drag handed to Windows after Alt+Tab took the mouse drops only once Windows has
+    /// seen the button down in it (Arke, in the background, can't read the button), and passing
+    /// over Arke doesn't hand it back. An ordinary drag out drops on release and returns home.
+    #[test]
+    fn a_drag_after_a_lost_press_drops_only_once_the_button_was_seen() {
+        use super::drag_source::{Answer, ReturnAware};
+        use windows::Win32::Foundation::HWND;
+        let lost = ReturnAware::new(HWND::default(), true);
+        assert_eq!(
+            lost.answer(false, || true),
+            Answer::Cancel,
+            "never seen down"
+        );
+        assert_eq!(lost.answer(true, || true), Answer::Go, "over Arke: goes on");
+        assert_eq!(lost.answer(false, || false), Answer::Drop);
+
+        let ordinary = ReturnAware::new(HWND::default(), false);
+        assert_eq!(ordinary.answer(true, || false), Answer::Go);
+        assert_eq!(ordinary.answer(true, || true), Answer::Home);
+        assert_eq!(ordinary.answer(false, || false), Answer::Drop);
+    }
+
     #[test]
     fn only_items_directly_in_the_bin_count() {
         assert!(in_recycle_bin(Path::new(
@@ -2206,6 +2273,16 @@ mod tests {
         assert!(!in_recycle_bin(Path::new("C:/$Recycle.Bin/S-1-5-21-1/$R")));
         assert!(!in_recycle_bin(Path::new("C:/Users/me/$RABC12.txt")));
         assert!(!in_recycle_bin(Path::new("$Recycle.Bin/S-1/$RABC12.txt")));
+        // #330: exFAT and FAT drives keep items right in the bin, with no folder per user.
+        assert!(in_recycle_bin(Path::new(r"E:\$RECYCLE.BIN\$RU1O20G.txt")));
+        assert!(!in_recycle_bin(Path::new(r"E:\$RECYCLE.BIN\$IU1O20G.txt")));
+        assert!(!in_recycle_bin(Path::new(r"E:\$RECYCLE.BIN\desktop.ini")));
+        assert!(!in_recycle_bin(Path::new(
+            r"E:\$RECYCLE.BIN\$RABC\$RDEF.txt"
+        )));
+        assert!(!in_recycle_bin(Path::new(
+            r"E:\$RECYCLE.BIN\$RABC\inner.txt"
+        )));
     }
 
     /// Recycle Bin: lists freshly recycled temp files with name, origin, size and deletion

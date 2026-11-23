@@ -338,6 +338,15 @@ pub(crate) enum KnownFolder {
 pub(crate) struct ShellMenu {
     pub(crate) session: u64,
     pub(crate) entries: Vec<ShellMenuEntry>,
+    /// Not everything was read: a submenu still filling when the wait ran out, one left to fill
+    /// when it opens, or the item limit. A command missing from it may still be there, so it
+    /// doesn't count as gone (#278).
+    #[serde(default)]
+    pub(crate) partial: bool,
+    /// Submenus left still filling (their `lazy` number, label): not waited for while the menu
+    /// was read, filled right after it (#278).
+    #[serde(default)]
+    pub(crate) filling: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -871,12 +880,17 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// Drags files into another program via Windows drag and drop; returns on drop or cancel with how it ended.
     /// Call on the UI thread while the left button is down (the drag loop needs a thread with a window). No file system access.
     /// `image` is the cursor image from [`Shell::drag_image`]; if it is not ready only the cursor shows.
+    /// `after_lost_press`: another program took the mouse in the middle of Arke's drag (Alt+Tab,
+    /// #326). Arke, now in the background, can't read whether the button is still down, so the
+    /// drag drops only once Windows has seen the button down (otherwise it is cancelled), and
+    /// coming back over Arke doesn't hand it back (Arke's own drag is over).
     fn drag_out(
         &self,
         paths: &[PathBuf],
         image: Option<&DragImage>,
+        after_lost_press: bool,
     ) -> Result<DragOutEnd, ShellError> {
-        let _ = (paths, image);
+        let _ = (paths, image, after_lost_press);
         Ok(DragOutEnd::Finished)
     }
     /// Whether another program's window is on top of `owner` at the cursor, such as a launcher

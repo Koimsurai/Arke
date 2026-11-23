@@ -144,6 +144,15 @@ impl Entry {
         }
     }
 
+    /// The same item under another name (the lowercase sort key follows it).
+    #[must_use]
+    pub fn renamed(&self, name: &str) -> Self {
+        Self {
+            created: self.created,
+            ..Self::new(name, self.kind, self.size, self.modified, self.attributes)
+        }
+    }
+
     /// Sets the creation time.
     #[must_use]
     pub const fn with_created(mut self, created: Option<SystemTime>) -> Self {

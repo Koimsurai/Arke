@@ -343,6 +343,7 @@ pub(crate) struct MenuItem {
     verb: Option<String>,
 }
 
+#[derive(Clone)]
 pub(crate) enum MenuEntry {
     Item(MenuItem),
     Submenu {
@@ -581,6 +582,15 @@ pub(crate) struct ContextMenu {
     /// The request the whole Windows menu came in for, once it is in: a command pinned from it
     /// learns its source at once (`toggle_shell_pin`).
     whole_request: Option<u64>,
+    /// The whole Windows menu came in only partly read ([`ShellMenu::partial`]): a pinned command
+    /// missing from it may still be there, so it doesn't decide which pinned rows go (#278).
+    whole_partial: bool,
+    /// "Send to" as the menu host lists it (label, targets), put in place of Windows' own under
+    /// "Show more options", which fills slowly and was often cut short (#278).
+    send_to: Option<(SharedString, Vec<MenuEntry>)>,
+    /// Submenus of the whole Windows menu left still filling ([`ShellMenu::filling`]), by number:
+    /// one that comes back with nothing to show goes (#278).
+    left_filling: Vec<u32>,
     /// Top-level row index of the "Show more options" submenu.
     shell_slot: Option<usize>,
     /// Number of pinned Windows commands placed directly above "Show more options".
@@ -605,6 +615,30 @@ pub(crate) struct ContextMenu {
     /// Scroll position of each level: a level taller than the window scrolls (#114).
     scrolls: RefCell<Vec<gpui::ScrollHandle>>,
     hover_task: Option<Task<()>>,
+}
+
+/// A menu made on a right press, before it shows on release: what comes back for it meanwhile
+/// waits here (#278).
+pub(crate) struct EarlyMenu {
+    menu: ContextMenu,
+    events: Vec<ShellMenuEvent>,
+    made: std::time::Instant,
+}
+
+/// An early menu older than this isn't shown: the press was let go somewhere unheard of.
+const EARLY_MENU_FOR: Duration = Duration::from_secs(3);
+
+impl EarlyMenu {
+    /// Whether `event` is for this menu's Windows menu or its sources.
+    fn wants(&self, event: &ShellMenuEvent) -> bool {
+        match event {
+            ShellMenuEvent::Whole { request, .. } => self.menu.shell_request == Some(*request),
+            ShellMenuEvent::Coming { request, .. } | ShellMenuEvent::Part { request, .. } => {
+                self.menu.parts_request == Some(*request)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl ContextMenu {
@@ -632,6 +666,9 @@ impl ContextMenu {
             targets,
             shell_session: None,
             shell_request: None,
+            whole_partial: false,
+            send_to: None,
+            left_filling: Vec::new(),
             shell_slot: None,
             pinned_rows: 0,
             parts: Vec::new(),
@@ -683,12 +720,38 @@ impl ContextMenu {
         }
     }
 
+    /// Puts the host's own "Send to" under "Show more options" in place of Windows', once both
+    /// are in. Its rows run in their own menu (their session), like a pinned command's.
+    pub(super) fn apply_send_to(&mut self) {
+        let Some((label, targets)) = &self.send_to else {
+            return;
+        };
+        let Some(MenuEntry::Submenu { children, .. }) =
+            self.shell_slot.and_then(|ix| self.entries.get_mut(ix))
+        else {
+            return;
+        };
+        for entry in children.iter_mut() {
+            if let MenuEntry::Submenu {
+                label: l,
+                children: c,
+                lazy,
+                ..
+            } = entry
+                && l == label
+            {
+                c.clone_from(targets);
+                *lazy = None;
+            }
+        }
+    }
+
     pub(super) fn sync_pinned(&mut self, pinned: &[String]) {
         let Some(slot) = self.shell_slot else {
             return;
         };
         let start = slot - self.pinned_rows;
-        let whole_in = self.shell_session.is_some();
+        let whole_in = self.shell_session.is_some() && !self.whole_partial;
         let mut found: Vec<MenuItem> = Vec::new();
         if let Some(MenuEntry::Submenu { children, .. }) = self.entries.get(slot) {
             // From the whole Windows menu once it's in, until then from the sources read on
@@ -699,7 +762,7 @@ impl ContextMenu {
                         .iter()
                         .find_map(|(_, entries)| find_pinned(entries, key))
                 }) {
-                    remember_pin_icon(key, item);
+                    remember_pin(key, item);
                     found.push(item.clone());
                 } else if !whole_in
                     && let Some(ix) = self.coming.iter().position(|k| k == key)
@@ -766,6 +829,52 @@ impl ContextMenu {
     #[cfg(test)]
     pub(crate) fn labels(&self) -> Vec<String> {
         self.labels_at(0)
+    }
+
+    /// Test helper: the items of Windows submenu `label` under "Show more options", and whether
+    /// it is still left to fill when opened.
+    #[cfg(test)]
+    pub(crate) fn shell_submenu_for_test(&self, label: &str) -> Option<(Vec<String>, bool)> {
+        let MenuEntry::Submenu { children, .. } =
+            self.shell_slot.and_then(|ix| self.entries.get(ix))?
+        else {
+            return None;
+        };
+        children.iter().find_map(|e| match e {
+            MenuEntry::Submenu {
+                label: l,
+                children,
+                lazy,
+                ..
+            } if l.as_ref() == label => Some((
+                children
+                    .iter()
+                    .filter_map(|c| match c {
+                        MenuEntry::Item(i) => Some(i.label.to_string()),
+                        _ => None,
+                    })
+                    .collect(),
+                lazy.is_some(),
+            )),
+            _ => None,
+        })
+    }
+
+    /// Test helper: the labels of the items right under "Show more options".
+    #[cfg(test)]
+    pub(crate) fn shell_items_for_test(&self) -> Vec<String> {
+        let Some(MenuEntry::Submenu { children, .. }) =
+            self.shell_slot.and_then(|ix| self.entries.get(ix))
+        else {
+            return Vec::new();
+        };
+        children
+            .iter()
+            .filter_map(|c| match c {
+                MenuEntry::Item(i) => Some(i.label.to_string()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Test helper: labels at `level`.
@@ -896,8 +1005,11 @@ impl Explorer {
             self.cursor = Some(ix);
         }
         // The menu opens on release (`right_press_released`), so the press can still become a
-        // right-button drag.
+        // right-button drag. It is made now, so what it reads from Windows is under way (#278).
         self.note_right_press(event.position, cx);
+        if !self.search_mode {
+            self.make_early_menu(event.modifiers.shift, cx);
+        }
     }
 
     /// Right-click on empty space: clear the selection and show the folder menu.
@@ -970,6 +1082,95 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let extended = window.modifiers().shift;
+        let targets = self.menu_targets();
+        let (mut menu, early_events) = match self.early_menu.take() {
+            Some(early)
+                if early.menu.targets == targets
+                    && early.menu.extended == extended
+                    && early.made.elapsed() < EARLY_MENU_FOR =>
+            {
+                (early.menu, early.events)
+            }
+            other => {
+                if let Some(early) = other {
+                    self.drop_early_menu(early);
+                }
+                (self.make_context_menu(position, extended, cx), Vec::new())
+            }
+        };
+        menu.position = position;
+        window.focus(&menu.focus, cx);
+        self.release_shell_menu();
+        self.show_menu(menu, window, cx);
+        // What came back while the button was down.
+        for event in early_events {
+            self.handle_shell_menu_event(event, cx);
+        }
+    }
+
+    /// A right press on items: makes their menu now, reading the Windows menu while the button
+    /// is down, to show on release (`open_context_menu`). Replaces one made before.
+    pub(super) fn make_early_menu(&mut self, shift: bool, cx: &mut Context<Self>) {
+        if let Some(early) = self.early_menu.take() {
+            self.drop_early_menu(early);
+        }
+        if !self.services.shell.shell_menu_prefetch() {
+            return;
+        }
+        let menu = self.make_context_menu(Point::default(), shift, cx);
+        if menu.shell_request.is_some() {
+            self.early_menu = Some(EarlyMenu {
+                menu,
+                events: Vec::new(),
+                made: std::time::Instant::now(),
+            });
+        }
+    }
+
+    /// The right press became a drag, or went away: its early menu isn't shown, and the Windows
+    /// menus read for it are let go.
+    pub(super) fn cancel_early_menu(&mut self) {
+        if let Some(early) = self.early_menu.take() {
+            self.drop_early_menu(early);
+        }
+    }
+
+    fn drop_early_menu(&self, early: EarlyMenu) {
+        let shell = &self.services.shell;
+        for event in early.events {
+            match event {
+                ShellMenuEvent::Whole {
+                    result: Ok(menu), ..
+                }
+                | ShellMenuEvent::Part {
+                    result: Ok((menu, _)),
+                    ..
+                } => shell.release_shell_menu(menu.session),
+                _ => {}
+            }
+        }
+    }
+
+    /// What comes back for an early menu (`make_early_menu`) waits for it to show.
+    pub(super) fn keep_for_early_menu(&mut self, event: ShellMenuEvent) -> Option<ShellMenuEvent> {
+        match self.early_menu.as_mut() {
+            Some(early) if early.wants(&event) => {
+                early.events.push(event);
+                None
+            }
+            _ => Some(event),
+        }
+    }
+
+    /// The menu for the selected items (or the folder background), with its Windows menu and
+    /// pinned commands' sources asked for.
+    fn make_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        extended: bool,
+        cx: &mut Context<Self>,
+    ) -> ContextMenu {
         let targets = self.menu_targets();
         let pinned = {
             let store = SettingsStore::global(cx);
@@ -1020,13 +1221,10 @@ impl Explorer {
         } else {
             entries
         };
-        let focus = cx.focus_handle();
-        window.focus(&focus, cx);
-        self.release_shell_menu();
-        let mut menu = ContextMenu::new(position, entries, focus, targets);
+        let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);
         // Shift held, as File Explorer: the Windows menu includes commands registered to show
         // only then (#272).
-        menu.extended = window.modifiers().shift;
+        menu.extended = extended;
         menu.shell_slot = menu
             .entries
             .iter()
@@ -1037,7 +1235,7 @@ impl Explorer {
                 self.request_menu_parts(&mut menu, request, cx);
             }
         }
-        self.show_menu(menu, window, cx);
+        menu
     }
 
     /// Shows `menu`, opened in `window`: its levels open in windows of their own owned by it
@@ -1126,6 +1324,9 @@ impl Explorer {
                 item(t!("menu.open_terminal"), None, C::OpenTerminal),
                 MenuEntry::Separator,
                 item(pin_label(pinned), None, C::TogglePin),
+                // The folder's own, as Alt+Enter with nothing selected; Windows' would open
+                // Explorer's dialog from "Show more options" otherwise.
+                item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
                 MenuEntry::Separator,
                 // Windows background menu: New (file types), Open in Terminal, third-party items.
                 more_options(),
@@ -1637,7 +1838,16 @@ impl Explorer {
                     });
                 }
             }
-            C::Properties => self.open_properties(targets, cx),
+            C::Properties => {
+                let mut targets = targets;
+                // The background menu: the folder shown.
+                if targets.is_empty()
+                    && let Some(path) = self.current_path()
+                {
+                    targets.push((path.to_path_buf(), true));
+                }
+                self.open_properties(targets, cx);
+            }
             // Windows' "Choose another app" dialog, with "Always", as Explorer opens it.
             C::ChooseApp => {
                 if let Some((path, false)) = targets.first().cloned() {
@@ -2074,7 +2284,22 @@ impl Explorer {
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("more-options", move || {
+            let started = Instant::now();
             let result = shell.shell_menu(&paths, background, extended);
+            // What a slow menu was waiting on can be named from the log (#278).
+            if let Ok(menu) = &result {
+                let names: Vec<&str> = menu.filling.iter().map(|(_, l)| l.as_str()).collect();
+                log::info!(
+                    "more options: {} ms{}{}",
+                    started.elapsed().as_millis(),
+                    if menu.partial { ", partly read" } else { "" },
+                    if names.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", filling after: {}", names.join(", "))
+                    }
+                );
+            }
             let _ = tx.send(AppEvent::ShellMenu(ShellMenuEvent::Whole {
                 request,
                 result,
@@ -2103,9 +2328,13 @@ impl Explorer {
         };
         menu.shell_request = None;
         menu.whole_request = Some(request);
+        let mut filling = Vec::new();
         let children = match result {
             Ok(shell_menu) => {
+                filling = shell_menu.filling.iter().map(|(ix, _)| *ix).collect();
+                menu.left_filling.clone_from(&filling);
                 menu.shell_session = Some(shell_menu.session);
+                menu.whole_partial = shell_menu.partial;
                 let entries: Vec<MenuEntry> = without_duplicates(shell_menu.entries, &menu.entries)
                     .into_iter()
                     .map(|e| MenuEntry::from_shell_in(e, &[], None))
@@ -2123,6 +2352,7 @@ impl Explorer {
         {
             *c = children;
         }
+        menu.apply_send_to();
         let pinned = SettingsStore::global(cx)
             .read(cx)
             .settings
@@ -2149,6 +2379,7 @@ impl Explorer {
             self.learn_pin_owners(menu, request, cx);
         }
         self.fill_lazy_for_pins(cx);
+        self.fill_left_filling(&filling);
     }
 
     /// A pinned row clicked before its source answered: runs it now that it is in, or forgets it
@@ -2182,7 +2413,7 @@ impl Explorer {
                     });
                 });
             }
-            None if menu.shell_request.is_none() => menu.pending = None,
+            None if menu.shell_request.is_none() && !menu.whole_partial => menu.pending = None,
             None => {}
         }
     }
@@ -3063,9 +3294,13 @@ fn row_mark(icon: Option<Arc<RenderImage>>, glyph: Option<Icon>, checked: bool) 
         })
 }
 
+/// Windows menu items that only File Explorer itself may run: from any other program Windows
+/// answers "access denied" (#344). Files hides them too.
+const EXPLORER_ONLY_VERBS: &[&str] = &["pintostartscreen", "unpinfromstartscreen"];
+
 /// Drops items from "Show more options" that Arke's menu already has (open, cut, copy, delete,
-/// ...),
-/// matched by standard Windows verbs like Files does. Only the top level is filtered.
+/// ...), matched by standard Windows verbs like Files does, and the ones only File Explorer may
+/// run. Only the top level is filtered.
 fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<ShellMenuEntry> {
     use MenuCommand as C;
     let verbs: Vec<&str> = ours
@@ -3091,6 +3326,7 @@ fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<She
             _ => &[][..],
         })
         .copied()
+        .chain(EXPLORER_ONLY_VERBS.iter().copied())
         .collect();
     let kept = shell
         .into_iter()
@@ -3246,19 +3482,9 @@ pub(crate) fn pin_key(path: &[&str]) -> String {
         .join(" › ")
 }
 
-thread_local! {
-    /// Icons of pinned Windows commands as last seen, by pin key: a row drawn before its source
-    /// answers (`coming_row`) shows it already.
-    static PIN_ICONS: RefCell<std::collections::HashMap<String, Arc<RenderImage>>> =
-        RefCell::default();
-}
-
-fn remember_pin_icon(key: &str, item: &MenuItem) {
-    if let Some(icon) = &item.icon {
-        PIN_ICONS.with(|icons| {
-            icons.borrow_mut().insert(key.to_string(), Arc::clone(icon));
-        });
-    }
+/// Remembers how pinned row `key` looked, for drawing it ahead next time (`menu_pin_looks`).
+fn remember_pin(key: &str, item: &MenuItem) {
+    crate::menu_pin_looks::remember(key, item.icon.as_ref(), false);
 }
 
 /// The row of a pinned command known to show, before its source answers: its label from the
@@ -3273,7 +3499,7 @@ fn coming_row(key: &str, ix: usize) -> Option<MenuItem> {
         shortcut: None,
         command: MenuCommand::PinPending(ix),
         enabled: true,
-        icon: PIN_ICONS.with(|icons| icons.borrow().get(key).cloned()),
+        icon: crate::menu_pin_looks::icon(key),
         glyph: None,
         checked: false,
         bold: false,

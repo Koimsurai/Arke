@@ -2760,6 +2760,40 @@ impl Overlay {
         self.shrink();
     }
 
+    /// Paths recorded as gone.
+    pub fn removed_count(&self) -> usize {
+        self.removed.len()
+    }
+
+    /// Removal records that change nothing if the index doesn't have their path: all but those
+    /// of folders that hold an added path (a folder made after the index and removed again
+    /// still hides what was recorded inside it).
+    pub fn removed_hiding_nothing_added(&self) -> Vec<PathBuf> {
+        let mut holding: HashSet<String> = HashSet::new();
+        for path in self.added.keys() {
+            let mut up = path.parent();
+            while let Some(dir) = up {
+                if !holding.insert(dir.to_string_lossy().to_lowercase()) {
+                    break;
+                }
+                up = dir.parent();
+            }
+        }
+        self.removed
+            .keys()
+            .filter(|p| !holding.contains(&p.to_string_lossy().to_lowercase()))
+            .cloned()
+            .collect()
+    }
+
+    /// Drops the removal records of `paths`, which the index doesn't have.
+    pub fn forget_removed(&mut self, paths: &[PathBuf]) {
+        for path in paths {
+            self.removed.remove(path);
+        }
+        self.removed.shrink_to_fit();
+    }
+
     /// Gives back the room of pruned records: up to 100,000 of them pile up between merges,
     /// and a map keeps its size when emptied.
     fn shrink(&mut self) {
@@ -2998,6 +3032,11 @@ impl Overlay {
                 {
                     continue;
                 }
+            }
+            // Inside a folder removed since (a folder made after the build, removed with what
+            // it held).
+            if self.is_removed(path) {
+                continue;
             }
             fresh.push((
                 name.len(),
@@ -4466,8 +4505,14 @@ mod tests {
         };
         let base = walk(&fs);
         let mut overlay = Overlay::default();
+        // As the index service records a change: an item found under another spelling (the
+        // case changed) leaves the old one and goes in under its own.
         let mut record = |path: &str, fs: &FakeFs| {
-            let path = PathBuf::from(path);
+            let mut path = PathBuf::from(path);
+            if let Some(listed) = fs.listed_name(&path) {
+                overlay.record(path.clone(), None);
+                path.set_file_name(listed);
+            }
             let seen = fs.stat(&path).ok().map(|e| Seen::of(&e));
             overlay.record(path, seen);
         };

@@ -611,6 +611,7 @@ impl Explorer {
         if event.pressed_button != Some(MouseButton::Right) {
             // Released somewhere we didn't hear about.
             self.right_press = None;
+            self.cancel_early_menu();
             cx.notify();
             return;
         }
@@ -618,6 +619,7 @@ impl Explorer {
             return;
         }
         self.right_press = None;
+        self.cancel_early_menu();
         let (from, to, modifiers) = (press.at, event.position, event.modifiers);
         cx.set_global(RightDrag);
         window.defer(cx, move |window, cx| {

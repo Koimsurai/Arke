@@ -669,3 +669,414 @@ fn pinning_learns_the_source_at_once(cx: &mut TestAppContext) {
     });
     assert_eq!(owners(cx)["Compress with 7-Zip"], seven_zip().clsid);
 }
+
+/// #278: a source read only in part (a submenu still filling when the wait ran out) doesn't
+/// count as not having a pinned command. Its row, drawn ahead, stays, and it is still drawn
+/// ahead next time: taking a short read for "not here" made rows come and go.
+#[gpui::test]
+fn a_source_read_short_keeps_its_row(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let key = "Compress with 7-Zip";
+    pin(cx, &[key]);
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "learned", |cx| {
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"])
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // 7-Zip comes back cut short and without the command; the whole menu too.
+    shell.extensions.lock()[0].1.clear();
+    shell.partial_extensions.lock().push("7-Zip".into());
+    shell
+        .partial_menu
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "7-Zip answered", |_| {
+        !shell.extensions_read.lock().is_empty()
+    });
+    wait_until(cx, &view, "more options loaded", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(
+        rows_above_more_options(&view, cx).contains(&key.to_owned()),
+        "the row stays"
+    );
+    assert!(
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"]),
+        "still known to show for a .txt file"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Read in full and still without it: now it goes, and is forgotten (the whole menu, which
+    // this shell gives with the command, held back).
+    shell.partial_extensions.lock().clear();
+    shell
+        .partial_menu
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "row gone", |cx| {
+        !rows_above_more_options(&view, cx).contains(&key.to_owned())
+    });
+    wait_for(cx, "forgotten", |cx| !pin_seen(cx).contains_key(key));
+    let _ = open_whole.send(());
+    *shell.menu_gate.lock() = None;
+}
+
+/// #278: "Send to" under "Show more options" is the menu host's own list, read on its own,
+/// in place of Windows' one, which fills slowly and was often cut short. Its rows run in that
+/// list's own menu.
+#[gpui::test]
+fn send_to_comes_from_the_hosts_own_list(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: None,
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    // Windows' own, as the whole menu has it: left to fill (it is never waited for).
+    *shell.lazy_submenus.lock() = vec![("Send to".into(), vec![item(40, "Only the first")])];
+    // The host's list.
+    shell.extensions.lock().push((
+        MenuHandler::send_to(),
+        vec![ShellMenuEntry::Submenu {
+            label: "Send to".into(),
+            enabled: true,
+            icon: None,
+            children: vec![
+                item(1, "Compressed folder"),
+                item(2, "Desktop"),
+                item(3, "Notes"),
+            ],
+            lazy: None,
+        }],
+    ));
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    let want = (
+        vec![
+            "Compressed folder".to_owned(),
+            "Desktop".to_owned(),
+            "Notes".to_owned(),
+        ],
+        false,
+    );
+    wait_until(cx, &view, "the host's Send to", |v| {
+        v.context_menu
+            .as_ref()
+            .and_then(|m| m.shell_submenu_for_test("Send to"))
+            .as_ref()
+            == Some(&want)
+    });
+    assert!(shell.extensions_read.lock().contains(&"SendTo".to_owned()));
+}
+
+/// A right press, as the list gets it on a row.
+fn right_press() -> gpui::MouseDownEvent {
+    gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: gpui::point(gpui::px(300.), gpui::px(200.)),
+        modifiers: gpui::Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    }
+}
+
+/// #325: a pinned command seen for this kind of item before is in the menu the moment it opens,
+/// before anything has been looked up for it, a registry command's (as "Run as administrator")
+/// as well as an extension's: the menu doesn't grow a row a moment later.
+#[gpui::test]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so its methods can't be named by path"
+)]
+fn seen_rows_are_in_the_menu_as_it_opens(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_commands();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let (git, zip) = ("Open Git Bash here", "Compress with 7-Zip");
+    pin(cx, &[git, zip]);
+
+    // Where they come from, then (their sources read on their own) where they show.
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "owners", |cx| owners(cx).len() >= 2);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "seen", |cx| {
+        let seen = pin_seen(cx);
+        [git, zip]
+            .iter()
+            .all(|key| seen.get(*key).is_some_and(|k| k == &[".txt"]))
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Nothing answers; the rows are there as it opens, before any event is handled.
+    let (open_whole, whole_gate) = flume::unbounded();
+    let (open_parts, parts_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    *shell.part_gate.lock() = Some(parts_gate);
+    let event = right_press();
+    let labels = cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.on_row_right_down(0, &event, window, cx);
+            v.right_press_released(event.position, window, cx);
+            v.context_menu
+                .as_ref()
+                .map_or_else(Vec::new, |m| m.labels())
+        })
+    });
+    assert!(labels.iter().any(|l| l == git), "{labels:?}");
+    assert!(labels.iter().any(|l| l == zip), "{labels:?}");
+    *shell.part_gate.lock() = None;
+    *shell.menu_gate.lock() = None;
+    for _ in 0..4 {
+        let _ = open_parts.send(());
+        let _ = open_whole.send(());
+    }
+    cx.run_until_parked();
+}
+
+/// #278: an item's menu is made when the right button goes down, so the Windows menu is read
+/// while it is held: what came back by the time it is let go is in the menu as it shows. A press
+/// that goes away without a menu (a drag, a release elsewhere) lets go of what was read for it.
+#[gpui::test]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so its methods can't be named by path"
+)]
+fn the_menu_is_read_while_the_button_is_down(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let event = right_press();
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.on_row_right_down(0, &event, window, cx));
+    });
+    wait_for(cx, "read while held", |_| {
+        shell.system_menus.lock().len() == 1
+    });
+    cx.run_until_parked();
+    assert!(
+        view.update(cx, |v, _| v.context_menu.is_none()),
+        "not shown while held"
+    );
+    // Let go: "Show more options" is in already.
+    let loaded = cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.right_press_released(event.position, window, cx);
+            v.context_menu.as_ref().map(|m| m.shell_state())
+        })
+    });
+    assert!(loaded.is_some_and(|(done, session)| done && session.is_some()));
+    assert_eq!(shell.system_menus.lock().len(), 1, "read once");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // A press that goes away: its menu isn't shown, and what was read is let go.
+    shell.shell_released.lock().clear();
+    let event = right_press();
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.on_row_right_down(1, &event, window, cx));
+    });
+    wait_for(cx, "read again", |_| shell.system_menus.lock().len() == 2);
+    cx.run_until_parked();
+    let moved = gpui::MouseMoveEvent {
+        position: gpui::point(gpui::px(320.), gpui::px(240.)),
+        pressed_button: None,
+        modifiers: gpui::Modifiers::default(),
+    };
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.right_press_moved(&moved, window, cx));
+    });
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| v.context_menu.is_none()
+        && v.early_menu.is_none()));
+    assert!(!shell.shell_released.lock().is_empty(), "let go");
+}
+
+/// #278: a Windows submenu still filling when the whole menu was read isn't waited for; it is
+/// filled right after, without being opened, so it is usually in by the time it is.
+#[gpui::test]
+fn a_submenu_left_filling_is_filled_right_after(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: None,
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    *shell.lazy_submenus.lock() = vec![
+        ("Give access to".into(), vec![item(30, "Specific people")]),
+        ("Opened later".into(), vec![item(31, "Only when opened")]),
+    ];
+    // The first was still filling; the second, empty, is one filled when opened (as before).
+    *shell.filling_menu.lock() = vec![(0, "Give access to".into())];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "filled unopened", |v| {
+        v.context_menu
+            .as_ref()
+            .and_then(|m| m.shell_submenu_for_test("Give access to"))
+            .is_some_and(|(items, _)| items == ["Specific people"])
+    });
+    let filled: Vec<u32> = shell
+        .submenus_filled
+        .lock()
+        .iter()
+        .map(|(_, ix)| *ix)
+        .collect();
+    assert_eq!(filled, [0], "only the one left filling");
+    assert!(
+        view.update(cx, |v, _| v
+            .context_menu
+            .as_ref()
+            .and_then(|m| m.shell_submenu_for_test("Opened later")))
+            .is_some_and(|(items, lazy)| lazy && !items.iter().any(|i| i == "Only when opened"))
+    );
+}
+
+/// #278: a submenu left filling that comes back with nothing Arke can show (owner-drawn items)
+/// goes from "Show more options", rather than staying as an empty submenu.
+#[gpui::test]
+fn a_submenu_left_filling_with_nothing_goes(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    *shell.lazy_submenus.lock() = vec![("Drawn by its app".into(), Vec::new())];
+    *shell.filling_menu.lock() = vec![(0, "Drawn by its app".into())];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    wait_for(cx, "filled", |_| !shell.submenus_filled.lock().is_empty());
+    wait_until(cx, &view, "gone", |v| {
+        v.context_menu
+            .as_ref()
+            .is_some_and(|m| m.shell_submenu_for_test("Drawn by its app").is_none())
+    });
+}
+
+/// #325: "Run as administrator" has no label in the registry (Windows names it), so read on its
+/// own it comes back called by its verb. It is still the pinned command: its row stays when that
+/// answer comes, and it is noted to show for the kind of item, to be drawn as the menu opens.
+#[gpui::test]
+fn a_command_windows_names_keeps_its_row(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let item = |id, label: &str| ShellMenuEntry::Item {
+        id,
+        verb: Some("runas".into()),
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    let key = "Run as administrator";
+    *shell.extra_menu.lock() = vec![item(22, key)];
+    shell.extensions.lock().push((
+        MenuHandler {
+            key: "txtfile".into(),
+            clsid: String::new(),
+            name: "runas".into(),
+            kind: HandlerKind::Verb { extended: false },
+            parent: None,
+        },
+        vec![item(1, "runas")],
+    ));
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    pin(cx, &[key]);
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "owner", |cx| {
+        owners(cx).get(key).is_some_and(|o| o == "verb:runas")
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // The whole menu slow: the row comes from the verb read on its own, and stays.
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    shell.extensions_read.lock().clear();
+    right_click(&view, cx, Some(0));
+    wait_for(cx, "verb answered", |_| {
+        !shell.extensions_read.lock().is_empty()
+    });
+    wait_for(cx, "noted", |cx| {
+        pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"])
+    });
+    assert!(rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    *shell.menu_gate.lock() = None;
+    for _ in 0..4 {
+        let _ = open_whole.send(());
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+}
+
+/// #344: "Pin to Start" only works when File Explorer itself runs it; from Arke Windows answers
+/// "access denied". It stays out of "Show more options"; the rest of the Windows menu is kept.
+#[gpui::test]
+fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.exe", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let item = |id, label: &str, verb: &str| ShellMenuEntry::Item {
+        id,
+        verb: Some(verb.into()),
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    *shell.extra_menu.lock() = vec![
+        item(40, "Pin to Start", "PinToStartScreen"),
+        item(41, "Share", "Windows.ModernShare"),
+    ];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    let items = view.update(cx, |v, _| {
+        let Some(menu) = v.context_menu.as_ref() else {
+            return Vec::new();
+        };
+        menu.shell_items_for_test()
+    });
+    assert!(items.iter().any(|i| i == "Share"), "{items:?}");
+    assert!(!items.iter().any(|i| i == "Pin to Start"), "{items:?}");
+}

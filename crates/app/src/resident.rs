@@ -55,20 +55,13 @@ pub(crate) fn is_resident() -> bool {
 }
 
 /// Memory priority low (or normal) and EcoQoS on (or left to Windows) for the whole process.
-fn set_background_priority(background: bool) {
+pub(crate) fn set_background_priority(background: bool) {
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_LOW,
-        MEMORY_PRIORITY_NORMAL, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        GetCurrentProcess, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-        ProcessMemoryPriority, ProcessPowerThrottling, SetProcessInformation,
+        ProcessPowerThrottling, SetProcessInformation,
     };
-    let memory = MEMORY_PRIORITY_INFORMATION {
-        MemoryPriority: if background {
-            MEMORY_PRIORITY_LOW
-        } else {
-            MEMORY_PRIORITY_NORMAL
-        },
-    };
+    set_memory_priority_low(background);
     // Control 0 with state 0 hands the decision back to Windows (its default).
     let throttle = PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
@@ -83,17 +76,9 @@ fn set_background_priority(background: bool) {
             0
         },
     };
-    // SAFETY: GetCurrentProcess is a pseudo handle that needs no closing; each structure is the
+    // SAFETY: GetCurrentProcess is a pseudo handle that needs no closing; the structure is the
     // one its information class takes, passed with its size.
     unsafe {
-        if let Err(err) = SetProcessInformation(
-            GetCurrentProcess(),
-            ProcessMemoryPriority,
-            (&raw const memory).cast(),
-            u32::try_from(size_of::<MEMORY_PRIORITY_INFORMATION>()).unwrap_or(4),
-        ) {
-            log::debug!("could not set memory priority: {err}");
-        }
         if let Err(err) = SetProcessInformation(
             GetCurrentProcess(),
             ProcessPowerThrottling,
@@ -102,5 +87,33 @@ fn set_background_priority(background: bool) {
         ) {
             log::debug!("could not set power throttling: {err}");
         }
+    }
+}
+
+/// Memory priority low (or normal) for the whole process: under memory pressure Windows takes
+/// low-priority pages first. Costs nothing while memory is plentiful.
+pub(crate) fn set_memory_priority_low(low: bool) {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_LOW,
+        MEMORY_PRIORITY_NORMAL, ProcessMemoryPriority, SetProcessInformation,
+    };
+    let memory = MEMORY_PRIORITY_INFORMATION {
+        MemoryPriority: if low {
+            MEMORY_PRIORITY_LOW
+        } else {
+            MEMORY_PRIORITY_NORMAL
+        },
+    };
+    // SAFETY: GetCurrentProcess is a pseudo handle that needs no closing; the structure is the
+    // one its information class takes, passed with its size.
+    if let Err(err) = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessMemoryPriority,
+            (&raw const memory).cast(),
+            u32::try_from(size_of::<MEMORY_PRIORITY_INFORMATION>()).unwrap_or(4),
+        )
+    } {
+        log::debug!("could not set memory priority: {err}");
     }
 }

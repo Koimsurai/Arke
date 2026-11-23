@@ -1,7 +1,7 @@
 //! GPUI tests for the favorites at the top of the sidebar (`workspace_sidebar.rs`): a tile dragged
 //! like an app icon (lifted under the pointer, an empty slot the others slide around, settling
-//! back when dropped), removal by dragging one out of the sidebar (with Undo), long names listed
-//! as rows instead of cut off (#174), names of their own (#259), and where the Recycle Bin goes
+//! back when dropped), removal by dragging one out of the sidebar (with Undo), long names kept on
+//! their tiles, names of their own (#259), and where the Recycle Bin goes
 //! when it leaves the sidebar (#31).
 
 use gpui::{Bounds, Modifiers, MouseButton, Pixels, Point, point, px};
@@ -342,74 +342,18 @@ fn a_tile_being_renamed_has_no_tooltip(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-/// #174: a name that doesn't fit on a tile is listed as a row under the tiles instead of being cut
-/// off. It stays where it was among the favorites, so a shorter name puts it back on its tile.
+/// A favorite with a name too long for its tile is still a tile (cut off, its tooltip has the
+/// path): where a folder goes, the tiles or the list, is the user's. Up to 0.8 it was drawn as a
+/// row (#174), which looked like the list but wasn't: dragging it to the tiles did nothing.
 #[gpui::test]
-fn long_names_are_listed_instead_of_cut_off(cx: &mut TestAppContext) {
-    let (ws, cx) = window(cx);
+fn a_long_name_stays_on_its_tile(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
     change(cx, |st| st.favorites = Some(vec![p("a"), p(LONG), p("b")]));
     refresh(cx);
-    assert!(drawn(cx, "tile-slot-0"));
-    assert!(!drawn(cx, "tile-slot-1"), "no tile with a cut-off name");
-    assert!(drawn(cx, "tile-slot-2"), "the others keep their slots");
-    assert!(drawn(cx, "favorite-row-1"), "listed as a row instead");
-    assert!(drawn(cx, &format!("sidebar {LONG}")));
-    assert!(drawn(cx, "pin-list-label"), "under the Favorites heading");
-    let settings = current(cx);
-    assert_eq!(
-        settings.favorites,
-        Some(vec![p("a"), p(LONG), p("b")]),
-        "the saved order doesn't change"
-    );
-    assert!(settings.pinned.is_empty());
-
-    rename(&ws, cx, &p(LONG), "Board");
-    assert!(drawn(cx, "tile-slot-1"), "back on its own tile");
-    assert!(drawn(cx, "tile Board"));
-    assert!(!drawn(cx, "favorite-row-1"));
-}
-
-/// With a favorite listed as a row, dragging a tile onto another still reorders them live and the
-/// tiles slide over from their old slots; the row keeps its place in the saved order.
-#[gpui::test]
-fn tiles_slide_when_a_favorite_is_a_row(cx: &mut TestAppContext) {
-    crate::motion::force_for_test(true);
-    let (ws, cx) = window(cx);
-    change(cx, |st| {
-        st.favorites = Some(vec![p("a"), p(LONG), p("b"), p("c")]);
-    });
-    refresh(cx);
-    assert!(drawn(cx, "favorite-row-1"), "the long name is a row");
-    let first = cx.debug_bounds("tile-slot-0").expect("a is a tile");
-    let last = cx.debug_bounds("tile-slot-3").expect("c is a tile");
-
-    cx.simulate_mouse_down(first.center(), MouseButton::Left, Modifiers::none());
-    // Two moves within the first tile: the drag starts, then every tile reports where it is.
-    for nudge in [6., 8.] {
-        cx.simulate_mouse_move(
-            first.center() + point(px(nudge), px(4.)),
-            Some(MouseButton::Left),
-            Modifiers::none(),
-        );
-        refresh(cx);
+    for slot in ["tile-slot-0", "tile-slot-1", "tile-slot-2"] {
+        assert!(drawn(cx, slot), "{slot} is a tile");
     }
-    cx.update(|_, cx| assert!(cx.has_active_drag()));
-
-    cx.simulate_mouse_move(last.center(), Some(MouseButton::Left), Modifiers::none());
-    cx.run_until_parked();
-    assert_eq!(
-        current(cx).favorites,
-        Some(vec![p(LONG), p("b"), p("c"), p("a")]),
-        "a takes c's slot; the row stays ahead of them"
-    );
-    assert_eq!(
-        ws.update(cx, |ws, _| ws.tiles_sliding_for_test()),
-        vec![p("a"), p("b"), p("c")],
-        "every tile slides from its old slot"
-    );
-    cx.simulate_mouse_up(last.center(), MouseButton::Left, Modifiers::none());
-    cx.run_until_parked();
-    crate::motion::force_for_test(false);
+    assert!(!drawn(cx, "favorite-row-1"), "not a row");
 }
 
 /// #259: "Rename" in a favorite's menu gives it a name of its own on its tile or row; the folder

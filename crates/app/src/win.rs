@@ -900,8 +900,9 @@ impl Shell for WinShell {
         &self,
         paths: &[PathBuf],
         image: Option<&crate::shell::DragImage>,
+        after_lost_press: bool,
     ) -> Result<crate::shell::DragOutEnd, ShellError> {
-        win_fileops::drag_out(paths, image).map(|outcome| match outcome {
+        win_fileops::drag_out(paths, image, after_lost_press).map(|outcome| match outcome {
             Some(win_fileops::DragOutcome::Returned) => crate::shell::DragOutEnd::Returned,
             _ => crate::shell::DragOutEnd::Finished,
         })
@@ -2400,7 +2401,7 @@ fn reg_key_exists(root: windows::Win32::System::Registry::HKEY, key: &str) -> bo
 }
 
 /// A `REG_DWORD` value, or `None`.
-fn read_reg_dword(
+pub(crate) fn read_reg_dword(
     root: windows::Win32::System::Registry::HKEY,
     key: &str,
     value: &str,

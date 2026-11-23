@@ -154,6 +154,8 @@ struct FakeShell {
     extra_menu: Mutex<Vec<crate::shell::ShellMenuEntry>>,
     /// While set, reading one source's menu waits for a message on it (a slow source).
     part_gate: Mutex<Option<flume::Receiver<()>>>,
+    /// Submenus the whole menu says are still filling ([`crate::shell::ShellMenu::filling`]).
+    pub(crate) filling_menu: Mutex<Vec<(u32, String)>>,
     /// Context menu extensions and their menus, read on their own (sessions from 100).
     extensions: Mutex<
         Vec<(
@@ -163,6 +165,10 @@ struct FakeShell {
     >,
     /// Names of the extensions read on their own.
     extensions_read: Mutex<Vec<String>>,
+    /// Names of extensions whose menu comes back only partly read (#278).
+    partial_extensions: Mutex<Vec<String>>,
+    /// Whether the whole Windows menu comes back only partly read.
+    partial_menu: std::sync::atomic::AtomicBool,
     /// Submenus added to the end of the whole Windows menu empty, filled only when opened
     /// (lazy index is the position here): label and what filling it gives.
     lazy_submenus: Mutex<Vec<(String, Vec<crate::shell::ShellMenuEntry>)>>,
@@ -193,6 +199,8 @@ struct FakeShell {
     drag_returns: std::sync::atomic::AtomicBool,
     /// Another program's window is on top of Arke at the cursor.
     covered: std::sync::atomic::AtomicBool,
+    /// For each drag out, whether it was handed over after a lost press (`Shell::drag_out`).
+    dragged_out_after_lost_press: Mutex<Vec<bool>>,
     /// Extra places (e.g. Downloads pointing at a temp folder).
     extra_places: Mutex<Vec<Place>>,
     /// Drag images built (request, whether a cached thumbnail existed).
@@ -432,8 +440,12 @@ impl Shell for FakeShell {
         &self,
         paths: &[PathBuf],
         image: Option<&crate::shell::DragImage>,
+        after_lost_press: bool,
     ) -> Result<crate::shell::DragOutEnd, ShellError> {
         self.dragged_out.lock().push(paths.to_vec());
+        self.dragged_out_after_lost_press
+            .lock()
+            .push(after_lost_press);
         // Fake image: width holds the item count, pixels hold the path.
         self.dragged_images.lock().push(image.map(|i| {
             (
@@ -682,6 +694,8 @@ impl Shell for FakeShell {
                 .shell_sessions
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             entries,
+            partial: self.partial_menu.load(std::sync::atomic::Ordering::Relaxed),
+            filling: self.filling_menu.lock().clone(),
         })
     }
 
@@ -780,6 +794,11 @@ impl Shell for FakeShell {
         _group: u64,
     ) -> Result<(crate::shell::ShellMenu, Duration), ShellError> {
         assert!(!arke_core::fs::is_ui_thread());
+        // A source this shell doesn't have (Send To, asked for on every menu) answers at once,
+        // so a gated test's messages go to the sources it set up.
+        if !self.extensions.lock().iter().any(|(h, _)| h == handler) {
+            return Err(ShellError::Unsupported);
+        }
         let gate = self.part_gate.lock().clone();
         if let Some(gate) = gate {
             let _ = gate.recv_timeout(Duration::from_secs(20));
@@ -794,6 +813,8 @@ impl Shell for FakeShell {
             crate::shell::ShellMenu {
                 session: 100 + at as u64,
                 entries: extensions[at].1.clone(),
+                partial: self.partial_extensions.lock().contains(&handler.name),
+                filling: Vec::new(),
             },
             Duration::from_millis(5),
         ))
@@ -2326,6 +2347,61 @@ fn dragging_over_a_window_on_top_of_arke_hands_off_to_windows(cx: &mut TestAppCo
         [vec![PathBuf::from(r"C:\o\b.txt")]]
     );
     cx.update(|_, cx| assert!(!cx.has_active_drag(), "Arke's own drag should have ended"));
+    assert!(shell.ops().is_empty(), "nothing moved inside Arke");
+}
+
+/// #326: Alt+Tab in the middle of a drag. Another program takes the mouse, and the window is told
+/// the press is over (our GPUI patch sends a release far outside): the files go to Windows drag
+/// and drop, which goes on across the switch. It is marked as handed over after a lost press, so
+/// it drops only once Windows has seen the button down (Arke can't tell from the background).
+/// A press lost before any drag started hands nothing over.
+#[gpui::test]
+fn alt_tab_mid_drag_hands_the_files_to_windows(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, point, px};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let start = point(bounds.left() + px(60.), bounds.top() + row * 1.5);
+    let lost = MouseUpEvent {
+        button: MouseButton::Left,
+        position: point(px(-100_000.), px(-100_000.)),
+        modifiers: Modifiers::none(),
+        click_count: 0,
+    };
+
+    // A press lost before it became a drag: nothing to hand over.
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_event(lost.clone());
+    cx.run_until_parked();
+    assert!(shell.dragged_out.lock().is_empty(), "no drag yet");
+    cx.update(|_, cx| assert!(!cx.has_active_drag()));
+
+    // Alt+Tab mid-drag.
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        start + point(px(30.), px(4.)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    wait_for_drag_image(cx);
+    cx.simulate_event(lost);
+    cx.run_until_parked();
+    assert_eq!(
+        *shell.dragged_out.lock(),
+        [vec![PathBuf::from(r"C:\o\b.txt")]]
+    );
+    assert_eq!(*shell.dragged_out_after_lost_press.lock(), [true]);
+    cx.update(|_, cx| {
+        assert!(!cx.has_active_drag());
+        assert!(!cx.has_global::<crate::explorer::DraggingOutside>());
+    });
     assert!(shell.ops().is_empty(), "nothing moved inside Arke");
 }
 
@@ -8627,6 +8703,38 @@ fn a_folder_under_home_is_not_a_cold_start(cx: &mut TestAppContext) {
     assert_eq!(pane.update(cx, |v, _| v.metrics.clock), StartClock::Untimed);
 }
 
+/// #343: the folder the first frame waited for never finished, and another one was opened later:
+/// that listing isn't the start's, so it isn't logged as the cold start's first full listing
+/// (the log said 703657 ms).
+#[gpui::test]
+fn a_later_folder_is_not_the_cold_starts_listing(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 3);
+    fs.insert_many(r"C:\b", 4);
+    fs.hang(r"C:\a");
+    let session = crate::settings::Session {
+        tabs: vec![saved_tab(r"C:\a", false)],
+        active: 0,
+    };
+    let process_start = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+    let (ws, cx) = cold_window(cx, Arc::clone(&fs), session, process_start, None);
+    cx.run_until_parked();
+    let pane = ws.update(cx, |ws, _| ws.tab_views().next().cloned().unwrap());
+    assert_eq!(
+        pane.update(cx, |v, _| v.metrics.clock),
+        StartClock::Cold(process_start)
+    );
+    pane.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\b"), NavKind::New, cx);
+    });
+    wait_until(cx, &pane, "b listed", loaded(r"C:\b"));
+    cx.run_until_parked();
+    let (clock, first) = pane.update(cx, |v, _| (v.metrics.clock, v.metrics.first_listing));
+    fs.release_all();
+    assert!(first.is_some(), "the listing is noted");
+    assert_eq!(clock, StartClock::Untimed, "but not as the cold start's");
+}
+
 /// A window the resident Arke opens on request, hours after it started: not a cold start, and
 /// its first frame is timed from when the request arrived.
 #[gpui::test]
@@ -8948,4 +9056,33 @@ fn ctrl_double_click_opens_a_folder_in_a_new_tab(cx: &mut TestAppContext) {
             Some(PathBuf::from(r"C:\t\two"))
         );
     });
+}
+
+/// #330: a drive plugged in while Arke runs shows in the sidebar of every window right away,
+/// not only after a restart, and goes away when pulled out.
+#[gpui::test]
+fn a_drive_plugged_in_shows_in_the_sidebar(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\d", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\d");
+    cx.run_until_parked();
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    let has_usb = |v: &Explorer| v.places.iter().any(|p| p.path == Path::new(r"E:\"));
+    assert!(!view.update(cx, |v, _| has_usb(v)));
+
+    shell.extra_places.lock().push(Place {
+        label: "USB Drive (E:)".into(),
+        path: PathBuf::from(r"E:\"),
+        kind: PlaceKind::Drive {
+            remote: false,
+            space: None,
+        },
+    });
+    cx.cx.update(crate::workspace::reload_places_everywhere);
+    wait_until(cx, &view, "the new drive", has_usb);
+
+    shell.extra_places.lock().clear();
+    cx.cx.update(crate::workspace::reload_places_everywhere);
+    wait_until(cx, &view, "the drive gone", |v| !has_usb(v));
 }

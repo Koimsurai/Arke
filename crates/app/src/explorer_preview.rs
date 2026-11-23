@@ -308,12 +308,27 @@ pub(crate) const fn turned(page: u32, pages: u32, turn: PageTurn) -> Option<u32>
     if next == page { None } else { Some(next) }
 }
 
-/// Recently rendered pages (keyed by file identity, page and box), least recently used first.
+/// Recently rendered PDF pages (keyed by file identity, page and box), least recently used first.
+/// One cache for all tabs: kept per tab, 12 pages each, a few tabs on large pages could hold
+/// hundreds of MB. A tab's handle onto it (the pages are only touched on the UI thread).
 #[derive(Default)]
-pub(crate) struct PdfCache(std::collections::VecDeque<(PdfKey, PdfPage)>);
+pub(crate) struct PdfCache;
 
-/// Pages kept per tab (a full-screen page at 200 % is about 30 MB, most are far smaller).
-const PDF_CACHE: usize = 12;
+thread_local! {
+    static PDF_PAGES: std::cell::RefCell<std::collections::VecDeque<(PdfKey, PdfPage)>> =
+        std::cell::RefCell::default();
+}
+
+/// Pages kept at most, in all tabs together.
+const PDF_CACHE: usize = 24;
+/// Bytes of pages kept at most (a full-screen page at 200 % is about 30 MB, most are far
+/// smaller). The page just rendered stays even when it alone is bigger.
+const PDF_CACHE_BYTES: usize = 96 << 20;
+
+/// Bytes a page holds (BGRA).
+const fn page_bytes(page: &PdfPage) -> usize {
+    (page.width as usize) * (page.height as usize) * 4
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PdfKey {
@@ -338,26 +353,41 @@ impl PdfKey {
 
 impl PdfCache {
     /// A page rendered for this file and a box close to `key`'s (see [`close_enough`]).
+    #[allow(
+        clippy::unused_self,
+        reason = "a tab's handle: the pages are shared by all tabs"
+    )]
     fn get(&mut self, key: &PdfKey) -> Option<PdfPage> {
-        let ix = self.0.iter().position(|(k, _)| {
-            k.page == key.page
-                && k.size == key.size
-                && k.modified == key.modified
-                && k.path == key.path
-                && close_enough(k.target, key.target)
-        })?;
-        let hit = self.0.remove(ix)?;
-        let page = hit.1.clone();
-        self.0.push_back(hit);
-        Some(page)
+        PDF_PAGES.with_borrow_mut(|pages| {
+            let ix = pages.iter().position(|(k, _)| {
+                k.page == key.page
+                    && k.size == key.size
+                    && k.modified == key.modified
+                    && k.path == key.path
+                    && close_enough(k.target, key.target)
+            })?;
+            let hit = pages.remove(ix)?;
+            let page = hit.1.clone();
+            pages.push_back(hit);
+            Some(page)
+        })
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "a tab's handle: the pages are shared by all tabs"
+    )]
     fn put(&mut self, key: PdfKey, page: PdfPage) {
-        self.0.retain(|(k, _)| *k != key);
-        self.0.push_back((key, page));
-        while self.0.len() > PDF_CACHE {
-            self.0.pop_front();
-        }
+        PDF_PAGES.with_borrow_mut(|pages| {
+            pages.retain(|(k, _)| *k != key);
+            pages.push_back((key, page));
+            let mut bytes: usize = pages.iter().map(|(_, p)| page_bytes(p)).sum();
+            while pages.len() > 1 && (pages.len() > PDF_CACHE || bytes > PDF_CACHE_BYTES) {
+                if let Some((_, old)) = pages.pop_front() {
+                    bytes -= page_bytes(&old);
+                }
+            }
+        });
     }
 }
 
@@ -901,14 +931,14 @@ impl Explorer {
             Some(Preview {
                 body: PreviewBody::Image { image, .. },
                 ..
-            }) => cx.drop_image(image, None),
+            }) => crate::media::drop_image_later(image, cx),
             // The cache keeps the pixels; only the GPU copy goes.
             Some(Preview {
                 body: PreviewBody::Pdf(view),
                 ..
             }) => {
                 view.pane.release(cx);
-                cx.drop_image(view.render.image, None);
+                crate::media::drop_image_later(view.render.image, cx);
             }
             Some(Preview {
                 body: PreviewBody::Slides(view),
@@ -935,7 +965,7 @@ impl Explorer {
                 PreviewData::Image { image, .. }
                 | PreviewData::Slides {
                     thumb: Some(image), ..
-                } => cx.drop_image(image, None),
+                } => crate::media::drop_image_later(image, cx),
                 _ => {}
             }
             return;
@@ -1228,7 +1258,7 @@ impl Explorer {
             view.page = page;
             view.target = target;
             view.pending = None;
-            cx.drop_image(old.image, None);
+            crate::media::drop_image_later(old.image, cx);
             cx.notify();
             return;
         }
@@ -1267,7 +1297,7 @@ impl Explorer {
                     view.page = *page;
                     view.target = *target;
                     view.pending = None;
-                    cx.drop_image(old.image, None);
+                    crate::media::drop_image_later(old.image, cx);
                     cx.notify();
                 }
             }
@@ -3552,7 +3582,7 @@ impl Explorer {
     /// Back to fit-to-window, dropping the high-res image.
     pub(super) fn reset_zoom(&mut self, cx: &mut Context<Self>) {
         if let Some(image) = self.zoom.full.take() {
-            cx.drop_image(image, None);
+            crate::media::drop_image_later(image, cx);
         }
         self.zoom.on = false;
         self.zoom.press = None;
@@ -3568,11 +3598,11 @@ impl Explorer {
         match image {
             Some(image) if generation == self.zoom.generation && self.zoom.on => {
                 if let Some(old) = self.zoom.full.replace(image) {
-                    cx.drop_image(old, None);
+                    crate::media::drop_image_later(old, cx);
                 }
                 cx.notify();
             }
-            Some(image) => cx.drop_image(image, None),
+            Some(image) => crate::media::drop_image_later(image, cx),
             None => {}
         }
     }
@@ -4308,7 +4338,7 @@ mod pdf_tests {
 
     #[test]
     fn cache_keeps_the_most_recent_pages() {
-        let mut cache = PdfCache::default();
+        let mut cache = PdfCache;
         let entry = Entry::new("a.pdf", arke_core::EntryKind::File, 10, None, 0);
         let image = crate::media::to_render_image(arke_core::thumbs::Thumbnail {
             width: 1,
@@ -4323,7 +4353,7 @@ mod pdf_tests {
             pages: 40,
         };
         let key = |n| PdfKey::new(Path::new(r"C:.pdf"), &entry, n, (100, 100));
-        for n in 0..20 {
+        for n in 0..30 {
             cache.put(key(n), page.clone());
         }
         assert!(cache.get(&key(0)).is_none(), "oldest pages are dropped");
@@ -4337,6 +4367,36 @@ mod pdf_tests {
         other = key(19);
         other.size = 11;
         assert!(cache.get(&other).is_none());
+    }
+
+    /// All tabs share one cache with a byte limit: big pages push older ones out well before the
+    /// page count does, and the page just rendered always stays.
+    #[test]
+    fn cache_holds_at_most_its_bytes() {
+        let page = |side: u32| PdfPage {
+            image: crate::media::to_render_image(arke_core::thumbs::Thumbnail {
+                width: 1,
+                height: 1,
+                rgba: vec![255; 4],
+            })
+            .unwrap(),
+            width: side,
+            height: side,
+            pages: 40,
+        };
+        let entry = Entry::new("big.pdf", arke_core::EntryKind::File, 10, None, 0);
+        let key = |n| PdfKey::new(Path::new(r"C:big.pdf"), &entry, n, (100, 100));
+        // About 30 MB each: three fit in 96 MB, a fourth pushes the oldest out.
+        let (mut one, mut two) = (PdfCache, PdfCache);
+        for n in 0..4 {
+            one.put(key(n), page(2800));
+        }
+        assert!(two.get(&key(0)).is_none(), "the oldest went, for every tab");
+        assert!(two.get(&key(3)).is_some(), "shared by the tabs");
+        // One page bigger than the whole budget is still kept.
+        one.put(key(9), page(6000));
+        assert!(two.get(&key(9)).is_some());
+        assert!(two.get(&key(3)).is_none());
     }
 }
 

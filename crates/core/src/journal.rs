@@ -43,8 +43,12 @@ pub enum JournalEvent {
     },
     /// Everything from while we were closed has been sent; live changes from here on.
     CaughtUp,
-    /// Gap in the journal (cleared, wrapped, service stopped): rebuild the index.
+    /// Gap in the journal (cleared, wrapped): rebuild the index.
     Lost,
+    /// The connection to the journal ended (the index service stopped or was updated), but the
+    /// journal itself may be intact: follow it again from the last position, and rebuild only if
+    /// that fails (#343).
+    Disconnected,
 }
 
 /// Callback for [`Journal::follow`]; runs on a background thread.
@@ -212,6 +216,15 @@ mod fake {
             };
             for (_, cb) in followers {
                 cb(JournalEvent::Lost);
+            }
+        }
+
+        /// The service went away (stopped, updated): followers are told and dropped; the journal
+        /// keeps recording, so following again from the last position gets what came meanwhile.
+        pub fn disconnect(&self) {
+            let followers = std::mem::take(&mut self.state.lock().followers);
+            for (_, cb) in followers {
+                cb(JournalEvent::Disconnected);
             }
         }
 

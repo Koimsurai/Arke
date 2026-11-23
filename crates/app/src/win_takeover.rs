@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use arke_core::takeover::{self, Bypass, ShellAttrs, Target};
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
-use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY};
 use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
     CoInitializeEx, CoTaskMemFree, CoUninitialize, IConnectionPointContainer, IDispatch_Impl,
@@ -397,41 +397,68 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..usize::try_from(len).unwrap_or(0)])
 }
 
-/// Whether the process owning `hwnd` runs elevated (or can't be inspected, which is the same
-/// thing from here: not ours to touch).
-fn elevated(hwnd: HWND) -> bool {
+/// Whether the window belongs to a process above Arke's integrity level (an elevated File Explorer
+/// next to a normal Arke), or one that can't be inspected: not ours to touch. With UAC turned off
+/// every program, Arke included, runs at the same high level, and those windows are Arke's (#343).
+fn above_us(hwnd: HWND) -> bool {
     let mut pid = 0u32;
     // SAFETY: valid out pointer.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
     // SAFETY: opens a query-only handle, closed below.
-    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
-    else {
-        return true;
+    let theirs = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+        Ok(process) => {
+            let level = integrity_level(process);
+            // SAFETY: closes the process handle opened above.
+            let _ = unsafe { CloseHandle(process) };
+            level
+        }
+        Err(_) => None,
+    };
+    // SAFETY: the pseudo handle of this process needs no closing.
+    let ours = integrity_level(unsafe { windows::Win32::System::Threading::GetCurrentProcess() });
+    leaves_to_explorer(theirs, ours)
+}
+
+/// Unknown levels count as above.
+const fn leaves_to_explorer(theirs: Option<u32>, ours: Option<u32>) -> bool {
+    match (theirs, ours) {
+        (Some(theirs), Some(ours)) => theirs > ours,
+        _ => true,
+    }
+}
+
+/// The mandatory integrity level (the RID: 0x2000 medium, 0x3000 high) of `process`'s token.
+fn integrity_level(process: windows::Win32::Foundation::HANDLE) -> Option<u32> {
+    use windows::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, TOKEN_MANDATORY_LABEL, TokenIntegrityLevel,
     };
     let mut token = windows::Win32::Foundation::HANDLE::default();
     // SAFETY: process is a valid handle; token is a valid out pointer.
-    let elevated = unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }
-        .ok()
-        .is_none_or(|()| {
-            let mut info = TOKEN_ELEVATION::default();
-            let mut len = 0u32;
-            // SAFETY: info and len are valid for the call; token is valid.
-            let ok = unsafe {
-                GetTokenInformation(
-                    token,
-                    TokenElevation,
-                    Some((&raw mut info).cast()),
-                    size_of::<TOKEN_ELEVATION>() as u32,
-                    &raw mut len,
-                )
-            };
-            // SAFETY: closes the token handle opened above.
-            let _ = unsafe { CloseHandle(token) };
-            ok.is_err() || info.TokenIsElevated != 0
-        });
-    // SAFETY: closes the process handle opened above.
-    let _ = unsafe { CloseHandle(process) };
-    elevated
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }.ok()?;
+    // TOKEN_MANDATORY_LABEL followed by its SID; 64 bytes is plenty, u64 keeps it aligned.
+    let mut buf = [0u64; 8];
+    let mut len = 0u32;
+    // SAFETY: buf and len are valid for the call; token is valid.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            Some(buf.as_mut_ptr().cast()),
+            size_of_val(&buf) as u32,
+            &raw mut len,
+        )
+    };
+    // SAFETY: closes the token handle opened above.
+    let _ = unsafe { CloseHandle(token) };
+    ok.ok()?;
+    // SAFETY: the call filled buf with a TOKEN_MANDATORY_LABEL whose SID lies within buf; the SID
+    // has at least one sub-authority (the level).
+    unsafe {
+        let label = &*buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>();
+        let sid = label.Label.Sid;
+        let count = *GetSidSubAuthorityCount(sid);
+        (count > 0).then(|| *GetSidSubAuthority(sid, u32::from(count) - 1))
+    }
 }
 
 fn shift_down() -> bool {
@@ -761,8 +788,10 @@ impl Watch {
             log::info!("takeover: Shift held, leaving {parsing} to Explorer");
             return None;
         }
-        if elevated(hwnd) {
-            log::info!("takeover: elevated window, leaving {parsing} to Explorer");
+        if above_us(hwnd) {
+            log::info!(
+                "takeover: window above Arke's integrity level, leaving {parsing} to Explorer"
+            );
             return None;
         }
         if let Target::Folder(folder) = &target
@@ -785,5 +814,25 @@ impl Watch {
             let _ = unsafe { KillTimer(None, self.fast_timer) };
             self.fast_timer = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #343: with UAC turned off File Explorer and Arke run at the same high level, and Arke takes
+    /// the window. Only a level above Arke's, or one it can't read, is left to File Explorer.
+    #[test]
+    fn only_a_level_above_arkes_is_left_to_explorer() {
+        assert!(!leaves_to_explorer(Some(0x3000), Some(0x3000)));
+        assert!(!leaves_to_explorer(Some(0x2000), Some(0x2000)));
+        assert!(!leaves_to_explorer(Some(0x2000), Some(0x3000)));
+        assert!(leaves_to_explorer(Some(0x3000), Some(0x2000)));
+        assert!(leaves_to_explorer(None, Some(0x2000)));
+        // SAFETY: the pseudo handle of this process needs no closing.
+        let ours =
+            integrity_level(unsafe { windows::Win32::System::Threading::GetCurrentProcess() });
+        assert!(ours.is_some_and(|level| level >= 0x1000), "{ours:?}");
     }
 }

@@ -66,7 +66,8 @@ pub(crate) struct BinItem {
 /// `work_done` counts finished items out of `work_total`; `done` counts files and folders
 /// removed.
 ///
-/// Every item must be a `$R...` entry of a `$Recycle.Bin\<SID>` folder, or nothing is deleted.
+/// Every item must be a `$R...` entry of a `$Recycle.Bin\<SID>` folder (or of `$Recycle.Bin`
+/// itself on exFAT and FAT drives), or nothing is deleted.
 pub(crate) fn purge_bin(items: &[BinItem], progress: &OpProgress) -> Result<OpOutcome, ShellError> {
     if let Some(stray) = items.iter().find(|item| !bin_entry(&item.data)) {
         return Err(ShellError::Missing {
@@ -130,24 +131,30 @@ pub(crate) fn purge_bin(items: &[BinItem], progress: &OpProgress) -> Result<OpOu
     }
 }
 
-/// Whether `data` is shaped like a bin item: `...\$Recycle.Bin\<SID>\$R...`.
+fn file_name(p: Option<&Path>) -> Option<&str> {
+    p.and_then(Path::file_name).and_then(|n| n.to_str())
+}
+
+fn is_bin(p: Option<&Path>) -> bool {
+    file_name(p).is_some_and(|n| n.eq_ignore_ascii_case("$Recycle.Bin"))
+}
+
+/// Whether `data` is shaped like a bin item: `...\$Recycle.Bin\<SID>\$R...` on NTFS, or
+/// `...\$Recycle.Bin\$R...` on exFAT and FAT drives, which have no folder per user (#330).
 fn bin_entry(data: &Path) -> bool {
-    fn name(p: Option<&Path>) -> Option<&str> {
-        p.and_then(Path::file_name).and_then(|n| n.to_str())
-    }
-    let item = name(Some(data));
-    let sid = data.parent();
-    let bin = sid.and_then(Path::parent);
-    item.is_some_and(|n| n.starts_with("$R") && n.len() > 2)
-        && name(sid).is_some_and(|n| !n.is_empty())
-        && name(bin).is_some_and(|n| n.eq_ignore_ascii_case("$Recycle.Bin"))
+    let parent = data.parent();
+    file_name(Some(data)).is_some_and(|n| n.starts_with("$R") && n.len() > 2)
+        && (is_bin(parent)
+            || (file_name(parent).is_some_and(|n| n.starts_with("S-1-"))
+                && is_bin(parent.and_then(Path::parent))))
 }
 
 /// The folder holding the item's `$Recycle.Bin` (the drive's root) is gone: the drive was
 /// removed, so missing files mean nothing was deleted.
 fn volume_gone(data: &Path) -> bool {
     data.ancestors()
-        .nth(3)
+        .find(|a| is_bin(Some(a)))
+        .and_then(Path::parent)
         .is_some_and(|root| fs::metadata(root).is_err())
 }
 
@@ -351,6 +358,23 @@ mod tests {
             progress.done.load(Ordering::Relaxed)
         );
         assert!(!dir.exists());
+    }
+
+    /// #330: exFAT and FAT drives keep items right in `$Recycle.Bin`, with no folder per user;
+    /// they can be deleted for good too. Nested items and similar names elsewhere still can't.
+    #[test]
+    fn bins_without_a_folder_per_user_count() {
+        assert!(super::bin_entry(Path::new(
+            r"C:\$Recycle.Bin\S-1-5-21-1\$RABC.txt"
+        )));
+        assert!(super::bin_entry(Path::new(r"E:\$RECYCLE.BIN\$RU1O20G.txt")));
+        assert!(!super::bin_entry(Path::new(
+            r"E:\$RECYCLE.BIN\$RABC\$RDEF.txt"
+        )));
+        assert!(!super::bin_entry(Path::new(r"E:\Data\$RABC.txt")));
+        assert!(super::volume_gone(Path::new(
+            r"Q:\$RECYCLE.BIN\$RU1O20G.txt"
+        )));
     }
 
     /// Creates a junction (no admin rights needed).

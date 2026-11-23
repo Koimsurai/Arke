@@ -497,9 +497,15 @@ impl Journal for ServiceJournal {
                         }
                         Ok(Reply::CaughtUp) => JournalEvent::CaughtUp,
                         Ok(Reply::Ping) => continue,
-                        // Disconnected, service stopped or unknown reply: changes may be missed.
-                        Ok(_) | Err(_) => {
+                        // Unknown reply: changes may be missed.
+                        Ok(_) => {
                             on_event(JournalEvent::Lost);
+                            return;
+                        }
+                        // The service stopped or is being updated; the journal itself goes on, so
+                        // following again from the last position misses nothing (#343).
+                        Err(_) => {
+                            on_event(JournalEvent::Disconnected);
                             return;
                         }
                     };

@@ -86,6 +86,19 @@ const GAP_BACKOFF: Duration = Duration::from_millis(300);
 const GAP_BACKOFF_MAX: Duration = Duration::from_mins(30);
 #[cfg(test)]
 const GAP_BACKOFF_MAX: Duration = Duration::from_millis(1200);
+/// After the index service went away, when to try following again (it restarts within seconds
+/// when updated); about a minute in all before treating it as a journal gap.
+#[cfg(not(test))]
+const REFOLLOW_WAITS: &[Duration] = &[
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+];
+#[cfg(test)]
+const REFOLLOW_WAITS: &[Duration] = &[Duration::from_millis(10), Duration::from_millis(20)];
 /// How often to check whether the index is stale while running.
 const REFRESH_CHECK: Duration = Duration::from_mins(10);
 /// A root that couldn't be listed (offline share) is tried again after this.
@@ -1037,18 +1050,7 @@ impl Shared {
                 fallback.push(i);
                 continue;
             };
-            let weak = Arc::downgrade(self);
-            let caught_up = AtomicBool::new(false);
-            let followed = journal.follow(
-                root,
-                cursor,
-                Box::new(move |event| {
-                    if let Some(shared) = weak.upgrade() {
-                        shared.on_journal(i, event, &caught_up);
-                    }
-                }),
-            );
-            match followed {
+            match self.follow_root(journal.as_ref(), i, cursor) {
                 Ok(f) => followers.push(f),
                 Err(err) => {
                     log::warn!("can't follow journal {}: {err}", root.display());
@@ -1065,6 +1067,67 @@ impl Shared {
                 }
             }
             self.watch_roots_at(&Arc::downgrade(self), &fallback);
+        }
+    }
+
+    /// Follows the journal of root `i` from `cursor`; its events go to [`Self::on_journal`].
+    fn follow_root(
+        self: &Arc<Self>,
+        journal: &dyn Journal,
+        i: usize,
+        cursor: Cursor,
+    ) -> std::io::Result<Box<dyn Send>> {
+        let root = self.opts.roots.get(i).cloned().unwrap_or_default();
+        let weak = Arc::downgrade(self);
+        let caught_up = AtomicBool::new(false);
+        journal.follow(
+            &root,
+            cursor,
+            Box::new(move |event| {
+                if let Some(shared) = weak.upgrade() {
+                    shared.on_journal(i, event, &caught_up);
+                }
+            }),
+        )
+    }
+
+    /// The index service went away (stopped, or being updated): once it's back, root `i` is
+    /// followed again from its last position, which misses nothing, instead of rebuilding the
+    /// whole index (#343). Only if it doesn't come back is it a journal gap. A rebuild that
+    /// starts meanwhile follows every root itself.
+    fn follow_again(self: &Arc<Self>, i: usize) {
+        let weak = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("arke-index-refollow".into())
+            .spawn(move || {
+                for wait in REFOLLOW_WAITS {
+                    std::thread::sleep(*wait);
+                    let Some(shared) = weak.upgrade() else { return };
+                    if shared.stopped.load(Ordering::Relaxed)
+                        || shared.building.load(Ordering::Acquire)
+                    {
+                        return;
+                    }
+                    let (Some(journal), Some(cursor)) = (
+                        shared.opts.journal.clone(),
+                        shared.latest.lock().get(i).copied().flatten(),
+                    ) else {
+                        break;
+                    };
+                    match shared.follow_root(journal.as_ref(), i, cursor) {
+                        Ok(follower) => {
+                            shared.followers.lock().push(follower);
+                            return;
+                        }
+                        Err(err) => log::info!("global search: index service not back yet: {err}"),
+                    }
+                }
+                if let Some(shared) = weak.upgrade() {
+                    shared.journal_gap();
+                }
+            });
+        if spawned.is_err() {
+            self.journal_gap();
         }
     }
 
@@ -1109,6 +1172,22 @@ impl Shared {
                         .map_or_default(|r| r.display().to_string())
                 );
                 self.journal_gap();
+            }
+            JournalEvent::Disconnected => {
+                if let Some(slot) = self.caught_up.lock().get_mut(root) {
+                    *slot = false;
+                }
+                if caught_up.swap(false, Ordering::Relaxed) {
+                    self.live.fetch_sub(1, Ordering::Relaxed);
+                }
+                log::info!(
+                    "global search: index service gone while following {}, following again once it's back",
+                    self.opts
+                        .roots
+                        .get(root)
+                        .map_or_default(|r| r.display().to_string())
+                );
+                self.follow_again(root);
             }
         }
     }
@@ -3024,6 +3103,44 @@ mod tests {
         journal.recreate(3);
         wait("second rebuild", || found(&svc, "second-report").len() == 1);
         wait("journal refollowed", || journal.follow_calls() > calls);
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #343: the index service going away (stopped, updated) isn't a journal gap. Following
+    /// starts again from the last position, which still gets the changes made meanwhile, and
+    /// nothing is walked again.
+    #[test]
+    fn the_service_going_away_is_followed_again_not_rebuilt() {
+        let (dir, cache) = temp_cache("refollow");
+        let fs = FakeFs::new();
+        let a = Path::new(r"C:\a");
+        fs.insert_dir(
+            a,
+            vec![Entry::new("old-report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let journal = FakeJournal::new(1);
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            journal_opts(&cache, &journal),
+            || {},
+        );
+        wait("first build", || ready(&svc) && svc.status().live);
+        let walked = fs.read_dir_calls();
+        let calls = journal.follow_calls();
+        let rebuilds = svc.rebuilds();
+
+        journal.disconnect();
+        // Changed while the service is away: still in the journal.
+        fs.add_file(a, "meanwhile-report.txt", 1);
+        journal.push(a.join("meanwhile-report.txt"), false);
+        wait("followed again", || journal.follow_calls() > calls);
+        wait("the change made meanwhile", || {
+            found(&svc, "meanwhile-report").len() == 1
+        });
+        wait("live again", || svc.status().live);
+        assert_eq!(fs.read_dir_calls(), walked, "nothing walked again");
+        assert_eq!(svc.rebuilds(), rebuilds, "no rebuild");
         drop(svc);
         let _ = std::fs::remove_dir_all(&dir);
     }

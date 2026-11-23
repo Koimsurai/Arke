@@ -929,6 +929,23 @@ impl ContextMenu {
         })
     }
 
+    /// Test helper: the labels of the items right under "Show more options".
+    #[cfg(test)]
+    pub(crate) fn shell_items_for_test(&self) -> Vec<String> {
+        let Some(MenuEntry::Submenu { children, .. }) =
+            self.shell_slot.and_then(|ix| self.entries.get(ix))
+        else {
+            return Vec::new();
+        };
+        children
+            .iter()
+            .filter_map(|c| match c {
+                MenuEntry::Item(i) => Some(i.label.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Test helper: labels at `level`.
     #[cfg(test)]
     pub(crate) fn labels_at(&self, level: usize) -> Vec<String> {
@@ -1454,6 +1471,9 @@ impl Explorer {
                 item(t!("menu.open_terminal"), None, C::OpenTerminal),
                 MenuEntry::Separator,
                 item(pin_label(pinned), None, C::TogglePin),
+                // The folder's own, as Alt+Enter with nothing selected; Windows' would open
+                // Explorer's dialog from "Show more options" otherwise.
+                item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
                 MenuEntry::Separator,
                 // Windows background menu: New (file types), Open in Terminal, third-party items.
                 more_options(),
@@ -1979,7 +1999,16 @@ impl Explorer {
                     });
                 }
             }
-            C::Properties => self.open_properties(targets, cx),
+            C::Properties => {
+                let mut targets = targets;
+                // The background menu: the folder shown.
+                if targets.is_empty()
+                    && let Some(path) = self.current_path()
+                {
+                    targets.push((path.to_path_buf(), true));
+                }
+                self.open_properties(targets, cx);
+            }
             // Windows' "Choose another app" dialog, with "Always", as Explorer opens it.
             C::ChooseApp => {
                 if let Some((path, false)) = targets.first().cloned() {
@@ -3428,9 +3457,13 @@ fn row_mark(icon: Option<Arc<RenderImage>>, glyph: Option<Icon>, checked: bool) 
         })
 }
 
+/// Windows menu items that only File Explorer itself may run: from any other program Windows
+/// answers "access denied" (#344). Files hides them too.
+const EXPLORER_ONLY_VERBS: &[&str] = &["pintostartscreen", "unpinfromstartscreen"];
+
 /// Drops items from "Show more options" that Arke's menu already has (open, cut, copy, delete,
-/// ...),
-/// matched by standard Windows verbs like Files does. Only the top level is filtered.
+/// ...), matched by standard Windows verbs like Files does, and the ones only File Explorer may
+/// run. Only the top level is filtered.
 fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<ShellMenuEntry> {
     use MenuCommand as C;
     let verbs: Vec<&str> = ours
@@ -3456,6 +3489,7 @@ fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<She
             _ => &[][..],
         })
         .copied()
+        .chain(EXPLORER_ONLY_VERBS.iter().copied())
         .collect();
     let kept = shell
         .into_iter()

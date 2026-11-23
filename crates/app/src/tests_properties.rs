@@ -630,3 +630,29 @@ fn alt_double_click_opens_the_window(cx: &mut TestAppContext) {
     assert_eq!(shown, Some(PathBuf::from(r"C:\p\a.txt")));
     assert!(shell.opened.lock().is_empty(), "not opened");
 }
+
+/// The folder background menu has Arke's own Properties, for the folder shown (as Alt+Enter with
+/// nothing selected); Windows' one under "Show more options" opened Explorer's dialog.
+#[gpui::test]
+fn the_background_menu_opens_the_folders_window(cx: &mut TestAppContext) {
+    let fs = file_fs();
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "the folder", loaded(r"C:\p"));
+    right_click(&view, cx, None);
+    let labels = menu_labels(&view, cx).unwrap_or_default();
+    assert!(
+        labels.contains(&t!("menu.properties").into_owned()),
+        "{labels:?}"
+    );
+    run_command(&view, cx, MenuCommand::Properties);
+    cx.run_until_parked();
+    let windows: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Properties>())
+        .collect();
+    assert_eq!(windows.len(), 1);
+    let shown = windows[0].read_with(cx, |p, _| p.path_for_test()).unwrap();
+    assert_eq!(shown, Some(PathBuf::from(r"C:\p")));
+}

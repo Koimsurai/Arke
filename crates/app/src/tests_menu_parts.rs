@@ -1044,3 +1044,39 @@ fn a_command_windows_names_keeps_its_row(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
 }
+
+/// #344: "Pin to Start" only works when File Explorer itself runs it; from Arke Windows answers
+/// "access denied". It stays out of "Show more options"; the rest of the Windows menu is kept.
+#[gpui::test]
+fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.exe", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let item = |id, label: &str, verb: &str| ShellMenuEntry::Item {
+        id,
+        verb: Some(verb.into()),
+        label: label.into(),
+        enabled: true,
+        checked: false,
+        default: false,
+        icon: None,
+    };
+    *shell.extra_menu.lock() = vec![
+        item(40, "Pin to Start", "PinToStartScreen"),
+        item(41, "Share", "Windows.ModernShare"),
+    ];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    let items = view.update(cx, |v, _| {
+        let Some(menu) = v.context_menu.as_ref() else {
+            return Vec::new();
+        };
+        menu.shell_items_for_test()
+    });
+    assert!(items.iter().any(|i| i == "Share"), "{items:?}");
+    assert!(!items.iter().any(|i| i == "Pin to Start"), "{items:?}");
+}

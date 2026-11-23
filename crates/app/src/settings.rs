@@ -29,8 +29,6 @@ pub(crate) const RESTORED_WINDOWS_MAX: usize = 20;
 pub(crate) const RECENT_MAX: usize = 50;
 /// Max favorite tiles; further pins go to the list below.
 pub(crate) const FAVORITES_MAX: usize = 12;
-/// Above this many tiles they shrink to 4 per row.
-pub(crate) const FAVORITES_LARGE: usize = 6;
 
 /// Where a pin ended up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

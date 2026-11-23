@@ -32,7 +32,7 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, Explorer, drop_external_into, drop_into, kind_icon};
 use crate::place_names::share_label;
-use crate::settings::{FAVORITES_LARGE, FAVORITES_MAX, PinSlot, SettingsStore, SidebarSection};
+use crate::settings::{FAVORITES_MAX, PinSlot, SettingsStore, SidebarSection};
 use crate::shell::{KnownFolder, Place, PlaceKind};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
@@ -741,23 +741,41 @@ fn follow_chain(places: &[Place], here: &Path) -> Vec<PathBuf> {
     chain
 }
 
-/// Whether the tiles are the large ones (three a row).
-#[derive(Debug, PartialEq, Eq)]
+/// How many favorite tiles share a row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TileLayout {
-    large: bool,
+    per_row: usize,
 }
 
-/// Lays out the favorite tiles. Every favorite is a tile: where a folder goes (the tiles or the
-/// list below) is the user's choice, by dragging it or "Move to the list". A name too long for its
-/// tile is cut off, and the tile's tooltip shows the whole path. (Up to 0.8 such a favorite was
-/// drawn as a row instead, #174, which looked like the list but wasn't: dragging it to the tiles
-/// did nothing, and a new favorite with a long name never showed as a tile.) More than six tiles
-/// shrink to four a row, but only when that cuts no name off that fits three a row.
-/// `fits(label, per_row)`: the label fits on a tile that many to a row.
-fn split_tiles(labels: &[&str], fits: &mut impl FnMut(&str, usize) -> bool) -> TileLayout {
-    let large = labels.len() <= FAVORITES_LARGE
-        || labels.iter().any(|label| fits(label, 3) && !fits(label, 4));
-    TileLayout { large }
+impl TileLayout {
+    /// Three or fewer a row: the taller tiles with the larger icon.
+    pub(super) const fn large(self) -> bool {
+        self.per_row <= 3
+    }
+
+    pub(super) const fn per_row(self) -> usize {
+        self.per_row
+    }
+}
+
+/// The narrowest a tile's name gets before it is cut to a few letters ("Descargas", "EVO1 (C:)",
+/// four or five CJK characters), at 100%.
+const TILE_NAME_MIN: f32 = 56.;
+
+/// Lays out the favorite tiles in a places list `list` wide: as many a row as leave each tile
+/// room for a readable name, four at most, two at least; more favorites take more rows. The width
+/// decides alone, not how many there are (#371: eight favorites went four a row in the default
+/// sidebar, their names cut to "Des…"). Every favorite is a tile: where a folder goes (the tiles
+/// or the list below) is the user's choice, by dragging it or "Move to the list". A name too long
+/// for its tile is cut off, and the tile's tooltip shows the whole path. (Up to 0.8 such a
+/// favorite was drawn as a row instead, #174, which looked like the list but wasn't.)
+fn split_tiles(list: Pixels) -> TileLayout {
+    let min = theme::scaled_px(TILE_NAME_MIN);
+    let per_row = [4, 3]
+        .into_iter()
+        .find(|&n| tile_text_width(list, n) >= min)
+        .unwrap_or(2);
+    TileLayout { per_row }
 }
 
 /// Room for a tile's name when `per_row` tiles share a row `list` wide.
@@ -1380,8 +1398,7 @@ impl Workspace {
         } else {
             self.favorites(cx)
         };
-        let layout = self.tile_layout(&favorites, cx);
-        let large = layout.large;
+        let layout = self.tile_layout();
         // Slots count every favorite, tiles or rows: drops and the saved order use them.
         let tile_count = favorites.len();
         let mut tiles: Vec<AnyElement> = Vec::new();
@@ -1390,7 +1407,7 @@ impl Workspace {
                 continue;
             }
             let here = current == Some(path.as_path());
-            let tile = self.render_tile(ix, &path, label, icon, here, large, cx);
+            let tile = self.render_tile(ix, &path, label, icon, here, layout, cx);
             let cell = tiles.len();
             tiles.push(self.tile_drag_shell(ix, cell, &path, tile, cx));
         }
@@ -1448,7 +1465,7 @@ impl Workspace {
             self.sidebar_ui.tile_rows.set(0);
             self.sidebar_ui.grid_height.set(None);
         } else {
-            out.push(self.render_tile_grid(tiles, tile_count, large, cx));
+            out.push(self.render_tile_grid(tiles, tile_count, layout, cx));
         }
         // The Recycle Bin is pinned by default and always sits last; it cannot be dragged. A
         // favorite or folder dragged over it goes in last in the list, just above it.
@@ -1573,14 +1590,14 @@ impl Workspace {
         &self,
         tiles: Vec<AnyElement>,
         tile_count: usize,
-        large: bool,
+        layout: TileLayout,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let add_slot = self.render_add_favorite_slot(tile_count, tiles.len(), large, cx);
-        let tile_rows = tiles.len().div_ceil(if large { 3 } else { 4 });
+        let add_slot = self.render_add_favorite_slot(tile_count, tiles.len(), layout, cx);
+        let tile_rows = tiles.len().div_ceil(layout.per_row());
         self.sidebar_ui.tile_rows.set(tile_rows);
         let slot_row = add_slot.as_ref().is_some_and(|(_, own_row)| *own_row);
-        self.keep_rows_under_tiles_still(tile_rows + usize::from(slot_row), large);
+        self.keep_rows_under_tiles_still(tile_rows + usize::from(slot_row), layout.large());
         let add_slot = add_slot.map(|(slot, _)| slot);
         div()
             .id("pin-tiles")
@@ -1592,7 +1609,7 @@ impl Workspace {
                 |d, height| d.min_h(px(height)),
             )
             .grid()
-            .grid_cols(if large { 3 } else { 4 })
+            .grid_cols(u16::try_from(layout.per_row()).unwrap_or(3))
             .gap(theme::s_4())
             .rounded(theme::r_8())
             .when(add_slot.is_some() || self.list_invites_tiles(cx), |d| {
@@ -1662,40 +1679,18 @@ impl Workspace {
         scroll.set_offset(gpui::point(offset.x, (offset.y - px(grew)).min(px(0.))));
     }
 
-    /// A tile's size in the grid, `large` ones three a row, the others four.
-    pub(super) fn tile_size(&self, large: bool) -> gpui::Size<Pixels> {
-        let per_row: f32 = if large { 3. } else { 4. };
+    /// A tile's size in the grid.
+    pub(super) fn tile_size(&self, layout: TileLayout) -> gpui::Size<Pixels> {
+        let per_row = layout.per_row() as f32;
         let gap = f32::from(theme::s_4());
         let width = (f32::from(self.places_width()) - gap * (per_row - 1.)) / per_row;
-        gpui::size(px(width), tile_height(large))
+        gpui::size(px(width), tile_height(layout.large()))
     }
 
-    /// Which favorites fit on a tile (`split_tiles`), measured with the tiles' font in the width
-    /// the places list had last frame (an estimate from the sidebar's width before the first).
-    pub(super) fn tile_layout(
-        &self,
-        favorites: &[(PathBuf, String, Icon)],
-        cx: &App,
-    ) -> TileLayout {
-        let list = self.places_width();
-        let mut wrapper = cx
-            .text_system()
-            .line_wrapper(theme::ui_font_at(gpui::FontWeight::NORMAL), theme::fs_12());
-        let mut fits = |label: &str, per_row: usize| {
-            wrapper
-                .should_truncate_line(
-                    label,
-                    tile_text_width(list, per_row),
-                    "",
-                    gpui::TruncateFrom::End,
-                )
-                .is_none()
-        };
-        let labels: Vec<&str> = favorites
-            .iter()
-            .map(|(_, label, _)| label.as_str())
-            .collect();
-        split_tiles(&labels, &mut fits)
+    /// How many tiles a row (`split_tiles`), in the width the places list had last frame (an
+    /// estimate from the sidebar's width before the first).
+    pub(super) fn tile_layout(&self) -> TileLayout {
+        split_tiles(self.places_width())
     }
 
     /// The favorites drawn as tiles, in order: the grid the tiles reorder and slide on.
@@ -2700,9 +2695,10 @@ impl Workspace {
         label: String,
         icon: Icon,
         here: bool,
-        large: bool,
+        layout: TileLayout,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let large = layout.large();
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu_path = path.to_path_buf();
@@ -2730,7 +2726,7 @@ impl Workspace {
             icon,
             from_tile: true,
             look: Some(TileLook {
-                size: self.tile_size(large),
+                size: self.tile_size(layout),
                 large,
                 here,
             }),
@@ -4956,24 +4952,18 @@ mod tests {
         assert_eq!(snap(78., 0, (500., 532.)), None);
     }
 
+    /// The sidebar's width alone decides how many tiles a row (#371): four where each still has
+    /// room for a readable name, else three, else two.
     #[test]
-    fn tiles_shrink_to_four_a_row_only_when_no_name_is_cut_more() {
-        // A name fits when it is at most 8 characters three a row, 5 four a row.
-        let mut fits = |label: &str, per_row: usize| {
-            let room = if per_row == 3 { 8 } else { 5 };
-            label.len() <= room
-        };
-        // Six or fewer: three a row, a long name included (it is cut off on its tile).
-        let three = ["Desktop", "Quarterly reports", "Music"];
-        assert!(split_tiles(&three, &mut fits).large);
-        // Seven short names shrink to four a row.
-        let seven = ["a", "b", "c", "d", "e", "f", "g"];
-        assert!(!split_tiles(&seven, &mut fits).large);
-        // But not when that would cut off a name that fits three a row.
-        let seven = ["a", "b", "c", "d", "e", "f", "Desktop"];
-        assert!(split_tiles(&seven, &mut fits).large);
-        // A name cut off either way doesn't keep them three a row.
-        let seven = ["a", "b", "c", "d", "e", "f", "Quarterly reports"];
-        assert!(!split_tiles(&seven, &mut fits).large);
+    fn the_width_decides_how_many_tiles_a_row() {
+        let per_row = |list: f32| split_tiles(px(list)).per_row();
+        // The default sidebar (a places list about 232 wide): three, not four cut to "Des…".
+        assert_eq!(per_row(232.), 3);
+        assert_eq!(per_row(284.), 4);
+        assert_eq!(per_row(364.), 4);
+        // Dragged narrow: two.
+        assert_eq!(per_row(170.), 2);
+        assert!(split_tiles(px(232.)).large());
+        assert!(!split_tiles(px(284.)).large());
     }
 }

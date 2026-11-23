@@ -433,21 +433,10 @@ impl Workspace {
         } else {
             self.favorites(cx)
         };
-        let on_tile = if home_hidden || list_hidden {
-            self.tile_layout(&favorites, cx).on_tile
-        } else {
-            Vec::new()
-        };
         favorites
             .into_iter()
             .enumerate()
-            .filter(|(ix, _)| {
-                if on_tile.get(*ix).copied().unwrap_or(true) {
-                    !home_hidden
-                } else {
-                    !list_hidden
-                }
-            })
+            .filter(|_| !home_hidden)
             .map(|(ix, (path, label, kf_icon))| {
                 let here = current.as_deref() == Some(path.as_path());
                 let tint = crate::assets::tinted(

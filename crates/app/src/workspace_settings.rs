@@ -399,7 +399,7 @@ impl Workspace {
         }
         // Free the old thumbnail's texture, not just the reference.
         if let Some(old) = page.backdrop.take().and_then(|t| t.image) {
-            cx.drop_image(old, None);
+            crate::media::drop_image_later(old, cx);
         }
         let Some(path) = wanted else {
             return;
@@ -440,7 +440,7 @@ impl Workspace {
                     // Changed again while decoding.
                     None => {
                         if let Some(image) = image {
-                            cx.drop_image(image, None);
+                            crate::media::drop_image_later(image, cx);
                         }
                     }
                 }

@@ -86,7 +86,7 @@ impl SlidesView {
     /// Drops the thumbnail from the GPU atlas.
     pub(super) fn drop_thumb(self, cx: &mut gpui::App) {
         if let Some(image) = self.thumb {
-            cx.drop_image(image, None);
+            crate::media::drop_image_later(image, cx);
         }
     }
 }

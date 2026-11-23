@@ -459,7 +459,7 @@ impl MediaStore {
                 self.bytes = self.bytes.saturating_sub(image_bytes(&image));
                 // Remove from every window's GPU atlas; dropping the reference alone leaves the
                 // texture in video memory.
-                cx.drop_image(image, None);
+                crate::media::drop_image_later(image, cx);
             }
         }
         // Still on screen: back at the old end, in the same order.
@@ -491,7 +491,7 @@ impl MediaStore {
     pub(crate) fn drop_decoded(&mut self, cx: &mut App) {
         for (_, image) in self.cache.drain() {
             if let Some(image) = image {
-                cx.drop_image(image, None);
+                crate::media::drop_image_later(image, cx);
             }
         }
         self.cache.shrink_to_fit();
@@ -669,4 +669,12 @@ impl MediaStore {
 fn image_bytes(image: &RenderImage) -> usize {
     let size = image.size(0);
     (size.width.0 as usize) * (size.height.0 as usize) * 4
+}
+
+/// Frees `image` from every window's GPU atlas once the update under way is done. GPUI leaves out
+/// the window it is updating, and nearly everything runs inside one (rendering, key and mouse
+/// handlers), so dropping it right away kept that window's copy in video memory: the preview pane
+/// kept every picture it had shown, about 7 MB each.
+pub(crate) fn drop_image_later(image: Arc<RenderImage>, cx: &mut App) {
+    cx.defer(move |cx| cx.drop_image(image, None));
 }

@@ -931,14 +931,14 @@ impl Explorer {
             Some(Preview {
                 body: PreviewBody::Image { image, .. },
                 ..
-            }) => cx.drop_image(image, None),
+            }) => crate::media::drop_image_later(image, cx),
             // The cache keeps the pixels; only the GPU copy goes.
             Some(Preview {
                 body: PreviewBody::Pdf(view),
                 ..
             }) => {
                 view.pane.release(cx);
-                cx.drop_image(view.render.image, None);
+                crate::media::drop_image_later(view.render.image, cx);
             }
             Some(Preview {
                 body: PreviewBody::Slides(view),
@@ -965,7 +965,7 @@ impl Explorer {
                 PreviewData::Image { image, .. }
                 | PreviewData::Slides {
                     thumb: Some(image), ..
-                } => cx.drop_image(image, None),
+                } => crate::media::drop_image_later(image, cx),
                 _ => {}
             }
             return;
@@ -1258,7 +1258,7 @@ impl Explorer {
             view.page = page;
             view.target = target;
             view.pending = None;
-            cx.drop_image(old.image, None);
+            crate::media::drop_image_later(old.image, cx);
             cx.notify();
             return;
         }
@@ -1297,7 +1297,7 @@ impl Explorer {
                     view.page = *page;
                     view.target = *target;
                     view.pending = None;
-                    cx.drop_image(old.image, None);
+                    crate::media::drop_image_later(old.image, cx);
                     cx.notify();
                 }
             }
@@ -3582,7 +3582,7 @@ impl Explorer {
     /// Back to fit-to-window, dropping the high-res image.
     pub(super) fn reset_zoom(&mut self, cx: &mut Context<Self>) {
         if let Some(image) = self.zoom.full.take() {
-            cx.drop_image(image, None);
+            crate::media::drop_image_later(image, cx);
         }
         self.zoom.on = false;
         self.zoom.press = None;
@@ -3598,11 +3598,11 @@ impl Explorer {
         match image {
             Some(image) if generation == self.zoom.generation && self.zoom.on => {
                 if let Some(old) = self.zoom.full.replace(image) {
-                    cx.drop_image(old, None);
+                    crate::media::drop_image_later(old, cx);
                 }
                 cx.notify();
             }
-            Some(image) => cx.drop_image(image, None),
+            Some(image) => crate::media::drop_image_later(image, cx),
             None => {}
         }
     }

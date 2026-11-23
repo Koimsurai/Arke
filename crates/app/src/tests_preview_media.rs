@@ -441,3 +441,38 @@ fn the_preview_boundary_can_be_dragged(cx: &mut TestAppContext) {
         "back to the first height"
     );
 }
+
+/// Moving on from a previewed picture frees its copy in the window's GPU atlas. Dropped while the
+/// window was being updated, it stayed there: the pane kept every picture shown, about 7 MB each.
+#[gpui::test]
+fn the_previous_picture_leaves_the_gpu_atlas(cx: &mut TestAppContext) {
+    let wide = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#;
+    let tall = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"><rect width="10" height="20" fill="blue"/></svg>"#;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\art", vec![file("a.svg", 120), file("b.svg", 120)]);
+    fs.set_content(Path::new(r"C:\art\a.svg"), wide.to_vec());
+    fs.set_content(Path::new(r"C:\art\b.svg"), tall.to_vec());
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\art");
+    wait_until(cx, &view, "load", loaded(r"C:\art"));
+    open_pane(&view, cx, (1200., 900.));
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "a.svg", |v| image_size(v) == Some((1600, 800)));
+    let first = view.update(cx, |v, _| match v.preview.as_ref().map(|p| &p.body) {
+        Some(PreviewBody::Image { image, .. }) => Arc::clone(image),
+        _ => panic!("a picture"),
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(
+        cx.update(|window, _| window.has_image_atlas_entry(&first)),
+        "drawn, so in the atlas"
+    );
+    cx.simulate_keystrokes("down");
+    wait_until(cx, &view, "b.svg", |v| image_size(v) == Some((800, 1600)));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|window, _| window.has_image_atlas_entry(&first)),
+        "the picture before is gone from the atlas"
+    );
+}

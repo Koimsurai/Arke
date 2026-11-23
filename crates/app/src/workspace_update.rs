@@ -300,9 +300,10 @@ fn route_used() -> Option<AnyElement> {
             t!("update.route_used", host = host).into_owned(),
             theme::text_subtle(),
         ),
+        // The update itself went fine: a note to look at the route, not an error.
         crate::update_route::Used::FellBack(host, error) => (
             t!("update.route_fell_back", host = host, error = error).into_owned(),
-            theme::danger(),
+            theme::text_muted(),
         ),
     };
     Some(

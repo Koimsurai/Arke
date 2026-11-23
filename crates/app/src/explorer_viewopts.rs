@@ -455,6 +455,9 @@ fn toggle_row(
     on: bool,
     toggle: impl Fn(&mut Settings) + 'static,
 ) -> AnyElement {
+    // The switch is named after the row for screen readers (#322).
+    let a11y = crate::a11y::active();
+    let spoken = desc.as_ref().map(|d| gpui::SharedString::from(d.to_string()));
     div()
         .flex()
         .items_center()
@@ -462,6 +465,12 @@ fn toggle_row(
         .min_h(theme::h_ctl())
         .px(theme::s_8())
         .py(theme::s_4())
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(
+                gpui::SharedString::from(label.to_string()),
+                spoken,
+            ))
+        })
         .child(
             div()
                 .flex_1()
@@ -488,6 +497,7 @@ fn toggle_row(
                 .flex_none()
                 .child(crate::workspace::switch(id, on, toggle)),
         )
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()
 }
 

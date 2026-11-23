@@ -1,4 +1,5 @@
-//! arke-remote: remote locations (SFTP and WebDAV) behind Arke's [`arke_core::Fs`] trait.
+//! arke-remote: remote locations (SFTP, WebDAV, and phones over Windows Portable Devices) behind
+//! Arke's [`arke_core::Fs`] trait.
 //!
 //! A remote folder is a path holding its URL (see [`arke_core::remote`]). [`RoutingFs`] sends
 //! those to [`Remotes`], which keeps the connections; file operations (copy in and out,
@@ -28,12 +29,17 @@ pub mod hub;
 pub mod known_hosts;
 #[cfg(test)]
 mod live_tests;
+pub mod mtp;
 pub mod routing;
 mod sftp;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing_dav;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing_mtp;
+#[cfg(windows)]
+pub mod wpd;
 
 pub use error::{HostKey, RemoteError, RemoteResult};
 pub use hub::{NoProgress, Remotes, RemotesConfig, TransferSink};

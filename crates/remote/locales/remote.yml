@@ -136,3 +136,27 @@ remote.cert:
   es: El certificado del servidor no es de confianza
   pt-BR: O certificado do servidor não é confiável
   ja: サーバーの証明書は信頼されていません
+remote.read_only:
+  en: Arke can only read from phones for now
+  zh-TW: Arke 目前只能讀取手機上的檔案
+  zh-CN: Arke 目前只能读取手机上的文件
+  de: Arke kann von Telefonen vorerst nur lesen
+  es: Por ahora Arke solo puede leer de los teléfonos
+  pt-BR: Por enquanto o Arke só consegue ler de celulares
+  ja: 現在、Arke はスマートフォンからの読み取りにのみ対応しています
+remote.locked:
+  en: The phone denied access. Unlock it and choose File transfer on it
+  zh-TW: 手機拒絕存取。請解鎖手機，並在手機上選擇「檔案傳輸」
+  zh-CN: 手机拒绝访问。请解锁手机，并在手机上选择“文件传输”
+  de: Das Telefon hat den Zugriff verweigert. Entsperren Sie es und wählen Sie darauf Dateiübertragung
+  es: El teléfono denegó el acceso. Desbloquéalo y elige Transferencia de archivos en él
+  pt-BR: O celular negou o acesso. Desbloqueie-o e escolha Transferência de arquivos nele
+  ja: スマートフォンがアクセスを拒否しました。ロックを解除し、スマートフォンで「ファイル転送」を選んでください
+remote.device_gone:
+  en: The device was disconnected
+  zh-TW: 裝置已中斷連線
+  zh-CN: 设备已断开连接
+  de: Das Gerät wurde getrennt
+  es: El dispositivo se desconectó
+  pt-BR: O dispositivo foi desconectado
+  ja: デバイスの接続が切れました

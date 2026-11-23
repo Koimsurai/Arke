@@ -369,6 +369,7 @@ version = "0.8.1"
 dependencies = [
  "arke-core",
  "base64",
+ "flume",
  "log",
  "parking_lot 0.13.0",
  "percent-encoding",

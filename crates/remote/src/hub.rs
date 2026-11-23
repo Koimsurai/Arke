@@ -1,5 +1,5 @@
-//! [`Remotes`]: every remote server Arke talks to, behind one blocking API for background
-//! threads. Keeps one SFTP connection per server (reconnecting once if it dropped), the
+//! [`Remotes`]: every remote server Arke talks to, and the phones on this PC (`mtp.rs`), behind
+//! one blocking API for background threads. Keeps one SFTP connection per server (reconnecting once if it dropped), the
 //! passwords typed this session, and a download cache for previews and opened files.
 
 use std::collections::{HashMap, HashSet};
@@ -17,6 +17,7 @@ use crate::creds::SecretStore;
 use crate::dav::{DavClient, Transport};
 use crate::error::{HostKey, RemoteError, RemoteResult};
 use crate::known_hosts::KnownHosts;
+use crate::mtp::{Device, Portable};
 use crate::sftp::{self, SftpConn, SshAuth};
 
 /// One SFTP request (listing a folder may take a while on slow links).
@@ -56,6 +57,8 @@ pub struct RemotesConfig {
     pub secrets: Arc<dyn SecretStore>,
     /// HTTP for WebDAV.
     pub transport: Arc<dyn Transport>,
+    /// Phones and other portable devices (`wpd.rs`; a fake in tests).
+    pub portable: Arc<dyn Portable>,
 }
 
 type Slot = Arc<tokio::sync::Mutex<Option<Arc<SftpConn>>>>;
@@ -67,6 +70,7 @@ pub struct Remotes {
     known: Arc<KnownHosts>,
     secrets: Arc<dyn SecretStore>,
     transport: Arc<dyn Transport>,
+    portable: Arc<dyn Portable>,
     cache_dir: PathBuf,
     /// Passwords typed this session, by origin.
     session: Mutex<HashMap<String, String>>,
@@ -119,6 +123,7 @@ impl Remotes {
             known: Arc::new(KnownHosts::new(config.known_hosts)),
             secrets: config.secrets,
             transport: config.transport,
+            portable: config.portable,
             cache_dir: config.cache_dir,
             session: Mutex::default(),
             key_files: Mutex::default(),
@@ -275,8 +280,17 @@ impl Remotes {
         )
     }
 
+    /// The phones and other portable devices connected now.
+    pub fn portable_devices(&self) -> RemoteResult<Vec<Device>> {
+        self.portable.devices()
+    }
+
     /// Lists a folder.
     pub fn list(&self, url: &RemoteUrl) -> RemoteResult<Vec<Entry>> {
+        if url.scheme.is_mtp() {
+            let objects = self.portable.list(&url.host, &url.path)?;
+            return Ok(objects.iter().map(crate::mtp::Object::entry).collect());
+        }
         if url.scheme.is_dav() {
             return self.dav(url).list(&url.path);
         }
@@ -289,6 +303,9 @@ impl Remotes {
 
     /// One item.
     pub fn stat(&self, url: &RemoteUrl) -> RemoteResult<Entry> {
+        if url.scheme.is_mtp() {
+            return Ok(self.portable.stat(&url.host, &url.path)?.entry());
+        }
         if url.scheme.is_dav() {
             return self.dav(url).stat(&url.path);
         }
@@ -301,6 +318,12 @@ impl Remotes {
 
     /// Up to `len` bytes from the start of a file (text previews).
     pub fn read_head(&self, url: &RemoteUrl, len: u64) -> RemoteResult<Vec<u8>> {
+        if url.scheme.is_mtp() {
+            let mut out = Vec::new();
+            self.portable
+                .read(&url.host, &url.path, &mut out, len, &NoProgress)?;
+            return Ok(out);
+        }
         if url.scheme.is_dav() {
             return self.dav(url).read_head(&url.path, len);
         }
@@ -313,6 +336,9 @@ impl Remotes {
 
     /// Creates a folder.
     pub fn mkdir(&self, url: &RemoteUrl) -> RemoteResult<()> {
+        if url.scheme.is_mtp() {
+            return Err(RemoteError::ReadOnly);
+        }
         if url.scheme.is_dav() {
             return self.dav(url).mkdir(&url.path);
         }
@@ -325,6 +351,9 @@ impl Remotes {
 
     /// Creates an empty file; fails if the name is taken.
     pub fn create_empty(&self, url: &RemoteUrl) -> RemoteResult<()> {
+        if url.scheme.is_mtp() {
+            return Err(RemoteError::ReadOnly);
+        }
         if self.stat(url).is_ok() {
             return Err(RemoteError::Exists);
         }
@@ -333,6 +362,9 @@ impl Remotes {
 
     /// Renames or moves on the same server; never replaces an existing item.
     pub fn rename(&self, from: &RemoteUrl, to: &RemoteUrl) -> RemoteResult<()> {
+        if from.scheme.is_mtp() {
+            return Err(RemoteError::ReadOnly);
+        }
         if from.scheme.is_dav() {
             let is_dir = self.stat(from)?.is_dir_like();
             return self.dav(from).rename(&from.path, &to.path, is_dir);
@@ -347,6 +379,9 @@ impl Remotes {
     /// Deletes permanently (folders with everything in them). There is no recycle bin on a
     /// server: the caller must have confirmed.
     pub fn delete(&self, url: &RemoteUrl, sink: &dyn TransferSink) -> RemoteResult<()> {
+        if url.scheme.is_mtp() {
+            return Err(RemoteError::ReadOnly);
+        }
         let entry = self.stat(url)?;
         if url.scheme.is_dav() {
             return self
@@ -405,6 +440,12 @@ impl Remotes {
         out: &mut std::fs::File,
         sink: &dyn TransferSink,
     ) -> RemoteResult<()> {
+        if url.scheme.is_mtp() {
+            return self
+                .portable
+                .read(&url.host, &url.path, out, u64::MAX, sink)
+                .map(|_| ());
+        }
         if url.scheme.is_dav() {
             let mut last = 0u64;
             return self.dav(url).download(&url.path, out, &mut |got| {
@@ -443,6 +484,9 @@ impl Remotes {
         sink: &dyn TransferSink,
     ) -> RemoteResult<()> {
         let _ = source;
+        if url.scheme.is_mtp() {
+            return Err(RemoteError::ReadOnly);
+        }
         if url.scheme.is_dav() {
             let mut last = 0u64;
             return self.dav(url).upload(&url.path, reader, len, &mut |sent| {
@@ -587,6 +631,7 @@ mod tests {
             cache_dir: std::env::temp_dir().join("arke-hub-insecure-test"),
             secrets: Arc::new(crate::creds::NoSecrets),
             transport: Arc::new(NoHttp),
+            portable: Arc::new(crate::mtp::NoDevices),
         });
         let nas = RemoteUrl::from_path(Path::new("http://u@10.0.0.5/files")).unwrap();
         let other_user = RemoteUrl::from_path(Path::new("http://v@10.0.0.5/")).unwrap();

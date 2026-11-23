@@ -27,6 +27,9 @@ use crate::theme;
 /// Number of recent log lines to include.
 const LOG_LINES: usize = 120;
 
+/// Where a report can also be sent, for people without a GitHub account.
+const SUPPORT_EMAIL: &str = "service@koimsurai.com";
+
 /// Result of the last action, shown in the card: a message or the error text.
 #[derive(Clone, Default)]
 pub(super) struct ReportNote(pub(super) Option<Result<String, String>>);
@@ -332,6 +335,28 @@ impl Workspace {
         .detach();
     }
 
+    /// Copies [`SUPPORT_EMAIL`] to the clipboard.
+    fn copy_support_email(&mut self, cx: &mut Context<Self>) {
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
+        let (tx, rx) = flume::bounded::<Result<String, ReportError>>(1);
+        crate::explorer::spawn_thread("report-email", move || {
+            let result = shell
+                .set_clipboard_text(SUPPORT_EMAIL)
+                .map(|()| t!("report.email_copied").into_owned())
+                .map_err(ReportError::from);
+            let _ = tx.send(result);
+        });
+        cx.spawn(async move |_, cx| {
+            if let Ok(result) = rx.recv_async().await {
+                cx.update(|cx| {
+                    cx.set_global(ReportNote(Some(result.map_err(|e| e.to_string()))));
+                    cx.refresh_windows();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Closes Settings and shows the log file, selected, in the active tab.
     fn reveal_log(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         let Some(path) = crate::crashlog::log_path() else {
@@ -465,6 +490,26 @@ pub(super) fn report_card(
             },
         ));
     }
+    let workspace = cx.entity().downgrade();
+    let email = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(theme::s_8())
+        .child(
+            div()
+                .text_size(theme::fs_12())
+                .text_color(theme::text_subtle())
+                .child(t!("report.email", address = SUPPORT_EMAIL).into_owned()),
+        )
+        .child(button(
+            "report-email-copy",
+            t!("menu.copy"),
+            false,
+            move |_, _, cx: &mut App| {
+                let _ = workspace.update(cx, Workspace::copy_support_email);
+            },
+        ));
     let d = draft(cx);
     // Prepared when the card is first opened; Refresh picks up newer log lines.
     if open && d.text.is_none() && !d.loading {
@@ -539,6 +584,7 @@ pub(super) fn report_card(
             Rc::clone(scrollbar),
         ))
         .child(actions)
+        .child(email)
         .children(note.map(|note| {
             let (icon, color, text) = match note {
                 Ok(text) => (Icon::Check, theme::signal(), text),

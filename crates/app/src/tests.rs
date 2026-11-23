@@ -7852,6 +7852,34 @@ fn the_settings_file_is_shown_in_arke(cx: &mut TestAppContext) {
     );
 }
 
+/// Settings › About › Report a problem: Copy next to the e-mail address puts the address on the
+/// clipboard, off the UI thread.
+#[gpui::test]
+fn the_report_card_copies_the_support_address(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
+    // Tall enough that the whole card is in view.
+    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(2400.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+        ws.expand_settings_card_for_test("report", cx);
+    });
+    cx.run_until_parked();
+    let copy = cx
+        .debug_bounds("report-email-copy")
+        .expect("the address has a Copy button");
+    cx.simulate_click(copy.center(), gpui::Modifiers::none());
+    wait_shell_in(cx, "the copy", || shell.clipboard_text.lock().is_some());
+    assert_eq!(
+        shell.clipboard_text.lock().as_deref(),
+        Some("service@koimsurai.com")
+    );
+}
+
 /// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the
 /// page, until the text reaches its end; then the page takes over.
 #[gpui::test]

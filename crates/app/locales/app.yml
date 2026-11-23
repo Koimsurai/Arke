@@ -9499,6 +9499,22 @@ report.refresh:
   es: Actualizar
   pt-BR: Atualizar
   ja: 最新の情報に更新
+report.email:
+  en: "Problems can also be sent to %{address}"
+  zh-TW: "也可以把問題寄到 %{address}"
+  zh-CN: "也可以把问题发送到 %{address}"
+  de: "Probleme können auch an %{address} gesendet werden"
+  es: "También puede enviar los problemas a %{address}"
+  pt-BR: "Também é possível enviar problemas para %{address}"
+  ja: "問題は %{address} に送ることもできます"
+report.email_copied:
+  en: "Address copied"
+  zh-TW: "已複製地址"
+  zh-CN: "已复制地址"
+  de: Adresse kopiert
+  es: Dirección copiada
+  pt-BR: Endereço copiado
+  ja: アドレスをコピーしました
 
 # ─── Command palette (Ctrl+Shift+P) and Settings > Keyboard shortcuts
 palette.hint_run:

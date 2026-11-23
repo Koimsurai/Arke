@@ -8828,6 +8828,38 @@ fn a_folder_under_home_is_not_a_cold_start(cx: &mut TestAppContext) {
     assert_eq!(pane.update(cx, |v, _| v.metrics.clock), StartClock::Untimed);
 }
 
+/// #343: the folder the first frame waited for never finished, and another one was opened later:
+/// that listing isn't the start's, so it isn't logged as the cold start's first full listing
+/// (the log said 703657 ms).
+#[gpui::test]
+fn a_later_folder_is_not_the_cold_starts_listing(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 3);
+    fs.insert_many(r"C:\b", 4);
+    fs.hang(r"C:\a");
+    let session = crate::settings::Session {
+        tabs: vec![saved_tab(r"C:\a", false)],
+        active: 0,
+    };
+    let process_start = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+    let (ws, cx) = cold_window(cx, Arc::clone(&fs), session, process_start, None);
+    cx.run_until_parked();
+    let pane = ws.update(cx, |ws, _| ws.tab_views().next().cloned().unwrap());
+    assert_eq!(
+        pane.update(cx, |v, _| v.metrics.clock),
+        StartClock::Cold(process_start)
+    );
+    pane.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\b"), NavKind::New, cx);
+    });
+    wait_until(cx, &pane, "b listed", loaded(r"C:\b"));
+    cx.run_until_parked();
+    let (clock, first) = pane.update(cx, |v, _| (v.metrics.clock, v.metrics.first_listing));
+    fs.release_all();
+    assert!(first.is_some(), "the listing is noted");
+    assert_eq!(clock, StartClock::Untimed, "but not as the cold start's");
+}
+
 /// A window the resident Arke opens on request, hours after it started: not a cold start, and
 /// its first frame is timed from when the request arrived.
 #[gpui::test]

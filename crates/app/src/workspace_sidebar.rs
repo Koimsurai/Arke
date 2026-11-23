@@ -3873,6 +3873,8 @@ impl Workspace {
                 .display_path()
                 .is_some_and(|p| on_drive(p, drive));
             if on_drive {
+                // A page over the tab (the Recycle Bin, Home) stays where it is.
+                self.keep_pages_over(view.entity_id(), &home);
                 let home = home.clone();
                 // Pinned tabs too: nothing may keep the drive busy.
                 view.update(cx, |v, cx| {

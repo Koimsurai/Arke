@@ -9266,3 +9266,29 @@ fn a_drive_plugged_in_shows_in_the_sidebar(cx: &mut TestAppContext) {
     cx.cx.update(crate::workspace::reload_places_everywhere);
     wait_until(cx, &view, "the drive gone", |v| !has_usb(v));
 }
+
+/// A drive pulled out under a tab showing the Recycle Bin: the tab's folder moves off the drive,
+/// but the Recycle Bin stays open (it used to close, as if the user had navigated away).
+#[gpui::test]
+fn the_recycle_bin_stays_open_when_its_tabs_drive_is_removed(cx: &mut TestAppContext) {
+    let home = std::env::var_os("USERPROFILE").map_or_else(|| PathBuf::from("C:\\"), PathBuf::from);
+    let fs = FakeFs::new();
+    fs.insert_dir(r"E:\photos", vec![file("a.jpg", 1)]);
+    fs.insert_dir(home.clone(), vec![file("b.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"E:\photos");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"E:\photos"));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    cx.run_until_parked();
+    let shown = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let bin = shown(cx);
+    assert!(bin.is_some(), "the Recycle Bin shows");
+
+    cx.cx
+        .update(|cx| crate::workspace::leave_drive_everywhere(Path::new(r"E:\"), cx));
+    let home_str = home.to_string_lossy().into_owned();
+    wait_until(cx, &view, "moved off the drive", loaded(&home_str));
+    assert_eq!(shown(cx), bin, "the Recycle Bin is still open");
+}

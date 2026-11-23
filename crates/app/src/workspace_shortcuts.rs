@@ -290,7 +290,20 @@ fn command_row(
     let key_button = div()
         .id(("shortcut-key", ix))
         .debug_selector(move || format!("shortcut-key-{id}"))
-        .a11y_button(command.label())
+        // The command and its keys, or that new keys are being waited for (#322).
+        .a11y_lazy(gpui::Role::Button, || {
+            let keys = if mine.is_some() {
+                t!("shortcuts.press").into_owned()
+            } else if keys.is_empty() {
+                t!("shortcuts.none").into_owned()
+            } else {
+                keys.iter()
+                    .map(|k| commands::display(k))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!("{}, {keys}", command.label())
+        })
         .min_h(theme::h_ctl_sm())
         .px(theme::s_8())
         .flex()

@@ -421,11 +421,18 @@ fn pref_row(ix: usize, pref: &'static MenuPref, s: &Settings, cx: &App) -> AnyEl
                         .child(t!(note).into_owned())
                 })),
         )
+        // The switch is named after the command it shows or hides (#322).
+        .when(crate::a11y::active(), |d| {
+            d.child(crate::a11y::label_scope(label(pref).into()))
+        })
         .children(pref.switch_id.map(|id| {
             div()
                 .flex_none()
                 .child(super::settings_panel::switch(id, on, toggle(pref.key)))
-        }));
+        }))
+        .when(crate::a11y::active(), |d| {
+            d.child(crate::a11y::end_label_scope())
+        });
     let drag = DraggedMenuRow {
         key: pref.key.into(),
         pinned: false,
@@ -740,6 +747,9 @@ fn app_row(
         .flex()
         .items_center()
         .gap(theme::s_16())
+        .when(crate::a11y::active(), |d| {
+            d.child(crate::a11y::label_scope(name.clone().into()))
+        })
         .child(icon)
         .child(super::settings_panel::row_text(
             name.into(),
@@ -753,6 +763,9 @@ fn app_row(
             }),
         ))
         .child(div().flex_none().child(control))
+        .when(crate::a11y::active(), |d| {
+            d.child(crate::a11y::end_label_scope())
+        })
         .into_any_element()
 }
 

@@ -3286,7 +3286,9 @@ impl Workspace {
             .id(id)
             .debug_selector(move || id.to_owned())
             .a11y_button(title.clone())
-            .aria_expanded(!collapsed)
+            .a11y_open_close(!collapsed, cx.entity().downgrade(), move |this, _, cx| {
+                this.toggle_section(section, cx);
+            })
             .group(id)
             .relative()
             .flex()

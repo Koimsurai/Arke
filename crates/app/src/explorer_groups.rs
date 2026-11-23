@@ -756,7 +756,10 @@ impl Explorer {
             .id(("group-header", row))
             .a11y_lazy(gpui::Role::Heading, || format!("{label} ({count})"))
             .aria_level(1)
-            .aria_expanded(!collapsed)
+            .a11y_open_close(!collapsed, cx.entity().downgrade(), {
+                let label = label.clone();
+                move |this, _, cx| this.toggle_group(&label, cx)
+            })
             // Full width, and at least as wide as Details rows when they scroll sideways.
             .w_full()
             .when_some(self.cols, |d, c| d.min_w(c.row))

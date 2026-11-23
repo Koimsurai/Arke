@@ -139,7 +139,9 @@ impl Explorer {
             .id("sort-options")
             .debug_selector(|| "sort-options".to_owned())
             .a11y_button(t!("view.sort"))
-            .aria_expanded(open)
+            .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
+                this.toggle_sort_options(cx);
+            })
             .flex()
             .flex_none()
             .items_center()

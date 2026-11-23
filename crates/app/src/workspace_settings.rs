@@ -1020,13 +1020,17 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(theme::s_4())
-                            .child(
+                            .child({
+                                let title = SharedString::from(title.into_owned());
                                 div()
+                                    .id("settings-page-title")
+                                    .a11y(gpui::Role::Heading, title.clone())
+                                    .aria_level(1)
                                     .pb(theme::s_4())
                                     .text_size(theme::fs_24())
                                     .font_weight(theme::FW_STRONG)
-                                    .child(title.into_owned()),
-                            )
+                                    .child(title)
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -2157,11 +2161,16 @@ pub(super) fn group_with(
             .flex_col()
             .gap(theme::s_2())
             .children(title.map(|t| {
+                let t = SharedString::from(t.into_owned());
+                // A heading screen readers can jump between (#322).
                 div()
+                    .id(SharedString::from(format!("group-title-{t}")))
+                    .a11y(gpui::Role::Heading, t.clone())
+                    .aria_level(2)
                     .text_size(theme::fs_13())
                     .font_weight(theme::FW_STRONG)
                     .text_color(theme::text_muted())
-                    .child(SharedString::from(t.into_owned()))
+                    .child(t)
             }))
             .children(note.map(|n| {
                 div()
@@ -2195,7 +2204,8 @@ pub(super) fn card(
     desc: Option<Cow<'static, str>>,
     control: AnyElement,
 ) -> AnyElement {
-    row(icon, title.into(), desc.map(row_desc), control)
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
+    row_with(icon, title.into(), desc.map(row_desc), spoken, control)
 }
 
 /// The one row layout every settings page uses: icon column, title over an optional second line,
@@ -2204,6 +2214,17 @@ pub(super) fn row(
     icon: Icon,
     title: SharedString,
     desc: Option<AnyElement>,
+    control: AnyElement,
+) -> AnyElement {
+    row_with(icon, title, desc, None, control)
+}
+
+/// [`row`] with the second line as text too, which screen readers read with the control.
+fn row_with(
+    icon: Icon,
+    title: SharedString,
+    desc: Option<AnyElement>,
+    spoken: Option<SharedString>,
     control: AnyElement,
 ) -> AnyElement {
     // The switch or dropdown on the right is named after the row for screen readers.
@@ -2215,7 +2236,9 @@ pub(super) fn row(
         .flex()
         .items_center()
         .gap(theme::s_16())
-        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(title.clone(), spoken))
+        })
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc))
         .child(div().flex_none().child(control))
@@ -2235,6 +2258,7 @@ fn wrapping_card(
 ) -> AnyElement {
     let title = title.into();
     let a11y = crate::a11y::active();
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
     div()
         .debug_selector(move || id.to_owned())
         .min_h(card_min_h())
@@ -2243,7 +2267,9 @@ fn wrapping_card(
         .flex()
         .items_center()
         .gap(theme::s_16())
-        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(title.clone(), spoken))
+        })
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc.map(row_desc)).min_w(gpui::relative(1. / 3.)))
         .child(div().min_w_0().child(control))
@@ -2373,35 +2399,51 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                 .with_transformation(gpui::Transformation::rotate(gpui::radians(
                     std::f32::consts::FRAC_PI_2,
                 ))),
-        )
+        );
+    // Opens the list; `keyboard` when a key or a screen reader opened it (the cursor shows).
+    let open_list = {
+        let workspace = workspace.clone();
+        let scroll = ui.list_scroll.clone();
+        // Hand the per-option actions and the selected index to the keyboard handling.
+        let appliers: Vec<Applier> = options
+            .iter()
+            .map(|(value, _)| {
+                let value = *value;
+                let pick = pick.clone();
+                std::rc::Rc::new(move |cx: &mut App| pick(value, cx)) as _
+            })
+            .collect();
+        std::rc::Rc::new(move |keyboard: bool, cx: &mut App| {
+            // A long list opens scrolled to the current choice.
+            if long {
+                scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+            }
+            set_dropdown(
+                &workspace,
+                Some(Dropdown {
+                    id,
+                    cursor: at,
+                    keyboard,
+                    options: appliers.clone(),
+                    popup: crate::popup::Single::new(),
+                }),
+                cx,
+            );
+        })
+    };
+    let button = button
         .on_click({
+            let open_list = std::rc::Rc::clone(&open_list);
+            move |_, _, cx| open_list(false, cx)
+        })
+        .a11y_on_expand({
             let workspace = workspace.clone();
-            let scroll = ui.list_scroll.clone();
-            // Hand the per-option actions and the selected index to the keyboard handling.
-            let appliers: Vec<Applier> = options
-                .iter()
-                .map(|(value, _)| {
-                    let value = *value;
-                    let pick = pick.clone();
-                    std::rc::Rc::new(move |cx: &mut App| pick(value, cx)) as _
-                })
-                .collect();
-            move |_, _, cx| {
-                // A long list opens scrolled to the current choice.
-                if long {
-                    scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+            move |want, _, cx| {
+                if want && !open {
+                    open_list(true, cx);
+                } else if !want && open {
+                    set_dropdown(&workspace, None, cx);
                 }
-                set_dropdown(
-                    &workspace,
-                    Some(Dropdown {
-                        id,
-                        cursor: at,
-                        keyboard: false,
-                        options: appliers.clone(),
-                        popup: crate::popup::Single::new(),
-                    }),
-                    cx,
-                );
             }
         });
     // Where each button is, for its list to open under it.
@@ -2587,7 +2629,18 @@ pub(super) fn expander(
                 .id(id)
                 .debug_selector(move || id.to_owned())
                 .a11y_lazy(gpui::Role::Button, || title.to_string())
-                .aria_expanded(open)
+                .a11y_node({
+                    let desc = desc.to_string();
+                    move |node| node.set_description(desc)
+                })
+                .a11y_open_close(open, cx.entity().downgrade(), move |this, _, cx| {
+                    if let Some(page) = &mut this.settings_panel
+                        && !page.expanded.remove(id)
+                    {
+                        page.expanded.insert(id);
+                    }
+                    cx.notify();
+                })
                 .min_h(card_min_h())
                 .px(theme::s_16())
                 .py(theme::s_12())
@@ -3736,7 +3789,7 @@ pub(super) fn text_button(
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .a11y_button(label.clone())
+        .a11y_row_button(label.clone())
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()

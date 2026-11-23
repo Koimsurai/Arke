@@ -961,7 +961,7 @@ impl Explorer {
                     .a11y_item(ix, is_selected, cursor == Some(ix), || {
                         self.item_a11y_label(entry)
                     })
-                    .map(|row| self.tree_a11y(ix, entry, row))
+                    .map(|row| self.tree_a11y(ix, entry, row, cx))
                     .group(Self::check_group(ix))
                     .text_color(if entry.is_hidden() {
                         theme::text_subtle()
@@ -2662,6 +2662,17 @@ pub(super) fn caption_group(window: &Window) -> gpui::Div {
                 WindowControlArea::Max if maximized => t!("window.restore"),
                 WindowControlArea::Max => t!("window.maximize"),
                 _ => t!("window.close"),
+            })
+            // The system handles the mouse here; a screen reader's Enter comes this way (#322).
+            .a11y_on_click(move |window, _| match area {
+                WindowControlArea::Min => window.minimize_window(),
+                WindowControlArea::Max if maximized => {
+                    if let Some(hwnd) = super::Explorer::owner_from(window) {
+                        crate::win::restore_window(hwnd);
+                    }
+                }
+                WindowControlArea::Max => window.zoom_window(),
+                _ => window.remove_window(),
             })
             .group(id)
             .size(theme::h_ctl())

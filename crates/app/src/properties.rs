@@ -1807,6 +1807,8 @@ const ROW_H: f32 = 42.;
 
 /// The row layout of every card: label on the left, the value (and what goes with it) after it.
 fn field(label: String, value: AnyElement, height: f32) -> CardRow {
+    // What's on the right is read with the row's label ("Size, 3 B"; "Location, C:\...").
+    let a11y = crate::a11y::active();
     CardRow {
         element: div()
             .min_h(px(ROW_H))
@@ -1815,6 +1817,9 @@ fn field(label: String, value: AnyElement, height: f32) -> CardRow {
             .flex()
             .items_center()
             .gap(theme::s_16())
+            .when(a11y, |d| {
+                d.child(crate::a11y::label_scope(label.clone().into()))
+            })
             .child(
                 div()
                     .w(LABEL_W)
@@ -1824,6 +1829,7 @@ fn field(label: String, value: AnyElement, height: f32) -> CardRow {
                     .child(label),
             )
             .child(div().flex_1().min_w_0().child(value))
+            .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
             .into_any_element(),
         height: height.max(ROW_H),
     }
@@ -1845,13 +1851,15 @@ fn wide(element: AnyElement, height: f32) -> CardRow {
 }
 
 fn text_value(id: &'static str, text: impl Into<SharedString>) -> AnyElement {
+    let text: SharedString = text.into();
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
+        .a11y_row_text(text.clone())
         .min_w_0()
         .text_size(theme::fs_13())
         .text_color(theme::text())
-        .child(text.into())
+        .child(text)
         .into_any_element()
 }
 
@@ -1930,7 +1938,7 @@ fn button(
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .a11y_button(label.clone())
+        .a11y_row_button(label.clone())
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()
@@ -1959,7 +1967,7 @@ fn action(
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .a11y_button(label.clone())
+        .a11y_row_button(label.clone())
         .h(theme::h_ctl_sm())
         .px(theme::s_8())
         .flex()
@@ -1996,7 +2004,7 @@ fn link(
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .a11y_button(text.clone())
+        .a11y_row_button(text.clone())
         .flex_none()
         .cursor_pointer()
         .text_size(theme::fs_12())
@@ -2135,7 +2143,14 @@ impl Properties {
                     theme::line_strong()
                 })
                 .text_size(theme::fs_15())
+                // The field is named "Name" for screen readers (`text_input.rs`).
+                .when(crate::a11y::active(), |d| {
+                    d.child(crate::a11y::label_scope(t!("col.name").into_owned().into()))
+                })
                 .child(self.name_input.clone())
+                .when(crate::a11y::active(), |d| {
+                    d.child(crate::a11y::end_label_scope())
+                })
                 .into_any_element()
         } else {
             let text = match (single, loaded.and_then(|l| l.drive.as_ref())) {
@@ -2282,7 +2297,7 @@ impl Properties {
                 Some(path) => div()
                     .id(id)
                     .debug_selector(move || id.to_owned())
-                    .a11y_button(info.value.clone())
+                    .a11y_row_button(info.value.clone().into())
                     .min_w_0()
                     .truncate()
                     .cursor_pointer()
@@ -2327,7 +2342,7 @@ impl Properties {
                 div()
                     .id("props-target")
                     .debug_selector(|| "props-target".to_owned())
-                    .a11y_button(shown.clone())
+                    .a11y_row_button(shown.clone().into())
                     .cursor_pointer()
                     .text_size(theme::fs_13())
                     .text_color(theme::signal())

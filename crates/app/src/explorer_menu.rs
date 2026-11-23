@@ -66,6 +66,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let menu = Some("ContextMenu");
     cx.bind_keys([
         KeyBinding::new("shift-f10", OpenContextMenu, Some("FileList")),
+        // The Menu key, which is what most keyboard and screen reader users press (#322).
+        KeyBinding::new("menu", OpenContextMenu, Some("FileList")),
         KeyBinding::new("up", MenuUp, menu),
         KeyBinding::new("down", MenuDown, menu),
         KeyBinding::new("left", MenuLeft, menu),
@@ -1709,6 +1711,23 @@ impl Explorer {
         }
     }
 
+    /// A screen reader opened or closed the submenu of row `ix` in menu `level` (#322): opens it
+    /// as Right does from that row, or closes it and goes back to the row.
+    fn a11y_toggle_submenu(&mut self, level: usize, ix: usize, cx: &mut Context<Self>) {
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
+        let was_open = menu.open.get(level) == Some(&ix);
+        menu.open.truncate(level);
+        menu.highlighted = Some(ix);
+        menu.hover_task = None;
+        if was_open {
+            cx.notify();
+        } else {
+            self.enter_submenu(cx);
+        }
+    }
+
     fn enter_submenu(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(menu) = self.context_menu.as_mut() else {
             return false;
@@ -3113,6 +3132,7 @@ impl Explorer {
         div()
             .id(("context-menu", level))
             .role(gpui::Role::Menu)
+            .when(level == 0, |d| d.aria_label(t!("a11y.context_menu")))
             .occlude()
             .min_w(crate::theme::scaled_px(240.))
             .max_w(crate::theme::scaled_px(420.))
@@ -3295,7 +3315,13 @@ impl Explorer {
         div()
             .id(("menu-item", key))
             .a11y_menu_item(label.clone(), enabled, checked, highlighted)
-            .when(submenu, |d| d.aria_expanded(menu.open.get(level) == Some(&ix)))
+            .when(submenu, |d| {
+                d.a11y_open_close(
+                    menu.open.get(level) == Some(&ix),
+                    cx.entity().downgrade(),
+                    move |this, _, cx| this.a11y_toggle_submenu(level, ix, cx),
+                )
+            })
             .when_some(shortcut, gpui::StatefulInteractiveElement::aria_keyshortcuts)
             .group(group)
             .relative()

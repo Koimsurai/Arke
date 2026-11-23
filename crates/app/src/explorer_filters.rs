@@ -495,6 +495,9 @@ impl Explorer {
         div()
             .id(facet_id(facet))
             .a11y_combo_named(name.clone(), spoken, open)
+            .a11y_open_close(open, cx.entity().downgrade(), move |this, window, cx| {
+                this.toggle_filter_menu(facet, true, window, cx);
+            })
             .when(set, |d| d.aria_keyshortcuts("Delete"))
             .when(
                 at && !open,

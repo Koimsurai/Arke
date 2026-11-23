@@ -662,8 +662,13 @@ impl Explorer {
         // Trailing ›: subfolders of the current folder (left out while the bar is shrunk).
         let tail_open = self.path_popup.as_ref().is_some_and(|p| p.tail);
         let tail = current_dir.filter(|_| !compact).map(|dir| {
-            chevron_button("crumb-tail", tail_open).on_click(cx.listener(
-                move |this, e: &ClickEvent, window, cx| {
+            chevron_button("crumb-tail", tail_open, Some(&dir))
+                .a11y_on_expand(crumb_folders(
+                    cx.entity().downgrade(),
+                    Some(dir.clone()),
+                    None,
+                ))
+                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if this.reopens_dismissed(true, None, e) {
                         return;
@@ -676,8 +681,7 @@ impl Explorer {
                         window,
                         cx,
                     );
-                },
-            ))
+                }))
         });
         // The bar fills its slot, so its highlight covers all of it.
         bar.cursor_text()
@@ -702,6 +706,9 @@ impl Explorer {
                     .id("path-blank")
                     .debug_selector(|| "path-blank".to_owned())
                     .a11y_button(t!("path.edit_tip"))
+                    // The bar's own press handling starts the edit; a screen reader's Enter
+                    // comes here.
+                    .a11y_on_click(edit_path(cx.entity().downgrade()))
                     .flex_1()
                     .min_w(if compact { theme::s_8() } else { path_blank_min() })
                     .h_full()
@@ -737,7 +744,13 @@ impl Explorer {
                 // Not before the first piece shown (the root, "…", or the current folder alone).
                 let chevron = (pos > 0).then(|| {
                     let open = here.is_some() && popup_parent == here;
-                    chevron_button(("crumb-sep", i), open).on_click(cx.listener({
+                    chevron_button(
+                        ("crumb-sep", i),
+                        open,
+                        here.as_deref().and_then(Path::parent),
+                    )
+                    .a11y_on_expand(crumb_folders(cx.entity().downgrade(), None, here.clone()))
+                    .on_click(cx.listener({
                         let here = here.clone();
                         move |this, e: &ClickEvent, window, cx| {
                             cx.stop_propagation();
@@ -877,7 +890,10 @@ impl Explorer {
                 .into_any_element(),
         };
         Some(crate::motion::appear(
-            menu_panel("path-popup").w(popup_w()).child(body),
+            menu_panel("path-popup")
+                .aria_label(t!("a11y.subfolders"))
+                .w(popup_w())
+                .child(body),
             "path-popup-appear",
             0.,
             -crate::motion::NUDGE,
@@ -1044,11 +1060,59 @@ fn crumb_piece(
         .into_any_element()
 }
 
+/// What a screen reader's Enter does on the bar's blank end: edit the path, like Ctrl+L.
+fn edit_path(view: gpui::WeakEntity<super::Explorer>) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |window, cx| {
+        let _ = view.update(cx, |this, cx| {
+            this.focus_path_bar(&crate::explorer::FocusPathBar, window, cx);
+        });
+    }
+}
+
+/// What a screen reader's expand and collapse do on a ›: list the folders in `dir` (the trailing
+/// ›), or next to `here` (the › before it), or close the list.
+fn crumb_folders(
+    view: gpui::WeakEntity<super::Explorer>,
+    dir: Option<PathBuf>,
+    here: Option<PathBuf>,
+) -> impl Fn(bool, &mut Window, &mut App) + 'static {
+    move |want, window, cx| {
+        let _ = view.update(cx, |this, cx| {
+            if !want {
+                this.close_path_popup(window, cx);
+            } else if let Some(dir) = dir.clone() {
+                this.show_folders(dir, None, px(0.), true, window, cx);
+            } else if let Some(here) = here.clone()
+                && let Some(parent) = here.parent().map(Path::to_path_buf)
+            {
+                this.show_folders(parent, Some(here), px(0.), true, window, cx);
+            }
+        });
+    }
+}
+
 /// The › between segments: clickable (lists folders) and rotates to ⌄ while open.
-fn chevron_button(id: impl Into<gpui::ElementId>, open: bool) -> gpui::Stateful<gpui::Div> {
+fn chevron_button(
+    id: impl Into<gpui::ElementId>,
+    open: bool,
+    of: Option<&Path>,
+) -> gpui::Stateful<gpui::Div> {
+    // Every › reads differently: "Subfolders of Users" (#322).
+    // A drive root has no name of its own: "C:".
+    let name = of.map(|p| {
+        p.file_name().map_or_else(
+            || p.to_string_lossy().trim_end_matches('\\').to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    });
+    let label = if let Some(name) = name {
+        t!("a11y.subfolders_of", name = name)
+    } else {
+        t!("a11y.subfolders")
+    };
     div()
         .id(id)
-        .a11y_button(t!("a11y.subfolders"))
+        .a11y_button(label)
         .aria_expanded(open)
         .flex_none()
         .size(theme::s_20())

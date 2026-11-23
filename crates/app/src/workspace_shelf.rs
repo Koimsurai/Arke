@@ -171,7 +171,9 @@ impl Workspace {
         let mut header = div()
             .id("shelf-row")
             .a11y(gpui::Role::Button, t!("shelf.title"))
-            .aria_expanded(open)
+            .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
+                this.toggle_shelf(cx);
+            })
             .relative()
             .h(theme::h_row())
             .flex()

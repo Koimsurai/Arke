@@ -58,6 +58,7 @@ mod frame_probe;
 mod global_search;
 mod home;
 mod instance;
+mod localized;
 mod media;
 mod menu_order;
 mod menu_pin_looks;

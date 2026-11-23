@@ -522,7 +522,7 @@ impl Explorer {
             widths.push(match col {
                 Col::Name => {
                     let depth = tree.then(|| self.tree_row(ix).depth);
-                    let name = super::view::shown_name(entry, self.show_extensions);
+                    let name = self.shown_name_of(entry);
                     // Room for a compare badge ("Only here", "Newer"…) after the name.
                     let badge = self
                         .compare_mark(&entry.name)

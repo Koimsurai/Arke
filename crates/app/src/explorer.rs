@@ -55,6 +55,8 @@ pub(crate) mod groups;
 mod icons;
 #[path = "explorer_layout.rs"]
 mod layout;
+#[path = "explorer_localized.rs"]
+mod localized_names;
 #[path = "explorer_markdown.rs"]
 mod markdown_view;
 #[path = "explorer_marquee.rs"]
@@ -663,6 +665,8 @@ pub(crate) struct Explorer {
     folder_view: folder_view::State,
     /// Show extensions; show thumbnails in grid (settings).
     pub(crate) show_extensions: bool,
+    /// Folders' localized names in this listing (#370).
+    pub(crate) localized: localized_names::LocalizedNames,
     /// Checkboxes next to items (settings).
     pub(crate) show_checkboxes: bool,
     /// Column widths were dragged but not saved yet (saved on release).
@@ -1079,6 +1083,7 @@ impl Explorer {
                 folder_views.read(cx),
             ),
             show_extensions: settings.read(cx).settings.show_extensions,
+            localized: localized_names::LocalizedNames::default(),
             show_checkboxes: settings.read(cx).settings.show_checkboxes,
             column_resized: false,
             preview_resized: false,

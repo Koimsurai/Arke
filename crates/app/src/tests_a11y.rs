@@ -264,3 +264,67 @@ fn a_screen_reader_can_press_a_button_out_of_view(cx: &mut TestAppContext) {
         "the dialog opens"
     );
 }
+
+/// A drive in the pinned list is named as on a tile and in This PC, not by its path (#371).
+#[gpui::test]
+fn a_pinned_drive_is_named_like_the_drive(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.pinned = vec![PathBuf::from(r"C:\")], cx);
+        });
+    });
+    let t = tree(cx);
+    let rows: Vec<&str> = nodes(&t)
+        .filter(|n| role(n) == "TreeItem")
+        .map(label)
+        .collect();
+    assert!(!rows.contains(&r"C:\"), "{rows:?}");
+    assert_eq!(
+        rows.iter().filter(|l| **l == "Local Disk (C:)").count(),
+        2,
+        "This PC and the pinned list: {rows:?}"
+    );
+}
+
+/// A folder named by its `desktop.ini`, as Windows names the user folder's Documents in other
+/// languages, is shown (and read out) by that name; a folder without the read-only or system
+/// attribute keeps its own, as in File Explorer (#370).
+#[gpui::test]
+fn a_folder_shows_the_name_its_desktop_ini_gives(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\u",
+        vec![
+            Entry::new("Documents", EntryKind::Dir, 0, None, 0x1),
+            Entry::new("Plain", EntryKind::Dir, 0, None, 0),
+        ],
+    );
+    let ini = |name: &str| {
+        let text = format!("[.ShellClassInfo]\r\nLocalizedResourceName={name}\r\n");
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    };
+    fs.set_content(r"C:\u\Documents\desktop.ini", ini("Dokumente"));
+    fs.set_content(r"C:\u\Plain\desktop.ini", ini("Not read"));
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\u");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\u"));
+    cx.simulate_a11y_activation();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rows = loop {
+        let t = tree(cx);
+        let rows: Vec<String> = nodes(&t)
+            .filter(|n| role(n) == "ListBoxOption")
+            .map(|n| label(n).to_owned())
+            .collect();
+        if rows.iter().any(|r| r.starts_with("Dokumente,")) || Instant::now() > deadline {
+            break rows;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(rows.iter().any(|r| r.starts_with("Dokumente,")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.starts_with("Plain,")), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.starts_with("Not read")), "{rows:?}");
+}

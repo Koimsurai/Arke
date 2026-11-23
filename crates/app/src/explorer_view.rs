@@ -715,8 +715,12 @@ impl Explorer {
         let modified = entry
             .modified
             .map_or_default(|t| self.services.shell.format_time(t));
-        // Nested tree rows are named by relative path; read the file name.
-        let name = arke_core::tree::leaf(&entry.name);
+        // Nested tree rows are named by relative path; read the file name. A folder's localized
+        // name is read as it is shown (#370).
+        let localized = self.localized.get(&entry.name).cloned();
+        let name = localized
+            .as_deref()
+            .unwrap_or_else(|| arke_core::tree::leaf(&entry.name));
         crate::a11y::item_label(
             name,
             &[&arke_core::format::type_label(entry), &size, &modified],
@@ -906,7 +910,7 @@ impl Explorer {
             .child(name_cell(
                 entry,
                 rename_input,
-                self.show_extensions,
+                self.shown_name_of(entry),
                 true,
                 Some(press),
             ))
@@ -1088,7 +1092,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match rename_input {
-            Some(rename) => name_cell(entry, Some(rename), true, false, None),
+            Some(rename) => name_cell(entry, Some(rename), SharedString::default(), false, None),
             None => div()
                 .debug_selector({
                     let name = Arc::clone(&entry.name);
@@ -1101,7 +1105,7 @@ impl Explorer {
                 // rather than clipping the sides.
                 .text_ellipsis()
                 .text_size(theme::fs_12())
-                .child(shown_name(entry, self.show_extensions))
+                .child(self.shown_name_of(entry))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
@@ -2787,7 +2791,7 @@ type NamePress = Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App)>;
 fn name_cell(
     entry: &Entry,
     rename: Option<(Entity<TextInput>, Option<NameError>)>,
-    show_ext: bool,
+    shown: SharedString,
     in_row: bool,
     on_press: Option<NamePress>,
 ) -> AnyElement {
@@ -2844,7 +2848,7 @@ fn name_cell(
                     })
                     .min_w_0()
                     .truncate()
-                    .child(shown_name(entry, show_ext))
+                    .child(shown)
                     .when_some(on_press, |d, press| {
                         d.on_mouse_down(MouseButton::Left, press)
                     }),
@@ -3061,6 +3065,7 @@ impl Explorer {
     /// needed (preview, parent, folder sizes).
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.on_frame(window, cx);
+        self.follow_localized(cx);
         // Windows' type names arrive after the first sort: order by what the column shows.
         if self.sort.uses(SortColumn::Type)
             && self.type_order != Some(arke_core::format::type_names_version())

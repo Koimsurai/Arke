@@ -2821,13 +2821,13 @@ settings.list_density:
   pt-BR: Densidade da lista
   ja: 一覧の密度
 settings.tabs:
-  en: "Tab position"
-  zh-TW: 分頁位置
-  zh-CN: 标签页位置
-  de: Position der Registerkarten
-  es: Posición de las pestañas
-  pt-BR: Posição das guias
-  ja: タブの位置
+  en: Tabs and sidebar
+  zh-TW: 分頁與側邊欄
+  zh-CN: 标签页与侧边栏
+  de: Registerkarten und Seitenleiste
+  es: Pestañas y barra lateral
+  pt-BR: Guias e barra lateral
+  ja: タブとサイドバー
 settings.tabs_side:
   en: Sidebar
   zh-TW: 側邊欄

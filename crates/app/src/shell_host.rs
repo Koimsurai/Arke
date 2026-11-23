@@ -394,8 +394,9 @@ mod idle {
         let _ = std::thread::Builder::new()
             .name("shell-host-idle".into())
             .spawn(move || {
+                let after = after();
                 loop {
-                    match rx.recv_timeout(AFTER) {
+                    match rx.recv_timeout(after) {
                         Ok(()) => {}
                         Err(flume::RecvTimeoutError::Timeout) => {
                             LOW.store(true, Ordering::Release);
@@ -409,6 +410,18 @@ mod idle {
                     }
                 }
             });
+    }
+
+    /// [`AFTER`]; `ARKE_MENU_HOST_IDLE` (seconds) overrides it in debug builds, for measuring.
+    fn after() -> Duration {
+        #[cfg(debug_assertions)]
+        if let Some(secs) = std::env::var("ARKE_MENU_HOST_IDLE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            return Duration::from_secs(secs);
+        }
+        AFTER
     }
 
     /// A request came in: normal memory priority before it is served.

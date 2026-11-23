@@ -1,6 +1,12 @@
 # Blank issues stay on for anything the forms do not fit. Settings › About › Report a problem opens the bug form filled in.
 blank_issues_enabled: true
 contact_links:
+  - name: Question or how-to
+    url: https://github.com/Koimsurai/Arke/discussions/categories/q-a
+    about: Ask how to do something in Arke. Answers stay searchable for others.
+  - name: Scripts and integrations
+    url: https://github.com/Koimsurai/Arke/discussions/categories/show-and-tell
+    about: Share or find scripts that work with Arke (AutoHotkey, launchers, the --api interface).
   - name: Security vulnerability
     url: https://github.com/Koimsurai/Arke/security/advisories/new
     about: Please report security issues privately, not in a public issue.

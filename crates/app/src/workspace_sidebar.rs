@@ -762,20 +762,34 @@ impl TileLayout {
 /// four or five CJK characters), at 100%.
 const TILE_NAME_MIN: f32 = 56.;
 
-/// Lays out the favorite tiles in a places list `list` wide: as many a row as leave each tile
-/// room for a readable name, four at most, two at least; more favorites take more rows. The width
-/// decides alone, not how many there are (#371: eight favorites went four a row in the default
-/// sidebar, their names cut to "Des…"). Every favorite is a tile: where a folder goes (the tiles
-/// or the list below) is the user's choice, by dragging it or "Move to the list". A name too long
-/// for its tile is cut off, and the tile's tooltip shows the whole path. (Up to 0.8 such a
-/// favorite was drawn as a row instead, #174, which looked like the list but wasn't.)
-fn split_tiles(list: Pixels) -> TileLayout {
+/// Lays out `count` favorite tiles in a places list `list` wide: never more a row than leave each
+/// tile room for a readable name, four at most, two at least (#371: eight favorites went four a
+/// row in the default sidebar, their names cut to "Des…"). Where both four and three fit, the one
+/// whose last row is fuller: six go three and three, eight four and four. Every favorite is a
+/// tile: where a folder goes (the tiles or the list below) is the user's choice, by dragging it or
+/// "Move to the list". A name too long for its tile is cut off, and the tile's tooltip shows the
+/// whole path. (Up to 0.8 such a favorite was drawn as a row instead, #174, which looked like the
+/// list but wasn't.)
+fn split_tiles(list: Pixels, count: usize) -> TileLayout {
     let min = theme::scaled_px(TILE_NAME_MIN);
-    let per_row = [4, 3]
+    let per_row = match [4, 3]
         .into_iter()
         .find(|&n| tile_text_width(list, n) >= min)
-        .unwrap_or(2);
+    {
+        Some(4) if last_row_fill(count, 3) > last_row_fill(count, 4) => 3,
+        Some(n) => n,
+        None => 2,
+    };
     TileLayout { per_row }
+}
+
+/// How full the last of the rows `count` tiles take `per_row` a row is, in twelfths (exact for
+/// three and four a row).
+const fn last_row_fill(count: usize, per_row: usize) -> usize {
+    match count % per_row {
+        0 => 12,
+        left => left * 12 / per_row,
+    }
 }
 
 /// Room for a tile's name when `per_row` tiles share a row `list` wide.
@@ -1398,9 +1412,9 @@ impl Workspace {
         } else {
             self.favorites(cx)
         };
-        let layout = self.tile_layout();
         // Slots count every favorite, tiles or rows: drops and the saved order use them.
         let tile_count = favorites.len();
+        let layout = self.tile_layout(tile_count);
         let mut tiles: Vec<AnyElement> = Vec::new();
         for (ix, (path, label, icon)) in favorites.into_iter().enumerate() {
             if home_hidden {
@@ -1687,10 +1701,10 @@ impl Workspace {
         gpui::size(px(width), tile_height(layout.large()))
     }
 
-    /// How many tiles a row (`split_tiles`), in the width the places list had last frame (an
-    /// estimate from the sidebar's width before the first).
-    pub(super) fn tile_layout(&self) -> TileLayout {
-        split_tiles(self.places_width())
+    /// How many of `count` tiles a row (`split_tiles`), in the width the places list had last
+    /// frame (an estimate from the sidebar's width before the first).
+    pub(super) fn tile_layout(&self, count: usize) -> TileLayout {
+        split_tiles(self.places_width(), count)
     }
 
     /// The favorites drawn as tiles, in order: the grid the tiles reorder and slide on.
@@ -4952,18 +4966,25 @@ mod tests {
         assert_eq!(snap(78., 0, (500., 532.)), None);
     }
 
-    /// The sidebar's width alone decides how many tiles a row (#371): four where each still has
-    /// room for a readable name, else three, else two.
+    /// The sidebar's width caps how many tiles a row (#371): four where each still has room for a
+    /// readable name, else three, else two. Where four fit, three when that fills the last row
+    /// more.
     #[test]
     fn the_width_decides_how_many_tiles_a_row() {
-        let per_row = |list: f32| split_tiles(px(list)).per_row();
+        let per_row = |list: f32, count: usize| split_tiles(px(list), count).per_row();
         // The default sidebar (a places list about 232 wide): three, not four cut to "Des…".
-        assert_eq!(per_row(232.), 3);
-        assert_eq!(per_row(284.), 4);
-        assert_eq!(per_row(364.), 4);
+        assert_eq!(per_row(232., 8), 3);
+        assert_eq!(per_row(232., 12), 3);
+        // Wide enough for four: whichever fills the last row more, four on a tie.
+        assert_eq!(per_row(284., 8), 4);
+        assert_eq!(per_row(284., 6), 3);
+        assert_eq!(per_row(364., 6), 3);
+        assert_eq!(per_row(364., 7), 4);
+        assert_eq!(per_row(364., 9), 3);
+        assert_eq!(per_row(364., 12), 4);
         // Dragged narrow: two.
-        assert_eq!(per_row(170.), 2);
-        assert!(split_tiles(px(232.)).large());
-        assert!(!split_tiles(px(284.)).large());
+        assert_eq!(per_row(170., 8), 2);
+        assert!(split_tiles(px(284.), 6).large());
+        assert!(!split_tiles(px(284.), 8).large());
     }
 }

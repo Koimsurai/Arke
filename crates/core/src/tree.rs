@@ -81,6 +81,7 @@ pub fn nested(parent: &Entry, child: &Entry) -> Entry {
     Entry {
         name: format!("{}{SEP}{}", parent.name, child.name).into(),
         sort_key: format!("{}{SEP}{}", parent.sort_key, child.sort_key).into(),
+        collation: std::sync::OnceLock::new(),
         ..child.clone()
     }
 }

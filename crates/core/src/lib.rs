@@ -92,6 +92,7 @@ pub(crate) mod alloc_peak {
     }
 }
 pub mod archive;
+pub mod collate;
 pub mod compare;
 pub mod content;
 pub mod dirsize;

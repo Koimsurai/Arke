@@ -375,6 +375,11 @@ impl SortSpec {
         // Unstable sort is faster, and the comparator is a total order, so the result is
         // deterministic.
         let types = TypeKeys::for_entries(self, &*entries);
+        // By name every entry needs its key: make them up front, on several threads for big lists.
+        // Other columns only need them to break ties, made as they come.
+        if matches_column(self.column, SortColumn::Name) {
+            crate::collate::prepare(entries);
+        }
         if let Some(days) = self.date_sections() {
             // Sorted as usual, the folder block and the file block are each in date order, so
             // one merge by section puts the folders into their sections: the section of each
@@ -535,9 +540,15 @@ fn type_cmp(a: &Entry, b: &Entry, types: &TypeKeys) -> Ordering {
     natural_cmp(&types.key(a), &types.key(b))
 }
 
-/// Natural, case-insensitive name order, then the exact name so the order is total.
+/// File Explorer's name order (`collate.rs`), or the natural, case-insensitive order where Windows
+/// can't give it; then the exact name so the order is total.
 fn name_cmp(a: &Entry, b: &Entry) -> Ordering {
-    natural_cmp(&a.sort_key, &b.sort_key).then_with(|| a.name.cmp(&b.name))
+    let ord = if crate::collate::available() {
+        a.collation().cmp(b.collation())
+    } else {
+        natural_cmp(&a.sort_key, &b.sort_key)
+    };
+    ord.then_with(|| a.name.cmp(&b.name))
 }
 
 /// Natural sort: digit runs compare numerically (file2 < file10), everything else per char, with

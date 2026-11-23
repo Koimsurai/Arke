@@ -1,6 +1,6 @@
 //! Directory entries ([`Entry`]) and the process-wide rules for which ones count as hidden.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 /// One directory entry. Names are `Arc<str>` so cloning the whole list only bumps refcounts.
@@ -20,6 +20,9 @@ pub struct Entry {
     pub created: Option<SystemTime>,
     /// Windows `FILE_ATTRIBUTE_*` bits; 0 on other platforms.
     pub attributes: u32,
+    /// Windows' sort key for the name, made when first needed ([`Self::collation`]). Whatever
+    /// builds an entry under another name starts this afresh.
+    pub(crate) collation: OnceLock<Arc<[u8]>>,
 }
 
 /// What an [`Entry`] is.
@@ -141,7 +144,15 @@ impl Entry {
             modified,
             created: None,
             attributes,
+            collation: OnceLock::new(),
         }
+    }
+
+    /// The name's place in File Explorer's name order (`collate.rs`), made the first time it's
+    /// asked for.
+    pub fn collation(&self) -> &[u8] {
+        self.collation
+            .get_or_init(|| crate::collate::key(&self.name))
     }
 
     /// The same item under another name (the lowercase sort key follows it).

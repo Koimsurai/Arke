@@ -593,3 +593,83 @@ fn the_path_bar_folder_menu_closes_when_its_chevron_is_pressed_again(cx: &mut Te
     cx.run_until_parked();
     assert!(open(cx), "and opens it again after that");
 }
+
+/// The › before the drive (#354) lists Home, Documents, every drive with its free space (as the
+/// sidebar has it, nothing is read) and the network shares opened before. The drive the path is
+/// on is in bold and the keys start there; Enter opens the row, Home opens the Home page.
+#[gpui::test]
+fn the_path_bar_lists_the_drives_before_the_first_segment(cx: &mut TestAppContext) {
+    use arke_core::format::format_size;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![file("x.txt", 1)]);
+    fs.insert_dir(r"D:\e", vec![file("y.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    shell.extra_places.lock().extend([
+        Place {
+            label: "Documents".into(),
+            path: std::path::PathBuf::from(r"C:\home\Documents"),
+            kind: PlaceKind::Folder(KnownFolder::Documents),
+        },
+        Place {
+            label: "Local Disk (C:)".into(),
+            path: std::path::PathBuf::from(r"C:\"),
+            kind: PlaceKind::Drive {
+                remote: false,
+                space: Some((10 << 30, 100 << 30)),
+            },
+        },
+        Place {
+            label: "Data (D:)".into(),
+            path: std::path::PathBuf::from(r"D:\"),
+            kind: PlaceKind::Drive {
+                remote: false,
+                space: None,
+            },
+        },
+    ]);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\a");
+    cx.simulate_resize(size(px(1200.), px(800.)));
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", |v| {
+        loaded(r"C:\a")(v) && v.places.len() > 3
+    });
+    let open = |cx: &mut VisualTestContext| {
+        let lead = cx
+            .debug_bounds("crumb-roots")
+            .expect("the › before the drive is drawn");
+        cx.simulate_click(lead.center(), Modifiers::none());
+        cx.run_until_parked();
+    };
+
+    open(cx);
+    let space = t!(
+        "home.space",
+        free = format_size(10 << 30),
+        total = format_size(100 << 30)
+    )
+    .into_owned();
+    assert_eq!(
+        view.update(cx, |v, _| v.path_popup_rows_for_test()),
+        Some(vec![
+            (t!("home.title").into_owned(), None, false),
+            ("Documents".to_owned(), None, false),
+            ("Local Disk (C:)".to_owned(), Some(space), true),
+            ("Data (D:)".to_owned(), None, false),
+        ])
+    );
+    let (_, at, lit) = view.update(cx, |v, _| v.path_popup_for_test()).unwrap();
+    assert_eq!((at, lit), (Some(2), false), "on the drive, not lit");
+
+    cx.simulate_keystrokes("down enter");
+    wait_until(cx, &view, "the other drive", loaded(r"D:\"));
+    assert!(view.update(cx, |v, _| v.path_popup_for_test().is_none()));
+
+    // From D:, three rows up is Home.
+    open(cx);
+    cx.simulate_keystrokes("up up up enter");
+    cx.run_until_parked();
+    assert!(
+        ws.update(cx, |ws, cx| ws.home_favorites_for_test(cx).is_some()),
+        "Home opens"
+    );
+}

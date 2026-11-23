@@ -453,6 +453,8 @@ pub(crate) enum ExplorerEvent {
     BackToHome {
         start: bool,
     },
+    /// Home picked from the path bar's drive menu: the workspace shows the Home page.
+    OpenHome,
     /// An operation changed this remote folder (servers send no change notifications; panes
     /// showing it relist).
     RemoteChanged(PathBuf),

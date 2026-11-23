@@ -31,6 +31,7 @@ use super::{DraggedTab, Tab, Workspace};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, Explorer, drop_external_into, drop_into, kind_icon};
+use crate::place_names::share_label;
 use crate::settings::{FAVORITES_LARGE, FAVORITES_MAX, PinSlot, SettingsStore, SidebarSection};
 use crate::shell::{KnownFolder, Place, PlaceKind};
 use crate::text_input::{InputEvent, TextInput};
@@ -1022,18 +1023,6 @@ pub(super) fn tab_layout_button(
             }
             .to_string(),
         )
-}
-
-/// `\nas\docs` -> "docs (nas)"
-fn share_label(share: &Path) -> String {
-    let s = share.to_string_lossy();
-    let mut parts = s.trim_start_matches('\\').splitn(2, '\\');
-    match (parts.next(), parts.next()) {
-        (Some(server), Some(name)) => {
-            t!("sidebar.share_label", share = name, server = server).into_owned()
-        }
-        _ => s.into_owned(),
-    }
 }
 
 /// Sidebar label of a saved remote location: the folder and its server, or just the server.

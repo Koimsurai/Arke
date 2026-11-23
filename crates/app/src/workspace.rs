@@ -1267,6 +1267,7 @@ impl Workspace {
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
             ExplorerEvent::BackToHome { start } => self.back_to_home(source, *start, window, cx),
+            ExplorerEvent::OpenHome => self.open_home(false, window, cx),
             ExplorerEvent::Navigated {
                 path,
                 stepped,

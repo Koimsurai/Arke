@@ -8949,6 +8949,14 @@ a11y.subfolders:
   es: Subcarpetas
   pt-BR: Subpastas
   ja: サブフォルダー
+a11y.roots:
+  en: Drives and places
+  zh-TW: 磁碟機與位置
+  zh-CN: 驱动器和位置
+  de: Laufwerke und Orte
+  es: Unidades y ubicaciones
+  pt-BR: Unidades e locais
+  ja: ドライブと場所
 a11y.more_folders:
   en: Hidden levels
   zh-TW: 隱藏的層級

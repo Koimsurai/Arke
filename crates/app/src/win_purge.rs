@@ -361,7 +361,7 @@ mod tests {
     }
 
     /// #330: exFAT and FAT drives keep items right in `$Recycle.Bin`, with no folder per user;
-    /// they can be deleted for good too. Nested names and look-alikes elsewhere still can't.
+    /// they can be deleted for good too. Nested items and similar names elsewhere still can't.
     #[test]
     fn bins_without_a_folder_per_user_count() {
         assert!(super::bin_entry(Path::new(

@@ -4843,7 +4843,7 @@ Used by:
 - fastrand 2.5.0 (https://github.com/smol-rs/fastrand)
 - filetime 0.2.29 (https://github.com/alexcrichton/filetime)
 - flate2 1.1.11 (https://github.com/rust-lang/flate2-rs)
-- form_urlencoded 1.2.2 (https://github.com/servo/rust-url)
+- form_urlencoded 1.2.3 (https://github.com/servo/rust-url)
 - glob 0.3.4 (https://github.com/rust-lang/glob)
 - group 0.14.0 (https://github.com/zkcrypto/group)
 - hash32 0.3.1 (https://github.com/japaric/hash32)
@@ -4902,7 +4902,7 @@ Used by:
 - unicode-segmentation 1.13.3 (https://github.com/unicode-rs/unicode-segmentation)
 - unicode-vo 0.1.0 (https://github.com/RazrFalcon/unicode-vo)
 - unicode-width 0.2.3 (https://github.com/unicode-rs/unicode-width)
-- url 2.5.8 (https://github.com/servo/rust-url)
+- url 2.5.9 (https://github.com/servo/rust-url)
 - uuid 1.29.1 (https://github.com/uuid-rs/uuid)
 - waker-fn 1.2.0 (https://github.com/smol-rs/waker-fn)
 

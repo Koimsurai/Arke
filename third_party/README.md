@@ -115,8 +115,17 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
 
 ## gpui-pre 0.3.11
 
-Zed's GPUI (Apache-2.0), unchanged except for its test platform, which only builds with the
-`test-support` feature (release builds are untouched):
+Zed's GPUI (Apache-2.0), unchanged except for:
+
+- `src/elements/div.rs` `a11y_click_listeners` and the accessibility block of `Interactivity::paint`:
+  an assistive technology's Click on an element with click listeners runs them, as Enter on the
+  focused element does (`ClickEvent::Keyboard`). Upstream, Click falls back to a synthetic mouse
+  click at the element's position: a button scrolled out of view (the sidebar's "Add network
+  location…" in a short window, a Settings button below the fold) couldn't be pressed with a
+  screen reader, and the click could land on whatever was drawn there instead. Elements that
+  handle Click themselves (`on_a11y_action`) are left alone. (#322)
+
+The test platform, which only builds with the `test-support` feature:
 
 - `src/platform/test/window.rs`: `TestWindow` keeps the accessibility callbacks `a11y_init` is
   given (upstream it ignores them, so a test window never builds an accessibility tree), and adds
@@ -126,5 +135,7 @@ Zed's GPUI (Apache-2.0), unchanged except for its test platform, which only buil
   `simulate_a11y_action`, which run until parked.
 
 With them, tests read what a screen reader is given through `Window::debug_a11y_tree_json`
-(`crates/app/src/tests_a11y.rs`, #322). The `examples`, `tests` and `benches` folders and their
+(`crates/app/src/tests_a11y.rs`, #322).
+
+The `examples`, `tests` and `benches` folders and their
 `Cargo.toml` entries are left out. Offered upstream; drop this copy once a gpui-pre has it.

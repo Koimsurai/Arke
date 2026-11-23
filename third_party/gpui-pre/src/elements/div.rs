@@ -2613,6 +2613,8 @@ impl Interactivity {
                                         if let Some(focus_handle) = &self.tracked_focus_handle {
                                             window.next_frame.tab_stops.insert(focus_handle);
                                         }
+                                        let a11y_click =
+                                            self.a11y_click_listeners(global_id, hitbox, window);
                                         if let Some(hitbox) = hitbox {
                                             #[cfg(debug_assertions)]
                                             self.paint_debug_info(
@@ -2653,15 +2655,30 @@ impl Interactivity {
 
                                         if window.a11y.is_active() {
                                             if let Some(global_id) = global_id {
-                                                if !self.a11y_action_listeners.is_empty() {
-                                                    let node_id = global_id.accesskit_node_id();
-                                                    for (action, listener) in
-                                                        self.a11y_action_listeners.drain(..)
-                                                    {
-                                                        window.on_a11y_action(
-                                                            node_id, action, listener,
-                                                        );
-                                                    }
+                                                let node_id = global_id.accesskit_node_id();
+                                                for (action, listener) in
+                                                    self.a11y_action_listeners.drain(..)
+                                                {
+                                                    window.on_a11y_action(
+                                                        node_id, action, listener,
+                                                    );
+                                                }
+                                                if let Some((listeners, bounds)) = a11y_click {
+                                                    window.on_a11y_action(
+                                                        node_id,
+                                                        accesskit::Action::Click,
+                                                        move |_, window, cx| {
+                                                            let event = ClickEvent::Keyboard(
+                                                                KeyboardClickEvent {
+                                                                    button: KeyboardButton::Enter,
+                                                                    bounds,
+                                                                },
+                                                            );
+                                                            for listener in &listeners {
+                                                                listener(&event, window, cx);
+                                                            }
+                                                        },
+                                                    );
                                                 }
                                             }
                                         }
@@ -2807,6 +2824,30 @@ impl Interactivity {
                 render_debug_text,
             )
         }
+    }
+
+    /// The click listeners an assistive technology's Click runs, with the element's bounds: the
+    /// same click as Enter on the focused element. Without this, Click falls back to a synthetic
+    /// mouse click at the element's position, which misses an element scrolled out of view and
+    /// can land on whatever is drawn there instead. `None` when the element handles Click itself
+    /// (`on_a11y_action`) or has no click listeners.
+    fn a11y_click_listeners(
+        &self,
+        global_id: Option<&GlobalElementId>,
+        hitbox: Option<&Hitbox>,
+        window: &Window,
+    ) -> Option<(Vec<ClickListener>, Bounds<Pixels>)> {
+        if !window.a11y.is_active()
+            || global_id.is_none()
+            || self.click_listeners.is_empty()
+            || self
+                .a11y_action_listeners
+                .iter()
+                .any(|(action, _)| *action == accesskit::Action::Click)
+        {
+            return None;
+        }
+        Some((self.click_listeners.clone(), hitbox?.bounds))
     }
 
     fn paint_mouse_listeners(

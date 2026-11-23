@@ -232,3 +232,21 @@ fn a_screen_reader_can_press_and_open(cx: &mut TestAppContext) {
     assert_eq!(named(&t, "View options")["aria"]["expanded"], Value::Bool(true));
     assert_eq!(unnamed(&t), Vec::<String>::new(), "view options open");
 }
+
+/// A screen reader's Click reaches a button scrolled out of view: it runs the button's click,
+/// rather than a mouse click where the button would be, which hit nothing or another control.
+#[gpui::test]
+fn a_screen_reader_can_press_a_button_out_of_view(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    // Short enough that the Network section is below the end of the sidebar.
+    cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(240.)));
+    let t = tree(cx);
+    cx.simulate_a11y_action(
+        node_id(&t, "Add network location…"),
+        gpui::AccessibleAction::Click,
+    );
+    assert!(
+        ws.update(cx, |ws, _| ws.net_dialog_for_test()).is_some(),
+        "the dialog opens"
+    );
+}

@@ -87,7 +87,7 @@ impl PanePages {
         }
         cx.defer(move |cx| {
             for (_, _, page) in self.kept {
-                cx.drop_image(page.image, None);
+                crate::media::drop_image_later(page.image, cx);
             }
         });
     }
@@ -375,7 +375,7 @@ impl Explorer {
             None => list.failed.push(page),
             Some(render) if list.keep(pages).contains(&page) => {
                 for (_, _, old) in list.kept.extract_if(.., |(p, _, _)| *p == page) {
-                    cx.drop_image(old.image, None);
+                    crate::media::drop_image_later(old.image, cx);
                 }
                 list.kept.push((page, target, render));
             }
@@ -405,7 +405,7 @@ impl Explorer {
             gone.extend(list.kept.drain(MAX_KEPT..).map(|(_, _, page)| page));
         }
         for page in gone {
-            cx.drop_image(page.image, None);
+            crate::media::drop_image_later(page.image, cx);
         }
     }
 

@@ -697,9 +697,8 @@ fn samples_well(src: &mut File, buf: &mut [u8]) -> bool {
     let mut got = 0;
     while got < len {
         match src.read(&mut buf[got..len]) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => got += n,
-            Err(_) => break,
         }
     }
     if src.seek(SeekFrom::Start(0)).is_err() {
@@ -2471,7 +2470,8 @@ mod tests {
             .collect();
         assert!(!compresses_well(&noise));
         let text = "the quick brown fox jumps over the lazy dog
-".repeat(2000);
+"
+        .repeat(2000);
         assert!(compresses_well(&text.as_bytes()[..SAMPLE_LEN]));
     }
 }

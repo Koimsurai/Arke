@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_NO_MORE_FILES, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
-    GetLastError, HANDLE, NO_ERROR, WAIT_OBJECT_0,
+    CloseHandle, ERROR_NO_MORE_FILES, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, GetLastError,
+    HANDLE, NO_ERROR, WAIT_OBJECT_0,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -29,7 +29,8 @@ use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY,
     FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
-    FindNextFileW, GetCompressedFileSizeW, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW, WIN32_FIND_DATAW,
+    FindNextFileW, GetCompressedFileSizeW, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW,
+    WIN32_FIND_DATAW,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};

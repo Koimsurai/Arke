@@ -1067,7 +1067,7 @@ struct Chunks<'a> {
 
 /// Whether a copy of `size` bytes goes past the cache. Not on one ReFS volume: there Windows can
 /// clone the blocks instead of copying them, and an unbuffered copy may keep it from doing so.
-fn no_buffering(size: u64, same_refs_volume: bool) -> bool {
+const fn no_buffering(size: u64, same_refs_volume: bool) -> bool {
     size >= UNBUFFERED_FILE && !same_refs_volume
 }
 
@@ -1090,9 +1090,10 @@ fn is_refs(root: &Path) -> bool {
     // SAFETY: wide is NUL-terminated; the buffer and its length are passed together.
     let read = unsafe { GetVolumeInformationW(&wide, None, None, None, None, Some(&mut name)) };
     let refs = read.is_ok()
-        && name.iter().position(|&c| c == 0).is_some_and(|len| {
-            String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("ReFS")
-        });
+        && name
+            .iter()
+            .position(|&c| c == 0)
+            .is_some_and(|len| String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("ReFS"));
     REFS_ROOTS.lock().push((root.to_path_buf(), refs));
     refs
 }

@@ -62,8 +62,8 @@ use windows::Win32::Storage::FileSystem::{
     COPYFILE2_PROGRESS_CANCEL, COPYFILE2_PROGRESS_CONTINUE, CopyFile2, CreateDirectoryExW,
     CreateDirectoryW, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
-    FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch,
-    FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW,
+    FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
+    FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW,
     GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, OPEN_EXISTING, SetFileAttributesW,
     SetFileTime, WIN32_FIND_DATAW,
 };
@@ -340,7 +340,9 @@ impl Admit {
         let entry = find_one(&real)?;
         // Given by its short (8.3) name: the copy takes the real one, which must be free too.
         if !entry.name.eq_ignore_ascii_case(name)
-            && (!self.names.insert(entry.name.to_string_lossy().to_lowercase())
+            && (!self
+                .names
+                .insert(entry.name.to_string_lossy().to_lowercase())
                 || !absent(&target.real.join(&entry.name)))
         {
             return None;
@@ -695,11 +697,11 @@ impl Plan {
             self.files.len(),
             self.bytes,
         );
-        let dst = target.real.join(&entry.name);
+        let copy = target.real.join(&entry.name);
         self.items.push(Item {
             index,
             src: real.clone(),
-            dst: dst.clone(),
+            dst: copy.clone(),
             shown: dest.join(&entry.name),
             is_dir: entry.is_dir(),
             made: AtomicBool::new(false),
@@ -707,7 +709,7 @@ impl Plan {
         let walked = if entry.is_dir() {
             self.folders.push(Folder {
                 src: real,
-                dst,
+                dst: copy,
                 parent: None,
                 depth: 0,
                 attributes: entry.attributes,
@@ -796,15 +798,12 @@ impl Plan {
 
     /// Source and copy of a file.
     fn paths(&self, file: &File) -> (PathBuf, PathBuf) {
-        match file.folder {
-            Some(folder) => {
-                let folder = &self.folders[folder];
-                (folder.src.join(&file.name), folder.dst.join(&file.name))
-            }
-            None => {
-                let item = &self.items[file.item];
-                (item.src.clone(), item.dst.clone())
-            }
+        if let Some(folder) = file.folder {
+            let folder = &self.folders[folder];
+            (folder.src.join(&file.name), folder.dst.join(&file.name))
+        } else {
+            let item = &self.items[file.item];
+            (item.src.clone(), item.dst.clone())
         }
     }
 
@@ -1114,7 +1113,10 @@ unsafe extern "system" fn on_chunk(
         let now = total.min(chunks.size).max(chunks.sent.get());
         let added = now - chunks.sent.replace(now);
         chunks.progress.bytes.fetch_add(added, Ordering::Relaxed);
-        chunks.progress.work_done.fetch_add(added, Ordering::Relaxed);
+        chunks
+            .progress
+            .work_done
+            .fetch_add(added, Ordering::Relaxed);
     }
     COPYFILE2_PROGRESS_CONTINUE
 }
@@ -1237,7 +1239,7 @@ mod tests {
                 let meta = fs::metadata(&path).unwrap();
                 let rel = path.strip_prefix(root).unwrap().to_path_buf();
                 let body = if meta.is_dir() {
-                    pending.push(path.clone());
+                    pending.push(path);
                     None
                 } else {
                     Some(fs::read(&path).unwrap())
@@ -1252,7 +1254,7 @@ mod tests {
     #[test]
     fn a_tree_is_copied_with_its_bytes_names_and_times() {
         let sb = Scratch::new("tree");
-        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_500_000_000);
+        let old = SystemTime::UNIX_EPOCH + Duration::from_hours(416_666);
         let mut bytes = 0u64;
         for d in 0..20u64 {
             for f in 0..10u64 {
@@ -1267,7 +1269,10 @@ mod tests {
         sb.file(r"tree\big.bin", &big);
         // Folders last: adding their contents changed their times.
         for d in 0..20 {
-            set_written(&sb.src(&format!(r"tree\d{d:02}")), old + Duration::from_secs(d));
+            set_written(
+                &sb.src(&format!(r"tree\d{d:02}")),
+                old + Duration::from_secs(d),
+            );
         }
         set_written(&sb.src("tree"), old);
 
@@ -1288,7 +1293,11 @@ mod tests {
             "the top folder's time too"
         );
         assert_eq!(progress.bytes.load(Ordering::Relaxed), bytes);
-        assert_eq!(progress.done.load(Ordering::Relaxed), 222, "files and folders");
+        assert_eq!(
+            progress.done.load(Ordering::Relaxed),
+            222,
+            "files and folders"
+        );
         assert_eq!(
             progress.work_done.load(Ordering::Relaxed),
             progress.work_total.load(Ordering::Relaxed)
@@ -1487,7 +1496,9 @@ mod tests {
         );
         assert_eq!(result.map_err(|e| e.to_string()), Ok(OpOutcome::Done));
         assert_eq!(
-            fs::read_dir(engine_dest.join(r"bench\d099")).unwrap().count(),
+            fs::read_dir(engine_dest.join(r"bench\d099"))
+                .unwrap()
+                .count(),
             100
         );
         if copied.made.len() == 1 {

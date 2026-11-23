@@ -165,6 +165,18 @@ pub(crate) static COMMANDS: &[Command] = &[
         crate::workspace::ToggleSidebar
     ),
     command!(
+        "focus_next_region",
+        WORKSPACE,
+        ["f6"],
+        crate::workspace::sidebar_keys::FocusNextRegion
+    ),
+    command!(
+        "focus_prev_region",
+        WORKSPACE,
+        ["shift-f6"],
+        crate::workspace::sidebar_keys::FocusPrevRegion
+    ),
+    command!(
         "open_workspaces",
         WORKSPACE,
         [],

@@ -9557,6 +9557,22 @@ cmd.toggle_sidebar:
   es: Contraer o expandir la barra lateral
   pt-BR: Recolher ou expandir a barra lateral
   ja: サイドバーの折りたたみ / 展開
+cmd.focus_next_region:
+  en: Move to the next part of the window
+  zh-TW: 移到視窗的下一個區域
+  zh-CN: 移到窗口的下一个区域
+  de: Zum nächsten Fensterbereich wechseln
+  es: Ir a la siguiente parte de la ventana
+  pt-BR: Ir para a próxima parte da janela
+  ja: ウィンドウの次の領域へ移動
+cmd.focus_prev_region:
+  en: Move to the previous part of the window
+  zh-TW: 移到視窗的上一個區域
+  zh-CN: 移到窗口的上一个区域
+  de: Zum vorherigen Fensterbereich wechseln
+  es: Ir a la parte anterior de la ventana
+  pt-BR: Ir para a parte anterior da janela
+  ja: ウィンドウの前の領域へ移動
 cmd.open_workspaces:
   en: Workspaces
   zh-TW: 工作區

@@ -389,6 +389,13 @@ pub(crate) enum AppEvent {
     ShellMenu(menu::ShellMenuEvent),
 }
 
+/// A text box of this pane the keyboard is in (F6, `workspace_sidebar_keys.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypingIn {
+    PathBar,
+    Search,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ViewMode {
@@ -3734,6 +3741,22 @@ impl Explorer {
 
     /// Click elsewhere (empty title bar, sidebar): end path editing without navigating, and release
     /// filter box focus back to the list, same as clicking the content. The filter text stays.
+    /// The path bar or the search box, when the keyboard is in one of them.
+    pub(crate) fn typing_in(&self, window: &Window, cx: &App) -> Option<TypingIn> {
+        if self.editing_path && self.path_input.read(cx).focus_handle(cx).is_focused(window) {
+            Some(TypingIn::PathBar)
+        } else if self
+            .filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            Some(TypingIn::Search)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn cancel_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing_path {
             self.stop_edit_path(window, cx);

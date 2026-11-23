@@ -17,9 +17,11 @@
 
 use std::cell::{Cell, RefCell};
 
-use gpui::accesskit::{Live, Node, SortDirection};
+use std::rc::Rc;
+
+use gpui::accesskit::{Action, Live, Node, SortDirection};
 use gpui::{
-    IntoElement, Role, SharedString, StatefulInteractiveElement, Styled as _, Toggled, Window,
+    App, IntoElement, Role, SharedString, StatefulInteractiveElement, Styled as _, Toggled, Window,
     canvas,
 };
 
@@ -280,6 +282,26 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
         } else {
             this
         }
+    }
+
+    /// Runs `act` when a screen reader asks to click this element (Enter on it, UIA Invoke, or
+    /// Select on a tree item). Without it GPUI clicks where the element is drawn, which misses an
+    /// element scrolled out of its area: a sidebar row out of sight couldn't be opened (#322).
+    #[must_use]
+    fn a11y_on_click(self, act: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_a11y_action(Action::Click, move |_, window, cx| act(window, cx))
+    }
+
+    /// Runs `set` with the state asked for when a screen reader expands or collapses this
+    /// element (the element reports the state with `aria_expanded`).
+    #[must_use]
+    fn a11y_on_expand(self, set: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+        let set = Rc::new(set);
+        let collapse = Rc::clone(&set);
+        self.on_a11y_action(Action::Expand, move |_, window, cx| set(true, window, cx))
+            .on_a11y_action(Action::Collapse, move |_, window, cx| {
+                collapse(false, window, cx);
+            })
     }
 
     /// A column header, with the sort direction when the list is sorted by it.

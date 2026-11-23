@@ -25,6 +25,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::pindrop::{self, PinArea, PinDrops as _};
+use super::sidebar_keys::{Expand, NavRow};
 use super::tabdrag::PlaceRow;
 use super::{DraggedTab, Tab, Workspace};
 use crate::a11y::A11yExt as _;
@@ -35,6 +36,7 @@ use crate::shell::{KnownFolder, Place, PlaceKind};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
+use std::rc::Rc;
 
 /// One tree indent level.
 fn tree_indent() -> gpui::Pixels {
@@ -2327,6 +2329,9 @@ impl Workspace {
     )]
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         self.snap_tile_rows();
+        if let Some(row) = self.sidebar_ui.keys.start_frame() {
+            self.reveal_sidebar_row(row);
+        }
         let current = self.sidebar_here(cx);
         let places = self.active_view().read(cx).places.clone();
         let (this_pc_collapsed, this_pc_hidden, network_collapsed) = {
@@ -2408,9 +2413,21 @@ impl Workspace {
         )
         .relative()
         .when(scrolled, |d| d.child(scroll_shadow()));
+        let keys_here = self.sidebar_ui.keys.focused.get();
         let sidebar = div()
             .id("sidebar")
             .a11y(gpui::Role::Tree, t!("a11y.sidebar"))
+            .key_context("Sidebar")
+            // Only while the keyboard is here (F6): a click in the sidebar leaves it in the list.
+            .when(keys_here, |d| d.track_focus(&self.sidebar_focus))
+            .on_action(cx.listener(Self::sidebar_up))
+            .on_action(cx.listener(Self::sidebar_down))
+            .on_action(cx.listener(Self::sidebar_first))
+            .on_action(cx.listener(Self::sidebar_last))
+            .on_action(cx.listener(Self::sidebar_in))
+            .on_action(cx.listener(Self::sidebar_out))
+            .on_action(cx.listener(Self::sidebar_open))
+            .on_action(cx.listener(Self::sidebar_leave))
             .relative()
             .children(self.pin_out_watch(cx))
             .flex()
@@ -2802,7 +2819,7 @@ impl Workspace {
                 here,
             }),
         };
-        div()
+        let tile = div()
             .id(SharedString::from(format!("tile-{}", path.display())))
             .a11y_lazy(gpui::Role::TreeItem, || label.clone())
             .debug_selector(move || format!("tile {label}"))
@@ -2878,7 +2895,22 @@ impl Workspace {
                 d.tooltip(tooltip_text(
                     t!("sidebar.tile_tooltip", path = path.display()).to_string(),
                 ))
-            })
+            });
+        let open = path.to_path_buf();
+        self.nav_row(
+            tile,
+            SharedString::from(format!("tile-{}", path.display())),
+            here,
+            move || NavRow {
+                depth: 1,
+                expanded: None,
+                open: Rc::new(move |this, window, cx| {
+                    this.open_clicked(open.clone(), gpui::Modifiers::default(), window, cx);
+                }),
+                expand: None,
+            },
+            cx,
+        )
     }
 
     fn render_device(
@@ -2967,8 +2999,7 @@ impl Workspace {
         // A drive: what the number on the right is, as File Explorer's navigation pane tells.
         let space_tip = space.as_ref().map(|s| s.bytes);
         let indent = tree_indent() * depth as f32;
-        out.push(
-            div()
+        let row = div()
                 .id(SharedString::from(format!(
                     "tree-{depth}-{}",
                     path.display()
@@ -3042,9 +3073,34 @@ impl Workspace {
                         );
                         cx.new(|_| Tooltip(text.into_owned().into())).into()
                     })
-                })
-                .into_any_element(),
+                });
+        let key = SharedString::from(format!(
+            "{}tree-{depth}-{}",
+            if favorite { "f" } else { "" },
+            path.display()
+        ));
+        let (open, at) = (path.to_path_buf(), path.to_path_buf());
+        let row = self.nav_row(
+            row,
+            key,
+            here,
+            move || NavRow {
+                depth: depth + 1,
+                expanded: (!leaf).then_some(expanded),
+                open: Rc::new(move |this, window, cx| {
+                    this.open_clicked(open.clone(), gpui::Modifiers::default(), window, cx);
+                }),
+                expand: (!leaf).then(|| -> Expand {
+                    Rc::new(move |this, want, cx| {
+                        if this.expanded.contains(&at) != want {
+                            this.toggle_expand(at.clone(), cx);
+                        }
+                    })
+                }),
+            },
+            cx,
         );
+        out.push(row.into_any_element());
         if !expanded {
             return;
         }
@@ -3322,7 +3378,7 @@ impl Workspace {
                 .into_any_element(),
             None => glyph.with_transformation(turn(1.)).into_any_element(),
         };
-        div()
+        let header = div()
             .id(id)
             .debug_selector(move || id.to_owned())
             .a11y_button(title.clone())
@@ -3379,7 +3435,23 @@ impl Workspace {
                         this.open_sidebar_menu(e.position, section_menu(section), cx);
                     }),
                 )
-            })
+            });
+        self.nav_row(
+            header,
+            SharedString::from(format!("section-{id}")),
+            false,
+            move || NavRow {
+                depth: 0,
+                expanded: Some(!collapsed),
+                open: Rc::new(move |this, _, cx| this.toggle_section(section, cx)),
+                expand: Some(Rc::new(move |this, want, cx| {
+                    if want == collapsed {
+                        this.toggle_section(section, cx);
+                    }
+                })),
+            },
+            cx,
+        )
     }
 
     /// Hides a section of the sidebar or shows it again (#323). Its room goes to the tabs below.

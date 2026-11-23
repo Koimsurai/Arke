@@ -77,6 +77,8 @@ pub(super) struct SidebarUi {
     /// A cue drawn in the sidebar is still playing: `Workspace::render` asks for the next frame
     /// (the sidebar's drawing code has no `Window`; see `Workspace::cue_progress`).
     pub(super) frame_wanted: std::cell::Cell<bool>,
+    /// The keyboard in the sidebar (`sidebar_keys`).
+    pub(super) keys: super::sidebar_keys::SidebarKeys,
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;

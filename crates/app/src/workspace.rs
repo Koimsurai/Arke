@@ -61,6 +61,8 @@ mod shelf_view;
 mod shortcuts;
 #[path = "workspace_sidebar.rs"]
 mod sidebar;
+#[path = "workspace_sidebar_keys.rs"]
+pub(crate) mod sidebar_keys;
 #[path = "workspace_tabdrag.rs"]
 mod tabdrag;
 #[path = "workspace_tabghost.rs"]
@@ -151,7 +153,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-s", ToggleSyncBrowsing, ctx),
         KeyBinding::new("ctrl-shift-d", CompareFolders, ctx),
         KeyBinding::new("ctrl-b", ToggleSidebar, ctx),
+        KeyBinding::new("f6", sidebar_keys::FocusNextRegion, ctx),
+        KeyBinding::new("shift-f6", sidebar_keys::FocusPrevRegion, ctx),
     ]);
+    sidebar_keys::bind_keys(cx);
     // The folder keys also work on the pages that cover a tab (Home, Settings, the Recycle Bin,
     // What's new), which step aside for the folder under them (#77).
     for page in ["HomePage", "SettingsPage", "RecycleBin", "WhatsNewPage"] {
@@ -422,6 +427,8 @@ pub(crate) struct Workspace {
     /// A close is pending (the pointer left the open sidebar).
     peek_closing: bool,
     sidebar_ui: rail::SidebarUi,
+    /// The sidebar has the keyboard (F6, `sidebar_keys`).
+    sidebar_focus: gpui::FocusHandle,
     /// Repaint when the shelf changes (any window may change it).
     _shelf: Subscription,
     last_viewport_width: gpui::Pixels,
@@ -773,6 +780,7 @@ impl Workspace {
             rail_hover: 0,
             peek_closing: false,
             sidebar_ui: rail::SidebarUi::default(),
+            sidebar_focus: cx.focus_handle(),
             _shelf: shelf,
             last_viewport_width: crate::theme::scaled_px(1200.),
             window_title: String::new(),
@@ -2790,6 +2798,10 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::frame_probe::frame_started();
         crate::a11y::sync(window);
+        self.sidebar_ui
+            .keys
+            .focused
+            .set(self.sidebar_focus.is_focused(window));
         // Only the first frame times the start.
         let start_clock = std::mem::take(&mut self.start_clock);
         self.last_viewport_width = window.viewport_size().width;
@@ -2886,6 +2898,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_window))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::focus_next_region))
+            .on_action(cx.listener(Self::focus_prev_region))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
                 this.peek_pointer_moved(e, cx);
             }))

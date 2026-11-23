@@ -9241,6 +9241,22 @@ uninstall.step_keep_settings:
   es: Su configuración se conserva en %{path}
   pt-BR: Suas configurações permanecem em %{path}
   ja: 設定は %{path} に残ります
+uninstall.step_keep_for_retry:
+  en: "Keep %{path}: it holds what folders are handed back with"
+  zh-TW: "保留 %{path}：還原資料夾關聯需要裡面的備份"
+  zh-CN: "保留 %{path}：还原文件夹关联需要里面的备份"
+  de: "%{path} bleibt: Darin liegt, womit Ordner an den Explorer zurückgehen"
+  es: "Se conserva %{path}: contiene lo necesario para devolver las carpetas al Explorador"
+  pt-BR: "%{path} é mantida: contém o necessário para devolver as pastas ao Explorador"
+  ja: "%{path} は残します: フォルダーをエクスプローラーに戻すためのバックアップがあります"
+uninstall.kept_for_retry:
+  en: "folders weren't handed back yet; run the removal again to finish"
+  zh-TW: "資料夾還沒還給檔案總管，再執行一次移除即可完成"
+  zh-CN: "文件夹还没还给资源管理器，再执行一次移除即可完成"
+  de: "Ordner gehen noch nicht an den Explorer zurück; zum Abschließen das Entfernen erneut ausführen"
+  es: "las carpetas aún no volvieron al Explorador; ejecute la eliminación otra vez para terminar"
+  pt-BR: "as pastas ainda não voltaram ao Explorador; execute a remoção de novo para concluir"
+  ja: "フォルダーはまだエクスプローラーに戻っていません。もう一度削除を実行すると完了します"
 uninstall.step_exe:
   en: "The program (%{path})"
   zh-TW: "程式本身（%{path}）"

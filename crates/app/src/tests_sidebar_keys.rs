@@ -184,3 +184,50 @@ fn a_click_in_the_sidebar_leaves_the_keyboard_in_the_list(cx: &mut TestAppContex
         assert_eq!(region(&ws, cx), "list");
     }
 }
+
+/// The path bar's folders have the same menu as the sidebar's: a right-click on `C:` shows the
+/// drive's (Disk Cleanup, Properties), on `work` the folder's; the empty end of the bar keeps the
+/// bar's own menu (#257).
+#[gpui::test]
+fn the_path_bar_folders_have_the_sidebar_menu(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let labels = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, _| ws.history_menu_labels_for_test())
+            .unwrap_or_default()
+    };
+    let right_click = |cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>| {
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+        refresh(cx);
+    };
+    let drive = cx
+        .debug_bounds("crumb-0")
+        .expect("C: in the path bar")
+        .center();
+    right_click(cx, drive);
+    let menu = labels(cx);
+    assert!(
+        menu.contains(&t!("menu.disk_cleanup").into_owned()),
+        "{menu:?}"
+    );
+    assert!(
+        menu.contains(&t!("menu.properties").into_owned()),
+        "{menu:?}"
+    );
+    key(cx, "escape");
+
+    let folder = cx
+        .debug_bounds("crumb-1")
+        .expect("work in the path bar")
+        .center();
+    right_click(cx, folder);
+    let menu = labels(cx);
+    assert!(
+        menu.contains(&t!("sidebar.open_in_new_tab").into_owned()),
+        "{menu:?}"
+    );
+    assert!(
+        !menu.contains(&t!("menu.disk_cleanup").into_owned()),
+        "{menu:?}"
+    );
+}

@@ -472,6 +472,12 @@ pub(crate) enum ExplorerEvent {
     /// F2 with nothing to rename in the list while a drive or network place is open: the
     /// workspace renames that place if it can be renamed.
     RenamePlace(PathBuf),
+    /// Right-click on a folder of the path bar: the workspace shows the folder's menu, the same
+    /// one as in the sidebar (a drive's has its rows and Properties too) (#257).
+    FolderMenu {
+        path: PathBuf,
+        position: gpui::Point<Pixels>,
+    },
 }
 
 /// Where this `Explorer` sits in its tab. Set by `Workspace` before every render.

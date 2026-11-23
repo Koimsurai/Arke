@@ -1234,6 +1234,20 @@ fn crumb_piece(
         })
         .child(label)
         .children(spring_bar)
+        // The folder's own menu, not the bar's (copy address, edit, ...) (#257).
+        .on_mouse_down(
+            gpui::MouseButton::Right,
+            cx.listener({
+                let target = target.clone();
+                move |_, e: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(super::ExplorerEvent::FolderMenu {
+                        path: target.clone(),
+                        position: e.position,
+                    });
+                }
+            }),
+        )
         .on_click(cx.listener({
             let target = target.clone();
             move |this, e: &ClickEvent, _, cx| {

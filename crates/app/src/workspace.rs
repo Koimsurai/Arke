@@ -1349,6 +1349,12 @@ impl Workspace {
             }
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
             ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
+            ExplorerEvent::FolderMenu { path, position } => {
+                // A drive or share root is the place itself, with its own rows.
+                let depth = usize::from(path.parent().is_some());
+                let items = self.folder_menu(path, sidebar::MenuFor::Tree { depth }, cx);
+                self.open_sidebar_menu(*position, items, cx);
+            }
             ExplorerEvent::ToggleCompare => self.toggle_compare(tab_ix, cx),
             ExplorerEvent::SelectDifferences => self.select_differences(tab_ix, cx),
             ExplorerEvent::RemoteChanged(path) => {

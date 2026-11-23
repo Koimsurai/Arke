@@ -1397,17 +1397,29 @@ impl Workspace {
         let mut pinned_rows = Vec::new();
         let mut pinned_keys: Vec<PlaceRow> = Vec::new();
         let listed: &[PathBuf] = if list_hidden { &[] } else { &pinned };
+        // Named and drawn as on a tile: a drive is "Local Disk (C:)" with its icon, not "C:\"
+        // with a folder's (#371).
+        let places = self.active_view().read(cx).places.clone();
+        let place_names = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .place_names
+            .clone();
         for (ix, path) in listed.iter().enumerate() {
             let row_at = pinned_rows.len();
             let label = own_names
                 .get(&crate::place_names::key(path))
                 .cloned()
-                .unwrap_or_else(|| display_name(path));
+                .unwrap_or_else(|| favorite_default(&place_names, &places, path));
+            let icon = places
+                .iter()
+                .find(|p| p.path == *path)
+                .map(|p| place_icon(p.kind));
             self.render_tree(
                 path,
                 label.clone(),
                 None,
-                None,
+                icon,
                 0,
                 current,
                 true,

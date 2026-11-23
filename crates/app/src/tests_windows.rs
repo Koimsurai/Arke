@@ -154,6 +154,7 @@ fn active_tab(window: gpui::WindowHandle<Workspace>, cx: &mut TestAppContext) ->
 fn saved_window(paths: &[&str], place: Option<WindowPlace>) -> SessionWindow {
     SessionWindow {
         session: Session {
+            workspace: None,
             tabs: paths.iter().map(|path| tab(path)).collect(),
             active: 0,
         },
@@ -612,6 +613,7 @@ fn folders_visited_before_the_file_is_read_are_written_with_it(cx: &mut TestAppC
 fn saved_window_with_pins(paths: &[&str], pinned: &[&str]) -> SessionWindow {
     SessionWindow {
         session: Session {
+            workspace: None,
             tabs: paths
                 .iter()
                 .map(|path| SessionTab {

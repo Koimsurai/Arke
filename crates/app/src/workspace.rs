@@ -836,7 +836,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.restore_tabs(session, true, window, cx);
+        let ids = self.restore_tabs(session, true, window, cx);
+        self.restore_shown_workspace(session.workspace.as_ref(), &ids, None);
         self.active = session.active.min(self.tabs.len() - 1);
         self.keep_pins_first();
         self.focus_active(window, cx);
@@ -859,6 +860,8 @@ impl Workspace {
             .map(Path::to_path_buf);
         // The folder asked for is open already: no second tab of it.
         let mut session = session.clone();
+        // The tab open now, when it stands for a tab of the session's workspace.
+        let mut kept_in_workspace = None;
         if let Some(path) = showing
             && let Some(ix) = session
                 .tabs
@@ -869,8 +872,20 @@ impl Workspace {
             if let Some(tab) = self.tabs.get_mut(self.active) {
                 tab.pinned |= saved.pinned;
             }
+            if let Some(shown) = session.workspace.as_mut() {
+                if shown.tabs.contains(&ix) {
+                    kept_in_workspace = self.tabs.get(self.active).map(|t| t.id);
+                }
+                shown.tabs.retain(|&t| t != ix);
+                for t in &mut shown.tabs {
+                    if *t > ix {
+                        *t -= 1;
+                    }
+                }
+            }
         }
-        self.restore_tabs(&session, false, window, cx);
+        let ids = self.restore_tabs(&session, false, window, cx);
+        self.restore_shown_workspace(session.workspace.as_ref(), &ids, kept_in_workspace);
         self.keep_pins_first();
         self.active = self
             .tabs
@@ -881,18 +896,44 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The workspace name the last session showed comes back with the tabs that came from it
+    /// (#269). `ids` are the restored tabs, by session index; `kept` a tab open before that
+    /// stands for one of them.
+    fn restore_shown_workspace(
+        &mut self,
+        shown: Option<&crate::settings::SessionWorkspace>,
+        ids: &[Option<u64>],
+        kept: Option<u64>,
+    ) {
+        let Some(shown) = shown else {
+            return;
+        };
+        let tabs: Vec<u64> = shown
+            .tabs
+            .iter()
+            .filter_map(|&ix| ids.get(ix).copied().flatten())
+            .chain(kept)
+            .collect();
+        if !tabs.is_empty() {
+            self.saved_shown = Some(saved::ShownWorkspace::new(shown.name.clone(), tabs));
+        }
+    }
+
     /// Opens `session`'s tabs: from the first tab on when `reuse_first` (it is open already on
-    /// the session's first folder), else as new tabs before the ones open now.
+    /// the session's first folder), else as new tabs before the ones open now. Returns the id of
+    /// the tab made for each of the session's tabs.
     fn restore_tabs(
         &mut self,
         session: &crate::settings::Session,
         reuse_first: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<Option<u64>> {
         let mut next = 0;
+        let mut ids = Vec::with_capacity(session.tabs.len());
         for (ix, saved) in session.tabs.iter().enumerate() {
             let Some(first) = saved.panes.first() else {
+                ids.push(None);
                 continue;
             };
             let tab_ix = if ix == 0 && reuse_first {
@@ -913,40 +954,53 @@ impl Workspace {
                 tab.pinned = saved.pinned;
                 tab.synced = saved.synced && tab.is_split();
             }
+            ids.push(self.tabs.get(tab_ix).map(|t| t.id));
             if saved.home {
                 // Home over its folder, as it was left; back shows the folder.
                 self.active = tab_ix;
                 self.open_home_as(false, false, window, cx);
             }
         }
+        ids
     }
 
     /// Snapshot of this window's tabs for the last session. Panes without a path are skipped.
     pub(crate) fn session_snapshot(&self, cx: &App) -> crate::settings::Session {
         let home_tab = self.home_page.as_ref().and_then(|p| self.tab_of(&p.owner));
-        let tabs: Vec<crate::settings::SessionTab> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, tab)| {
-                let panes: Vec<PathBuf> = tab
-                    .panes
-                    .iter()
-                    .filter_map(|p| p.view.read(cx).display_path().map(Path::to_path_buf))
-                    .collect();
-                (!panes.is_empty()).then(|| crate::settings::SessionTab {
-                    active_pane: tab.active_pane.min(panes.len() - 1),
-                    ratio: tab.ratio,
-                    pinned: tab.pinned,
-                    synced: tab.synced && panes.len() > 1,
-                    home: home_tab == Some(ix),
-                    panes,
-                })
-            })
-            .collect();
+        let shown = self.saved_shown.as_ref();
+        let mut tabs: Vec<crate::settings::SessionTab> = Vec::with_capacity(self.tabs.len());
+        let mut shown_tabs = Vec::new();
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            let panes: Vec<PathBuf> = tab
+                .panes
+                .iter()
+                .filter_map(|p| p.view.read(cx).display_path().map(Path::to_path_buf))
+                .collect();
+            if panes.is_empty() {
+                continue;
+            }
+            if shown.is_some_and(|s| s.has(tab.id)) {
+                shown_tabs.push(tabs.len());
+            }
+            tabs.push(crate::settings::SessionTab {
+                active_pane: tab.active_pane.min(panes.len() - 1),
+                ratio: tab.ratio,
+                pinned: tab.pinned,
+                synced: tab.synced && panes.len() > 1,
+                home: home_tab == Some(ix),
+                panes,
+            });
+        }
+        let workspace = shown
+            .filter(|_| !shown_tabs.is_empty())
+            .map(|s| crate::settings::SessionWorkspace {
+                name: s.name().to_owned(),
+                tabs: shown_tabs,
+            });
         crate::settings::Session {
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,
+            workspace,
         }
     }
 

@@ -430,6 +430,83 @@ fn the_tabs_show_the_workspace_name(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("tabs-workspace").is_none());
 }
 
+/// The workspace name comes back with the last session (#269): only on the tabs that came from
+/// it, and the next snapshot carries it again.
+#[gpui::test]
+fn the_workspace_name_comes_back_with_the_session(cx: &mut TestAppContext) {
+    use crate::settings::{Session, SessionTab, SessionWorkspace};
+    let fs = folders(&[r"C:\p", r"C:\q", r"C:\r"]);
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    let tab = |path: &str| SessionTab {
+        panes: vec![p(path)],
+        active_pane: 0,
+        ratio: 0.5,
+        pinned: false,
+        synced: false,
+        home: false,
+    };
+    cx.update(|cx| {
+        WorkspaceStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |w| {
+                    let _ = w.save("Work", vec![tab(r"C:\p"), tab(r"C:\r")], 0);
+                },
+                cx,
+            );
+        });
+    });
+    let session = Session {
+        tabs: vec![tab(r"C:\p"), tab(r"C:\q"), tab(r"C:\r")],
+        active: 0,
+        workspace: Some(SessionWorkspace {
+            name: "Work".to_owned(),
+            tabs: vec![0, 2],
+        }),
+    };
+    let services = Services {
+        fs,
+        shell: Arc::new(FakeShell::default()),
+        remotes: crate::remote_shell::test_remotes(),
+    };
+    let (ws, cx) = cx.add_window_view(move |window, cx| {
+        Workspace::new(
+            services,
+            p(r"C:\p"),
+            false,
+            Some(session),
+            None,
+            Instant::now(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_views().count(), 3);
+        assert_eq!(ws.shown_workspace_for_test(cx).as_deref(), Some("Work"));
+        assert_eq!(
+            ws.session_snapshot(cx).workspace,
+            Some(SessionWorkspace {
+                name: "Work".to_owned(),
+                tabs: vec![0, 2],
+            }),
+            "saved again with the same tabs"
+        );
+    });
+    // Its two tabs closed: the other tab doesn't keep the name.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.close_tab(2, window, cx);
+        ws.close_tab(0, window, cx);
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.shown_workspace_for_test(cx), None);
+        assert_eq!(ws.session_snapshot(cx).workspace, None);
+    });
+}
+
 #[gpui::test]
 fn synchronized_browsing_repeats_moves_in_the_other_pane(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
@@ -2852,6 +2929,7 @@ fn restored_pinned_tabs_are_locked(cx: &mut TestAppContext) {
         home: false,
     };
     let session = Session {
+        workspace: None,
         tabs: vec![tab(r"C:\p", true), tab(r"C:\q", false)],
         active: 0,
     };

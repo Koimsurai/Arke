@@ -270,6 +270,17 @@ const fn half() -> f32 {
 pub(crate) struct Session {
     pub(crate) tabs: Vec<SessionTab>,
     pub(crate) active: usize,
+    /// The saved workspace the window showed (#269), so its name comes back with the tabs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workspace: Option<SessionWorkspace>,
+}
+
+/// The saved workspace a window showed: its name and which of the session's tabs came from it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SessionWorkspace {
+    pub(crate) name: String,
+    /// Indices into [`Session::tabs`].
+    pub(crate) tabs: Vec<usize>,
 }
 
 /// One window of the last session: its tabs and where it was.
@@ -1541,7 +1552,11 @@ impl Settings {
                 });
             }
         }
-        Session { tabs, active: 0 }
+        Session {
+            tabs,
+            active: 0,
+            workspace: None,
+        }
     }
 
     /// Network locations global search actually indexes: user-added ones plus, when auto is on, network
@@ -1762,6 +1777,7 @@ mod tests {
             session: Session {
                 tabs: vec![tab(path)],
                 active: 0,
+                workspace: None,
             },
             place: None,
         };

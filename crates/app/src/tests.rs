@@ -2141,6 +2141,7 @@ fn restores_last_session_tabs(cx: &mut TestAppContext) {
         crate::workspace::bind_keys(cx);
     });
     let session = Session {
+        workspace: None,
         tabs: vec![
             SessionTab {
                 panes: vec![PathBuf::from(r"C:\t")],
@@ -2222,6 +2223,7 @@ fn restores_home_from_the_last_session(cx: &mut TestAppContext) {
         crate::workspace::bind_keys(cx);
     });
     let session = Session {
+        workspace: None,
         tabs: vec![SessionTab {
             panes: vec![PathBuf::from(r"C:\t")],
             active_pane: 0,
@@ -8838,6 +8840,7 @@ fn the_cold_start_is_timed_on_the_tab_shown(cx: &mut TestAppContext) {
     fs.insert_many(r"C:\a", 3);
     fs.insert_many(r"C:\b", 4);
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", false), saved_tab(r"C:\b", false)],
         active: 1,
     };
@@ -8865,6 +8868,7 @@ fn a_folder_under_home_is_not_a_cold_start(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_many(r"C:\a", 3);
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", true)],
         active: 0,
     };
@@ -8885,6 +8889,7 @@ fn a_later_folder_is_not_the_cold_starts_listing(cx: &mut TestAppContext) {
     fs.insert_many(r"C:\b", 4);
     fs.hang(r"C:\a");
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", false)],
         active: 0,
     };
@@ -8914,6 +8919,7 @@ fn a_window_opened_on_request_is_timed_from_the_request(cx: &mut TestAppContext)
     let fs = FakeFs::new();
     fs.insert_many(r"C:\a", 3);
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", false)],
         active: 0,
     };

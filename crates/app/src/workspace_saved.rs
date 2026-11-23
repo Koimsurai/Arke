@@ -381,6 +381,22 @@ pub(super) struct ShownWorkspace {
     tabs: Vec<u64>,
 }
 
+impl ShownWorkspace {
+    /// The workspace `name` shown by the tabs `tabs` (ids), as the last session left it.
+    pub(super) const fn new(name: String, tabs: Vec<u64>) -> Self {
+        Self { name, tabs }
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether the tab `id` came from the workspace.
+    pub(super) fn has(&self, id: u64) -> bool {
+        self.tabs.contains(&id)
+    }
+}
+
 impl Workspace {
     /// The name of the saved workspace this window shows, while one of its tabs is open and it
     /// is still saved.

@@ -1075,8 +1075,13 @@ impl PlatformWindow for WindowsWindow {
         self.state.frames.wake();
     }
 
-    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
-        self.state.callbacks.input.set(Some(callback));
+    fn on_input(&self, mut callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
+        // Arke: noted while it runs, so a hit test arriving meanwhile doesn't ask the app (see
+        // `begin_modal_drag`).
+        self.state.callbacks.input.set(Some(Box::new(move |input| {
+            let _dispatching = DispatchingInput::enter();
+            callback(input)
+        })));
     }
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
@@ -1770,8 +1775,34 @@ impl Drop for ModalDragGuard {
     }
 }
 
+thread_local! {
+    /// Arke: how many input callbacks are running on this thread (nested ones included).
+    static DISPATCHING_INPUT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Arke: marks an input callback as running. The app is borrowed for as long as one runs, so a
+/// `WM_NCHITTEST` that something inside it lets through (a message loop run by a handler, such as
+/// Windows' drag loop) can't ask the app where the window controls are: that only failed and
+/// logged a "RefCell already borrowed" error on every mouse move (#338, #343).
+struct DispatchingInput;
+
+impl DispatchingInput {
+    fn enter() -> Self {
+        DISPATCHING_INPUT.with(|n| n.set(n.get() + 1));
+        Self
+    }
+}
+
+impl Drop for DispatchingInput {
+    fn drop(&mut self) {
+        DISPATCHING_INPUT.with(|n| n.set(n.get().saturating_sub(1)));
+    }
+}
+
+/// Whether asking the app for a hit test now could only fail: in Windows' modal drag loop, or
+/// inside an input callback.
 pub(crate) fn in_modal_drag() -> bool {
-    IN_MODAL_DRAG.with(Cell::get)
+    IN_MODAL_DRAG.with(Cell::get) || DISPATCHING_INPUT.with(Cell::get) > 0
 }
 
 pub(crate) fn window_from_hwnd(hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {

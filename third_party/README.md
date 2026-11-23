@@ -106,8 +106,9 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
 - `src/direct_write.rs` `get_name`: a font with no name in the UI locale or in en-us (a Chinese
   font named only in zh-TW, on a zh-CN system) takes its first name instead of failing, so it is
   no longer left out of the font list with a "No localised string" error per font. (#343)
-- `src/window.rs` `begin_modal_drag` and `src/events.rs` `handle_hit_test_msg`: while the app runs
-  Windows' modal drag loop (`SHDoDragDrop`, started from inside event dispatch, so the app is
-  borrowed), `WM_NCHITTEST` doesn't ask the app where the window controls are. Asking could only
-  fail, and logged a "RefCell already borrowed" error on every mouse move over the window. Arke's
-  `crates/app/src/win_fileops.rs` `drag_out` holds the guard. (#338, #343)
+- `src/window.rs` `begin_modal_drag`, `DispatchingInput` and `on_input`, and `src/events.rs`
+  `handle_hit_test_msg`: while an input callback runs (the app is borrowed then) or while Arke runs
+  Windows' modal drag loop, `WM_NCHITTEST` doesn't ask the app where the window controls are.
+  Asking could only fail: during a drag out of Arke it logged a "RefCell already borrowed" error on
+  every mouse move. Arke's `crates/app/src/win_fileops.rs` `drag_out` holds the drag guard; the
+  input count is kept by the wrapper `on_input` puts around the callback. (#338, #343)

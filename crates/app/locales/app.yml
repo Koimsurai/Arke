@@ -2380,6 +2380,70 @@ update.bad_signature:
   es: la descarga no está firmada por Arke, así que no se instaló
   pt-BR: o download não está assinado pelo Arke, por isso não foi instalado
   ja: ダウンロードしたファイルに Arke の署名がないため、インストールしませんでした
+update.route:
+  en: Download route
+  zh-TW: "下載線路"
+  zh-CN: 下载线路
+  de: Download-Weg
+  es: Ruta de descarga
+  pt-BR: Rota de download
+  ja: ダウンロード経路
+update.route_desc:
+  en: Only for updates. Empty uses GitHub directly
+  zh-TW: "只用在更新。留空就直接連 GitHub"
+  zh-CN: 只用于更新。留空就直接连接 GitHub
+  de: Nur für Updates. Leer verbindet direkt mit GitHub
+  es: Solo para actualizaciones. Vacío usa GitHub directamente
+  pt-BR: Só para atualizações. Vazio usa o GitHub diretamente
+  ja: 更新にだけ使います。空欄なら GitHub に直接接続します
+update.route_placeholder:
+  en: "https://mirror.example.com/ or 127.0.0.1:7890"
+  zh-TW: "https://mirror.example.com/ 或 127.0.0.1:7890"
+  zh-CN: "https://mirror.example.com/ 或 127.0.0.1:7890"
+  de: "https://mirror.example.com/ oder 127.0.0.1:7890"
+  es: "https://mirror.example.com/ o 127.0.0.1:7890"
+  pt-BR: "https://mirror.example.com/ ou 127.0.0.1:7890"
+  ja: "https://mirror.example.com/ または 127.0.0.1:7890"
+update.route_not_https:
+  en: "Use an https:// address, or a proxy as host:port"
+  zh-TW: "請用 https:// 開頭的網址，或「主機:埠」格式的代理"
+  zh-CN: "请使用 https:// 开头的网址，或“主机:端口”格式的代理"
+  de: "Eine https://-Adresse oder einen Proxy als Host:Port angeben"
+  es: "Usa una dirección https:// o un proxy como host:puerto"
+  pt-BR: "Use um endereço https:// ou um proxy como host:porta"
+  ja: "https:// で始まるアドレスか、「ホスト:ポート」形式のプロキシを入力してください"
+update.route_socks:
+  en: SOCKS isn't supported. Use the proxy's HTTP or mixed port
+  zh-TW: "不支援 SOCKS，請改用代理程式的 HTTP 或混合埠"
+  zh-CN: 不支持 SOCKS，请改用代理程序的 HTTP 或混合端口
+  de: SOCKS wird nicht unterstützt. Den HTTP- oder Mixed-Port des Proxys verwenden
+  es: SOCKS no es compatible. Usa el puerto HTTP o mixto del proxy
+  pt-BR: SOCKS não é compatível. Use a porta HTTP ou mista do proxy
+  ja: SOCKS には対応していません。プロキシの HTTP ポートまたは混合ポートを使ってください
+update.route_bad:
+  en: "Not an https:// address or a host:port"
+  zh-TW: "不是 https:// 網址，也不是「主機:埠」"
+  zh-CN: "不是 https:// 网址，也不是“主机:端口”"
+  de: "Weder eine https://-Adresse noch Host:Port"
+  es: "No es una dirección https:// ni un host:puerto"
+  pt-BR: "Não é um endereço https:// nem host:porta"
+  ja: "https:// のアドレスでも「ホスト:ポート」でもありません"
+update.route_used:
+  en: "Last update request went through %{host}"
+  zh-TW: "上次更新連線經由 %{host}"
+  zh-CN: "上次更新连接经由 %{host}"
+  de: "Die letzte Update-Anfrage lief über %{host}"
+  es: "La última solicitud de actualización pasó por %{host}"
+  pt-BR: "A última solicitação de atualização passou por %{host}"
+  ja: "前回の更新の接続は %{host} を経由しました"
+update.route_fell_back:
+  en: "%{host} didn't work (%{error}), so GitHub was used directly"
+  zh-TW: "%{host} 連不上（%{error}），已改直接連 GitHub"
+  zh-CN: "%{host} 连不上（%{error}），已改为直接连接 GitHub"
+  de: "%{host} hat nicht funktioniert (%{error}), daher wurde GitHub direkt verwendet"
+  es: "%{host} no funcionó (%{error}), así que se usó GitHub directamente"
+  pt-BR: "%{host} não funcionou (%{error}), então o GitHub foi usado diretamente"
+  ja: "%{host} に接続できなかったため（%{error}）、GitHub に直接接続しました"
 update.cannot_replace:
   en: "couldn't replace arke.exe (%{error}); download it from the release page instead"
   zh-TW: "無法取代 arke.exe（%{error}）；請從發行頁面手動下載"

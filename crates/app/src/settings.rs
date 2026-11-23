@@ -746,6 +746,9 @@ pub(crate) struct Settings {
     /// The update whose notice bar was closed (`Some("0.4.0")`): it doesn't come back for that
     /// version, only for a newer one.
     pub(crate) update_dismissed: Option<String>,
+    /// Download route for updates (`update_route.rs`): empty for GitHub directly, an https prefix
+    /// or an HTTP proxy `host:port`. Only update checks and downloads use it.
+    pub(crate) update_route: String,
     /// What's new (`whats_new.rs`): open it after an update, and the version it last saw (`None`
     /// before Arke 0.4 recorded it).
     pub(crate) whats_new_auto: bool,
@@ -875,6 +878,7 @@ impl Default for Settings {
             update_auto: true,
             update_checked: None,
             update_dismissed: None,
+            update_route: String::new(),
             whats_new_auto: true,
             whats_new_seen: None,
             open_with_extra: Vec::new(),

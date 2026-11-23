@@ -93,6 +93,7 @@ mod tray;
 mod uninstall;
 mod update;
 mod update_quiet;
+mod update_route;
 mod update_sig;
 mod whats_new;
 mod win;
@@ -522,6 +523,7 @@ fn app_main(mut args: Args) {
             cx,
         );
         follow_language_setting(&store, cx);
+        follow_update_route(&store, cx);
         let remotes = remote_shell::start(&store, cx);
         let services = Services {
             fs: Arc::new(arke_remote::RoutingFs::new(
@@ -1230,6 +1232,18 @@ fn follow_jump_list(store: &gpui::Entity<settings::SettingsStore>, cx: &mut App)
 
 /// "Language" setting: switch when loaded or changed and redraw all windows (input placeholders
 /// update in new tabs only).
+/// Updates go through the download route in Settings (`update_route.rs`).
+fn follow_update_route(store: &gpui::Entity<settings::SettingsStore>, cx: &mut App) {
+    let apply = |store: &settings::SettingsStore| {
+        if store.loaded {
+            update_route::set(&store.settings.update_route);
+        }
+    };
+    apply(store.read(cx));
+    cx.observe(store, move |store, cx| apply(store.read(cx)))
+        .detach();
+}
+
 fn follow_language_setting(store: &gpui::Entity<settings::SettingsStore>, cx: &mut App) {
     let mut applied: Option<settings::Language> = None;
     cx.observe(store, move |store, cx| {

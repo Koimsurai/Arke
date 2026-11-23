@@ -473,6 +473,15 @@ nach einer neuen Version zu suchen (höchstens einmal am Tag, unter Einstellunge
 um eine herunterzuladen, wenn Sie sich für die Installation entscheiden, und um die
 Netzwerkfreigaben sowie SFTP- und WebDAV-Orte zu erreichen, die Sie selbst öffnen.
 
+Ist GitHub bei Ihnen langsam oder gesperrt, leitet Einstellungen › Info › Updates › Download-Weg
+die Suche nach Updates und ihre Downloads über einen Mirror (eine `https://`-Adresse vor der von
+GitHub) oder einen HTTP-Proxy (`Host:Port`) Ihrer Wahl. Arke bringt keinen eigenen mit und nutzt
+einen nur, wenn Sie ihn eintragen. Wer ihn betreibt, sieht Ihre IP-Adresse und welche Arke-Version
+Sie suchen oder herunterladen; sonst geht nichts darüber. Schlägt er fehl, fragt Arke GitHub direkt
+und zeigt das unter der Einstellung an. Arke installiert nur Downloads, die mit seinem eigenen
+Schlüssel signiert sind, sodass ein Mirror oder Proxy keine veränderte oder ältere Version
+unterschieben kann.
+
 ## Lizenz
 
 [AGPL-3.0](LICENSE). Hinweise zu Drittanbietern stehen in

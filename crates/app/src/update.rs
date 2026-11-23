@@ -260,7 +260,7 @@ pub(crate) fn check(channel: Channel) -> Result<Option<Release>, UpdateError> {
         return Err(UpdateError::NoSource);
     }
     let current = Version::parse(build_info::VERSION).ok_or(UpdateError::BadVersion)?;
-    let found = match crate::win_http::get_text(
+    let found = match routed_text(
         &format!("https://api.github.com/repos/{repo}/releases?per_page=30"),
         &["Accept: application/vnd.github+json"],
     ) {
@@ -269,10 +269,7 @@ pub(crate) fn check(channel: Channel) -> Result<Option<Release>, UpdateError> {
         // where many people share one (a school, an office, a café) (#183).
         Err(crate::win_http::HttpError::Status(403 | 429)) => {
             log::info!("update check: GitHub API limit reached, reading the releases feed");
-            let feed = crate::win_http::get_text(
-                &format!("https://github.com/{repo}/releases.atom"),
-                &[],
-            )?;
+            let feed = routed_text(&format!("https://github.com/{repo}/releases.atom"), &[])?;
             pick_from_feed(&feed, repo, channel, &current)
         }
         Err(err) => return Err(err.into()),
@@ -306,7 +303,7 @@ fn with_signed_notes(mut release: Release, repo: &str) -> Release {
 /// The text at `url` (release asset `asset` of `version`), once its signature (`<url>.minisig`)
 /// checks out. Blocks on the network: background thread.
 pub(crate) fn signed_text(url: &str, asset: &str, version: &str) -> Result<String, UpdateError> {
-    let text = crate::win_http::get_text(url, &[])?;
+    let text = routed_text(url, &[])?;
     let signature = signature_at(&format!("{url}.minisig"))?;
     if let Err(err) = crate::update_sig::verify(text.as_bytes(), &signature, asset, version) {
         log::warn!("{asset}: {err}");
@@ -315,9 +312,26 @@ pub(crate) fn signed_text(url: &str, asset: &str, version: &str) -> Result<Strin
     Ok(text)
 }
 
+/// GETs `url` (a GitHub address) through the update route (`update_route.rs`), or from GitHub
+/// directly when that fails.
+fn routed_text(url: &str, headers: &[&str]) -> Result<String, crate::win_http::HttpError> {
+    crate::update_route::fetch(url, |url, proxy| {
+        crate::win_http::get_text_via(url, headers, proxy)
+    })
+}
+
 /// A `.minisig` file's text; a missing one is an unsigned file.
 fn signature_at(url: &str) -> Result<String, UpdateError> {
-    match crate::win_http::get_text(url, &[]) {
+    signature_from(routed_text(url, &[]))
+}
+
+/// [`signature_at`] straight from GitHub.
+fn signature_direct(url: &str) -> Result<String, UpdateError> {
+    signature_from(crate::win_http::get_text(url, &[]))
+}
+
+fn signature_from(got: Result<String, crate::win_http::HttpError>) -> Result<String, UpdateError> {
+    match got {
         Ok(text) => Ok(text),
         Err(crate::win_http::HttpError::Status(404)) => Err(UpdateError::BadSignature),
         Err(err) => Err(err.into()),
@@ -464,27 +478,49 @@ pub(crate) fn download_to(
             let _ = std::fs::remove_file(path);
         }
     }
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&part)?;
-        crate::win_http::get_resumed(&release.exe_url, &mut file, progress)?;
-    }
-    // Nothing is installed without Arke's signature for this very file and version.
-    let signature = signature_at(&release.sig_url)?;
-    let bytes = std::fs::read(&part)?;
-    if let Err(err) =
-        crate::update_sig::verify(&bytes, &signature, &release.exe_name, &release.version)
-    {
-        log::warn!("{}: {err}", release.exe_name);
-        let _ = std::fs::remove_file(&part);
-        return Err(UpdateError::BadSignature);
-    }
+    // Through the route first; a route that hands out something else (a mirror's error page
+    // with status 200) gets one more try straight from GitHub.
+    let mut direct = false;
+    let bytes = loop {
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&part)?;
+            if direct {
+                crate::win_http::get_resumed_via(&release.exe_url, &mut file, progress, None)?;
+            } else {
+                crate::update_route::fetch(&release.exe_url, |url, proxy| {
+                    crate::win_http::get_resumed_via(url, &mut file, progress, proxy)
+                })?;
+            }
+        }
+        // Nothing is installed without Arke's signature for this very file and version.
+        let signature = if direct {
+            signature_direct(&release.sig_url)?
+        } else {
+            signature_at(&release.sig_url)?
+        };
+        let bytes = std::fs::read(&part)?;
+        match crate::update_sig::verify(&bytes, &signature, &release.exe_name, &release.version) {
+            Ok(()) => break bytes,
+            Err(err) => {
+                log::warn!("{}: {err}", release.exe_name);
+                let _ = std::fs::remove_file(&part);
+                match crate::update_route::last() {
+                    Some(crate::update_route::Used::Route(host)) if !direct => {
+                        crate::update_route::fell_back(&host, &err.to_string());
+                        direct = true;
+                    }
+                    _ => return Err(UpdateError::BadSignature),
+                }
+            }
+        }
+    };
     if let Some(sha_url) = &release.sha_url {
-        let expected = crate::win_http::get_text(sha_url, &[])?;
+        let expected = routed_text(sha_url, &[])?;
         let expected = expected
             .split_whitespace()
             .next()

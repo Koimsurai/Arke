@@ -458,6 +458,14 @@ para consultar o GitHub por uma nova versão (no máximo uma vez por dia, pode s
 Configurações › Sobre), para baixar uma quando você escolhe instalá-la e para acessar os
 compartilhamentos de rede e os locais SFTP e WebDAV que você mesmo abre.
 
+Se o GitHub estiver lento ou bloqueado onde você está, Configurações › Sobre › Atualizações › Rota de
+download envia a busca e o download de atualizações por um espelho (um endereço `https://` colocado antes
+do endereço do GitHub) ou um proxy HTTP (`host:porta`) que você escolher. O Arke não inclui nenhum e só
+usa um se você digitar. Quem o opera vê seu endereço IP e qual versão do Arke você consulta ou baixa;
+nada mais passa por ele. Se falhar, o Arke consulta o GitHub diretamente e mostra isso abaixo da
+configuração. O Arke só instala downloads assinados com a própria chave, então um espelho ou proxy não
+consegue empurrar uma versão alterada ou mais antiga.
+
 ## Licença
 
 [AGPL-3.0](LICENSE). Os avisos de terceiros estão em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), e

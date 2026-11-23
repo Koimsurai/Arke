@@ -99,6 +99,9 @@ pub(super) struct SettingsPage {
     /// Path input for adding an "Open with" app.
     pub(super) app_input: Entity<TextInput>,
     _app_input: Subscription,
+    /// About › Updates: the download route (`update_route.rs`).
+    pub(super) route_input: Entity<TextInput>,
+    _route_input: Subscription,
     /// Keyboard shortcuts: search and the key being recorded.
     pub(super) shortcuts: super::shortcuts::Page,
     pub(super) backup: Option<super::backup::BackupNote>,
@@ -326,6 +329,17 @@ impl Workspace {
         let import_sub = cx.subscribe_in(&import_input, window, Self::on_import_input);
         let app_input = cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx));
         let app_sub = cx.subscribe_in(&app_input, window, Self::on_app_input);
+        let route = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .update_route
+            .clone();
+        let route_input = cx.new(|cx| {
+            let mut input = TextInput::new(t!("update.route_placeholder").to_string(), cx);
+            input.set_text(route, cx);
+            input
+        });
+        let route_sub = cx.subscribe_in(&route_input, window, Self::on_route_input);
         let shortcuts = super::shortcuts::Page::new(window, cx);
         // List fonts in the background; there can be hundreds.
         let text_system = Arc::clone(cx.text_system());
@@ -368,6 +382,8 @@ impl Workspace {
             _import_input: import_sub,
             app_input,
             _app_input: app_sub,
+            route_input,
+            _route_input: route_sub,
             shortcuts,
             backup: None,
             dropdown: None,
@@ -619,6 +635,27 @@ impl Workspace {
     }
 
     /// Background image path input: Enter applies (empty means no image), Esc cancels.
+    /// The download route is saved as typed; Settings says under it when it can't be used.
+    fn on_route_input(
+        &mut self,
+        input: &Entity<TextInput>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = input.read(cx).committed_text().trim().to_owned();
+        set(cx, |s| {
+            if s.update_route != text {
+                s.update_route = text;
+            }
+        });
+        if matches!(event, InputEvent::Confirm | InputEvent::Cancel)
+            && let Some(page) = &self.settings_panel
+        {
+            window.focus(&page.focus, cx);
+        }
+    }
+
     fn on_image_input(
         &mut self,
         input: &Entity<TextInput>,
@@ -1581,7 +1618,14 @@ impl Workspace {
             startup.remove(0);
         }
         let search = search_page(s, cx);
-        let update = super::update_page::update_card(s, page.expanded.contains("update"), ui, cx);
+        let route_focused = page.route_input.focus_handle(cx).is_focused(window);
+        let update = super::update_page::update_card(
+            s,
+            page.expanded.contains("update"),
+            (&page.route_input, route_focused),
+            ui,
+            cx,
+        );
         let report = super::report_page::report_card(
             page.expanded.contains("report"),
             &page.report_scroll,

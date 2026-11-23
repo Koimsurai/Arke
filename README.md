@@ -242,7 +242,8 @@ Scoop then keeps it up to date (`scoop update arke`), and Arke leaves updating t
 Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time.
 
 Arke checks GitHub for a new version at most once a day and only installs one when you say so
-(Settings › About).
+(Settings › About). Updates are signed: Arke installs only files signed with its own key. Where
+GitHub is slow, you can set a download route there (see [Privacy](#privacy)).
 
 <details>
 <summary><b>Optional background service</b></summary>
@@ -429,6 +430,14 @@ Arke doesn't collect or send any data about you or your files. It goes online on
 check GitHub for a new version (at most once a day, can be turned off in Settings › About), to
 download one when you choose to install it, and to reach the network shares, SFTP and WebDAV
 locations you open yourself.
+
+If GitHub is slow or blocked where you are, Settings › About › Updates › Download route sends
+update checks and downloads through a mirror (an `https://` address put in front of GitHub's) or
+an HTTP proxy (`host:port`) you choose. Arke ships none of its own and uses one only if you type
+it in. Whoever runs it sees your IP address and which Arke version you check for or download;
+nothing else goes through it. When it fails, Arke asks GitHub directly and says so under the
+setting. Arke installs only downloads signed with its own key, so a mirror or proxy can't slip in
+a changed or older version.
 
 ## License
 

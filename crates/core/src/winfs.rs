@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_NO_MORE_FILES, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, HANDLE,
-    WAIT_OBJECT_0,
+    CloseHandle, ERROR_NO_MORE_FILES, ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED,
+    GetLastError, HANDLE, NO_ERROR, WAIT_OBJECT_0,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -29,7 +29,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY,
     FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
-    FindNextFileW, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW, WIN32_FIND_DATAW,
+    FindNextFileW, GetCompressedFileSizeW, GetDriveTypeW, OPEN_EXISTING, ReadDirectoryChangesW, WIN32_FIND_DATAW,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
@@ -60,6 +60,22 @@ impl Drop for Handle {
 unsafe impl Send for Handle {}
 // SAFETY: as above; SetEvent / waits on a shared event handle are thread safe.
 unsafe impl Sync for Handle {}
+
+/// Space the file at `path` really takes on disk (`GetCompressedFileSizeW`: the compressed size
+/// of an NTFS-compressed file, the allocated size of a sparse one). `None` when it can't be read.
+/// One call by name, so only for the few files whose attributes say the cluster estimate is off.
+pub(crate) fn allocated_size(path: &Path) -> Option<u64> {
+    let wide = wide(path);
+    let mut high = 0u32;
+    // SAFETY: wide is NUL-terminated; the out pointer is valid for the call.
+    let low = unsafe { GetCompressedFileSizeW(PCWSTR(wide.as_ptr()), Some(&raw mut high)) };
+    // `u32::MAX` is also a valid low half; only the last error tells a failure.
+    // SAFETY: reads the calling thread's last error, right after the call above.
+    if low == u32::MAX && unsafe { GetLastError() } != NO_ERROR {
+        return None;
+    }
+    Some((u64::from(high) << 32) | u64::from(low))
+}
 
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()

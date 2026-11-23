@@ -280,10 +280,39 @@ impl Space {
     }
 }
 
+/// `FILE_ATTRIBUTE_SPARSE_FILE` and `FILE_ATTRIBUTE_COMPRESSED`: files whose size on disk is not
+/// their size rounded up to clusters.
+const ATTR_SPARSE_OR_COMPRESSED: u32 = 0x200 | 0x800;
+
 /// Counts one listed file into `total`.
 pub fn count_file(total: &mut Usage, entry: &Entry, cluster: u64) {
+    count_with(total, entry, file_on_disk(entry, cluster));
+}
+
+/// [`count_file`] for a file listed in `dir`. Sparse and NTFS-compressed files take less than
+/// their size rounded up to clusters, so their real allocation is asked from the file system (one
+/// call each, and only those few files); every other file keeps the cluster estimate.
+pub fn count_file_in(total: &mut Usage, entry: &Entry, dir: &Path, cluster: u64) {
+    let mut on_disk = file_on_disk(entry, cluster);
+    if entry.attributes & ATTR_SPARSE_OR_COMPRESSED != 0 && !entry.is_cloud_placeholder() {
+        on_disk = real_on_disk(&dir.join(&*entry.name)).unwrap_or(on_disk);
+    }
+    count_with(total, entry, on_disk);
+}
+
+#[cfg(windows)]
+fn real_on_disk(path: &Path) -> Option<u64> {
+    crate::winfs::allocated_size(path)
+}
+
+#[cfg(not(windows))]
+fn real_on_disk(_path: &Path) -> Option<u64> {
+    None
+}
+
+fn count_with(total: &mut Usage, entry: &Entry, on_disk: u64) {
     total.bytes += entry.size;
-    total.on_disk += file_on_disk(entry, cluster);
+    total.on_disk += on_disk;
     total.files += 1;
     total.categories[Category::of(entry).index()] += entry.size;
 }
@@ -318,7 +347,7 @@ pub fn usage(
             for entry in entries {
                 match entry {
                     Ok(e) => match e.kind {
-                        EntryKind::File => count_file(&mut space.usage, &e, cluster),
+                        EntryKind::File => count_file_in(&mut space.usage, &e, root, cluster),
                         EntryKind::Dir => {
                             space.usage.folders += 1;
                             let path = root.join(&*e.name);
@@ -463,7 +492,7 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
                     match entry {
                         Ok(e) => match e.kind {
                             EntryKind::File => {
-                                count_file(&mut usage, &e, cluster);
+                                count_file_in(&mut usage, &e, &dir, cluster);
                                 bytes += e.size;
                             }
                             EntryKind::Dir => {
@@ -1097,6 +1126,20 @@ mod tests {
         assert_eq!(round_to_clusters(1, 4096), 4096);
         assert_eq!(round_to_clusters(8192, 4096), 8192);
         assert_eq!(round_to_clusters(5, 0), 5);
+    }
+
+    #[test]
+    fn sparse_and_compressed_files_fall_back_to_the_estimate() {
+        let missing = Path::new(r"Z:\arke-no-such-folder");
+        let mut usage = Usage::default();
+        // Flagged, but the real size can't be read: rounded up to clusters as before.
+        let sparse = Entry::new("a", EntryKind::File, 5000, None, 0x200);
+        count_file_in(&mut usage, &sparse, missing, 4096);
+        assert_eq!(usage.on_disk, 8192);
+        // Not flagged: never asks the file system.
+        count_file_in(&mut usage, &file("b", 10), missing, 4096);
+        assert_eq!(usage.on_disk, 8192 + 4096);
+        assert_eq!(usage.bytes, 5010);
     }
 
     fn file(name: &str, size: u64) -> Entry {

@@ -112,3 +112,19 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   Asking could only fail: during a drag out of Arke it logged a "RefCell already borrowed" error on
   every mouse move. Arke's `crates/app/src/win_fileops.rs` `drag_out` holds the drag guard; the
   input count is kept by the wrapper `on_input` puts around the callback. (#338, #343)
+
+## gpui-pre 0.3.11
+
+Zed's GPUI (Apache-2.0), unchanged except for its test platform, which only builds with the
+`test-support` feature (release builds are untouched):
+
+- `src/platform/test/window.rs`: `TestWindow` keeps the accessibility callbacks `a11y_init` is
+  given (upstream it ignores them, so a test window never builds an accessibility tree), and adds
+  `simulate_a11y_activation`, `simulate_a11y_deactivation` and `simulate_a11y_action`.
+- `src/app/test_context.rs`: `TestAppContext::simulate_window_a11y_activation` and
+  `simulate_window_a11y_action`, and `VisualTestContext::simulate_a11y_activation` and
+  `simulate_a11y_action`, which run until parked.
+
+With them, tests read what a screen reader is given through `Window::debug_a11y_tree_json`
+(`crates/app/src/tests_a11y.rs`, #322). The `examples`, `tests` and `benches` folders and their
+`Cargo.toml` entries are left out. Offered upstream; drop this copy once a gpui-pre has it.

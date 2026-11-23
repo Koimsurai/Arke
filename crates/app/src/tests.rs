@@ -27,6 +27,8 @@ use crate::shell::{
 };
 use crate::workspace::{CloseTab, NewTab, Workspace};
 
+#[path = "tests_a11y.rs"]
+mod a11y_tree;
 #[path = "tests_column_view.rs"]
 mod column_view;
 #[path = "tests_favorites.rs"]

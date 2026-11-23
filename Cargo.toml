@@ -157,7 +157,9 @@ codegen-units = 1
 opt-level = 3
 strip = "debuginfo"
 
-# GPUI's Windows renderer with Arke's fixes on top (third_party/README.md lists them). Re-apply
-# when gpui-pre is upgraded.
+# GPUI and its Windows renderer with Arke's changes on top (third_party/README.md lists them).
+# Re-apply when gpui-pre is upgraded.
 [patch.crates-io]
+# Test windows build the accessibility tree, so tests can read it (#322).
+gpui-pre = { path = "third_party/gpui-pre" }
 gpui-pre-windows = { path = "third_party/gpui-pre-windows" }

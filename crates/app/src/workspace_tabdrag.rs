@@ -86,12 +86,11 @@ pub(super) struct TabDrag {
     pub(super) rows: std::rc::Rc<crate::motion::Flip<PlaceRow>>,
 }
 
-/// A row of the sidebar's places list, as [`TabDrag::rows`] knows it across a change: a favorite
-/// listed as a row (#174) or a pinned folder (`n`-th row of it, its folders under it when it is
-/// expanded), the Recycle Bin, the Shelf's rows and the rows after the favorites, by their place.
+/// A row of the sidebar's places list, as [`TabDrag::rows`] knows it across a change: a pinned
+/// folder (`n`-th row of it, its folders under it when it is expanded), the Recycle Bin, the
+/// Shelf's rows and the rows after the favorites, by their place.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PlaceRow {
-    Favorite(PathBuf, usize),
     Pinned(PathBuf, usize),
     Recycle,
     Shelf(usize),

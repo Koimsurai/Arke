@@ -727,27 +727,23 @@ fn follow_chain(places: &[Place], here: &Path) -> Vec<PathBuf> {
     chain
 }
 
-/// Which favorites get a tile, and whether the tiles are the large ones (three a row).
+/// Whether the tiles are the large ones (three a row).
 #[derive(Debug, PartialEq, Eq)]
 struct TileLayout {
     large: bool,
-    on_tile: Vec<bool>,
 }
 
-/// Lays out the favorites (#174): a name that doesn't fit on a large tile is listed as a row below
-/// the tiles instead of being cut off. More than six tiles shrink to four a row, but only when that
-/// cuts none of their names off; otherwise they stay three a row and take more rows. The saved
-/// order is untouched, so a name that fits again (a wider sidebar, a shorter name) goes back to
-/// its own slot. `fits(label, per_row)`: the label fits on a tile that many to a row.
+/// Lays out the favorite tiles. Every favorite is a tile: where a folder goes (the tiles or the
+/// list below) is the user's choice, by dragging it or "Move to the list". A name too long for its
+/// tile is cut off, and the tile's tooltip shows the whole path. (Up to 0.8 such a favorite was
+/// drawn as a row instead, #174, which looked like the list but wasn't: dragging it to the tiles
+/// did nothing, and a new favorite with a long name never showed as a tile.) More than six tiles
+/// shrink to four a row, but only when that cuts no name off that fits three a row.
+/// `fits(label, per_row)`: the label fits on a tile that many to a row.
 fn split_tiles(labels: &[&str], fits: &mut impl FnMut(&str, usize) -> bool) -> TileLayout {
-    let on_tile: Vec<bool> = labels.iter().map(|label| fits(label, 3)).collect();
-    let shown = on_tile.iter().filter(|&&tile| tile).count();
-    let large = shown <= FAVORITES_LARGE
-        || labels
-            .iter()
-            .zip(&on_tile)
-            .any(|(label, &tile)| tile && !fits(label, 4));
-    TileLayout { large, on_tile }
+    let large = labels.len() <= FAVORITES_LARGE
+        || labels.iter().any(|label| fits(label, 3) && !fits(label, 4));
+    TileLayout { large }
 }
 
 /// Room for a tile's name when `per_row` tiles share a row `list` wide.
@@ -1355,35 +1351,11 @@ impl Workspace {
         // Slots count every favorite, tiles or rows: drops and the saved order use them.
         let tile_count = favorites.len();
         let mut tiles: Vec<AnyElement> = Vec::new();
-        let mut long_rows: Vec<AnyElement> = Vec::new();
-        // Who each row is, so it slides to its new place when the favorites change under a drag.
-        let mut long_keys: Vec<PlaceRow> = Vec::new();
         for (ix, (path, label, icon)) in favorites.into_iter().enumerate() {
-            if layout.on_tile.get(ix).copied().unwrap_or(true) {
-                let here = current == Some(path.as_path());
-                let tile = self.render_tile(ix, &path, label, icon, here, large, cx);
-                let cell = tiles.len();
-                tiles.push(self.tile_drag_shell(ix, cell, &path, tile, cx));
-            } else {
-                let at = long_rows.len();
-                // A plain folder keeps the tree's folder icon, like the pinned rows.
-                let row_icon = (icon != Icon::Folder).then_some(icon);
-                self.render_tree(
-                    &path,
-                    label.clone(),
-                    None,
-                    row_icon,
-                    0,
-                    current,
-                    true,
-                    &mut long_rows,
-                    cx,
-                );
-                let row = long_rows.remove(at);
-                long_rows.insert(at, Self::favorite_row(ix, &path, label, icon, row, cx));
-                long_keys
-                    .extend((0..long_rows.len() - at).map(|n| PlaceRow::Favorite(path.clone(), n)));
-            }
+            let here = current == Some(path.as_path());
+            let tile = self.render_tile(ix, &path, label, icon, here, large, cx);
+            let cell = tiles.len();
+            tiles.push(self.tile_drag_shell(ix, cell, &path, tile, cx));
         }
         let mut pinned_rows = Vec::new();
         let mut pinned_keys: Vec<PlaceRow> = Vec::new();
@@ -1508,7 +1480,7 @@ impl Workspace {
             pinned_keys.push(PlaceRow::Recycle);
         }
         // No pins, no section. "Pin to sidebar" makes it appear; no placeholder text.
-        let heading = !long_rows.is_empty() || !pinned_rows.is_empty() || wants_list_drop;
+        let heading = !pinned_rows.is_empty() || wants_list_drop;
         if heading {
             out.push(
                 self.section_header(SidebarSection::Favorites, collapsed, Vec::new(), cx)
@@ -1549,27 +1521,7 @@ impl Workspace {
             return out;
         }
         let start = out.len();
-        // Favorites too long for a tile come first: they are ahead of the list in the saved order.
-        // Each in a parent of its own, so a favorite also shown under This PC doesn't repeat an
-        // element id.
         let flip = &self.tab_drag.rows;
-        out.extend(
-            long_rows
-                .into_iter()
-                .zip(long_keys)
-                .enumerate()
-                .map(|(ix, (row, key))| {
-                    flip.row(
-                        key,
-                        div()
-                            .id(("favorite", ix))
-                            .flex()
-                            .flex_col()
-                            .child(row)
-                            .into_any_element(),
-                    )
-                }),
-        );
         // Where a tile dropped into the list lands (first of the pinned folders), so the block
         // turns into its gap in place when it gets there.
         if tile_dragged {
@@ -1678,61 +1630,12 @@ impl Workspace {
         split_tiles(&labels, &mut fits)
     }
 
-    /// The favorites drawn as tiles, in order: the grid the tiles reorder and slide on (the others
-    /// are rows, #174).
+    /// The favorites drawn as tiles, in order: the grid the tiles reorder and slide on.
     pub(super) fn tile_favorites(&self, cx: &mut Context<Self>) -> Vec<PathBuf> {
-        let favorites = self.favorites(cx);
-        let layout = self.tile_layout(&favorites, cx);
-        favorites
+        self.favorites(cx)
             .into_iter()
-            .zip(layout.on_tile)
-            .filter_map(|((path, ..), tile)| tile.then_some(path))
+            .map(|(path, ..)| path)
             .collect()
-    }
-
-    /// A favorite listed as a row because its name doesn't fit on a tile (#174). It still is one of
-    /// the favorites at slot `ix`: dragged, it moves like a list entry. A pin dropped on it goes
-    /// in the list it is drawn in (first, right under it), not back up among the tiles.
-    fn favorite_row(
-        ix: usize,
-        path: &Path,
-        label: String,
-        icon: Icon,
-        row: AnyElement,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let workspace = cx.entity().downgrade();
-        let dragged = DraggedPin {
-            path: path.to_path_buf(),
-            label: label.into(),
-            icon,
-            from_tile: false,
-            look: None,
-        };
-        div()
-            .id(SharedString::from(format!(
-                "favorite-row-{}",
-                path.display()
-            )))
-            .debug_selector(move || format!("favorite-row-{ix}"))
-            .relative()
-            .rounded(theme::r_8())
-            .child(row)
-            .on_drag(dragged, move |dragged, grab, _, cx| {
-                start_pin_drag(&workspace, dragged, grab, cx)
-            })
-            .on_drag_move(cx.listener({
-                let path = path.to_path_buf();
-                move |this, e: &DragMoveEvent<DraggedPin>, _, cx| {
-                    if e.drag(cx).path != path {
-                        this.pin_over_list(0, e, cx);
-                    }
-                }
-            }))
-            .on_drop(cx.listener(move |this, dragged: &DraggedPin, window, cx| {
-                this.drop_pin_in_list(dragged, 0, window, cx);
-            }))
-            .into_any_element()
     }
 
     /// The menu of a favorite in the sidebar, on a tile or in the list.
@@ -4759,27 +4662,23 @@ mod tests {
     }
 
     #[test]
-    fn long_names_leave_the_tiles_without_moving_the_others() {
+    fn tiles_shrink_to_four_a_row_only_when_no_name_is_cut_more() {
         // A name fits when it is at most 8 characters three a row, 5 four a row.
         let mut fits = |label: &str, per_row: usize| {
             let room = if per_row == 3 { 8 } else { 5 };
             label.len() <= room
         };
-        let layout = split_tiles(&["Desktop", "Quarterly reports", "Music"], &mut fits);
-        assert_eq!(
-            layout,
-            TileLayout {
-                large: true,
-                on_tile: vec![true, false, true],
-            }
-        );
+        // Six or fewer: three a row, a long name included (it is cut off on its tile).
+        let three = ["Desktop", "Quarterly reports", "Music"];
+        assert!(split_tiles(&three, &mut fits).large);
         // Seven short names shrink to four a row.
         let seven = ["a", "b", "c", "d", "e", "f", "g"];
         assert!(!split_tiles(&seven, &mut fits).large);
-        // But not when that would cut one off: they stay three a row instead.
+        // But not when that would cut off a name that fits three a row.
         let seven = ["a", "b", "c", "d", "e", "f", "Desktop"];
-        let layout = split_tiles(&seven, &mut fits);
-        assert!(layout.large);
-        assert!(layout.on_tile.iter().all(|&tile| tile));
+        assert!(split_tiles(&seven, &mut fits).large);
+        // A name cut off either way doesn't keep them three a row.
+        let seven = ["a", "b", "c", "d", "e", "f", "Quarterly reports"];
+        assert!(!split_tiles(&seven, &mut fits).large);
     }
 }

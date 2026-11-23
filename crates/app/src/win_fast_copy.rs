@@ -1065,11 +1065,53 @@ struct Chunks<'a> {
     sent: Cell<u64>,
 }
 
+/// Whether a copy of `size` bytes goes past the cache. Not on one ReFS volume: there Windows can
+/// clone the blocks instead of copying them, and an unbuffered copy may keep it from doing so.
+fn no_buffering(size: u64, same_refs_volume: bool) -> bool {
+    size >= UNBUFFERED_FILE && !same_refs_volume
+}
+
+/// Per volume root, whether it is ReFS (which includes a Dev Drive). The file system of a mounted
+/// volume doesn't change while Arke runs, so each root is asked once.
+static REFS_ROOTS: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+
+/// Whether the volume mounted at `root` is ReFS. `false` when that can't be read.
+fn is_refs(root: &Path) -> bool {
+    let known = REFS_ROOTS
+        .lock()
+        .iter()
+        .find(|(r, _)| r == root)
+        .map(|(_, refs)| *refs);
+    if let Some(refs) = known {
+        return refs;
+    }
+    let wide = HSTRING::from(root.as_os_str());
+    let mut name = [0u16; 32];
+    // SAFETY: wide is NUL-terminated; the buffer and its length are passed together.
+    let read = unsafe { GetVolumeInformationW(&wide, None, None, None, None, Some(&mut name)) };
+    let refs = read.is_ok()
+        && name.iter().position(|&c| c == 0).is_some_and(|len| {
+            String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("ReFS")
+        });
+    REFS_ROOTS.lock().push((root.to_path_buf(), refs));
+    refs
+}
+
+/// `src` and `dst` are on the same ReFS volume (same mount root).
+fn same_refs_volume(src: &Path, dst: &Path) -> bool {
+    match (volume_root(src), volume_root(dst)) {
+        (Some(a), Some(b)) => a == b && is_refs(&a),
+        _ => false,
+    }
+}
+
 /// Copies the file `src` to `dst` (both `\\?\`), which must not exist. Big files report their
 /// bytes to `chunks` as they go.
 fn copy_one(src: &Path, dst: &Path, size: u64, chunks: &Chunks<'_>) -> windows::core::Result<()> {
     let mut flags = COPY_FILE_FAIL_IF_EXISTS;
-    if size >= UNBUFFERED_FILE {
+    // Only the rare huge file asks about the volume (cached), so small files pay nothing.
+    // Only the rare huge file asks about the volume (cached), so small files pay nothing.
+    if size >= UNBUFFERED_FILE && no_buffering(size, same_refs_volume(src, dst)) {
         flags |= COPY_FILE_NO_BUFFERING;
     }
     let params = COPYFILE2_EXTENDED_PARAMETERS {
@@ -1215,6 +1257,13 @@ mod tests {
         let progress = OpProgress::default();
         let copied = copy_with(sources, dest, &progress, false);
         (copied, progress)
+    }
+
+    #[test]
+    fn refs_same_volume_skips_no_buffering() {
+        assert!(no_buffering(UNBUFFERED_FILE, false));
+        assert!(!no_buffering(UNBUFFERED_FILE, true));
+        assert!(!no_buffering(UNBUFFERED_FILE - 1, false));
     }
 
     /// Sets the last write time of a file or folder.

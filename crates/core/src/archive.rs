@@ -650,6 +650,64 @@ fn with_time(
     }
 }
 
+/// Extensions of formats that are already compressed (images, video, audio, archives, Office and
+/// similar zip containers). Deflating them costs time and saves next to nothing, so they are
+/// stored. Lowercase, without the dot. PDF is left out on purpose: some are mostly text.
+const PRECOMPRESSED: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "mp4", "m4v", "mkv", "mov", "avi",
+    "webm", "wmv", "mp3", "aac", "m4a", "ogg", "opus", "flac", "wma", "zip", "7z", "rar", "gz",
+    "tgz", "bz2", "xz", "zst", "lz4", "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub", "jar",
+    "apk", "msix", "whl", "nupkg",
+];
+
+/// Bytes of a file tried with deflate to see if it is worth compressing.
+const SAMPLE_LEN: usize = 64 * 1024;
+
+/// The deflated sample must be at least this much smaller (here 5%) for a file to be deflated.
+const MIN_SAVING_PERCENT: usize = 5;
+
+/// The entry's name ends in an extension of an already compressed format.
+fn is_precompressed(name: &str) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    PRECOMPRESSED.iter().any(|e| ext.eq_ignore_ascii_case(e))
+}
+
+/// Whether deflate saves enough on `sample` (the start of a file) to be worth it.
+fn compresses_well(sample: &[u8]) -> bool {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    let mut enc = DeflateEncoder::new(Vec::with_capacity(sample.len() / 2), Compression::fast());
+    if enc.write_all(sample).is_err() {
+        return true;
+    }
+    let Ok(out) = enc.finish() else {
+        return true;
+    };
+    out.len() * 100 <= sample.len() * (100 - MIN_SAVING_PERCENT)
+}
+
+/// Reads the first [`SAMPLE_LEN`] bytes of `src` into `buf` and judges them with
+/// [`compresses_well`], then rewinds. Anything that goes wrong answers `true`, which is what
+/// happened to every file before.
+fn samples_well(src: &mut File, buf: &mut [u8]) -> bool {
+    use std::io::{Seek, SeekFrom};
+    let len = SAMPLE_LEN.min(buf.len());
+    let mut got = 0;
+    while got < len {
+        match src.read(&mut buf[got..len]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(_) => break,
+        }
+    }
+    if src.seek(SeekFrom::Start(0)).is_err() {
+        return true;
+    }
+    got == 0 || compresses_well(&buf[..got])
+}
+
 fn write_zip(
     file: File,
     entries: &[Entry],
@@ -685,8 +743,16 @@ fn write_zip(
                     summary.skipped += 1;
                     continue;
                 };
+                let method = if is_precompressed(name)
+                    || (*size >= SAMPLE_LEN as u64 && !samples_well(&mut src, &mut buf))
+                {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                };
                 let options = with_time(
-                    base.large_file(*size >= u64::from(u32::MAX)),
+                    base.compression_method(method)
+                        .large_file(*size >= u64::from(u32::MAX)),
                     *modified,
                     opts,
                 );
@@ -2379,5 +2445,33 @@ mod tests {
             .collect();
         let items: Vec<Item<'_>> = bodies.iter().map(|(n, b)| Item::File(n, b)).collect();
         write_pax_tar(path, &items);
+    }
+
+    #[test]
+    fn precompressed_extensions_are_stored() {
+        assert!(is_precompressed("photos/IMG_1.JPG"));
+        assert!(is_precompressed("a.b.mp4"));
+        assert!(is_precompressed("report.docx"));
+        assert!(!is_precompressed("notes.txt"));
+        assert!(!is_precompressed("doc.pdf"));
+        assert!(!is_precompressed("jpg"));
+    }
+
+    #[test]
+    fn sample_decides_between_stored_and_deflate() {
+        // A xorshift stream does not compress; repeated text does.
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let noise: Vec<u8> = (0..SAMPLE_LEN)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect();
+        assert!(!compresses_well(&noise));
+        let text = "the quick brown fox jumps over the lazy dog
+".repeat(2000);
+        assert!(compresses_well(&text.as_bytes()[..SAMPLE_LEN]));
     }
 }

@@ -12,6 +12,7 @@
 //!                               and `docs/integration.md`)
 //!   arke --home                 what Win+E runs while "Open folders in Arke" is on: opens a window
 //!                               like starting Arke (Settings › "New windows open to")
+//!   arke --search <text>        a new window searching the whole computer for <text>
 //!   arke --restore-explorer     undo the folder handler registration and turn the setting off
 //!   arke --uninstall [--keep-settings] [--quiet] [--dry-run]
 //!                               remove Arke from this PC (see `uninstall.rs`)
@@ -177,6 +178,8 @@ struct Args {
     restore_explorer: bool,
     /// A window of its own, not a tab in the window used last (`--new-window`)
     new_window: bool,
+    /// Search the whole computer for this text in the window that opens (`--search <text>`)
+    search: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -194,6 +197,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
         page: None,
         restore_explorer: false,
         new_window: false,
+        search: None,
     };
     while let Some(arg) = it.next() {
         match arg.to_str() {
@@ -214,6 +218,14 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             Some("--home") => {}
             Some("--restore-explorer") => args.restore_explorer = true,
             Some(NEW_WINDOW_ARG) => args.new_window = true,
+            // Text to search for; a missing or empty one is ignored.
+            Some("--search") => {
+                args.search = it
+                    .next()
+                    .and_then(|text| text.into_string().ok())
+                    .map(|text| text.trim().to_owned())
+                    .filter(|text| !text.is_empty());
+            }
             // Just updated: the old process's pid follows (already waited for at the start of
             // app_main).
             Some(update::AFTER_UPDATE_ARG) => {
@@ -417,6 +429,8 @@ fn app_main(mut args: Args) {
     } else if args.resident || args.quit {
         let request = if args.quit {
             Request::Quit
+        } else if let Some(text) = &args.search {
+            Request::Search(text.clone())
         } else {
             Request::Open(OpenRequest {
                 path: args.path.clone(),
@@ -453,6 +467,7 @@ fn app_main(mut args: Args) {
         .map(|mode| Bench::new(mode, args.bench_out));
     let start_path = args.path;
     let start_page = args.page;
+    let start_search = args.search;
     let resident = listener.is_some();
     log::info!(
         "{}",
@@ -637,6 +652,9 @@ fn app_main(mut args: Args) {
         if !first_window_opened && !resident {
             cx.quit();
             return;
+        }
+        if let Some(text) = start_search.filter(|_| first_window_opened) {
+            search_computer(cx, text);
         }
         if let Some(listener) = listener {
             start_resident_service(cx, listener, services, api_queue);
@@ -1029,6 +1047,31 @@ fn handle_open(cx: &mut App, services: &Services, open: OpenRequest, received: I
         )
     } else {
         open_fresh(cx, services, received)
+    }
+}
+
+/// `arke.exe --search <text>` reaching the resident Arke: a window of its own that searches the
+/// whole computer, brought to the front.
+fn handle_search(cx: &mut App, services: &Services, text: String, received: Instant) -> bool {
+    let Some(handle) =
+        open_explorer_window(cx, services, None, None, Instant::now(), Some(received))
+    else {
+        return false;
+    };
+    let _ = handle.update(cx, |workspace, window, cx| {
+        bring_to_front(window, None);
+        workspace.search_computer(text, window, cx);
+    });
+    cx.activate(true);
+    true
+}
+
+/// Starts a whole computer search for `text` in the window used last.
+fn search_computer(cx: &mut App, text: String) {
+    if let Some(host) = last_window(cx) {
+        let _ = host.update(cx, |workspace, window, cx| {
+            workspace.search_computer(text, window, cx);
+        });
     }
 }
 
@@ -1533,6 +1576,7 @@ fn start_resident_service(
                 }
                 Request::Select { folder, items } => select_items(cx, &services, &folder, &items),
                 Request::Open(open) => handle_open(cx, &services, open, received),
+                Request::Search(text) => handle_search(cx, &services, text, received),
                 // Answered on the pipe thread.
                 Request::Api(_) => false,
             });
@@ -2100,6 +2144,20 @@ mod arg_tests {
         assert!(args.page.is_none() && args.path.is_none() && !args.restore_explorer);
         let args = parse(&["--restore-explorer"]);
         assert!(args.restore_explorer && args.path.is_none() && args.page.is_none());
+    }
+
+    #[test]
+    fn search_takes_the_text_after_it() {
+        assert_eq!(
+            parse(&["--search", "tax return"]).search.as_deref(),
+            Some("tax return")
+        );
+        let args = parse(&["--search", "  notes ", r"C:\work"]);
+        assert_eq!(args.search.as_deref(), Some("notes"));
+        assert_eq!(args.path, Some(PathBuf::from(r"C:\work")));
+        assert_eq!(parse(&["--search"]).search, None);
+        assert_eq!(parse(&["--search", " "]).search, None);
+        assert_eq!(parse(&[r"C:\work"]).search, None);
     }
 
     #[test]

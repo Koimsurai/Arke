@@ -1960,6 +1960,19 @@ impl Workspace {
         window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
     }
 
+    /// `arke.exe --search <text>`: the active pane searches the whole computer for `text`.
+    pub(crate) fn search_computer(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drop_shown_page();
+        let view = self.active_view().clone();
+        view.update(cx, |e, cx| e.search_computer(text, window, cx));
+        cx.notify();
+    }
+
     /// The active tab is pinned and `path` isn't its folder (a pinned tab whose folder failed to
     /// open can go elsewhere in place, see [`Explorer::keeps_folder`]).
     pub(super) fn active_pinned_elsewhere(&self, path: &Path, cx: &App) -> bool {

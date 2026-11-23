@@ -237,6 +237,17 @@ fn choices<T: Copy + PartialEq>(
 
 impl Explorer {
     /// Replaces the box text the way a filter does and reruns the search, keeping the panel open.
+    /// `arke.exe --search <text>`: a whole computer search for `text`, the box filled in and focused.
+    pub(crate) fn search_computer(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_scope(crate::explorer::scope::Scope::Computer, cx);
+        self.write_query(text, None, true, window, cx);
+    }
+
     /// Focus stays in the panel when it has it (keyboard use); `focus_box` moves it to the box
     /// with the caret at `caret` (default: the end), for terms that need typing.
     fn write_query(

@@ -59,6 +59,8 @@ echo {"v":1,"cmd":"state"} | arke.exe --api -
 - A relative `path` is taken from the folder the command runs in.
 - `arke.exe "D:\Folder"` keeps working as before (in single window mode it opens a tab in the
   window used last).
+- `arke.exe --search "text"` opens a new window that searches the whole computer for `text`
+  (the same as Ctrl+K and typing it). It starts Arke when none is running.
 
 ## Requests
 

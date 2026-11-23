@@ -88,6 +88,8 @@ pub(crate) enum Request {
         items: Vec<PathBuf>,
     },
     Quit,
+    /// `arke.exe --search <text>`: a window searching the whole computer for the text.
+    Search(String),
     /// An integration API request (`api.rs`, `arke.exe --api <json>`): the JSON text. Its reply
     /// is the JSON reply, not a status byte.
     Api(String),
@@ -124,6 +126,10 @@ pub(crate) fn encode(req: &Request) -> Vec<u8> {
     let mut w = Vec::new();
     match req {
         Request::Quit => push_field(&mut w, &wide("quit")),
+        Request::Search(text) => {
+            push_field(&mut w, &wide("search"));
+            push_field(&mut w, &wide(text));
+        }
         Request::Api(json) => {
             push_field(&mut w, &wide("api"));
             push_field(&mut w, &wide(json));
@@ -185,6 +191,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Request> {
     match as_string(fields.next()?)?.as_str() {
         "quit" => Some(Request::Quit),
         "api" => Some(Request::Api(as_string(fields.next()?)?)),
+        "search" => Some(Request::Search(as_string(fields.next()?)?)),
         "open" => {
             let path = as_path(fields.next()?);
             let bench = match as_string(fields.next()?)?.as_str() {
@@ -916,6 +923,12 @@ mod tests {
             page: None,
             new_window: false,
         });
+        assert_eq!(decode(&encode(&req)), Some(req));
+    }
+
+    #[test]
+    fn search_requests_keep_their_text() {
+        let req = Request::Search("annual report 日本語".to_owned());
         assert_eq!(decode(&encode(&req)), Some(req));
     }
 

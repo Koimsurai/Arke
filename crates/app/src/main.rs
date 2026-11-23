@@ -593,6 +593,8 @@ fn app_main(mut args: Args) {
             update_quiet::mark_resident(resident, background);
             cx.on_app_quit(|cx| {
                 update_quiet::on_quit(cx);
+                // The process ends right after: the last lines (why it quit) go in the file first.
+                crashlog::flush(Duration::from_millis(200));
                 async {}
             })
             .detach();

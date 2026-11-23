@@ -144,6 +144,7 @@ pub(crate) fn run() {
     if std::env::args_os().nth(2).is_some_and(|a| a == SPARE_ARG) {
         spare::begin();
     }
+    idle::watch();
     serve(
         BufReader::new(std::io::stdin()),
         std::io::stdout(),
@@ -289,6 +290,7 @@ fn start_reader<R: BufRead + Send + 'static>(
                 let Ok(line) = line else { break };
                 // A spare taking over, even while it is still warming up.
                 spare::take_over();
+                idle::asked();
                 let Ok(request) = serde_json::from_str::<HostRequest>(&line) else {
                     continue;
                 };
@@ -366,6 +368,59 @@ fn warm_up() {
     }
     // Send To, which Arke lists itself (#278).
     crate::win_menu::warm_send_to(&exe);
+}
+
+/// A host asked nothing for [`idle::AFTER`] lowers its memory priority, so Windows takes its
+/// pages first when memory runs short; the next request puts it back first. Nothing changes while
+/// memory is plentiful, and nothing wakes up while it waits.
+mod idle {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    /// How long without requests counts as idle.
+    pub(super) const AFTER: Duration = Duration::from_secs(30);
+    /// Each request, for the watcher (only in a real host: tests serve in their own process).
+    static ASKED: OnceLock<flume::Sender<()>> = OnceLock::new();
+    /// Memory priority is low now.
+    static LOW: AtomicBool = AtomicBool::new(false);
+
+    /// Starts the watcher thread.
+    pub(super) fn watch() {
+        let (tx, rx) = flume::unbounded::<()>();
+        if ASKED.set(tx).is_err() {
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("shell-host-idle".into())
+            .spawn(move || {
+                loop {
+                    match rx.recv_timeout(AFTER) {
+                        Ok(()) => {}
+                        Err(flume::RecvTimeoutError::Timeout) => {
+                            LOW.store(true, Ordering::Release);
+                            crate::resident::set_memory_priority_low(true);
+                            // Asleep until the next request.
+                            if rx.recv().is_err() {
+                                return;
+                            }
+                        }
+                        Err(flume::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            });
+    }
+
+    /// A request came in: normal memory priority before it is served.
+    pub(super) fn asked() {
+        let Some(tx) = ASKED.get() else {
+            return;
+        };
+        if LOW.swap(false, Ordering::AcqRel) {
+            crate::resident::set_memory_priority_low(false);
+        }
+        let _ = tx.send(());
+    }
 }
 
 /// A spare host, one waiting to take over, until it is asked anything: it warms up at low

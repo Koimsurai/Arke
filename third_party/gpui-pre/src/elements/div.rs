@@ -2659,9 +2659,8 @@ impl Interactivity {
                                                 for (action, listener) in
                                                     self.a11y_action_listeners.drain(..)
                                                 {
-                                                    window.on_a11y_action(
-                                                        node_id, action, listener,
-                                                    );
+                                                    window
+                                                        .on_a11y_action(node_id, action, listener);
                                                 }
                                                 if let Some((listeners, bounds)) = a11y_click {
                                                     window.on_a11y_action(

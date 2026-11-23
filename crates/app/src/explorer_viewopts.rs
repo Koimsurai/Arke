@@ -457,7 +457,9 @@ fn toggle_row(
 ) -> AnyElement {
     // The switch is named after the row for screen readers (#322).
     let a11y = crate::a11y::active();
-    let spoken = desc.as_ref().map(|d| gpui::SharedString::from(d.to_string()));
+    let spoken = desc
+        .as_ref()
+        .map(|d| gpui::SharedString::from(d.to_string()));
     div()
         .flex()
         .items_center()

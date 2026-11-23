@@ -991,12 +991,13 @@ impl Workspace {
                 panes,
             });
         }
-        let workspace = shown
-            .filter(|_| !shown_tabs.is_empty())
-            .map(|s| crate::settings::SessionWorkspace {
-                name: s.name().to_owned(),
-                tabs: shown_tabs,
-            });
+        let workspace =
+            shown
+                .filter(|_| !shown_tabs.is_empty())
+                .map(|s| crate::settings::SessionWorkspace {
+                    name: s.name().to_owned(),
+                    tabs: shown_tabs,
+                });
         crate::settings::Session {
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,

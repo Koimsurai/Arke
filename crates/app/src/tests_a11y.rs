@@ -69,7 +69,9 @@ fn unnamed(tree: &Value) -> Vec<String> {
         .filter(|n| {
             let acts = actions(n);
             let control = CONTROLS.contains(&role(n))
-                || acts.iter().any(|a| matches!(*a, "Click" | "Expand" | "Focus"));
+                || acts
+                    .iter()
+                    .any(|a| matches!(*a, "Click" | "Expand" | "Focus"));
             control && label(n).trim().is_empty()
         })
         .map(|n| {
@@ -123,7 +125,9 @@ fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext
     });
     let (ws, cx) = setup_workspace_with(cx, fs, shell, r"C:\w");
     let first = ws.update(cx, |ws, _| ws.active_view().clone());
-    wait_until(cx, &first, "load", |v| loaded(r"C:\w")(v) && v.places.len() > 1);
+    wait_until(cx, &first, "load", |v| {
+        loaded(r"C:\w")(v) && v.places.len() > 1
+    });
     cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(900.)));
     cx.simulate_a11y_activation();
     (ws, cx)
@@ -165,7 +169,11 @@ fn every_control_is_named(cx: &mut TestAppContext) {
         let mut seen = std::collections::HashSet::new();
         for _ in 0..30 {
             let settings = tree(cx);
-            assert_eq!(unnamed(&settings), Vec::<String>::new(), "settings › {page}");
+            assert_eq!(
+                unnamed(&settings),
+                Vec::<String>::new(),
+                "settings › {page}"
+            );
             // Open the next closed section (not dropdowns: one would close the other).
             let next = nodes(&settings).find(|n| {
                 role(n) == "Button"
@@ -207,7 +215,10 @@ fn f6_names_each_area(cx: &mut TestAppContext) {
     );
     assert!(stops.iter().all(|(_, l)| !l.is_empty()), "{stops:?}");
     assert_eq!(stops[1].1, "w", "the sidebar starts on the folder shown");
-    assert_ne!(stops[2].1, stops[3].1, "path bar and search box are told apart");
+    assert_ne!(
+        stops[2].1, stops[3].1,
+        "path bar and search box are told apart"
+    );
 }
 
 /// What a screen reader presses works: a toggle button by Click, a menu button by Expand (it
@@ -229,7 +240,10 @@ fn a_screen_reader_can_press_and_open(cx: &mut TestAppContext) {
     let t = tree(cx);
     cx.simulate_a11y_action(node_id(&t, "View options"), gpui::AccessibleAction::Expand);
     let t = tree(cx);
-    assert_eq!(named(&t, "View options")["aria"]["expanded"], Value::Bool(true));
+    assert_eq!(
+        named(&t, "View options")["aria"]["expanded"],
+        Value::Bool(true)
+    );
     assert_eq!(unnamed(&t), Vec::<String>::new(), "view options open");
 }
 

@@ -94,6 +94,7 @@ fn release(version: &str) -> Release {
         exe_name: format!("arke-{version}.exe"),
         size: 100,
         sha_url: None,
+        sig_url: String::new(),
         notes: "### Features\n\n- Something new\n".into(),
         page: String::new(),
     }

@@ -93,6 +93,7 @@ mod tray;
 mod uninstall;
 mod update;
 mod update_quiet;
+mod update_sig;
 mod whats_new;
 mod win;
 mod win_cloud;

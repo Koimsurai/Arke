@@ -18,7 +18,9 @@
 //! cargo xtask publish <stable|rc|nightly> [--number N] [--arch x64|arm64] [--prebuilt]
 //!                                                 build (or with --prebuilt take what is in dist/),
 //!                                                 then upload to GitHub Releases (repo from
-//!                                                 release.toml; needs GITHUB_TOKEN; curl)
+//!                                                 release.toml; needs GITHUB_TOKEN; curl), each
+//!                                                 file Arke downloads signed with
+//!                                                 MINISIGN_SECRET_KEY (.minisig)
 //! ```
 //!
 //! Both architectures are built unless `--arch` picks one: `arke-<version>.exe` (x64) and
@@ -535,6 +537,58 @@ fn write_sha256(file: &Path) -> Result<(String, u64)> {
     Ok((hash, bytes.len() as u64))
 }
 
+/// The update signing key from `MINISIGN_SECRET_KEY` (an unencrypted minisign secret key, as
+/// `minisign -G -W` writes it; the release workflow passes the repository secret). The public half
+/// is built into Arke (`update_sig.rs`).
+fn signing_key() -> Result<minisign::SecretKey> {
+    let text = std::env::var("MINISIGN_SECRET_KEY")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .context("MINISIGN_SECRET_KEY must be set: Arke only installs signed updates")?;
+    // The key line alone works too.
+    let text = if text.trim().lines().count() == 1 {
+        format!("untrusted comment: arke update key\n{}\n", text.trim())
+    } else {
+        text
+    };
+    minisign::SecretKeyBox::from_string(&text)
+        .and_then(|b| b.into_secret_key(Some(String::new())))
+        .map_err(|e| anyhow!("MINISIGN_SECRET_KEY: {e}"))
+}
+
+/// What a signature vouches for besides the bytes: the release asset name and the version, so a
+/// signature can't stand for another file or an older version (`update_sig.rs` checks both).
+fn trusted_comment(asset: &str, version: &str) -> String {
+    format!("file:{asset} version:{version}")
+}
+
+/// Signs `file`, published as `asset`, into `dist/<asset>.minisig`; returns that path.
+fn sign(file: &Path, asset: &str, version: &str, key: &minisign::SecretKey) -> Result<PathBuf> {
+    let data = std::fs::File::open(file).with_context(|| format!("reading {}", file.display()))?;
+    let signature = minisign::sign(
+        None,
+        key,
+        data,
+        Some(&trusted_comment(asset, version)),
+        Some("arke update signature"),
+    )
+    .map_err(|e| anyhow!("signing {}: {e}", file.display()))?;
+    let path = root().join("dist").join(format!("{asset}.minisig"));
+    std::fs::write(&path, signature.to_string())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Release asset name of the notes in `lang`: the English release notes, or the changelog in
+/// another language (Arke shows the new version's part of it before updating).
+fn notes_asset(version: &str, lang: &str) -> String {
+    if lang == "en" {
+        format!("arke-{version}-notes.md")
+    } else {
+        format!("arke-{version}-changelog.{lang}.md")
+    }
+}
+
 /// Builds the installer around `exe` with Inno Setup; returns its path.
 fn build_setup(iscc: &Path, version: &str, arch: Arch, exe: &Path, dist: &Path) -> Result<PathBuf> {
     let status = Command::new(iscc)
@@ -673,14 +727,44 @@ fn cmd_publish(args: &[String]) -> Result<()> {
         .ok()
         .context("GITHUB_TOKEN must be set (with write access to that repo)")?;
     let channel = args.first().cloned().unwrap_or_default();
+    // Before creating the release: nothing goes out unsigned.
+    let key = signing_key()?;
     let (version, packaged) = if args.iter().any(|a| a == "--prebuilt") {
         prebuilt(args)?
     } else {
         cmd_build(args)?
     };
     // The notes written with the build, so a prebuilt dist/ publishes what it was built with.
-    let notes = std::fs::read_to_string(root().join("dist").join(format!("arke-{version}.md")))
-        .unwrap_or_else(|_| release_notes(&channel, &version));
+    let notes_path = root().join("dist").join(format!("arke-{version}.md"));
+    let notes = std::fs::read_to_string(&notes_path).unwrap_or_else(|_| {
+        let notes = release_notes(&channel, &version);
+        let _ = std::fs::write(&notes_path, &notes);
+        notes
+    });
+    // Every file Arke downloads, with its name on the release and its signature.
+    let mut uploads: Vec<(PathBuf, String)> = Vec::new();
+    for file in &packaged {
+        let name = file
+            .file_name()
+            .map_or_default(|n| n.to_string_lossy().into_owned());
+        let sha = file.with_file_name(format!("{name}.sha256"));
+        let sig = sign(file, &name, &version, &key)?;
+        uploads.push((file.clone(), name.clone()));
+        uploads.push((sha, format!("{name}.sha256")));
+        uploads.push((sig, format!("{name}.minisig")));
+    }
+    for lang in LANGS {
+        let file = if lang == "en" {
+            notes_path.clone()
+        } else {
+            root().join(notes::changelog_file(lang))
+        };
+        let name = notes_asset(&version, lang);
+        let sig = sign(&file, &name, &version, &key)?;
+        uploads.push((file, name.clone()));
+        uploads.push((sig, format!("{name}.minisig")));
+    }
+    uploads.push((root().join("dist").join(LICENSES), LICENSES.to_owned()));
     let body = serde_json::json!({
         "tag_name": format!("v{version}"),
         "name": format!("Arke {version}"),
@@ -705,19 +789,7 @@ fn cmd_publish(args: &[String]) -> Result<()> {
     let id = release["id"]
         .as_u64()
         .with_context(|| format!("creating the release failed: {created}"))?;
-    let files = packaged.iter().flat_map(|exe| {
-        let sha = exe.with_file_name(format!(
-            "{}.sha256",
-            exe.file_name()
-                .map_or_default(|n| n.to_string_lossy().into_owned())
-        ));
-        [exe.clone(), sha]
-    });
-    let licenses = root().join("dist").join(LICENSES);
-    for file in files.chain([licenses]) {
-        let name = file
-            .file_name()
-            .map_or_default(|n| n.to_string_lossy().into_owned());
+    for (file, name) in uploads {
         curl(&[
             "-sS",
             "-X",

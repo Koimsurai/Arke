@@ -54,4 +54,6 @@ jobs:
         if: steps.changed.outputs.build == 'true' && !inputs.dry_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Nightly updates are signed like the others (update_sig.rs).
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: cargo xtask publish nightly

@@ -2372,6 +2372,14 @@ update.bad_hash:
   es: la descarga no coincide con su suma de comprobación
   pt-BR: o download não corresponde à soma de verificação
   ja: ダウンロードしたファイルがチェックサムと一致しません
+update.bad_signature:
+  en: the download isn't signed by Arke, so it wasn't installed
+  zh-TW: "下載的檔案沒有 Arke 的簽章，所以沒有安裝"
+  zh-CN: 下载的文件没有 Arke 的签名，所以没有安装
+  de: Der Download ist nicht von Arke signiert und wurde daher nicht installiert
+  es: la descarga no está firmada por Arke, así que no se instaló
+  pt-BR: o download não está assinado pelo Arke, por isso não foi instalado
+  ja: ダウンロードしたファイルに Arke の署名がないため、インストールしませんでした
 update.cannot_replace:
   en: "couldn't replace arke.exe (%{error}); download it from the release page instead"
   zh-TW: "無法取代 arke.exe（%{error}）；請從發行頁面手動下載"

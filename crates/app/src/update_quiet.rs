@@ -452,6 +452,7 @@ pub(crate) fn restore(file: PathBuf, cx: &mut App) {
         exe_name: name,
         size: 0,
         sha_url: None,
+        sig_url: String::new(),
         notes: String::new(),
         page: String::new(),
     };

@@ -201,6 +201,7 @@ fn release(version: &str) -> Release {
         exe_name: format!("arke-{version}.exe"),
         size: 1,
         sha_url: None,
+        sig_url: String::new(),
         notes: "### Features\n\n- Something new\n\nVirusTotal scans of this release:\n[arke.exe](https://www.virustotal.com/gui/file/x)".into(),
         page: format!("https://example.test/v{version}"),
     }

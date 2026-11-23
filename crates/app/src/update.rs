@@ -3,7 +3,8 @@
 //!
 //! - Channels: stable sees stable only; RC sees RC and stable; nightly sees everything. Versions
 //!   compare by SemVer (`0.2.0-nightly.20261110` < `0.2.0-rc.1` < `0.2.0`).
-//! - Downloads go to `%LOCALAPPDATA%\Arke\updates`, verified against `.sha256` when present.
+//! - Downloads go to `%LOCALAPPDATA%\Arke\updates` and are installed only with a valid signature
+//!   from Arke's update key (`update_sig.rs`); the notes shown about an update are signed too.
 //! - Swap: a running exe can be renamed on Windows, so `arke.exe` -> `arke.exe.old` and the new one
 //!   becomes `arke.exe`, rolled back on failure. Then start the new one
 //!   (`--after-update <old pid>`, which waits for this process to exit before taking over
@@ -121,6 +122,10 @@ pub(crate) enum UpdateError {
     /// The download does not match its published SHA-256.
     #[error("{}", t!("update.bad_hash"))]
     BadHash,
+    /// The download has no signature from Arke's update key, or one for another file or version
+    /// (`update_sig.rs`): not installed.
+    #[error("{}", t!("update.bad_signature"))]
+    BadSignature,
     /// The running exe could not be swapped for the new one.
     #[error("{}", t!("update.cannot_replace", error = .0))]
     Replace(#[source] std::io::Error),
@@ -139,6 +144,8 @@ pub(crate) struct Release {
     pub(crate) size: u64,
     /// `.sha256` download URL, if any
     pub(crate) sha_url: Option<String>,
+    /// `.minisig` download URL: the signature the download must have (`update_sig.rs`)
+    pub(crate) sig_url: String,
     /// Release notes (Markdown) and web page
     pub(crate) notes: String,
     pub(crate) page: String,
@@ -223,16 +230,18 @@ fn pick_for(json: &str, channel: Channel, current: &Version, suffix: &str) -> Op
             .find(|a| a["name"].as_str() == Some(&format!("{exe_name}.sha256")))
             .and_then(|a| a["browser_download_url"].as_str())
             .map(str::to_string);
+        let exe_url = exe["browser_download_url"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let release = Release {
             version: item["tag_name"]
                 .as_str()
                 .unwrap_or_default()
                 .trim_start_matches('v')
                 .to_string(),
-            exe_url: exe["browser_download_url"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
+            sig_url: format!("{exe_url}.minisig"),
+            exe_url,
             exe_name,
             size: exe["size"].as_u64().unwrap_or(0),
             sha_url,
@@ -251,20 +260,68 @@ pub(crate) fn check(channel: Channel) -> Result<Option<Release>, UpdateError> {
         return Err(UpdateError::NoSource);
     }
     let current = Version::parse(build_info::VERSION).ok_or(UpdateError::BadVersion)?;
-    match crate::win_http::get_text(
+    let found = match crate::win_http::get_text(
         &format!("https://api.github.com/repos/{repo}/releases?per_page=30"),
         &["Accept: application/vnd.github+json"],
     ) {
-        Ok(json) => return Ok(pick(&json, channel, &current)),
+        Ok(json) => pick(&json, channel, &current),
         // The API allows 60 requests an hour per address without signing in, soon used up
         // where many people share one (a school, an office, a café) (#183).
         Err(crate::win_http::HttpError::Status(403 | 429)) => {
             log::info!("update check: GitHub API limit reached, reading the releases feed");
+            let feed = crate::win_http::get_text(
+                &format!("https://github.com/{repo}/releases.atom"),
+                &[],
+            )?;
+            pick_from_feed(&feed, repo, channel, &current)
         }
         Err(err) => return Err(err.into()),
+    };
+    Ok(found.map(|release| with_signed_notes(release, repo)))
+}
+
+/// Release asset name of the notes Arke shows about `version` (`cargo xtask publish` signs it).
+fn notes_asset(version: &str) -> String {
+    format!("arke-{version}-notes.md")
+}
+
+/// `release` with the notes from the signed notes file instead of the release's text, which
+/// nothing vouches for; without a valid signature, no notes (the release page is a click away).
+fn with_signed_notes(mut release: Release, repo: &str) -> Release {
+    let asset = notes_asset(&release.version);
+    let url = format!(
+        "https://github.com/{repo}/releases/download/v{}/{asset}",
+        release.version
+    );
+    release.notes = match signed_text(&url, &asset, &release.version) {
+        Ok(notes) => notes,
+        Err(err) => {
+            log::info!("update notes not shown: {err}");
+            String::new()
+        }
+    };
+    release
+}
+
+/// The text at `url` (release asset `asset` of `version`), once its signature (`<url>.minisig`)
+/// checks out. Blocks on the network: background thread.
+pub(crate) fn signed_text(url: &str, asset: &str, version: &str) -> Result<String, UpdateError> {
+    let text = crate::win_http::get_text(url, &[])?;
+    let signature = signature_at(&format!("{url}.minisig"))?;
+    if let Err(err) = crate::update_sig::verify(text.as_bytes(), &signature, asset, version) {
+        log::warn!("{asset}: {err}");
+        return Err(UpdateError::BadSignature);
     }
-    let feed = crate::win_http::get_text(&format!("https://github.com/{repo}/releases.atom"), &[])?;
-    Ok(pick_from_feed(&feed, repo, channel, &current))
+    Ok(text)
+}
+
+/// A `.minisig` file's text; a missing one is an unsigned file.
+fn signature_at(url: &str) -> Result<String, UpdateError> {
+    match crate::win_http::get_text(url, &[]) {
+        Ok(text) => Ok(text),
+        Err(crate::win_http::HttpError::Status(404)) => Err(UpdateError::BadSignature),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// [`pick`] from the releases feed (`releases.atom`): a web page, not the API, so the API's
@@ -308,6 +365,7 @@ fn pick_from_feed_for(
         let release = Release {
             version: number.to_owned(),
             sha_url: Some(format!("{exe_url}.sha256")),
+            sig_url: format!("{exe_url}.minisig"),
             exe_url,
             exe_name,
             // Not in the feed: the download tells it.
@@ -415,6 +473,16 @@ pub(crate) fn download_to(
             .open(&part)?;
         crate::win_http::get_resumed(&release.exe_url, &mut file, progress)?;
     }
+    // Nothing is installed without Arke's signature for this very file and version.
+    let signature = signature_at(&release.sig_url)?;
+    let bytes = std::fs::read(&part)?;
+    if let Err(err) =
+        crate::update_sig::verify(&bytes, &signature, &release.exe_name, &release.version)
+    {
+        log::warn!("{}: {err}", release.exe_name);
+        let _ = std::fs::remove_file(&part);
+        return Err(UpdateError::BadSignature);
+    }
     if let Some(sha_url) = &release.sha_url {
         let expected = crate::win_http::get_text(sha_url, &[])?;
         let expected = expected
@@ -422,7 +490,6 @@ pub(crate) fn download_to(
             .next()
             .unwrap_or_default()
             .to_lowercase();
-        let bytes = std::fs::read(&part)?;
         let actual = Sha256::digest(&bytes)
             .iter()
             .fold(String::new(), |mut s, b| {
@@ -1171,6 +1238,7 @@ mod tests {
             exe_name: String::new(),
             size: 0,
             sha_url: None,
+            sig_url: String::new(),
             notes: String::new(),
             page: String::new(),
         };

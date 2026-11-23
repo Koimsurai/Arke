@@ -973,23 +973,27 @@ fn undo_with(
     }
 }
 
-/// Whether `path` is a top-level Recycle Bin item, `X:/$Recycle.Bin/<SID>/$R...`. Neither
-/// the bin folder itself nor anything nested inside an item matches.
+/// Whether `path` is a top-level Recycle Bin item: `X:/$Recycle.Bin/<SID>/$R...` on NTFS, or
+/// `X:/$Recycle.Bin/$R...` on exFAT and FAT drives, whose bin has no folder per user (#330).
+/// Neither the bin folders themselves nor anything nested inside an item matches.
 pub(crate) fn in_recycle_bin(path: &Path) -> bool {
     use std::path::Component;
     let mut parts = path.components();
-    matches!(parts.next(), Some(Component::Prefix(_)))
+    let in_bin = matches!(parts.next(), Some(Component::Prefix(_)))
         && matches!(parts.next(), Some(Component::RootDir))
         && parts
             .next()
-            .is_some_and(|c| c.as_os_str().eq_ignore_ascii_case("$Recycle.Bin"))
-        && matches!(parts.next(), Some(Component::Normal(_)))
-        && parts.next().is_some_and(|c| {
-            c.as_os_str()
-                .to_str()
-                .is_some_and(|name| name.starts_with("$R") && name.len() > 2)
-        })
-        && parts.next().is_none()
+            .is_some_and(|c| c.as_os_str().eq_ignore_ascii_case("$Recycle.Bin"));
+    if !in_bin {
+        return false;
+    }
+    let rest: Vec<&str> = parts.filter_map(|c| c.as_os_str().to_str()).collect();
+    let item = |name: &str| name.starts_with("$R") && name.len() > 2;
+    match rest.as_slice() {
+        [name] => item(name),
+        [sid, name] => sid.starts_with("S-1-") && item(name),
+        _ => false,
+    }
 }
 
 /// Permanently deletes Recycle Bin items (Arke has already asked) with Arke's own walk, not
@@ -2207,6 +2211,16 @@ mod tests {
         assert!(!in_recycle_bin(Path::new("C:/$Recycle.Bin/S-1-5-21-1/$R")));
         assert!(!in_recycle_bin(Path::new("C:/Users/me/$RABC12.txt")));
         assert!(!in_recycle_bin(Path::new("$Recycle.Bin/S-1/$RABC12.txt")));
+        // #330: exFAT and FAT drives keep items right in the bin, with no folder per user.
+        assert!(in_recycle_bin(Path::new(r"E:\$RECYCLE.BIN\$RU1O20G.txt")));
+        assert!(!in_recycle_bin(Path::new(r"E:\$RECYCLE.BIN\$IU1O20G.txt")));
+        assert!(!in_recycle_bin(Path::new(r"E:\$RECYCLE.BIN\desktop.ini")));
+        assert!(!in_recycle_bin(Path::new(
+            r"E:\$RECYCLE.BIN\$RABC\$RDEF.txt"
+        )));
+        assert!(!in_recycle_bin(Path::new(
+            r"E:\$RECYCLE.BIN\$RABC\inner.txt"
+        )));
     }
 
     /// Recycle Bin: lists freshly recycled temp files with name, origin, size and deletion

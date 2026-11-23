@@ -343,6 +343,7 @@ pub(crate) struct MenuItem {
     verb: Option<String>,
 }
 
+#[derive(Clone)]
 pub(crate) enum MenuEntry {
     Item(MenuItem),
     Submenu {

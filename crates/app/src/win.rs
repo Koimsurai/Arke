@@ -900,8 +900,9 @@ impl Shell for WinShell {
         &self,
         paths: &[PathBuf],
         image: Option<&crate::shell::DragImage>,
+        after_lost_press: bool,
     ) -> Result<crate::shell::DragOutEnd, ShellError> {
-        win_fileops::drag_out(paths, image).map(|outcome| match outcome {
+        win_fileops::drag_out(paths, image, after_lost_press).map(|outcome| match outcome {
             Some(win_fileops::DragOutcome::Returned) => crate::shell::DragOutEnd::Returned,
             _ => crate::shell::DragOutEnd::Finished,
         })
@@ -911,23 +912,6 @@ impl Shell for WinShell {
         owner.is_some_and(|h| {
             win_fileops::other_window_at_cursor(windows::Win32::Foundation::HWND(h as *mut _))
         })
-    }
-
-    fn primary_button_down(&self) -> bool {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-            GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
-        };
-        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
-        // SAFETY: plain state queries. GetAsyncKeyState reads the physical buttons, so the
-        // primary one is the right button when they are swapped.
-        unsafe {
-            let key = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
-                VK_RBUTTON
-            } else {
-                VK_LBUTTON
-            };
-            GetAsyncKeyState(i32::from(key.0)) < 0
-        }
     }
 
     fn window_at_cursor(&self) -> Option<(isize, (i32, i32))> {

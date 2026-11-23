@@ -1084,6 +1084,10 @@ fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
 /// "More options" says once what its pins do: the line is there until the submenu has been open,
 /// then it doesn't come back.
 #[gpui::test]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so its methods can't be named by path"
+)]
 fn more_options_explains_its_pins_once(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
@@ -1101,8 +1105,7 @@ fn more_options_explains_its_pins_once(cx: &mut TestAppContext) {
         view.update(cx, |v, _| {
             v.context_menu
                 .as_ref()
-                .map(|m| m.shell_items_for_test())
-                .unwrap_or_default()
+                .map_or_default(|m| m.shell_items_for_test())
         })
     };
     let seen = |cx: &mut VisualTestContext| {

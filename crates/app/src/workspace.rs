@@ -1266,6 +1266,19 @@ impl Workspace {
         );
     }
 
+    /// Right-click on a folder of a path bar: the sidebar's menu for it (#257). A drive or share
+    /// root is the place itself, with its own rows.
+    fn show_folder_menu(
+        &mut self,
+        path: &Path,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let depth = usize::from(path.parent().is_some());
+        let items = self.folder_menu(path, sidebar::MenuFor::Tree { depth }, cx);
+        self.open_sidebar_menu(position, items, cx);
+    }
+
     fn on_explorer_event(
         &mut self,
         source: &Entity<Explorer>,
@@ -1350,10 +1363,7 @@ impl Workspace {
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
             ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::FolderMenu { path, position } => {
-                // A drive or share root is the place itself, with its own rows.
-                let depth = usize::from(path.parent().is_some());
-                let items = self.folder_menu(path, sidebar::MenuFor::Tree { depth }, cx);
-                self.open_sidebar_menu(*position, items, cx);
+                self.show_folder_menu(path, *position, cx);
             }
             ExplorerEvent::ToggleCompare => self.toggle_compare(tab_ix, cx),
             ExplorerEvent::SelectDifferences => self.select_differences(tab_ix, cx),

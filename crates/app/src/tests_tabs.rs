@@ -368,6 +368,68 @@ fn saved_workspaces_save_open_and_show_in_ctrl_t(cx: &mut TestAppContext) {
     );
 }
 
+/// The saved workspace a window shows is named beside the tabs (#269): once the tabs are saved
+/// as one or one is opened, following a rename, and gone once its tabs are closed or it is
+/// deleted.
+#[gpui::test]
+fn the_tabs_show_the_workspace_name(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\w", 1);
+    fs.insert_many(r"C:\x", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\w");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\w"));
+    let shown =
+        |cx: &mut VisualTestContext| ws.update(cx, |ws, cx| ws.shown_workspace_for_test(cx));
+    assert_eq!(shown(cx), None);
+    assert!(cx.debug_bounds("tabs-workspace").is_none());
+
+    cx.dispatch_action(OpenWorkspaces);
+    cx.run_until_parked();
+    let panel = ws
+        .update(cx, |ws, _| ws.workspaces_panel_for_test())
+        .expect("panel open");
+    panel.update(cx, |panel, cx| panel.type_name_for_test("Work", cx));
+    cx.run_until_parked();
+    assert_eq!(shown(cx).as_deref(), Some("Work"), "saved as Work");
+    assert!(cx.debug_bounds("tabs-workspace").is_some(), "drawn");
+
+    // Renamed in the panel: the name follows.
+    cx.dispatch_action(OpenWorkspaces);
+    cx.run_until_parked();
+    let panel = ws
+        .update(cx, |ws, _| ws.workspaces_panel_for_test())
+        .expect("panel open");
+    panel.update_in(cx, |panel, window, cx| {
+        panel.rename_for_test("Work", "Office", window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx).as_deref(), Some("Office"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Its tab closed: the window no longer shows it.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_tab(p(r"C:\x"), 1, true, window, cx);
+        ws.close_tab(0, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx), None, "its tabs are closed");
+
+    // Opened again, then deleted.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_saved_workspace("Office", window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx).as_deref(), Some("Office"), "opened");
+    cx.update(|_, cx| {
+        WorkspaceStore::global(cx).update(cx, |s, cx| s.update(|w| w.remove("office"), cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx), None, "deleted");
+    assert!(cx.debug_bounds("tabs-workspace").is_none());
+}
+
 #[gpui::test]
 fn synchronized_browsing_repeats_moves_in_the_other_pane(cx: &mut TestAppContext) {
     let fs = FakeFs::new();

@@ -2352,7 +2352,19 @@ impl Workspace {
             .flex_none()
             .items_end()
             .child(self.tab_area_recorder(super::tabmove::AreaPart::ListHead))
-            .child(div().flex_1().child(section_label(t!("sidebar.tabs"))))
+            // The saved workspace this window shows, muted after the heading (#269).
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_end()
+                    .child(section_label(t!("sidebar.tabs")))
+                    .children(
+                        self.workspace_label(cx)
+                            .map(|label| label.pb(theme::s_6()).pr(theme::s_8())),
+                    ),
+            )
             .child(Self::workspaces_button(cx))
             .child(tab_layout_button(false, cx));
         let sidebar = sidebar.child(header);
@@ -2374,7 +2386,7 @@ impl Workspace {
                 .child(scrolling(
                     div()
                         .id("tab-list")
-                        .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
+                        .a11y(gpui::Role::TabList, self.tabs_label(cx))
                         .flex()
                         .flex_col()
                         .gap(theme::s_2())

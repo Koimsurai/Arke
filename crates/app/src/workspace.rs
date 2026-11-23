@@ -387,6 +387,8 @@ pub(crate) struct Workspace {
     net_dialog: Option<NetDialogSlot>,
     /// Saved workspaces panel.
     workspaces: Option<(Entity<saved::WorkspacesPanel>, Subscription)>,
+    /// The saved workspace this window was opened from or saved as last (#269).
+    shown_workspace: Option<saved::ShownWorkspace>,
     _saved_workspaces: Subscription,
     /// Open Settings page (holds focus).
     settings_panel: Option<settings_panel::SettingsPage>,
@@ -752,6 +754,7 @@ impl Workspace {
             closing_palette: None,
             net_dialog: None,
             workspaces: None,
+            shown_workspace: None,
             _saved_workspaces: saved_workspaces,
             settings_panel: None,
             recycle_page: None,
@@ -3276,7 +3279,7 @@ impl Workspace {
             .debug_selector(|| "tab-strip".to_owned())
             .relative()
             .child(self.tab_area_recorder(tabmove::AreaPart::Strip))
-            .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
+            .a11y(gpui::Role::TabList, self.tabs_label(cx))
             // Dropping a tab between tabs or on the empty space to the right moves it to the end.
             .on_drop(cx.listener(Self::drop_tab_at_end))
             .h(theme::h_bar())
@@ -3328,6 +3331,11 @@ impl Workspace {
                     .flex_1()
                     .min_w(theme::s_32())
                     .h_full(),
+            )
+            // The saved workspace this window shows, muted before its button (#269).
+            .children(
+                self.workspace_label(cx)
+                    .map(|label| label.max_w(crate::theme::scaled_px(160.))),
             )
             .child(Self::workspaces_button(cx))
             .child(sidebar::tab_layout_button(true, cx))

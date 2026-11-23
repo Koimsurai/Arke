@@ -116,6 +116,8 @@ screen reader announces the row under it.
 | Ctrl+Shift+T | Reopen the closed tab |
 | Ctrl+Tab or Ctrl+Page Down | Next tab |
 | Ctrl+Shift+Tab or Ctrl+Page Up | Previous tab |
+| Ctrl+1 … Ctrl+8 | Tab 1 to 8 |
+| Ctrl+9 | Last tab |
 
 "New tab" and "Workspaces" have no key by default; use the command palette.
 

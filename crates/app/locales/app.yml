@@ -4946,6 +4946,14 @@ menupref.cloud_note:
   es: Solo en OneDrive y otras carpetas en la nube
   pt-BR: Somente no OneDrive e em outras pastas na nuvem
   ja: OneDrive などのクラウド フォルダーのみ
+menu.pin_hint:
+  en: Click a command's pin to keep it in the menu
+  zh-TW: 按命令旁的圖釘可固定到主選單
+  zh-CN: 点命令旁的图钉可固定到主菜单
+  de: Mit der Stecknadel bleibt ein Befehl im Menü
+  es: Fija un comando con su chincheta
+  pt-BR: Fixe um comando com o alfinete
+  ja: ピンでメイン メニューに固定できます
 menu.pin_command:
   en: Pin to the main menu
   zh-TW: 釘到主選單

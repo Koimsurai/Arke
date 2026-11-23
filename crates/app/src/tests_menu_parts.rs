@@ -1080,3 +1080,67 @@ fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
     assert!(items.iter().any(|i| i == "Share"), "{items:?}");
     assert!(!items.iter().any(|i| i == "Pin to Start"), "{items:?}");
 }
+
+/// "More options" says once what its pins do: the line is there until the submenu has been open,
+/// then it doesn't come back.
+#[gpui::test]
+fn more_options_explains_its_pins_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let hint = t!("menu.pin_hint").into_owned();
+    // A new profile: the line hasn't been shown yet.
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.pin_hint_seen = false, cx);
+        });
+    });
+    let items = |view: &Entity<Explorer>, cx: &mut VisualTestContext| {
+        view.update(cx, |v, _| {
+            v.context_menu
+                .as_ref()
+                .map(|m| m.shell_items_for_test())
+                .unwrap_or_default()
+        })
+    };
+    let seen = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .pin_hint_seen
+        })
+    };
+
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(items(&view, cx).contains(&hint), "{:?}", items(&view, cx));
+    assert!(!seen(cx), "not until More options opens");
+
+    let more = format!("{} ›", t!("menu.more_options"));
+    let at = menu_labels(&view, cx)
+        .unwrap_or_default()
+        .iter()
+        .position(|l| *l == more)
+        .expect("More options in the menu");
+    view.update(cx, |v, _| {
+        if let Some(menu) = v.context_menu.as_mut() {
+            menu.highlight_for_test(at);
+        }
+    });
+    cx.simulate_keystrokes("right");
+    cx.run_until_parked();
+    assert!(seen(cx), "shown once");
+    cx.simulate_keystrokes("escape escape");
+    cx.run_until_parked();
+
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(!items(&view, cx).contains(&hint), "{:?}", items(&view, cx));
+}

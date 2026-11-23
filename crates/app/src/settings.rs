@@ -740,6 +740,8 @@ pub(crate) struct Settings {
     /// extension showed them for when last read. An extension decides for itself whether it adds
     /// an item, so its row is drawn ahead only where it showed last time (#278).
     pub(crate) menu_pin_seen: std::collections::BTreeMap<String, Vec<String>>,
+    /// "More options" has shown, once, the line saying its pins keep a command in the main menu.
+    pub(crate) pin_hint_seen: bool,
     /// How long reading each drive's whole file table through the index service took (`C:\`
     /// keys), as last measured by Properties: a folder walk that has taken longer than that is
     /// overtaken by a read of the table (`properties.rs`).
@@ -882,6 +884,7 @@ impl Default for Settings {
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),
             menu_pin_seen: std::collections::BTreeMap::new(),
+            pin_hint_seen: false,
             mft_list: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
@@ -1166,6 +1169,9 @@ impl SettingsStore {
     /// Creates the global settings and reads the file in the background. With `path` `None` it is memory only (tests).
     pub(crate) fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<Self> {
         let store = Self::unread(path.clone(), cx);
+        // Tests compare whole menus: the one-time line in More options is left to its own test.
+        #[cfg(test)]
+        store.update(cx, |s, _| s.settings.pin_hint_seen = true);
         if let Some(path) = path {
             let (tx, rx) = flume::bounded::<(Settings, bool)>(1);
             let spawned = std::thread::Builder::new()

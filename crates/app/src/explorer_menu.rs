@@ -612,6 +612,9 @@ pub(crate) struct ContextMenu {
     left_filling: Vec<u32>,
     /// Top-level row index of the "Show more options" submenu.
     shell_slot: Option<usize>,
+    /// "More options" ends with the one-time line about its pins; set once it has been shown.
+    pin_hint: bool,
+    pin_hint_shown: std::cell::Cell<bool>,
     /// Number of pinned Windows commands placed directly above "Show more options".
     pinned_rows: usize,
     /// Single extensions' menus read for pinned commands, by session, while they are held.
@@ -689,6 +692,8 @@ impl ContextMenu {
             send_to: None,
             left_filling: Vec::new(),
             shell_slot: None,
+            pin_hint: false,
+            pin_hint_shown: std::cell::Cell::new(false),
             pinned_rows: 0,
             parts: Vec::new(),
             parts_request: None,
@@ -2508,6 +2513,7 @@ impl Explorer {
         };
         menu.shell_request = None;
         menu.whole_request = Some(request);
+        let hint = !SettingsStore::global(cx).read(cx).settings.pin_hint_seen;
         let mut filling = Vec::new();
         let children = match result {
             Ok(shell_menu) => {
@@ -2521,6 +2527,12 @@ impl Explorer {
                     .collect();
                 if entries.is_empty() {
                     vec![placeholder(t!("menu.no_more_options"))]
+                } else if hint {
+                    // Once: what the pins next to the commands do.
+                    menu.pin_hint = true;
+                    let mut entries = entries;
+                    entries.extend([MenuEntry::Separator, placeholder(t!("menu.pin_hint"))]);
+                    entries
                 } else {
                     entries
                 }
@@ -3116,6 +3128,18 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let entries = menu.level(level);
+        // "More options" showing its one-time line: it doesn't come back.
+        if level == 1
+            && menu.pin_hint
+            && menu.open.first() == menu.shell_slot.as_ref()
+            && !menu.pin_hint_shown.replace(true)
+        {
+            cx.defer(|cx| {
+                SettingsStore::global(cx).update(cx, |s, cx| {
+                    s.update(|st| st.pin_hint_seen = true, cx);
+                });
+            });
+        }
         let current = level == menu.open.len();
         let open_here = menu.open.get(level).copied();
         let marks = entries.iter().any(MenuEntry::has_mark);

@@ -21,6 +21,8 @@
 //!                                                 release.toml; needs GITHUB_TOKEN; curl), each
 //!                                                 file Arke downloads signed with
 //!                                                 MINISIGN_SECRET_KEY (.minisig)
+//! cargo xtask sign-check                          check that MINISIGN_SECRET_KEY is the key whose
+//!                                                 public half Arke has, without releasing
 //! ```
 //!
 //! Both architectures are built unless `--arch` picks one: `arke-<version>.exe` (x64) and
@@ -589,6 +591,43 @@ fn sign(file: &Path, asset: &str, version: &str, key: &minisign::SecretKey) -> R
     Ok(path)
 }
 
+/// Whether `key` signs what Arke's update keys accept: signs a few bytes in memory and checks
+/// them. The release checks every file it signs too ([`sign`]); this answers before a release.
+fn check_key(key: &minisign::SecretKey) -> Result<()> {
+    const PROBE: &[u8] = b"arke update key check";
+    let signature = minisign::sign(
+        None,
+        key,
+        std::io::Cursor::new(PROBE),
+        Some("arke key check"),
+        None,
+    )
+    .map_err(|e| anyhow!("signing: {e}"))?;
+    let checks = arke_keys()?.iter().any(|public| {
+        minisign::verify(
+            public,
+            &signature,
+            std::io::Cursor::new(PROBE),
+            true,
+            false,
+            false,
+        )
+        .is_ok()
+    });
+    ensure!(
+        checks,
+        "the signing key doesn't match the update keys in {UPDATE_KEYS_FILE}"
+    );
+    Ok(())
+}
+
+/// `cargo xtask sign-check`: the CI secret against the keys built into Arke.
+fn cmd_sign_check() -> Result<()> {
+    check_key(&signing_key()?)?;
+    println!("MINISIGN_SECRET_KEY matches the update key built into Arke");
+    Ok(())
+}
+
 /// Where Arke's update public keys are (`KEYS`).
 const UPDATE_KEYS_FILE: &str = "crates/app/src/update_sig.rs";
 
@@ -869,8 +908,9 @@ fn main() -> ExitCode {
         Some("licenses") => cmd_licenses(),
         Some("build") => cmd_build(rest).map(|_| ()),
         Some("publish") => cmd_publish(rest),
+        Some("sign-check") => cmd_sign_check(),
         _ => Err(anyhow!(
-            "usage: cargo xtask <change|status|version|release-version|i18n|licenses|build|publish> ..."
+            "usage: cargo xtask <change|status|version|release-version|i18n|licenses|build|publish|sign-check> ..."
         )),
     };
     match result {
@@ -975,6 +1015,14 @@ mod tests {
         let err = signed.unwrap_err().to_string();
         assert!(err.contains("doesn't match"), "{err}");
         assert!(!root().join("dist/arke-0.0.1-notes.md.minisig").exists());
+    }
+
+    /// The check before a release tells a key Arke doesn't know from one it does.
+    #[test]
+    fn key_check_needs_the_key_arke_has() {
+        let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let err = check_key(&pair.sk).unwrap_err().to_string();
+        assert!(err.contains("doesn't match"), "{err}");
     }
 
     #[test]

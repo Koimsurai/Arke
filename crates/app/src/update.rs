@@ -1356,6 +1356,55 @@ mod tests {
         assert!(latest.notes.starts_with("### ") && latest.notes.contains("\n\n### "));
     }
 
+    /// #249 against the real releases, through an HTTP proxy as the download route
+    /// (`ARKE_TEST_PROXY=127.0.0.1:18080`): the 0.8.1 installer comes through the route whole.
+    /// 0.8.1 predates update signatures, so its `.sha256` stands in for them here.
+    #[test]
+    #[ignore = "network"]
+    fn live_download_through_a_proxy() {
+        let proxy = std::env::var("ARKE_TEST_PROXY").expect("ARKE_TEST_PROXY=host:port");
+        crate::update_route::set(&proxy);
+        let url = "https://github.com/Koimsurai/Arke/releases/download/v0.8.1/arke-0.8.1-setup.exe";
+        let path = std::env::temp_dir().join(format!("arke-live-route-{}.exe", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        crate::update_route::fetch(url, |url, proxy| {
+            crate::win_http::get_resumed_via(url, &mut file, &mut |_, _| true, proxy)
+        })
+        .unwrap();
+        drop(file);
+        let used = crate::update_route::last();
+        assert!(
+            matches!(&used, Some(crate::update_route::Used::Route(_))),
+            "{used:?}"
+        );
+        let sha = crate::update_route::fetch(&format!("{url}.sha256"), |url, proxy| {
+            crate::win_http::get_text_via(url, &[], proxy)
+        })
+        .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        crate::update_route::set("");
+        let actual = Sha256::digest(&bytes)
+            .iter()
+            .fold(String::new(), |mut s, b| {
+                use std::fmt::Write as _;
+                let _ = write!(s, "{b:02x}");
+                s
+            });
+        assert_eq!(
+            sha.split_whitespace().next().map(str::to_ascii_lowercase),
+            Some(actual),
+            "{} bytes",
+            bytes.len()
+        );
+    }
+
     #[test]
     fn picks_the_exe_for_this_architecture() {
         let json = r#"[

@@ -116,6 +116,12 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   Asking could only fail: during a drag out of Arke it logged a "RefCell already borrowed" error on
   every mouse move. Arke's `crates/app/src/win_fileops.rs` `drag_out` holds the drag guard; the
   input count is kept by the wrapper `on_input` puts around the callback. (#338, #343)
+- `src/window.rs` `a11y_init`: the accessibility adapter starts out knowing the window is focused
+  when it is the active window (`GetActiveWindow`, what `WM_ACTIVATE` reports), not only when it
+  is the foreground window. The first `WM_ACTIVATE` comes before the adapter exists, and the
+  window isn't always the foreground one yet at that point; when it becomes so, no second
+  `WM_ACTIVATE` follows. The adapter then thought the window never had focus, so screen readers
+  were given no focused element: NVDA read nothing in the main window or Settings. (#322)
 
 ## gpui-pre 0.3.11
 

@@ -1196,7 +1196,12 @@ impl PlatformWindow for WindowsWindow {
 
     fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
         let action_handler = A11yActionHandler(callbacks.action);
-        let is_focused = unsafe { GetForegroundWindow() } == self.0.hwnd;
+        // Whether the window is active, as `WM_ACTIVATE` will report it from now on. The first
+        // `WM_ACTIVATE` usually comes before this, while there is no adapter to tell, and the
+        // window isn't always the foreground one yet at this point; when it becomes so, no second
+        // `WM_ACTIVATE` follows. Asking for the foreground window here left the adapter thinking
+        // the window never had focus, so screen readers were given no focused element at all.
+        let is_focused = self.is_active();
 
         let adapter = accesskit_windows::Adapter::new(
             accesskit_windows::HWND(self.0.hwnd.0),

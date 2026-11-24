@@ -2085,7 +2085,8 @@ impl Explorer {
     }
 
     /// The faded-out notice, where it was. Drawn only when no other toast is up, so it never
-    /// overlaps one. Its buttons are drawn (inert) so the text wraps as it did.
+    /// overlaps one. Its buttons are drawn (inert) so the text wraps, and the buttons sit beside
+    /// or below it, as they did.
     fn render_leaving_notice(&self) -> Option<AnyElement> {
         let ghost = self.closing_notice.as_ref()?;
         let (text, undo) = &ghost.value;
@@ -2222,34 +2223,15 @@ fn toast_body(
             theme::overlay()
         })
         .shadow(theme::elev_float())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(theme::s_8())
-                .child(glyph.size(theme::icon()).flex_none())
-                .child(div().flex_1().min_w_0().line_clamp(4).child(text))
-                .children(
-                    actions
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, (label, on_click))| {
-                            div()
-                                .id(("toast-action", ix))
-                                .debug_selector(move || format!("{id}-action-{ix}"))
-                                .a11y_button(label.to_string())
-                                .flex_none()
-                                .px(theme::s_6())
-                                .rounded(theme::r_4())
-                                .cursor_pointer()
-                                .text_size(theme::fs_12())
-                                .text_color(theme::text_muted())
-                                .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
-                                .child(label.to_string())
-                                .on_click(on_click)
-                        }),
-                ),
-        )
+        .child(toast_row(
+            id,
+            glyph.size(theme::icon()).flex_none(),
+            text,
+            actions,
+            // Progress text changes as the job runs: its Cancel stays beside it rather than
+            // jumping between lines whenever the text gets a little longer or shorter.
+            matches!(progress, Progress::None),
+        ))
         .children(
             match progress {
                 Progress::None => None,
@@ -2275,6 +2257,89 @@ fn toast_body(
             }),
         )
         .into_any_element()
+}
+
+/// Most lines a toast's message takes before it ends in "…". With the buttons out of the way the
+/// message has about 300 px, so six lines hold some 250 characters: an error naming a long full
+/// path still reads whole, and even a clamped toast stays under 200 px tall.
+const TOAST_LINES: usize = 6;
+
+/// A toast's icon and message, then its buttons. Like a WinUI InfoBar, the buttons sit beside a
+/// message that fits on one line next to them ("Copied", Close) and, when `wrap` is set and it
+/// doesn't, move to a line of their own below it, right-aligned, so the message gets the toast's
+/// whole width instead of a narrow column beside them.
+fn toast_row(
+    id: &'static str,
+    glyph: impl IntoElement,
+    text: String,
+    actions: Vec<(std::borrow::Cow<'static, str>, Listener)>,
+    wrap: bool,
+) -> impl IntoElement {
+    let buttons = (!actions.is_empty()).then(|| {
+        div()
+            .debug_selector(move || format!("{id}-actions"))
+            .ml_auto()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(theme::s_8())
+            .children(
+                actions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (label, on_click))| {
+                        toast_button(id, ix, label.into_owned(), on_click)
+                    }),
+            )
+    });
+    let row = div()
+        .flex()
+        .items_center()
+        .gap_x(theme::s_8())
+        .gap_y(theme::s_4());
+    let row = if wrap { row.flex_wrap() } else { row };
+    row.child(
+        // Grows from the message's own width (not `flex_1`'s zero basis), so a message too wide
+        // to sit beside the buttons pushes them to the next line.
+        div()
+            .flex_auto()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(theme::s_8())
+            .child(glyph)
+            .child(
+                div()
+                    .debug_selector(move || format!("{id}-text"))
+                    .min_w_0()
+                    .line_clamp(TOAST_LINES)
+                    .text_ellipsis()
+                    .child(text),
+            ),
+    )
+    .children(buttons)
+}
+
+/// One of a toast's buttons: quiet text that lights up on hover.
+fn toast_button(
+    id: &'static str,
+    ix: usize,
+    label: String,
+    on_click: Listener,
+) -> impl IntoElement {
+    div()
+        .id(("toast-action", ix))
+        .debug_selector(move || format!("{id}-action-{ix}"))
+        .a11y_button(label.clone())
+        .flex_none()
+        .px(theme::s_6())
+        .rounded(theme::r_4())
+        .cursor_pointer()
+        .text_size(theme::fs_12())
+        .text_color(theme::text_muted())
+        .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
+        .child(label)
+        .on_click(on_click)
 }
 
 pub(crate) fn tooltip(

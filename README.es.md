@@ -241,6 +241,8 @@ scoop install arke/arke
 Scoop lo mantiene actualizado (`scoop update arke`), y Arke le deja ese trabajo.
 
 Las compilaciones aún no están firmadas, por lo que SmartScreen puede pedir confirmación la primera vez.
+La firma a través de SignPath Foundation está en trámite, consulta la
+[política de firma de código](#política-de-firma-de-código).
 
 Arke consulta GitHub en busca de una versión nueva como máximo una vez al día y solo instala una cuando usted lo indica
 (Configuración › Acerca de).
@@ -439,6 +441,18 @@ de interfaz del editor Zed, y sobre los crates de código abierto enumerados en
 [Files](https://files.community/), y la barra lateral de pestañas es un guiño al navegador Arc.
 
 El nombre viene de la mitología griega: Arke es la hermana gemela de Iris, ambas mensajeras con alas.
+
+## Política de firma de código
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/) (firma de código gratuita de SignPath.io, certificado emitido
+por SignPath Foundation).
+
+- Commits y revisión: [Koimsurai](https://github.com/Koimsurai)
+- Aprobación: [Koimsurai](https://github.com/Koimsurai)
+
+Solo se firman los exe que compila el flujo de publicación de este repositorio en GitHub Actions a
+partir de un commit con etiqueta, y cada versión se aprueba a mano antes de firmarla.
 
 ## Privacidad
 

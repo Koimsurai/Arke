@@ -486,10 +486,25 @@ fn column_cmp(
 
 /// Lowercased type texts, one per extension, frozen when a sort starts: the texts can change
 /// while a sort runs (Windows' type names arrive on another thread), and a comparison whose
-/// answers change midway is no total order. Never asks the shell.
+/// answers change midway is no total order. Never asks the shell. Each text comes with its
+/// Windows sort key (`collate.rs`), made once per extension, as names have theirs (#331).
 #[derive(Default)]
 pub struct TypeKeys {
-    keys: HashMap<String, Arc<str>>,
+    keys: HashMap<String, TypeKey>,
+}
+
+/// A type text and, where Windows orders texts, its sort key.
+struct TypeKey {
+    text: Arc<str>,
+    collation: Option<Arc<[u8]>>,
+}
+
+impl TypeKey {
+    fn of(e: &Entry) -> Self {
+        let text = type_text(e);
+        let collation = crate::collate::available().then(|| crate::collate::key(&text));
+        Self { text, collation }
+    }
 }
 
 /// What the text of `e` is keyed by: folders and folder links have their own texts (no
@@ -515,29 +530,42 @@ impl TypeKeys {
             for e in entries {
                 let id = type_id(e);
                 if !keys.contains_key(id) {
-                    keys.insert(id.to_owned(), type_text(e));
+                    keys.insert(id.to_owned(), TypeKey::of(e));
                 }
             }
         }
         Self { keys }
     }
 
-    fn key(&self, e: &Entry) -> std::borrow::Cow<'_, str> {
-        match self.keys.get(type_id(e)) {
-            Some(known) => std::borrow::Cow::Borrowed(known),
-            None => std::borrow::Cow::Owned(type_text(e).to_string()),
+    /// The frozen key of `e`'s type, or one made now into `own` for a type the sort didn't see.
+    fn key<'a>(&'a self, e: &Entry, own: &'a mut Option<TypeKey>) -> &'a TypeKey {
+        if let Some(known) = self.keys.get(type_id(e)) {
+            known
+        } else {
+            own.insert(TypeKey::of(e))
+        }
+    }
+
+    fn cmp(&self, a: &Entry, b: &Entry) -> Ordering {
+        let (mut own_a, mut own_b) = (None, None);
+        let a = self.key(a, &mut own_a);
+        let b = self.key(b, &mut own_b);
+        match (&a.collation, &b.collation) {
+            (Some(x), Some(y)) => x.cmp(y).then_with(|| natural_cmp(&a.text, &b.text)),
+            _ => natural_cmp(&a.text, &b.text),
         }
     }
 }
 
-/// Type column order: the shown type text in natural order (File Explorer sorts by the type's
-/// display name too), not the extension.
+/// Type column order: the shown type text in File Explorer's order (`collate.rs`; natural order
+/// where Windows can't give it), not the extension: File Explorer sorts by the type's display
+/// name too.
 fn type_cmp(a: &Entry, b: &Entry, types: &TypeKeys) -> Ordering {
     // Same kind of item with the same extension: same text, no lookup.
     if a.kind == b.kind && a.extension() == b.extension() {
         return Ordering::Equal;
     }
-    natural_cmp(&types.key(a), &types.key(b))
+    types.cmp(a, b)
 }
 
 /// File Explorer's name order (`collate.rs`), or the natural, case-insensitive order where Windows
@@ -1308,6 +1336,41 @@ mod tests {
         spec.sort(&mut v);
         assert_eq!(names(&v), ["a.zzz", "b.txt"], "Latin text before CJK");
         rust_i18n::set_locale("en");
+    }
+
+    /// Type texts go in File Explorer's order, as names do (#331): by Windows' sort keys, not by
+    /// code point. "éclair" comes before "zeta" in every language (by code point it came after),
+    /// and in Simplified Chinese File Explorer puts 配置设置 (pèi) before 应用程序 (yìng), with
+    /// Latin text first.
+    #[test]
+    fn type_order_is_file_explorers() {
+        if !crate::collate::available() {
+            return;
+        }
+        rust_i18n::set_locale("en");
+        let f = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        crate::format::set_type_name("t331z", Some("Zeta File"));
+        crate::format::set_type_name("t331e", Some("Éclair File"));
+        let mut v = vec![f("a.t331z"), f("b.t331e")];
+        let spec = SortSpec::by(SortColumn::Type, true, false);
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["b.t331e", "a.t331z"]);
+
+        crate::format::set_type_name("t331x", Some("应用程序"));
+        crate::format::set_type_name("t331i", Some("配置设置"));
+        crate::format::set_type_name("t331d", Some("DWG 文件"));
+        let mut v = vec![f("a.t331x"), f("b.t331i"), f("c.t331d")];
+        spec.sort(&mut v);
+        // The order is the user's language's: the same as the keys'.
+        let key = |e: &Entry| crate::collate::key(&crate::format::type_label(e).to_lowercase());
+        for w in v.windows(2) {
+            assert!(key(&w[0]) <= key(&w[1]), "{:?}", names(&v));
+        }
+        assert_eq!(names(&v)[0], "c.t331d", "Latin text first");
+        // Simplified Chinese, as on hzhbest's machine.
+        let zh = |t: &str| crate::collate::key_for("zh-CN", t).unwrap();
+        assert!(zh("配置设置") < zh("应用程序"));
+        assert!(zh("dwg 文件") < zh("配置设置"));
     }
 
     /// Three keys over 100k entries: a total order (every neighbor pair in order), and quick.

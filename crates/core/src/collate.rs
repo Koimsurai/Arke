@@ -39,6 +39,13 @@ pub(crate) fn key(name: &str) -> Arc<[u8]> {
     })
 }
 
+/// The sort key for `name` in language `locale` (`zh-CN`), for tests that need one language's
+/// order whatever the machine's is.
+#[cfg(all(test, windows))]
+pub(crate) fn key_for(locale: &str, name: &str) -> Option<Arc<[u8]>> {
+    imp::key_for(locale, name)
+}
+
 /// Makes the keys `entries` don't have yet; on several threads for big lists. Does nothing where
 /// names aren't ordered by keys.
 pub fn prepare(entries: &[Entry]) {
@@ -76,6 +83,17 @@ mod imp {
     const FLAGS: u32 = LCMAP_SORTKEY | NORM_IGNORECASE.0 | SORT_DIGITSASNUMBERS.0;
 
     pub(super) fn key(name: &str) -> Option<std::sync::Arc<[u8]>> {
+        key_in(PCWSTR::null(), name)
+    }
+
+    /// The key in the given language; tests pin one.
+    #[cfg(test)]
+    pub(super) fn key_for(locale: &str, name: &str) -> Option<std::sync::Arc<[u8]>> {
+        let locale: Vec<u16> = locale.encode_utf16().chain([0]).collect();
+        key_in(PCWSTR(locale.as_ptr()), name)
+    }
+
+    fn key_in(locale: PCWSTR, name: &str) -> Option<std::sync::Arc<[u8]>> {
         let wide: Vec<u16> = name.encode_utf16().collect();
         if wide.is_empty() {
             return Some(std::sync::Arc::from(&[][..]));
@@ -83,8 +101,7 @@ mod imp {
         // With LCMAP_SORTKEY the destination is bytes and its size is counted in bytes. A null
         // locale name is the user's locale (LOCALE_NAME_USER_DEFAULT).
         // SAFETY: size query only; no buffer.
-        let need =
-            unsafe { LCMapStringEx(PCWSTR::null(), FLAGS, &wide, None, None, None, LPARAM(0)) };
+        let need = unsafe { LCMapStringEx(locale, FLAGS, &wide, None, None, None, LPARAM(0)) };
         let need = usize::try_from(need).ok().filter(|&n| n > 0)?;
         // The wrapper passes the slice's length as the size, which the call reads as bytes: `need`
         // units are twice the room it is told about.
@@ -92,7 +109,7 @@ mod imp {
         // SAFETY: the call writes at most `need` bytes into `buf`, which holds twice that.
         let got = unsafe {
             LCMapStringEx(
-                PCWSTR::null(),
+                locale,
                 FLAGS,
                 &wide,
                 Some(&mut buf[..]),

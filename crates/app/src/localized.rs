@@ -21,7 +21,7 @@ const MAX_INI: u64 = 64 * 1024;
 /// disk: background thread.
 pub(crate) fn read(fs: &dyn arke_core::Fs, dir: &Path) -> Option<String> {
     let bytes = fs.read(&dir.join("desktop.ini"), MAX_INI).ok()?;
-    let value = name_in(&decode(&bytes))?;
+    let value = name_in(&decode(&bytes, ANSI).0)?;
     let name = resolve(&value);
     let name = name.trim();
     (!name.is_empty()).then(|| name.to_owned())
@@ -29,14 +29,14 @@ pub(crate) fn read(fs: &dyn arke_core::Fs, dir: &Path) -> Option<String> {
 
 /// Renames the folder `dir` as File Explorer does when its name comes from `desktop.ini`: the
 /// folder keeps its own name (programs find Documents by it) and `LocalizedResourceName` becomes
-/// `name`; the rest of the file stays. Writes the disk: background thread.
+/// `name`; the rest of the file stays, in the encoding it was in. Writes the disk: background
+/// thread.
 pub(crate) fn write_name(dir: &Path, name: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let path = dir.join("desktop.ini");
-    let text = std::fs::read(&path).map_or_else(|_| String::new(), |b| decode(&b));
-    let text = with_name(&text, name);
-    let mut bytes = vec![0xFF, 0xFE];
-    bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    let (text, encoding) = std::fs::read(&path)
+        .map_or_else(|_| (String::new(), Encoding::Utf16), |b| decode(&b, ANSI));
+    let bytes = encode(&with_name(&text, name), encoding);
     // Opened for writing, not created anew: Windows refuses to replace a hidden system file.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -88,9 +88,27 @@ fn with_name(ini: &str, name: &str) -> String {
     text
 }
 
-/// `desktop.ini` as text: UTF-16 with a byte order mark (what Windows writes), UTF-8, or the
-/// ANSI code page read leniently.
-fn decode(bytes: &[u8]) -> String {
+/// The ANSI code page: the system's (`CP_ACP`), which is how Windows reads a `desktop.ini` with no
+/// byte order mark. Tests pass a fixed one.
+const ANSI: u32 = 0;
+
+/// How a `desktop.ini` was written, so a rename writes it back the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Encoding {
+    /// UTF-16 with a byte order mark: what Windows writes.
+    Utf16,
+    /// UTF-8 with a byte order mark.
+    Utf8Bom,
+    /// UTF-8 with no byte order mark (some tools write it).
+    Utf8,
+    /// No byte order mark and not UTF-8: an ANSI code page (older files, other programs': GBK,
+    /// Big5, Shift-JIS). Plain ASCII is this too.
+    Ansi(u32),
+}
+
+/// `desktop.ini` as text, and how it was encoded. With no byte order mark it is UTF-8 when the
+/// bytes are valid UTF-8 (and not plain ASCII), otherwise code page `ansi`.
+fn decode(bytes: &[u8], ansi: u32) -> (String, Encoding) {
     match bytes {
         [0xFF, 0xFE, rest @ ..] => {
             let units: Vec<u16> = rest
@@ -99,10 +117,97 @@ fn decode(bytes: &[u8]) -> String {
                 .iter()
                 .map(|&pair| u16::from_le_bytes(pair))
                 .collect();
-            String::from_utf16_lossy(&units)
+            (String::from_utf16_lossy(&units), Encoding::Utf16)
         }
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => (
+            String::from_utf8_lossy(rest).into_owned(),
+            Encoding::Utf8Bom,
+        ),
+        _ if !bytes.is_ascii() && std::str::from_utf8(bytes).is_ok() => {
+            (String::from_utf8_lossy(bytes).into_owned(), Encoding::Utf8)
+        }
+        _ => (ansi::decode(bytes, ansi), Encoding::Ansi(ansi)),
+    }
+}
+
+/// `text` written as `encoding`. A name the ANSI code page can't hold makes the file UTF-16 (what
+/// Windows itself writes) rather than turning those characters into question marks.
+fn encode(text: &str, encoding: Encoding) -> Vec<u8> {
+    let utf16 = || {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    };
+    match encoding {
+        Encoding::Utf16 => utf16(),
+        Encoding::Utf8Bom => [&[0xEF, 0xBB, 0xBF][..], text.as_bytes()].concat(),
+        Encoding::Utf8 => text.as_bytes().to_vec(),
+        Encoding::Ansi(page) => ansi::encode(text, page).unwrap_or_else(utf16),
+    }
+}
+
+#[cfg(windows)]
+mod ansi {
+    use windows::Win32::Globalization::{
+        MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar, WideCharToMultiByte,
+    };
+    use windows::core::PCSTR;
+
+    /// `bytes` in code page `page`.
+    pub(super) fn decode(bytes: &[u8], page: u32) -> String {
+        if bytes.is_empty() {
+            return String::new();
+        }
+        let flags = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
+        // SAFETY: pure conversion; the first call gets the length, the second fills a buffer of it.
+        let wide = unsafe {
+            let len = MultiByteToWideChar(page, flags, bytes, None);
+            let Ok(len) = usize::try_from(len) else {
+                return String::from_utf8_lossy(bytes).into_owned();
+            };
+            let mut buf = vec![0u16; len];
+            let n = MultiByteToWideChar(page, flags, bytes, Some(&mut buf));
+            buf.truncate(usize::try_from(n).unwrap_or(0));
+            buf
+        };
+        String::from_utf16_lossy(&wide)
+    }
+
+    /// `text` in code page `page`; `None` if a character has no place in it.
+    pub(super) fn encode(text: &str, page: u32) -> Option<Vec<u8>> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        if wide.is_empty() {
+            return Some(Vec::new());
+        }
+        let mut lossy = windows::core::BOOL(0);
+        // SAFETY: pure conversion; the first call gets the length, the second fills a buffer of
+        // it. The flag pointer is valid for the call.
+        unsafe {
+            let len = WideCharToMultiByte(page, 0, &wide, None, PCSTR::null(), None);
+            let len = usize::try_from(len).ok().filter(|&n| n > 0)?;
+            let mut out = vec![0u8; len];
+            let n = WideCharToMultiByte(
+                page,
+                0,
+                &wide,
+                Some(&mut out),
+                PCSTR::null(),
+                Some(&raw mut lossy),
+            );
+            out.truncate(usize::try_from(n).ok()?);
+            (!lossy.as_bool()).then_some(out)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod ansi {
+    pub(super) fn decode(bytes: &[u8], _: u32) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    pub(super) fn encode(text: &str, _: u32) -> Option<Vec<u8>> {
+        text.is_ascii().then(|| text.as_bytes().to_vec())
     }
 }
 
@@ -189,10 +294,47 @@ mod tests {
         let text = "[.ShellClassInfo]\r\nLocalizedResourceName=下载\r\n";
         let mut utf16 = vec![0xFF, 0xFE];
         utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-        assert_eq!(name_in(&decode(&utf16)).as_deref(), Some("下载"));
+        assert_eq!(name_in(&decode(&utf16, ANSI).0).as_deref(), Some("下载"));
         let mut utf8 = vec![0xEF, 0xBB, 0xBF];
         utf8.extend(text.as_bytes());
-        assert_eq!(name_in(&decode(&utf8)).as_deref(), Some("下载"));
+        assert_eq!(name_in(&decode(&utf8, ANSI).0).as_deref(), Some("下载"));
+        assert_eq!(
+            decode(text.as_bytes(), ANSI),
+            (text.to_owned(), Encoding::Utf8),
+            "UTF-8 with no byte order mark"
+        );
+    }
+
+    /// An older or another program's `desktop.ini` in an ANSI code page (GBK here, code page 936
+    /// whatever the system's is) reads right, and a rename writes it back in that code page; a
+    /// name the code page can't hold makes the file UTF-16 instead of question marks.
+    #[cfg(windows)]
+    #[test]
+    fn ansi_files_are_read_and_written_in_their_code_page() {
+        const GBK: u32 = 936;
+        // 下载 in GBK.
+        let ini = b"[.ShellClassInfo]\r\nLocalizedResourceName=\xCF\xC2\xD4\xD8\r\n";
+        let (text, encoding) = decode(ini, GBK);
+        assert_eq!(encoding, Encoding::Ansi(GBK));
+        assert_eq!(name_in(&text).as_deref(), Some("下载"));
+        // 文件 in GBK.
+        assert_eq!(
+            encode(&with_name(&text, "文件"), encoding),
+            b"[.ShellClassInfo]\r\nLocalizedResourceName=\xCE\xC4\xBC\xFE\r\n"
+        );
+        let emoji = encode(&with_name(&text, "文件\u{1F642}"), encoding);
+        assert_eq!(emoji[..2], [0xFF, 0xFE]);
+        assert_eq!(
+            name_in(&decode(&emoji, GBK).0).as_deref(),
+            Some("文件\u{1F642}")
+        );
+        // Plain ASCII counts as ANSI: a rename keeps it a byte per character.
+        let (ascii, encoding) = decode(b"[.ShellClassInfo]\r\n", GBK);
+        assert_eq!(encoding, Encoding::Ansi(GBK));
+        assert_eq!(
+            encode(&with_name(&ascii, "Docs"), encoding),
+            b"[.ShellClassInfo]\r\nLocalizedResourceName=Docs\r\n"
+        );
     }
 
     #[test]

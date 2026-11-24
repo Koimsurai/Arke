@@ -404,6 +404,15 @@ impl OpCenter {
         });
     }
 
+    /// Drops a job that stopped only to ask something (an archive's password, #346): the retry
+    /// is a job of its own.
+    pub(crate) fn forget(cx: &mut App, id: u64) {
+        if !cx.has_global::<Self>() {
+            return;
+        }
+        cx.update_global::<Self, _>(|center, _| center.jobs.retain(|job| job.id != id));
+    }
+
     /// The finished job can be undone with this undo history id.
     pub(crate) fn set_undo(cx: &mut App, id: u64, undo: u64) {
         if !cx.has_global::<Self>() {

@@ -149,7 +149,7 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   mapeadas e locais de rede podem ter nomes próprios, guardados apenas no Arke.
 - OneDrive e outras pastas na nuvem com status de sincronização. As visualizações nunca baixam
   arquivos que existem apenas online.
-- Arquivos compactados: visualize e extraia zip, 7z, tar (.gz, .xz, .bz2, .zst) e RAR, compacte em
+- Arquivos compactados: visualize e extraia zip e 7z (também com senha), tar (.gz, .xz, .bz2, .zst) e RAR, compacte em
   zip. RAR e os tars xz / bzip2 / zstd usam a libarchive incluída no Windows (melhor no Windows 11
   23H2 e posterior).
 

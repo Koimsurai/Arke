@@ -5066,6 +5066,38 @@ net.user_hint:
   es: "nombre o DOMINIO\\nombre"
   pt-BR: "nome ou DOMÍNIO\\nome"
   ja: "名前、または DOMAIN\\名前"
+archive_password.title:
+  en: Enter password
+  zh-TW: 輸入密碼
+  zh-CN: 输入密码
+  de: Kennwort eingeben
+  es: Introducir contraseña
+  pt-BR: Digite a senha
+  ja: パスワードを入力
+archive_password.intro:
+  en: "“%{name}” is password-protected."
+  zh-TW: 「%{name}」有密碼保護。
+  zh-CN: “%{name}”受密码保护。
+  de: "„%{name}“ ist kennwortgeschützt."
+  es: "«%{name}» está protegido con contraseña."
+  pt-BR: "“%{name}” é protegido por senha."
+  ja: 「%{name}」はパスワードで保護されています。
+archive_password.ok:
+  en: Extract
+  zh-TW: 解壓縮
+  zh-CN: 解压
+  de: Extrahieren
+  es: Extraer
+  pt-BR: Extrair
+  ja: 展開
+archive_password.wrong:
+  en: The password is incorrect. Try again.
+  zh-TW: 密碼不正確，請再試一次。
+  zh-CN: 密码不正确，请重试。
+  de: Das Kennwort ist falsch. Versuchen Sie es erneut.
+  es: La contraseña no es correcta. Inténtalo de nuevo.
+  pt-BR: A senha está incorreta. Tente novamente.
+  ja: パスワードが正しくありません。もう一度入力してください。
 net.password:
   en: Password
   zh-TW: 密碼

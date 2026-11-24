@@ -137,6 +137,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
     settings_panel::bind_keys(cx);
     uninstall_page::bind_keys(cx);
     crate::net_dialog::bind_keys(cx);
+    crate::archive_password::bind_keys(cx);
     crate::recycle_bin::bind_keys(cx);
     let ctx = Some("Workspace");
     cx.bind_keys([
@@ -385,6 +386,8 @@ pub(crate) struct Workspace {
     closing_palette: Option<crate::motion::Leaving<Entity<LocationPalette>>>,
     /// Network login/connect dialog.
     net_dialog: Option<NetDialogSlot>,
+    /// An archive's password, asked when extracting it (#346).
+    archive_password: Option<ArchivePasswordSlot>,
     /// Saved workspaces panel.
     workspaces: Option<(Entity<saved::WorkspacesPanel>, Subscription)>,
     /// The saved workspace this window was opened from or saved as last (#269).
@@ -458,6 +461,15 @@ pub(crate) struct Workspace {
     start_clock: StartClock,
 }
 
+/// Open archive password dialog, and the pane and archive it extracts.
+struct ArchivePasswordSlot {
+    dialog: Entity<crate::archive_password::ArchivePasswordDialog>,
+    view: Entity<Explorer>,
+    archive: PathBuf,
+    here: bool,
+    _events: Subscription,
+}
+
 /// Open network dialog, plus the tab and path to reopen after a successful login.
 struct NetDialogSlot {
     dialog: Entity<NetDialog>,
@@ -484,6 +496,62 @@ impl Workspace {
             _events: events,
         });
         cx.notify();
+    }
+
+    /// Asks for the password of the archive `view` is extracting; that pane then extracts with it.
+    fn ask_password(
+        &mut self,
+        view: &Entity<Explorer>,
+        ask: &crate::archive_password::PasswordAsk,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (view, ask) = (view.clone(), ask.clone());
+        let name = ask.archive.file_name().map_or_else(
+            || ask.archive.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let wrong = ask.wrong;
+        let dialog = cx
+            .new(|cx| crate::archive_password::ArchivePasswordDialog::new(name, wrong, window, cx));
+        let events = cx.subscribe_in(&dialog, window, Self::on_archive_password);
+        self.archive_password = Some(ArchivePasswordSlot {
+            dialog,
+            view,
+            archive: ask.archive,
+            here: ask.here,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn on_archive_password(
+        &mut self,
+        _: &Entity<crate::archive_password::ArchivePasswordDialog>,
+        event: &crate::archive_password::ArchivePasswordEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = self.archive_password.take() else {
+            return;
+        };
+        self.focus_active(window, cx);
+        if let crate::archive_password::ArchivePasswordEvent::Submit(password) = event {
+            let password = password.clone();
+            slot.view.update(cx, |v, cx| {
+                v.extract_archive(slot.archive, slot.here, Some(password), cx);
+            });
+        }
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn archive_password_for_test(
+        &self,
+    ) -> Option<Entity<crate::archive_password::ArchivePasswordDialog>> {
+        self.archive_password
+            .as_ref()
+            .map(|slot| slot.dialog.clone())
     }
 
     fn on_net_dialog(
@@ -753,6 +821,7 @@ impl Workspace {
             palette: None,
             closing_palette: None,
             net_dialog: None,
+            archive_password: None,
             workspaces: None,
             saved_shown: None,
             _saved_workspaces: saved_workspaces,
@@ -1321,12 +1390,10 @@ impl Workspace {
             ExplorerEvent::NetLogin(path) if arke_core::remote::is_remote(path) => {
                 self.remote_login(path, source, window, cx);
             }
+            ExplorerEvent::ArchivePassword(ask) => self.ask_password(source, ask, window, cx),
             ExplorerEvent::NetLogin(path) => {
-                let view = self
-                    .tabs
-                    .get(tab_ix)
-                    .and_then(|t| t.panes.get(pane_ix))
-                    .map(|p| p.view.clone());
+                // The pane that asked (`locate` found it at tab_ix, pane_ix) reopens the path.
+                let view = Some(source.clone());
                 // Log in to the share root (\\server\share), not a folder below it.
                 let share = arke_core::net::share_root(path).unwrap_or_else(|| path.clone());
                 self.open_net_dialog(
@@ -3141,6 +3208,11 @@ impl Render for Workspace {
             .children(welcome::welcome_card(cx))
             .children(update_page::update_notice(cx))
             .children(self.net_dialog.as_ref().map(|slot| slot.dialog.clone()))
+            .children(
+                self.archive_password
+                    .as_ref()
+                    .map(|slot| slot.dialog.clone()),
+            )
             .children(self.workspaces.as_ref().map(|(panel, _)| panel.clone()))
             .children(self.palette.as_ref().map(|(palette, _)| {
                 // Ctrl+T: clicking the backdrop closes it.

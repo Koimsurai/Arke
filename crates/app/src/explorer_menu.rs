@@ -1024,6 +1024,8 @@ impl ContextMenu {
 
 pub(crate) struct ExtractJob {
     pub(crate) name: String,
+    /// What is extracted, and whether into the folder it is in: asked again for its password.
+    archive: Option<(PathBuf, bool)>,
     /// Compressing rather than extracting; changes the banner text.
     pub(crate) compress: bool,
     /// Progress center job. Cancelling sets its `cancel`; the progress center and banner share one
@@ -1038,6 +1040,14 @@ fn report(ops: &crate::shell::OpProgress, p: ExtractProgress) {
     ops.done.store(p.files, Ordering::Relaxed);
     ops.work_done.store(p.done, Ordering::Relaxed);
     ops.work_total.store(p.total, Ordering::Relaxed);
+}
+
+/// The extraction stopped for a password: none was given, or it was wrong.
+const fn needs_password(e: &archive::ArchiveError) -> bool {
+    matches!(
+        e,
+        archive::ArchiveError::Encrypted | archive::ArchiveError::WrongPassword
+    )
 }
 
 /// Maps a compress/extract result to a progress center outcome.
@@ -1936,7 +1946,7 @@ impl Explorer {
             }
             C::ExtractToFolder | C::ExtractHere => {
                 if let Some((path, false)) = targets.first().cloned() {
-                    self.start_extract(path, command == C::ExtractHere, cx);
+                    self.extract_archive(path, command == C::ExtractHere, None, cx);
                 }
             }
             C::Cut => self.cut_files(&CutFiles, window, cx),
@@ -2681,7 +2691,15 @@ impl Explorer {
 
     // ───────────────────────── Extraction ─────────────────────────
 
-    fn start_extract(&mut self, archive_path: PathBuf, here: bool, cx: &mut Context<Self>) {
+    /// Extracts `archive_path` into a new folder next to it, or `here`; `password` for a
+    /// protected zip or 7z (#346), asked for after a first try without one.
+    pub(crate) fn extract_archive(
+        &mut self,
+        archive_path: PathBuf,
+        here: bool,
+        password: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.extract_job.is_some() {
             self.notice = Some(t!("extract.busy").into_owned());
             return;
@@ -2711,6 +2729,7 @@ impl Explorer {
             crate::op_center::OpCenter::begin(cx, "op.extract", Some((name.clone(), 1)));
         self.extract_job = Some(ExtractJob {
             name,
+            archive: Some((archive_path.clone(), here)),
             compress: false,
             job,
             ops: Arc::clone(&ops),
@@ -2743,8 +2762,15 @@ impl Explorer {
                     cancel: &ops.cancel,
                     progress: &progress,
                     decode_legacy: &decode,
+                    password: password.as_deref(),
                 },
             );
+            drop(password);
+            // Stopped to ask for the password: the new folder goes until it has something in it
+            // (it's empty, so this removes nothing else).
+            if folder.is_some() && result.as_ref().is_err_and(needs_password) {
+                let _ = std::fs::remove_dir(&dest);
+            }
             let _ = tx.send(AppEvent::ExtractDone { result, folder });
         });
         cx.notify();
@@ -2780,6 +2806,7 @@ impl Explorer {
             crate::op_center::OpCenter::begin(cx, "op.compress", Some((first_name, sources.len())));
         self.extract_job = Some(ExtractJob {
             name: name.clone(),
+            archive: None,
             compress: true,
             job,
             ops: Arc::clone(&ops),
@@ -2877,7 +2904,26 @@ impl Explorer {
         folder: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let name = match self.extract_job.take() {
+        let job = self.extract_job.take();
+        // A protected archive: ask for its password (again, if this one was wrong) instead of
+        // failing. The try that stopped to ask isn't a job in the operation center.
+        if let (Err(e), Some(job)) = (&result, &job)
+            && needs_password(e)
+            && let Some((archive, here)) = job.archive.clone()
+        {
+            crate::op_center::OpCenter::forget(cx, job.job);
+            let wrong = matches!(e, archive::ArchiveError::WrongPassword);
+            cx.emit(ExplorerEvent::ArchivePassword(
+                crate::archive_password::PasswordAsk {
+                    archive,
+                    here,
+                    wrong,
+                },
+            ));
+            cx.notify();
+            return;
+        }
+        let name = match job {
             Some(job) => {
                 let state = outcome(result.as_ref().map(|s| s.cancelled));
                 crate::op_center::OpCenter::finish(cx, job.job, "op.extract", &state);

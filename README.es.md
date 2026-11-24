@@ -137,7 +137,7 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
   lo permita para esa ubicación). Las unidades asignadas y los lugares de red pueden tener nombres propios, guardados
   solo en Arke.
 - OneDrive y otras carpetas en la nube con estado de sincronización. Las vistas previas nunca descargan archivos solo en línea.
-- Archivos comprimidos: vista previa y extracción de zip, 7z, tar (.gz, .xz, .bz2, .zst) y RAR, compresión a zip.
+- Archivos comprimidos: vista previa y extracción de zip y 7z (también con contraseña), tar (.gz, .xz, .bz2, .zst) y RAR, compresión a zip.
   RAR y los tar xz / bzip2 / zstd usan la libarchive integrada en Windows (mejor en Windows 11
   23H2 y posteriores).
 

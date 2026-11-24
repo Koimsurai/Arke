@@ -153,7 +153,7 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
   Netzwerkorte können eigene Namen erhalten, die nur in Arke gespeichert werden.
 - OneDrive und andere Cloud-Ordner mit Synchronisierungsstatus. Vorschauen laden nie Dateien herunter,
   die nur online verfügbar sind.
-- Archive: zip, 7z, tar (.gz, .xz, .bz2, .zst) und RAR in der Vorschau anzeigen und extrahieren, als
+- Archive: zip und 7z (auch kennwortgeschützte), tar (.gz, .xz, .bz2, .zst) und RAR in der Vorschau anzeigen und extrahieren, als
   zip komprimieren. RAR und die tar-Varianten xz / bzip2 / zstd nutzen die in Windows enthaltene
   libarchive (am besten ab Windows 11 23H2).
 

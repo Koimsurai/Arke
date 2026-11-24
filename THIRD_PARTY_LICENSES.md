@@ -7,16 +7,17 @@ design references and other third-party material are in `THIRD_PARTY_NOTICES.md`
 
 ## Overview
 
-- Apache License 2.0: 341
-- MIT License: 74
+- Apache License 2.0: 342
+- MIT License: 76
 - Unicode License v3: 25
 - ISC License: 22
-- BSD 3-Clause "New" or "Revised" License: 13
+- BSD 3-Clause "New" or "Revised" License: 18
 - zlib License: 3
+- BSD 2-Clause "Simplified" License: 2
 - Creative Commons Zero v1.0 Universal: 2
 - Mozilla Public License 2.0: 2
 - BSD Zero Clause License: 1
-- BSD 2-Clause "Simplified" License: 1
+- bzip2 and libbzip2 License v1.0.6: 1
 
 ## BSD Zero Clause License
 
@@ -4826,6 +4827,7 @@ Used by:
 - bitflags 2.13.2 (https://github.com/bitflags/bitflags)
 - bstr 1.13.1 (https://github.com/BurntSushi/bstr)
 - bumpalo 3.20.3 (https://github.com/fitzgen/bumpalo)
+- bzip2 0.6.1 (https://github.com/trifectatechfoundation/bzip2-rs)
 - cfg-if 1.0.5 (https://github.com/rust-lang/cfg-if)
 - concurrent-queue 2.5.0 (https://github.com/smol-rs/concurrent-queue)
 - crossbeam-deque 0.8.8 (https://github.com/crossbeam-rs/crossbeam)
@@ -7711,6 +7713,7 @@ limitations under the License.
 
 Used by:
 
+- gpui-pre 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-windows 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-collections 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-derive-refineable 0.3.11 (https://github.com/zed-industries/zed)
@@ -7724,7 +7727,6 @@ Used by:
 - gpui-pre-util 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-ztracing-macro 0.3.11 (https://github.com/zed-industries/zed)
 - gpui-pre-ztracing 0.3.11 (https://github.com/zed-industries/zed)
-- gpui-pre 0.3.11 (https://github.com/zed-industries/zed)
 
 ````text
 Copyright 2022 - 2025 Zed Industries, Inc.
@@ -8238,6 +8240,45 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
+## BSD 2-Clause "Simplified" License
+
+Used by:
+
+- zstd-sys 2.1.3+zstd.1.5.7 (https://github.com/gyscos/zstd-rs)
+
+````text
+The decoders for legacy formats, in zstd/lib/legacy/, include code under the
+2-clause BSD license:
+
+BSD 2-Clause License
+
+Copyright (C) 2013-2016, Yann Collet.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+````
+
 ## BSD 3-Clause "New" or "Revised" License
 
 Used by:
@@ -8299,6 +8340,86 @@ pub(crate) static GB18030_2022_OVERRIDE_BYTES: [[u8; 2]; 18] = [
     [0xFE, 0x90],
     [0xFE, 0xA0],
 ];
+
+````
+
+## BSD 3-Clause "New" or "Revised" License
+
+Used by:
+
+- zstd-safe 8.3.0 (https://github.com/gyscos/zstd-rs)
+- zstd-sys 2.1.3+zstd.1.5.7 (https://github.com/gyscos/zstd-rs)
+- zstd 0.14.4 (https://github.com/gyscos/zstd-rs)
+
+````text
+BSD 3-Clause License
+
+Copyright (c) 2026, Alexandre Bury
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+````
+
+## BSD 3-Clause "New" or "Revised" License
+
+Used by:
+
+- zstd-sys 2.1.3+zstd.1.5.7 (https://github.com/gyscos/zstd-rs)
+
+````text
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
@@ -8574,6 +8695,48 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+````
+
+## BSD 3-Clause "New" or "Revised" License
+
+Used by:
+
+- zstd-sys 2.1.3+zstd.1.5.7 (https://github.com/gyscos/zstd-rs)
+
+````text
+The auto-generated bindings are under the 3-clause BSD license:
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ````
 
@@ -10482,6 +10645,7 @@ SOFTWARE.
 Used by:
 
 - libm 0.2.16 (https://github.com/rust-lang/compiler-builtins)
+- minisign-verify 0.2.5 (https://github.com/jedisct1/rust-minisign-verify)
 - pulp-wasm-simd-flag 0.1.1 (https://github.com/sarah-quinones/pulp/)
 - rust-i18n-macro 4.2.4 (https://github.com/longbridge/rust-i18n)
 - rust-i18n-support 4.2.4 (https://github.com/longbridge/rust-i18n)
@@ -10694,6 +10858,40 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+````
+
+## MIT License
+
+Used by:
+
+- deflate64 0.1.12 (https://github.com/anatawa12/deflate64-rs)
+
+````text
+The MIT License (MIT)
+
+Copyright (c) .NET Foundation and Contributors
+Copyright (c) anatawa12 2023
+
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ````
 
@@ -11758,4 +11956,62 @@ the following restrictions:
     misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
+````
+
+## bzip2 and libbzip2 License v1.0.6
+
+Used by:
+
+- libbz2-rs-sys 0.2.6 (https://github.com/trifectatechfoundation/libbzip2-rs)
+
+````text
+
+--------------------------------------------------------------------------
+
+The original program, "bzip2", the associated library "libbzip2", and all
+documentation, are
+
+Copyright (C) 1996-2021 Julian R Seward.
+Copyright (C) 2019-2020 Federico Mena Quintero
+Copyright (C) 2021 Micah Snyder
+
+This Rust translation, "libbzip2-rs" is a derived work based on "bzip2" and
+"libbzip2", and is Copyright (C) 2024-2025 Trifecta Tech Foundation and contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. The origin of this software must not be misrepresented; you must
+   not claim that you wrote the original software.  If you use this
+   software in a product, an acknowledgment in the product
+   documentation would be appreciated but is not required.
+
+3. Altered source versions must be plainly marked as such, and must
+   not be misrepresented as being the original software.
+
+4. The name of the author may not be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Julian Seward, jseward@acm.org
+bzip2/libbzip2 version 1.1.0 of 6 September 2010
+
+--------------------------------------------------------------------------
+
 ````

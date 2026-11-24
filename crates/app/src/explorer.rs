@@ -443,6 +443,8 @@ pub(crate) enum ExplorerEvent {
     },
     /// Needs a login for this network location (Workspace opens the dialog).
     NetLogin(PathBuf),
+    /// Extracting an archive needs its password (Workspace asks, then calls `extract_archive`).
+    ArchivePassword(crate::archive_password::PasswordAsk),
     /// Moved to another folder (recorded in Recent).
     /// Arrived at a folder; `stepped` when the history recorded a step back to where it was.
     /// `kind` is how it got there (a history menu jump moves the timeline only once it lands).

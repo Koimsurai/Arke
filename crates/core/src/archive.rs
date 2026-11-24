@@ -144,9 +144,13 @@ pub enum ArchiveError {
         #[source]
         source: sevenz_rust2::Error,
     },
-    /// The archive (or an entry in it) is password-protected; there is no password prompt yet.
+    /// The archive (or an entry in it) is password-protected and no password was given.
     #[error("{}", t!("archive.encrypted"))]
     Encrypted,
+    /// The password given doesn't open the archive (or the encrypted data is damaged: the two
+    /// can't be told apart).
+    #[error("{}", t!("archive.wrong_password"))]
+    WrongPassword,
     /// The archive uses a compression method the reader doesn't implement.
     #[error("{}", t!("archive.unsupported_method", method = .method))]
     UnsupportedMethod {
@@ -423,6 +427,8 @@ pub struct ExtractOptions<'a> {
     pub progress: &'a (dyn Fn(ExtractProgress) + Sync),
     /// Decoder for non-UTF-8 names.
     pub decode_legacy: &'a (dyn Fn(&[u8]) -> String + Sync),
+    /// For a password-protected zip or 7z (#346); `None` until the user gives one.
+    pub password: Option<&'a str>,
 }
 
 /// Extracts into `dest`, creating it if needed.
@@ -1178,27 +1184,34 @@ fn extract_zip(
         .map_err(|source| ArchiveError::NotZip { source })?;
     let mut summary = ExtractSummary::default();
     let mut progress = ExtractProgress::default();
-    for i in 0..zip.len() {
+    let mut encrypted = vec![false; zip.len()];
+    for (i, flag) in encrypted.iter_mut().enumerate() {
         if let Ok(entry) = zip.by_index_raw(i) {
-            // A password-protected entry: say so instead of calling the archive damaged (#282),
-            // and before anything is written, so a mixed archive isn't left half extracted.
-            if entry.encrypted() && !entry.is_dir() {
-                return Err(ArchiveError::Encrypted);
-            }
+            *flag = entry.encrypted() && !entry.is_dir();
             progress.total = progress.total.saturating_add(entry.size());
         }
     }
+    // A password-protected entry: ask for the password instead of calling the archive damaged
+    // (#282), and check it against every such entry (each has its own check value, read without
+    // decoding anything) before anything is written, so a mixed archive isn't left half extracted.
+    if encrypted.contains(&true) {
+        let password = opts.password.ok_or(ArchiveError::Encrypted)?;
+        for i in (0..zip.len()).filter(|&i| encrypted[i]) {
+            zip.by_index_decrypt(i, password.as_bytes())
+                .map_err(|source| zip_error(source, true))?;
+        }
+    }
     (opts.progress)(progress);
-    for i in 0..zip.len() {
+    for (i, &encrypted) in encrypted.iter().enumerate() {
         if cancelled(opts) {
             summary.cancelled = true;
             return Ok(summary);
         }
-        let mut entry = zip.by_index(i).map_err(|source| match source {
-            zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
-            | zip::result::ZipError::InvalidPassword => ArchiveError::Encrypted,
-            source => ArchiveError::CorruptZip { source },
-        })?;
+        let entry = match opts.password.filter(|_| encrypted) {
+            Some(password) => zip.by_index_decrypt(i, password.as_bytes()),
+            None => zip.by_index(i),
+        };
+        let mut entry = entry.map_err(|source| zip_error(source, encrypted))?;
         let Some(rel) = safe_relative_path(entry.name_raw(), opts.decode_legacy) else {
             summary.skipped_unsafe += 1;
             continue;
@@ -1221,11 +1234,30 @@ fn extract_zip(
             (opts.progress)(progress);
         };
         let size = entry.size();
-        write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)?.count(&mut summary);
+        let written = write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts);
+        // ZipCrypto's check value is one byte: one wrong password in 256 passes it and decodes
+        // to garbage, which fails here (bad data or CRC).
+        let written = match written {
+            Err(ArchiveError::Read { .. }) if encrypted => Err(ArchiveError::WrongPassword),
+            written => written,
+        };
+        written?.count(&mut summary);
         progress.files = summary.files;
     }
     summary.cancelled = cancelled(opts);
     Ok(summary)
+}
+
+/// Maps a zip error for an entry (`encrypted`: a password was needed for it).
+fn zip_error(source: zip::result::ZipError, encrypted: bool) -> ArchiveError {
+    use zip::result::ZipError;
+    match source {
+        ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED) => ArchiveError::Encrypted,
+        ZipError::InvalidPassword => ArchiveError::WrongPassword,
+        // Garbage from a wrong password (see above) can also fail as the stream starts.
+        ZipError::Io(_) if encrypted => ArchiveError::WrongPassword,
+        source => ArchiveError::CorruptZip { source },
+    }
 }
 
 fn extract_tar(
@@ -1334,6 +1366,8 @@ mod tests {
     use parking_lot::Mutex;
     use zip::write::SimpleFileOptions;
 
+    mod formats;
+
     /// Tests run only in their own folder under %TEMP%, deleted afterwards.
     struct Sandbox(PathBuf);
 
@@ -1372,6 +1406,7 @@ mod tests {
             cancel,
             progress,
             decode_legacy: &fake_big5,
+            password: None,
         }
     }
 

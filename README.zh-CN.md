@@ -113,7 +113,7 @@ Arke 登上了[阮一峰《科技爱好者周刊》第 420 期](https://www.ruan
 - 网络位置：服务器离线时马上告诉你、显示上次看到的内容；`\\服务器` 会列出它的共享文件夹。
   也能连接 SFTP 和 WebDAV（实验性；纯 http 要先对那个位置允许）。映射的网络驱动器和网络位置可以另起名称，只保存在 Arke 里。
 - OneDrive 和其他云文件夹显示同步状态，预览不会下载只在云端的文件。
-- 压缩包：预览和解压 zip、7z、tar（.gz、.xz、.bz2、.zst）和 RAR，压缩成 zip。RAR 和
+- 压缩包：预览和解压 zip 和 7z（包括有密码的）、tar（.gz、.xz、.bz2、.zst）和 RAR，压缩成 zip。RAR 和
   xz／bzip2／zstd 的 tar 使用 Windows 内置的 libarchive（Windows 11 23H2 及以上最完整）。
 
 **Windows 集成**

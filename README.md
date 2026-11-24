@@ -136,7 +136,7 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
   allow it for that location). Mapped drives and network places can get names of their own, kept
   in Arke only.
 - OneDrive and other cloud folders with sync status. Previews never download online-only files.
-- Archives: preview and extract zip, 7z, tar (.gz, .xz, .bz2, .zst) and RAR, compress to zip.
+- Archives: preview and extract zip and 7z (password-protected ones too), tar (.gz, .xz, .bz2, .zst) and RAR, compress to zip.
   RAR and the xz / bzip2 / zstd tars use the libarchive built into Windows (best on Windows 11
   23H2 and later).
 

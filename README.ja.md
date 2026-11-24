@@ -139,7 +139,7 @@ Arke は [阮一峰のテック週刊 #420](https://www.ruanyifeng.com/blog/2026
   割り当て済みドライブとネットワークの場所には独自の名前を付けられ、名前は Arke 内にのみ保存されます。
 - 同期状態を表示する OneDrive などのクラウド フォルダー。プレビューでオンライン専用ファイルを
   ダウンロードすることはありません。
-- アーカイブ：zip、7z、tar (.gz、.xz、.bz2、.zst)、RAR のプレビューと展開、zip への圧縮。RAR と xz / bzip2 /
+- アーカイブ：zip と 7z（パスワード付きも）、tar (.gz、.xz、.bz2、.zst)、RAR のプレビューと展開、zip への圧縮。RAR と xz / bzip2 /
   zstd の tar には Windows 組み込みの libarchive を使います（Windows 11 23H2 以降が最適）。
 
 **Windows**

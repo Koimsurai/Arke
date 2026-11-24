@@ -8,6 +8,8 @@ accepted = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",
+  # libbz2-rs-sys (BZip2 in zip and 7z, #341): the original bzip2 license, BSD-like
+  "bzip2-1.0.6",
   "CC0-1.0",
   "CDLA-Permissive-2.0",
   "ISC",

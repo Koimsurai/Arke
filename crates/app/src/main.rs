@@ -42,6 +42,7 @@ mod plural;
 
 mod a11y;
 mod api;
+mod archive_password;
 mod assets;
 mod bench;
 mod bench_index;

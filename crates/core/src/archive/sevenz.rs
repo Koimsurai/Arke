@@ -32,14 +32,12 @@ const fn is_link(entry: &ArchiveEntry) -> bool {
 }
 
 /// Maps a sevenz-rust2 error; `corrupt` picks the fallback for errors after the header was read.
-fn map_error(source: sevenz_rust2::Error, corrupt: bool) -> ArchiveError {
+/// `password`: one was given, so a bad-password guess is a wrong password, not a missing one.
+fn map_error(source: sevenz_rust2::Error, corrupt: bool, password: bool) -> ArchiveError {
     use sevenz_rust2::Error as E;
     match source {
+        E::MaybeBadPassword(_) if password => ArchiveError::WrongPassword,
         E::PasswordRequired | E::MaybeBadPassword(_) => ArchiveError::Encrypted,
-        // Built without AES, so an encrypted archive shows up as an unknown method.
-        E::UnsupportedCompressionMethod(method) if method.contains("AES") => {
-            ArchiveError::Encrypted
-        }
         E::UnsupportedCompressionMethod(method) => ArchiveError::UnsupportedMethod { method },
         source if corrupt => ArchiveError::CorruptSevenZip { source },
         source => ArchiveError::NotSevenZip { source },
@@ -53,7 +51,7 @@ pub(super) fn list(
     decode_legacy: &dyn Fn(&[u8]) -> String,
 ) -> Result<ArchiveListing, ArchiveError> {
     let archive =
-        Archive::read(&mut reader, &Password::empty()).map_err(|e| map_error(e, false))?;
+        Archive::read(&mut reader, &Password::empty()).map_err(|e| map_error(e, false, false))?;
     let mut listing = ArchiveListing {
         complete: true,
         ..ArchiveListing::default()
@@ -76,13 +74,20 @@ pub(super) fn extract(
     dest: &Path,
     opts: &ExtractOptions<'_>,
 ) -> Result<ExtractSummary, ArchiveError> {
-    let mut reader = ArchiveReader::new(BufReader::new(file), Password::empty())
-        .map_err(|e| map_error(e, false))?;
-    let archive = reader.archive();
-    // Fail before writing anything rather than halfway through.
-    if (0..archive.files.len()).any(|i| archive.is_file_encrypted(i)) {
+    let given = opts.password.is_some();
+    let password = opts.password.map_or_else(Password::empty, Password::from);
+    let mut file = BufReader::new(file);
+    let header = Archive::read(&mut file, &password).map_err(|e| map_error(e, false, given))?;
+    // Ask for the password, or check it, before writing anything rather than halfway through.
+    let encrypted = (0..header.files.len()).any(|i| header.is_file_encrypted(i));
+    if encrypted && !given {
         return Err(ArchiveError::Encrypted);
     }
+    if encrypted {
+        check_password(&mut file, header.clone(), &password)?;
+    }
+    let mut reader = ArchiveReader::from_archive(header, &mut file, password);
+    let archive = reader.archive();
     let mut progress = ExtractProgress {
         total: archive
             .files
@@ -151,10 +156,53 @@ pub(super) fn extract(
             EntryDecision::Continue
         })
     });
+    // Data that doesn't decode in an encrypted archive is most likely a wrong password (7-Zip
+    // asks the same: "Data error in encrypted file. Wrong password?").
     if let Some(e) = failure {
-        return Err(e);
+        return Err(match e {
+            ArchiveError::Read { .. } if encrypted => ArchiveError::WrongPassword,
+            e => e,
+        });
     }
-    result.map_err(|e| map_error(e, true))?;
+    result.map_err(|e| match map_error(e, true, given) {
+        ArchiveError::CorruptSevenZip { .. } if encrypted => ArchiveError::WrongPassword,
+        e => e,
+    })?;
     summary.cancelled = cancelled(opts);
     Ok(summary)
+}
+
+/// How much of the first encrypted file is decoded to check a password: a wrong key turns the
+/// data into noise the decoder rejects within the first bytes, and a file this small is decoded
+/// whole, up to its CRC.
+const PASSWORD_PROBE: u64 = 1 << 20;
+
+/// Decodes the start of the first encrypted file with `password`, writing nothing: a wrong
+/// password fails here, before any file is extracted.
+fn check_password(
+    reader: &mut (impl Read + Seek),
+    header: Archive,
+    password: &Password,
+) -> Result<(), ArchiveError> {
+    let encrypted: Vec<bool> = (0..header.files.len())
+        .map(|i| header.is_file_encrypted(i))
+        .collect();
+    let mut reader = ArchiveReader::from_archive(header, reader, password.clone());
+    let mut index = 0;
+    let mut bad = false;
+    let result = reader.for_each_entries_with_decision(|entry, data| {
+        let this = index;
+        index += 1;
+        if entry.is_directory || entry.size == 0 || !encrypted.get(this).copied().unwrap_or(false) {
+            return Ok(EntryDecision::Continue);
+        }
+        if std::io::copy(&mut data.take(PASSWORD_PROBE), &mut std::io::sink()).is_err() {
+            bad = true;
+        }
+        Ok(EntryDecision::Stop)
+    });
+    if bad || result.is_err() {
+        return Err(ArchiveError::WrongPassword);
+    }
+    Ok(())
 }

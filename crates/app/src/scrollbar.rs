@@ -113,8 +113,9 @@ fn scroll_to(
     handle.set_offset(offset.apply_along(axis, |_| -(max * progress)));
 }
 
-/// Scrollbar overlaid on the right of a list. Place it in a `relative()` container after the list.
-pub(crate) fn scrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> impl IntoElement {
+/// Scrollbar overlaid on the right of a list. Place it in a `relative()` container after the list;
+/// its edge can be moved (`right`) to sit in a gutter beside the rows.
+pub(crate) fn scrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> gpui::Canvas<Bounds<Pixels>> {
     bar(handle, drag, Axis::Vertical)
         .absolute()
         .top_0()

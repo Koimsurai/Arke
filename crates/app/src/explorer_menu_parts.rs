@@ -9,12 +9,14 @@
 //! - a packaged app's command (Windows Terminal, VS Code, Zed): 2 to 140 ms, its
 //!   `IExplorerCommand` created alone (`win_menu_single.rs`).
 //!
-//! The rows of registry and packaged commands are known to show before they answer (the
-//! registry says so, or the item kinds the app registered them for), so they are drawn right
-//! away with the label and icon they had, and a click before the source is in runs the command
-//! once it is. An extension's row is drawn ahead too where the extension showed it for the same
-//! kind of item last time (`menu_pin_seen`): loading a third-party DLL and asking it for its
-//! items takes it 40 ms to a second, and the row was waiting on that. If it turns out not to
+//! A packaged command's row is known to show before it answers (the item kinds the app
+//! registered it for), so it is drawn right away with the label and icon it had, and a click
+//! before the source is in runs the command once it is. An extension's or a registry command's
+//! row is drawn ahead where it showed for the same kind of item before (`menu_pin_seen`, noted
+//! from its source and from the whole menu): being listed doesn't say it shows, since an
+//! extension decides for itself and Windows leaves a registry command out where it doesn't apply
+//! ("Run as administrator" listed for a zip, #325). Loading a third-party DLL and asking it for
+//! its items takes it 40 ms to a second, and the row was waiting on that. If it turns out not to
 //! add it this time, the row goes away when it answers. The whole menu still fills "Show more options", and once it is in, the pinned rows
 //! come from it.
 //!
@@ -154,8 +156,12 @@ impl Explorer {
                     wanted.push(MenuHandler::command(clsid));
                 }
             }
-            // Rows known to show, and an extension's where it showed for this kind of item last
-            // time (it decides for itself whether it adds its item).
+            // A packaged command's row (its app registered it for this kind of item), and an
+            // extension's or a registry command's where it showed for this kind of item last
+            // time. Neither is sure to show from being listed: an extension decides for itself,
+            // and Windows leaves a registry command out where it doesn't apply ("Run as
+            // administrator" listed for a zip, #325). Drawn ahead there, the row came a moment
+            // after the menu and went again, on every menu.
             let shown_here =
                 |key: &str| kind.as_ref().is_some_and(|kind| seen_for(&seen, key, kind));
             let keys: Vec<String> = owned
@@ -163,7 +169,7 @@ impl Explorer {
                 .filter(|(key, o)| {
                     wanted.iter().any(|h| {
                         h.owner().eq_ignore_ascii_case(o)
-                            && (h.kind != HandlerKind::Extension || shown_here(key))
+                            && (h.kind == HandlerKind::Command || shown_here(key))
                     })
                 })
                 .map(|(key, _)| key.clone())
@@ -329,11 +335,17 @@ impl Explorer {
         let mut unknown: Vec<(String, Option<String>)> = Vec::new();
         let mut packaged: Vec<String> = Vec::new();
         for key in &settings.menu_pinned {
-            let Some(item) = find_pinned(children, key) else {
+            let Some(entry) = find_pinned(children, key) else {
                 continue;
             };
+            // A whole submenu has no verb: the extension whose menu has it is found by reading
+            // them, as for an extension's item.
+            let verb = match entry {
+                MenuEntry::Item(item) => item.verb.clone(),
+                _ => None,
+            };
             match settings.menu_pin_owners.get(key).map(String::as_str) {
-                None | Some("") => unknown.push((key.clone(), item.verb.clone())),
+                None | Some("") => unknown.push((key.clone(), verb)),
                 Some(owner) if owner.starts_with(COMMAND_OWNER) => {
                     packaged.push(owner.to_string());
                 }
@@ -346,6 +358,8 @@ impl Explorer {
         if unknown.is_empty() && packaged.is_empty() {
             return;
         }
+        // A menu opened with Shift also has commands that show only with it.
+        let extended = menu.extended;
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("menu-learn", move || {
@@ -353,10 +367,11 @@ impl Explorer {
             let (owners, mut types) =
                 find_owners(shell.as_ref(), &paths, background, &unknown, request);
             if let Some(kind) = &kind {
-                // Extensions' commands learned in this menu showed for this kind of item.
+                // Extensions' and registry commands learned in this menu showed for this kind
+                // of item: their rows are drawn ahead for it from now on.
                 let seen: Vec<(String, String, bool)> = owners
                     .iter()
-                    .filter(|(_, o)| is_clsid(o))
+                    .filter(|(_, o)| is_clsid(o) || (o.starts_with(VERB_OWNER) && !extended))
                     .map(|(key, _)| (key.clone(), kind.clone(), true))
                     .collect();
                 if !seen.is_empty() {
@@ -691,7 +706,8 @@ fn is_clsid(s: &str) -> bool {
     s.len() == 38 && s.starts_with('{') && s.ends_with('}')
 }
 
-/// Pin keys of every command in `entries` (as [`MenuEntry::from_shell_in`] makes them).
+/// Pin keys of every command and submenu in `entries` (as [`MenuEntry::from_shell_in`] makes
+/// them).
 fn pin_keys(entries: &[ShellMenuEntry], parent: &[&str], out: &mut Vec<String>) {
     for entry in entries {
         match entry {
@@ -705,6 +721,7 @@ fn pin_keys(entries: &[ShellMenuEntry], parent: &[&str], out: &mut Vec<String>) 
             } => {
                 let mut path = parent.to_vec();
                 path.push(label);
+                out.push(pin_key(&path));
                 pin_keys(children, &path, out);
             }
             ShellMenuEntry::Separator => {}

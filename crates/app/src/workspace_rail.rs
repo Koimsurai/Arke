@@ -29,6 +29,10 @@ pub(super) struct SidebarUi {
     /// sidebar and in the column of icons.
     pub(super) places_scroll: gpui::ScrollHandle,
     pub(super) tabs_scroll: gpui::ScrollHandle,
+    /// The vertical tab list's scrollbar (#323), and the tab last scrolled into view there (the
+    /// active one, once each time it changes or the list changes height).
+    pub(super) tabs_bar: crate::scrollbar::ScrollbarDrag,
+    pub(super) tabs_revealed: std::cell::Cell<Option<(usize, gpui::Pixels)>>,
     rail_places_scroll: gpui::ScrollHandle,
     rail_tabs_scroll: gpui::ScrollHandle,
     /// Tabs on top: the strip, which scrolls sideways when the tabs don't fit, and the tab last
@@ -73,11 +77,13 @@ pub(super) struct SidebarUi {
     /// A cue drawn in the sidebar is still playing: `Workspace::render` asks for the next frame
     /// (the sidebar's drawing code has no `Window`; see `Workspace::cue_progress`).
     pub(super) frame_wanted: std::cell::Cell<bool>,
+    /// The keyboard in the sidebar (`sidebar_keys`).
+    pub(super) keys: super::sidebar_keys::SidebarKeys,
 }
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{DraggedFiles, kind_icon};
-use crate::settings::SettingsStore;
+use crate::settings::{SettingsStore, SidebarSection};
 use crate::shell::PlaceKind;
 use crate::theme;
 use arke_core::filetype::FileKind;
@@ -239,9 +245,20 @@ impl Workspace {
         let home_open = self.home_open();
         let settings_open = self.settings_open();
         let peek = SettingsStore::global(cx).read(cx).settings.sidebar_peek;
+        // Hidden sections (#323) leave the rail as they leave the full sidebar.
+        let hidden = |section| super::sidebar::section_hidden(section, cx);
+        let (home_hidden, this_pc_hidden) =
+            (hidden(SidebarSection::Home), hidden(SidebarSection::ThisPc));
         let mut places = self.rail_tiles(cx);
+        if !places.is_empty() {
+            places.push(divider());
+        }
         places.extend(self.rail_pins(cx));
-        let drives = self.rail_drives(cx);
+        let drives = if this_pc_hidden {
+            Vec::new()
+        } else {
+            self.rail_drives(cx)
+        };
         if !drives.is_empty() {
             places.push(divider());
             places.extend(drives);
@@ -300,21 +317,7 @@ impl Workspace {
             )
             // Back and forward, which the full sidebar has in its title row.
             .child(self.rail_nav(cx))
-            .child(
-                rail_button(
-                    "rail-home",
-                    icon(Icon::KfHome, home_open),
-                    &t!("home.title"),
-                    home_open,
-                )
-                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                    if home_open {
-                        this.close_home(window, cx);
-                    } else {
-                        this.open_home(e.modifiers().control, window, cx);
-                    }
-                })),
-            )
+            .when(!home_hidden, |d| d.child(Self::rail_home(home_open, cx)))
             // Places and tabs each scroll on their own when the window is short, like the full
             // sidebar.
             .child(super::sidebar::scrolling(
@@ -337,6 +340,24 @@ impl Workspace {
             })
             .child(div().flex_1().min_h(theme::s_8()))
             .child(Self::rail_settings(settings_open, cx))
+    }
+
+    /// Home: open (Ctrl: in a new tab), or closed again while it is open.
+    fn rail_home(home_open: bool, cx: &mut Context<Self>) -> AnyElement {
+        rail_button(
+            "rail-home",
+            icon(Icon::KfHome, home_open),
+            &t!("home.title"),
+            home_open,
+        )
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            if home_open {
+                this.close_home(window, cx);
+            } else {
+                this.open_home(e.modifiers().control, window, cx);
+            }
+        }))
+        .into_any_element()
     }
 
     /// Settings, with a dot for a new version where the full sidebar shows "Update available".
@@ -399,12 +420,23 @@ impl Workspace {
         ]
     }
 
-    /// The quick access folders, the current one lit.
+    /// The quick access folders, the current one lit. Those the full sidebar draws as tiles go
+    /// with Home when it is hidden, the others with Favorites (#323).
     fn rail_tiles(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let current = self.rail_here(cx);
-        self.favorites(cx)
+        let (home_hidden, list_hidden) = (
+            super::sidebar::section_hidden(SidebarSection::Home, cx),
+            super::sidebar::section_hidden(SidebarSection::Favorites, cx),
+        );
+        let favorites = if home_hidden && list_hidden {
+            Vec::new()
+        } else {
+            self.favorites(cx)
+        };
+        favorites
             .into_iter()
             .enumerate()
+            .filter(|_| !home_hidden)
             .map(|(ix, (path, label, kf_icon))| {
                 let here = current.as_deref() == Some(path.as_path());
                 let tint = crate::assets::tinted(
@@ -462,14 +494,19 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The pinned list: pinned folders, then the Recycle Bin (when pinned) and the Shelf.
+    /// The pinned list: pinned folders, then the Recycle Bin (when pinned) and the Shelf. With
+    /// Favorites hidden (#323) only the Shelf stays, as in the full sidebar.
     fn rail_pins(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let settings = &SettingsStore::global(cx).read(cx).settings;
-        let (pinned, recycle_pinned) = (settings.pinned.clone(), settings.recycle_pinned);
+        let (pinned, recycle_pinned) = if settings.is_hidden(SidebarSection::Favorites) {
+            (Vec::new(), false)
+        } else {
+            (settings.pinned.clone(), settings.recycle_pinned)
+        };
         // A favorite's own name (#259) shows here too.
         let names = settings.favorite_names.clone();
         let current = self.rail_here(cx);
-        let mut out = vec![divider()];
+        let mut out = Vec::new();
         for (ix, path) in pinned.into_iter().enumerate() {
             let here = current.as_deref() == Some(path.as_path());
             let label = names
@@ -863,7 +900,7 @@ impl Workspace {
             .border_color(theme::line())
             .shadow(theme::elev_float())
             .child(self.render_brand_row(cx))
-            .child(self.render_home_button(cx))
+            .children(self.render_home_button(cx))
             .child(self.render_sidebar(cx))
             .child(self.render_sidebar_footer(cx))
     }

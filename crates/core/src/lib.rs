@@ -92,6 +92,7 @@ pub(crate) mod alloc_peak {
     }
 }
 pub mod archive;
+pub mod collate;
 pub mod compare;
 pub mod content;
 pub mod dirsize;
@@ -147,5 +148,8 @@ pub use model::{Delta, DeltaOutcome, DirModel};
 pub use search::{SearchHit, SearchResults, SearchService};
 pub use selection::Selection;
 pub use service::{DirService, Gen, IoEvent, ListOptions, ListTiming};
-pub use sort::{SortColumn, SortKey, SortSpec};
+pub use sort::{
+    DateSection, DayBuckets, SearchColumn, SearchSort, SortColumn, SortKey, SortSpec,
+    sort_search_hits,
+};
 pub use typeahead::TypeAhead;

@@ -134,7 +134,7 @@ impl Workspace {
                 SidebarAction::SetRecyclePinned(false),
             ),
         ];
-        div()
+        let row = div()
             .id("open-recycle")
             .a11y(gpui::Role::TreeItem, t!("recycle.title"))
             .aria_selected(open)
@@ -182,8 +182,20 @@ impl Workspace {
                 cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                     this.open_sidebar_menu(e.position, menu.clone(), cx);
                 }),
-            )
-            .into_any_element()
+            );
+        self.nav_row(
+            row,
+            gpui::SharedString::from("recycle"),
+            open,
+            || super::sidebar_keys::NavRow {
+                depth: 1,
+                expanded: None,
+                open: std::rc::Rc::new(|this, window, cx| this.open_recycle(false, window, cx)),
+                expand: None,
+            },
+            cx,
+        )
+        .into_any_element()
     }
 
     /// Settings changes repaint the workspace, so no notify is needed.

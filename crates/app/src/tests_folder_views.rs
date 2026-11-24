@@ -408,3 +408,80 @@ fn remembered_views_survive_a_restart(cx: &mut TestAppContext) {
     assert_eq!(view_mode(&again, cx), ViewMode::Icons);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn downloads_shell() -> Arc<FakeShell> {
+    let shell = Arc::new(FakeShell::default());
+    shell.extra_places.lock().push(Place {
+        label: "Downloads".into(),
+        path: PathBuf::from(r"C:\Users\me\Downloads"),
+        kind: PlaceKind::Folder(KnownFolder::Downloads),
+    });
+    shell
+}
+
+fn downloads_fs() -> Arc<FakeFs> {
+    let fs = two_folders();
+    fs.insert_dir(r"C:\Users\me\Downloads", vec![file("a.zip", 1)]);
+    fs.insert_dir(r"C:\Other\Downloads", vec![file("b.zip", 1)]);
+    fs
+}
+
+fn places_loaded(v: &Explorer) -> bool {
+    v.places
+        .iter()
+        .any(|p| matches!(p.kind, PlaceKind::Folder(KnownFolder::Downloads)))
+}
+
+/// #248: Downloads (the known folder) opens newest first when it has no remembered view; any other
+/// folder, even one named Downloads, keeps the defaults.
+#[gpui::test]
+fn downloads_opens_by_date_modified_newest_first(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx, downloads_fs(), downloads_shell(), r"C:\a");
+    wait_until(cx, &view, "load a", loaded(r"C:\a"));
+    wait_until(cx, &view, "places", places_loaded);
+
+    go(&view, cx, r"C:\Users\me\Downloads");
+    assert_eq!(sort_of(&view, cx), (SortColumn::Modified, false));
+    assert_eq!(remembered(cx, r"C:\Users\me\Downloads"), None, "not saved");
+    go(&view, cx, r"C:\Other\Downloads");
+    assert_eq!(
+        sort_of(&view, cx),
+        (SortColumn::Name, true),
+        "not the known folder"
+    );
+    go(&view, cx, r"C:\a");
+    assert_eq!(sort_of(&view, cx), (SortColumn::Name, true));
+}
+
+/// A view picked in Downloads is remembered and wins over its default.
+#[gpui::test]
+fn a_remembered_downloads_view_wins(cx: &mut TestAppContext) {
+    let (view, cx) = setup(cx, downloads_fs(), downloads_shell(), r"C:\a");
+    wait_until(cx, &view, "load a", loaded(r"C:\a"));
+    wait_until(cx, &view, "places", places_loaded);
+
+    go(&view, cx, r"C:\Users\me\Downloads");
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Name, true, false), cx);
+    });
+    assert!(remembered(cx, r"C:\Users\me\Downloads").is_some());
+    go(&view, cx, r"C:\a");
+    go(&view, cx, r"C:\Users\me\Downloads");
+    assert_eq!(sort_of(&view, cx), (SortColumn::Name, true));
+}
+
+/// Starting in Downloads, before the places have arrived: the default is applied when they do.
+#[gpui::test]
+fn downloads_default_applies_when_the_places_arrive(cx: &mut TestAppContext) {
+    let (view, cx) = setup(
+        cx,
+        downloads_fs(),
+        downloads_shell(),
+        r"C:\Users\me\Downloads",
+    );
+    wait_until(cx, &view, "load", loaded(r"C:\Users\me\Downloads"));
+    wait_until(cx, &view, "places", places_loaded);
+    wait_until(cx, &view, "newest first", |v| {
+        v.sort.column == SortColumn::Modified && !v.sort.ascending
+    });
+}

@@ -321,32 +321,33 @@ fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
         ]
     );
 
-    // Name descending: children reverse too (folders still first).
+    // Name descending: children reverse too, and folders trail the files at every level.
     view.update(cx, |v, cx| {
         v.set_sort(SortSpec::by(SortColumn::Name, false, false), cx);
     });
     wait_until(cx, &view, "resorted", |v| {
-        view_names(v).first().map(String::as_str) == Some("beta")
+        view_names(v).first().map(String::as_str) == Some("top.txt")
             && view_names(v).get(4) == Some(&sep(&["alpha", "a0.txt"]))
     });
     assert_eq!(
         view.update(cx, |v, _| view_names(v)),
         [
-            "beta".to_string(),
+            "top.txt".to_string(),
+            "beta".into(),
             "alpha".into(),
-            sep(&["alpha", "inner"]),
             sep(&["alpha", "a1.txt"]),
             sep(&["alpha", "a0.txt"]),
-            "top.txt".into(),
+            sep(&["alpha", "inner"]),
         ]
     );
 
-    // The expanded folder is deleted: its rows and its expansion go away.
+    // The expanded folder is deleted: its rows and its expansion go away (still descending, so
+    // the folder left trails the file).
     wait_watcher(&fs, Path::new(r"C:\t"));
     fs.remove(Path::new(r"C:\t"), "alpha");
     fs.emit_changed(Path::new(r"C:\t"), &["alpha"]);
     wait_until(cx, &view, "alpha gone", |v| {
-        view_names(v) == ["beta", "top.txt"] && v.tree_expanded().is_empty()
+        view_names(v) == ["top.txt", "beta"] && v.tree_expanded().is_empty()
     });
 }
 
@@ -596,17 +597,17 @@ fn tree_folder_menu_creates_inside_nested_folders(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("home right");
     wait_until(cx, &view, "alpha listed", |v| view_names(v).len() == 5);
 
-    // alpha\inner, collapsed: the group sits right under Open, as at the top of VS Code's menu.
+    // alpha\inner, collapsed: the group sits right under Open, as at the top of VS Code's menu,
+    // with "New file…" and "New folder…" in "New" (#190).
     right_click(&view, cx, Some(1));
     let labels = menu_labels(&view, cx).unwrap();
     assert_eq!(
-        labels[..6],
+        labels[..5],
         [
             tr("menu.open"),
             tr("menu.open_in_new_tab"),
             "—".into(),
-            tr("menu.new_file_in"),
-            tr("menu.new_folder_in"),
+            format!("{} ›", tr("menu.new")),
             tr("menu.search_in_folder"),
         ]
     );
@@ -941,6 +942,278 @@ fn expanding_a_folder_keeps_the_sections(cx: &mut TestAppContext) {
     assert_eq!(headers, [(0, 1, 3), (3, 1, 1), (4, 1, 1)]);
     let rows = view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
     assert_eq!(rows, Some(8), "5 items plus 3 headers");
+}
+
+/// Collapsing a group (#287): the header stays with its count, the items lose their rows, and the
+/// keyboard, Ctrl+A and Shift ranges skip them.
+#[gpui::test]
+fn collapsed_groups_hide_their_items(cx: &mut TestAppContext) {
+    use crate::explorer::groups::Row;
+    use gpui::SharedString;
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\g",
+        vec![
+            dir("docs"),
+            file("apple.txt", 1),
+            file("avocado.txt", 1),
+            file("banana.txt", 1),
+            file("cherry.txt", 1),
+        ],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\g");
+    wait_until(cx, &view, "load", loaded(r"C:\g"));
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
+    });
+    cx.run_until_parked();
+    let rows =
+        |cx: &mut gpui::VisualTestContext| view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
+    let toggle = |cx: &mut gpui::VisualTestContext, label: &str| {
+        view.update(cx, |v, cx| {
+            v.toggle_group(&SharedString::from(label.to_owned()), cx);
+        });
+    };
+    assert_eq!(rows(cx), Some(9), "5 items plus 4 headers");
+    toggle(cx, "A");
+    assert_eq!(rows(cx), Some(7), "A's two items lose their rows");
+    let header = view.update(cx, |v, _| {
+        v.groups().and_then(|g| {
+            g.rows.iter().find_map(|r| match r {
+                Row::Header {
+                    label,
+                    count,
+                    collapsed,
+                    ..
+                } if label.as_ref() == "A" => Some((*count, *collapsed)),
+                _ => None,
+            })
+        })
+    });
+    assert_eq!(header, Some((2, true)), "the header keeps its count");
+
+    // Down from docs jumps over A, and up comes back.
+    cx.update(|_, cx| view.update(cx, |v, cx| v.select_index(0, cx)));
+    cx.simulate_keystrokes("down");
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["banana.txt"]);
+    cx.simulate_keystrokes("up");
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["docs"]);
+    // Shift+Down selects across the collapsed section without taking its items.
+    cx.simulate_keystrokes("shift-down");
+    assert_eq!(
+        view.update(cx, |v, _| selected_names(v)),
+        ["docs", "banana.txt"]
+    );
+    // Ctrl+A leaves them out too.
+    cx.simulate_keystrokes("ctrl-a");
+    assert_eq!(
+        view.update(cx, |v, _| selected_names(v)),
+        ["docs", "banana.txt", "cherry.txt"]
+    );
+    // End lands on the last visible item when the last section is collapsed.
+    toggle(cx, "C");
+    cx.simulate_keystrokes("end");
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["banana.txt"]);
+    toggle(cx, "C");
+
+    // Selecting a hidden item by index (type to select, a pasted file) opens its section.
+    cx.update(|_, cx| view.update(cx, |v, cx| v.select_index(2, cx)));
+    assert_eq!(rows(cx), Some(9));
+    assert_eq!(view.update(cx, |v, _| selected_names(v)), ["avocado.txt"]);
+    // Collapsing deselects what it hides.
+    toggle(cx, "A");
+    assert_eq!(rows(cx), Some(7));
+    assert!(view.update(cx, |v, _| selected_names(v)).is_empty());
+
+    // A new folder starts with every section open.
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\g"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "reload", loaded(r"C:\g"));
+    assert_eq!(rows(cx), Some(9));
+}
+
+/// The chevron in a group header collapses it without selecting the section (#287).
+#[gpui::test]
+fn the_group_chevron_collapses_without_selecting(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\g",
+        vec![dir("docs"), file("apple.txt", 1), file("banana.txt", 1)],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\g");
+    wait_until(cx, &view, "load", loaded(r"C:\g"));
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.group_rows = true, cx));
+    });
+    cx.run_until_parked();
+    let rows =
+        |cx: &mut gpui::VisualTestContext| view.update(cx, |v, _| v.groups().map(|g| g.rows.len()));
+    assert_eq!(rows(cx), Some(6), "3 items plus 3 headers");
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    // Rows: Folders header, docs, "A" header. The chevron sits after the list's and the header's
+    // padding.
+    let chevron = point(
+        bounds.left() + crate::theme::s_8() + crate::theme::s_12() + px(8.),
+        bounds.top() + row * 2.5,
+    );
+    cx.simulate_click(chevron, Modifiers::none());
+    assert_eq!(rows(cx), Some(5), "apple.txt is hidden");
+    assert!(
+        view.update(cx, |v, _| selected_names(v)).is_empty(),
+        "the chevron doesn't select the section"
+    );
+    cx.simulate_click(chevron, Modifiers::none());
+    assert_eq!(rows(cx), Some(6));
+}
+
+/// Search results (here the subfolder search; the whole-computer one shares the view) sort by a
+/// clicked header without searching again, and a third click goes back to relevance (#55).
+#[gpui::test]
+fn search_results_sort_by_header_clicks(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\sr",
+        vec![dir("docs"), dir("src"), file("report_mid.txt", 20)],
+    );
+    fs.insert_dir(r"C:\sr\docs", vec![file("report_big.txt", 900)]);
+    fs.insert_dir(r"C:\sr\src", vec![file("report_small.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\sr");
+    wait_until(cx, &view, "load", loaded(r"C:\sr"));
+    cx.dispatch_action(FocusSearch);
+    cx.simulate_input("report");
+    wait_until(cx, &view, "results", |v| final_hits(v).len() == 3);
+    let relevance = view.update(cx, |v, _| final_hits(v));
+    let hits = |cx: &mut gpui::VisualTestContext| view.update(cx, |v, _| final_hits(v));
+
+    // Size starts largest first, then flips.
+    click_drawn(cx, "search-header-size");
+    assert_eq!(
+        hits(cx),
+        [
+            r"docs\report_big.txt",
+            "report_mid.txt",
+            r"src\report_small.txt"
+        ]
+    );
+    click_drawn(cx, "search-header-size");
+    assert_eq!(
+        hits(cx),
+        [
+            r"src\report_small.txt",
+            "report_mid.txt",
+            r"docs\report_big.txt"
+        ]
+    );
+    // A third click is back to the order the search gave.
+    click_drawn(cx, "search-header-size");
+    assert_eq!(hits(cx), relevance);
+
+    // Name: report_big, report_mid, report_small.
+    click_drawn(cx, "search-header-name");
+    assert_eq!(
+        hits(cx),
+        [
+            r"docs\report_big.txt",
+            "report_mid.txt",
+            r"src\report_small.txt"
+        ]
+    );
+    // Location: the folder searched itself first, then docs, then src.
+    click_drawn(cx, "search-header-location");
+    assert_eq!(
+        hits(cx),
+        [
+            "report_mid.txt",
+            r"docs\report_big.txt",
+            r"src\report_small.txt"
+        ]
+    );
+    // The sort ends with the search: a new one starts in relevance order again.
+    cx.simulate_keystrokes("escape");
+    view.update(cx, |v, _| assert!(v.search_sort.is_none()));
+}
+
+/// #286: grouped by a date, folders go into the section of their date, after the files when
+/// newest first and before them when oldest first, as in File Explorer. Not grouped, they stay a
+/// block of their own; column view never groups.
+#[gpui::test]
+fn grouped_by_date_folders_join_their_sections(cx: &mut TestAppContext) {
+    use std::time::{Duration, SystemTime};
+    let now = SystemTime::now();
+    let old = now - Duration::from_hours(400 * 24);
+    let at = |name: &str, kind, t| Entry::new(name, kind, 1, Some(t), 0);
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\d",
+        vec![
+            at("new.txt", EntryKind::File, now),
+            at("new-dir", EntryKind::Dir, now),
+            at("old.txt", EntryKind::File, old),
+            at("old-dir", EntryKind::Dir, old),
+        ],
+    );
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\d");
+    wait_until(cx, &view, "load", loaded(r"C:\d"));
+    let sort = |cx: &mut gpui::VisualTestContext, ascending: bool| {
+        view.update(cx, |v, cx| {
+            v.set_sort(SortSpec::by(SortColumn::Modified, ascending, false), cx);
+        });
+        cx.run_until_parked();
+    };
+    let group = |cx: &mut gpui::VisualTestContext, on: bool| {
+        cx.update(|_, cx| {
+            SettingsStore::global(cx)
+                .update(cx, |s, cx| s.update(move |st| st.group_rows = on, cx));
+        });
+        cx.run_until_parked();
+    };
+    let headers = |cx: &mut gpui::VisualTestContext| {
+        view.update(cx, |v, _| {
+            v.groups().map_or_default(|g| {
+                g.rows
+                    .iter()
+                    .filter_map(|r| match r {
+                        crate::explorer::groups::Row::Header { count, .. } => Some(*count),
+                        crate::explorer::groups::Row::Item(_) => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+
+    sort(cx, false);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["new.txt", "old.txt", "new-dir", "old-dir"]
+    );
+    group(cx, true);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["new.txt", "new-dir", "old.txt", "old-dir"]
+    );
+    assert_eq!(headers(cx), [2, 2], "today and the year, two items each");
+    sort(cx, true);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["old-dir", "old.txt", "new-dir", "new.txt"]
+    );
+    assert_eq!(headers(cx), [2, 2]);
+
+    // Column view doesn't group: the folders go back to a block of their own.
+    view.update(cx, |v, cx| v.pick_view_mode(ViewMode::Columns, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["old-dir", "new-dir", "old.txt", "new.txt"]
+    );
+    view.update(cx, |v, cx| v.pick_view_mode(ViewMode::Details, cx));
+    cx.run_until_parked();
+    group(cx, false);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["old-dir", "new-dir", "old.txt", "new.txt"]
+    );
 }
 
 /// #335: a rename changes the list in place, at the same length. The sections are made again

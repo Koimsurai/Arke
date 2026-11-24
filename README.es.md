@@ -137,7 +137,7 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
   lo permita para esa ubicación). Las unidades asignadas y los lugares de red pueden tener nombres propios, guardados
   solo en Arke.
 - OneDrive y otras carpetas en la nube con estado de sincronización. Las vistas previas nunca descargan archivos solo en línea.
-- Archivos comprimidos: vista previa y extracción de zip, 7z, tar (.gz, .xz, .bz2, .zst) y RAR, compresión a zip.
+- Archivos comprimidos: vista previa y extracción de zip y 7z (también con contraseña), tar (.gz, .xz, .bz2, .zst) y RAR, compresión a zip.
   RAR y los tar xz / bzip2 / zstd usan la libarchive integrada en Windows (mejor en Windows 11
   23H2 y posteriores).
 
@@ -306,6 +306,22 @@ aparece más arriba; puede desactivarlo o borrarlo en Configuración › Búsque
 
 </details>
 
+## Accesibilidad
+
+Arke funciona con los lectores de pantalla de Windows a través de UI Automation, la interfaz que usan
+Narrator y NVDA; JAWS también debería funcionar. Hasta ahora se ha comprobado con herramientas de UI
+Automation, todavía no con personas que usen un lector de pantalla a diario, así que se agradece la
+ayuda para probarlo.
+
+Lo que funciona: la lista de archivos, la barra lateral, las pestañas, la barra de ruta, la búsqueda,
+Configuración, los menús y la ventana de Propiedades. Lo que sigue incompleto: a los botones de la
+barra de herramientas aún no se llega con Tab (usa F6 y los atajos) y algunos cuadros de diálogo no se
+han revisado.
+
+La [guía de teclado](docs/keyboard.md) (en inglés) enumera todos los atajos por zona. Si algo no se
+puede alcanzar o no se anuncia, [abre un issue](https://github.com/Koimsurai/Arke/issues) e indica tu
+lector de pantalla y su versión.
+
 ## Preguntas frecuentes
 
 <details>
@@ -430,6 +446,14 @@ Arke no recopila ni envía ningún dato sobre usted ni sobre sus archivos. Solo 
 consultar GitHub en busca de una versión nueva (como máximo una vez al día, se puede desactivar en Configuración › Acerca de), para
 descargar una cuando usted decide instalarla, y para acceder a los recursos de red y las ubicaciones SFTP y WebDAV
 que usted mismo abre.
+
+Si GitHub es lento o está bloqueado donde usted está, Configuración › Acerca de › Actualizaciones ›
+Ruta de descarga envía la búsqueda y la descarga de actualizaciones a través de un espejo (una dirección
+`https://` antepuesta a la de GitHub) o un proxy HTTP (`host:puerto`) que usted elija. Arke no incluye
+ninguno propio y solo usa uno si usted lo escribe. Quien lo gestiona ve su dirección IP y qué versión de
+Arke consulta o descarga; nada más pasa por él. Si falla, Arke consulta GitHub directamente y lo indica
+bajo el ajuste. Arke solo instala descargas firmadas con su propia clave, así que un espejo o proxy no
+puede colar una versión modificada o anterior.
 
 ## Licencia
 

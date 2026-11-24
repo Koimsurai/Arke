@@ -30,6 +30,10 @@ actions!(
         DeleteFiles,
         DeletePermanently,
         RenameFile,
+        /// Tab in the rename box: commits and renames the next item.
+        RenameNext,
+        /// Shift+Tab in the rename box: commits and renames the previous item.
+        RenamePrev,
         NewFolder,
         UndoFileOp,
         RedoFileOp,
@@ -55,6 +59,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // redoes nothing there either.
         KeyBinding::new("ctrl-y", gpui::NoAction, Some("TextInput")),
         KeyBinding::new("ctrl-shift-z", gpui::NoAction, Some("TextInput")),
+        // In the rename box they go on to the next or previous item as in File Explorer, instead of
+        // the list's Tab, which switches panes (#310).
+        KeyBinding::new("tab", RenameNext, Some("RenameBox")),
+        KeyBinding::new("shift-tab", RenamePrev, Some("RenameBox")),
     ]);
 }
 
@@ -1161,9 +1169,13 @@ impl Explorer {
         else {
             return;
         };
-        // Nested tree rows are named by their relative path; only the file name is edited.
-        let leaf = arke_core::tree::leaf(&name);
-        let range = if fresh {
+        // Nested tree rows are named by their relative path; only the file name is edited. A
+        // folder named by its desktop.ini is renamed by that name, as in File Explorer (#370).
+        let leaf = entry
+            .shown
+            .as_deref()
+            .unwrap_or_else(|| arke_core::tree::leaf(&name));
+        let range = if fresh || entry.shown.is_some() {
             0..leaf.len()
         } else {
             arke_core::path::rename_selection(leaf, entry.is_dir_like())
@@ -1230,17 +1242,89 @@ impl Explorer {
         }
     }
 
-    fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut renaming) = self.renaming.take() else {
+    /// Tab and Shift+Tab in the rename box: commits this name and starts renaming the item after
+    /// (before) it in the list, in the order shown. At the last (first) item it only commits, and
+    /// when the name is refused (a problem under the box, or the extension question) it stays
+    /// here. A multi-item rename names all its items at once, so it only commits.
+    pub(super) fn rename_next(
+        &mut self,
+        _: &RenameNext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rename_step(true, window, cx);
+    }
+
+    pub(super) fn rename_prev(
+        &mut self,
+        _: &RenamePrev,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rename_step(false, window, cx);
+    }
+
+    fn rename_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(renaming) = self.renaming.as_ref() else {
             return;
+        };
+        let next = if renaming.batch.len() > 1 {
+            None
+        } else {
+            self.neighbor_in_view(&renaming.name, forward)
+        };
+        let committed = self.commit_rename_inner(next.is_some(), window, cx);
+        if committed && let Some(next) = next {
+            self.start_rename(next, window, cx);
+        }
+    }
+
+    /// The name of the item next to `name` in the list shown.
+    fn neighbor_in_view(&self, name: &str, forward: bool) -> Option<Arc<str>> {
+        let view = self.view()?;
+        let ix = view.iter().position(|e| &*e.name == name)?;
+        let next = if forward { ix + 1 } else { ix.checked_sub(1)? };
+        view.get(next).map(|e| Arc::clone(&e.name))
+    }
+
+    fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_rename_inner(false, window, cx);
+    }
+
+    /// Commits the rename in progress. `moving_on`: another item is renamed next, so the renamed
+    /// one isn't selected afterwards, which would take the selection from it. Returns whether the
+    /// name was taken (sent, or left as it was); `false` when the box stays open or waits for
+    /// the extension question.
+    fn commit_rename_inner(
+        &mut self,
+        moving_on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(mut renaming) = self.renaming.take() else {
+            return false;
         };
         let typed = renaming.input.read(cx).text().to_owned();
         let new_name = typed.trim().to_owned();
+        if renaming.batch.len() <= 1
+            && let Some(shown) = self.view().and_then(|v| {
+                v.iter()
+                    .find(|e| e.name == renaming.name)
+                    .and_then(|e| e.shown.clone())
+            })
+        {
+            window.focus(&self.list_focus, cx);
+            if !new_name.is_empty() && new_name != *shown {
+                self.rename_shown(Arc::clone(&renaming.name), new_name, cx);
+            }
+            cx.notify();
+            return true;
+        }
         let old_leaf = arke_core::tree::leaf(&renaming.name);
         if new_name.is_empty() || new_name == old_leaf {
             window.focus(&self.list_focus, cx);
             cx.notify();
-            return;
+            return true;
         }
         if let Some(problem) = commit_problem(&typed) {
             // Invalid name: stay in edit mode so it can be fixed, with the reason next to the box
@@ -1250,26 +1334,31 @@ impl Explorer {
             self.renaming = Some(renaming);
             window.focus(&focus, cx);
             cx.notify();
-            return;
+            return false;
         }
         window.focus(&self.list_focus, cx);
         let Some(dir) = self.current_path().map(PathBuf::from) else {
-            return;
+            return false;
         };
         if renaming.batch.len() > 1 {
             self.commit_batch_rename(&dir, &renaming, &new_name, cx);
-            return;
+            return true;
         }
         // The renamed row keeps its place in the tree.
         let new_name_arc =
             arke_core::tree::join(arke_core::tree::parent(&renaming.name), &new_name);
         // Point the selection at the new name first so it gets selected when the watcher reports
         // it.
-        self.selection.select_name(Arc::clone(&new_name_arc));
-        self.scroll_to_cursor = Some(ScrollStrategy::Nearest);
+        let select = if moving_on {
+            Vec::new()
+        } else {
+            self.selection.select_name(Arc::clone(&new_name_arc));
+            self.scroll_to_cursor = Some(ScrollStrategy::Nearest);
+            vec![new_name_arc]
+        };
         let follow = OpFollowUp {
             dest: Some(dir.clone()),
-            select: vec![new_name_arc],
+            select,
             ..OpFollowUp::default()
         };
         let path = dir.join(&*renaming.name);
@@ -1290,9 +1379,10 @@ impl Explorer {
         let asked = renaming.fresh;
         if is_file && warn && !asked && super::confirm::extension_changed(old_leaf, &new_name) {
             self.ask_extension_change(path, new_name, follow, window, cx);
-            return;
+            return false;
         }
         self.run_op(FileOp::Rename { path, new_name }, follow, cx);
+        true
     }
 
     /// Multi-item rename like Explorer: the typed name minus extension becomes the stem, and items

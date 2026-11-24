@@ -35,6 +35,11 @@ pub(crate) fn icon(key: &str) -> Option<Arc<RenderImage>> {
     LOOKS.lock().get(key).and_then(|l| l.icon.clone())
 }
 
+/// Whether pinned row `key` was last seen as a whole submenu.
+pub(crate) fn is_submenu(key: &str) -> bool {
+    LOOKS.lock().get(key).is_some_and(|l| l.submenu)
+}
+
 /// Notes how pinned row `key` looks now (an icon left out keeps the one it had); saved a moment
 /// later when that changed anything.
 pub(crate) fn remember(key: &str, icon: Option<&Arc<RenderImage>>, submenu: bool) {

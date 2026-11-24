@@ -154,6 +154,7 @@ fn active_tab(window: gpui::WindowHandle<Workspace>, cx: &mut TestAppContext) ->
 fn saved_window(paths: &[&str], place: Option<WindowPlace>) -> SessionWindow {
     SessionWindow {
         session: Session {
+            workspace: None,
             tabs: paths.iter().map(|path| tab(path)).collect(),
             active: 0,
         },
@@ -606,4 +607,139 @@ fn folders_visited_before_the_file_is_read_are_written_with_it(cx: &mut TestAppC
         "{written}"
     );
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// A saved window whose tabs are the given folders, the ones in `pinned` pinned.
+fn saved_window_with_pins(paths: &[&str], pinned: &[&str]) -> SessionWindow {
+    SessionWindow {
+        session: Session {
+            workspace: None,
+            tabs: paths
+                .iter()
+                .map(|path| SessionTab {
+                    pinned: pinned.contains(path),
+                    ..tab(path)
+                })
+                .collect(),
+            active: 0,
+        },
+        place: None,
+    }
+}
+
+/// Pinned tabs come back like a browser's even when the start location is not "Last tabs" (#298):
+/// pinned, in their order, in front of the usual start tab, which is the active one.
+#[gpui::test]
+fn pinned_tabs_come_back_when_last_tabs_is_off(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    no_window_yet(cx);
+    settings(cx, |s| {
+        s.start_location = StartLocation::Home;
+        s.session_windows = vec![saved_window_with_pins(
+            &[r"C:\a", r"C:\b", r"C:\c"],
+            &[r"C:\a", r"C:\c"],
+        )];
+    });
+    let services = services(&fs);
+    assert!(cx.update(|cx| crate::open_explorer(cx, &services, None, None, Instant::now())));
+    settle(cx);
+    let windows = workspaces(cx);
+    assert_eq!(windows.len(), 1, "only the window of the start location");
+    let window = windows[0];
+    let tabs = tabs_of(window, cx);
+    assert_eq!(tabs.len(), 3, "two pinned tabs and the start tab: {tabs:?}");
+    assert_eq!(tabs[..2], [Some(p(r"C:\a")), Some(p(r"C:\c"))]);
+    // The unpinned tab stays closed.
+    assert!(!tabs.contains(&Some(p(r"C:\b"))));
+    cx.update(|cx| {
+        let ws = window.read(cx).unwrap();
+        assert_eq!(ws.pinned_for_test(), [true, true, false]);
+        assert_eq!(ws.active, 2, "the start tab is the active one");
+    });
+}
+
+/// Opened on a folder (Win+E with Arke as the default, "Open in Arke"), the pinned tabs come back
+/// in front of it too, and the folder asked for is the active tab (#298).
+#[gpui::test]
+fn pinned_tabs_come_back_around_a_folder_asked_for(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    no_window_yet(cx);
+    settings(cx, |s| {
+        s.start_location = StartLocation::Home;
+        s.session_windows = vec![saved_window_with_pins(
+            &[r"C:\a", r"C:\b", r"C:\c"],
+            &[r"C:\a", r"C:\c"],
+        )];
+    });
+    let services = services(&fs);
+    let opened =
+        cx.update(|cx| crate::open_explorer(cx, &services, Some(p(r"C:\d")), None, Instant::now()));
+    assert!(opened);
+    settle(cx);
+    let windows = workspaces(cx);
+    assert_eq!(windows.len(), 1);
+    let window = windows[0];
+    let tabs = tabs_of(window, cx);
+    assert_eq!(
+        tabs,
+        [Some(p(r"C:\a")), Some(p(r"C:\c")), Some(p(r"C:\d"))],
+        "pinned tabs, then the folder asked for"
+    );
+    cx.update(|cx| {
+        let ws = window.read(cx).unwrap();
+        assert_eq!(ws.pinned_for_test(), [true, true, false]);
+        assert_eq!(ws.active, 2, "the folder asked for is the active tab");
+    });
+}
+
+/// Without a pinned tab in the last session, the start location alone decides, as before.
+#[gpui::test]
+fn no_pinned_tabs_leaves_the_start_alone(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    no_window_yet(cx);
+    settings(cx, |s| {
+        s.start_location = StartLocation::Home;
+        s.session_windows = vec![saved_window(&[r"C:\a", r"C:\b"], None)];
+    });
+    let services = services(&fs);
+    assert!(cx.update(|cx| crate::open_explorer(cx, &services, None, None, Instant::now())));
+    settle(cx);
+    let windows = workspaces(cx);
+    assert_eq!(windows.len(), 1);
+    assert_eq!(tabs_of(windows[0], cx).len(), 1);
+}
+
+/// A pinned tab is saved in the session whatever the start location is, so the next start can
+/// bring it back.
+#[gpui::test]
+fn a_pinned_tab_is_saved_when_last_tabs_is_off(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    no_window_yet(cx);
+    settings(cx, |s| s.start_location = StartLocation::Home);
+    let services = services(&fs);
+    assert!(cx.update(|cx| crate::open_explorer(cx, &services, None, None, Instant::now())));
+    settle(cx);
+    let window = workspaces(cx)[0];
+    window
+        .update(cx, |ws, window, cx| {
+            ws.open_tab(p(r"C:\a"), 1, true, window, cx);
+            ws.toggle_pin(1, cx);
+        })
+        .unwrap();
+    settle(cx);
+    // The next start brings that tab back.
+    let pinned = cx.update(|cx| {
+        SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .last_pinned_tabs()
+    });
+    assert_eq!(
+        pinned
+            .tabs
+            .iter()
+            .map(|t| t.panes.clone())
+            .collect::<Vec<_>>(),
+        [vec![p(r"C:\a")]]
+    );
 }

@@ -1,10 +1,11 @@
-//! Sorting of directory listings (natural name order, folders first).
+//! Sorting of directory listings (natural name order, folders first like File Explorer).
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::entry::{Entry, EntryKind};
+use crate::search::SearchHit;
 
 /// Column a listing is sorted by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -55,14 +56,124 @@ pub const MAX_SORT_KEYS: usize = 3;
 pub struct SortSpec {
     /// Primary sort column.
     pub column: SortColumn,
-    /// Ascending order; folders stay first either way.
+    /// Ascending order. With folders kept apart ([`Self::folders_apart`]) they lead an ascending
+    /// sort and trail a descending one, as in File Explorer.
     pub ascending: bool,
-    /// Sort folders and files together (default `false`: folders always first).
+    /// Sort folders and files together (default `false`: folders kept apart, see
+    /// [`Self::folders_apart`]).
     pub mixed: bool,
     /// Secondary and tertiary keys, compared in order when the ones before tie. Filled from the
     /// front: a `None` is never followed by a key. A fixed array keeps the spec `Copy` and the
     /// comparison free of allocation.
     pub then: [Option<SortKey>; MAX_SORT_KEYS - 1],
+    /// The list is grouped by its date column (#286): with folders kept apart, they still go into
+    /// the section of their date, as in File Explorer, so the sections come first and the folder
+    /// block applies within each. `None` when not grouping by a date.
+    pub sections: Option<DayBuckets>,
+}
+
+/// The day the date sections (today, yesterday, ..., years) are counted from: the local day
+/// number and the local offset from UTC in seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DayBuckets {
+    /// Today's local day number (days since 1970-01-01).
+    pub day: i64,
+    /// Local offset from UTC, in seconds.
+    pub offset: i64,
+}
+
+/// A date section, in time order (oldest first): unknown dates, then years, then the relative
+/// sections of this year up to today, then dates in the future. Weeks start on Monday.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DateSection {
+    /// No date.
+    Unknown,
+    /// An earlier year.
+    Year(i64),
+    /// Earlier this year.
+    ThisYear,
+    /// Last month.
+    LastMonth,
+    /// Earlier this month.
+    ThisMonth,
+    /// Last week.
+    LastWeek,
+    /// Earlier this week.
+    ThisWeek,
+    /// Yesterday.
+    Yesterday,
+    /// Today.
+    Today,
+    /// After today.
+    Future,
+}
+
+impl DayBuckets {
+    /// The section `t` falls in.
+    #[must_use]
+    pub fn section(self, t: Option<std::time::SystemTime>) -> DateSection {
+        let Some(t) = t else {
+            return DateSection::Unknown;
+        };
+        let day = (unix_secs(t) + self.offset).div_euclid(86_400);
+        let now = self.day;
+        let week_start = now - (now + 3).rem_euclid(7);
+        let (y, m) = year_month(day);
+        let (ny, nm) = year_month(now);
+        if day > now {
+            DateSection::Future
+        } else if day == now {
+            DateSection::Today
+        } else if day == now - 1 {
+            DateSection::Yesterday
+        } else if day >= week_start {
+            DateSection::ThisWeek
+        } else if day >= week_start - 7 {
+            DateSection::LastWeek
+        } else if (y, m) == (ny, nm) {
+            DateSection::ThisMonth
+        } else if y * 12 + m == ny * 12 + nm - 1 {
+            DateSection::LastMonth
+        } else if y == ny {
+            DateSection::ThisYear
+        } else {
+            DateSection::Year(y)
+        }
+    }
+}
+
+/// Seconds since the Unix epoch, negative before it.
+fn unix_secs(t: std::time::SystemTime) -> i64 {
+    match t.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+    }
+}
+
+/// Civil date to days since 1970-01-01 (Howard Hinnant's algorithm).
+#[must_use]
+pub const fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Day number to (year, month).
+#[must_use]
+pub const fn year_month(days: i64) -> (i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    (y, m)
 }
 
 impl Default for SortSpec {
@@ -80,7 +191,18 @@ impl SortSpec {
             ascending,
             mixed,
             then: [None; MAX_SORT_KEYS - 1],
+            sections: None,
         }
+    }
+
+    /// The date sections the list is grouped in, when folders go into them (#286): grouping by
+    /// the primary column, which is a date, with folders kept apart (mixed, they already do).
+    #[must_use]
+    pub fn date_sections(&self) -> Option<DayBuckets> {
+        self.sections.filter(|_| {
+            self.folders_apart()
+                && matches!(self.column, SortColumn::Modified | SortColumn::Created)
+        })
     }
 
     /// All keys in order, the primary first.
@@ -113,7 +235,7 @@ impl SortSpec {
         self.keys().any(|k| k.column == column)
     }
 
-    /// Same keys and directions (where folders go aside).
+    /// Same keys and directions (where folders go and the date sections aside).
     #[must_use]
     pub fn same_order(&self, other: &Self) -> bool {
         self.keys().eq(other.keys())
@@ -157,8 +279,24 @@ impl SortSpec {
         next
     }
 
-    /// Full comparison: folders first (regardless of direction; not with `mixed`), then each key in
-    /// turn, then name (in the primary direction) as a tiebreaker so the order is total.
+    /// Whether folders form their own block (everything but "folders and files together"). Like
+    /// File Explorer, the block leads an ascending sort and trails a descending one, dates
+    /// included, except by Type, where folders lead either way ([`Self::folders_lead`]).
+    #[must_use]
+    pub const fn folders_apart(&self) -> bool {
+        !self.mixed
+    }
+
+    /// Whether the folder block comes before the files. Only the primary key counts; Shift+click
+    /// keys never move folders.
+    #[must_use]
+    pub const fn folders_lead(&self) -> bool {
+        self.ascending || matches!(self.column, SortColumn::Type)
+    }
+
+    /// Full comparison: folders as a block first (usually last when descending; see
+    /// [`Self::folders_lead`]), then each key in turn, then name (in the primary direction) as a
+    /// tiebreaker so the order is total.
     ///
     /// Type texts are read afresh on every call, so for many comparisons in a row (sorting,
     /// searching a sorted list) take [`TypeKeys::for_entries`] once and use [`Self::compare_with`].
@@ -181,10 +319,31 @@ impl SortSpec {
         size_b: u64,
         types: &TypeKeys,
     ) -> Ordering {
-        if !self.mixed {
+        if let Some(days) = self.date_sections() {
+            let ord = days
+                .section(self.date_of(a))
+                .cmp(&days.section(self.date_of(b)));
+            if ord != Ordering::Equal {
+                return if self.ascending { ord } else { ord.reverse() };
+            }
+        }
+        if self.folders_apart() {
+            let lead = self.folders_lead();
             match (a.is_dir_like(), b.is_dir_like()) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
+                (true, false) => {
+                    return if lead {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    };
+                }
+                (false, true) => {
+                    return if lead {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    };
+                }
                 _ => {}
             }
         }
@@ -202,11 +361,70 @@ impl SortSpec {
         if self.ascending { ord } else { ord.reverse() }
     }
 
+    /// The date the date sections go by: the primary column's.
+    const fn date_of(&self, e: &Entry) -> Option<std::time::SystemTime> {
+        if matches!(self.column, SortColumn::Created) {
+            e.created
+        } else {
+            e.modified
+        }
+    }
+
     /// Sorts `entries` in place by [`Self::compare`].
     pub fn sort(&self, entries: &mut [Entry]) {
         // Unstable sort is faster, and the comparator is a total order, so the result is
         // deterministic.
         let types = TypeKeys::for_entries(self, &*entries);
+        // By name every entry needs its key: make them up front, on several threads for big lists.
+        // Other columns only need them to break ties, made as they come.
+        if matches_column(self.column, SortColumn::Name) {
+            crate::collate::prepare(entries);
+        }
+        if let Some(days) = self.date_sections() {
+            // Sorted as usual, the folder block and the file block are each in date order, so
+            // one merge by section puts the folders into their sections: the section of each
+            // item is worked out once, and the sort costs about what it does ungrouped.
+            let rest = Self {
+                sections: None,
+                ..*self
+            };
+            entries.sort_unstable_by(|a, b| rest.compare_with(a, b, &types));
+            let split = entries
+                .iter()
+                .position(|e| e.is_dir_like() != entries[0].is_dir_like())
+                .unwrap_or(entries.len());
+            let sections: Vec<DateSection> = entries
+                .iter()
+                .map(|e| days.section(self.date_of(e)))
+                .collect();
+            let first = |a: DateSection, b: DateSection| {
+                if self.ascending { a <= b } else { a >= b }
+            };
+            let (mut i, mut j) = (0, split);
+            let mut from = Vec::with_capacity(entries.len());
+            while i < split || j < entries.len() {
+                // Same section: the leading block's items first.
+                if j == entries.len() || (i < split && first(sections[i], sections[j])) {
+                    from.push(i);
+                    i += 1;
+                } else {
+                    from.push(j);
+                    j += 1;
+                }
+            }
+            // Into place by following the permutation's cycles: swaps, no copies.
+            for start in 0..from.len() {
+                let mut at = start;
+                while from[at] != start {
+                    let next = from[at];
+                    entries.swap(at, next);
+                    from[at] = at;
+                    at = next;
+                }
+                from[at] = at;
+            }
+            return;
+        }
         entries.sort_unstable_by(|a, b| self.compare_with(a, b, &types));
     }
 
@@ -268,10 +486,25 @@ fn column_cmp(
 
 /// Lowercased type texts, one per extension, frozen when a sort starts: the texts can change
 /// while a sort runs (Windows' type names arrive on another thread), and a comparison whose
-/// answers change midway is no total order. Never asks the shell.
+/// answers change midway is no total order. Never asks the shell. Each text comes with its
+/// Windows sort key (`collate.rs`), made once per extension, as names have theirs (#331).
 #[derive(Default)]
 pub struct TypeKeys {
-    keys: HashMap<String, Arc<str>>,
+    keys: HashMap<String, TypeKey>,
+}
+
+/// A type text and, where Windows orders texts, its sort key.
+struct TypeKey {
+    text: Arc<str>,
+    collation: Option<Arc<[u8]>>,
+}
+
+impl TypeKey {
+    fn of(e: &Entry) -> Self {
+        let text = type_text(e);
+        let collation = crate::collate::available().then(|| crate::collate::key(&text));
+        Self { text, collation }
+    }
 }
 
 /// What the text of `e` is keyed by: folders and folder links have their own texts (no
@@ -297,34 +530,53 @@ impl TypeKeys {
             for e in entries {
                 let id = type_id(e);
                 if !keys.contains_key(id) {
-                    keys.insert(id.to_owned(), type_text(e));
+                    keys.insert(id.to_owned(), TypeKey::of(e));
                 }
             }
         }
         Self { keys }
     }
 
-    fn key(&self, e: &Entry) -> std::borrow::Cow<'_, str> {
-        match self.keys.get(type_id(e)) {
-            Some(known) => std::borrow::Cow::Borrowed(known),
-            None => std::borrow::Cow::Owned(type_text(e).to_string()),
+    /// The frozen key of `e`'s type, or one made now into `own` for a type the sort didn't see.
+    fn key<'a>(&'a self, e: &Entry, own: &'a mut Option<TypeKey>) -> &'a TypeKey {
+        if let Some(known) = self.keys.get(type_id(e)) {
+            known
+        } else {
+            own.insert(TypeKey::of(e))
+        }
+    }
+
+    fn cmp(&self, a: &Entry, b: &Entry) -> Ordering {
+        let (mut own_a, mut own_b) = (None, None);
+        let a = self.key(a, &mut own_a);
+        let b = self.key(b, &mut own_b);
+        match (&a.collation, &b.collation) {
+            (Some(x), Some(y)) => x.cmp(y).then_with(|| natural_cmp(&a.text, &b.text)),
+            _ => natural_cmp(&a.text, &b.text),
         }
     }
 }
 
-/// Type column order: the shown type text in natural order (File Explorer sorts by the type's
-/// display name too), not the extension.
+/// Type column order: the shown type text in File Explorer's order (`collate.rs`; natural order
+/// where Windows can't give it), not the extension: File Explorer sorts by the type's display
+/// name too.
 fn type_cmp(a: &Entry, b: &Entry, types: &TypeKeys) -> Ordering {
     // Same kind of item with the same extension: same text, no lookup.
     if a.kind == b.kind && a.extension() == b.extension() {
         return Ordering::Equal;
     }
-    natural_cmp(&types.key(a), &types.key(b))
+    types.cmp(a, b)
 }
 
-/// Natural, case-insensitive name order, then the exact name so the order is total.
+/// File Explorer's name order (`collate.rs`), or the natural, case-insensitive order where Windows
+/// can't give it; then the exact name so the order is total.
 fn name_cmp(a: &Entry, b: &Entry) -> Ordering {
-    natural_cmp(&a.sort_key, &b.sort_key).then_with(|| a.name.cmp(&b.name))
+    let ord = if crate::collate::available() {
+        a.collation().cmp(b.collation())
+    } else {
+        natural_cmp(&a.shown_key(), &b.shown_key())
+    };
+    ord.then_with(|| a.name.cmp(&b.name))
 }
 
 /// Natural sort: digit runs compare numerically (file2 < file10), everything else per char, with
@@ -380,6 +632,112 @@ const fn char_rank(c: u8) -> (u8, u8) {
         2
     };
     (group, c)
+}
+
+/// A column of the search results that can be sorted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchColumn {
+    /// Name in natural order.
+    Name,
+    /// The folder the item is in.
+    Location,
+    /// Last write time.
+    Modified,
+    /// Size in bytes.
+    Size,
+}
+
+impl SearchColumn {
+    /// Direction a column starts in when first picked (see [`SortColumn::starts_ascending`]).
+    #[must_use]
+    pub const fn starts_ascending(self) -> bool {
+        matches!(self, Self::Name | Self::Location)
+    }
+
+    /// Short stable name, for test selectors.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Location => "location",
+            Self::Modified => "modified",
+            Self::Size => "size",
+        }
+    }
+}
+
+/// How the search results are ordered when a header was clicked. Without one they stay in the
+/// search's own relevance order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchSort {
+    /// Column compared.
+    pub column: SearchColumn,
+    /// Ascending (A to Z, oldest, smallest first).
+    pub ascending: bool,
+}
+
+impl SearchSort {
+    /// `column` in the direction it starts in.
+    #[must_use]
+    pub const fn new(column: SearchColumn) -> Self {
+        Self {
+            column,
+            ascending: column.starts_ascending(),
+        }
+    }
+
+    /// The same column the other way round.
+    #[must_use]
+    pub const fn flipped(self) -> Self {
+        Self {
+            column: self.column,
+            ascending: !self.ascending,
+        }
+    }
+
+    /// What a click on `column`'s header leads to: its first direction, then the other, then back
+    /// to relevance (`None`).
+    #[must_use]
+    pub fn after_click(current: Option<Self>, column: SearchColumn) -> Option<Self> {
+        match current {
+            Some(sort) if sort.column == column => {
+                (sort.ascending == column.starts_ascending()).then(|| sort.flipped())
+            }
+            _ => Some(Self::new(column)),
+        }
+    }
+}
+
+/// The folder part of a hit's path, lowercase, for the Location column.
+fn hit_location(hit: &SearchHit) -> String {
+    hit.rel
+        .rsplit_once(['\\', '/'])
+        .map_or_else(String::new, |(parent, _)| parent.to_lowercase())
+}
+
+/// `hits` ordered by `sort`. Hits that tie keep the order they came in (relevance), in either
+/// direction. Folders are mixed with files, as in the relevance order.
+#[must_use]
+pub fn sort_search_hits(hits: &[Arc<SearchHit>], sort: SearchSort) -> Vec<Arc<SearchHit>> {
+    let directed = |ord: Ordering| if sort.ascending { ord } else { ord.reverse() };
+    let mut out = hits.to_vec();
+    match sort.column {
+        SearchColumn::Name => out.sort_by(|a, b| directed(name_cmp(&a.entry, &b.entry))),
+        SearchColumn::Modified => {
+            out.sort_by(|a, b| directed(a.entry.modified.cmp(&b.entry.modified)));
+        }
+        SearchColumn::Size => out.sort_by(|a, b| directed(a.entry.size.cmp(&b.entry.size))),
+        SearchColumn::Location => {
+            // Each folder text is built once, not on every comparison.
+            let mut keyed: Vec<(String, Arc<SearchHit>)> = out
+                .into_iter()
+                .map(|hit| (hit_location(&hit), hit))
+                .collect();
+            keyed.sort_by(|a, b| directed(natural_cmp(&a.0, &b.0)));
+            out = keyed.into_iter().map(|(_, hit)| hit).collect();
+        }
+    }
+    out
 }
 
 fn trim_zeros(s: &[u8]) -> &[u8] {
@@ -477,14 +835,83 @@ mod tests {
         }
     }
 
+    /// #177: like File Explorer, folders lead an ascending sort and trail a descending one.
     #[test]
-    fn dirs_first_in_both_directions() {
+    fn folders_lead_ascending_and_trail_descending() {
         let d = Entry::new("zzz", EntryKind::Dir, 0, None, 0);
         let f = Entry::new("aaa", EntryKind::File, 5, None, 0);
-        for ascending in [true, false] {
-            let spec = SortSpec::by(SortColumn::Name, ascending, false);
-            assert_eq!(spec.compare(&d, &f), Ordering::Less);
+        for column in [
+            SortColumn::Name,
+            SortColumn::Modified,
+            SortColumn::Size,
+            SortColumn::Created,
+            SortColumn::Extension,
+            SortColumn::Attributes,
+        ] {
+            let up = SortSpec::by(column, true, false);
+            assert_eq!(up.compare(&d, &f), Ordering::Less, "{column:?} ascending");
+            assert_eq!(up.compare(&f, &d), Ordering::Greater);
+            let down = SortSpec::by(column, false, false);
+            assert_eq!(
+                down.compare(&d, &f),
+                Ordering::Greater,
+                "{column:?} descending"
+            );
+            assert_eq!(down.compare(&f, &d), Ordering::Less);
         }
+    }
+
+    /// #177: sorted by a date, folders stay a block like in File Explorer (checked on Windows 11):
+    /// newest files first, then the folders newest first.
+    #[test]
+    fn dates_keep_folders_apart() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let at = |name: &str, kind: EntryKind, secs: u64| {
+            Entry::new(
+                name,
+                kind,
+                1,
+                Some(UNIX_EPOCH + Duration::from_secs(secs)),
+                0,
+            )
+            .with_created(Some(UNIX_EPOCH + Duration::from_secs(secs)))
+        };
+        let mut v = vec![
+            at("old.txt", EntryKind::File, 10),
+            at("mid-dir", EntryKind::Dir, 20),
+            at("new.txt", EntryKind::File, 30),
+            at("old-dir", EntryKind::Dir, 5),
+        ];
+        for column in [SortColumn::Modified, SortColumn::Created] {
+            let down = SortSpec::by(column, false, false);
+            down.sort(&mut v);
+            assert_eq!(names(&v), ["new.txt", "old.txt", "mid-dir", "old-dir"]);
+            let up = SortSpec::by(column, true, false);
+            up.sort(&mut v);
+            assert_eq!(names(&v), ["old-dir", "mid-dir", "old.txt", "new.txt"]);
+            // Together with files, they sort by date among them.
+            SortSpec::by(column, false, true).sort(&mut v);
+            assert_eq!(names(&v), ["new.txt", "mid-dir", "old.txt", "old-dir"]);
+        }
+    }
+
+    /// The primary key decides where folders go; Shift+click keys don't move them.
+    #[test]
+    fn folder_placement_follows_the_primary_key() {
+        let d = Entry::new("d", EntryKind::Dir, 0, None, 0);
+        let f = Entry::new("f", EntryKind::File, 1, None, 0);
+        let down_second =
+            SortSpec::by(SortColumn::Name, true, false).shift_toggled(SortColumn::Modified);
+        assert!(down_second.folders_lead());
+        assert_eq!(down_second.compare(&d, &f), Ordering::Less);
+        let down_first =
+            SortSpec::by(SortColumn::Modified, false, false).shift_toggled(SortColumn::Name);
+        assert!(!down_first.folders_lead());
+        assert_eq!(down_first.compare(&d, &f), Ordering::Greater);
+        // By Type folders lead either way, as in File Explorer.
+        assert!(SortSpec::by(SortColumn::Type, false, false).folders_lead());
+        // "Folders and files together" is always mixed.
+        assert!(!SortSpec::by(SortColumn::Name, true, true).folders_apart());
     }
 
     #[test]
@@ -500,6 +927,122 @@ mod tests {
         spec.sort(&mut v);
         let names: Vec<&str> = v.iter().map(|e| &*e.name).collect();
         assert_eq!(names, ["new", "mid", "old"]);
+    }
+
+    #[test]
+    fn civil_dates_round_trip() {
+        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2026, 11, 10), (2026, 12, 31)] {
+            assert_eq!(year_month(days_from_civil(y, m, d)), (y, m));
+        }
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+    }
+
+    /// The sections follow time: every later day is in the same section or a later one.
+    #[test]
+    fn date_sections_run_in_time_order() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2026-11-10 is a Tuesday.
+        let days = DayBuckets {
+            day: days_from_civil(2026, 11, 10),
+            offset: 8 * 3600,
+        };
+        let day = |n: i64| {
+            let secs = n * 86_400 - days.offset + 12 * 3600;
+            Some(UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap()))
+        };
+        let mut last = DateSection::Unknown;
+        for n in days.day - 800..=days.day + 2 {
+            let section = days.section(day(n));
+            assert!(section >= last, "day {n}: {section:?} after {last:?}");
+            last = section;
+        }
+        assert_eq!(days.section(day(days.day)), DateSection::Today);
+        assert_eq!(days.section(day(days.day - 3)), DateSection::LastWeek);
+        assert_eq!(days.section(None), DateSection::Unknown);
+    }
+
+    /// #286: grouped by a date, folders go into their date's section, and the folder block
+    /// applies within it: after the files newest first, before them oldest first.
+    #[test]
+    fn date_sections_take_the_folders_in() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let days = DayBuckets {
+            day: days_from_civil(2026, 11, 10),
+            offset: 0,
+        };
+        let at = |name: &str, kind, ago: u64| {
+            let today = u64::try_from(days.day).unwrap() * 86_400 + 12 * 3600;
+            Entry::new(
+                name,
+                kind,
+                1,
+                Some(UNIX_EPOCH + Duration::from_secs(today - ago * 86_400)),
+                0,
+            )
+        };
+        let entries = vec![
+            at("old-dir", EntryKind::Dir, 400),
+            at("new.txt", EntryKind::File, 0),
+            at("old.txt", EntryKind::File, 401),
+            at("new-dir", EntryKind::Dir, 0),
+        ];
+        let order = |spec: SortSpec| {
+            let mut v = entries.clone();
+            spec.sort(&mut v);
+            v.iter().map(|e| e.name.to_string()).collect::<Vec<_>>()
+        };
+        let newest = SortSpec::by(SortColumn::Modified, false, false);
+        let grouped = SortSpec {
+            sections: Some(days),
+            ..newest
+        };
+        assert_eq!(order(newest), ["new.txt", "old.txt", "new-dir", "old-dir"]);
+        assert_eq!(order(grouped), ["new.txt", "new-dir", "old.txt", "old-dir"]);
+        let oldest = SortSpec {
+            ascending: true,
+            ..grouped
+        };
+        assert_eq!(order(oldest), ["old-dir", "old.txt", "new-dir", "new.txt"]);
+        // The merge in `sort` gives what the comparison does, for many items in both directions.
+        let many: Vec<Entry> = (0..500u64)
+            .map(|i| {
+                let kind = if i % 3 == 0 {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                };
+                at(&format!("n{}", i % 17), kind, i * 7 % 900)
+            })
+            .collect();
+        for ascending in [true, false] {
+            let spec = SortSpec {
+                ascending,
+                ..grouped
+            };
+            let mut merged = many.clone();
+            spec.sort(&mut merged);
+            let mut compared = many.clone();
+            compared.sort_by(|a, b| spec.compare(a, b));
+            let names = |v: &[Entry]| {
+                v.iter()
+                    .map(|e| (e.name.to_string(), e.modified))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(names(&merged), names(&compared));
+        }
+        // By name, or with folders and files together, the sections change nothing.
+        for spec in [
+            SortSpec {
+                sections: Some(days),
+                ..SortSpec::default()
+            },
+            SortSpec {
+                mixed: true,
+                ..grouped
+            },
+        ] {
+            assert!(spec.date_sections().is_none());
+        }
     }
 
     #[test]
@@ -531,8 +1074,8 @@ mod tests {
                 .collect()
         };
         let mut spec = SortSpec::by(SortColumn::Size, false, false);
-        // Folders still first; the uncomputed one (c) counts as 0.
-        assert_eq!(names(spec), ["b", "a", "c", "f"]);
+        // Descending: folders last (the uncomputed one, c, counts as 0).
+        assert_eq!(names(spec), ["f", "b", "a", "c"]);
         spec.ascending = true;
         assert_eq!(names(spec), ["c", "a", "b", "f"]);
         // Mixed: folders and files compared together.
@@ -619,8 +1162,16 @@ mod tests {
         let spec = SortSpec::by(SortColumn::Type, false, false).shift_toggled(SortColumn::Size);
         spec.sort(&mut v);
         assert_eq!(names(&v), ["d.txt", "b.txt", "a.txt", "c.jpg", "e.jpg"]);
-        // Folders stay first whatever the keys.
+        // By Type folders lead even descending, whatever the other keys.
         v.push(Entry::new("zz", EntryKind::Dir, 0, None, 0));
+        spec.sort(&mut v);
+        assert_eq!(v[0].name.as_ref(), "zz");
+        // By Size descending they trail.
+        SortSpec::by(SortColumn::Size, false, false)
+            .shift_toggled(SortColumn::Modified)
+            .sort(&mut v);
+        assert_eq!(v.last().map(|e| e.name.as_ref()), Some("zz"));
+        let spec = SortSpec::by(SortColumn::Type, true, false).shift_toggled(SortColumn::Size);
         spec.sort(&mut v);
         assert_eq!(v[0].name.as_ref(), "zz");
     }
@@ -679,6 +1230,7 @@ mod tests {
             names(&v),
             ["dir", "d.bak", "c.dwg", "noext", "b.md", "a.txt", "z.log"]
         );
+        // Descending, folders still lead (File Explorer does the same by Type).
         SortSpec::by(SortColumn::Type, false, false).sort(&mut v);
         assert_eq!(
             names(&v),
@@ -786,6 +1338,41 @@ mod tests {
         rust_i18n::set_locale("en");
     }
 
+    /// Type texts go in File Explorer's order, as names do (#331): by Windows' sort keys, not by
+    /// code point. "éclair" comes before "zeta" in every language (by code point it came after),
+    /// and in Simplified Chinese File Explorer puts 配置设置 (pèi) before 应用程序 (yìng), with
+    /// Latin text first.
+    #[test]
+    fn type_order_is_file_explorers() {
+        if !crate::collate::available() {
+            return;
+        }
+        rust_i18n::set_locale("en");
+        let f = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        crate::format::set_type_name("t331z", Some("Zeta File"));
+        crate::format::set_type_name("t331e", Some("Éclair File"));
+        let mut v = vec![f("a.t331z"), f("b.t331e")];
+        let spec = SortSpec::by(SortColumn::Type, true, false);
+        spec.sort(&mut v);
+        assert_eq!(names(&v), ["b.t331e", "a.t331z"]);
+
+        crate::format::set_type_name("t331x", Some("应用程序"));
+        crate::format::set_type_name("t331i", Some("配置设置"));
+        crate::format::set_type_name("t331d", Some("DWG 文件"));
+        let mut v = vec![f("a.t331x"), f("b.t331i"), f("c.t331d")];
+        spec.sort(&mut v);
+        // The order is the user's language's: the same as the keys'.
+        let key = |e: &Entry| crate::collate::key(&crate::format::type_label(e).to_lowercase());
+        for w in v.windows(2) {
+            assert!(key(&w[0]) <= key(&w[1]), "{:?}", names(&v));
+        }
+        assert_eq!(names(&v)[0], "c.t331d", "Latin text first");
+        // Simplified Chinese, as on hzhbest's machine.
+        let zh = |t: &str| crate::collate::key_for("zh-CN", t).unwrap();
+        assert!(zh("配置设置") < zh("应用程序"));
+        assert!(zh("dwg 文件") < zh("配置设置"));
+    }
+
     /// Three keys over 100k entries: a total order (every neighbor pair in order), and quick.
     #[test]
     fn three_keys_sort_100k_entries() {
@@ -820,5 +1407,107 @@ mod tests {
         }
         // Generous even for an unoptimized test build; release sorts this in a few ms.
         assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    }
+
+    fn hit(rel: &str, size: u64, secs: Option<u64>) -> Arc<SearchHit> {
+        let name = rel.rsplit(['\\', '/']).next().unwrap_or(rel);
+        let modified = secs.map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
+        Arc::new(SearchHit {
+            rel: Arc::from(rel),
+            entry: Entry::new(name, EntryKind::File, size, modified, 0),
+            snippet: None,
+        })
+    }
+
+    fn rels(hits: &[Arc<SearchHit>]) -> Vec<&str> {
+        hits.iter().map(|h| &*h.rel).collect()
+    }
+
+    #[test]
+    fn search_results_sort_by_each_column_and_keep_ties_in_relevance_order() {
+        // In relevance order.
+        let hits = vec![
+            hit(r"b\file10.txt", 5, Some(30)),
+            hit(r"a\file2.txt", 9, Some(10)),
+            hit(r"file1.txt", 5, None),
+            hit(r"a\sub\x.txt", 1, Some(20)),
+        ];
+        let by = |column, ascending| sort_search_hits(&hits, SearchSort { column, ascending });
+        let name = by(SearchColumn::Name, true);
+        assert_eq!(
+            rels(&name),
+            [
+                r"file1.txt",
+                r"a\file2.txt",
+                r"b\file10.txt",
+                r"a\sub\x.txt"
+            ]
+        );
+        let name = by(SearchColumn::Name, false);
+        assert_eq!(rels(&name)[0], r"a\sub\x.txt");
+        // Files in no folder come first; "a" before "a\sub" before "b".
+        let place = by(SearchColumn::Location, true);
+        assert_eq!(
+            rels(&place),
+            [
+                r"file1.txt",
+                r"a\file2.txt",
+                r"a\sub\x.txt",
+                r"b\file10.txt"
+            ]
+        );
+        // Unknown dates are the oldest.
+        let date = by(SearchColumn::Modified, false);
+        assert_eq!(
+            rels(&date),
+            [
+                r"b\file10.txt",
+                r"a\sub\x.txt",
+                r"a\file2.txt",
+                r"file1.txt"
+            ]
+        );
+        // The two 5-byte files tie: relevance order (file10 first) in both directions.
+        let small = by(SearchColumn::Size, true);
+        assert_eq!(
+            rels(&small),
+            [
+                r"a\sub\x.txt",
+                r"b\file10.txt",
+                r"file1.txt",
+                r"a\file2.txt"
+            ]
+        );
+        let big = by(SearchColumn::Size, false);
+        assert_eq!(
+            rels(&big),
+            [
+                r"a\file2.txt",
+                r"b\file10.txt",
+                r"file1.txt",
+                r"a\sub\x.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn search_header_clicks_go_first_direction_then_back_then_relevance() {
+        use SearchColumn::{Modified, Name};
+        let first = SearchSort::after_click(None, Name);
+        assert_eq!(first, Some(SearchSort::new(Name)));
+        assert!(first.is_some_and(|s| s.ascending));
+        let second = SearchSort::after_click(first, Name);
+        assert_eq!(second.map(|s| s.ascending), Some(false));
+        assert_eq!(SearchSort::after_click(second, Name), None);
+        // Dates start newest first.
+        let date = SearchSort::after_click(first, Modified);
+        assert_eq!(
+            date.map(|s| (s.column, s.ascending)),
+            Some((Modified, false))
+        );
+        assert_eq!(
+            SearchSort::after_click(date, Modified).map(|s| s.ascending),
+            Some(true)
+        );
     }
 }

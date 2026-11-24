@@ -579,6 +579,13 @@ pub(crate) fn perform_tracked(
     {
         return (crate::win_purge::purge(paths, progress), None);
     }
+    // Fast copy: what it can safely take Arke copies itself, several files at once
+    // (win_fast_copy.rs); the rest goes through the engine.
+    if let FileOp::Copy { sources, dest } = op
+        && crate::win_fast_copy::enabled()
+    {
+        return copy_tracked(sources, dest, owner, progress);
+    }
     // Fast Recycle Bin: what it can take goes there directly, the rest through
     // the engine below (win_fast_recycle.rs). Items too big for their drive's bin stay where they
     // are and are reported, so Arke asks about deleting them permanently instead of Windows.
@@ -657,6 +664,40 @@ pub(crate) fn perform_tracked(
     (with_too_big(result, too_big), undo)
 }
 
+/// A copy with fast copy on (win_fast_copy.rs): Arke copies what it can take, then the engine
+/// copies the rest, so its conflict dialog sees Arke's copies. Failures and undo are merged.
+fn copy_tracked(
+    sources: &[PathBuf],
+    dest: &Path,
+    owner: Option<isize>,
+    progress: &std::sync::Arc<crate::shell::OpProgress>,
+) -> (Result<OpOutcome, ShellError>, Option<Undo>) {
+    use std::sync::atomic::Ordering;
+    let fast = crate::win_fast_copy::copy(sources, dest, progress);
+    if fast.cancelled {
+        // Like the engine: what is copied stays, and undo removes it.
+        let undo = crate::win_fast_copy::merged_undo(&fast, dest, None);
+        return (Ok(OpOutcome::Cancelled), undo);
+    }
+    let (result, engine_undo) = if fast.rest.is_empty() {
+        (Ok(OpOutcome::Done), None)
+    } else {
+        // The engine reports its own work, starting from nothing.
+        progress.work_done.store(0, Ordering::Relaxed);
+        progress.work_total.store(0, Ordering::Relaxed);
+        let rest = FileOp::Copy {
+            sources: fast.rest.iter().map(|(_, path)| path.clone()).collect(),
+            dest: dest.to_path_buf(),
+        };
+        HIDE_PROGRESS.set(true);
+        let done = perform_recorded(&rest, owner, false, Some(Arc::clone(progress)));
+        HIDE_PROGRESS.set(false);
+        done
+    };
+    let undo = crate::win_fast_copy::merged_undo(&fast, dest, engine_undo);
+    (with_failures(result, fast.failed), undo)
+}
+
 /// `result` with the items kept back as too big for the Recycle Bin added to its failures. A
 /// cancel, or a failure of the whole operation, stays what is reported; those items are still
 /// where they were.
@@ -665,19 +706,27 @@ fn with_too_big(
     too_big: Vec<PathBuf>,
 ) -> Result<OpOutcome, ShellError> {
     use arke_core::failure::FailReason;
-    if too_big.is_empty() {
-        return result;
-    }
     let big = too_big
         .into_iter()
-        .map(|path| ItemFailure::new(path, FailReason::TooBigForBin, String::new()));
+        .map(|path| ItemFailure::new(path, FailReason::TooBigForBin, String::new()))
+        .collect();
+    with_failures(result, big)
+}
+
+/// `result` with `failed` added to its failures. A cancel, or a failure of the whole operation,
+/// stays what is reported.
+fn with_failures(
+    result: Result<OpOutcome, ShellError>,
+    failed: Vec<ItemFailure>,
+) -> Result<OpOutcome, ShellError> {
+    if failed.is_empty() {
+        return result;
+    }
     match result {
-        Ok(OpOutcome::Done) => Err(ShellError::Items {
-            failed: big.collect(),
-        }),
-        Err(ShellError::Items { mut failed }) => {
-            failed.extend(big);
-            Err(ShellError::Items { failed })
+        Ok(OpOutcome::Done) => Err(ShellError::Items { failed }),
+        Err(ShellError::Items { failed: mut all }) => {
+            all.extend(failed);
+            Err(ShellError::Items { failed: all })
         }
         other => other,
     }

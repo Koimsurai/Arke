@@ -15,6 +15,7 @@
 //!   its row where it was, and listings or changes arriving for expanded folders keep the first
 //!   visible row in place ([`ScrollAnchor`]). Only keyboard moves scroll to the cursor.
 
+use crate::a11y::A11yExt as _;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -242,6 +243,7 @@ impl Explorer {
         ix: usize,
         entry: &Entry,
         row: E,
+        cx: &Context<Self>,
     ) -> E {
         if !self.tree_active() {
             return row;
@@ -249,7 +251,14 @@ impl Explorer {
         let tree_row = self.tree_row(ix);
         let row = row.aria_level(usize::from(tree_row.depth) + 1);
         if entry.is_dir_like() {
-            row.aria_expanded(tree_row.expanded)
+            let name = Arc::clone(&entry.name);
+            row.a11y_open_close(
+                tree_row.expanded,
+                cx.entity().downgrade(),
+                move |this, _, cx| {
+                    this.toggle_expanded(&name, cx);
+                },
+            )
         } else {
             row
         }

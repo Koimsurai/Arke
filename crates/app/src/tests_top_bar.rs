@@ -403,6 +403,34 @@ fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext
     assert_eq!(menus(cx), 1, "⋯ opens the selection's menu");
 }
 
+/// #179: the Sort button sits in the pane row before the view switcher, and stays in split panes
+/// (where the switcher folds into the view options button), opening its own pane's flyout.
+#[gpui::test]
+fn the_sort_button_sits_before_the_view_switcher(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1600.);
+    let row = bounds(cx, "pane-row");
+    let sort = bounds(cx, "sort-options");
+    let options = bounds(cx, "view-options");
+    assert!(sort.top() >= row.top() && sort.bottom() <= row.bottom());
+    assert!(
+        sort.right() <= options.left(),
+        "{sort:?} before {options:?}"
+    );
+
+    let right = split(&ws, &left, cx);
+    let sort = bounds(cx, "sort-options");
+    press(cx, sort.center());
+    let open: Vec<bool> = [&left, &right]
+        .into_iter()
+        .map(|v| v.update(cx, |v, _| v.sort_options_open_for_test()))
+        .collect();
+    assert_eq!(
+        open.iter().filter(|o| **o).count(),
+        1,
+        "one pane's flyout: {open:?}"
+    );
+}
+
 /// Tabs on top, as in VS Code: the title row (search, window buttons) stays on top, as with tabs
 /// in the sidebar; the tab strip goes under it, over the panes.
 #[gpui::test]

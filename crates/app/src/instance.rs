@@ -88,6 +88,8 @@ pub(crate) enum Request {
         items: Vec<PathBuf>,
     },
     Quit,
+    /// `arke.exe --search <text>`: a window searching the whole computer for the text.
+    Search(String),
     /// An integration API request (`api.rs`, `arke.exe --api <json>`): the JSON text. Its reply
     /// is the JSON reply, not a status byte.
     Api(String),
@@ -124,6 +126,10 @@ pub(crate) fn encode(req: &Request) -> Vec<u8> {
     let mut w = Vec::new();
     match req {
         Request::Quit => push_field(&mut w, &wide("quit")),
+        Request::Search(text) => {
+            push_field(&mut w, &wide("search"));
+            push_field(&mut w, &wide(text));
+        }
         Request::Api(json) => {
             push_field(&mut w, &wide("api"));
             push_field(&mut w, &wide(json));
@@ -185,6 +191,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Request> {
     match as_string(fields.next()?)?.as_str() {
         "quit" => Some(Request::Quit),
         "api" => Some(Request::Api(as_string(fields.next()?)?)),
+        "search" => Some(Request::Search(as_string(fields.next()?)?)),
         "open" => {
             let path = as_path(fields.next()?);
             let bench = match as_string(fields.next()?)?.as_str() {
@@ -636,6 +643,42 @@ pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Opens a new window by launching Arke again, on a background thread: at `path`, or where a new
+/// window starts without one. In background mode the running process takes it over, so it's fast.
+/// Marked as a new window, so single window mode doesn't turn it into a tab.
+pub(crate) fn open_new_window(path: Option<PathBuf>) {
+    // Tests run inside the test binary, which must not launch itself: they read what was asked.
+    #[cfg(test)]
+    NEW_WINDOWS.with(|asked| asked.borrow_mut().push(path));
+    #[cfg(not(test))]
+    crate::explorer::spawn_thread("new-window", move || {
+        let spawned = std::env::current_exe().and_then(|exe| {
+            let mut command = std::process::Command::new(exe);
+            command.arg(NEW_WINDOW_ARG);
+            if let Some(path) = &path {
+                command.arg(path);
+            }
+            command.spawn()
+        });
+        if let Err(err) = spawned {
+            log::warn!("failed to open a new window: {err}");
+        }
+    });
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What `open_new_window` was asked for, in order.
+    static NEW_WINDOWS: std::cell::RefCell<Vec<Option<PathBuf>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the new windows asked for since the last call.
+#[cfg(test)]
+pub(crate) fn take_new_windows() -> Vec<Option<PathBuf>> {
+    NEW_WINDOWS.with(|asked| std::mem::take(&mut *asked.borrow_mut()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,6 +923,12 @@ mod tests {
             page: None,
             new_window: false,
         });
+        assert_eq!(decode(&encode(&req)), Some(req));
+    }
+
+    #[test]
+    fn search_requests_keep_their_text() {
+        let req = Request::Search("annual report 日本語".to_owned());
         assert_eq!(decode(&encode(&req)), Some(req));
     }
 

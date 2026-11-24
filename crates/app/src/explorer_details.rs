@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arke_core::{Entry, Gen};
+use arke_core::{Entry, Gen, SearchColumn};
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, Pixels,
     SharedString, Window, div, prelude::*, px, svg,
@@ -185,50 +185,41 @@ impl Explorer {
             .pr(layout::row_pad_r())
             .gap(layout::col_gap());
         let row = if self.search_mode {
-            // Search results are sorted by relevance; no column sorting.
+            // Search results start in relevance order; a click on a header sorts them.
             row.child(
                 self.name_header(
-                    div()
+                    self.search_header_cell(SearchColumn::Name, t!("col.name").into_owned(), cx)
                         .flex_1()
                         .min_w_0()
-                        .truncate()
-                        .child(t!("col.name").to_string())
                         .into_any_element(),
                     cx,
                 ),
             )
             .child(
-                div()
-                    .w(theme::col_location())
-                    .flex_none()
-                    .truncate()
-                    .child(t!("col.location").to_string()),
+                self.search_header_cell(
+                    SearchColumn::Location,
+                    t!("col.location").into_owned(),
+                    cx,
+                )
+                .w(theme::col_location())
+                .flex_none(),
             )
             .child(resizable(
-                div()
-                    .w(crate::prefs::modified_width())
-                    .flex_none()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(t!("col.modified").to_string()),
-                    ),
+                self.search_header_cell(
+                    SearchColumn::Modified,
+                    t!("col.modified").into_owned(),
+                    cx,
+                )
+                .w(crate::prefs::modified_width())
+                .flex_none(),
                 Col::Modified,
                 cx,
             ))
             .child(resizable(
-                div()
+                self.search_header_cell(SearchColumn::Size, t!("col.size").into_owned(), cx)
                     .w(crate::prefs::size_width())
                     .flex_none()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .child(t!("col.size").to_string()),
+                    .justify_end(),
                 Col::Size,
                 cx,
             ))
@@ -287,6 +278,51 @@ impl Explorer {
             cx,
         )
         .into_any_element()
+    }
+
+    /// A header of the search results: the label, and the sort arrow when the results are ordered
+    /// by it. Clicking sorts (see `click_search_header`). The caller sets the width.
+    fn search_header_cell(
+        &self,
+        column: SearchColumn,
+        label: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let active = self.search_sort.filter(|s| s.column == column);
+        let label: SharedString = label.into();
+        div()
+            .id(("search-header", column as usize))
+            .debug_selector(move || format!("search-header-{}", column.key()))
+            .a11y_column_header(label.clone(), active.map(|s| s.ascending))
+            .flex()
+            .h_full()
+            .items_center()
+            .gap(theme::s_4())
+            .when(active.is_some(), |d| {
+                d.text_color(theme::text()).font_weight(theme::FW_STRONG)
+            })
+            .child(div().min_w_0().truncate().child(label))
+            .children(active.map(|s| {
+                // Same arrow as the Details headers: up for ascending.
+                svg()
+                    .path(Icon::ChevronRight.path())
+                    .size(theme::icon_sm())
+                    .flex_none()
+                    .text_color(theme::text_muted())
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        if s.ascending {
+                            -std::f32::consts::FRAC_PI_2
+                        } else {
+                            std::f32::consts::FRAC_PI_2
+                        },
+                    )))
+            }))
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::text()))
+            .tooltip_below(t!("col.sort_hint").into_owned())
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.click_search_header(column, cx);
+            }))
     }
 
     fn header_cell(&self, col: Col, cx: &mut Context<Self>) -> AnyElement {
@@ -486,7 +522,7 @@ impl Explorer {
             widths.push(match col {
                 Col::Name => {
                     let depth = tree.then(|| self.tree_row(ix).depth);
-                    let name = super::view::shown_name(entry, self.show_extensions);
+                    let name = self.shown_name_of(entry);
                     // Room for a compare badge ("Only here", "Newer"…) after the name.
                     let badge = self
                         .compare_mark(&entry.name)

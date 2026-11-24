@@ -7,11 +7,11 @@
 use std::io::Write;
 
 use windows::Win32::Networking::WinHttp::{
-    INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD,
-    WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
-    WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
-    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
-    WinHttpSetTimeouts,
+    INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders,
+    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
+    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
 };
 use windows::core::{PCWSTR, w};
 
@@ -95,17 +95,28 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// `https://host/path?q` -> (host, path?q). Only https is accepted.
-fn split_url(url: &str) -> Result<(&str, &str), HttpError> {
+/// `https://host[:port]/path?q` -> (host, port, path?q). Only https is accepted.
+fn split_url(url: &str) -> Result<(&str, u16, &str), HttpError> {
     let rest = url
         .strip_prefix("https://")
         .ok_or_else(|| HttpError::NotHttps {
             url: url.to_owned(),
         })?;
-    Ok(match rest.find('/') {
+    let (authority, path) = match rest.find('/') {
         Some(at) => (&rest[..at], &rest[at..]),
         None => (rest, "/"),
-    })
+    };
+    let default = INTERNET_DEFAULT_HTTPS_PORT;
+    Ok(
+        match authority
+            .rsplit_once(':')
+            .filter(|(host, _)| !host.ends_with(']') || authority.starts_with('['))
+            .and_then(|(host, port)| port.parse::<u16>().ok().map(|p| (host, p)))
+        {
+            Some((host, port)) => (host, port, path),
+            None => (authority, default, path),
+        },
+    )
 }
 
 /// Where a response goes: told the status and length first, then given the body chunk by chunk.
@@ -117,11 +128,13 @@ trait Body {
 
 /// GETs `url` into `out`, calling `progress(read, total)` after each chunk. Any status
 /// other than 200 is an error.
-pub(crate) fn get(
+/// Through the HTTP proxy `proxy` (`host:port`) when given.
+fn get_via(
     url: &str,
     headers: &[&str],
     out: &mut dyn Write,
     progress: &mut dyn FnMut(u64, Option<u64>),
+    proxy: Option<&str>,
 ) -> Result<(), HttpError> {
     struct Plain<'a> {
         out: &'a mut dyn Write,
@@ -153,6 +166,7 @@ pub(crate) fn get(
             done: 0,
             total: None,
         },
+        proxy,
     )
 }
 
@@ -160,10 +174,12 @@ pub(crate) fn get(
 /// earlier): asks for the rest and appends it when the server sends only that (206), starts the
 /// file over when it sends everything (200). `progress(done, total)` counts the whole file and
 /// returns `false` to stop ([`HttpError::Stopped`]).
-pub(crate) fn get_resumed(
+/// Through the HTTP proxy `proxy` (`host:port`) when given.
+pub(crate) fn get_resumed_via(
     url: &str,
     file: &mut std::fs::File,
     progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+    proxy: Option<&str>,
 ) -> Result<(), HttpError> {
     struct Resumed<'a> {
         file: &'a mut std::fs::File,
@@ -225,35 +241,48 @@ pub(crate) fn get_resumed(
             total: None,
             complete: false,
         },
+        proxy,
     )
 }
 
-fn fetch(url: &str, headers: &[&str], body: &mut dyn Body) -> Result<(), HttpError> {
-    let (host, path) = split_url(url)?;
+/// GETs `url` into `body`, through the HTTP proxy `proxy` (`host:port`) when given, else the way
+/// Windows is set up to connect (its proxy settings included).
+fn fetch(
+    url: &str,
+    headers: &[&str],
+    body: &mut dyn Body,
+    proxy: Option<&str>,
+) -> Result<(), HttpError> {
+    let (host, port, path) = split_url(url)?;
     let agent = wide(&format!("Arke/{}", crate::build_info::VERSION));
     let host_w = wide(host);
     let path_w = wide(path);
+    let proxy_w = proxy.map(wide);
     // SAFETY: all strings are NUL-terminated and outlive the calls; handles are owned by
     // Handle and closed in reverse creation order.
     unsafe {
-        let session = Handle(WinHttpOpen(
-            PCWSTR(agent.as_ptr()),
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-            PCWSTR::null(),
-            PCWSTR::null(),
-            0,
-        ));
+        let session = Handle(match &proxy_w {
+            Some(proxy) => WinHttpOpen(
+                PCWSTR(agent.as_ptr()),
+                WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+                PCWSTR(proxy.as_ptr()),
+                w!("<local>"),
+                0,
+            ),
+            None => WinHttpOpen(
+                PCWSTR(agent.as_ptr()),
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                0,
+            ),
+        });
         if session.0.is_null() {
             return Err(windows::core::Error::from_thread().into());
         }
         // Resolve 10 s, connect 15 s, send and receive 30 s each.
         let _ = WinHttpSetTimeouts(session.0, 10_000, 15_000, 30_000, 30_000);
-        let connect = Handle(WinHttpConnect(
-            session.0,
-            PCWSTR(host_w.as_ptr()),
-            INTERNET_DEFAULT_HTTPS_PORT,
-            0,
-        ));
+        let connect = Handle(WinHttpConnect(session.0, PCWSTR(host_w.as_ptr()), port, 0));
         if connect.0.is_null() {
             return Err(windows::core::Error::from_thread().into());
         }
@@ -320,8 +349,17 @@ fn fetch(url: &str, headers: &[&str], body: &mut dyn Body) -> Result<(), HttpErr
 
 /// GETs `url` and returns the body as text.
 pub(crate) fn get_text(url: &str, headers: &[&str]) -> Result<String, HttpError> {
+    get_text_via(url, headers, None)
+}
+
+/// [`get_text`] through the HTTP proxy `proxy` (`host:port`) when given.
+pub(crate) fn get_text_via(
+    url: &str,
+    headers: &[&str],
+    proxy: Option<&str>,
+) -> Result<String, HttpError> {
     let mut body = Vec::new();
-    get(url, headers, &mut body, &mut |_, _| {})?;
+    get_via(url, headers, &mut body, &mut |_, _| {}, proxy)?;
     Ok(String::from_utf8(body)?)
 }
 
@@ -333,11 +371,16 @@ mod tests {
     fn splits_https_urls() {
         assert_eq!(
             split_url("https://api.github.com/repos/a/b/releases?per_page=30").ok(),
-            Some(("api.github.com", "/repos/a/b/releases?per_page=30"))
+            Some(("api.github.com", 443, "/repos/a/b/releases?per_page=30"))
         );
         assert_eq!(
             split_url("https://example.com").ok(),
-            Some(("example.com", "/"))
+            Some(("example.com", 443, "/"))
+        );
+        // A mirror on its own port (`update_route.rs`).
+        assert_eq!(
+            split_url("https://mirror.example.com:8443/https://github.com/x").ok(),
+            Some(("mirror.example.com", 8443, "/https://github.com/x"))
         );
         assert!(matches!(
             split_url("http://example.com/x"),

@@ -333,7 +333,7 @@ impl Workspace {
         &self,
         count: usize,
         drawn: usize,
-        large: bool,
+        layout: super::sidebar::TileLayout,
         cx: &mut Context<Self>,
     ) -> Option<(AnyElement, bool)> {
         // One sign at a time: at a tile's edge the insertion mark says where it goes.
@@ -359,10 +359,10 @@ impl Workspace {
             t!("sidebar.add_favorite")
         }
         .into_owned();
-        let per_row: u16 = if large { 3 } else { 4 };
+        let per_row = u16::try_from(layout.per_row()).unwrap_or(3);
         let free = per_row - u16::try_from(drawn % usize::from(per_row)).unwrap_or(0);
         let cells = f32::from(free);
-        let room = self.tile_size(large).width * cells + theme::s_4() * (cells - 1.)
+        let room = self.tile_size(layout).width * cells + theme::s_4() * (cells - 1.)
             - theme::s_4() * 3.
             - theme::icon_sm();
         let fits = cx
@@ -383,7 +383,7 @@ impl Workspace {
                 .id("tile-add-favorite")
                 .debug_selector(|| "tile-add-favorite".to_owned())
                 .col_span(if fits { free } else { per_row })
-                .h(super::sidebar::tile_height(large))
+                .h(super::sidebar::tile_height(layout.large()))
                 .flex()
                 .items_center()
                 .justify_center()

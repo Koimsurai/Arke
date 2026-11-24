@@ -2,39 +2,50 @@
 //! each with a header row.
 //!
 //! - Date modified uses relative buckets (today, yesterday, earlier this week, ...), then years.
-//!   Size uses the same buckets as Windows. Name groups by first letter. Folders sorted first
-//!   get their own section.
+//!   Size uses the same buckets as Windows. Name groups by first letter. Folders kept apart (first
+//!   when ascending, last when descending) get their own section; sorted by a date, or mixed with
+//!   files, folders go into the section of their date like any file.
 //! - Grouping by the sort column means sections are already contiguous, so one linear pass is
 //!   enough (a few ms for tens of thousands of items). Cached by (list, sort, today).
 //! - Rows mix headers and items. Selection, cursor and keyboard only see items; rows are
 //!   converted only for scrolling and marquee selection. Clicking a header selects its section.
+//! - A section can be collapsed (#287, chevron or double-click on the header): it keeps its header
+//!   and count but contributes no item rows, so marquee and scrolling need no special case. The
+//!   keyboard skips its items, and selecting everything or a range leaves them out. The set of
+//!   collapsed labels lives on the tab and is cleared when it opens another folder.
 //! - Grid view groups too. List rows must have uniform height, so the unit is a smaller slot:
 //!   a header takes one slot, a row of tiles takes [`TILE_SLOTS`] (drawn in its first slot and
 //!   overflowing down; when scrolled mid-row, the top slot draws the row upward).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use arke_core::sort::days_from_civil;
 use arke_core::{Entry, SortColumn};
-use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;
 
 use super::{Explorer, ViewMode};
 use crate::a11y::A11yExt as _;
+use crate::assets::Icon;
 use crate::theme;
 
 /// One row in the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
     /// Section header: label, first item, item count, and the items it covers (more than the
-    /// count when expanded folders list their items under themselves).
+    /// count when expanded folders list their items under themselves). `collapsed`: the items
+    /// get no rows.
     Header {
         label: SharedString,
         start: usize,
         count: usize,
         span: usize,
+        collapsed: bool,
     },
     /// An item, by index in the list.
     Item(usize),
@@ -61,13 +72,23 @@ pub(crate) struct Groups {
     list: ListOf,
     key: (SortColumn, bool, i64),
     pub(crate) rows: Vec<Row>,
-    /// Row index of each item.
+    /// Row index of each item; an item of a collapsed section maps to the section's header.
     row_of: Vec<u32>,
+    /// Items of the collapsed sections, in order.
+    pub(crate) hidden: Vec<Range<usize>>,
 }
 
 /// Cached layouts, queried on every render.
 #[derive(Default)]
 pub(crate) struct GroupCache(RefCell<Option<Rc<Groups>>>, RefCell<Option<Rc<GridGroups>>>);
+
+impl GroupCache {
+    /// Forgets both layouts (the collapsed sections changed).
+    fn clear(&self) {
+        self.0.borrow_mut().take();
+        self.1.borrow_mut().take();
+    }
+}
 
 /// Slots taken by one row of tiles when grouping in grid view (a header takes one).
 pub(crate) const TILE_SLOTS: usize = 4;
@@ -79,6 +100,7 @@ pub(crate) enum Slot {
         label: SharedString,
         start: usize,
         count: usize,
+        collapsed: bool,
     },
     /// Tile row and slot within it (0 is where the row is drawn).
     Row(usize, usize),
@@ -91,8 +113,10 @@ pub(crate) struct GridGroups {
     pub(crate) slots: Vec<Slot>,
     /// Each tile row: item range and first slot.
     pub(crate) rows: Vec<(std::ops::Range<usize>, usize)>,
-    /// Tile row of each item.
+    /// Tile row of each item (`u32::MAX` in a collapsed section).
     row_of_item: Vec<u32>,
+    /// Items of each collapsed section, with the slot of its header.
+    pub(crate) hidden: Vec<(Range<usize>, usize)>,
 }
 
 impl GridGroups {
@@ -101,22 +125,32 @@ impl GridGroups {
         let mut slots = Vec::new();
         let mut rows = Vec::new();
         let mut row_of_item = Vec::new();
+        let mut hidden = Vec::new();
         for row in detail {
             let Row::Header {
                 label,
                 start,
                 count,
+                collapsed,
                 ..
             } = row
             else {
                 continue;
             };
+            let end = start + count;
+            if *collapsed {
+                hidden.push((*start..end, slots.len()));
+                row_of_item.resize(row_of_item.len() + count, u32::MAX);
+            }
             slots.push(Slot::Header {
                 label: label.clone(),
                 start: *start,
                 count: *count,
+                collapsed: *collapsed,
             });
-            let end = start + count;
+            if *collapsed {
+                continue;
+            }
             let mut at = *start;
             while at < end {
                 let stop = (at + cols).min(end);
@@ -135,25 +169,48 @@ impl GridGroups {
             slots,
             rows,
             row_of_item,
+            hidden,
         }
     }
 
-    /// Tile row containing the item.
+    /// Tile row containing the item; `None` for an item of a collapsed section.
     pub(crate) fn row_of(&self, ix: usize) -> Option<usize> {
-        self.row_of_item.get(ix).map(|r| *r as usize)
+        self.row_of_item
+            .get(ix)
+            .filter(|r| **r != u32::MAX)
+            .map(|r| *r as usize)
     }
 
-    /// First slot of the item's row, for scrolling.
+    /// The collapsed section holding the item: its items and header slot.
+    pub(crate) fn hidden_at(&self, ix: usize) -> Option<&(Range<usize>, usize)> {
+        let p = self.hidden.partition_point(|(r, _)| r.end <= ix);
+        self.hidden.get(p).filter(|(r, _)| r.start <= ix)
+    }
+
+    /// First slot of the item's row, for scrolling (the header's, for a hidden item).
     pub(crate) fn slot_of(&self, ix: usize) -> usize {
         self.row_of(ix)
             .and_then(|r| self.rows.get(r))
-            .map_or(0, |r| r.1)
+            .map_or_else(|| self.hidden_at(ix).map_or(0, |h| h.1), |r| r.1)
     }
 
     /// Moves `delta` rows, keeping the column (clamped to the last item of a shorter row).
     pub(crate) fn step(&self, ix: usize, delta: isize) -> usize {
         let Some(row) = self.row_of(ix) else {
-            return ix;
+            // In a collapsed section: the nearest row before or after its header.
+            let Some((_, slot)) = self.hidden_at(ix) else {
+                return ix;
+            };
+            let next = self.rows.partition_point(|r| r.1 < *slot);
+            let target = if delta > 0 {
+                next
+            } else {
+                match next.checked_sub(1) {
+                    Some(t) => t,
+                    None => return ix,
+                }
+            };
+            return self.rows.get(target).map_or(ix, |r| r.0.start);
         };
         let col = ix - self.rows[row].0.start;
         let target = row
@@ -182,97 +239,44 @@ impl Groups {
     }
 }
 
-/// "Today" for date buckets: local day number and the local offset from UTC in seconds.
-#[derive(Clone, Copy)]
-pub(crate) struct Today {
-    day: i64,
-    offset: i64,
-}
+/// "Today" for date sections: local day number and the local offset from UTC in seconds.
+pub(crate) type Today = arke_core::DayBuckets;
 
-impl Today {
-    pub(crate) fn now(shell: &dyn crate::shell::Shell) -> Self {
-        let now = SystemTime::now();
-        let utc = unix_secs(now);
-        let offset = shell.local_parts(now).map_or(0, |[y, m, d, h, mi, s]| {
-            let local = days_from_civil(i64::from(y), i64::from(m), i64::from(d)) * 86_400
-                + i64::from(h) * 3600
-                + i64::from(mi) * 60
-                + i64::from(s);
-            // Round to whole minutes.
-            ((local - utc) as f64 / 60.).round() as i64 * 60
-        });
-        Self {
-            day: (utc + offset).div_euclid(86_400),
-            offset,
-        }
-    }
-
-    fn local_day(self, t: SystemTime) -> i64 {
-        (unix_secs(t) + self.offset).div_euclid(86_400)
-    }
-}
-
-fn unix_secs(t: SystemTime) -> i64 {
-    match t.duration_since(SystemTime::UNIX_EPOCH) {
+/// Today's day and the local offset, for date sections.
+pub(crate) fn day_buckets(shell: &dyn crate::shell::Shell) -> Today {
+    let now = SystemTime::now();
+    let utc = match now.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
-        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+        Err(_) => 0,
+    };
+    let offset = shell.local_parts(now).map_or(0, |[y, m, d, h, mi, s]| {
+        let local = days_from_civil(i64::from(y), i64::from(m), i64::from(d)) * 86_400
+            + i64::from(h) * 3600
+            + i64::from(mi) * 60
+            + i64::from(s);
+        // Round to whole minutes.
+        ((local - utc) as f64 / 60.).round() as i64 * 60
+    });
+    Today {
+        day: (utc + offset).div_euclid(86_400),
+        offset,
     }
 }
 
-/// Civil date to days since 1970-01-01 (Howard Hinnant's algorithm).
-const fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Day number to (year, month).
-fn year_month(days: i64) -> (i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    (y, m)
-}
-
-/// Date-modified section label.
+/// Date section label.
 fn date_group(t: Option<SystemTime>, today: Today) -> String {
-    let Some(t) = t else {
-        return t!("group.unknown").into_owned();
-    };
-    let day = today.local_day(t);
-    let now = today.day;
-    // Weeks start on Monday (0 = Monday).
-    let weekday = (now + 3).rem_euclid(7);
-    let week_start = now - weekday;
-    let (y, m) = year_month(day);
-    let (ny, nm) = year_month(now);
-    let key = if day > now {
-        "group.future"
-    } else if day == now {
-        "group.today"
-    } else if day == now - 1 {
-        "group.yesterday"
-    } else if day >= week_start {
-        "group.this_week"
-    } else if day >= week_start - 7 {
-        "group.last_week"
-    } else if (y, m) == (ny, nm) {
-        "group.this_month"
-    } else if (y * 12 + m) == (ny * 12 + nm - 1) {
-        "group.last_month"
-    } else if y == ny {
-        "group.this_year"
-    } else {
-        return t!("group.year", year = y).into_owned();
+    use arke_core::DateSection as D;
+    let key = match today.section(t) {
+        D::Unknown => "group.unknown",
+        D::Future => "group.future",
+        D::Today => "group.today",
+        D::Yesterday => "group.yesterday",
+        D::ThisWeek => "group.this_week",
+        D::LastWeek => "group.last_week",
+        D::ThisMonth => "group.this_month",
+        D::LastMonth => "group.last_month",
+        D::ThisYear => "group.this_year",
+        D::Year(year) => return t!("group.year", year = year).into_owned(),
     };
     t!(key).into_owned()
 }
@@ -303,8 +307,8 @@ fn name_group(entry: &Entry) -> String {
     }
 }
 
-/// Section label for an entry. `folders_apart`: folders are sorted first and form their own
-/// section.
+/// Section label for an entry. `folders_apart`: folders are kept apart from files and form their
+/// own section.
 fn group_of(entry: &Entry, column: SortColumn, folders_apart: bool, today: Today) -> String {
     let dir = entry.is_dir_like();
     if dir && (folders_apart || !matches!(column, SortColumn::Modified | SortColumn::Created)) {
@@ -336,22 +340,27 @@ fn build(
     column: SortColumn,
     folders_apart: bool,
     today: Today,
+    collapsed: &HashSet<SharedString>,
 ) -> (Vec<Row>, Vec<u32>) {
     let mut rows = Vec::with_capacity(entries.len() + 16);
     let mut row_of = Vec::with_capacity(entries.len());
     let mut current: Option<String> = None;
     let mut header_at = 0usize;
+    let mut hide = false;
     for (ix, entry) in entries.iter().enumerate() {
         let nested = depth(ix) > 0 && current.is_some();
         if !nested {
             let group = group_of(entry, column, folders_apart, today);
             if current.as_deref() != Some(group.as_str()) {
                 header_at = rows.len();
+                let label = SharedString::from(group.clone());
+                hide = collapsed.contains(&label);
                 rows.push(Row::Header {
-                    label: SharedString::from(group.clone()),
+                    label,
                     start: ix,
                     count: 0,
                     span: 0,
+                    collapsed: hide,
                 });
                 current = Some(group);
             }
@@ -360,13 +369,47 @@ fn build(
             *count += usize::from(!nested);
             *span += 1;
         }
-        row_of.push(u32::try_from(rows.len()).unwrap_or(u32::MAX));
-        rows.push(Row::Item(ix));
+        if hide {
+            row_of.push(u32::try_from(header_at).unwrap_or(u32::MAX));
+        } else {
+            row_of.push(u32::try_from(rows.len()).unwrap_or(u32::MAX));
+            rows.push(Row::Item(ix));
+        }
     }
     (rows, row_of)
 }
 
+/// Items covered by the collapsed sections.
+fn hidden_ranges(rows: &[Row]) -> Vec<Range<usize>> {
+    rows.iter()
+        .filter_map(|r| match r {
+            Row::Header {
+                start,
+                span,
+                collapsed: true,
+                ..
+            } => Some(*start..start + span),
+            _ => None,
+        })
+        .collect()
+}
+
 impl Explorer {
+    /// What the sections are counted from: the day the list was sorted for, when it is sorted
+    /// into date sections (#286, folders go into them then; labels from that same day keep the
+    /// sections whole until it is sorted again), otherwise today. And whether folders form a
+    /// section of their own.
+    fn section_basis(&self) -> Option<(Today, bool)> {
+        let sorted = self.model.as_ref()?.sorted_by;
+        Some(match sorted.date_sections() {
+            Some(days) => (days, false),
+            None => (
+                day_buckets(self.services.shell.as_ref()),
+                self.sort.folders_apart(),
+            ),
+        })
+    }
+
     /// Whether to group: setting on, details view, not search results or column view. Expanded
     /// folders keep their items under themselves, in the folder's section (#279).
     pub(super) fn grouping(&self) -> bool {
@@ -382,8 +425,7 @@ impl Explorer {
             return None;
         }
         let view = self.view()?;
-        let today = Today::now(self.services.shell.as_ref());
-        let folders_apart = !self.sort.mixed;
+        let (today, folders_apart) = self.section_basis()?;
         let cols = self.grid_cols.max(1);
         let key = (self.sort.column, folders_apart, today.day, cols);
         if let Some(cached) = self
@@ -395,7 +437,14 @@ impl Explorer {
         {
             return Some(Rc::clone(cached));
         }
-        let (rows, _) = build(&view, |_| 0, self.sort.column, folders_apart, today);
+        let (rows, _) = build(
+            &view,
+            |_| 0,
+            self.sort.column,
+            folders_apart,
+            today,
+            &self.collapsed_groups,
+        );
         let grid = Rc::new(GridGroups::new(ListOf::new(&view), key, &rows, cols));
         *self.group_cache.1.borrow_mut() = Some(Rc::clone(&grid));
         Some(grid)
@@ -434,9 +483,17 @@ impl Explorer {
                     label,
                     start,
                     count,
+                    collapsed,
                 }) => {
                     let n = *count;
-                    self.group_header(slot, label.clone(), *start, (n, n), Some(slot_h), cx)
+                    self.group_header(
+                        slot,
+                        label.clone(),
+                        *start,
+                        (n, n, *collapsed),
+                        Some(slot_h),
+                        cx,
+                    )
                 }
                 Some(Slot::Row(r, k)) if wanted.peek() == Some(&(*r, *k)) => {
                     wanted.next();
@@ -467,8 +524,7 @@ impl Explorer {
             return None;
         }
         let view = self.view()?;
-        let today = Today::now(self.services.shell.as_ref());
-        let folders_apart = !self.sort.mixed;
+        let (today, folders_apart) = self.section_basis()?;
         let key = (self.sort.column, folders_apart, today.day);
         if let Some(cached) = self
             .group_cache
@@ -489,12 +545,21 @@ impl Explorer {
                 .and_then(|rows| rows.get(ix))
                 .map_or(0, |r| r.depth)
         };
-        let (rows, row_of) = build(&view, depth, self.sort.column, folders_apart, today);
+        let (rows, row_of) = build(
+            &view,
+            depth,
+            self.sort.column,
+            folders_apart,
+            today,
+            &self.collapsed_groups,
+        );
+        let hidden = hidden_ranges(&rows);
         let groups = Rc::new(Groups {
             list: ListOf::new(&view),
             key,
             rows,
             row_of,
+            hidden,
         });
         *self.group_cache.0.borrow_mut() = Some(Rc::clone(&groups));
         Some(groups)
@@ -549,12 +614,20 @@ impl Explorer {
                     start,
                     count,
                     span,
+                    collapsed,
                 }) => {
                     if let Some(r) = run.take() {
                         out.extend(self.render_rows(r, focused, &[], cx));
                     }
                     let (start, count, span) = (*start, *count, *span);
-                    out.push(self.group_header(row, label.clone(), start, (count, span), None, cx));
+                    out.push(self.group_header(
+                        row,
+                        label.clone(),
+                        start,
+                        (count, span, *collapsed),
+                        None,
+                        cx,
+                    ));
                 }
                 None => {}
             }
@@ -565,21 +638,128 @@ impl Explorer {
         out
     }
 
+    /// Flips a section between collapsed and expanded. Collapsing deselects its items, so nothing
+    /// the user can't see stays selected.
+    pub(crate) fn toggle_group(&mut self, label: &SharedString, cx: &mut Context<Self>) {
+        if !self.collapsed_groups.remove(label) {
+            self.collapsed_groups.insert(label.clone());
+        }
+        self.group_cache.clear();
+        self.drop_hidden_selection();
+        cx.notify();
+    }
+
+    /// Expands every section again (a new folder starts with all sections open).
+    pub(super) fn reset_collapsed_groups(&mut self) {
+        if !self.collapsed_groups.is_empty() {
+            self.collapsed_groups.clear();
+            self.group_cache.clear();
+        }
+    }
+
+    /// Items inside collapsed sections, in order. Empty when nothing is collapsed or the list
+    /// isn't grouped.
+    fn hidden_items(&self) -> Vec<Range<usize>> {
+        if self.collapsed_groups.is_empty() {
+            return Vec::new();
+        }
+        if let Some(groups) = self.groups() {
+            groups.hidden.clone()
+        } else if let Some(grid) = self.grid_groups() {
+            grid.hidden.iter().map(|(r, _)| r.clone()).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Deselects items of collapsed sections (after Ctrl+A or a Shift range).
+    pub(super) fn drop_hidden_selection(&mut self) {
+        let hidden = self.hidden_items();
+        if hidden.is_empty() || self.selection.is_empty() {
+            return;
+        }
+        let Some(view) = self.view() else { return };
+        let names: Vec<Arc<str>> = hidden
+            .iter()
+            .flat_map(|r| view[r.start.min(view.len())..r.end.min(view.len())].iter())
+            .map(|e| Arc::clone(&e.name))
+            .collect();
+        self.selection.remove_names(&names);
+    }
+
+    /// The nearest item at or after (`forward`) or before `ix` that isn't in a collapsed section.
+    pub(super) fn skip_collapsed(&self, ix: usize, forward: bool) -> Option<usize> {
+        let len = self.list_len();
+        let mut at = ix.min(len.checked_sub(1)?);
+        let hidden = self.hidden_items();
+        loop {
+            let p = hidden.partition_point(|r| r.end <= at);
+            match hidden.get(p).filter(|r| r.start <= at) {
+                None => return Some(at),
+                Some(r) if forward => {
+                    at = r.end;
+                    if at >= len {
+                        return None;
+                    }
+                }
+                Some(r) => at = r.start.checked_sub(1)?,
+            }
+        }
+    }
+
+    /// Expands the section holding `ix` if it is collapsed, for something that selects an item by
+    /// name or index (type to select, a pasted file). Returns whether it did.
+    pub(super) fn reveal_item(&mut self, ix: usize) -> bool {
+        if self.collapsed_groups.is_empty() {
+            return false;
+        }
+        let label = if let Some(groups) = self.groups() {
+            match groups.rows.get(groups.row_of(ix)) {
+                Some(Row::Header {
+                    label,
+                    collapsed: true,
+                    ..
+                }) => label.clone(),
+                _ => return false,
+            }
+        } else if let Some(grid) = self.grid_groups() {
+            match grid
+                .hidden_at(ix)
+                .and_then(|(_, slot)| grid.slots.get(*slot))
+            {
+                Some(Slot::Header { label, .. }) => label.clone(),
+                _ => return false,
+            }
+        } else {
+            return false;
+        };
+        self.collapsed_groups.remove(&label);
+        self.group_cache.clear();
+        true
+    }
+
     /// Section header with label, count and a rule. Clicking selects the section: `span` items
-    /// from `start` (expanded folders' items included).
+    /// from `start` (expanded folders' items included). The chevron, or a double click, collapses
+    /// and expands it.
     fn group_header(
         &self,
         row: usize,
         label: SharedString,
         start: usize,
-        (count, span): (usize, usize),
+        (count, span, collapsed): (usize, usize, bool),
         height: Option<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let on_chevron = label.clone();
+        let on_double = label.clone();
         div()
             .id(("group-header", row))
             .a11y_lazy(gpui::Role::Heading, || format!("{label} ({count})"))
             .aria_level(1)
+            .a11y_open_close(!collapsed, cx.entity().downgrade(), {
+                let label = label.clone();
+                move |this, _, cx| this.toggle_group(&label, cx)
+            })
             // Full width, and at least as wide as Details rows when they scroll sideways.
             .w_full()
             .when_some(self.cols, |d, c| d.min_w(c.row))
@@ -592,6 +772,39 @@ impl Explorer {
             .cursor_pointer()
             .rounded(theme::r_8())
             .hover(|s| s.bg(theme::wash()))
+            .child(
+                div()
+                    .id(("group-chevron", row))
+                    .size(theme::tree_chevron())
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::r_4())
+                    .hover(|s| s.bg(theme::wash_strong()))
+                    // Toggles without selecting the section or starting a marquee.
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            window.focus(&this.list_focus, cx);
+                            this.toggle_group(&on_chevron, cx);
+                        }),
+                    )
+                    .child(
+                        svg()
+                            .path(Icon::ChevronRight.path())
+                            .size(theme::icon_sm())
+                            .text_color(theme::text_subtle())
+                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                if collapsed {
+                                    0.
+                                } else {
+                                    std::f32::consts::FRAC_PI_2
+                                },
+                            ))),
+                    ),
+            )
             // A heading, not a caption: item size, semibold, full ink.
             .child(
                 div()
@@ -615,6 +828,14 @@ impl Explorer {
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 window.focus(&this.list_focus, cx);
+                if event.click_count() >= 2 {
+                    this.toggle_group(&on_double, cx);
+                    return;
+                }
+                // A collapsed section has nothing on screen to select.
+                if collapsed {
+                    return;
+                }
                 let Some(view) = this.view() else {
                     return;
                 };
@@ -652,7 +873,14 @@ mod tests {
         for name in ["a1", "a2", "a3", "a4", "a5", "b1", "b2"] {
             entries.push(Entry::new(name, EntryKind::File, 1, None, 0));
         }
-        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today);
+        let (rows, _) = build(
+            &entries,
+            |_| 0,
+            SortColumn::Name,
+            true,
+            today,
+            &HashSet::new(),
+        );
         let grid = GridGroups::new(
             ListOf(std::sync::Weak::new()),
             (SortColumn::Name, true, 0, 3),
@@ -681,15 +909,6 @@ mod tests {
     fn at(today: Today, days_ago: i64) -> SystemTime {
         let secs = today.day * 86_400 - today.offset + 12 * 3600 - days_ago * 86_400;
         SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap())
-    }
-
-    #[test]
-    fn civil_dates_round_trip() {
-        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2026, 11, 10), (2026, 12, 31)] {
-            let days = days_from_civil(y, m, d);
-            assert_eq!(year_month(days), (y, m));
-        }
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
     }
 
     #[test]
@@ -725,7 +944,14 @@ mod tests {
             // A non-ASCII first letter falls into "Other".
             Entry::new("報告.docx", EntryKind::File, 1, None, 0),
         ];
-        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today);
+        let (rows, row_of) = build(
+            &entries,
+            |_| 0,
+            SortColumn::Name,
+            true,
+            today,
+            &HashSet::new(),
+        );
         let headers: Vec<(String, usize)> = rows
             .iter()
             .filter_map(|r| match r {
@@ -747,5 +973,114 @@ mod tests {
         for (ix, row) in row_of.iter().enumerate() {
             assert_eq!(rows[*row as usize], Row::Item(ix));
         }
+    }
+
+    /// #276: with folders and files together, a date sort puts folders in the section of their
+    /// date; kept apart they have a section of their own.
+    #[test]
+    fn folders_go_by_date_when_not_kept_apart() {
+        rust_i18n::set_locale("en");
+        let today = Today {
+            day: days_from_civil(2026, 11, 10),
+            offset: 0,
+        };
+        let spec = arke_core::SortSpec::by(SortColumn::Modified, false, true);
+        let with_date = |name: &str, kind, ago| Entry::new(name, kind, 1, Some(at(today, ago)), 0);
+        let entries = vec![
+            with_date("new.txt", EntryKind::File, 0),
+            with_date("new-dir", EntryKind::Dir, 0),
+            with_date("old.txt", EntryKind::File, 400),
+            with_date("old-dir", EntryKind::Dir, 400),
+        ];
+        let labels = |apart: bool| -> Vec<(String, usize)> {
+            build(
+                &entries,
+                |_| 0,
+                SortColumn::Modified,
+                apart,
+                today,
+                &HashSet::new(),
+            )
+            .0
+            .iter()
+            .filter_map(|r| match r {
+                Row::Header { label, count, .. } => Some((label.to_string(), *count)),
+                Row::Item(_) => None,
+            })
+            .collect()
+        };
+        assert!(!spec.folders_apart());
+        assert_eq!(
+            labels(spec.folders_apart()),
+            [(t!("group.today").into_owned(), 2), ("2025".into(), 2)]
+        );
+        // Kept apart: the folders form sections of their own.
+        assert_eq!(labels(true).len(), 4);
+    }
+
+    #[test]
+    fn collapsed_sections_keep_their_header_and_lose_their_rows() {
+        rust_i18n::set_locale("en");
+        let today = Today {
+            day: 20_000,
+            offset: 0,
+        };
+        let entries = vec![
+            Entry::new("docs", EntryKind::Dir, 0, None, 0),
+            Entry::new("apple.txt", EntryKind::File, 1, None, 0),
+            Entry::new("avocado.txt", EntryKind::File, 1, None, 0),
+            Entry::new("banana.txt", EntryKind::File, 1, None, 0),
+        ];
+        let collapsed: HashSet<SharedString> = [SharedString::from("A")].into_iter().collect();
+        let (rows, row_of) = build(&entries, |_| 0, SortColumn::Name, true, today, &collapsed);
+        // Three headers and the two items outside A.
+        assert_eq!(rows.len(), 5);
+        assert!(matches!(
+            &rows[2],
+            Row::Header {
+                count: 2,
+                span: 2,
+                collapsed: true,
+                ..
+            }
+        ));
+        // A's items point at their header, so scrolling to one lands there.
+        assert_eq!(row_of, [1, 2, 2, 4]);
+        assert_eq!(hidden_ranges(&rows), [Range { start: 1, end: 3 }]);
+    }
+
+    #[test]
+    fn grid_skips_collapsed_sections() {
+        rust_i18n::set_locale("en");
+        let today = Today {
+            day: 20_000,
+            offset: 0,
+        };
+        let mut entries = vec![Entry::new("docs", EntryKind::Dir, 0, None, 0)];
+        for name in ["a1", "a2", "a3", "b1"] {
+            entries.push(Entry::new(name, EntryKind::File, 1, None, 0));
+        }
+        let collapsed: HashSet<SharedString> = [SharedString::from("A")].into_iter().collect();
+        let (rows, _) = build(&entries, |_| 0, SortColumn::Name, true, today, &collapsed);
+        let grid = GridGroups::new(
+            ListOf(std::sync::Weak::new()),
+            (SortColumn::Name, true, 0, 3),
+            &rows,
+            3,
+        );
+        // Folders: header + row; A: header only; B: header + row.
+        let ranges: Vec<_> = grid.rows.iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(ranges, [0..1, 4..5]);
+        assert_eq!(grid.slots.len(), 3 + 2 * TILE_SLOTS);
+        assert_eq!(grid.hidden, [(1..4, 5)]);
+        assert_eq!(grid.row_of(2), None);
+        assert_eq!(grid.row_of(4), Some(1));
+        assert_eq!(grid.slot_of(2), 5, "a hidden item scrolls to its header");
+        // Down from docs goes over A to b1; up comes back.
+        assert_eq!(grid.step(0, 1), 4);
+        assert_eq!(grid.step(4, -1), 0);
+        // From inside the collapsed section too.
+        assert_eq!(grid.step(2, 1), 4);
+        assert_eq!(grid.step(2, -1), 0);
     }
 }

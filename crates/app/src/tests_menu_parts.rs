@@ -53,6 +53,15 @@ fn pin(cx: &mut VisualTestContext, keys: &[&str]) {
     });
 }
 
+fn set_owner(cx: &mut VisualTestContext, key: &str, owner: &str) {
+    let (key, owner) = (key.to_owned(), owner.to_owned());
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| _ = st.menu_pin_owners.insert(key, owner), cx);
+        });
+    });
+}
+
 fn owners(cx: &mut VisualTestContext) -> std::collections::BTreeMap<String, String> {
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx)
@@ -1045,6 +1054,55 @@ fn a_command_windows_names_keeps_its_row(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
+/// #325: the registry lists "Run as administrator" for an item Windows doesn't show it for (a zip
+/// here). Its row isn't drawn ahead of its source, to vanish when that answers: rows are drawn
+/// ahead only where they showed before.
+#[gpui::test]
+fn a_command_left_out_here_is_not_drawn_ahead(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.zip", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let key = "Run as administrator";
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    pin(cx, &[key]);
+    set_owner(cx, key, "verb:runas");
+    // Listed in the registry, left out by Windows: read on its own it adds nothing.
+    shell.extensions.lock().push((
+        MenuHandler {
+            key: "CompressedFolder".into(),
+            clsid: String::new(),
+            name: "runas".into(),
+            kind: HandlerKind::Verb { extended: false },
+            parent: None,
+        },
+        Vec::new(),
+    ));
+    // Every source slow, the whole menu too (once it is in, it decides the rows).
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    let (answer, gate) = flume::unbounded();
+    *shell.part_gate.lock() = Some(gate);
+    right_click(&view, cx, Some(0));
+    // Long enough for the sources to be listed and their rows drawn ahead.
+    for _ in 0..20 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    let _ = answer.send(());
+    wait_for(cx, "read", |_| !shell.extensions_read.lock().is_empty());
+    cx.run_until_parked();
+    assert!(!rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    *shell.part_gate.lock() = None;
+    *shell.menu_gate.lock() = None;
+    for _ in 0..4 {
+        let _ = open_whole.send(());
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+}
+
 /// #344: "Pin to Start" only works when File Explorer itself runs it; from Arke Windows answers
 /// "access denied". It stays out of "Show more options"; the rest of the Windows menu is kept.
 #[gpui::test]
@@ -1079,4 +1137,71 @@ fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
     });
     assert!(items.iter().any(|i| i == "Share"), "{items:?}");
     assert!(!items.iter().any(|i| i == "Pin to Start"), "{items:?}");
+}
+
+/// "More options" says once what its pins do: the line is there until the submenu has been open,
+/// then it doesn't come back.
+#[gpui::test]
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "ContextMenu lives in a private explorer submodule, so its methods can't be named by path"
+)]
+fn more_options_explains_its_pins_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
+    let shell = shell_with_extensions();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    let hint = t!("menu.pin_hint").into_owned();
+    // A new profile: the line hasn't been shown yet.
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.pin_hint_seen = false, cx);
+        });
+    });
+    let items = |view: &Entity<Explorer>, cx: &mut VisualTestContext| {
+        view.update(cx, |v, _| {
+            v.context_menu
+                .as_ref()
+                .map_or_default(|m| m.shell_items_for_test())
+        })
+    };
+    let seen = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .pin_hint_seen
+        })
+    };
+
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(items(&view, cx).contains(&hint), "{:?}", items(&view, cx));
+    assert!(!seen(cx), "not until More options opens");
+
+    let more = format!("{} ›", t!("menu.more_options"));
+    let at = menu_labels(&view, cx)
+        .unwrap_or_default()
+        .iter()
+        .position(|l| *l == more)
+        .expect("More options in the menu");
+    view.update(cx, |v, _| {
+        if let Some(menu) = v.context_menu.as_mut() {
+            menu.highlight_for_test(at);
+        }
+    });
+    cx.simulate_keystrokes("right");
+    cx.run_until_parked();
+    assert!(seen(cx), "shown once");
+    cx.simulate_keystrokes("escape escape");
+    cx.run_until_parked();
+
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options in", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    assert!(!items(&view, cx).contains(&hint), "{:?}", items(&view, cx));
 }

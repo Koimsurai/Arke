@@ -27,6 +27,10 @@ use crate::shell::{
 };
 use crate::workspace::{CloseTab, NewTab, Workspace};
 
+#[path = "tests_a11y.rs"]
+mod a11y_tree;
+#[path = "tests_archive_password.rs"]
+mod archive_password;
 #[path = "tests_column_view.rs"]
 mod column_view;
 #[path = "tests_favorites.rs"]
@@ -42,6 +46,8 @@ mod lazy_submenus;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
+#[path = "tests_menu_customize.rs"]
+mod menu_customize;
 #[path = "tests_menu_parts.rs"]
 mod menu_parts;
 #[path = "tests_motion.rs"]
@@ -70,12 +76,16 @@ mod quiet_update;
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_sidebar_keys.rs"]
+mod sidebar_keys;
 #[path = "tests_sidebar_sections.rs"]
 mod sidebar_sections;
 #[path = "tests_sidebar_tree.rs"]
 mod sidebar_tree;
 #[path = "tests_small_behaviors.rs"]
 mod small_behaviors;
+#[path = "tests_sort_options.rs"]
+mod sort_options;
 #[path = "tests_stuck_drag.rs"]
 mod stuck_drag;
 #[path = "tests_tab_drag.rs"]
@@ -2135,6 +2145,7 @@ fn restores_last_session_tabs(cx: &mut TestAppContext) {
         crate::workspace::bind_keys(cx);
     });
     let session = Session {
+        workspace: None,
         tabs: vec![
             SessionTab {
                 panes: vec![PathBuf::from(r"C:\t")],
@@ -2216,6 +2227,7 @@ fn restores_home_from_the_last_session(cx: &mut TestAppContext) {
         crate::workspace::bind_keys(cx);
     });
     let session = Session {
+        workspace: None,
         tabs: vec![SessionTab {
             panes: vec![PathBuf::from(r"C:\t")],
             active_pane: 0,
@@ -3351,6 +3363,28 @@ fn failed_delete_names_the_program_and_retries_only_what_failed(cx: &mut TestApp
     );
 }
 
+/// While a confirmation is open, nothing behind it can be clicked: a click on another file
+/// neither selects it nor closes the dialog's question about the first one (#368).
+#[gpui::test]
+fn a_confirmation_blocks_the_list_behind_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\cv", vec![file("a.txt", 1), file("b.txt", 1)]);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\cv");
+    wait_until(cx, &view, "load", loaded(r"C:\cv"));
+    cx.run_until_parked();
+    let b = cx.debug_bounds("name:b.txt").expect("b.txt is drawn");
+    cx.simulate_keystrokes("home shift-delete");
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| v.confirm_title().is_some()), "asks");
+    // A click outside the dialog cancels it, and that is all it does.
+    cx.simulate_click(b.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    view.update(cx, |v, _| {
+        assert!(v.confirm_title().is_none(), "cancelled");
+        assert_eq!(selected_names(v), ["a.txt"], "the list behind never saw it");
+    });
+}
+
 /// Items on a drive without a Recycle Bin are never deleted silently: Arke asks like a
 /// permanent delete and says why; the others still go to the Recycle Bin.
 #[gpui::test]
@@ -3683,6 +3717,104 @@ fn inline_rename_validates_names(cx: &mut TestAppContext) {
     );
 }
 
+/// Tab in the rename box commits and renames the next item, Shift+Tab the previous one, in the
+/// order shown (#310).
+#[gpui::test]
+fn tab_in_the_rename_box_moves_to_the_next_item(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let dir_path = Path::new(r"C:\r");
+    fs.insert_dir(
+        dir_path,
+        vec![file("a.txt", 1), file("b.txt", 1), file("c.txt", 1)],
+    );
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\r");
+    wait_until(cx, &view, "load", loaded(r"C:\r"));
+    wait_watcher(&fs, dir_path);
+    let renaming = |v: &Explorer| v.renaming.as_ref().map(|r| r.name.to_string());
+
+    // Tab commits "a2" and goes on to b.txt, which is the one selected.
+    cx.simulate_keystrokes("home f2");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("a.txt")
+    );
+    cx.simulate_input("a2");
+    cx.simulate_keystrokes("tab");
+    view.update(cx, |v, _| {
+        assert_eq!(renaming(v).as_deref(), Some("b.txt"));
+        assert_eq!(selected_name(v).as_deref(), Some("b.txt"));
+    });
+    wait_until(cx, &view, "a renamed", |v| {
+        names(v).contains(&"a2.txt".to_string())
+    });
+    // The renamed row doesn't take the selection back when the rename is done.
+    view.update(cx, |v, _| {
+        assert_eq!(renaming(v).as_deref(), Some("b.txt"));
+        assert_eq!(selected_name(v).as_deref(), Some("b.txt"));
+    });
+
+    // A name the box refuses keeps it on this item, with the reason under it.
+    cx.simulate_input("x|y");
+    cx.simulate_keystrokes("tab");
+    view.update(cx, |v, _| {
+        assert_eq!(renaming(v).as_deref(), Some("b.txt"));
+        assert!(v.renaming.as_ref().is_some_and(|r| r.problem.is_some()));
+    });
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input("b2.txt");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("c.txt")
+    );
+    wait_until(cx, &view, "b renamed", |v| {
+        names(v).contains(&"b2.txt".to_string())
+    });
+
+    // At the last item Tab only commits.
+    cx.simulate_input("c2");
+    cx.simulate_keystrokes("tab");
+    assert!(view.update(cx, |v, _| v.renaming.is_none()));
+    wait_until(cx, &view, "c renamed", |v| {
+        names(v).contains(&"c2.txt".to_string())
+    });
+    assert_eq!(
+        shell.ops(),
+        [
+            FileOp::Rename {
+                path: PathBuf::from(r"C:\r\a.txt"),
+                new_name: "a2.txt".into(),
+            },
+            FileOp::Rename {
+                path: PathBuf::from(r"C:\r\b.txt"),
+                new_name: "b2.txt".into(),
+            },
+            FileOp::Rename {
+                path: PathBuf::from(r"C:\r\c.txt"),
+                new_name: "c2.txt".into(),
+            },
+        ]
+    );
+
+    // Shift+Tab goes back through the list as shown now (a2, b2, c2), and at the first
+    // item it only commits. Nothing is typed, so no more renames.
+    cx.simulate_keystrokes("end f2");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("c2.txt")
+    );
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(
+        view.update(cx, |v, _| renaming(v)).as_deref(),
+        Some("b2.txt")
+    );
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    assert!(view.update(cx, |v, _| v.renaming.is_none()));
+    assert_eq!(shell.ops().len(), 3);
+}
+
 /// The profile folder under This PC is named after the account, so it isn't a second "Home".
 #[test]
 fn profile_folder_is_named_after_the_account() {
@@ -3768,13 +3900,31 @@ fn background_menu_new_text_file_and_more_options(cx: &mut TestAppContext) {
 
     right_click(&view, cx, None);
     let labels = menu_labels(&view, cx).unwrap();
+    // New folder and New text document are in "New", at the top (#190).
+    assert_eq!(labels[0], format!("{} ›", t!("menu.new")));
+    view.update(cx, |v, cx| {
+        if let Some(menu) = v.context_menu.as_mut() {
+            menu.highlight_for_test(0);
+        }
+        cx.notify();
+    });
+    cx.simulate_keystrokes("right");
     assert_eq!(
-        &labels[..2],
-        [
+        view.update(cx, |v, _| v.context_menu.as_ref().map(|m| m.labels_at(1))),
+        Some(vec![
             t!("menu.new_folder").into_owned(),
             t!("menu.new_text_file").into_owned()
-        ]
+        ])
     );
+    assert_eq!(
+        view.update(cx, |v, _| v
+            .context_menu
+            .as_ref()
+            .and_then(|m| m.shortcut_at(1, 0))),
+        Some("Ctrl+Shift+N"),
+        "the shortcut stays on New folder"
+    );
+    cx.simulate_keystrokes("left");
     let more_options = format!("{} ›", t!("menu.more_options"));
     assert_eq!(labels.last(), Some(&more_options));
     wait_shell("background menu", || {
@@ -4442,9 +4592,20 @@ fn sorting_by_size_reorders_once_when_sizes_are_done(cx: &mut TestAppContext) {
         fs.release(Path::new(&format!(r"C:\q\{name}")));
     }
     let sized = |v: &Explorer, n: &str| matches!(v.folder_size(n), FolderSize::Known { .. });
-    wait_until(cx, &view, "the quick ones", |v| {
+    // Once in a dozen full runs this timed out on a busy machine; the state then says why.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !view.update(cx, |v, _| {
         ["a-small", "b-big", "c-tiny"].iter().all(|n| sized(v, n))
-    });
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the quick ones: {} ({} reads)",
+            view.update(cx, |v, _| v.folder_sizes_state()),
+            fs.read_dir_calls()
+        );
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(2));
     cx.run_until_parked();
@@ -4495,11 +4656,11 @@ fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
         Some("c-mid")
     );
 
-    // Largest first; folders still sort before files.
+    // Largest first: folders trail a descending sort, like File Explorer.
     let mut spec = SortSpec::by(SortColumn::Size, false, false);
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "sort by size", |v| {
-        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
+        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
     });
     assert_eq!(
         view.update(cx, |v, _| selected_name(v)).as_deref(),
@@ -4870,7 +5031,7 @@ fn details_rows_end_with_their_columns(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(view.update(cx, |v, _| v.selection.is_empty()));
     let labels = menu_labels(&view, cx).expect("a menu opens");
-    assert_eq!(labels.first(), Some(&t!("menu.new_folder").into_owned()));
+    assert_eq!(labels.first(), Some(&format!("{} ›", t!("menu.new"))));
     // A marquee started there selects the rows it reaches into, not the ones it doesn't.
     cx.simulate_keystrokes("escape");
     let from = point(end + px(40.), bounds.top() + row * 0.5);
@@ -5424,7 +5585,7 @@ fn context_menu_items_selection_and_keyboard(cx: &mut TestAppContext) {
     right_click(&view, cx, None);
     assert!(view.update(cx, |v, _| v.selection.is_empty()));
     let labels = menu_labels(&view, cx).unwrap();
-    assert_eq!(labels.first(), Some(&t!("menu.new_folder").into_owned()));
+    assert_eq!(labels.first(), Some(&format!("{} ›", t!("menu.new"))));
     cx.simulate_keystrokes("escape");
 
     // Keyboard: Shift+F10 opens the menu; Down x6 then Enter runs the sixth enabled item (after
@@ -7708,6 +7869,34 @@ fn the_settings_file_is_shown_in_arke(cx: &mut TestAppContext) {
     );
 }
 
+/// Settings › About › Report a problem: Copy next to the e-mail address puts the address on the
+/// clipboard, off the UI thread.
+#[gpui::test]
+fn the_report_card_copies_the_support_address(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\o");
+    // Tall enough that the whole card is in view.
+    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(2400.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+        ws.expand_settings_card_for_test("report", cx);
+    });
+    cx.run_until_parked();
+    let copy = cx
+        .debug_bounds("report-email-copy")
+        .expect("the address has a Copy button");
+    cx.simulate_click(copy.center(), gpui::Modifiers::none());
+    wait_shell_in(cx, "the copy", || shell.clipboard_text.lock().is_some());
+    assert_eq!(
+        shell.clipboard_text.lock().as_deref(),
+        Some("service@koimsurai.com")
+    );
+}
+
 /// Settings › About › Report a problem: the wheel over the report text scrolls the text, not the
 /// page, until the text reaches its end; then the page takes over.
 #[gpui::test]
@@ -8666,6 +8855,7 @@ fn the_cold_start_is_timed_on_the_tab_shown(cx: &mut TestAppContext) {
     fs.insert_many(r"C:\a", 3);
     fs.insert_many(r"C:\b", 4);
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", false), saved_tab(r"C:\b", false)],
         active: 1,
     };
@@ -8693,6 +8883,7 @@ fn a_folder_under_home_is_not_a_cold_start(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_many(r"C:\a", 3);
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", true)],
         active: 0,
     };
@@ -8713,6 +8904,7 @@ fn a_later_folder_is_not_the_cold_starts_listing(cx: &mut TestAppContext) {
     fs.insert_many(r"C:\b", 4);
     fs.hang(r"C:\a");
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", false)],
         active: 0,
     };
@@ -8742,6 +8934,7 @@ fn a_window_opened_on_request_is_timed_from_the_request(cx: &mut TestAppContext)
     let fs = FakeFs::new();
     fs.insert_many(r"C:\a", 3);
     let session = crate::settings::Session {
+        workspace: None,
         tabs: vec![saved_tab(r"C:\a", false)],
         active: 0,
     };
@@ -9085,4 +9278,74 @@ fn a_drive_plugged_in_shows_in_the_sidebar(cx: &mut TestAppContext) {
     shell.extra_places.lock().clear();
     cx.cx.update(crate::workspace::reload_places_everywhere);
     wait_until(cx, &view, "the drive gone", |v| !has_usb(v));
+}
+
+/// A drive pulled out under a tab showing the Recycle Bin: the tab's folder moves off the drive,
+/// but the Recycle Bin stays open (it used to close, as if the user had navigated away).
+#[gpui::test]
+fn the_recycle_bin_stays_open_when_its_tabs_drive_is_removed(cx: &mut TestAppContext) {
+    let home = std::env::var_os("USERPROFILE").map_or_else(|| PathBuf::from("C:\\"), PathBuf::from);
+    let fs = FakeFs::new();
+    fs.insert_dir(r"E:\photos", vec![file("a.jpg", 1)]);
+    fs.insert_dir(home.clone(), vec![file("b.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"E:\photos");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"E:\photos"));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    cx.run_until_parked();
+    let shown = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let bin = shown(cx);
+    assert!(bin.is_some(), "the Recycle Bin shows");
+
+    cx.cx
+        .update(|cx| crate::workspace::leave_drive_everywhere(Path::new(r"E:\"), cx));
+    let home_str = home.to_string_lossy().into_owned();
+    wait_until(cx, &view, "moved off the drive", loaded(&home_str));
+    assert_eq!(shown(cx), bin, "the Recycle Bin is still open");
+}
+
+/// A folder named by its desktop.ini sorts and jumps by that name, as in File Explorer, and F2
+/// edits that name (#370).
+#[gpui::test]
+fn a_localized_folder_sorts_jumps_and_renames_by_its_shown_name(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\u",
+        vec![
+            Entry::new("Alpha", EntryKind::Dir, 0, None, 0),
+            Entry::new("Beta", EntryKind::Dir, 0, None, 0),
+            Entry::new("Documents", EntryKind::Dir, 0, None, 0x1),
+        ],
+    );
+    let text = "[.ShellClassInfo]\r\nLocalizedResourceName=Aardvark\r\n";
+    let mut ini = vec![0xFF, 0xFE];
+    ini.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    fs.set_content(r"C:\u\Documents\desktop.ini", ini);
+    let (view, cx) = setup(cx, fs, Arc::new(FakeShell::default()), r"C:\u");
+    wait_until(cx, &view, "sorted by the shown name", |v| {
+        loaded(r"C:\u")(v) && names(v) == ["Documents", "Alpha", "Beta"]
+    });
+
+    // Typing jumps by the shown name.
+    cx.simulate_input("aar");
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| selected_name(v)).as_deref(),
+        Some("Documents")
+    );
+
+    cx.simulate_keystrokes("f2");
+    cx.run_until_parked();
+    let edited = view.update(cx, |v, cx| {
+        v.renaming
+            .as_ref()
+            .map(|r| (r.name.to_string(), r.input.read(cx).text().to_owned()))
+    });
+    assert_eq!(
+        edited,
+        Some(("Documents".to_owned(), "Aardvark".to_owned())),
+        "the shown name is edited"
+    );
 }

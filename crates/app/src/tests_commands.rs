@@ -507,3 +507,43 @@ fn recent_commands_are_kept_newest_first_and_bounded() {
     assert_eq!(recent.len(), 8);
     assert_eq!(recent[0], "c19");
 }
+
+#[gpui::test]
+fn ctrl_n_opens_a_new_window_on_the_folder_and_without_one_on_a_page(cx: &mut TestAppContext) {
+    let (ws, cx) = start(cx);
+    // Nothing left over from other tests on this thread.
+    crate::instance::take_new_windows();
+
+    cx.simulate_keystrokes("ctrl-n");
+    cx.run_until_parked();
+    assert_eq!(
+        crate::instance::take_new_windows(),
+        [Some(PathBuf::from(r"C:\a\sub"))]
+    );
+    // A new window is not a new tab.
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 1);
+
+    // The command palette runs it too.
+    cx.simulate_keystrokes("ctrl-shift-p");
+    cx.run_until_parked();
+    cx.simulate_input("new window");
+    cx.run_until_parked();
+    assert_eq!(
+        labels(&ws, cx).first(),
+        Some(&t!("cmd.new_window").into_owned())
+    );
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        crate::instance::take_new_windows(),
+        [Some(PathBuf::from(r"C:\a\sub"))]
+    );
+
+    // On a page there is no folder: the new window starts where new windows do.
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    assert!(ws.update(cx, |ws, _| ws.shown_page_for_test()).is_some());
+    cx.dispatch_action(crate::workspace::NewWindow);
+    cx.run_until_parked();
+    assert_eq!(crate::instance::take_new_windows(), [None]);
+}

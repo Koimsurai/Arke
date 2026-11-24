@@ -136,7 +136,7 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
   allow it for that location). Mapped drives and network places can get names of their own, kept
   in Arke only.
 - OneDrive and other cloud folders with sync status. Previews never download online-only files.
-- Archives: preview and extract zip, 7z, tar (.gz, .xz, .bz2, .zst) and RAR, compress to zip.
+- Archives: preview and extract zip and 7z (password-protected ones too), tar (.gz, .xz, .bz2, .zst) and RAR, compress to zip.
   RAR and the xz / bzip2 / zstd tars use the libarchive built into Windows (best on Windows 11
   23H2 and later).
 
@@ -242,7 +242,8 @@ Scoop then keeps it up to date (`scoop update arke`), and Arke leaves updating t
 Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time.
 
 Arke checks GitHub for a new version at most once a day and only installs one when you say so
-(Settings › About).
+(Settings › About). Updates are signed: Arke installs only files signed with its own key. Where
+GitHub is slow, you can set a download route there (see [Privacy](#privacy)).
 
 <details>
 <summary><b>Optional background service</b></summary>
@@ -304,6 +305,20 @@ ranks higher; turn it off or clear it in Settings › Search.
 | Ctrl+, | Settings |
 
 </details>
+
+## Accessibility
+
+Arke works with Windows screen readers through UI Automation, the interface Narrator and NVDA use;
+JAWS should work too. So far it has been checked with UI Automation tools, not yet by people who
+use a screen reader every day, so help with testing is welcome.
+
+What works: the file list, the sidebar, tabs, the path bar, search, Settings, menus and the
+Properties window. What is still incomplete: the toolbar buttons can't be reached with Tab yet
+(use F6 and the shortcuts instead), and some dialogs haven't been checked.
+
+The [keyboard guide](docs/keyboard.md) lists every shortcut by area. If something can't be reached
+or isn't announced, please [open an issue](https://github.com/Koimsurai/Arke/issues) and mention
+your screen reader and its version.
 
 ## FAQ
 
@@ -429,6 +444,14 @@ Arke doesn't collect or send any data about you or your files. It goes online on
 check GitHub for a new version (at most once a day, can be turned off in Settings › About), to
 download one when you choose to install it, and to reach the network shares, SFTP and WebDAV
 locations you open yourself.
+
+If GitHub is slow or blocked where you are, Settings › About › Updates › Download route sends
+update checks and downloads through a mirror (an `https://` address put in front of GitHub's) or
+an HTTP proxy (`host:port`) you choose. Arke ships none of its own and uses one only if you type
+it in. Whoever runs it sees your IP address and which Arke version you check for or download;
+nothing else goes through it. When it fails, Arke asks GitHub directly and says so under the
+setting. Arke installs only downloads signed with its own key, so a mirror or proxy can't slip in
+a changed or older version.
 
 ## License
 

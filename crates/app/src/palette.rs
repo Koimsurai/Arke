@@ -553,6 +553,7 @@ impl Render for LocationPalette {
                 div()
                     .id("palette-results")
                     .role(gpui::Role::ListBox)
+                    .aria_label(t!("a11y.results"))
                     .aria_size_of_set(count)
                     .py(theme::s_4())
                     .flex()

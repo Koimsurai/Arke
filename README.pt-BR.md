@@ -149,7 +149,7 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   mapeadas e locais de rede podem ter nomes próprios, guardados apenas no Arke.
 - OneDrive e outras pastas na nuvem com status de sincronização. As visualizações nunca baixam
   arquivos que existem apenas online.
-- Arquivos compactados: visualize e extraia zip, 7z, tar (.gz, .xz, .bz2, .zst) e RAR, compacte em
+- Arquivos compactados: visualize e extraia zip e 7z (também com senha), tar (.gz, .xz, .bz2, .zst) e RAR, compacte em
   zip. RAR e os tars xz / bzip2 / zstd usam a libarchive incluída no Windows (melhor no Windows 11
   23H2 e posterior).
 
@@ -327,6 +327,22 @@ limpe em Configurações › Pesquisa.
 
 </details>
 
+## Acessibilidade
+
+O Arke funciona com os leitores de tela do Windows por meio do UI Automation, a interface usada pelo
+Narrator e pelo NVDA; o JAWS também deve funcionar. Até agora foi verificado com ferramentas de UI
+Automation, ainda não por pessoas que usam leitor de tela no dia a dia, então ajuda nos testes é
+bem-vinda.
+
+O que funciona: a lista de arquivos, a barra lateral, as guias, a barra de caminho, a pesquisa, as
+Configurações, os menus e a janela de Propriedades. O que ainda está incompleto: os botões da barra de
+ferramentas ainda não são alcançados com Tab (use F6 e os atalhos) e alguns diálogos não foram
+verificados.
+
+O [guia de teclado](docs/keyboard.md) (em inglês) lista todos os atalhos por área. Se algo não puder
+ser alcançado ou não for anunciado, [abra uma issue](https://github.com/Koimsurai/Arke/issues) e
+informe seu leitor de tela e a versão.
+
 ## Perguntas frequentes
 
 <details>
@@ -457,6 +473,14 @@ O Arke não coleta nem envia nenhum dado sobre você ou seus arquivos. Ele só s
 para consultar o GitHub por uma nova versão (no máximo uma vez por dia, pode ser desativado em
 Configurações › Sobre), para baixar uma quando você escolhe instalá-la e para acessar os
 compartilhamentos de rede e os locais SFTP e WebDAV que você mesmo abre.
+
+Se o GitHub estiver lento ou bloqueado onde você está, Configurações › Sobre › Atualizações › Rota de
+download envia a busca e o download de atualizações por um espelho (um endereço `https://` colocado antes
+do endereço do GitHub) ou um proxy HTTP (`host:porta`) que você escolher. O Arke não inclui nenhum e só
+usa um se você digitar. Quem o opera vê seu endereço IP e qual versão do Arke você consulta ou baixa;
+nada mais passa por ele. Se falhar, o Arke consulta o GitHub diretamente e mostra isso abaixo da
+configuração. O Arke só instala downloads assinados com a própria chave, então um espelho ou proxy não
+consegue empurrar uma versão alterada ou mais antiga.
 
 ## Licença
 

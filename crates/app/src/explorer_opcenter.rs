@@ -287,7 +287,9 @@ fn button(
         .id("op-center")
         .debug_selector(|| "op-center".to_owned())
         .a11y_button(tip.clone())
-        .aria_expanded(open)
+        .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
+            this.toggle_ops(cx);
+        })
         .relative()
         .h(theme::h_ctl())
         .min_w(theme::h_ctl())

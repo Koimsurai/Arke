@@ -514,6 +514,9 @@ impl Job {
         }
 
         let mut entries: Vec<Entry> = Vec::new();
+        // Entries up to here have their name order keys (made before each snapshot is cloned, so
+        // each key is made once).
+        let mut keyed = 0usize;
         let mut hidden_count = 0usize;
         let mut last_snapshot = start;
         for (i, item) in iter.enumerate() {
@@ -531,6 +534,8 @@ impl Job {
             // again) and wait for the full listing.
             if !showed_cache && last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
                 last_snapshot = Instant::now();
+                crate::collate::prepare(&entries[keyed..]);
+                keyed = entries.len();
                 let mut partial = entries.clone();
                 let sort_start = Instant::now();
                 opts.sort.sort(&mut partial);
@@ -552,6 +557,7 @@ impl Job {
         }
         let enumerate = start.elapsed();
         let sort_start = Instant::now();
+        crate::collate::prepare(&entries[keyed..]);
         opts.sort.sort(&mut entries);
         let sort = sort_start.elapsed();
         log::info!(

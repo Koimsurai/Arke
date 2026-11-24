@@ -213,9 +213,26 @@ impl Workspace {
         let snapshot = self.session_snapshot(cx);
         let panel = cx.new(|cx| WorkspacesPanel::new(snapshot.tabs, snapshot.active, window, cx));
         let events = cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
+            if let PanelEvent::Renamed { from, to } = event {
+                // The panel stays open; the name shown beside the tabs follows.
+                if let Some(shown) = this.saved_shown.as_mut()
+                    && shown.name.to_lowercase() == from.to_lowercase()
+                {
+                    shown.name.clone_from(to);
+                }
+                cx.notify();
+                return;
+            }
             this.workspaces = None;
-            if let PanelEvent::Open(name) = event {
-                this.open_saved_workspace(name, window, cx);
+            match event {
+                PanelEvent::Open(name) => this.open_saved_workspace(name, window, cx),
+                PanelEvent::Saved(name) => {
+                    this.saved_shown = Some(ShownWorkspace {
+                        name: name.clone(),
+                        tabs: this.tabs.iter().map(|t| t.id).collect(),
+                    });
+                }
+                PanelEvent::Closed | PanelEvent::Renamed { .. } => {}
             }
             this.focus_active(window, cx);
             cx.notify();
@@ -255,6 +272,7 @@ impl Workspace {
             .collect();
         let mut active = None;
         let mut first = None;
+        let mut opened = Vec::with_capacity(saved.tabs.len());
         for (ix, tab) in saved.tabs.iter().enumerate() {
             // The same folders in another spelling (`C:\Work` and `c:\work\`) are the same tab.
             let already = tab
@@ -276,6 +294,7 @@ impl Workspace {
                 },
             };
             first.get_or_insert(id);
+            opened.push(id);
             if ix == saved.active {
                 active = Some(id);
             }
@@ -288,6 +307,10 @@ impl Workspace {
             }
         }
         self.keep_pins_first();
+        self.saved_shown = (!opened.is_empty()).then(|| ShownWorkspace {
+            name: saved.name.clone(),
+            tabs: opened,
+        });
         let active = active.or(first);
         self.active = self
             .tabs
@@ -350,7 +373,70 @@ fn tab_paths(tab: &Tab, cx: &App) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The saved workspace a window shows (#269): opened from it, or saved as it last.
+pub(super) struct ShownWorkspace {
+    name: String,
+    /// The tabs that came from it (or were saved in it): once they are all closed, the window
+    /// no longer shows it.
+    tabs: Vec<u64>,
+}
+
+impl ShownWorkspace {
+    /// The workspace `name` shown by the tabs `tabs` (ids), as the last session left it.
+    pub(super) const fn new(name: String, tabs: Vec<u64>) -> Self {
+        Self { name, tabs }
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether the tab `id` came from the workspace.
+    pub(super) fn has(&self, id: u64) -> bool {
+        self.tabs.contains(&id)
+    }
+}
+
 impl Workspace {
+    /// The name of the saved workspace this window shows, while one of its tabs is open and it
+    /// is still saved.
+    fn shown_workspace_name(&self, cx: &mut App) -> Option<String> {
+        let shown = self.saved_shown.as_ref()?;
+        if !self.tabs.iter().any(|t| shown.tabs.contains(&t.id)) {
+            return None;
+        }
+        let store = WorkspaceStore::global(cx);
+        store
+            .read(cx)
+            .workspaces()
+            .get(&shown.name)
+            .map(|w| w.name.clone())
+    }
+
+    /// The workspace's name, small and muted, after the Tabs heading or before the Workspaces
+    /// button of the tab strip.
+    pub(super) fn workspace_label(&self, cx: &mut App) -> Option<gpui::Div> {
+        let name = self.shown_workspace_name(cx)?;
+        Some(
+            div()
+                .debug_selector(|| "tabs-workspace".to_owned())
+                .min_w_0()
+                .truncate()
+                .text_size(theme::fs_12())
+                .text_color(theme::text_subtle())
+                .child(name),
+        )
+    }
+
+    /// The tab list's name for screen readers: "Tabs", then the workspace's name.
+    pub(super) fn tabs_label(&self, cx: &mut App) -> String {
+        let tabs = t!("sidebar.tabs");
+        match self.shown_workspace_name(cx) {
+            Some(name) => crate::a11y::item_label(&tabs, &[name]),
+            None => tabs.into_owned(),
+        }
+    }
+
     /// Tabs header and tab strip button that opens the Workspaces panel.
     pub(super) fn workspaces_button(cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
@@ -386,6 +472,13 @@ impl Workspace {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PanelEvent {
     Open(String),
+    /// The open tabs were saved under this name (the panel closes).
+    Saved(String),
+    /// A saved workspace was renamed (the panel stays open).
+    Renamed {
+        from: String,
+        to: String,
+    },
     Closed,
 }
 
@@ -454,7 +547,7 @@ impl WorkspacesPanel {
             store.update(|w| w.save(&name, tabs, active), cx)
         });
         match result {
-            Ok(_) => cx.emit(PanelEvent::Closed),
+            Ok(name) => cx.emit(PanelEvent::Saved(name)),
             Err(problem) => {
                 self.error = Some(problem.to_string().into());
                 cx.notify();
@@ -491,7 +584,10 @@ impl WorkspacesPanel {
         let result = WorkspaceStore::global(cx)
             .update(cx, |store, cx| store.update(|w| w.rename(&from, &to), cx));
         match result {
-            Ok(_) => self.cancel_rename(window, cx),
+            Ok(to) => {
+                cx.emit(PanelEvent::Renamed { from, to });
+                self.cancel_rename(window, cx);
+            }
             Err(problem) => {
                 self.rename_error = Some(problem.to_string().into());
                 cx.notify();
@@ -516,6 +612,21 @@ impl WorkspacesPanel {
         self.name
             .update(cx, |input, cx| input.set_text(name.to_owned(), cx));
         self.save(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rename_for_test(
+        &mut self,
+        from: &str,
+        to: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_rename(from.to_owned(), window, cx);
+        if let Some((_, input, _)) = &self.renaming {
+            input.update(cx, |input, cx| input.set_text(to.to_owned(), cx));
+        }
+        self.finish_rename(window, cx);
     }
 
     #[cfg(test)]
@@ -825,5 +936,10 @@ impl Workspace {
 
     pub(crate) fn move_tab_for_test(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         self.move_tab(from, to, cx);
+    }
+
+    /// The saved workspace's name shown beside the tabs.
+    pub(crate) fn shown_workspace_for_test(&self, cx: &mut App) -> Option<String> {
+        self.shown_workspace_name(cx)
     }
 }

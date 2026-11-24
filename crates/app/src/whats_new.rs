@@ -94,29 +94,31 @@ pub(crate) fn available_in(version: &str, localized: Option<&str>) -> Option<Rel
     (!release.blocks.is_empty()).then_some(release)
 }
 
-/// URL of the changelog in `lang` at release tag `v<version>`. `None` for English, whose notes
-/// are the release body already.
-fn localized_changelog_url(repo: &str, lang: &str, version: &str) -> Option<String> {
-    (lang != "en").then(|| {
-        format!(
-            "https://raw.githubusercontent.com/{repo}/v{version}/{}",
-            changelog_file(lang)
-        )
-    })
+/// Release asset name of the changelog in `lang` as it was when `version` was released
+/// (`cargo xtask publish` uploads and signs it). `None` for English, whose notes come on their own.
+fn localized_changelog_asset(lang: &str, version: &str) -> Option<String> {
+    (lang != "en").then(|| format!("arke-{version}-changelog.{lang}.md"))
 }
 
-/// Fetches the changelog in `lang` at the tag of `version` from GitHub. `None` for English or
-/// when anything goes wrong (offline, no such tag). Blocks on the network: background thread.
+/// Fetches the changelog in `lang` from the release of `version`, once its signature checks out
+/// (`update_sig.rs`). `None` for English or when anything goes wrong (offline, unsigned, a
+/// release from before the notes were signed). Blocks on the network: background thread.
 #[cfg(not(test))]
 pub(crate) fn fetch_localized_changelog(lang: &str, version: &str) -> Option<String> {
-    let url = localized_changelog_url(build_info::RELEASES_REPO, lang, version)?;
-    crate::win_http::get_text(&url, &[]).ok()
+    let asset = localized_changelog_asset(lang, version)?;
+    let url = format!(
+        "https://github.com/{}/releases/download/v{version}/{asset}",
+        build_info::RELEASES_REPO
+    );
+    crate::update::signed_text(&url, &asset, version)
+        .map_err(|err| log::info!("{lang} notes not shown: {err}"))
+        .ok()
 }
 
 /// Tests have no network: they get what [`set_localized_changelog_for_test`] put in.
 #[cfg(test)]
 pub(crate) fn fetch_localized_changelog(lang: &str, version: &str) -> Option<String> {
-    localized_changelog_url("Koimsurai/Arke", lang, version)?;
+    localized_changelog_asset(lang, version)?;
     TEST_CHANGELOG.lock().clone()
 }
 
@@ -363,17 +365,17 @@ mod tests {
     }
 
     #[test]
-    fn the_changelog_is_fetched_from_the_release_tag_only_for_translated_languages() {
-        let url = |lang| localized_changelog_url("Koimsurai/Arke", lang, "0.7.1");
+    fn the_changelog_comes_from_the_release_only_for_translated_languages() {
+        let asset = |lang| localized_changelog_asset(lang, "0.9.0");
         assert_eq!(
-            url("zh-TW").as_deref(),
-            Some("https://raw.githubusercontent.com/Koimsurai/Arke/v0.7.1/CHANGELOG.zh-TW.md")
+            asset("zh-TW").as_deref(),
+            Some("arke-0.9.0-changelog.zh-TW.md")
         );
         assert_eq!(
-            url("zh-CN").as_deref(),
-            Some("https://raw.githubusercontent.com/Koimsurai/Arke/v0.7.1/CHANGELOG.zh-CN.md")
+            asset("zh-CN").as_deref(),
+            Some("arke-0.9.0-changelog.zh-CN.md")
         );
-        assert_eq!(url("en"), None);
+        assert_eq!(asset("en"), None);
     }
 
     #[test]

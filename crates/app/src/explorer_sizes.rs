@@ -650,6 +650,32 @@ impl Explorer {
         self.folder_sizes.computing()
     }
 
+    /// The folder sizes' bookkeeping, for a test that timed out waiting on them.
+    #[cfg(test)]
+    pub(crate) fn folder_sizes_state(&self) -> String {
+        let f = &self.folder_sizes;
+        let queue = f.queue.as_ref().map(|q| {
+            let (todo, running) = {
+                let t = q.todo.lock();
+                (
+                    t.0.iter().map(|x| Arc::clone(&x.0)).collect::<Vec<_>>(),
+                    t.1,
+                )
+            };
+            let cancel = q.cancel.load(Ordering::Relaxed);
+            format!("todo={todo:?} running={running} cancel={cancel}")
+        });
+        format!(
+            "dir={:?} sizes={:?} pending={:?} waiting={:?} stale={} queue={queue:?} rev={}",
+            f.dir,
+            f.sizes,
+            f.pending,
+            f.waiting.keys().collect::<Vec<_>>(),
+            f.stale,
+            f.rev
+        )
+    }
+
     /// What the Size column shows for subfolder `name`.
     pub(crate) fn folder_size(&self, name: &str) -> FolderSize {
         if self.folder_sizes.dir.is_none() {

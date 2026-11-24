@@ -285,7 +285,7 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// View tools: details/icons/columns with the view options flyout, preview pane, split.
+    /// View tools: sort, details/icons/columns with the view options flyout, preview pane, split.
     pub(super) fn render_view_controls(
         &self,
         window: &Window,
@@ -296,6 +296,10 @@ impl Explorer {
             .flex_none()
             .items_center()
             .gap(theme::s_4())
+            // Search results keep their own order (relevance, or their headers).
+            .when(!self.search_mode, |d| {
+                d.child(self.render_sort_options(window, cx))
+            })
             // Split panes are half width: the switcher folds into the view options button (the
             // flyout has the same choices), leaving room for Copy to/Move to.
             .when(!self.pane.split, |d| {
@@ -522,6 +526,17 @@ impl Explorer {
                             .text_color(theme::text_muted()),
                     )
                     .tooltip_below(t!("sel.more").to_string())
+                    // A screen reader's Enter: opens where Shift+F10 would (#322).
+                    .a11y_on_click({
+                        let this = cx.entity().downgrade();
+                        move |window, cx| {
+                            let size = window.viewport_size();
+                            let at = gpui::point(size.width / 2., size.height / 3.);
+                            let _ = this.update(cx, |this, cx| {
+                                this.open_context_menu(at, window, cx);
+                            });
+                        }
+                    })
                     // Opens on press, like the other menus.
                     .on_mouse_down(
                         MouseButton::Left,
@@ -700,8 +715,12 @@ impl Explorer {
         let modified = entry
             .modified
             .map_or_default(|t| self.services.shell.format_time(t));
-        // Nested tree rows are named by relative path; read the file name.
-        let name = arke_core::tree::leaf(&entry.name);
+        // Nested tree rows are named by relative path; read the file name. A folder's localized
+        // name is read as it is shown (#370).
+        let name = entry
+            .shown
+            .as_deref()
+            .unwrap_or_else(|| arke_core::tree::leaf(&entry.name));
         crate::a11y::item_label(
             name,
             &[&arke_core::format::type_label(entry), &size, &modified],
@@ -711,7 +730,14 @@ impl Explorer {
     /// Screen reader name of the file list: the folder shown, or the search.
     fn list_a11y_label(&self) -> String {
         if self.search_mode {
-            return t!("filter.search_placeholder").into_owned();
+            return if self.scope() == super::scope::Scope::Computer {
+                t!("filter.computer_placeholder").into_owned()
+            } else {
+                self.search_in_name().map_or_else(
+                    || t!("filter.search_placeholder").into_owned(),
+                    |name| t!("filter.search_in_placeholder", name = name).into_owned(),
+                )
+            };
         }
         self.display_path().map_or_default(|p| {
             p.file_name().map_or_else(
@@ -884,7 +910,7 @@ impl Explorer {
             .child(name_cell(
                 entry,
                 rename_input,
-                self.show_extensions,
+                self.shown_name_of(entry),
                 true,
                 Some(press),
             ))
@@ -957,7 +983,7 @@ impl Explorer {
                     .a11y_item(ix, is_selected, cursor == Some(ix), || {
                         self.item_a11y_label(entry)
                     })
-                    .map(|row| self.tree_a11y(ix, entry, row))
+                    .map(|row| self.tree_a11y(ix, entry, row, cx))
                     .group(Self::check_group(ix))
                     .text_color(if entry.is_hidden() {
                         theme::text_subtle()
@@ -1066,7 +1092,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match rename_input {
-            Some(rename) => name_cell(entry, Some(rename), true, false, None),
+            Some(rename) => name_cell(entry, Some(rename), SharedString::default(), false, None),
             None => div()
                 .debug_selector({
                     let name = Arc::clone(&entry.name);
@@ -1079,7 +1105,7 @@ impl Explorer {
                 // rather than clipping the sides.
                 .text_ellipsis()
                 .text_size(theme::fs_12())
-                .child(shown_name(entry, self.show_extensions))
+                .child(self.shown_name_of(entry))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
@@ -1971,6 +1997,7 @@ impl Explorer {
                 let label = match a {
                     ErrorAction::Retry(_) | ErrorAction::RetryOp(_) => t!("toast.retry"),
                     ErrorAction::Login(_) => t!("toast.login"),
+                    ErrorAction::OpenDefault(_) => t!("toast.open_default"),
                 };
                 let listener: Listener =
                     Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -2659,6 +2686,17 @@ pub(super) fn caption_group(window: &Window) -> gpui::Div {
                 WindowControlArea::Max => t!("window.maximize"),
                 _ => t!("window.close"),
             })
+            // The system handles the mouse here; a screen reader's Enter comes this way (#322).
+            .a11y_on_click(move |window, _| match area {
+                WindowControlArea::Min => window.minimize_window(),
+                WindowControlArea::Max if maximized => {
+                    if let Some(hwnd) = super::Explorer::owner_from(window) {
+                        crate::win::restore_window(hwnd);
+                    }
+                }
+                WindowControlArea::Max => window.zoom_window(),
+                _ => window.remove_window(),
+            })
             .group(id)
             .size(theme::h_ctl())
             .flex()
@@ -2754,13 +2792,15 @@ type NamePress = Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App)>;
 fn name_cell(
     entry: &Entry,
     rename: Option<(Entity<TextInput>, Option<NameError>)>,
-    show_ext: bool,
+    shown: SharedString,
     in_row: bool,
     on_press: Option<NamePress>,
 ) -> AnyElement {
     match rename {
         Some((input, problem)) => div()
             .debug_selector(|| "rename-box".to_owned())
+            // Tab and Shift+Tab here go to the next and previous item (`explorer_ops.rs`).
+            .key_context("RenameBox")
             // Presses stay in the box: the row under it would take focus back to the list, which
             // commits the rename, and a double-click would open the file (#69).
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -2809,7 +2849,7 @@ fn name_cell(
                     })
                     .min_w_0()
                     .truncate()
-                    .child(shown_name(entry, show_ext))
+                    .child(shown)
                     .when_some(on_press, |d, press| {
                         d.on_mouse_down(MouseButton::Left, press)
                     }),
@@ -3013,7 +3053,7 @@ impl Explorer {
             self.render_path_overlays(window, cx),
             self.render_context_menu(cx),
             self.render_quick_look(window, cx),
-            self.render_confirm(cx),
+            self.render_confirm(window, cx),
         ]
         .into_iter()
         .flatten()
@@ -3026,6 +3066,7 @@ impl Explorer {
     /// needed (preview, parent, folder sizes).
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.on_frame(window, cx);
+        self.follow_localized(cx);
         // Windows' type names arrive after the first sort: order by what the column shows.
         if self.sort.uses(SortColumn::Type)
             && self.type_order != Some(arke_core::format::type_names_version())
@@ -3184,6 +3225,8 @@ impl Explorer {
             .on_action(cx.listener(Self::undo_file_op))
             .on_action(cx.listener(Self::redo_file_op))
             .on_action(cx.listener(Self::rename_file))
+            .on_action(cx.listener(Self::rename_next))
+            .on_action(cx.listener(Self::rename_prev))
             .on_action(cx.listener(Self::new_folder))
             .map(|d| Self::view_actions(d, cx))
             .on_action(cx.listener(Self::copy_to_peer))

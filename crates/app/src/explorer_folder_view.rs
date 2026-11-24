@@ -7,6 +7,8 @@
 //! - Search results neither record nor apply: they aren't a folder.
 //! - Columns view is a way of browsing: moving to the parent, a subfolder or a sibling (what the
 //!   columns themselves do) keeps the columns and the sort instead of switching per folder.
+//! - Downloads, with no remembered view, opens by Date modified, newest first, as in File Explorer
+//!   (found by its known folder, not its name). A view the user picked there always wins.
 //! - New defaults in Settings reach tabs showing a folder without a remembered view; remembered
 //!   folders keep theirs. "Reset folder views" puts tabs showing a remembered view back on the
 //!   defaults.
@@ -16,11 +18,12 @@
 
 use std::path::Path;
 
-use arke_core::{NavKind, SortSpec};
+use arke_core::{NavKind, SortColumn, SortSpec};
 use gpui::{Context, Entity};
 
 use super::{Explorer, IconSize, ViewMode};
 use crate::folder_views::{FolderView, FolderViewStore, folder_key};
+use crate::shell::{KnownFolder, PlaceKind};
 
 /// What a tab showed before a navigation applied the target's view, to put back if the target
 /// can't be opened.
@@ -30,6 +33,7 @@ struct Before {
     view: ViewMode,
     icons: IconSize,
     applied: bool,
+    downloads: bool,
 }
 
 /// Per-folder view bookkeeping carried by a navigation that hasn't finished yet.
@@ -49,14 +53,22 @@ pub(super) enum DefaultsPolicy {
     Follow,
     /// The folder's own remembered view stays.
     Keep,
+    /// The folder shows its own default sort (Downloads): the view follows, the sort stays.
+    KeepSort,
 }
 
 /// A tab's state for the per-folder memory.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about where the current view came from"
+)]
 pub(super) struct State {
     /// The setting is on (and this isn't a benchmark, which must not be steered by saved views)
     enabled: bool,
     /// The current sort and view came from, or were saved to, the memory for this folder
     applied: bool,
+    /// The current sort is the Downloads default (newest first): nothing remembered or picked
+    downloads: bool,
     /// `FolderViewStore::resets` last seen
     resets: u64,
     /// The memory had finished loading when last seen
@@ -68,6 +80,7 @@ impl State {
         Self {
             enabled,
             applied: false,
+            downloads: false,
             resets: store.resets(),
             loaded: store.loaded(),
         }
@@ -82,6 +95,7 @@ impl Explorer {
             // Where folders go is one setting for every folder
             mixed: self.seen_defaults.0.mixed,
             then: view.then,
+            sections: None,
         }
     }
 
@@ -117,6 +131,7 @@ impl Explorer {
                 view: self.view_mode,
                 icons: self.icon_size,
                 applied: self.folder_view.applied,
+                downloads: self.folder_view.downloads,
             });
         self.apply_folder_view(path, cx);
         PendingView {
@@ -132,14 +147,35 @@ impl Explorer {
         let remembered = FolderViewStore::global(cx).update(cx, |s, _| s.lookup(target));
         let (sort, view) = match remembered {
             Some(v) => (self.spec_of(v), v.view),
-            None => self.seen_defaults,
+            None => self.unremembered_view(target),
         };
         self.folder_view.applied = remembered.is_some();
+        self.folder_view.downloads = remembered.is_none() && self.is_downloads(target);
         // Only the field: the listing about to be requested comes sorted this way, and the folder
         // being left shouldn't be re-sorted for the moment it stays on screen.
         self.sort = sort;
         self.set_icon_size(remembered.map_or_else(IconSize::default, |v| v.icons));
         self.set_view_mode(view, cx);
+    }
+
+    /// Whether `path` is the Downloads known folder (from the places loaded off the UI thread; none
+    /// until they arrive).
+    fn is_downloads(&self, path: &Path) -> bool {
+        let key = folder_key(path);
+        self.places.iter().any(|p| {
+            matches!(p.kind, PlaceKind::Folder(KnownFolder::Downloads))
+                && folder_key(&p.path) == key
+        })
+    }
+
+    /// The sort and view of a folder with no remembered view: the Settings defaults, except
+    /// Downloads, which is newest first like in File Explorer.
+    fn unremembered_view(&self, path: &Path) -> (SortSpec, ViewMode) {
+        let (sort, view) = self.seen_defaults;
+        if self.is_downloads(path) {
+            return (SortSpec::by(SortColumn::Modified, false, sort.mixed), view);
+        }
+        (sort, view)
     }
 
     /// Columns view moving the way the columns do (to the parent, a subfolder, or a folder next to
@@ -171,6 +207,7 @@ impl Explorer {
     pub(super) fn folder_view_on_fail(&mut self, pending: PendingView, cx: &mut Context<Self>) {
         if let Some(before) = pending.before {
             self.folder_view.applied = before.applied;
+            self.folder_view.downloads = before.downloads;
             self.sort = before.sort;
             self.set_icon_size(before.icons);
             self.set_view_mode(before.view, cx);
@@ -192,6 +229,7 @@ impl Explorer {
             return;
         };
         self.folder_view.applied = true;
+        self.folder_view.downloads = false;
         let view = FolderView {
             view: self.view_mode,
             icons: self.icon_size,
@@ -209,9 +247,11 @@ impl Explorer {
             self.folder_view.enabled = enabled;
             // Off: back to a view of the tab's own, nothing is "remembered" anymore
             self.folder_view.applied &= enabled;
+            self.folder_view.downloads &= enabled;
         }
         match (self.folder_view.enabled, self.folder_view.applied) {
             (false, _) => DefaultsPolicy::FollowUnchanged,
+            (true, false) if self.folder_view.downloads => DefaultsPolicy::KeepSort,
             (true, false) => DefaultsPolicy::Follow,
             (true, true) => DefaultsPolicy::Keep,
         }
@@ -231,7 +271,11 @@ impl Explorer {
             self.folder_view.resets = resets;
             if self.folder_view.applied {
                 self.folder_view.applied = false;
-                let (sort, view) = self.seen_defaults;
+                let here = self.display_path().map(Path::to_path_buf);
+                let (sort, view) = here
+                    .as_deref()
+                    .map_or(self.seen_defaults, |p| self.unremembered_view(p));
+                self.folder_view.downloads = here.as_deref().is_some_and(|p| self.is_downloads(p));
                 self.show_view(sort, view, IconSize::default(), cx);
             }
         }
@@ -243,13 +287,48 @@ impl Explorer {
                 && !self.folder_view.applied
                 && !self.search_mode
                 && let Some(path) = self.display_path().map(Path::to_path_buf)
-                && let Some(view) = store.update(cx, |s, _| s.lookup(&path))
             {
-                self.folder_view.applied = true;
-                let sort = self.spec_of(view);
-                self.show_view(sort, view.view, view.icons, cx);
+                if let Some(view) = store.update(cx, |s, _| s.lookup(&path)) {
+                    self.folder_view.applied = true;
+                    self.folder_view.downloads = false;
+                    let sort = self.spec_of(view);
+                    self.show_view(sort, view.view, view.icons, cx);
+                } else {
+                    self.apply_downloads_default(cx);
+                }
             }
         }
+    }
+
+    /// The places (and with them the Downloads folder) arrived, maybe after this tab opened its
+    /// folder.
+    pub(super) fn folder_view_on_places(&mut self, cx: &mut Context<Self>) {
+        // Before the memory is loaded, its own arrival decides (a remembered view wins)
+        if self.folder_view.loaded {
+            self.apply_downloads_default(cx);
+        }
+    }
+
+    /// The tab shows Downloads with nothing remembered for it and no sort picked: newest first.
+    fn apply_downloads_default(&mut self, cx: &mut Context<Self>) {
+        if !self.folder_view.enabled
+            || self.folder_view.applied
+            || self.folder_view.downloads
+            || self.search_mode
+            || self.view_mode == ViewMode::Columns
+        {
+            return;
+        }
+        let Some(path) = self.display_path().map(Path::to_path_buf) else {
+            return;
+        };
+        // A sort other than the default was picked here already
+        if self.sort != self.seen_defaults.0 || !self.is_downloads(&path) {
+            return;
+        }
+        self.folder_view.downloads = true;
+        let sort = self.unremembered_view(&path).0;
+        self.apply_sort(sort, cx);
     }
 
     /// Switch the folder shown to `sort`, `view` and `icons` without recording anything.

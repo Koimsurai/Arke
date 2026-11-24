@@ -255,6 +255,7 @@ pub(crate) fn start(
         cache_dir: std::env::temp_dir().join("Arke").join("remote"),
         secrets: Arc::new(arke_remote::creds::CredentialManager),
         transport,
+        portable: Arc::new(arke_remote::wpd::Wpd::new()),
     });
     for place in &store.read(cx).settings.remote_places {
         if let Some(url) = remote(&place.url) {
@@ -296,6 +297,7 @@ pub(crate) fn test_remotes() -> Arc<Remotes> {
         cache_dir: std::env::temp_dir().join(format!("arke-test-remote-{}", std::process::id())),
         secrets: Arc::new(arke_remote::creds::NoSecrets),
         transport: Arc::new(NoHttp),
+        portable: Arc::new(arke_remote::mtp::NoDevices),
     })
 }
 
@@ -528,7 +530,9 @@ fn outcome(result: Result<(), ShellError>) -> Result<OpOutcome, ShellError> {
 
 impl Shell for RemoteShell {
     fn load_places(&self) -> Vec<Place> {
-        self.inner.load_places()
+        let mut places = self.inner.load_places();
+        places.extend(phone_places());
+        places
     }
     fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
         self.inner.quick_access_pinned()
@@ -950,9 +954,76 @@ impl Shell for RemoteShell {
     }
 }
 
+/// The phones connected now, as last read ([`refresh_phones`]). Reading them takes WPD a moment
+/// (the first time, while it starts), so the sidebar never waits for it: it takes this list and
+/// is reloaded once a new one is in.
+static PHONES: parking_lot::Mutex<Vec<arke_remote::mtp::Device>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// The phones in [`PHONES`] as places under This PC (#292).
+fn phone_places() -> Vec<Place> {
+    PHONES
+        .lock()
+        .iter()
+        .map(|device| Place {
+            label: device.name.clone(),
+            path: PathBuf::from(format!("mtp://{}", device.key)),
+            kind: crate::shell::PlaceKind::Phone,
+        })
+        .collect()
+}
+
+/// Reads which phones are connected (in the background) and, when that changed, has every
+/// sidebar list its places again. At startup and whenever Windows says a portable device came
+/// or went.
+pub(crate) fn refresh_phones(remotes: Arc<Remotes>, cx: &mut gpui::App) {
+    let read = cx
+        .background_executor()
+        .spawn(async move { remotes.portable_devices() });
+    cx.spawn(async move |cx| {
+        let devices = match read.await {
+            Ok(devices) => devices,
+            Err(err) => {
+                log::info!("portable devices not listed: {err}");
+                return;
+            }
+        };
+        let changed = {
+            let mut phones = PHONES.lock();
+            let changed = *phones != devices;
+            if changed {
+                log::info!("portable devices: {}", devices.len());
+                *phones = devices;
+            }
+            changed
+        };
+        if changed {
+            cx.update(crate::workspace::reload_places_everywhere);
+        }
+    })
+    .detach();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connected phone shows under This PC, opening its `mtp://` location (#292).
+    #[test]
+    fn phones_are_places_under_this_pc() {
+        *PHONES.lock() = vec![arke_remote::mtp::Device {
+            key: "pixel-7-3fa2c1".into(),
+            name: "Pixel 7".into(),
+        }];
+        let places = phone_places();
+        assert_eq!(places.len(), 1);
+        assert_eq!(places[0].label, "Pixel 7");
+        assert_eq!(places[0].path, PathBuf::from("mtp://pixel-7-3fa2c1"));
+        assert_eq!(places[0].kind, crate::shell::PlaceKind::Phone);
+        assert!(arke_core::remote::is_remote(&places[0].path));
+        PHONES.lock().clear();
+        assert!(phone_places().is_empty());
+    }
 
     #[test]
     fn free_names_never_overwrite() {

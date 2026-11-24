@@ -153,7 +153,7 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
   Netzwerkorte können eigene Namen erhalten, die nur in Arke gespeichert werden.
 - OneDrive und andere Cloud-Ordner mit Synchronisierungsstatus. Vorschauen laden nie Dateien herunter,
   die nur online verfügbar sind.
-- Archive: zip, 7z, tar (.gz, .xz, .bz2, .zst) und RAR in der Vorschau anzeigen und extrahieren, als
+- Archive: zip und 7z (auch kennwortgeschützte), tar (.gz, .xz, .bz2, .zst) und RAR in der Vorschau anzeigen und extrahieren, als
   zip komprimieren. RAR und die tar-Varianten xz / bzip2 / zstd nutzen die in Windows enthaltene
   libarchive (am besten ab Windows 11 23H2).
 
@@ -335,6 +335,21 @@ ausschalten oder zurücksetzen.
 
 </details>
 
+## Barrierefreiheit
+
+Arke arbeitet über UI Automation mit Windows-Screenreadern zusammen, der Schnittstelle von Narrator
+und NVDA; JAWS sollte ebenfalls funktionieren. Bisher wurde es mit UI-Automation-Werkzeugen geprüft,
+noch nicht von Menschen, die täglich einen Screenreader nutzen. Hilfe beim Testen ist willkommen.
+
+Das funktioniert: Dateiliste, Seitenleiste, Tabs, Pfadleiste, Suche, Einstellungen, Menüs und das
+Eigenschaften-Fenster. Noch unvollständig: Die Schaltflächen der Symbolleiste sind noch nicht mit der
+Tab-Taste erreichbar (nutzen Sie stattdessen F6 und die Tastenkombinationen), und einige Dialoge
+wurden noch nicht geprüft.
+
+Die [Tastaturanleitung](docs/keyboard.md) (auf Englisch) listet alle Tastenkombinationen nach Bereich.
+Wenn etwas nicht erreichbar ist oder nicht vorgelesen wird, [eröffnen Sie bitte ein
+Issue](https://github.com/Koimsurai/Arke/issues) und nennen Sie Ihren Screenreader samt Version.
+
 ## FAQ
 
 <details>
@@ -472,6 +487,15 @@ Arke erhebt oder sendet keine Daten über Sie oder Ihre Dateien. Es geht nur onl
 nach einer neuen Version zu suchen (höchstens einmal am Tag, unter Einstellungen › Info abschaltbar),
 um eine herunterzuladen, wenn Sie sich für die Installation entscheiden, und um die
 Netzwerkfreigaben sowie SFTP- und WebDAV-Orte zu erreichen, die Sie selbst öffnen.
+
+Ist GitHub bei Ihnen langsam oder gesperrt, leitet Einstellungen › Info › Updates › Download-Weg
+die Suche nach Updates und ihre Downloads über einen Mirror (eine `https://`-Adresse vor der von
+GitHub) oder einen HTTP-Proxy (`Host:Port`) Ihrer Wahl. Arke bringt keinen eigenen mit und nutzt
+einen nur, wenn Sie ihn eintragen. Wer ihn betreibt, sieht Ihre IP-Adresse und welche Arke-Version
+Sie suchen oder herunterladen; sonst geht nichts darüber. Schlägt er fehl, fragt Arke GitHub direkt
+und zeigt das unter der Einstellung an. Arke installiert nur Downloads, die mit seinem eigenen
+Schlüssel signiert sind, sodass ein Mirror oder Proxy keine veränderte oder ältere Version
+unterschieben kann.
 
 ## Lizenz
 

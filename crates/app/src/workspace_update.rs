@@ -36,6 +36,7 @@ fn summary(state: &UpdateState) -> String {
 pub(super) fn update_card(
     s: &Settings,
     open: bool,
+    route: (&gpui::Entity<crate::text_input::TextInput>, bool),
     ui: &Ui,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -56,7 +57,7 @@ pub(super) fn update_card(
         t!("update.desc_short"),
         summary,
         open,
-        body(s, &state, ui, cx.weak_entity()),
+        body(s, &state, route, ui, cx.weak_entity()),
         cx,
     )
 }
@@ -68,6 +69,7 @@ pub(super) fn update_card(
 fn body(
     s: &Settings,
     state: &UpdateState,
+    route: (&gpui::Entity<crate::text_input::TextInput>, bool),
     ui: &Ui,
     workspace: gpui::WeakEntity<Workspace>,
 ) -> AnyElement {
@@ -118,7 +120,8 @@ fn body(
             Some(t!("update.channel_desc")),
             channel,
         ))
-        .child(row(t!("update.auto"), Some(t!("update.auto_desc")), auto));
+        .child(row(t!("update.auto"), Some(t!("update.auto_desc")), auto))
+        .child(route_row(&s.update_route, route));
     if no_source {
         return out
             .child(status_line(
@@ -238,8 +241,88 @@ fn body(
             )),
         ),
     };
-    out = out.child(line);
+    out = out.child(line).children(route_used());
     out.into_any_element()
+}
+
+/// The download route field (`update_route.rs`), with why it can't be used when it can't.
+fn route_row(
+    text: &str,
+    (input, focused): (&gpui::Entity<crate::text_input::TextInput>, bool),
+) -> AnyElement {
+    let field = div()
+        .w(theme::scaled_px(240.))
+        .h(theme::h_ctl())
+        .px(theme::s_8())
+        .flex()
+        .items_center()
+        .rounded(theme::r_8())
+        .border_1()
+        .when(focused, |d| {
+            d.bg(theme::surface()).border_color(theme::signal_line())
+        })
+        .when(!focused, |d| {
+            d.bg(theme::wash()).border_color(theme::line())
+        })
+        .child(input.clone());
+    let (desc, color) = match crate::update_route::Route::parse(text) {
+        Ok(_) => (t!("update.route_desc").into_owned(), theme::text_subtle()),
+        Err(err) => (err.to_string(), theme::danger()),
+    };
+    let a11y = crate::a11y::active();
+    let spoken = SharedString::from(desc.clone());
+    div()
+        .flex()
+        .items_center()
+        .gap(theme::s_12())
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(
+                t!("update.route").into_owned().into(),
+                Some(spoken),
+            ))
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(theme::s_2())
+                .child(div().text_size(theme::fs_13()).child(t!("update.route")))
+                .child(
+                    div()
+                        .text_size(theme::fs_12())
+                        .text_color(color)
+                        .child(desc),
+                ),
+        )
+        .child(div().flex_none().child(field))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
+        .into_any_element()
+}
+
+/// Which way the last update request went, while a route is set: through it, or to GitHub
+/// directly because it failed. Never a silent switch.
+fn route_used() -> Option<AnyElement> {
+    let (text, color) = match crate::update_route::last()? {
+        crate::update_route::Used::Route(host) => (
+            t!("update.route_used", host = host).into_owned(),
+            theme::text_subtle(),
+        ),
+        // The update itself went fine: a note to look at the route, not an error.
+        crate::update_route::Used::FellBack(host, error) => (
+            t!("update.route_fell_back", host = host, error = error).into_owned(),
+            theme::text_muted(),
+        ),
+    };
+    Some(
+        div()
+            .px(theme::s_12())
+            .text_size(theme::fs_12())
+            .text_color(color)
+            .child(text)
+            .into_any_element(),
+    )
 }
 
 /// "Downloading 0.4.0: 12.3 / 35.2 MB".
@@ -283,10 +366,19 @@ fn row(
     desc: Option<Cow<'static, str>>,
     control: AnyElement,
 ) -> AnyElement {
+    // The control on the right is named after the row for screen readers (#322).
+    let a11y = crate::a11y::active();
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
     div()
         .flex()
         .items_center()
         .gap(theme::s_12())
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(
+                SharedString::from(title.to_string()),
+                spoken,
+            ))
+        })
         .child(
             div()
                 .flex_1()
@@ -303,6 +395,7 @@ fn row(
                 })),
         )
         .child(div().flex_none().child(control))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()
 }
 

@@ -292,12 +292,27 @@ impl Explorer {
         };
         lazy.asked = true;
         let index = lazy.index;
+        // A submenu pinned up top is the same Windows submenu as the one it was copied from
+        // (#88): that one isn't asked again.
+        mark_asked(&mut menu.entries, whole, session, index);
+        for (_, entries) in &mut menu.parts {
+            mark_asked(entries, None, session, index);
+        }
         self.ask_fill(serial, session, index);
     }
 
     /// The menu or one of its parts was read, or a submenu filled: fill the submenus pinned
     /// commands are still hidden in, without waiting for them to be opened.
     pub(super) fn fill_lazy_for_pins(&mut self, cx: &mut Context<Self>) {
+        // A pinned submenu opened while it was drawn ahead of its source, now in: filled as if
+        // it had just been opened (#88).
+        let open_pin = self.context_menu.as_ref().and_then(|m| {
+            let (ix, slot) = (*m.open.first()?, m.shell_slot?);
+            (ix < slot && ix + m.pinned_rows >= slot).then_some(ix)
+        });
+        if let Some(ix) = open_pin {
+            self.fill_lazy_submenu(0, ix);
+        }
         let pinned = SettingsStore::global(cx)
             .read(cx)
             .settings

@@ -99,6 +99,9 @@ pub(super) struct SettingsPage {
     /// Path input for adding an "Open with" app.
     pub(super) app_input: Entity<TextInput>,
     _app_input: Subscription,
+    /// About › Updates: the download route (`update_route.rs`).
+    pub(super) route_input: Entity<TextInput>,
+    _route_input: Subscription,
     /// Keyboard shortcuts: search and the key being recorded.
     pub(super) shortcuts: super::shortcuts::Page,
     pub(super) backup: Option<super::backup::BackupNote>,
@@ -326,6 +329,17 @@ impl Workspace {
         let import_sub = cx.subscribe_in(&import_input, window, Self::on_import_input);
         let app_input = cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx));
         let app_sub = cx.subscribe_in(&app_input, window, Self::on_app_input);
+        let route = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .update_route
+            .clone();
+        let route_input = cx.new(|cx| {
+            let mut input = TextInput::new(t!("update.route_placeholder").to_string(), cx);
+            input.set_text(route, cx);
+            input
+        });
+        let route_sub = cx.subscribe_in(&route_input, window, Self::on_route_input);
         let shortcuts = super::shortcuts::Page::new(window, cx);
         // List fonts in the background; there can be hundreds.
         let text_system = Arc::clone(cx.text_system());
@@ -368,6 +382,8 @@ impl Workspace {
             _import_input: import_sub,
             app_input,
             _app_input: app_sub,
+            route_input,
+            _route_input: route_sub,
             shortcuts,
             backup: None,
             dropdown: None,
@@ -619,6 +635,27 @@ impl Workspace {
     }
 
     /// Background image path input: Enter applies (empty means no image), Esc cancels.
+    /// The download route is saved as typed; Settings says under it when it can't be used.
+    fn on_route_input(
+        &mut self,
+        input: &Entity<TextInput>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = input.read(cx).committed_text().trim().to_owned();
+        set(cx, |s| {
+            if s.update_route != text {
+                s.update_route = text;
+            }
+        });
+        if matches!(event, InputEvent::Confirm | InputEvent::Cancel)
+            && let Some(page) = &self.settings_panel
+        {
+            window.focus(&page.focus, cx);
+        }
+    }
+
     fn on_image_input(
         &mut self,
         input: &Entity<TextInput>,
@@ -983,13 +1020,17 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(theme::s_4())
-                            .child(
+                            .child({
+                                let title = SharedString::from(title.into_owned());
                                 div()
+                                    .id("settings-page-title")
+                                    .a11y(gpui::Role::Heading, title.clone())
+                                    .aria_level(1)
                                     .pb(theme::s_4())
                                     .text_size(theme::fs_24())
                                     .font_weight(theme::FW_STRONG)
-                                    .child(title.into_owned()),
-                            )
+                                    .child(title)
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -1259,14 +1300,7 @@ impl Workspace {
                     st.show_checkboxes = !st.show_checkboxes;
                 }),
             ),
-            card(
-                Icon::ArrowRight,
-                t!("settings.single_click"),
-                Some(t!("settings.single_click_desc")),
-                switch("single-click", s.single_click, |st| {
-                    st.single_click = !st.single_click;
-                }),
-            ),
+            single_click_card(s),
             card(
                 Icon::FileExt,
                 t!("settings.show_extensions"),
@@ -1350,14 +1384,25 @@ impl Workspace {
                     st.swipe_nav = !st.swipe_nav;
                 }),
             ),
-            card(
-                Icon::Trash,
-                t!("settings.fast_recycle"),
-                Some(t!("settings.fast_recycle_desc")),
-                switch("fast-recycle", s.fast_recycle, |st| {
-                    st.fast_recycle = !st.fast_recycle;
-                }),
-            ),
+            // One card: the Recycle Bin, and under it copies, both done by Arke on local drives.
+            div()
+                .flex()
+                .flex_col()
+                .child(card(
+                    Icon::Trash,
+                    t!("settings.fast_recycle"),
+                    Some(t!("settings.fast_recycle_desc")),
+                    switch("fast-recycle", s.fast_recycle, |st| {
+                        st.fast_recycle = !st.fast_recycle;
+                    }),
+                ))
+                .child(sub_row(
+                    t!("settings.fast_copy"),
+                    switch("fast-copy", s.fast_copy, |st| {
+                        st.fast_copy = !st.fast_copy;
+                    }),
+                ))
+                .into_any_element(),
         ];
         let sorting = vec![
             wrapping_card(
@@ -1577,7 +1622,14 @@ impl Workspace {
             startup.remove(0);
         }
         let search = search_page(s, cx);
-        let update = super::update_page::update_card(s, page.expanded.contains("update"), ui, cx);
+        let route_focused = page.route_input.focus_handle(cx).is_focused(window);
+        let update = super::update_page::update_card(
+            s,
+            page.expanded.contains("update"),
+            (&page.route_input, route_focused),
+            ui,
+            cx,
+        );
         let report = super::report_page::report_card(
             page.expanded.contains("report"),
             &page.report_scroll,
@@ -1755,6 +1807,30 @@ fn thumbnail_controls(s: &crate::settings::Settings, cx: &mut Context<Workspace>
             cx.listener(|_, _: &ClickEvent, _, cx| Workspace::clear_thumbnail_cache(cx)),
         ))
         .child(toggle)
+        .into_any_element()
+}
+
+/// Single-click opening, and under it while on, whether resting the pointer selects (#46).
+fn single_click_card(s: &Settings) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .child(card(
+            Icon::ArrowRight,
+            t!("settings.single_click"),
+            Some(t!("settings.single_click_desc")),
+            switch("single-click", s.single_click, |st| {
+                st.single_click = !st.single_click;
+            }),
+        ))
+        .when(s.single_click, |d| {
+            d.child(sub_row(
+                t!("settings.point_to_select"),
+                switch("point-to-select", s.point_to_select, |st| {
+                    st.point_to_select = !st.point_to_select;
+                }),
+            ))
+        })
         .into_any_element()
 }
 
@@ -2085,11 +2161,16 @@ pub(super) fn group_with(
             .flex_col()
             .gap(theme::s_2())
             .children(title.map(|t| {
+                let t = SharedString::from(t.into_owned());
+                // A heading screen readers can jump between (#322).
                 div()
+                    .id(SharedString::from(format!("group-title-{t}")))
+                    .a11y(gpui::Role::Heading, t.clone())
+                    .aria_level(2)
                     .text_size(theme::fs_13())
                     .font_weight(theme::FW_STRONG)
                     .text_color(theme::text_muted())
-                    .child(SharedString::from(t.into_owned()))
+                    .child(t)
             }))
             .children(note.map(|n| {
                 div()
@@ -2123,7 +2204,8 @@ pub(super) fn card(
     desc: Option<Cow<'static, str>>,
     control: AnyElement,
 ) -> AnyElement {
-    row(icon, title.into(), desc.map(row_desc), control)
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
+    row_with(icon, title.into(), desc.map(row_desc), spoken, control)
 }
 
 /// The one row layout every settings page uses: icon column, title over an optional second line,
@@ -2132,6 +2214,17 @@ pub(super) fn row(
     icon: Icon,
     title: SharedString,
     desc: Option<AnyElement>,
+    control: AnyElement,
+) -> AnyElement {
+    row_with(icon, title, desc, None, control)
+}
+
+/// [`row`] with the second line as text too, which screen readers read with the control.
+fn row_with(
+    icon: Icon,
+    title: SharedString,
+    desc: Option<AnyElement>,
+    spoken: Option<SharedString>,
     control: AnyElement,
 ) -> AnyElement {
     // The switch or dropdown on the right is named after the row for screen readers.
@@ -2143,7 +2236,9 @@ pub(super) fn row(
         .flex()
         .items_center()
         .gap(theme::s_16())
-        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(title.clone(), spoken))
+        })
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc))
         .child(div().flex_none().child(control))
@@ -2163,6 +2258,7 @@ fn wrapping_card(
 ) -> AnyElement {
     let title = title.into();
     let a11y = crate::a11y::active();
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
     div()
         .debug_selector(move || id.to_owned())
         .min_h(card_min_h())
@@ -2171,7 +2267,9 @@ fn wrapping_card(
         .flex()
         .items_center()
         .gap(theme::s_16())
-        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(title.clone(), spoken))
+        })
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc.map(row_desc)).min_w(gpui::relative(1. / 3.)))
         .child(div().min_w_0().child(control))
@@ -2301,35 +2399,51 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                 .with_transformation(gpui::Transformation::rotate(gpui::radians(
                     std::f32::consts::FRAC_PI_2,
                 ))),
-        )
+        );
+    // Opens the list; `keyboard` when a key or a screen reader opened it (the cursor shows).
+    let open_list = {
+        let workspace = workspace.clone();
+        let scroll = ui.list_scroll.clone();
+        // Hand the per-option actions and the selected index to the keyboard handling.
+        let appliers: Vec<Applier> = options
+            .iter()
+            .map(|(value, _)| {
+                let value = *value;
+                let pick = pick.clone();
+                std::rc::Rc::new(move |cx: &mut App| pick(value, cx)) as _
+            })
+            .collect();
+        std::rc::Rc::new(move |keyboard: bool, cx: &mut App| {
+            // A long list opens scrolled to the current choice.
+            if long {
+                scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+            }
+            set_dropdown(
+                &workspace,
+                Some(Dropdown {
+                    id,
+                    cursor: at,
+                    keyboard,
+                    options: appliers.clone(),
+                    popup: crate::popup::Single::new(),
+                }),
+                cx,
+            );
+        })
+    };
+    let button = button
         .on_click({
+            let open_list = std::rc::Rc::clone(&open_list);
+            move |_, _, cx| open_list(false, cx)
+        })
+        .a11y_on_expand({
             let workspace = workspace.clone();
-            let scroll = ui.list_scroll.clone();
-            // Hand the per-option actions and the selected index to the keyboard handling.
-            let appliers: Vec<Applier> = options
-                .iter()
-                .map(|(value, _)| {
-                    let value = *value;
-                    let pick = pick.clone();
-                    std::rc::Rc::new(move |cx: &mut App| pick(value, cx)) as _
-                })
-                .collect();
-            move |_, _, cx| {
-                // A long list opens scrolled to the current choice.
-                if long {
-                    scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+            move |want, _, cx| {
+                if want && !open {
+                    open_list(true, cx);
+                } else if !want && open {
+                    set_dropdown(&workspace, None, cx);
                 }
-                set_dropdown(
-                    &workspace,
-                    Some(Dropdown {
-                        id,
-                        cursor: at,
-                        keyboard: false,
-                        options: appliers.clone(),
-                        popup: crate::popup::Single::new(),
-                    }),
-                    cx,
-                );
             }
         });
     // Where each button is, for its list to open under it.
@@ -2515,7 +2629,18 @@ pub(super) fn expander(
                 .id(id)
                 .debug_selector(move || id.to_owned())
                 .a11y_lazy(gpui::Role::Button, || title.to_string())
-                .aria_expanded(open)
+                .a11y_node({
+                    let desc = desc.to_string();
+                    move |node| node.set_description(desc)
+                })
+                .a11y_open_close(open, cx.entity().downgrade(), move |this, _, cx| {
+                    if let Some(page) = &mut this.settings_panel
+                        && !page.expanded.remove(id)
+                    {
+                        page.expanded.insert(id);
+                    }
+                    cx.notify();
+                })
                 .min_h(card_min_h())
                 .px(theme::s_16())
                 .py(theme::s_12())
@@ -3664,7 +3789,7 @@ pub(super) fn text_button(
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .a11y_button(label.clone())
+        .a11y_row_button(label.clone())
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()

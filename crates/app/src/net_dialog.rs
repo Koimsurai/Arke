@@ -624,7 +624,7 @@ impl NetDialog {
     }
 }
 
-fn label(text: impl Into<SharedString>) -> impl IntoElement {
+pub(crate) fn label(text: impl Into<SharedString>) -> impl IntoElement {
     let text = text.into();
     div()
         .text_size(theme::fs_12())
@@ -637,7 +637,7 @@ fn label(text: impl Into<SharedString>) -> impl IntoElement {
 }
 
 /// Input frame (accent border when focused).
-fn field(input: &Entity<TextInput>, window: &Window, cx: &App) -> gpui::Div {
+pub(crate) fn field(input: &Entity<TextInput>, window: &Window, cx: &App) -> gpui::Div {
     let focused = input.focus_handle(cx).is_focused(window);
     div()
         .h(theme::h_ctl())
@@ -683,7 +683,7 @@ fn labeled(text: impl Into<SharedString>, input: gpui::Div) -> gpui::Div {
         .child(input)
 }
 
-fn button(
+pub(crate) fn button(
     id: &'static str,
     text: impl Into<SharedString>,
     primary: bool,

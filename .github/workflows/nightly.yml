@@ -44,14 +44,21 @@ jobs:
       - name: add ARM64 target
         if: steps.changed.outputs.build == 'true'
         run: rustup target add aarch64-pc-windows-msvc
+      # A dry run also checks the signing secret against the key built into Arke, so a wrong
+      # secret shows here rather than in the first release (signs nothing it keeps).
       - name: build only (dry run)
         if: steps.changed.outputs.build == 'true' && inputs.dry_run
         shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
+          cargo xtask sign-check
           cargo xtask build nightly
           ls -l dist
       - name: publish
         if: steps.changed.outputs.build == 'true' && !inputs.dry_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Nightly updates are signed like the others (update_sig.rs).
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: cargo xtask publish nightly

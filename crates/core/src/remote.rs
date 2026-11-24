@@ -1,7 +1,9 @@
-//! Remote locations (SFTP, WebDAV) as paths.
+//! Remote locations (SFTP, WebDAV, phones and other portable devices over MTP) as paths.
 //!
 //! A remote folder travels through Arke as an ordinary `PathBuf` holding its URL, like
-//! `sftp://alice@nas:2222/home/alice` or `https://dav.example.com/files`. History, tabs, the
+//! `sftp://alice@nas:2222/home/alice`, `https://dav.example.com/files` or
+//! `mtp://pixel-7-3fa2c1/Internal shared storage/DCIM` (a phone: the host is the device's key,
+//! see `arke-remote`'s `mtp.rs`). History, tabs, the
 //! sidebar and the directory service then work unchanged; only the few places that take paths
 //! apart (path bar input, parent, breadcrumbs) ask this module first.
 //!
@@ -21,6 +23,8 @@ pub enum Scheme {
     Dav,
     /// WebDAV over HTTPS (`https://`).
     Davs,
+    /// A phone or other portable device on this PC, over Windows Portable Devices (`mtp://`).
+    Mtp,
 }
 
 impl Scheme {
@@ -30,6 +34,8 @@ impl Scheme {
             Self::Sftp => 22,
             Self::Dav => 80,
             Self::Davs => 443,
+            // No port: a device on this PC.
+            Self::Mtp => 0,
         }
     }
 
@@ -39,6 +45,7 @@ impl Scheme {
             Self::Sftp => "sftp",
             Self::Dav => "http",
             Self::Davs => "https",
+            Self::Mtp => "mtp",
         }
     }
 
@@ -47,11 +54,17 @@ impl Scheme {
         matches!(self, Self::Dav | Self::Davs)
     }
 
+    /// A portable device on this PC (a phone), not a server.
+    pub const fn is_mtp(self) -> bool {
+        matches!(self, Self::Mtp)
+    }
+
     fn parse(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "sftp" | "ssh" => Some(Self::Sftp),
             "http" | "dav" | "webdav" => Some(Self::Dav),
             "https" | "davs" | "webdavs" => Some(Self::Davs),
+            "mtp" => Some(Self::Mtp),
             _ => None,
         }
     }
@@ -340,6 +353,24 @@ mod tests {
         assert_eq!(bare.port, 22);
         assert_eq!(bare.path, "/");
         assert_eq!(bare.to_string(), "sftp://nas", "default port left out");
+    }
+
+    /// A phone: the device key as host, no port, storage and folders as the path (#292).
+    #[test]
+    fn parses_phone_urls() {
+        let u = url("mtp://pixel-7-3fa2c1/Internal shared storage/DCIM");
+        assert_eq!(u.scheme, Scheme::Mtp);
+        assert_eq!(u.host, "pixel-7-3fa2c1");
+        assert_eq!(u.path, "/Internal shared storage/DCIM");
+        assert_eq!(
+            u.to_string(),
+            "mtp://pixel-7-3fa2c1/Internal shared storage/DCIM"
+        );
+        assert_eq!(
+            url("mtp://pixel-7-3fa2c1").to_string(),
+            "mtp://pixel-7-3fa2c1"
+        );
+        assert!(u.scheme.is_mtp() && !u.scheme.is_dav());
     }
 
     #[test]

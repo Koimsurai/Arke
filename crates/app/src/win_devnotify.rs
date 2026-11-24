@@ -9,6 +9,9 @@
 //! (`arke_core::watches::release_volume`, which waits until the handles are gone) before
 //! answering, and tells the UI to move tabs on that drive to the home folder like Arke's own
 //! eject does. If the removal or lock is cancelled, everything is reopened and rescanned.
+//!
+//! The same window hears when a phone or other portable device is plugged in or pulled out
+//! (`GUID_DEVINTERFACE_WPD`), so This PC lists it (#292).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,12 +26,13 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DBT_CUSTOMEVENT, DBT_DEVICEARRIVAL, DBT_DEVICEQUERYREMOVE,
     DBT_DEVICEQUERYREMOVEFAILED, DBT_DEVICEREMOVECOMPLETE, DBT_DEVICEREMOVEPENDING,
-    DBT_DEVTYP_HANDLE, DBT_DEVTYP_VOLUME, DEV_BROADCAST_HANDLE, DEV_BROADCAST_HDR,
-    DEV_BROADCAST_VOLUME, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DispatchMessageW,
-    GUID_IO_VOLUME_DISMOUNT, GUID_IO_VOLUME_DISMOUNT_FAILED, GUID_IO_VOLUME_LOCK,
-    GUID_IO_VOLUME_LOCK_FAILED, GUID_IO_VOLUME_MOUNT, GUID_IO_VOLUME_UNLOCK, GetMessageW,
-    HDEVNOTIFY, MSG, RegisterClassW, RegisterDeviceNotificationW, UnregisterDeviceNotification,
-    WM_DEVICECHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    DBT_DEVTYP_DEVICEINTERFACE, DBT_DEVTYP_HANDLE, DBT_DEVTYP_VOLUME,
+    DEV_BROADCAST_DEVICEINTERFACE_W, DEV_BROADCAST_HANDLE, DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME,
+    DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DispatchMessageW, GUID_IO_VOLUME_DISMOUNT,
+    GUID_IO_VOLUME_DISMOUNT_FAILED, GUID_IO_VOLUME_LOCK, GUID_IO_VOLUME_LOCK_FAILED,
+    GUID_IO_VOLUME_MOUNT, GUID_IO_VOLUME_UNLOCK, GetMessageW, HDEVNOTIFY, MSG, RegisterClassW,
+    RegisterDeviceNotificationW, UnregisterDeviceNotification, WM_DEVICECHANGE, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -44,7 +48,13 @@ pub(crate) enum DriveEvent {
     /// A drive letter came or went (a USB drive plugged in or pulled out): the sidebar's drive
     /// list is read again (#330).
     Changed,
+    /// A phone or other portable device came or went: the phone list is read again (#292).
+    Phones,
 }
+
+/// `GUID_DEVINTERFACE_WPD`: portable devices (phones, cameras) over Windows Portable Devices.
+const WPD_INTERFACE: windows::core::GUID =
+    windows::core::GUID::from_u128(0x6ac2_7878_a6fa_4155_ba85_f98f_491d_4f33);
 
 /// A device message about one volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,6 +343,10 @@ fn on_device_change(wparam: WPARAM, lparam: LPARAM) {
             if matches!(kind, DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE) {
                 let _ = watcher.events.send(DriveEvent::Changed);
             }
+        } else if header.dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
+            if matches!(kind, DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE) {
+                let _ = watcher.events.send(DriveEvent::Phones);
+            }
         } else if header.dbch_devicetype == DBT_DEVTYP_HANDLE {
             // SAFETY: the header says this is a DEV_BROADCAST_HANDLE.
             let notice = unsafe { &*(lparam.0 as *const DEV_BROADCAST_HANDLE) };
@@ -415,6 +429,23 @@ fn run(events: flume::Sender<DriveEvent>) -> windows::core::Result<()> {
         watcher.watch(letter);
     }
     log::info!("watching {} drives for removal", watcher.volumes.len());
+    let phones = DEV_BROADCAST_DEVICEINTERFACE_W {
+        dbcc_size: u32::try_from(size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>()).unwrap_or(0),
+        dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+        dbcc_classguid: WPD_INTERFACE,
+        ..DEV_BROADCAST_DEVICEINTERFACE_W::default()
+    };
+    // SAFETY: hwnd is this thread's window; the filter lives through the call. The registration
+    // lasts as long as the window (the process).
+    if let Err(err) = unsafe {
+        RegisterDeviceNotificationW(
+            HANDLE(hwnd.0),
+            (&raw const phones).cast(),
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        )
+    } {
+        log::info!("portable devices: no plug-in notices: {err}");
+    }
     WATCHER.set(Some(watcher));
     let mut msg = MSG::default();
     // SAFETY: standard message loop for this thread's window.

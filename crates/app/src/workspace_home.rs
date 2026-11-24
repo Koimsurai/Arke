@@ -364,11 +364,20 @@ impl Workspace {
         )
     }
 
-    /// Sidebar Home button. Shows as selected while open; clicking again closes it.
-    pub(super) fn render_home_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Sidebar Home button. Shows as selected while open; clicking again closes it. `None` while
+    /// Home is hidden (#323): a right click on it offers that.
+    pub(super) fn render_home_button(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<gpui::Div>> {
+        use crate::settings::SidebarSection;
+        if super::sidebar::section_hidden(SidebarSection::Home, cx) {
+            return None;
+        }
         let open = self.home_open();
-        div()
+        let row = div()
             .id("open-home")
+            .debug_selector(|| "open-home".to_owned())
             .a11y(gpui::Role::Link, t!("home.title"))
             .relative()
             .flex_none()
@@ -402,6 +411,14 @@ impl Workspace {
                     this.open_home(true, window, cx);
                 }),
             )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
+                    let items = super::sidebar::section_menu(SidebarSection::Home);
+                    this.open_sidebar_menu(e.position, items, cx);
+                }),
+            );
+        Some(row)
     }
 
     /// Home page for the content area, or `None` when closed.

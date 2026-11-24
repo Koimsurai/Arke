@@ -63,6 +63,12 @@ fn recent_row_h() -> gpui::Pixels {
 /// A favorite as the sidebar shows it: folder, its name (a name of its own first) and icon.
 pub(crate) type Favorite = (PathBuf, String, Icon);
 
+/// Whether a click on a recent file opens it: always with "Single click to open", otherwise
+/// on the second click of a double click.
+const fn recent_click_opens(single_click: bool, click_count: usize) -> bool {
+    single_click || click_count >= 2
+}
+
 /// One recent file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RecentFile {
@@ -214,6 +220,9 @@ pub(crate) struct HomePage {
     names: crate::place_names::Names,
     /// The place being renamed here and its box.
     rename: Option<(PathBuf, Entity<TextInput>)>,
+    /// The recent file picked with one click (a double click opens it, or one click with
+    /// "Single click to open").
+    selected_recent: Option<PathBuf>,
     focus: FocusHandle,
     scroll: ScrollHandle,
     /// The favorite card being dragged: its cell stays empty while the card is under the pointer.
@@ -333,6 +342,7 @@ impl HomePage {
             shares,
             names: crate::place_names::Names::new(),
             rename: None,
+            selected_recent: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             dragging: None,
@@ -519,6 +529,9 @@ impl HomePage {
                 .gap(theme::s_12())
                 .when(ix > 0, |d| d.border_t_1().border_color(theme::line()))
                 .cursor_pointer()
+                .when(self.selected_recent.as_ref() == Some(&file.path), |d| {
+                    d.bg(theme::selection())
+                })
                 .hover(|s| s.bg(theme::wash()))
                 .child(kind_icon(kind_for_extension(&ext), theme::icon()))
                 .child(
@@ -569,8 +582,13 @@ impl HomePage {
                             cx.emit(HomeEvent::Reveal(reveal.clone()));
                         })),
                 )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.open_file(open.clone(), cx);
+                .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                    if recent_click_opens(crate::prefs::single_click(), e.click_count()) {
+                        this.open_file(open.clone(), cx);
+                    } else {
+                        this.selected_recent = Some(open.clone());
+                        cx.notify();
+                    }
                 }))
                 // Middle click opens the file's folder in a new tab.
                 .on_mouse_down(
@@ -1071,6 +1089,13 @@ mod tests {
             path: PathBuf::from(path),
             kind,
         }
+    }
+
+    #[test]
+    fn recent_files_open_by_double_click_unless_single_click_is_on() {
+        assert!(!recent_click_opens(false, 1));
+        assert!(recent_click_opens(false, 2));
+        assert!(recent_click_opens(true, 1));
     }
 
     #[test]

@@ -378,6 +378,21 @@ pub(crate) fn double_click_time() -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(if ms == 0 { 500 } else { ms }))
 }
 
+/// Whether the mouse message being handled was made by Windows from a finger or a pen (it marks
+/// those with a signature in the message's extra info), not by a mouse or touchpad. Single-click
+/// mode selects what the pointer rests on; a finger or a pen hovering over the screen isn't
+/// pointing at anything, so it doesn't (#46). Only meaningful while a mouse event is handled.
+pub(crate) fn pointer_is_touch_or_pen() -> bool {
+    const SIGNATURE_MASK: isize = 0xFFFF_FF00;
+    const MI_WP_SIGNATURE: isize = 0xFF51_5700;
+    if cfg!(test) {
+        return false;
+    }
+    // SAFETY: no arguments; reads the current thread's last message's extra info.
+    let extra = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageExtraInfo() }.0;
+    extra & SIGNATURE_MASK == MI_WP_SIGNATURE
+}
+
 /// How long the pointer must rest on an item to select it in single-click mode (Settings >
 /// Mouse; `SPI_GETMOUSEHOVERTIME`, 400 ms by default). Reads one system parameter, fine on the
 /// UI thread.

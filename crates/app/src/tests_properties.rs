@@ -589,6 +589,48 @@ fn alt_enter_opens_the_window(cx: &mut TestAppContext) {
     assert_eq!(windows(cx).len(), 2, "several can be open");
 }
 
+/// #337: Alt+double-click opens the Properties window for the item, instead of opening it.
+#[gpui::test]
+fn alt_double_click_opens_the_window(cx: &mut TestAppContext) {
+    use gpui::{MouseButton, MouseDownEvent, MouseUpEvent};
+    let fs = file_fs();
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "the folder", loaded(r"C:\p"));
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    cx.simulate_click(row, alt);
+    cx.simulate_event(MouseDownEvent {
+        position: row,
+        modifiers: alt,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position: row,
+        modifiers: alt,
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    cx.run_until_parked();
+    let windows: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Properties>())
+        .collect();
+    assert_eq!(windows.len(), 1, "the Properties window");
+    let shown = windows[0].read_with(cx, |p, _| p.path_for_test()).unwrap();
+    assert_eq!(shown, Some(PathBuf::from(r"C:\p\a.txt")));
+    assert!(shell.opened.lock().is_empty(), "not opened");
+}
+
 /// The folder background menu has Arke's own Properties, for the folder shown (as Alt+Enter with
 /// nothing selected); Windows' one under "Show more options" opened Explorer's dialog.
 #[gpui::test]

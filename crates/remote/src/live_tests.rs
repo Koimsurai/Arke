@@ -37,6 +37,7 @@ fn remotes(cache: &Path) -> Arc<Remotes> {
         cache_dir: cache.to_path_buf(),
         secrets: Arc::new(crate::creds::NoSecrets),
         transport: Arc::new(NoHttp),
+        portable: Arc::new(crate::mtp::NoDevices),
     })
 }
 
@@ -204,6 +205,7 @@ fn browses_and_changes_a_webdav_server_over_winhttp() {
         cache_dir: cache.clone(),
         secrets: Arc::new(crate::creds::NoSecrets),
         transport: Arc::new(crate::http::WinHttp::new().unwrap()),
+        portable: Arc::new(crate::mtp::NoDevices),
     });
     let anonymous = RemoteUrl::from_path(Path::new(&format!("http://127.0.0.1:{port}/"))).unwrap();
     assert!(matches!(hub.list(&anonymous), Err(RemoteError::NeedsLogin)));

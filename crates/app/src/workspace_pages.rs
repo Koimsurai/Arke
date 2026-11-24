@@ -106,6 +106,22 @@ impl Workspace {
             .position(|t| t.panes.iter().any(|p| p.view.entity_id() == owner.view))
     }
 
+    /// The tab `view` was moved to `path` without the user going anywhere (its drive was removed):
+    /// the pages it shows stay open over the new folder instead of closing as on a navigation.
+    pub(super) fn keep_pages_over(&mut self, view: EntityId, path: &std::path::Path) {
+        let owners = [
+            self.home_page.as_mut().map(|p| &mut p.owner),
+            self.settings_panel.as_mut().map(|p| &mut p.owner),
+            self.recycle_page.as_mut().map(|p| &mut p.owner),
+            self.whats_new.as_mut().map(|p| &mut p.owner),
+        ];
+        for owner in owners.into_iter().flatten() {
+            if owner.view == view {
+                owner.path = Some(path.to_path_buf());
+            }
+        }
+    }
+
     /// The owner still exists and is still on the original folder.
     pub(super) fn owner_alive(&self, owner: &Owner, cx: &App) -> bool {
         self.tabs

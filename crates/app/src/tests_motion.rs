@@ -36,6 +36,18 @@ fn menu_state(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> (bool, boo
     })
 }
 
+/// The Menu key opens the context menu like Shift+F10: it's the key most keyboard and screen
+/// reader users press (#322).
+#[gpui::test]
+fn the_menu_key_opens_the_context_menu(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    cx.simulate_keystrokes("home menu");
+    assert!(menu_state(&view, cx).0, "the menu is open");
+}
+
 /// Escape fades the context menu out (it is closed for everything else at once); a new menu
 /// replaces the ghost; running a command closes it without one.
 #[gpui::test]

@@ -29,8 +29,6 @@ pub(crate) const RESTORED_WINDOWS_MAX: usize = 20;
 pub(crate) const RECENT_MAX: usize = 50;
 /// Max favorite tiles; further pins go to the list below.
 pub(crate) const FAVORITES_MAX: usize = 12;
-/// Above this many tiles they shrink to 4 per row.
-pub(crate) const FAVORITES_LARGE: usize = 6;
 
 /// Where a pin ended up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,11 +47,12 @@ pub(crate) enum PinSlot {
     List(usize),
 }
 
-/// A sidebar section that collapses to its heading. Home and its tiles never collapse, nor do the
-/// tabs.
+/// A sidebar section. Favorites, This PC and Network collapse to their heading; Home (its row and
+/// tiles) never collapses, nor do the tabs. Home, Favorites and This PC can be hidden (#323).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SidebarSection {
+    Home,
     Favorites,
     ThisPc,
     Network,
@@ -269,6 +268,17 @@ const fn half() -> f32 {
 pub(crate) struct Session {
     pub(crate) tabs: Vec<SessionTab>,
     pub(crate) active: usize,
+    /// The saved workspace the window showed (#269), so its name comes back with the tabs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workspace: Option<SessionWorkspace>,
+}
+
+/// The saved workspace a window showed: its name and which of the session's tabs came from it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SessionWorkspace {
+    pub(crate) name: String,
+    /// Indices into [`Session::tabs`].
+    pub(crate) tabs: Vec<usize>,
 }
 
 /// One window of the last session: its tabs and where it was.
@@ -587,6 +597,10 @@ pub(crate) struct Settings {
     /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
     #[serde(deserialize_with = "known_sections")]
     pub(crate) collapsed_sections: Vec<SidebarSection>,
+    /// Sidebar sections hidden from their heading's menu, shown again from the menu of the
+    /// sidebar's empty space (#323).
+    #[serde(deserialize_with = "known_sections")]
+    pub(crate) hidden_sections: Vec<SidebarSection>,
     pub(crate) accent: Accent,
     pub(crate) tint: Tint,
     pub(crate) material: Material,
@@ -640,6 +654,9 @@ pub(crate) struct Settings {
     /// Same-drive Recycle Bin moves done directly instead of through the Windows
     /// engine (`win_fast_recycle.rs`).
     pub(crate) fast_recycle: bool,
+    /// Copies of new items on local SSDs done by Arke, several files at once, instead of the
+    /// Windows engine (`win_fast_copy.rs`).
+    pub(crate) fast_copy: bool,
     pub(crate) language: Language,
     /// Ask before moving to the Recycle Bin. Permanent deletes are always confirmed by Windows.
     pub(crate) confirm_recycle: bool,
@@ -661,6 +678,10 @@ pub(crate) struct Settings {
     pub(crate) show_protected: bool,
     /// Open with a single click instead of double.
     pub(crate) single_click: bool,
+    /// With [`single_click`](Self::single_click): resting the pointer on an item selects it, as
+    /// Windows' "Single-click to open an item (point to select)" (#46). Off: it only highlights,
+    /// as File Explorer on Windows 11 does.
+    pub(crate) point_to_select: bool,
     /// Selection checkboxes to the left of items.
     pub(crate) show_checkboxes: bool,
     /// Group rows in details view by the sort column.
@@ -698,6 +719,10 @@ pub(crate) struct Settings {
     pub(crate) tray_icon: bool,
     /// Arke context menu entries turned off (keys from `workspace_menuprefs.rs`).
     pub(crate) menu_hidden: Vec<String>,
+    /// Arke context menu entries in the order dragged to in Settings › Context menu (keys from
+    /// `menu_order::DEFAULT`), empty for the built-in order. Unknown keys are ignored and missing
+    /// entries keep their built-in place, so files from other versions still load (#263).
+    pub(crate) menu_order: Vec<String>,
     /// Windows commands pinned to the main menu from "More options" (`explorer_menu::pin_key` keys, in pin order).
     pub(crate) menu_pinned: Vec<String>,
     /// Where each pinned command comes from, learned from the menus seen
@@ -713,6 +738,8 @@ pub(crate) struct Settings {
     /// extension showed them for when last read. An extension decides for itself whether it adds
     /// an item, so its row is drawn ahead only where it showed last time (#278).
     pub(crate) menu_pin_seen: std::collections::BTreeMap<String, Vec<String>>,
+    /// "More options" has shown, once, the line saying its pins keep a command in the main menu.
+    pub(crate) pin_hint_seen: bool,
     /// How long reading each drive's whole file table through the index service took (`C:\`
     /// keys), as last measured by Properties: a folder walk that has taken longer than that is
     /// overtaken by a read of the table (`properties.rs`).
@@ -730,6 +757,9 @@ pub(crate) struct Settings {
     /// The update whose notice bar was closed (`Some("0.4.0")`): it doesn't come back for that
     /// version, only for a newer one.
     pub(crate) update_dismissed: Option<String>,
+    /// Download route for updates (`update_route.rs`): empty for GitHub directly, an https prefix
+    /// or an HTTP proxy `host:port`. Only update checks and downloads use it.
+    pub(crate) update_route: String,
     /// What's new (`whats_new.rs`): open it after an update, and the version it last saw (`None`
     /// before Arke 0.4 recorded it).
     pub(crate) whats_new_auto: bool,
@@ -794,6 +824,7 @@ impl Default for Settings {
             sidebar_peek: false,
             sidebar_follow: true,
             collapsed_sections: Vec::new(),
+            hidden_sections: Vec::new(),
             font: String::new(),
             background_image: None,
             background_opacity: 20,
@@ -817,6 +848,7 @@ impl Default for Settings {
             nav_scope: NavScope::AcrossTabs,
             swipe_nav: true,
             fast_recycle: true,
+            fast_copy: true,
             language: Language::default(),
             confirm_recycle: false,
             warn_extension_change: true,
@@ -828,6 +860,7 @@ impl Default for Settings {
             hide_dotfiles: false,
             show_protected: false,
             single_click: false,
+            point_to_select: true,
             full_dates: false,
             show_modified: true,
             show_created: false,
@@ -844,10 +877,12 @@ impl Default for Settings {
             decimal_sizes: false,
             tray_icon: true,
             menu_hidden: Vec::new(),
+            menu_order: Vec::new(),
             menu_pinned: Vec::new(),
             menu_pin_owners: std::collections::BTreeMap::new(),
             menu_pin_types: std::collections::BTreeMap::new(),
             menu_pin_seen: std::collections::BTreeMap::new(),
+            pin_hint_seen: false,
             mft_list: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             recent_commands: Vec::new(),
@@ -855,6 +890,7 @@ impl Default for Settings {
             update_auto: true,
             update_checked: None,
             update_dismissed: None,
+            update_route: String::new(),
             whats_new_auto: true,
             whats_new_seen: None,
             open_with_extra: Vec::new(),
@@ -1131,6 +1167,9 @@ impl SettingsStore {
     /// Creates the global settings and reads the file in the background. With `path` `None` it is memory only (tests).
     pub(crate) fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<Self> {
         let store = Self::unread(path.clone(), cx);
+        // Tests compare whole menus: the one-time line in More options is left to its own test.
+        #[cfg(test)]
+        store.update(cx, |s, _| s.settings.pin_hint_seen = true);
         if let Some(path) = path {
             let (tx, rx) = flume::bounded::<(Settings, bool)>(1);
             let spawned = std::thread::Builder::new()
@@ -1471,6 +1510,23 @@ impl Settings {
         }
     }
 
+    /// Whether a sidebar section is hidden (#323).
+    pub(crate) fn is_hidden(&self, section: SidebarSection) -> bool {
+        self.hidden_sections.contains(&section)
+    }
+
+    /// Hides a sidebar section, or shows it again.
+    pub(crate) fn set_hidden(&mut self, section: SidebarSection, hidden: bool) {
+        let at = self.hidden_sections.iter().position(|s| *s == section);
+        match (hidden, at) {
+            (true, None) => self.hidden_sections.push(section),
+            (false, Some(ix)) => {
+                self.hidden_sections.remove(ix);
+            }
+            _ => {}
+        }
+    }
+
     /// The windows of the last session that have something to restore, the one used last first;
     /// at most [`RESTORED_WINDOWS_MAX`].
     pub(crate) fn last_windows(&self) -> Vec<SessionWindow> {
@@ -1480,6 +1536,31 @@ impl Settings {
             .take(RESTORED_WINDOWS_MAX)
             .cloned()
             .collect()
+    }
+
+    /// The pinned tabs of the last session's windows, in order: they come back at every start,
+    /// whatever the start location is, as in a browser (#298). A tab pinned in two windows on the
+    /// same folders comes back once, and none of them reopens Home over its folder.
+    pub(crate) fn last_pinned_tabs(&self) -> Session {
+        let mut tabs: Vec<SessionTab> = Vec::new();
+        for tab in self
+            .last_windows()
+            .iter()
+            .flat_map(|w| w.session.tabs.iter())
+            .filter(|t| t.pinned)
+        {
+            if !tabs.iter().any(|t| t.panes == tab.panes) {
+                tabs.push(SessionTab {
+                    home: false,
+                    ..tab.clone()
+                });
+            }
+        }
+        Session {
+            tabs,
+            active: 0,
+            workspace: None,
+        }
     }
 
     /// Network locations global search actually indexes: user-added ones plus, when auto is on, network
@@ -1700,6 +1781,7 @@ mod tests {
             session: Session {
                 tabs: vec![tab(path)],
                 active: 0,
+                workspace: None,
             },
             place: None,
         };
@@ -1770,6 +1852,35 @@ mod tests {
         assert!(!s.is_collapsed(SidebarSection::ThisPc));
         s.toggle_collapsed(SidebarSection::Favorites);
         assert!(s.collapsed_sections.is_empty());
+    }
+
+    /// Hidden sidebar sections are kept, once each; a name from a later version is skipped.
+    #[test]
+    fn hidden_sections_are_kept() {
+        let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
+        assert!(Settings::default().hidden_sections.is_empty());
+        let later = read(br#"{"hidden_sections": ["home", "someday", "this_pc", "home"]}"#);
+        assert_eq!(
+            later.hidden_sections,
+            vec![SidebarSection::Home, SidebarSection::ThisPc]
+        );
+        let json = serde_json::to_string(&later).unwrap();
+        assert!(
+            json.contains(r#""hidden_sections":["home","this_pc"]"#),
+            "{json}"
+        );
+
+        let mut s = Settings::default();
+        s.set_hidden(SidebarSection::Favorites, true);
+        s.set_hidden(SidebarSection::Favorites, true);
+        assert_eq!(s.hidden_sections, vec![SidebarSection::Favorites]);
+        assert!(s.is_hidden(SidebarSection::Favorites));
+        assert!(
+            !s.is_collapsed(SidebarSection::Favorites),
+            "hidden isn't collapsed"
+        );
+        s.set_hidden(SidebarSection::Favorites, false);
+        assert!(s.hidden_sections.is_empty());
     }
 
     /// A file with both the old switch and single window mode (an older Arke ran after 0.7 and
@@ -2036,7 +2147,11 @@ mod tests {
         assert_eq!(old.pinned, [PathBuf::from(r"D:\x")]);
         assert_eq!(old.tab_layout, TabLayout::Vertical);
         assert!(
-            old.show_extensions && old.show_thumbnails && old.keep_running && old.fast_recycle,
+            old.show_extensions
+                && old.show_thumbnails
+                && old.keep_running
+                && old.fast_recycle
+                && old.fast_copy,
             "new switches default to on"
         );
         assert!(

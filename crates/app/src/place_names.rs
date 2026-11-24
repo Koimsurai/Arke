@@ -63,6 +63,18 @@ pub(crate) fn shown_name(names: &Names, path: &Path) -> Option<String> {
     })
 }
 
+/// A share's default name: `\\nas\docs` -> "docs (nas)".
+pub(crate) fn share_label(share: &Path) -> String {
+    let s = share.to_string_lossy();
+    let mut parts = s.trim_start_matches('\\').splitn(2, '\\');
+    match (parts.next(), parts.next()) {
+        (Some(server), Some(name)) => {
+            t!("sidebar.share_label", share = name, server = server).into_owned()
+        }
+        _ => s.into_owned(),
+    }
+}
+
 /// A place's label with its custom name applied (mapped drives only; the rest keep theirs).
 pub(crate) fn place_label(names: &Names, place: &Place) -> String {
     match place.kind {

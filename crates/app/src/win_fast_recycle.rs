@@ -686,7 +686,8 @@ pub(crate) fn notify_bins(bins: &[&Path]) {
     unsafe { SHUpdateRecycleBinIcon() };
 }
 
-fn send(event: windows::Win32::UI::Shell::SHCNE_ID, path: &Path) {
+/// Tells the shell `event` happened at `path` (fast copy reports its new items with it too).
+pub(crate) fn send(event: windows::Win32::UI::Shell::SHCNE_ID, path: &Path) {
     use windows::Win32::UI::Shell::{SHCNF_FLUSHNOWAIT, SHCNF_PATHW, SHChangeNotify};
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: a NUL-terminated path that outlives the call.

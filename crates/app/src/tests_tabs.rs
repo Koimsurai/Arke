@@ -43,6 +43,12 @@ fn split_to(
     left.update(cx, |_, cx| cx.emit(ExplorerEvent::ToggleSplit));
     cx.run_until_parked();
     let right_view = ws.update(cx, |ws, _| ws.pane_views()[1].clone());
+    // The new side opens where the left one is: let it get there first. On a busy machine its
+    // listing thread was still running when the navigation below replaced it, so that folder
+    // never made it into the right side's history.
+    wait_until(cx, &right_view, "the new side's first folder", |v| {
+        v.model.as_ref().is_some_and(|m| m.complete)
+    });
     right_view.update(cx, |e, cx| e.navigate(p(right), NavKind::New, cx));
     wait_until(cx, &right_view, right, loaded(right));
     cx.run_until_parked();
@@ -366,6 +372,145 @@ fn saved_workspaces_save_open_and_show_in_ctrl_t(cx: &mut TestAppContext) {
         Some("Work"),
         "{labels:?}"
     );
+}
+
+/// The saved workspace a window shows is named beside the tabs (#269): once the tabs are saved
+/// as one or one is opened, following a rename, and gone once its tabs are closed or it is
+/// deleted.
+#[gpui::test]
+fn the_tabs_show_the_workspace_name(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\w", 1);
+    fs.insert_many(r"C:\x", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\w");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\w"));
+    let shown =
+        |cx: &mut VisualTestContext| ws.update(cx, |ws, cx| ws.shown_workspace_for_test(cx));
+    assert_eq!(shown(cx), None);
+    assert!(cx.debug_bounds("tabs-workspace").is_none());
+
+    cx.dispatch_action(OpenWorkspaces);
+    cx.run_until_parked();
+    let panel = ws
+        .update(cx, |ws, _| ws.workspaces_panel_for_test())
+        .expect("panel open");
+    panel.update(cx, |panel, cx| panel.type_name_for_test("Work", cx));
+    cx.run_until_parked();
+    assert_eq!(shown(cx).as_deref(), Some("Work"), "saved as Work");
+    assert!(cx.debug_bounds("tabs-workspace").is_some(), "drawn");
+
+    // Renamed in the panel: the name follows.
+    cx.dispatch_action(OpenWorkspaces);
+    cx.run_until_parked();
+    let panel = ws
+        .update(cx, |ws, _| ws.workspaces_panel_for_test())
+        .expect("panel open");
+    panel.update_in(cx, |panel, window, cx| {
+        panel.rename_for_test("Work", "Office", window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx).as_deref(), Some("Office"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+
+    // Its tab closed: the window no longer shows it.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_tab(p(r"C:\x"), 1, true, window, cx);
+        ws.close_tab(0, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx), None, "its tabs are closed");
+
+    // Opened again, then deleted.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_saved_workspace("Office", window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx).as_deref(), Some("Office"), "opened");
+    cx.update(|_, cx| {
+        WorkspaceStore::global(cx).update(cx, |s, cx| s.update(|w| w.remove("office"), cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(cx), None, "deleted");
+    assert!(cx.debug_bounds("tabs-workspace").is_none());
+}
+
+/// The workspace name comes back with the last session (#269): only on the tabs that came from
+/// it, and the next snapshot carries it again.
+#[gpui::test]
+fn the_workspace_name_comes_back_with_the_session(cx: &mut TestAppContext) {
+    use crate::settings::{Session, SessionTab, SessionWorkspace};
+    let fs = folders(&[r"C:\p", r"C:\q", r"C:\r"]);
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    let tab = |path: &str| SessionTab {
+        panes: vec![p(path)],
+        active_pane: 0,
+        ratio: 0.5,
+        pinned: false,
+        synced: false,
+        home: false,
+    };
+    cx.update(|cx| {
+        WorkspaceStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |w| {
+                    let _ = w.save("Work", vec![tab(r"C:\p"), tab(r"C:\r")], 0);
+                },
+                cx,
+            );
+        });
+    });
+    let session = Session {
+        tabs: vec![tab(r"C:\p"), tab(r"C:\q"), tab(r"C:\r")],
+        active: 0,
+        workspace: Some(SessionWorkspace {
+            name: "Work".to_owned(),
+            tabs: vec![0, 2],
+        }),
+    };
+    let services = Services {
+        fs,
+        shell: Arc::new(FakeShell::default()),
+        remotes: crate::remote_shell::test_remotes(),
+    };
+    let (ws, cx) = cx.add_window_view(move |window, cx| {
+        Workspace::new(
+            services,
+            p(r"C:\p"),
+            false,
+            Some(session),
+            None,
+            Instant::now(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_views().count(), 3);
+        assert_eq!(ws.shown_workspace_for_test(cx).as_deref(), Some("Work"));
+        assert_eq!(
+            ws.session_snapshot(cx).workspace,
+            Some(SessionWorkspace {
+                name: "Work".to_owned(),
+                tabs: vec![0, 2],
+            }),
+            "saved again with the same tabs"
+        );
+    });
+    // Its two tabs closed: the other tab doesn't keep the name.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.close_tab(2, window, cx);
+        ws.close_tab(0, window, cx);
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.shown_workspace_for_test(cx), None);
+        assert_eq!(ws.session_snapshot(cx).workspace, None);
+    });
 }
 
 #[gpui::test]
@@ -1468,6 +1613,43 @@ fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
     let at = cx.debug_bounds("rail work").unwrap().center();
     cx.simulate_click(at, gpui::Modifiers::none());
     wait_until(cx, &view, "work", loaded(r"C:\work"));
+
+    // #323: the hidden sections leave the column too. Home takes Home and the tiles, Favorites
+    // the pinned folders and the Recycle Bin, This PC the drives; the Shelf stays.
+    let [_, bin, kept_shelf, letter] = wanted[..] else {
+        unreachable!()
+    };
+    let home: &'static str = Box::leak(format!("rail {}", t!("home.title")).into_boxed_str());
+    change(cx, |st| {
+        st.favorites = Some(vec![p(r"C:\a")]);
+        st.pinned = vec![p(r"C:\kept")];
+    });
+    let pin = "rail kept";
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let tile = "rail a";
+    assert!(cx.debug_bounds(home).is_some(), "home in the rail");
+    assert!(cx.debug_bounds(tile).is_some(), "the tile in the rail");
+    change(cx, |st| {
+        use crate::settings::SidebarSection as S;
+        st.hidden_sections = vec![S::Home, S::Favorites, S::ThisPc];
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    for gone in [home, tile, pin, bin, letter] {
+        assert!(cx.debug_bounds(gone).is_none(), "{gone} is hidden");
+    }
+    assert!(cx.debug_bounds(kept_shelf).is_some(), "the Shelf stays");
+
+    change(cx, |st| {
+        st.hidden_sections = vec![crate::settings::SidebarSection::Home];
+    });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds(home).is_none());
+    for shown in [pin, bin, letter, kept_shelf] {
+        assert!(cx.debug_bounds(shown).is_some(), "{shown} is back");
+    }
 }
 
 /// #122: resting the pointer on the collapsed column opens the full sidebar over the content; it
@@ -1618,6 +1800,8 @@ fn sidebar_with_tabs(
     wait_until(cx, &view, "load", loaded(&paths[0]));
     let rest: Vec<&str> = paths[1..].iter().map(String::as_str).collect();
     open_tabs(&ws, cx, &rest);
+    // The first tab active, so the list starts at the top (the active tab is scrolled to).
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
     cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(height)));
     for _ in 0..3 {
         cx.update(|window, _| window.refresh());
@@ -2751,6 +2935,7 @@ fn restored_pinned_tabs_are_locked(cx: &mut TestAppContext) {
         home: false,
     };
     let session = Session {
+        workspace: None,
         tabs: vec![tab(r"C:\p", true), tab(r"C:\q", false)],
         active: 0,
     };

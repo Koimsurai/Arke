@@ -30,6 +30,7 @@ mod bsdtar;
 mod libarchive;
 mod sevenz;
 mod system;
+mod zstd;
 
 /// Why an archive could not be extracted, compressed or listed.
 ///
@@ -144,9 +145,13 @@ pub enum ArchiveError {
         #[source]
         source: sevenz_rust2::Error,
     },
-    /// The archive (or an entry in it) is password-protected; there is no password prompt yet.
+    /// The archive (or an entry in it) is password-protected and no password was given.
     #[error("{}", t!("archive.encrypted"))]
     Encrypted,
+    /// The password given doesn't open the archive (or the encrypted data is damaged: the two
+    /// can't be told apart).
+    #[error("{}", t!("archive.wrong_password"))]
+    WrongPassword,
     /// The archive uses a compression method the reader doesn't implement.
     #[error("{}", t!("archive.unsupported_method", method = .method))]
     UnsupportedMethod {
@@ -423,6 +428,8 @@ pub struct ExtractOptions<'a> {
     pub progress: &'a (dyn Fn(ExtractProgress) + Sync),
     /// Decoder for non-UTF-8 names.
     pub decode_legacy: &'a (dyn Fn(&[u8]) -> String + Sync),
+    /// For a password-protected zip or 7z (#346); `None` until the user gives one.
+    pub password: Option<&'a str>,
 }
 
 /// Extracts into `dest`, creating it if needed.
@@ -650,6 +657,63 @@ fn with_time(
     }
 }
 
+/// Extensions of formats that are already compressed (images, video, audio, archives, Office and
+/// similar zip containers). Deflating them costs time and saves next to nothing, so they are
+/// stored. Lowercase, without the dot. PDF is left out on purpose: some are mostly text.
+const PRECOMPRESSED: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "mp4", "m4v", "mkv", "mov", "avi",
+    "webm", "wmv", "mp3", "aac", "m4a", "ogg", "opus", "flac", "wma", "zip", "7z", "rar", "gz",
+    "tgz", "bz2", "xz", "zst", "lz4", "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub", "jar",
+    "apk", "msix", "whl", "nupkg",
+];
+
+/// Bytes of a file tried with deflate to see if it is worth compressing.
+const SAMPLE_LEN: usize = 64 * 1024;
+
+/// The deflated sample must be at least this much smaller (here 5%) for a file to be deflated.
+const MIN_SAVING_PERCENT: usize = 5;
+
+/// The entry's name ends in an extension of an already compressed format.
+fn is_precompressed(name: &str) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    PRECOMPRESSED.iter().any(|e| ext.eq_ignore_ascii_case(e))
+}
+
+/// Whether deflate saves enough on `sample` (the start of a file) to be worth it.
+fn compresses_well(sample: &[u8]) -> bool {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    let mut enc = DeflateEncoder::new(Vec::with_capacity(sample.len() / 2), Compression::fast());
+    if enc.write_all(sample).is_err() {
+        return true;
+    }
+    let Ok(out) = enc.finish() else {
+        return true;
+    };
+    out.len() * 100 <= sample.len() * (100 - MIN_SAVING_PERCENT)
+}
+
+/// Reads the first [`SAMPLE_LEN`] bytes of `src` into `buf` and judges them with
+/// [`compresses_well`], then rewinds. Anything that goes wrong answers `true`, which is what
+/// happened to every file before.
+fn samples_well(src: &mut File, buf: &mut [u8]) -> bool {
+    use std::io::{Seek, SeekFrom};
+    let len = SAMPLE_LEN.min(buf.len());
+    let mut got = 0;
+    while got < len {
+        match src.read(&mut buf[got..len]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
+        }
+    }
+    if src.seek(SeekFrom::Start(0)).is_err() {
+        return true;
+    }
+    got == 0 || compresses_well(&buf[..got])
+}
+
 fn write_zip(
     file: File,
     entries: &[Entry],
@@ -685,8 +749,16 @@ fn write_zip(
                     summary.skipped += 1;
                     continue;
                 };
+                let method = if is_precompressed(name)
+                    || (*size >= SAMPLE_LEN as u64 && !samples_well(&mut src, &mut buf))
+                {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                };
                 let options = with_time(
-                    base.large_file(*size >= u64::from(u32::MAX)),
+                    base.compression_method(method)
+                        .large_file(*size >= u64::from(u32::MAX)),
                     *modified,
                     opts,
                 );
@@ -1113,27 +1185,47 @@ fn extract_zip(
         .map_err(|source| ArchiveError::NotZip { source })?;
     let mut summary = ExtractSummary::default();
     let mut progress = ExtractProgress::default();
-    for i in 0..zip.len() {
+    let mut encrypted = vec![false; zip.len()];
+    // Each entry's method, to name one Arke can't read.
+    let mut methods = vec![0u16; zip.len()];
+    for (i, (flag, method)) in encrypted.iter_mut().zip(&mut methods).enumerate() {
         if let Ok(entry) = zip.by_index_raw(i) {
-            // A password-protected entry: say so instead of calling the archive damaged (#282),
-            // and before anything is written, so a mixed archive isn't left half extracted.
-            if entry.encrypted() && !entry.is_dir() {
-                return Err(ArchiveError::Encrypted);
+            *flag = entry.encrypted() && !entry.is_dir();
+            #[allow(
+                deprecated,
+                reason = "the number names the methods the crate has no constant for"
+            )]
+            {
+                *method = entry.compression().to_u16();
             }
             progress.total = progress.total.saturating_add(entry.size());
         }
     }
+    // A password-protected entry: ask for the password instead of calling the archive damaged
+    // (#282), and check it against every such entry (each has its own check value, read without
+    // decoding anything) before anything is written, so a mixed archive isn't left half extracted.
+    if encrypted.contains(&true) {
+        let password = opts.password.ok_or(ArchiveError::Encrypted)?;
+        for i in (0..zip.len()).filter(|&i| encrypted[i]) {
+            zip.by_index_decrypt(i, password.as_bytes())
+                .map_err(|source| zip_error(source, true, methods[i]))?;
+        }
+    }
     (opts.progress)(progress);
-    for i in 0..zip.len() {
+    for (i, &encrypted) in encrypted.iter().enumerate() {
         if cancelled(opts) {
             summary.cancelled = true;
             return Ok(summary);
         }
-        let mut entry = zip.by_index(i).map_err(|source| match source {
-            zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
-            | zip::result::ZipError::InvalidPassword => ArchiveError::Encrypted,
-            source => ArchiveError::CorruptZip { source },
-        })?;
+        // zstd is decoded here, from the raw bytes (`zstd.rs`); encrypted, it is left to the
+        // zip crate, which says it can't.
+        let zstd = methods[i] == zstd::ZIP_ZSTD && !encrypted;
+        let entry = match opts.password.filter(|_| encrypted) {
+            Some(password) => zip.by_index_decrypt(i, password.as_bytes()),
+            None if zstd => zip.by_index_raw(i),
+            None => zip.by_index(i),
+        };
+        let mut entry = entry.map_err(|source| zip_error(source, encrypted, methods[i]))?;
         let Some(rel) = safe_relative_path(entry.name_raw(), opts.decode_legacy) else {
             summary.skipped_unsafe += 1;
             continue;
@@ -1156,11 +1248,73 @@ fn extract_zip(
             (opts.progress)(progress);
         };
         let size = entry.size();
-        write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)?.count(&mut summary);
+        let written = if zstd {
+            let (packed, crc) = (entry.compressed_size(), entry.crc32());
+            match zstd::ZstdEntry::new(&mut entry, packed, crc) {
+                Ok(mut decoded) => {
+                    write_new_file(&target, &mut decoded, Some(size), &mut on_bytes, opts)
+                }
+                Err(source) => Err(ArchiveError::Read {
+                    path: target.clone(),
+                    source,
+                }),
+            }
+        } else {
+            write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)
+        };
+        // ZipCrypto's check value is one byte: one wrong password in 256 passes it and decodes
+        // to garbage, which fails here (bad data or CRC).
+        let written = match written {
+            // The zip crate says it can't decode a method only once it is read.
+            Err(ArchiveError::Read { source, .. })
+                if source.kind() == io::ErrorKind::Unsupported =>
+            {
+                Err(ArchiveError::UnsupportedMethod {
+                    method: zip_method_name(methods[i]),
+                })
+            }
+            Err(ArchiveError::Read { .. }) if encrypted => Err(ArchiveError::WrongPassword),
+            written => written,
+        };
+        written?.count(&mut summary);
         progress.files = summary.files;
     }
     summary.cancelled = cancelled(opts);
     Ok(summary)
+}
+
+/// Maps a zip error for an entry (`encrypted`: a password was needed for it; `method`: its
+/// compression method's id).
+fn zip_error(source: zip::result::ZipError, encrypted: bool, method: u16) -> ArchiveError {
+    use zip::result::ZipError;
+    match source {
+        ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED) => ArchiveError::Encrypted,
+        ZipError::InvalidPassword => ArchiveError::WrongPassword,
+        // A method Arke doesn't decode (old PKZIP ones, JPEG, WavPack...): said so by name, not
+        // called damage, so the app can offer another program (#341).
+        ZipError::UnsupportedArchive(_) => ArchiveError::UnsupportedMethod {
+            method: zip_method_name(method),
+        },
+        // Garbage from a wrong password (see above) can also fail as the stream starts.
+        ZipError::Io(_) if encrypted => ArchiveError::WrongPassword,
+        source => ArchiveError::CorruptZip { source },
+    }
+}
+
+/// A zip compression method's name (APPNOTE 4.4.5), or its number.
+fn zip_method_name(id: u16) -> String {
+    match id {
+        1 => "Shrink".into(),
+        2..=5 => "Reduce".into(),
+        6 => "Implode".into(),
+        10 => "PKWARE DCL Implode".into(),
+        18 => "IBM TERSE".into(),
+        19 => "IBM LZ77".into(),
+        93 => "zstd".into(),
+        96 => "JPEG".into(),
+        97 => "WavPack".into(),
+        id => format!("#{id}"),
+    }
 }
 
 fn extract_tar(
@@ -1269,6 +1423,8 @@ mod tests {
     use parking_lot::Mutex;
     use zip::write::SimpleFileOptions;
 
+    mod formats;
+
     /// Tests run only in their own folder under %TEMP%, deleted afterwards.
     struct Sandbox(PathBuf);
 
@@ -1307,6 +1463,7 @@ mod tests {
             cancel,
             progress,
             decode_legacy: &fake_big5,
+            password: None,
         }
     }
 
@@ -2379,5 +2536,34 @@ mod tests {
             .collect();
         let items: Vec<Item<'_>> = bodies.iter().map(|(n, b)| Item::File(n, b)).collect();
         write_pax_tar(path, &items);
+    }
+
+    #[test]
+    fn precompressed_extensions_are_stored() {
+        assert!(is_precompressed("photos/IMG_1.JPG"));
+        assert!(is_precompressed("a.b.mp4"));
+        assert!(is_precompressed("report.docx"));
+        assert!(!is_precompressed("notes.txt"));
+        assert!(!is_precompressed("doc.pdf"));
+        assert!(!is_precompressed("jpg"));
+    }
+
+    #[test]
+    fn sample_decides_between_stored_and_deflate() {
+        // A xorshift stream does not compress; repeated text does.
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let noise: Vec<u8> = (0..SAMPLE_LEN)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect();
+        assert!(!compresses_well(&noise));
+        let text = "the quick brown fox jumps over the lazy dog
+"
+        .repeat(2000);
+        assert!(compresses_well(&text.as_bytes()[..SAMPLE_LEN]));
     }
 }

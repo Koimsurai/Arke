@@ -22,6 +22,7 @@ static SHOW_EXTENSION: AtomicBool = AtomicBool::new(false);
 static SHOW_ATTRIBUTES: AtomicBool = AtomicBool::new(false);
 static SHOW_LINK_TARGET: AtomicBool = AtomicBool::new(false);
 static SINGLE_CLICK: AtomicBool = AtomicBool::new(false);
+static POINT_TO_SELECT: AtomicBool = AtomicBool::new(true);
 /// Dragged column widths (px, 0 = default), in [`Col`] order
 static WIDTHS: [AtomicU32; Col::ALL.len()] = [const { AtomicU32::new(0) }; Col::ALL.len()];
 /// Dragged preview pane width (px, 0 = automatic).
@@ -393,7 +394,9 @@ pub(crate) fn apply(settings: &Settings) {
         changed |= slot.swap(value, Ordering::Relaxed) != value;
     }
     SINGLE_CLICK.store(settings.single_click, Ordering::Relaxed);
+    POINT_TO_SELECT.store(settings.point_to_select, Ordering::Relaxed);
     crate::win_fast_recycle::set_enabled(settings.fast_recycle);
+    crate::win_fast_copy::set_enabled(settings.fast_copy);
     for col in Col::ALL {
         let value = settings.column_widths.get(col).map_or(0, u32::from);
         changed |= col.slot().swap(value, Ordering::Relaxed) != value;
@@ -449,6 +452,11 @@ pub(crate) fn show_size() -> bool {
 /// Open on single click (on release; select with Ctrl/Shift click, marquee or keyboard).
 pub(crate) fn single_click() -> bool {
     SINGLE_CLICK.load(Ordering::Relaxed)
+}
+
+/// Single-click mode selects the item the pointer rests on (#46).
+pub(crate) fn point_to_select() -> bool {
+    single_click() && POINT_TO_SELECT.load(Ordering::Relaxed)
 }
 
 /// Modified column width: dragged value or default (full date-times are longer).

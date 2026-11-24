@@ -56,6 +56,7 @@ icons![
     Rename => "rename",
     Trash => "trash",
     More => "more",
+    Grip => "grip",
     Restore => "restore",
     ViewList => "view-list",
     ViewGrid => "view-grid",
@@ -118,6 +119,7 @@ icons![
     DriveFill => "drive-fill",
     NetDriveFill => "net-drive-fill",
     TerminalFill => "terminal-fill",
+    PhoneFill => "phone-fill",
     // Large folder art (grid, preview): back panel, paper, front flap, lit edge
     FolderLgBack => "folder-lg-back",
     FolderLgPaper => "folder-lg-paper",
@@ -138,6 +140,7 @@ icons![
     Accent => "accent",
     // Context menu
     Terminal => "terminal",
+    Phone => "phone",
     Pin => "pin",
     External => "external",
     Open => "open",
@@ -194,6 +197,7 @@ impl Icon {
             Self::Drive => Self::DriveFill,
             Self::NetDrive => Self::NetDriveFill,
             Self::Terminal => Self::TerminalFill,
+            Self::Phone => Self::PhoneFill,
             _ => return None,
         })
     }

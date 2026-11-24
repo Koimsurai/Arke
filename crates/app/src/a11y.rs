@@ -17,9 +17,11 @@
 
 use std::cell::{Cell, RefCell};
 
-use gpui::accesskit::{Live, Node, SortDirection};
+use std::rc::Rc;
+
+use gpui::accesskit::{Action, Live, Node, SortDirection};
 use gpui::{
-    IntoElement, Role, SharedString, StatefulInteractiveElement, Styled as _, Toggled, Window,
+    App, IntoElement, Role, SharedString, StatefulInteractiveElement, Styled as _, Toggled, Window,
     canvas,
 };
 
@@ -28,6 +30,8 @@ thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
     /// Title of the settings row being prepainted, for controls inside it (see [`label_scope`]).
     static SCOPE_LABEL: RefCell<Option<SharedString>> = const { RefCell::new(None) };
+    /// That row's second line, read as the control's description (see [`described_scope`]).
+    static SCOPE_DESC: RefCell<Option<SharedString>> = const { RefCell::new(None) };
 }
 
 /// Records whether `window` is building an accessibility tree this frame. Call first thing in the
@@ -35,6 +39,7 @@ thread_local! {
 pub(crate) fn sync(window: &Window) {
     ACTIVE.set(window.is_a11y_active());
     SCOPE_LABEL.set(None);
+    SCOPE_DESC.set(None);
 }
 
 /// Whether a screen reader or another UIA client is attached (as of this frame).
@@ -65,10 +70,17 @@ pub(crate) fn item_label<S: AsRef<str>>(name: &str, details: &[S]) -> String {
 /// Invisible element that makes `label` the name of the unnamed controls drawn after it, up to
 /// [`end_label_scope`]. Settings rows put it before their title and control.
 pub(crate) fn label_scope(label: SharedString) -> impl IntoElement {
+    described_scope(label, None)
+}
+
+/// [`label_scope`] with the row's second line, which screen readers read as the control's
+/// description after its name and state (#322).
+pub(crate) fn described_scope(label: SharedString, desc: Option<SharedString>) -> impl IntoElement {
     canvas(
         move |_, _, _| {
             if active() {
                 SCOPE_LABEL.set(Some(label));
+                SCOPE_DESC.set(desc);
             }
         },
         |_, (), _, _| {},
@@ -79,12 +91,29 @@ pub(crate) fn label_scope(label: SharedString) -> impl IntoElement {
 
 /// Ends a [`label_scope`].
 pub(crate) fn end_label_scope() -> impl IntoElement {
-    canvas(|_, _, _| SCOPE_LABEL.set(None), |_, (), _, _| {}).absolute()
+    canvas(
+        |_, _, _| {
+            SCOPE_LABEL.set(None);
+            SCOPE_DESC.set(None);
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
 }
 
 /// The current [`label_scope`] label, if any (read while prepainting).
 pub(crate) fn scope_label() -> Option<SharedString> {
     SCOPE_LABEL.with_borrow(Clone::clone)
+}
+
+/// Names `node` after the current scope, with its description when it has one.
+fn name_from_scope(node: &mut Node) {
+    if let Some(label) = scope_label() {
+        node.set_label(label.to_string());
+    }
+    if let Some(desc) = SCOPE_DESC.with_borrow(Clone::clone) {
+        node.set_description(desc.to_string());
+    }
 }
 
 /// Accessibility builders for stateful elements (anything with an `id`).
@@ -115,6 +144,34 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
     #[must_use]
     fn a11y_button(self, label: impl Into<SharedString>) -> Self {
         self.a11y(Role::Button, label)
+    }
+
+    /// A button in a settings row, read as "row title, button text" ("What's new, View"): the
+    /// text alone ("View", "Install") doesn't say what it acts on (#322).
+    #[must_use]
+    fn a11y_row_button(self, text: SharedString) -> Self {
+        self.a11y_button(text.clone()).a11y_node(move |node| {
+            if let Some(label) = scope_label() {
+                node.set_label(format!("{label}, {text}"));
+            }
+            if let Some(desc) = SCOPE_DESC.with_borrow(Clone::clone) {
+                node.set_description(desc.to_string());
+            }
+        })
+    }
+
+    /// Text in a labelled row ("Size", "3 B"), read as "Size, 3 B" (#322).
+    #[must_use]
+    fn a11y_row_text(self, text: SharedString) -> Self {
+        // AccessKit reads a label's text from its value, not its name.
+        self.a11y(Role::Label, text.clone()).a11y_node(move |node| {
+            let spoken = match scope_label() {
+                Some(label) => format!("{label}, {text}"),
+                None => text.to_string(),
+            };
+            node.set_label(spoken.clone());
+            node.set_value(spoken);
+        })
     }
 
     /// A button that can be off or on (preview pane, split view).
@@ -169,11 +226,7 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
     fn a11y_switch(self, on: bool) -> Self {
         self.role(Role::Switch)
             .aria_toggled(toggled(on))
-            .a11y_node(|node| {
-                if let Some(label) = scope_label() {
-                    node.set_label(label.to_string());
-                }
-            })
+            .a11y_node(name_from_scope)
     }
 
     /// A dropdown showing `value`, named by the row it sits in.
@@ -183,11 +236,7 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
         if !active() {
             return this;
         }
-        this.aria_value(value).a11y_node(|node| {
-            if let Some(label) = scope_label() {
-                node.set_label(label.to_string());
-            }
-        })
+        this.aria_value(value).a11y_node(name_from_scope)
     }
 
     /// A dropdown named `label` showing `value` (outside settings rows, which name it themselves).
@@ -280,6 +329,47 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
         } else {
             this
         }
+    }
+
+    /// Runs `act` when a screen reader asks to click this element (Enter on it, UIA Invoke, or
+    /// Select on a tree item). Without it GPUI clicks where the element is drawn, which misses an
+    /// element scrolled out of its area: a sidebar row out of sight couldn't be opened (#322).
+    #[must_use]
+    fn a11y_on_click(self, act: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_a11y_action(Action::Click, move |_, window, cx| act(window, cx))
+    }
+
+    /// Runs `set` with the state asked for when a screen reader expands or collapses this
+    /// element (the element reports the state with `aria_expanded`).
+    #[must_use]
+    fn a11y_on_expand(self, set: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+        let set = Rc::new(set);
+        let collapse = Rc::clone(&set);
+        self.on_a11y_action(Action::Expand, move |_, window, cx| set(true, window, cx))
+            .on_a11y_action(Action::Collapse, move |_, window, cx| {
+                collapse(false, window, cx);
+            })
+    }
+
+    /// Something that opens and closes (a menu button, a dropdown, a section), now `open`: reports
+    /// the state and lets a screen reader open or close it by running `toggle` on `view`.
+    /// AccessKit offers an element with an expanded state only Expand and Collapse, not Click,
+    /// and GPUI has no default for those: without this, Narrator's Enter did nothing (#322).
+    #[must_use]
+    fn a11y_open_close<V: 'static>(
+        self,
+        open: bool,
+        view: gpui::WeakEntity<V>,
+        toggle: impl Fn(&mut V, &mut Window, &mut gpui::Context<V>) + 'static,
+    ) -> Self {
+        let toggle = Rc::new(toggle);
+        self.aria_expanded(open)
+            .a11y_on_expand(move |want, window, cx| {
+                if want != open {
+                    let toggle = Rc::clone(&toggle);
+                    let _ = view.update(cx, |v, cx| toggle(v, window, cx));
+                }
+            })
     }
 
     /// A column header, with the sort direction when the list is sorted by it.

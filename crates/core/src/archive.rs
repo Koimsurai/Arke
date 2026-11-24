@@ -1185,9 +1185,18 @@ fn extract_zip(
     let mut summary = ExtractSummary::default();
     let mut progress = ExtractProgress::default();
     let mut encrypted = vec![false; zip.len()];
-    for (i, flag) in encrypted.iter_mut().enumerate() {
+    // Each entry's method, to name one Arke can't read.
+    let mut methods = vec![0u16; zip.len()];
+    for (i, (flag, method)) in encrypted.iter_mut().zip(&mut methods).enumerate() {
         if let Ok(entry) = zip.by_index_raw(i) {
             *flag = entry.encrypted() && !entry.is_dir();
+            #[allow(
+                deprecated,
+                reason = "the number names the methods the crate has no constant for"
+            )]
+            {
+                *method = entry.compression().to_u16();
+            }
             progress.total = progress.total.saturating_add(entry.size());
         }
     }
@@ -1198,7 +1207,7 @@ fn extract_zip(
         let password = opts.password.ok_or(ArchiveError::Encrypted)?;
         for i in (0..zip.len()).filter(|&i| encrypted[i]) {
             zip.by_index_decrypt(i, password.as_bytes())
-                .map_err(|source| zip_error(source, true))?;
+                .map_err(|source| zip_error(source, true, methods[i]))?;
         }
     }
     (opts.progress)(progress);
@@ -1211,7 +1220,7 @@ fn extract_zip(
             Some(password) => zip.by_index_decrypt(i, password.as_bytes()),
             None => zip.by_index(i),
         };
-        let mut entry = entry.map_err(|source| zip_error(source, encrypted))?;
+        let mut entry = entry.map_err(|source| zip_error(source, encrypted, methods[i]))?;
         let Some(rel) = safe_relative_path(entry.name_raw(), opts.decode_legacy) else {
             summary.skipped_unsafe += 1;
             continue;
@@ -1238,6 +1247,14 @@ fn extract_zip(
         // ZipCrypto's check value is one byte: one wrong password in 256 passes it and decodes
         // to garbage, which fails here (bad data or CRC).
         let written = match written {
+            // The zip crate says it can't decode a method only once it is read.
+            Err(ArchiveError::Read { source, .. })
+                if source.kind() == io::ErrorKind::Unsupported =>
+            {
+                Err(ArchiveError::UnsupportedMethod {
+                    method: zip_method_name(methods[i]),
+                })
+            }
             Err(ArchiveError::Read { .. }) if encrypted => Err(ArchiveError::WrongPassword),
             written => written,
         };
@@ -1248,15 +1265,36 @@ fn extract_zip(
     Ok(summary)
 }
 
-/// Maps a zip error for an entry (`encrypted`: a password was needed for it).
-fn zip_error(source: zip::result::ZipError, encrypted: bool) -> ArchiveError {
+/// Maps a zip error for an entry (`encrypted`: a password was needed for it; `method`: its
+/// compression method's id).
+fn zip_error(source: zip::result::ZipError, encrypted: bool, method: u16) -> ArchiveError {
     use zip::result::ZipError;
     match source {
         ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED) => ArchiveError::Encrypted,
         ZipError::InvalidPassword => ArchiveError::WrongPassword,
+        // A method Arke doesn't decode (old PKZIP ones, JPEG, WavPack...): said so by name, not
+        // called damage, so the app can offer another program (#341).
+        ZipError::UnsupportedArchive(_) => ArchiveError::UnsupportedMethod {
+            method: zip_method_name(method),
+        },
         // Garbage from a wrong password (see above) can also fail as the stream starts.
         ZipError::Io(_) if encrypted => ArchiveError::WrongPassword,
         source => ArchiveError::CorruptZip { source },
+    }
+}
+
+/// A zip compression method's name (APPNOTE 4.4.5), or its number.
+fn zip_method_name(id: u16) -> String {
+    match id {
+        1 => "Shrink".into(),
+        2..=5 => "Reduce".into(),
+        6 => "Implode".into(),
+        10 => "PKWARE DCL Implode".into(),
+        18 => "IBM TERSE".into(),
+        19 => "IBM LZ77".into(),
+        96 => "JPEG".into(),
+        97 => "WavPack".into(),
+        id => format!("#{id}"),
     }
 }
 

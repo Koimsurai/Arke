@@ -286,6 +286,9 @@ pub(crate) enum ErrorAction {
     /// Run this file operation again: the items of a failed one that are worth retrying (a
     /// program had them open, say).
     RetryOp(Box<crate::shell::FileOp>),
+    /// Open this archive with the app Windows has for it: Arke can't read how it is compressed
+    /// (#341).
+    OpenDefault(PathBuf),
 }
 
 #[derive(Clone)]
@@ -1542,6 +1545,7 @@ impl Explorer {
         match action {
             ErrorAction::Retry(path) => self.retry(path, cx),
             ErrorAction::RetryOp(op) => self.retry_op(*op, cx),
+            ErrorAction::OpenDefault(path) => self.open_file(path, cx),
             ErrorAction::Login(path) => {
                 // Arke's own dialog (opened by Workspace) asks for credentials and reopens this tab
                 // on success.

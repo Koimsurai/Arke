@@ -1997,6 +1997,7 @@ impl Explorer {
                 let label = match a {
                     ErrorAction::Retry(_) | ErrorAction::RetryOp(_) => t!("toast.retry"),
                     ErrorAction::Login(_) => t!("toast.login"),
+                    ErrorAction::OpenDefault(_) => t!("toast.open_default"),
                 };
                 let listener: Listener =
                     Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {

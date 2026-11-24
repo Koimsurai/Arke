@@ -135,3 +135,57 @@ fn cancelling_the_password_extracts_nothing(cx: &mut TestAppContext) {
     assert!(finished_jobs(cx).is_empty());
     let _ = std::fs::remove_dir_all(&sandbox);
 }
+
+/// #341: compressed in a way Arke can't read (WavPack here), the error offers the app Windows has
+/// for the archive.
+#[gpui::test]
+fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
+    use std::io::Write as _;
+    let sandbox =
+        std::env::temp_dir().join(format!("arke-archive-unreadable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sandbox);
+    std::fs::create_dir_all(&sandbox).unwrap();
+    let path = sandbox.join("audio.zip");
+    {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("a.txt", stored).unwrap();
+        zip.write_all(b"track").unwrap();
+        zip.finish().unwrap();
+    }
+    // WavPack (97) in the local and central headers.
+    let mut bytes = std::fs::read(&path).unwrap();
+    for (signature, method_at) in [(0x0403_4b50_u32, 8), (0x0201_4b50, 10)] {
+        let at = bytes
+            .windows(4)
+            .position(|w| w == signature.to_le_bytes())
+            .unwrap();
+        bytes[at + method_at..at + method_at + 2].copy_from_slice(&97u16.to_le_bytes());
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let fs = FakeFs::new();
+    fs.insert_dir(&sandbox, vec![file("audio.zip", 100)]);
+    let shell = Arc::new(FakeShell::default());
+    let dir = sandbox.to_string_lossy().into_owned();
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), &dir);
+    wait_until(cx, &view, "load", loaded(&dir));
+    right_click(&view, cx, Some(0));
+    run_command(&view, cx, MenuCommand::ExtractHere);
+    wait_until(cx, &view, "failed", |v| {
+        v.extract_job.is_none() && v.error.is_some()
+    });
+    assert_eq!(
+        view.update(cx, |v, _| v.error_action.clone()),
+        Some(crate::explorer::ErrorAction::OpenDefault(path.clone()))
+    );
+    cx.update(|window, cx| view.update(cx, |v, cx| v.run_error_action(window, cx)));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !shell.opened.lock().contains(&path) {
+        assert!(Instant::now() < deadline, "opened with the default app");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_dir_all(&sandbox);
+}

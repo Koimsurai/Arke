@@ -120,3 +120,31 @@ fn protected_archives_take_their_password() {
         "{listing:?}"
     );
 }
+
+/// A method Arke doesn't decode is named, not called damage (#341): the app then offers another
+/// program.
+#[test]
+fn a_zip_method_arke_cant_read_is_named() {
+    let sb = Sandbox::new("zip-wavpack");
+    let path = sb.0.join("audio.zip");
+    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    zip.start_file("a.txt", stored).unwrap();
+    zip.write_all(&body()).unwrap();
+    zip.finish().unwrap();
+    // Say WavPack (97) in the local and central headers, as a tool that writes it does.
+    let mut bytes = fs::read(&path).unwrap();
+    for (signature, method_at) in [(0x0403_4b50_u32, 8), (0x0201_4b50, 10)] {
+        let at = bytes
+            .windows(4)
+            .position(|w| w == signature.to_le_bytes())
+            .unwrap();
+        bytes[at + method_at..at + method_at + 2].copy_from_slice(&97u16.to_le_bytes());
+    }
+    fs::write(&path, bytes).unwrap();
+    let err = extract_with(&path, &sb.0.join("out"), ArchiveKind::Zip, None).unwrap_err();
+    assert!(
+        matches!(&err, ArchiveError::UnsupportedMethod { method } if method == "WavPack"),
+        "{err:?}"
+    );
+}

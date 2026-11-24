@@ -7521,6 +7521,14 @@ toast.retry:
   es: Reintentar
   pt-BR: Tentar novamente
   ja: 再試行
+toast.open_default:
+  en: Open with default app
+  zh-TW: 用預設應用程式開啟
+  zh-CN: 用默认应用打开
+  de: Mit Standard-App öffnen
+  es: Abrir con la aplicación predeterminada
+  pt-BR: Abrir com o app padrão
+  ja: 既定のアプリで開く
 toast.login:
   en: Sign in…
   zh-TW: 登入…

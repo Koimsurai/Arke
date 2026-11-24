@@ -1042,6 +1042,16 @@ fn report(ops: &crate::shell::OpProgress, p: ExtractProgress) {
     ops.work_total.store(p.total, Ordering::Relaxed);
 }
 
+/// The archive is fine but compressed in a way Arke has no reader for.
+const fn can_not_read(e: &archive::ArchiveError) -> bool {
+    matches!(
+        e,
+        archive::ArchiveError::UnsupportedMethod { .. }
+            | archive::ArchiveError::SystemUnsupported { .. }
+            | archive::ArchiveError::SystemReaderMissing { .. }
+    )
+}
+
 /// The extraction stopped for a password: none was given, or it was wrong.
 const fn needs_password(e: &archive::ArchiveError) -> bool {
     matches!(
@@ -2923,6 +2933,9 @@ impl Explorer {
             cx.notify();
             return;
         }
+        let archive = job
+            .as_ref()
+            .and_then(|j| j.archive.as_ref().map(|(path, _)| path.clone()));
         let name = match job {
             Some(job) => {
                 let state = outcome(result.as_ref().map(|s| s.cancelled));
@@ -2934,6 +2947,10 @@ impl Explorer {
         match result {
             Err(e) => {
                 self.error = Some(t!("extract.failed", name = name, error = e).into_owned());
+                // Compressed in a way Arke can't read: the app Windows has for it may (#341).
+                if can_not_read(&e) {
+                    self.error_action = archive.map(super::ErrorAction::OpenDefault);
+                }
             }
             Ok(s) => {
                 let count = s.files as usize;

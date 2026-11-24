@@ -188,6 +188,18 @@ fn parse_args() -> Args {
     parse_args_from(std::env::args_os().skip(1))
 }
 
+/// The command line as text, for reading flags (`--indexd`, `--uninstall`, `--api`, the update
+/// hand-off). `std::env::args` panics on an argument that isn't valid Unicode, such as a folder
+/// whose name has a lone surrogate; here such an argument keeps U+FFFD in its place. The folder
+/// argument itself is read as an `OsString` ([`parse_args`]).
+fn text_args() -> Vec<String> {
+    text_args_from(std::env::args_os())
+}
+
+fn text_args_from(it: impl Iterator<Item = std::ffi::OsString>) -> Vec<String> {
+    it.map(|arg| arg.to_string_lossy().into_owned()).collect()
+}
+
 fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
     let mut args = Args {
         path: None,
@@ -291,7 +303,7 @@ fn instant_from_unix_ms(launched_unix_ms: u64) -> Instant {
 const INDEXD_ARG: &str = "--indexd";
 
 fn main() -> std::process::ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let args = text_args();
     if args.get(1).map(String::as_str) == Some(INDEXD_ARG) {
         return arke_indexd::cli::run(args[2..].to_vec(), Some(INDEXD_ARG));
     }
@@ -380,7 +392,7 @@ fn app_main(mut args: Args) {
         return;
     }
     // Launched by the old version (auto-update): wait for it to exit before taking over residency.
-    update::wait_for_previous(&std::env::args().collect::<Vec<_>>());
+    update::wait_for_previous(&text_args());
     let started_at = Instant::now();
     // A launch in the background opens no window; any it opens later is no cold start.
     if !args.background {
@@ -2123,6 +2135,23 @@ mod arg_tests {
 
     fn parse(args: &[&str]) -> Args {
         parse_args_from(args.iter().map(std::ffi::OsString::from))
+    }
+
+    /// A folder whose name has a lone surrogate (valid on NTFS, not valid Unicode) no longer
+    /// panics at startup: the flags are still read, the folder keeps its exact name.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_name_that_isnt_unicode_doesnt_stop_startup() {
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+        let mut wide: Vec<u16> = r"C:\a".encode_utf16().collect();
+        wide.push(0xD800);
+        let folder = std::ffi::OsString::from_wide(&wide);
+        let flags = text_args_from(["arke.exe".into(), "--api".into(), folder.clone()].into_iter());
+        assert_eq!(flags[1], "--api");
+        assert_eq!(flags[2], "C:\\a\u{FFFD}");
+        let args = parse_args_from([folder].into_iter());
+        let kept: Vec<u16> = args.path.unwrap().as_os_str().encode_wide().collect();
+        assert_eq!(kept, wide, "the folder argument is read as it is");
     }
 
     #[test]

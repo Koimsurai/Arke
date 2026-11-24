@@ -36,14 +36,8 @@ const fn is_prefix(c: Component<'_>) -> bool {
 /// `\\?\C:\x` becomes `C:\x`, `\\?\UNC\server\share` becomes `\\server\share` (and the NT form
 /// `\??\` that junctions store the same way). Other paths are returned unchanged.
 fn strip_verbatim(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    for lead in [r"\\?\", r"\??\"] {
-        if let Some(rest) = text.strip_prefix(lead) {
-            if let Some(unc) = rest.strip_prefix(r"UNC\") {
-                return PathBuf::from(format!(r"\\{unc}"));
-            }
-            return PathBuf::from(rest);
-        }
+    if let Some(stripped) = strip_lead(path) {
+        return stripped;
     }
     // A verbatim prefix std already parsed (e.g. built from components).
     if let Some(Component::Prefix(p)) = path.components().next()
@@ -55,9 +49,57 @@ fn strip_verbatim(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// `path` without a leading `\\?\` or `\??\` (and `UNC\` after it), compared as UTF-16 so a
+/// target that isn't valid Unicode keeps every unit (a lossy string would turn them into U+FFFD
+/// and "Go to link target" would look for a path that doesn't exist).
+#[cfg(windows)]
+fn strip_lead(path: &Path) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let rest = [r"\\?\", r"\??\"]
+        .into_iter()
+        .find_map(|lead| wide.strip_prefix(units(lead).as_slice()))?;
+    let out = match rest.strip_prefix(units(r"UNC\").as_slice()) {
+        Some(unc) => [units(r"\\").as_slice(), unc].concat(),
+        None => rest.to_vec(),
+    };
+    Some(PathBuf::from(OsString::from_wide(&out)))
+}
+
+#[cfg(not(windows))]
+fn strip_lead(path: &Path) -> Option<PathBuf> {
+    let text = path.to_str()?;
+    let rest = [r"\\?\", r"\??\"]
+        .into_iter()
+        .find_map(|lead| text.strip_prefix(lead))?;
+    Some(match rest.strip_prefix(r"UNC\") {
+        Some(unc) => PathBuf::from(format!(r"\\{unc}")),
+        None => PathBuf::from(rest),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A target whose name isn't valid Unicode (a lone surrogate, allowed on NTFS) keeps it.
+    #[cfg(windows)]
+    #[test]
+    fn a_target_that_isnt_unicode_keeps_its_name() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+        let tail: Vec<u16> = [u16::from(b'x'), 0xDC00].to_vec();
+        let raw: Vec<u16> = [
+            r"\\?\D:\data\".encode_utf16().collect::<Vec<u16>>(),
+            tail.clone(),
+        ]
+        .concat();
+        let target = resolve_target(Path::new(r"C:\link"), Path::new(&OsString::from_wide(&raw)));
+        let want: Vec<u16> = [r"D:\data\".encode_utf16().collect::<Vec<u16>>(), tail].concat();
+        assert_eq!(target.as_os_str().encode_wide().collect::<Vec<u16>>(), want);
+    }
 
     #[test]
     fn targets_lose_the_verbatim_prefix() {

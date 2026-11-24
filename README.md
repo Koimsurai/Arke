@@ -239,7 +239,8 @@ scoop install arke/arke
 
 Scoop then keeps it up to date (`scoop update arke`), and Arke leaves updating to it.
 
-Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time.
+Builds aren't code-signed yet, so SmartScreen may ask for confirmation the first time. Signing
+through SignPath Foundation is on the way, see [Code signing policy](#code-signing-policy).
 
 Arke checks GitHub for a new version at most once a day and only installs one when you say so
 (Settings › About). Updates are signed: Arke installs only files signed with its own key. Where
@@ -437,6 +438,17 @@ framework of the Zed editor, and on the open-source crates listed in
 [Files](https://files.community/) app, and the tab sidebar is a nod to the Arc browser.
 
 The name comes from Greek myth: Arke is the twin sister of Iris, both winged messengers.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/).
+
+- Committers and reviewers: [Koimsurai](https://github.com/Koimsurai)
+- Approvers: [Koimsurai](https://github.com/Koimsurai)
+
+Only exes built by this repository's release workflow on GitHub Actions from a tagged commit are
+signed, and each release is approved by hand before it is signed.
 
 ## Privacy
 

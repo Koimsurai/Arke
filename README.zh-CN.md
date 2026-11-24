@@ -200,7 +200,8 @@ scoop install arke/arke
 
 之后由 Scoop 负责更新（`scoop update arke`），Arke 不会自己更新。
 
-目前还没有代码签名，第一次运行时 SmartScreen 可能会让你确认。
+目前还没有代码签名，第一次运行时 SmartScreen 可能会让你确认。通过 SignPath Foundation 的签名
+正在申请中，见[代码签名政策](#代码签名政策)。
 
 Arke 一天最多向 GitHub 检查一次新版本，你同意后才会安装（设置 › 关于）。
 
@@ -375,6 +376,17 @@ Arke 基于 Zed 编辑器的界面框架 [GPUI](https://github.com/zed-industrie
 侧边栏标签页则致敬了 Arc 浏览器。
 
 名字来自希腊神话：Arke 是 Iris 的双胞胎姐妹，两人都是长着翅膀的信使。
+
+## 代码签名政策
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/)（由 SignPath.io 免费提供代码签名，证书由
+SignPath Foundation 颁发）。
+
+- 提交与审查：[Koimsurai](https://github.com/Koimsurai)
+- 批准：[Koimsurai](https://github.com/Koimsurai)
+
+只有本仓库的 GitHub Actions 发版流程从 tag 构建出的 exe 会被签名，并且每个版本签名前都经过人工批准。
 
 ## 隐私
 

@@ -8559,6 +8559,7 @@ name = "xtask"
 version = "0.8.1"
 dependencies = [
  "anyhow",
+ "base64",
  "minisign",
  "serde_json",
  "sha2 0.10.9",

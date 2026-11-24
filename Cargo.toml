@@ -87,6 +87,8 @@ sha2 = "0.10"
 # Update signatures (#249): Arke verifies, the release tooling signs.
 minisign-verify = "0.2.5"
 minisign = { version = "0.7.9", default-features = false }
+# The release tooling reads the signing key's bytes itself (xtask `signing_key`).
+base64 = "0.22"
 
 # ─── Lints (crates opt in with `[lints] workspace = true`)
 [workspace.lints.rust]

@@ -547,15 +547,24 @@ fn signing_key() -> Result<minisign::SecretKey> {
         .ok()
         .filter(|t| !t.trim().is_empty())
         .context("MINISIGN_SECRET_KEY must be set: Arke only installs signed updates")?;
-    // The key line alone works too.
-    let text = if text.trim().lines().count() == 1 {
-        format!("untrusted comment: arke update key\n{}\n", text.trim())
-    } else {
-        text
-    };
-    minisign::SecretKeyBox::from_string(&text)
-        .and_then(|b| b.into_secret_key(Some(String::new())))
-        .map_err(|e| anyhow!("MINISIGN_SECRET_KEY: {e}"))
+    secret_key_from(&text)
+}
+
+/// An unencrypted minisign secret key from its text: the whole file or the key line alone. Read
+/// as bytes, not through `SecretKeyBox::into_secret_key`: that checks a checksum the minisign
+/// crate leaves empty in the unencrypted keys it makes, so it took the right key for a wrong
+/// password. Whether the key is the right one is checked by signing with it ([`check_key`]).
+fn secret_key_from(text: &str) -> Result<minisign::SecretKey> {
+    use base64::Engine as _;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
+        .context("MINISIGN_SECRET_KEY has no key line")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(line)
+        .map_err(|e| anyhow!("MINISIGN_SECRET_KEY isn't base64: {e}"))?;
+    minisign::SecretKey::from_bytes(&bytes).map_err(|e| anyhow!("MINISIGN_SECRET_KEY: {e}"))
 }
 
 /// What a signature vouches for besides the bytes: the release asset name and the version, so a
@@ -1015,6 +1024,30 @@ mod tests {
         let err = signed.unwrap_err().to_string();
         assert!(err.contains("doesn't match"), "{err}");
         assert!(!root().join("dist/arke-0.0.1-notes.md.minisig").exists());
+    }
+
+    /// An unencrypted key saved as text and read back (the repository secret) signs what its
+    /// public key accepts, whole file or key line alone. Through `into_secret_key` it was
+    /// refused as "Wrong password for that key".
+    #[test]
+    fn an_unencrypted_key_reads_back_from_its_text() {
+        let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let text = pair.sk.to_box(None).unwrap().to_string();
+        let line = text.lines().nth(1).unwrap().to_owned();
+        for text in [text, line] {
+            let key = secret_key_from(&text).unwrap();
+            let signature =
+                minisign::sign(None, &key, std::io::Cursor::new(b"x"), None, None).unwrap();
+            minisign::verify(
+                &pair.pk,
+                &signature,
+                std::io::Cursor::new(b"x"),
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+        }
     }
 
     /// The check before a release tells a key Arke doesn't know from one it does.

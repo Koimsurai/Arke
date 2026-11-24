@@ -2776,9 +2776,9 @@ impl Explorer {
                 },
             );
             drop(password);
-            // Stopped to ask for the password: the new folder goes until it has something in it
-            // (it's empty, so this removes nothing else).
-            if folder.is_some() && result.as_ref().is_err_and(needs_password) {
+            // Stopped before writing anything (a password to ask for, a method Arke can't read):
+            // the new folder goes. Only while it is empty, so nothing extracted is lost.
+            if folder.is_some() && result.is_err() {
                 let _ = std::fs::remove_dir(&dest);
             }
             let _ = tx.send(AppEvent::ExtractDone { result, folder });

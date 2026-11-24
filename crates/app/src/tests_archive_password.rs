@@ -137,7 +137,7 @@ fn cancelling_the_password_extracts_nothing(cx: &mut TestAppContext) {
 }
 
 /// #341: compressed in a way Arke can't read (WavPack here), the error offers the app Windows has
-/// for the archive.
+/// for the archive, and the new folder made for it isn't left behind.
 #[gpui::test]
 fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
     use std::io::Write as _;
@@ -172,7 +172,7 @@ fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx, fs, Arc::clone(&shell), &dir);
     wait_until(cx, &view, "load", loaded(&dir));
     right_click(&view, cx, Some(0));
-    run_command(&view, cx, MenuCommand::ExtractHere);
+    run_command(&view, cx, MenuCommand::ExtractToFolder);
     wait_until(cx, &view, "failed", |v| {
         v.extract_job.is_none() && v.error.is_some()
     });
@@ -180,6 +180,7 @@ fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
         view.update(cx, |v, _| v.error_action.clone()),
         Some(crate::explorer::ErrorAction::OpenDefault(path.clone()))
     );
+    assert!(!sandbox.join("audio").exists(), "no empty folder is left");
     cx.update(|window, cx| view.update(cx, |v, cx| v.run_error_action(window, cx)));
     let deadline = Instant::now() + Duration::from_secs(20);
     while !shell.opened.lock().contains(&path) {

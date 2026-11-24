@@ -53,6 +53,15 @@ fn pin(cx: &mut VisualTestContext, keys: &[&str]) {
     });
 }
 
+fn set_owner(cx: &mut VisualTestContext, key: &str, owner: &str) {
+    let (key, owner) = (key.to_owned(), owner.to_owned());
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| _ = st.menu_pin_owners.insert(key, owner), cx);
+        });
+    });
+}
+
 fn owners(cx: &mut VisualTestContext) -> std::collections::BTreeMap<String, String> {
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx)
@@ -1037,6 +1046,55 @@ fn a_command_windows_names_keeps_its_row(cx: &mut TestAppContext) {
         pin_seen(cx).get(key).is_some_and(|k| k == &[".txt"])
     });
     assert!(rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    *shell.menu_gate.lock() = None;
+    for _ in 0..4 {
+        let _ = open_whole.send(());
+    }
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+}
+
+/// #325: the registry lists "Run as administrator" for an item Windows doesn't show it for (a zip
+/// here). Its row isn't drawn ahead of its source, to vanish when that answers: rows are drawn
+/// ahead only where they showed before.
+#[gpui::test]
+fn a_command_left_out_here_is_not_drawn_ahead(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\p", vec![file("a.zip", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let key = "Run as administrator";
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "load", loaded(r"C:\p"));
+    pin(cx, &[key]);
+    set_owner(cx, key, "verb:runas");
+    // Listed in the registry, left out by Windows: read on its own it adds nothing.
+    shell.extensions.lock().push((
+        MenuHandler {
+            key: "CompressedFolder".into(),
+            clsid: String::new(),
+            name: "runas".into(),
+            kind: HandlerKind::Verb { extended: false },
+            parent: None,
+        },
+        Vec::new(),
+    ));
+    // Every source slow, the whole menu too (once it is in, it decides the rows).
+    let (open_whole, whole_gate) = flume::unbounded();
+    *shell.menu_gate.lock() = Some(whole_gate);
+    let (answer, gate) = flume::unbounded();
+    *shell.part_gate.lock() = Some(gate);
+    right_click(&view, cx, Some(0));
+    // Long enough for the sources to be listed and their rows drawn ahead.
+    for _ in 0..20 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    let _ = answer.send(());
+    wait_for(cx, "read", |_| !shell.extensions_read.lock().is_empty());
+    cx.run_until_parked();
+    assert!(!rows_above_more_options(&view, cx).contains(&key.to_owned()));
+    *shell.part_gate.lock() = None;
     *shell.menu_gate.lock() = None;
     for _ in 0..4 {
         let _ = open_whole.send(());

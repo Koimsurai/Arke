@@ -266,7 +266,8 @@ scoop install arke/arke
 Scoop hält es danach aktuell (`scoop update arke`), und Arke überlässt ihm das Aktualisieren.
 
 Die Builds sind noch nicht codesigniert, daher fragt SmartScreen beim ersten Mal möglicherweise nach
-einer Bestätigung.
+einer Bestätigung. Die Signierung über die SignPath Foundation ist beantragt, siehe
+[Code-Signing-Richtlinie](#code-signing-richtlinie).
 
 Arke prüft höchstens einmal am Tag auf GitHub auf eine neue Version und installiert eine nur, wenn
 Sie es sagen (Einstellungen › Info).
@@ -480,6 +481,18 @@ vor dem Arc-Browser.
 
 Der Name stammt aus der griechischen Mythologie: Arke ist die Zwillingsschwester der Iris, beide sind
 geflügelte Götterboten.
+
+## Code-Signing-Richtlinie
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/) (kostenlose Code-Signierung von SignPath.io, Zertifikat
+ausgestellt von der SignPath Foundation).
+
+- Committer und Reviewer: [Koimsurai](https://github.com/Koimsurai)
+- Freigabe: [Koimsurai](https://github.com/Koimsurai)
+
+Signiert werden nur exe-Dateien, die der Release-Workflow dieses Repositorys auf GitHub Actions aus
+einem getaggten Commit baut, und jede Version wird vor dem Signieren von Hand freigegeben.
 
 ## Datenschutz
 

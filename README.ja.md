@@ -241,7 +241,8 @@ scoop install arke/arke
 
 以降は Scoop が最新の状態に保ち (`scoop update arke`)、Arke は更新を Scoop に任せます。
 
-ビルドはまだコード署名されていないため、初回は SmartScreen が確認を求めることがあります。
+ビルドはまだコード署名されていないため、初回は SmartScreen が確認を求めることがあります。SignPath Foundation
+による署名を申請中です。[コード署名ポリシー](#コード署名ポリシー)を参照してください。
 
 Arke は新しいバージョンを GitHub で 1 日に最大 1 回確認し、ユーザーが指示したときだけインストールします
 (設定 › バージョン情報)。
@@ -440,6 +441,18 @@ Arke は、Zed エディターの UI フレームワークである [GPUI](https
 多くを学び、タブのサイドバーは Arc ブラウザーへのオマージュです。
 
 名前はギリシャ神話に由来します。アルケーはイリスの双子の姉妹で、どちらも翼を持つ使者です。
+
+## コード署名ポリシー
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/)（SignPath.io による無償のコード署名、証明書は
+SignPath Foundation が発行）。
+
+- コミットとレビュー：[Koimsurai](https://github.com/Koimsurai)
+- 承認：[Koimsurai](https://github.com/Koimsurai)
+
+署名されるのは、このリポジトリの GitHub Actions のリリースワークフローがタグ付きコミットからビルドした exe
+だけで、各リリースは署名前に手作業で承認されます。
 
 ## プライバシー
 

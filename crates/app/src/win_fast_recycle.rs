@@ -8,8 +8,8 @@
 //!
 //! - A local fixed NTFS drive whose bin folder for this user already exists (Windows creates it
 //!   with the right permissions on first use; until then the engine does the work).
-//! - The drive's bin is not set to delete right away, and this item fits in its maximum size
-//!   with what is already there (Windows would otherwise ask or drop older items).
+//! - The drive's bin is not set to delete right away, and this item fits in its maximum size on
+//!   its own (Windows would otherwise ask), as does everything this delete puts there.
 //! - No Group Policy turns the bin off or caps its size (the engine applies those).
 //! - The `$I` records already in the bin are all version 2, the layout written here.
 //! - The rename succeeds: a file in use inside the folder makes it fail, nothing has moved, and
@@ -20,9 +20,10 @@
 //! at all without confirmations), so the caller keeps it and Arke asks instead. The fast path
 //! already has the size for that; for items it leaves to the engine before measuring them,
 //! [`Limits`] sums the size, stopping as soon as it is past the limit. A bin that is merely full is
-//! no reason: Windows makes room by dropping older items. The size is summed from directory
-//! listings only, so no file is opened (and scanned). The `$I` layout (version 2) was checked byte
-//! for byte against records Windows wrote (see the tests):
+//! no reason: like Windows, the fast path makes room by deleting the oldest items for good
+//! (`win_bin_evict.rs`). The size is summed from directory listings only, so no file is opened
+//! (and scanned). What the bin already holds is kept in memory (`win_bin_usage.rs`). The `$I`
+//! layout (version 2) was checked byte for byte against records Windows wrote (see the tests):
 //!
 //! | offset | size | value |
 //! |---|---|---|
@@ -34,12 +35,17 @@
 //!
 //! Item names are `$I` / `$R`, six random letters or digits, then the original extension.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write as _;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::win_bin_evict::{Evicted, Evictor, delete_for_good};
+use crate::win_bin_usage::{Stamp, tracker};
 
 /// The setting, mirrored for the file operation threads.
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -55,7 +61,7 @@ pub(crate) fn enabled() -> bool {
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 /// `$I` layout version written and accepted.
-const VERSION: i64 = 2;
+pub(crate) const VERSION: i64 = 2;
 /// `$I` records looked at to check the bin's layout.
 const PROBE_RECORDS: usize = 8;
 
@@ -97,10 +103,13 @@ const NOTIFY_EACH_MAX: usize = 64;
 
 /// One delete of any number of items. What doesn't change from item to item is checked once:
 /// Group Policy and the user for the batch; per drive the file system, the bin folder, its `$I`
-/// layout, its settings and what it holds. `SHQueryRecycleBinW` lists the whole bin, so asking it
-/// for every item made a delete of many loose files quadratic; here it is asked once per drive,
-/// and once more to confirm Windows counted the first item moved there. The bytes in the bin are
-/// then kept up to date locally.
+/// layout and its settings. What the bin holds comes from memory ([`crate::win_bin_usage`]):
+/// `SHQueryRecycleBinW` lists the whole bin, which took tens of seconds per delete on a big one
+/// (#379). It is only asked while this version of Windows hasn't been seen counting an item moved
+/// to a bin ([`Counted`]). The bytes in the bin are then kept up to date locally.
+///
+/// When the bin is full, the item goes in first and older items are then deleted for good until
+/// it fits, oldest first and never items of this batch, as Windows does ([`crate::win_bin_evict`]).
 ///
 /// What is left per item is creating its `$I` record and the rename; real-time antivirus sets
 /// their cost (0.2 ms each with Defender, about 2 ms with another product, measured). Items go
@@ -120,10 +129,20 @@ struct Drive {
     bin: PathBuf,
     /// The bin's maximum size, MB.
     max_mb: u32,
-    /// Bytes in the bin: what Windows reported at the start, plus what this batch added.
+    /// Bytes in the bin: what its records held at the start, plus what this batch added, minus
+    /// what it deleted to make room.
     used: u64,
-    /// Items Windows counted at the start, until it has been seen counting one moved here.
+    /// Items Windows counted at the start, while this version of Windows hasn't been seen
+    /// counting an item moved to a bin ([`Counted`]).
     unconfirmed: Option<u64>,
+    /// `$I` names of the items this batch moved here: never deleted to make room.
+    mine: HashSet<String>,
+    /// Bytes this batch moved here.
+    mine_bytes: u64,
+    /// Older items to delete for good when the bin is full; made when first needed.
+    evictor: Option<Evictor>,
+    /// What that deleted, logged once at the end.
+    evicted: Evicted,
 }
 
 impl Batch {
@@ -136,7 +155,10 @@ impl Batch {
         else {
             return Outcome::UNMEASURED;
         };
-
+        // Windows was seen not counting an item moved to a bin: the engine, until Arke restarts.
+        if !counted().allowed() {
+            return Outcome::UNMEASURED;
+        }
         let Some(root) = drive_root(path) else {
             return Outcome::UNMEASURED;
         };
@@ -164,82 +186,57 @@ impl Batch {
         } else {
             meta.len()
         };
-        if !has_room(drive.used, size, drive.max_mb) {
-            // Over the bin's maximum on its own: Windows would delete it permanently. Only short
-            // of room: Windows drops older items to make it fit.
-            return if has_room(0, size, drive.max_mb) {
-                Outcome::MEASURED
-            } else {
-                Outcome::TooBig
-            };
+        match room(drive.used, drive.mine_bytes, size, drive.max_mb) {
+            Room::Fits => {}
+            Room::Full { need } if drive.can_free(need) => {}
+            // Deleting every older item wouldn't make room (some aren't version 2 records, or
+            // they are this batch's own): nothing is deleted, and the engine decides.
+            Room::Full { .. } => return Outcome::MEASURED,
+            // Windows would delete it permanently: Arke asks instead.
+            Room::TooBig => return Outcome::TooBig,
         }
-        let ext = bin_extension(path);
-        let Some((info, item)) = free_names(&drive.bin, &ext) else {
+        let Some(placed) = place(path, &drive.bin, size) else {
             return Outcome::MEASURED;
         };
-        let record = encode(
-            VERSION,
-            size,
-            now_filetime(),
-            &arke_core::path::unverbatim(path),
-        );
-        // The whole record must be in place before anything moves: after it is closed (when
-        // antivirus may still take it away) it is still there at full length. Only its metadata
-        // is read: reading it back opened it again right after it was written, which real-time
-        // antivirus scans before letting the read through (with Defender two thirds of each
-        // item), and it only read the cache anyway.
-        let written = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&info)
-            .and_then(|mut f| f.write_all(&record));
-        let in_place = || fs::symlink_metadata(&info).is_ok_and(|m| m.len() == record.len() as u64);
-        if written.is_err() || !in_place() {
-            let _ = fs::remove_file(&info);
-            return Outcome::MEASURED;
-        }
-        if let Err(err) = move_no_replace(
-            &arke_core::path::verbatim(path),
-            &arke_core::path::verbatim(&item),
-        ) {
-            log::info!(
-                "fast recycle: {} stays with the engine: {err}",
-                path.display()
-            );
-            let _ = fs::remove_file(&info);
-            return Outcome::MEASURED;
-        }
-        // The first item moved to a drive's bin: Windows must count it. If it doesn't, put it
-        // back, and this item and every later one on the drive go to the engine. (A crash
-        // between the record and the move leaves the item where it was and an `$I` with no
-        // item, which Windows lists as nothing to restore; no data moves without a record.)
-        if let Some(count_before) = drive.unconfirmed {
-            if bin_state(&root).is_none_or(|(_, count)| count <= count_before) {
+        // The first item moved to a bin on this version of Windows: Windows must count it. If it
+        // doesn't, put it back, and this item and every later one go to the engine. Checked
+        // before any room is made, so the count can only go up. (A crash between the record and
+        // the move leaves the item where it was and an `$I` with no item, which Windows lists as
+        // nothing to restore; no data moves without a record.)
+        if let Some(count_before) = drive.unconfirmed.take()
+            && !counted().confirmed()
+        {
+            if bin_state(&root).is_some_and(|(_, count)| count > count_before) {
+                counted().confirm();
+            } else {
                 log::warn!(
                     "fast recycle: Windows didn't count {}; put back",
                     path.display()
                 );
+                counted().fail();
                 let back = move_no_replace(
-                    &arke_core::path::verbatim(&item),
+                    &arke_core::path::verbatim(&placed.item),
                     &arke_core::path::verbatim(path),
                 );
                 if back.is_ok() {
-                    let _ = fs::remove_file(&info);
-                    self.drives.insert(root, None);
+                    let _ = fs::remove_file(&placed.info);
                     return Outcome::MEASURED;
                 }
             }
-            drive.unconfirmed = None;
         }
-        drive.used = drive.used.saturating_add(size);
+        drive.add(&placed, size);
         self.moved.push((path.to_path_buf(), meta.is_dir()));
         #[cfg(test)]
         TAKEN.fetch_add(1, Ordering::Relaxed);
-        Outcome::Recycled(item)
+        Outcome::Recycled(placed.item)
     }
 
     /// Tells Explorer windows and the desktop icon what changed. Call once, after the last item.
     pub(crate) fn finish(self) {
+        let now = now_filetime();
+        for drive in self.drives.values().flatten() {
+            drive.evicted.log(&drive.bin, now);
+        }
         if self.moved.is_empty() {
             return;
         }
@@ -247,7 +244,7 @@ impl Batch {
             .drives
             .values()
             .flatten()
-            .filter(|d| d.unconfirmed.is_none())
+            .filter(|d| !d.mine.is_empty())
             .map(|d| d.bin.as_path())
             .collect();
         notify(&self.moved, &bins);
@@ -268,14 +265,151 @@ impl Drive {
         if nuke {
             return None;
         }
-        let (used, count) = bin_state(root)?;
+        let used = tracker().bytes(&bin)?;
+        let unconfirmed = if counted().confirmed() {
+            None
+        } else {
+            Some(bin_state(root)?.1)
+        };
         Some(Self {
             bin,
             max_mb,
             used,
-            unconfirmed: Some(count),
+            unconfirmed,
+            mine: HashSet::new(),
+            mine_bytes: 0,
+            evictor: None,
+            evicted: Evicted::default(),
         })
     }
+
+    /// Whether deleting older items (none of this batch's) could free `need` bytes.
+    fn can_free(&mut self, need: u64) -> bool {
+        let bin = &self.bin;
+        self.evictor
+            .get_or_insert_with(|| Evictor::new(tracker().candidates(bin)))
+            .can_free(need, &self.mine)
+    }
+
+    /// The item [`place`] moved here (`size` bytes) is in the bin: counted, and if that took the
+    /// bin over its maximum, older items are deleted for good until it fits.
+    fn add(&mut self, placed: &Placed, size: u64) {
+        let name = placed
+            .info
+            .file_name()
+            .map_or_default(|n| n.to_string_lossy().into_owned());
+        let head = Head {
+            version: VERSION,
+            size,
+            deleted: placed.deleted,
+        };
+        tracker().note_added(&self.bin, &name, head, placed.stamp);
+        self.used = self.used.saturating_add(size);
+        self.mine_bytes = self.mine_bytes.saturating_add(size);
+        self.mine.insert(name);
+        let need = self.used.saturating_sub(max_bytes(self.max_mb));
+        if need == 0 {
+            return;
+        }
+        let bin = &self.bin;
+        let evicted = self
+            .evictor
+            .get_or_insert_with(|| Evictor::new(tracker().candidates(bin)))
+            .evict(need, &self.mine, |c| delete_for_good(bin, c));
+        self.used = self.used.saturating_sub(evicted.bytes);
+        self.evicted.absorb(evicted);
+    }
+}
+
+/// An item [`place`] moved into the bin.
+struct Placed {
+    /// Its `$I` record.
+    info: PathBuf,
+    /// Its `$R` data: the item itself.
+    item: PathBuf,
+    /// Deletion time in the record, FILETIME.
+    deleted: i64,
+    stamp: Stamp,
+}
+
+/// Writes the `$I` record of `path` (`size` bytes) and renames it into `bin`. `None` when nothing
+/// moved; no record is left behind then.
+fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
+    let ext = bin_extension(path);
+    let (info, item) = free_names(bin, &ext)?;
+    let deleted = now_filetime();
+    let record = encode(VERSION, size, deleted, &arke_core::path::unverbatim(path));
+    // The whole record must be in place before anything moves: after it is closed (when
+    // antivirus may still take it away) it is still there at full length. Only its metadata
+    // is read: reading it back opened it again right after it was written, which real-time
+    // antivirus scans before letting the read through (with Defender two thirds of each
+    // item), and it only read the cache anyway.
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&info)
+        .and_then(|mut f| f.write_all(&record));
+    let in_place = fs::symlink_metadata(&info)
+        .ok()
+        .filter(|m| m.len() == record.len() as u64);
+    let (Ok(()), Some(meta)) = (written, in_place) else {
+        let _ = fs::remove_file(&info);
+        return None;
+    };
+    if let Err(err) = move_no_replace(
+        &arke_core::path::verbatim(path),
+        &arke_core::path::verbatim(&item),
+    ) {
+        log::info!(
+            "fast recycle: {} stays with the engine: {err}",
+            path.display()
+        );
+        let _ = fs::remove_file(&info);
+        return None;
+    }
+    Some(Placed {
+        info,
+        item,
+        deleted,
+        stamp: Stamp::of(&meta),
+    })
+}
+
+/// Where an item stands with its drive's bin.
+#[derive(Debug, PartialEq, Eq)]
+enum Room {
+    /// It fits with what is there.
+    Fits,
+    /// It fits once older items holding `need` bytes are deleted for good, as Windows does.
+    Full { need: u64 },
+    /// It can't go to the bin without it, or this batch's own items, being deleted for good.
+    TooBig,
+}
+
+/// Where an item of `size` bytes stands with a bin of at most `max_mb` MB that holds `used`
+/// bytes, `mine` of them put there by this batch.
+fn room(used: u64, mine: u64, size: u64, max_mb: u32) -> Room {
+    let max = max_bytes(max_mb);
+    if size > max {
+        return Room::TooBig;
+    }
+    // This batch alone is over the maximum: making room would mean deleting its own first items,
+    // which is never done. What Windows does with a selection bigger than the bin isn't known for
+    // sure (one report says it asks "These items are too big to recycle" about all of them); it
+    // is to be checked on a VM. Until then the items past the maximum count as too big, like a
+    // single item that doesn't fit, and Arke asks before deleting them for good.
+    if mine.saturating_add(size) > max {
+        return Room::TooBig;
+    }
+    match used.saturating_add(size).saturating_sub(max) {
+        0 => Room::Fits,
+        need => Room::Full { need },
+    }
+}
+
+/// A bin's maximum size in bytes, from `MaxCapacity` (MB).
+fn max_bytes(max_mb: u32) -> u64 {
+    u64::from(max_mb).saturating_mul(1024 * 1024)
 }
 
 /// The part of the name the bin item keeps: from the last dot on, as Windows takes it, so a name
@@ -511,11 +645,6 @@ fn volume_bytes(root: &Path) -> Option<u64> {
     (total > 0).then_some(total)
 }
 
-/// `size` more bytes fit in a bin holding `used` bytes of at most `max_mb` megabytes.
-fn has_room(used: u64, size: u64, max_mb: u32) -> bool {
-    used.saturating_add(size) <= u64::from(max_mb).saturating_mul(1024 * 1024)
-}
-
 /// `MaxCapacity` (MB) and `NukeOnDelete` of the drive's bin, from
 /// `HKCU\...\Explorer\BitBucket\Volume\{volume GUID}`. Read only.
 fn bin_settings(root: &Path) -> Option<(u32, bool)> {
@@ -710,8 +839,34 @@ struct Record {
     path: String,
 }
 
+/// The start of a `$I` record, the same in versions 1 (Vista to 8.1) and 2: all the bin's
+/// size and age need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Head {
+    pub(crate) version: i64,
+    /// Bytes the item holds; a folder's is the sum of its files.
+    pub(crate) size: u64,
+    /// Deletion time, FILETIME (UTC).
+    pub(crate) deleted: i64,
+}
+
+/// Bytes [`head`] reads.
+pub(crate) const HEAD_LEN: usize = 24;
+
+/// The start of a `$I` record of any version; `None` if it is too short.
+pub(crate) fn head(bytes: &[u8]) -> Option<Head> {
+    let (version, rest) = bytes.split_first_chunk::<8>()?;
+    let (size, rest) = rest.split_first_chunk::<8>()?;
+    let (deleted, _) = rest.split_first_chunk::<8>()?;
+    Some(Head {
+        version: i64::from_le_bytes(*version),
+        size: u64::from_le_bytes(*size),
+        deleted: i64::from_le_bytes(*deleted),
+    })
+}
+
 /// The `$I` bytes for an item of `size` bytes deleted at `deleted` (FILETIME) from `path`.
-fn encode(version: i64, size: u64, deleted: i64, path: &Path) -> Vec<u8> {
+pub(crate) fn encode(version: i64, size: u64, deleted: i64, path: &Path) -> Vec<u8> {
     let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut out = Vec::with_capacity(28 + path.len() * 2);
     out.extend_from_slice(&version.to_le_bytes());
@@ -750,6 +905,166 @@ fn decode(bytes: &[u8]) -> Option<Record> {
         deleted: i64::from_le_bytes(int(16)?),
         path: String::from_utf16(units.strip_suffix(&[0])?).ok()?,
     })
+}
+
+/// Whether Windows counts the items the fast path moves into a bin, checked once per version of
+/// Windows instead of on every delete (#379).
+///
+/// On a version not seen before, the first item moved to a bin is checked: Windows' item count
+/// for that drive (`SHQueryRecycleBinW`, which lists the whole bin, so it is slow on a big one)
+/// must go up. The version is then noted in `%LOCALAPPDATA%\Arke\bin-usage\counted.txt` and never
+/// checked again. If Windows didn't count it, the item is put back and every later one goes to
+/// the engine until Arke restarts; that isn't noted, since it may have been a one-off (the bin
+/// emptied at the same moment).
+struct Counted {
+    /// Where confirmed versions are noted; `None` notes nothing.
+    file: Option<PathBuf>,
+    /// This version of Windows, as noted there (`10.0.19045`).
+    version: String,
+    state: parking_lot::Mutex<Check>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Check {
+    /// The file isn't read yet.
+    Unread,
+    Unchecked,
+    Confirmed,
+    /// Windows didn't count an item moved to a bin.
+    Failed,
+}
+
+impl Counted {
+    const fn new(file: Option<PathBuf>, version: String) -> Self {
+        Self {
+            file,
+            version,
+            state: parking_lot::Mutex::new(Check::Unread),
+        }
+    }
+
+    fn check(&self) -> Check {
+        let mut state = self.state.lock();
+        if *state == Check::Unread {
+            let noted = self
+                .file
+                .as_deref()
+                .and_then(|file| fs::read_to_string(file).ok())
+                .is_some_and(|text| lists(&text, &self.version));
+            *state = if noted {
+                Check::Confirmed
+            } else {
+                Check::Unchecked
+            };
+        }
+        *state
+    }
+
+    /// Windows was seen counting an item moved to a bin on this version: no need to ask it.
+    fn confirmed(&self) -> bool {
+        self.check() == Check::Confirmed
+    }
+
+    /// The fast path may be used: Windows wasn't seen failing to count an item since Arke started.
+    fn allowed(&self) -> bool {
+        self.check() != Check::Failed
+    }
+
+    fn confirm(&self) {
+        *self.state.lock() = Check::Confirmed;
+        log::info!(
+            "fast recycle: Windows {} counts items moved to the Recycle Bin; not checked again",
+            self.version
+        );
+        let Some(file) = &self.file else {
+            return;
+        };
+        let text = fs::read_to_string(file).unwrap_or_default();
+        if lists(&text, &self.version) {
+            return;
+        }
+        if let Some(dir) = file.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Err(e) = fs::write(file, with_version(&text, &self.version)) {
+            log::warn!("fast recycle: {} not saved: {e}", file.display());
+        }
+    }
+
+    fn fail(&self) {
+        *self.state.lock() = Check::Failed;
+    }
+}
+
+/// Whether a list of versions, one per line, has `version`.
+fn lists(text: &str, version: &str) -> bool {
+    text.lines().any(|line| line.trim() == version)
+}
+
+/// The list with `version` added at the end.
+fn with_version(text: &str, version: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(version);
+    out.push('\n');
+    out
+}
+
+/// The check for this version of Windows. When the version can't be read, nothing is noted, so
+/// it is checked again on each start.
+fn counted() -> &'static Counted {
+    static COUNTED: LazyLock<Counted> = LazyLock::new(|| {
+        let version = crate::win::windows_version();
+        let file = if cfg!(test) {
+            None
+        } else {
+            version.and_then(|_| {
+                std::env::var_os("LOCALAPPDATA").map(|d| {
+                    PathBuf::from(d)
+                        .join("Arke")
+                        .join("bin-usage")
+                        .join("counted.txt")
+                })
+            })
+        };
+        let version = version.map_or_else(
+            || "unknown".to_owned(),
+            |(major, minor, build)| format!("{major}.{minor}.{build}"),
+        );
+        Counted::new(file, version)
+    });
+    &COUNTED
+}
+
+/// Starts summing the system drive's bin in the background a little after Arke starts, so the
+/// first delete there doesn't wait for it. Other drives start on their first delete (their disks
+/// may be asleep). Nothing happens with the fast Recycle Bin off.
+pub(crate) fn warm_up() {
+    let _ = std::thread::Builder::new()
+        .name("bin-usage-warm".into())
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if !enabled() || !policy_allows() {
+                return;
+            }
+            let Some(sid) = user_sid() else {
+                return;
+            };
+            let Some(drive) = std::env::var_os("SystemDrive") else {
+                return;
+            };
+            let root = PathBuf::from(format!(r"{}\", drive.to_string_lossy()));
+            if !local_ntfs(&root) {
+                return;
+            }
+            let bin = root.join("$Recycle.Bin").join(sid);
+            if bin.is_dir() {
+                tracker().track(&bin);
+            }
+        });
 }
 
 /// Calls to `SHQueryRecycleBinW`, which lists the whole bin each time.
@@ -865,13 +1180,98 @@ mod tests {
     }
 
     #[test]
-    fn an_item_fits_only_with_what_is_already_in_the_bin() {
+    fn a_full_bin_makes_room_but_a_batch_never_pushes_out_its_own() {
         let mb = 1024 * 1024;
-        assert!(has_room(0, 10 * mb, 10));
-        assert!(!has_room(1, 10 * mb, 10), "one byte over");
-        assert!(!has_room(5 * mb, 6 * mb, 10));
-        assert!(!has_room(0, 1, 0), "a bin of size 0 takes nothing");
-        assert!(!has_room(u64::MAX, 1, u32::MAX), "no overflow");
+        assert_eq!(room(0, 0, 10 * mb, 10), Room::Fits, "exactly the maximum");
+        assert_eq!(
+            room(1, 0, 10 * mb, 10),
+            Room::Full { need: 1 },
+            "one byte over: older items make room"
+        );
+        assert_eq!(room(5 * mb, 0, 6 * mb, 10), Room::Full { need: mb });
+        assert_eq!(room(0, 0, 10 * mb + 1, 10), Room::TooBig, "over on its own");
+        assert_eq!(
+            room(0, 0, 1, 0),
+            Room::TooBig,
+            "a bin of size 0 takes nothing"
+        );
+        assert_eq!(
+            room(9 * mb, 4 * mb, 3 * mb, 10),
+            Room::Full { need: 2 * mb },
+            "room from items older than this batch"
+        );
+        assert_eq!(
+            room(8 * mb, 8 * mb, 3 * mb, 10),
+            Room::TooBig,
+            "room would mean pushing out this batch's own items"
+        );
+        assert_eq!(
+            room(u64::MAX, 0, 1, u32::MAX),
+            Room::Full {
+                need: u64::MAX - u64::from(u32::MAX) * mb
+            },
+            "no overflow"
+        );
+    }
+
+    #[test]
+    fn record_heads_read_any_version() {
+        let path = Path::new(r"C:\x.txt");
+        let bytes = encode(2, 10, 0x01DD_735E_EFCE_2ED0, path);
+        assert_eq!(
+            head(&bytes),
+            Some(Head {
+                version: 2,
+                size: 10,
+                deleted: 0x01DD_735E_EFCE_2ED0
+            })
+        );
+        let mut v1 = bytes.clone();
+        v1[..8].copy_from_slice(&1i64.to_le_bytes());
+        assert_eq!(head(&v1).map(|h| (h.version, h.size)), Some((1, 10)));
+        assert_eq!(head(&bytes[..HEAD_LEN]).map(|h| h.size), Some(10));
+        assert_eq!(head(&bytes[..HEAD_LEN - 1]), None, "too short");
+    }
+
+    #[test]
+    fn windows_counting_moved_items_is_checked_once_per_version() {
+        let dir = Scratch::new("counted");
+        let file = dir.0.join("counted.txt");
+        let first = Counted::new(Some(file.clone()), "10.0.19045".into());
+        assert!(!first.confirmed() && first.allowed(), "not checked yet");
+        first.confirm();
+        assert!(first.confirmed());
+        let later = Counted::new(Some(file.clone()), "10.0.19045".into());
+        assert!(later.confirmed(), "remembered: not checked again");
+        let updated = Counted::new(Some(file.clone()), "10.0.26100".into());
+        assert!(
+            !updated.confirmed(),
+            "a new version of Windows is checked again"
+        );
+        updated.confirm();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(lists(&text, "10.0.19045") && lists(&text, "10.0.26100"));
+
+        let failing = Counted::new(Some(file.clone()), "10.0.22631".into());
+        failing.fail();
+        assert!(
+            !failing.allowed() && !failing.confirmed(),
+            "off until Arke restarts"
+        );
+        assert!(
+            Counted::new(Some(file), "10.0.22631".into()).allowed(),
+            "a failure isn't remembered"
+        );
+        assert!(!Counted::new(None, "10.0.19045".into()).confirmed());
+    }
+
+    #[test]
+    fn version_lists_ignore_blank_lines_and_spaces() {
+        assert!(lists(" 10.0.19045 \r\n", "10.0.19045"));
+        assert!(!lists("10.0.190451", "10.0.19045"));
+        assert!(!lists("", "10.0.19045"));
+        assert_eq!(with_version("a\n\n b \n", "c"), "a\nb\nc\n");
+        assert_eq!(with_version("", "c"), "c\n");
     }
 
     #[test]

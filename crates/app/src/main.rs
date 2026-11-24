@@ -100,6 +100,8 @@ mod update_route;
 mod update_sig;
 mod whats_new;
 mod win;
+mod win_bin_evict;
+mod win_bin_usage;
 mod win_cloud;
 mod win_devnotify;
 mod win_dragimage;
@@ -680,6 +682,8 @@ fn app_main(mut args: Args) {
         }
         if !benchmarking {
             prewarm_shell_host();
+            // What the system drive's Recycle Bin holds, for the first delete (#379).
+            win_fast_recycle::warm_up();
             // How pinned Windows commands looked, for the first menu (#278).
             let pinned = settings::SettingsStore::global(cx)
                 .read(cx)

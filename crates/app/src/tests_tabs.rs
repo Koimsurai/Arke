@@ -43,6 +43,12 @@ fn split_to(
     left.update(cx, |_, cx| cx.emit(ExplorerEvent::ToggleSplit));
     cx.run_until_parked();
     let right_view = ws.update(cx, |ws, _| ws.pane_views()[1].clone());
+    // The new side opens where the left one is: let it get there first. On a busy machine its
+    // listing thread was still running when the navigation below replaced it, so that folder
+    // never made it into the right side's history.
+    wait_until(cx, &right_view, "the new side's first folder", |v| {
+        v.model.as_ref().is_some_and(|m| m.complete)
+    });
     right_view.update(cx, |e, cx| e.navigate(p(right), NavKind::New, cx));
     wait_until(cx, &right_view, right, loaded(right));
     cx.run_until_parked();

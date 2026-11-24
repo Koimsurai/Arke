@@ -4592,9 +4592,20 @@ fn sorting_by_size_reorders_once_when_sizes_are_done(cx: &mut TestAppContext) {
         fs.release(Path::new(&format!(r"C:\q\{name}")));
     }
     let sized = |v: &Explorer, n: &str| matches!(v.folder_size(n), FolderSize::Known { .. });
-    wait_until(cx, &view, "the quick ones", |v| {
+    // Once in a dozen full runs this timed out on a busy machine; the state then says why.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !view.update(cx, |v, _| {
         ["a-small", "b-big", "c-tiny"].iter().all(|n| sized(v, n))
-    });
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the quick ones: {} ({} reads)",
+            view.update(cx, |v, _| v.folder_sizes_state()),
+            fs.read_dir_calls()
+        );
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(2));
     cx.run_until_parked();

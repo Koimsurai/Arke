@@ -35,6 +35,10 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
     recovery doesn't wait for the next frame.
 
   Worth offering upstream (Zed has the same loop).
+- Quieter log (`src/window.rs` `calculate_window_bounds` and `mouse_position`): a failed
+  `GetWindowPlacement` is logged only while the window still exists (it fails for every window
+  being closed), and a failed `GetCursorPos` (the screen is locked) is a debug line, not an
+  error.
 - Touchpad gestures over an idle window (`src/events.rs` `handle_dm_pointer_hit_test` and
   `draw_window`, `src/direct_manipulation.rs` `interacting`): Direct Manipulation's updates are
   only read in `draw_window`, and an idle window doesn't draw (see Idle vsync above). A touchpad

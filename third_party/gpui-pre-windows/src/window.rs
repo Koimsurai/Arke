@@ -238,9 +238,13 @@ impl WindowsWindowState {
                 length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
                 ..Default::default()
             };
-            GetWindowPlacement(self.hwnd, &mut placement)
-                .context("failed to get window placement")
-                .log_err();
+            // A window being destroyed has no placement any more: only a live one is worth an
+            // error in the log (Arke: these filled the log on every close).
+            if GetWindowPlacement(self.hwnd, &mut placement).is_err()
+                && IsWindow(Some(self.hwnd)).as_bool()
+            {
+                log::error!("failed to get window placement");
+            }
             placement
         };
         (
@@ -775,9 +779,11 @@ impl PlatformWindow for WindowsWindow {
         let scale_factor = self.scale_factor();
         let point = unsafe {
             let mut point: POINT = std::mem::zeroed();
-            GetCursorPos(&mut point)
-                .context("unable to get cursor position")
-                .log_err();
+            // Fails while the screen is locked (another desktop has the cursor): not an error
+            // (Arke: logged as one on every lock).
+            if let Err(err) = GetCursorPos(&mut point) {
+                log::debug!("no cursor position: {err}");
+            }
             ScreenToClient(self.0.hwnd, &mut point).ok().log_err();
             point
         };

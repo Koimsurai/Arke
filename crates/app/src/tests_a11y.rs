@@ -328,3 +328,27 @@ fn a_folder_shows_the_name_its_desktop_ini_gives(cx: &mut TestAppContext) {
     assert!(rows.iter().any(|r| r.starts_with("Plain,")), "{rows:?}");
     assert!(!rows.iter().any(|r| r.starts_with("Not read")), "{rows:?}");
 }
+
+/// The context menu's rows are told from the window that has the keys, the highlighted one as
+/// focused: its levels are popup windows that are never active, which a screen reader doesn't
+/// follow (#322).
+#[gpui::test]
+fn the_context_menu_tells_its_highlighted_row(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.simulate_keystrokes("down shift-f10");
+    let opened = focused(&tree(cx));
+    assert!(
+        matches!(opened.0.as_str(), "Menu" | "MenuItem"),
+        "the menu has the focus: {opened:?}"
+    );
+    cx.simulate_keystrokes("down");
+    let first = focused(&tree(cx));
+    assert_eq!(first.0, "MenuItem", "{first:?}");
+    assert!(!first.1.is_empty(), "{first:?}");
+    cx.simulate_keystrokes("down");
+    let second = focused(&tree(cx));
+    assert_eq!(second.0, "MenuItem", "{second:?}");
+    assert_ne!(first.1, second.1, "the next row is told");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(focused(&tree(cx)).0, "ListBoxOption", "back on the file");
+}

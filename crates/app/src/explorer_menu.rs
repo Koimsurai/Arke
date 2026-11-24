@@ -3002,6 +3002,10 @@ impl Explorer {
         let menu = self.context_menu.as_ref()?;
         Some(
             div()
+                .id("context-menu-keys")
+                .role(gpui::Role::Menu)
+                .aria_label(menu_a11y_label(menu))
+                .children(menu_a11y_items(menu))
                 .absolute()
                 .size_0()
                 .key_context("ContextMenu")
@@ -3501,6 +3505,53 @@ struct RowParts {
     glyph: Option<Icon>,
     /// Windows menu items: pin key (row shows a pin on the right).
     pin: Option<String>,
+}
+
+/// Name of the menu level the keys move in: the context menu, or the submenu open innermost.
+fn menu_a11y_label(menu: &ContextMenu) -> SharedString {
+    let Some(&row) = menu.open.last() else {
+        return t!("a11y.context_menu").into();
+    };
+    menu.level(menu.open.len() - 1)
+        .get(row)
+        .and_then(RowParts::of)
+        .map_or_else(|| t!("a11y.context_menu").into(), |parts| parts.label)
+}
+
+/// The rows of the level the keys move in, as a screen reader is told them: items that aren't
+/// drawn, under the element that has the keys, the highlighted one reported as focused.
+///
+/// The levels are drawn in popup windows that are never activated, and a screen reader follows
+/// the focus of the active window only; the keys stay in the menu's own window, so its rows are
+/// told from there too (#322).
+fn menu_a11y_items(menu: &ContextMenu) -> Vec<AnyElement> {
+    let mut items = Vec::new();
+    for (ix, entry) in menu.level(menu.open.len()).iter().enumerate() {
+        if let MenuEntry::Actions(actions) = entry {
+            for (ax, item) in actions.iter().enumerate() {
+                items.push(
+                    div()
+                        .id(("menu-a11y-action", ax))
+                        .a11y_menu_item(item.label.clone(), item.enabled, false, false)
+                        .into_any_element(),
+                );
+            }
+        } else if let Some(parts) = RowParts::of(entry) {
+            items.push(
+                div()
+                    .id(("menu-a11y-item", ix))
+                    .a11y_menu_item(
+                        parts.label,
+                        parts.enabled,
+                        parts.checked,
+                        menu.highlighted == Some(ix),
+                    )
+                    .when(parts.submenu, |d| d.aria_expanded(false))
+                    .into_any_element(),
+            );
+        }
+    }
+    items
 }
 
 impl RowParts {

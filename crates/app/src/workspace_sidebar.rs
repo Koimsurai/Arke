@@ -3895,12 +3895,17 @@ impl Workspace {
                 .display_path()
                 .is_some_and(|p| on_drive(p, drive));
             if on_drive {
-                // A page over the tab (the Recycle Bin, Home) stays where it is.
-                self.keep_pages_over(view.entity_id(), &home);
+                // A page over the tab (the Recycle Bin, Home) stays where it is, and the folder
+                // it returns to is the user folder with nothing of the drive left.
+                let covered = self.keep_pages_over(view.entity_id(), &home);
                 let home = home.clone();
                 // Pinned tabs too: nothing may keep the drive busy.
                 view.update(cx, |v, cx| {
-                    v.navigate_unlocked(home, arke_core::NavKind::New, cx);
+                    if covered {
+                        v.leave_removed_drive(home, cx);
+                    } else {
+                        v.navigate_unlocked(home, arke_core::NavKind::New, cx);
+                    }
                 });
             }
         }

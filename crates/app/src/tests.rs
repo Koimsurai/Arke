@@ -9351,3 +9351,42 @@ fn a_localized_folder_sorts_jumps_and_renames_by_its_shown_name(cx: &mut TestApp
         "the shown name is edited"
     );
 }
+
+/// The folder the Recycle Bin returns to after its tab's drive is removed is the user folder
+/// with a clean history: nothing of the drive comes along (Back would open a folder that is gone).
+#[gpui::test]
+fn the_recycle_bin_tab_keeps_nothing_of_a_removed_drive(cx: &mut TestAppContext) {
+    let home = std::env::var_os("USERPROFILE").map_or_else(|| PathBuf::from("C:\\"), PathBuf::from);
+    let fs = FakeFs::new();
+    fs.insert_dir(r"E:\photos", vec![dir("trip")]);
+    fs.insert_dir(r"E:\photos\trip", vec![file("a.jpg", 1)]);
+    fs.insert_dir(home.clone(), vec![file("b.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"E:\photos");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"E:\photos"));
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"E:\photos\trip"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "trip", loaded(r"E:\photos\trip"));
+    assert!(
+        view.update(cx, |v, _| v.history.can_go_back()),
+        "it has a way back"
+    );
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    cx.run_until_parked();
+
+    cx.cx
+        .update(|cx| crate::workspace::leave_drive_everywhere(Path::new(r"E:\"), cx));
+    let home_str = home.to_string_lossy().into_owned();
+    wait_until(cx, &view, "moved off the drive", loaded(&home_str));
+    assert!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()).is_some(),
+        "the Recycle Bin is still open"
+    );
+    view.update(cx, |v, _| {
+        assert!(!v.history.can_go_back(), "no way back to the drive");
+        assert!(!v.history.can_go_forward());
+    });
+}

@@ -5,7 +5,8 @@
 //! anti-ransomware tools quarantine (Trend Micro did, as "Unauthorized file encryption"). The
 //! protected archives, and the methods with no writer in Rust (Deflate64, LZMA in a zip), are made
 //! by 7-Zip once and kept in `fixtures/`; each holds `a.txt`, [`body`], and the password is
-//! "secret".
+//! "secret". So are the zstd zips, which the zip crate can't write without its C zstd: `zstd.zip`
+//! by Python 3.14's zipfile, `zstd-frames.zip` made by hand with its data in two frames.
 
 use super::*;
 use zip::CompressionMethod;
@@ -43,7 +44,6 @@ fn every_zip_method_extracts() {
         CompressionMethod::Stored,
         CompressionMethod::Deflated,
         CompressionMethod::Bzip2,
-        CompressionMethod::Zstd,
         CompressionMethod::Xz,
         CompressionMethod::Ppmd,
     ] {
@@ -59,7 +59,7 @@ fn every_zip_method_extracts() {
         assert_eq!(summary.files, 2, "{method:?}");
         assert_eq!(fs::read(out.join("a.txt")).unwrap(), body(), "{method:?}");
     }
-    for name in ["deflate64.zip", "lzma.zip"] {
+    for name in ["deflate64.zip", "lzma.zip", "zstd.zip", "zstd-frames.zip"] {
         let out = sb.0.join(name);
         extract_with(&fixture(name), &out, ArchiveKind::Zip, None)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
@@ -75,7 +75,6 @@ fn every_7z_method_extracts() {
         EncoderMethod::LZMA2,
         EncoderMethod::BZIP2,
         EncoderMethod::DEFLATE,
-        EncoderMethod::ZSTD,
     ] {
         let name = method.name().to_owned();
         let path = sb.0.join(format!("{name}.7z"));
@@ -147,4 +146,25 @@ fn a_zip_method_arke_cant_read_is_named() {
         matches!(&err, ArchiveError::UnsupportedMethod { method } if method == "WavPack"),
         "{err:?}"
     );
+}
+
+/// A zstd entry whose data doesn't match its CRC is damage, not a file written wrong.
+#[test]
+fn a_zstd_entry_with_a_bad_crc_fails() {
+    let sb = Sandbox::new("zstd-crc");
+    let path = sb.0.join("bad.zip");
+    let mut bytes = fs::read(fixture("zstd-frames.zip")).unwrap();
+    // The CRC-32 in the local and central headers.
+    for (signature, crc_at) in [(0x0403_4b50_u32, 14), (0x0201_4b50, 16)] {
+        let at = bytes
+            .windows(4)
+            .position(|w| w == signature.to_le_bytes())
+            .unwrap();
+        bytes[at + crc_at] ^= 0xff;
+    }
+    fs::write(&path, bytes).unwrap();
+    let out = sb.0.join("out");
+    let err = extract_with(&path, &out, ArchiveKind::Zip, None).unwrap_err();
+    assert!(matches!(err, ArchiveError::Read { .. }), "{err:?}");
+    assert!(!out.join("a.txt").exists(), "the bad file isn't left");
 }

@@ -30,6 +30,7 @@ mod bsdtar;
 mod libarchive;
 mod sevenz;
 mod system;
+mod zstd;
 
 /// Why an archive could not be extracted, compressed or listed.
 ///
@@ -1216,8 +1217,12 @@ fn extract_zip(
             summary.cancelled = true;
             return Ok(summary);
         }
+        // zstd is decoded here, from the raw bytes (`zstd.rs`); encrypted, it is left to the
+        // zip crate, which says it can't.
+        let zstd = methods[i] == zstd::ZIP_ZSTD && !encrypted;
         let entry = match opts.password.filter(|_| encrypted) {
             Some(password) => zip.by_index_decrypt(i, password.as_bytes()),
+            None if zstd => zip.by_index_raw(i),
             None => zip.by_index(i),
         };
         let mut entry = entry.map_err(|source| zip_error(source, encrypted, methods[i]))?;
@@ -1243,7 +1248,20 @@ fn extract_zip(
             (opts.progress)(progress);
         };
         let size = entry.size();
-        let written = write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts);
+        let written = if zstd {
+            let (packed, crc) = (entry.compressed_size(), entry.crc32());
+            match zstd::ZstdEntry::new(&mut entry, packed, crc) {
+                Ok(mut decoded) => {
+                    write_new_file(&target, &mut decoded, Some(size), &mut on_bytes, opts)
+                }
+                Err(source) => Err(ArchiveError::Read {
+                    path: target.clone(),
+                    source,
+                }),
+            }
+        } else {
+            write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)
+        };
         // ZipCrypto's check value is one byte: one wrong password in 256 passes it and decodes
         // to garbage, which fails here (bad data or CRC).
         let written = match written {
@@ -1292,6 +1310,7 @@ fn zip_method_name(id: u16) -> String {
         10 => "PKWARE DCL Implode".into(),
         18 => "IBM TERSE".into(),
         19 => "IBM LZ77".into(),
+        93 => "zstd".into(),
         96 => "JPEG".into(),
         97 => "WavPack".into(),
         id => format!("#{id}"),

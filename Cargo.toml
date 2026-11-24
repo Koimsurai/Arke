@@ -48,8 +48,13 @@ hashbrown = { version = "0.16", default-features = false }
 # Fuzzy matching (Helix's engine). MPL-2.0, used unmodified; see THIRD_PARTY_NOTICES.md
 nucleo = "0.5"
 # Archive support: zip, tar and .tar.gz. Every method 7-Zip, WinRAR and Bandizip write into a zip
-# (#341), and passwords: ZipCrypto and AES (#346). zstd is the C library (zstd-sys).
-zip = { version = "9", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "xz", "zstd", "ppmd", "aes-crypto"] }
+# (#341), and passwords: ZipCrypto and AES (#346). Not the crate's zstd: that is the C library
+# (zstd-sys), with its encoder; zstd entries are decoded by ruzstd instead.
+zip = { version = "9", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "xz", "ppmd", "aes-crypto"] }
+# zstd decoder in pure Rust (MIT), for zip entries compressed with it (#341)
+ruzstd = "0.9"
+# CRC-32 of the zstd entries ruzstd decodes; already in the build through flate2
+crc32fast = "1"
 tar = "0.4"
 # Office Open XML previews (.docx/.xlsx/.pptx): streaming XML reader, no DTD or entity expansion
 quick-xml = "0.42"
@@ -57,9 +62,9 @@ quick-xml = "0.42"
 lopdf = { version = "0.47", default-features = false }
 flate2 = "1"
 # 7z in pure Rust (Apache-2.0): exact Unicode names, byte progress and cancel, and it works on
-# Windows 10, whose tar.exe has no LZMA. Also BZip2, Deflate and zstd (7-Zip's zstd builds), and
-# AES-256 passwords (#346).
-sevenz-rust2 = { version = "0.25", default-features = false, features = ["ppmd", "bzip2", "deflate", "zstd", "aes256"] }
+# Windows 10, whose tar.exe has no LZMA. Also BZip2 and Deflate, and AES-256 passwords (#346).
+# Not zstd: 7-Zip itself doesn't write it (only forks do), and it would be the C library.
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["ppmd", "bzip2", "deflate", "aes256"] }
 # Thumbnails; same version as gpui so decoded frames can be handed over directly
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
 # Thumbnails: JPEGs decoded at 1/2 to 1/8 size in the DCT, so a big photo is never held at full size

@@ -99,6 +99,12 @@ fn a_protected_zip_asks_for_its_password(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(!sandbox.join("secret").exists());
+    // Without the opening motion: it reads as the same dialog staying open.
+    assert!(
+        !dialog(&ws, cx)
+            .unwrap()
+            .update(cx, |d, _| d.appears_for_test())
+    );
 
     // The right one extracts into the folder, selected, as one job in the operation center.
     enter(&ws, cx, "secret");

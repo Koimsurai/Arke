@@ -1,8 +1,9 @@
 //! The password for a protected zip or 7z (#346), asked when extracting it.
 //!
 //! The password lives only in this dialog's input and the extraction it starts: never logged,
-//! never saved, not copyable. A wrong one brings the dialog back with that said, the password
-//! selected to type over.
+//! never saved, not copyable. A wrong one brings the dialog back at once (the password is checked
+//! before anything is extracted) with that said and the input empty, without the opening motion,
+//! so it reads as the same dialog staying open.
 
 use gpui::{
     AnimationExt, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -50,6 +51,8 @@ pub(crate) struct ArchivePasswordDialog {
     name: String,
     /// The last password didn't open it.
     wrong: bool,
+    /// Slides in: a first ask, not one after a wrong password.
+    appear: bool,
     focus: FocusHandle,
     password: Entity<TextInput>,
     _input: Subscription,
@@ -80,6 +83,7 @@ impl ArchivePasswordDialog {
         Self {
             name,
             wrong,
+            appear: !wrong,
             focus: cx.focus_handle(),
             password,
             _input: input,
@@ -133,6 +137,11 @@ impl ArchivePasswordDialog {
     #[cfg(test)]
     pub(crate) const fn wrong_for_test(&self) -> bool {
         self.wrong
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn appears_for_test(&self) -> bool {
+        self.appear
     }
 }
 
@@ -205,7 +214,7 @@ impl Render for ArchivePasswordDialog {
                     ),
             );
         // Backdrop: clicking outside cancels.
-        div()
+        let veil = div()
             .id("archive-password-veil")
             .absolute()
             .inset_0()
@@ -217,11 +226,15 @@ impl Render for ArchivePasswordDialog {
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.cancel(cx)),
             )
-            .child(panel)
-            .with_animation(
-                "archive-password-appear",
-                crate::motion::enter(),
-                |el, t| crate::motion::slide_in(el, t, 0., 0.),
-            )
+            .child(panel);
+        if !self.appear {
+            return veil.into_any_element();
+        }
+        veil.with_animation(
+            "archive-password-appear",
+            crate::motion::enter(),
+            |el, t| crate::motion::slide_in(el, t, 0., 0.),
+        )
+        .into_any_element()
     }
 }

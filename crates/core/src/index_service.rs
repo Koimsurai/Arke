@@ -1250,6 +1250,8 @@ impl Shared {
             overlay.seq()
         };
         let path = checkpoint_path(cache);
+        // Not flushed to disk (`fs::replace_file`): checkpoints are frequent, and one cut short by a
+        // power loss fails its magic check on load and is rebuilt.
         let tmp = path.with_extension("checkpoint.tmp");
         let written = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path));
         match written {
@@ -2088,6 +2090,8 @@ fn alt_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Not flushed to disk like settings (`fs::replace_file`): the index is large and rebuilt when a
+/// power loss leaves it unreadable (its magic check fails on load).
 fn save(path: &Path, index: &Index) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

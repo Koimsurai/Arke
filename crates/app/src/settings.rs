@@ -1426,8 +1426,7 @@ fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
     }
     let json = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    arke_core::fs::replace_file(path, &tmp, json)
 }
 
 impl Settings {

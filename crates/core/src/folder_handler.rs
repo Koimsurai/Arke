@@ -805,8 +805,7 @@ impl BackupStore for FileBackup {
         }
         let json = serde_json::to_vec_pretty(backup).map_err(|e| Error::Backup(e.to_string()))?;
         let tmp = self.0.with_extension("json.tmp");
-        std::fs::write(&tmp, json).map_err(io)?;
-        std::fs::rename(&tmp, &self.0).map_err(io)
+        crate::fs::replace_file(&self.0, &tmp, json).map_err(io)
     }
 
     fn remove(&self) -> Result<(), Error> {

@@ -143,6 +143,19 @@ pub fn is_network_path(path: &Path) -> bool {
     }
 }
 
+/// Replaces `path` with `bytes` so that it is always either the old file or the whole new one:
+/// written to `tmp`, flushed to the disk, then renamed over `path`. Without the flush a power cut
+/// right after the rename can leave `path` full of zeros (the rename reaches the disk before the
+/// data does), which for settings.json meant losing every setting. Background threads only.
+pub fn replace_file(path: &Path, tmp: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    use std::io::Write as _;
+    let mut file = std::fs::File::create(tmp)?;
+    file.write_all(bytes.as_ref())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(tmp, path)
+}
+
 /// Panics (debug builds) on file system calls from the UI thread.
 #[track_caller]
 pub(crate) fn debug_assert_not_ui_thread(op: &str, path: &Path) {
@@ -434,5 +447,26 @@ mod tests {
         }
         drop(watch);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::*;
+
+    /// The new content replaces the old whole, and the temporary file doesn't stay behind.
+    #[test]
+    fn a_replaced_file_has_the_new_content_and_no_temporary_file_is_left() {
+        let dir = std::env::temp_dir().join(format!("arke-test-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let tmp = dir.join("settings.json.tmp");
+        std::fs::write(&path, "old").unwrap();
+        replace_file(&path, &tmp, "new content").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
+        assert!(!tmp.exists());
+        replace_file(&path, &tmp, b"bytes too").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"bytes too");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

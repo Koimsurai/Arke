@@ -211,8 +211,7 @@ fn save(path: &Path, list: &[SavedWorkspace]) -> Result<(), WorkspacesError> {
     })
     .map_err(WorkspacesError::Encode)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(write_err)?;
-    std::fs::rename(&tmp, path).map_err(write_err)
+    arke_core::fs::replace_file(path, &tmp, json).map_err(write_err)
 }
 
 /// `%APPDATA%\Arke\workspaces.json`, next to the settings (string work only).

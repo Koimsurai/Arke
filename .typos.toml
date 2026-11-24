@@ -26,6 +26,10 @@ repor = "repor"
 [default.extend-identifiers]
 # "PNGs" is split as PN + Gs
 PNGs = "PNGs"
+# Plug and Play device ids (MTP devices), split as Pn + P
+PnP = "PnP"
+# Windows' Security Support Provider library, secur32.dll
+secur32 = "secur32"
 
 [files]
 # THIRD_PARTY_LICENSES.md is generated and quotes license texts and crate names verbatim

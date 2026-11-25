@@ -924,14 +924,68 @@ fn follow_win_e_hook(
 }
 
 /// Opens a window showing what an Explorer window showed. Answers whether Arke has a window.
+///
+/// The early path (#285) ends File Explorer's launcher before it opens a window, and the tab it
+/// opens here is marked (`Workspace::mark_early`). If that launcher had handed the folder over
+/// already, the window comes anyway and arrives here from the watcher like any other: while the
+/// marked tab still shows that folder, it comes forward with the window's selection instead of a
+/// second tab or window. The same happens for any other window on it then; nothing is closed
+/// without Arke showing it.
 fn open_taken_over(cx: &mut App, services: &Services, request: &win_takeover::OpenRequest) -> bool {
-    open_target(
+    let explorer_thread = Some(request.explorer_thread);
+    if !request.early
+        && merge_into_early_tab(cx, &request.target, &request.select, explorer_thread)
+    {
+        return true;
+    }
+    let Some(window) = open_target_in(
         cx,
         services,
         request.target.clone(),
         &request.select,
-        Some(request.explorer_thread),
-    )
+        explorer_thread,
+        None,
+    ) else {
+        return false;
+    };
+    if request.early {
+        let _ = window.update(cx, |workspace, _, cx| {
+            workspace.mark_early(&request.target, cx);
+        });
+    }
+    true
+}
+
+/// A File Explorer window on `target` while a tab the early path opened still shows it (see
+/// [`open_taken_over`]): that tab comes forward, in whichever window it is, with `select` selected.
+/// False when there is no such tab (it was closed or went elsewhere).
+fn merge_into_early_tab(
+    cx: &mut App,
+    target: &Target,
+    select: &[String],
+    explorer_thread: Option<u32>,
+) -> bool {
+    let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
+    let windows: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Workspace>())
+        .collect();
+    for handle in windows {
+        let merged = handle.update(cx, |workspace, window, cx| {
+            let merged = workspace.merge_early(target, select.clone(), window, cx);
+            if merged {
+                bring_to_front(window, explorer_thread);
+            }
+            merged
+        });
+        if matches!(merged, Ok(true)) {
+            log::info!("takeover: shown in the tab opened early for {target:?}");
+            cx.activate(true);
+            return true;
+        }
+    }
+    false
 }
 
 /// Shows a folder, Home or the Recycle Bin (with `select` selected) and brings it to the front: in
@@ -957,27 +1011,36 @@ fn open_target_timed(
     explorer_thread: Option<u32>,
     received: Option<Instant>,
 ) -> bool {
+    open_target_in(cx, services, target, select, explorer_thread, received).is_some()
+}
+
+/// [`open_target_timed`], giving the window `target` now shows in (its active tab).
+fn open_target_in(
+    cx: &mut App,
+    services: &Services,
+    target: Target,
+    select: &[String],
+    explorer_thread: Option<u32>,
+    received: Option<Instant>,
+) -> Option<gpui::WindowHandle<Workspace>> {
     let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
     if let Some(host) = tab_host(cx)
         && show_in_tab(cx, host, target.clone(), select.clone(), explorer_thread)
     {
-        return true;
+        return Some(host);
     }
     // Win+E (File Explorer's Home) with no window open: Arke starting, as "New windows open to"
     // says (the last session, say).
     let asked =
         (target != Target::Home || last_window(cx).is_some()).then_some(Asked { target, select });
-    let opened = open_explorer_window(cx, services, asked, None, Instant::now(), received);
-    let Some(window) = opened else {
-        return false;
-    };
+    let window = open_explorer_window(cx, services, asked, None, Instant::now(), received)?;
     let shown = window.update(cx, |_, window, _| {
         bring_to_front(window, explorer_thread);
     });
     if shown.is_ok() {
         cx.activate(true);
     }
-    shown.is_ok()
+    shown.is_ok().then_some(window)
 }
 
 /// The window a folder from another program, Win+E or Arke started again open in as a tab: the

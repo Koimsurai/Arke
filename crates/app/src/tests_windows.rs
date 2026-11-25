@@ -232,6 +232,95 @@ fn with_single_window_off_each_folder_gets_a_window(cx: &mut TestAppContext) {
     assert_eq!(tabs_of(windows[1], cx), [Some(p(r"C:\b"))]);
 }
 
+/// What "Open folders in Arke" asks for: from the early path (File Explorer's launcher ended) or
+/// from the watcher (a File Explorer window).
+fn taken_over(path: &str, select: &[&str], early: bool) -> crate::win_takeover::OpenRequest {
+    let (reply, _) = flume::bounded(1);
+    crate::win_takeover::OpenRequest {
+        target: arke_core::takeover::Target::Folder(p(path)),
+        select: select.iter().map(|name| (*name).to_owned()).collect(),
+        explorer_thread: 0,
+        early,
+        reply,
+    }
+}
+
+fn until(cx: &mut TestAppContext, what: &str, mut done: impl FnMut(&mut TestAppContext) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if done(cx) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// #285, single window mode off: the folder the early path opened gets a window. A File Explorer
+/// window on it that comes anyway (its launcher had handed it over already), or that another
+/// program opens later, shows in that tab with its selection instead of in a window of its own,
+/// until the tab goes elsewhere: then it opens as any other.
+#[gpui::test]
+fn a_late_explorer_window_shows_in_the_tab_opened_early(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    let (ws, vcx) = setup_workspace(cx, Arc::clone(&fs), r"C:\a");
+    let first = ws.update(vcx, |ws, _| ws.active_view().clone());
+    wait_until(vcx, &first, "a", loaded(r"C:\a"));
+    let cx = &mut vcx.cx;
+    settings(cx, |s| s.single_window = false);
+    let services = services(&fs);
+    let open = |cx: &mut TestAppContext, request: crate::win_takeover::OpenRequest| {
+        cx.update(|cx| crate::open_taken_over(cx, &services, &request))
+    };
+
+    assert!(open(cx, taken_over(r"C:\b", &[], true)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 2);
+    let early = window_on(cx, r"C:\b");
+    let view = cx.update(|cx| early.read(cx).unwrap().active_view().clone());
+    let b_loaded = loaded(r"C:\b");
+    until(cx, "b", |cx| cx.update(|cx| b_loaded(view.read(cx))));
+
+    // The window comes anyway, with the item selected.
+    assert!(open(cx, taken_over(r"C:\b", &["file_000000.txt"], false)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 2, "no window of its own");
+    assert_eq!(tabs_of(early, cx), [Some(p(r"C:\b"))], "no second tab");
+    until(cx, "the window's selection", |cx| {
+        cx.update(|cx| selected_name(view.read(cx)).as_deref() == Some("file_000000.txt"))
+    });
+    // Another one without a selection: shown there, the selection left as it is.
+    assert!(open(cx, taken_over(r"C:\b", &[], false)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 2);
+    assert_eq!(
+        cx.update(|cx| selected_name(view.read(cx))).as_deref(),
+        Some("file_000000.txt")
+    );
+
+    // The tab goes elsewhere: the mark goes with it, even once it is back.
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.navigate(p(r"C:\c"), arke_core::NavKind::New, cx);
+        });
+    });
+    let c_loaded = loaded(r"C:\c");
+    until(cx, "c", |cx| cx.update(|cx| c_loaded(view.read(cx))));
+    assert!(open(cx, taken_over(r"C:\b", &[], false)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 3, "a window as usual");
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.navigate(p(r"C:\b"), arke_core::NavKind::New, cx);
+        });
+    });
+    until(cx, "b again", |cx| cx.update(|cx| b_loaded(view.read(cx))));
+    assert!(open(cx, taken_over(r"C:\b", &[], false)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 4, "not marked any more");
+}
+
 /// The forum report: with two windows open, the second one's tabs no longer replace the
 /// first's. Each window is saved; closing one of several drops it, closing the last keeps it.
 #[gpui::test]

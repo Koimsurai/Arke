@@ -2125,6 +2125,42 @@ fn setup_workspace_services(
     })
 }
 
+/// #285: the Recycle Bin the early path opened is where a File Explorer window on it that comes
+/// anyway shows, while that page is open; a folder window doesn't go there, and once the page
+/// closed nothing is marked.
+#[gpui::test]
+fn a_late_recycle_bin_window_shows_in_the_page_opened_early(cx: &mut TestAppContext) {
+    use arke_core::takeover::Target;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\home", 1);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::default(), r"C:\home");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\home"));
+    let merge = |cx: &mut VisualTestContext, target: &Target| {
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.merge_early(target, Vec::new(), window, cx)))
+    };
+    assert!(!merge(cx, &Target::RecycleBin), "nothing marked yet");
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_external(Target::RecycleBin, Vec::new(), window, cx);
+            ws.mark_early(&Target::RecycleBin, cx);
+        });
+    });
+    cx.run_until_parked();
+    let tabs = ws.update(cx, |ws, _| ws.tab_views().count());
+    assert_eq!(tabs, 2, "the page has a tab of its own");
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.activate(0, window, cx)));
+    assert!(merge(cx, &Target::RecycleBin));
+    ws.update(cx, |ws, _| {
+        assert_eq!(ws.tab_views().count(), tabs, "no other tab");
+        assert_eq!(ws.active, 1, "the page's tab comes forward");
+    });
+    assert!(!merge(cx, &Target::Folder(PathBuf::from(r"C:\home"))));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_recycle_for_test(window, cx)));
+    cx.run_until_parked();
+    assert!(!merge(cx, &Target::RecycleBin), "the mark went with the page");
+}
+
 fn tab_paths(ws: &Workspace, cx: &App) -> Vec<Option<PathBuf>> {
     ws.tab_views()
         .map(|t| t.read(cx).display_path().map(Path::to_path_buf))

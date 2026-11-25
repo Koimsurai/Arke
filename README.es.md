@@ -266,8 +266,11 @@ nunca informa de nombres dentro de las carpetas de perfil de otros usuarios. Pue
 ## Sintaxis de búsqueda
 
 Escriba en el cuadro de búsqueda (Ctrl+F). El panel situado debajo elige el ámbito (esta carpeta, subcarpetas o
-todo el equipo) y los filtros; Tab pasa a él. Las palabras se comparan de forma aproximada, así que `rprt` encuentra
-`report`. Los filtros también se pueden escribir y combinar:
+todo el equipo) y los filtros; Tab pasa a él. Esta carpeta se filtra de forma aproximada, así que `rprt` encuentra
+`report`. Las subcarpetas y todo el equipo muestran los nombres que contienen las palabras tal como se escribieron; los
+que solo tienen sus letras en orden esperan en «Resultados similares» hasta que se abre, y aparecen enseguida si nada
+coincide exactamente. Empiece con `'` (`'report`) para ver solo coincidencias exactas. Los filtros también se pueden
+escribir y combinar:
 
 | Filtro | Ejemplo | Significado |
 | --- | --- | --- |

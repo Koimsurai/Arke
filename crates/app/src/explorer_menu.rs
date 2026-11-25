@@ -1094,6 +1094,7 @@ impl Explorer {
         window.focus(&self.list_focus, cx);
         if self.search_mode {
             self.search_cursor = Some(ix);
+            self.similar_focus = false;
         } else if let Some(view) = self.view()
             && let Some(entry) = view.get(ix)
         {

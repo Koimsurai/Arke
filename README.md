@@ -264,8 +264,11 @@ never reports names inside other users' profile folders. You can remove it from 
 ## Search syntax
 
 Type in the search box (Ctrl+F). The panel below it picks the scope (this folder, subfolders or
-the whole computer) and the filters; Tab moves into it. Words are matched fuzzily, so `rprt` finds
-`report`. Filters can also be typed and combined:
+the whole computer) and the filters; Tab moves into it. This folder is filtered fuzzily, so `rprt`
+finds `report`. Subfolders and the whole computer list the names that contain the words as typed;
+names that only have their letters in order wait under "Similar results" until it is opened, and
+show right away when nothing matches as typed. Start with `'` (`'report`) for exact matches only.
+Filters can also be typed and combined:
 
 | Filter | Example | Meaning |
 | --- | --- | --- |

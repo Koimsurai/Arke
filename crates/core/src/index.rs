@@ -34,7 +34,7 @@ use nucleo::{Matcher, Utf32Str};
 
 use crate::entry::{Entry, EntryKind};
 use crate::fs::Fs;
-use crate::index_query::Query;
+use crate::index_query::{NameMatch, Query, exact_text, fuzzy_text};
 use crate::journal::{Cursor, LISTED_ROOT, ListSink, Listed};
 
 /// No parent (root).
@@ -215,6 +215,8 @@ impl IndexHit {
 pub(crate) struct PathMatcher {
     name: Pattern,
     dir: Option<Pattern>,
+    /// Left out ([`NameMatch::Similar`]).
+    exact: Option<ExactMatch>,
     matcher: Matcher,
     buf: Vec<char>,
     indices: Vec<u32>,
@@ -228,8 +230,9 @@ impl PathMatcher {
             return None;
         }
         Some(Self {
-            name: name_pattern(name_part),
-            dir: dir_part.map(|d| Pattern::parse(d, CaseMatching::Smart, Normalization::Smart)),
+            name: name_pattern(name_part, query.names),
+            dir: dir_part.map(|d| dir_pattern(d, query.names)),
+            exact: ExactMatch::of(dir_part, name_part, query.names),
             matcher: Matcher::new(nucleo::Config::DEFAULT.match_paths()),
             buf: Vec::new(),
             indices: Vec::new(),
@@ -248,6 +251,19 @@ impl PathMatcher {
         if let Some(dir) = &self.dir {
             let parent = path.parent()?.to_string_lossy();
             dir.score(Utf32Str::new(&parent, &mut self.buf), &mut self.matcher)?;
+        }
+        if let Some(exact) = &self.exact
+            && exact.matches(
+                &name,
+                || {
+                    path.parent()
+                        .map_or_default(|p| p.to_string_lossy().into_owned())
+                },
+                &mut self.matcher,
+                &mut self.buf,
+            )
+        {
+            return None;
         }
         Some((
             score,
@@ -1843,10 +1859,11 @@ impl Index {
             return empty;
         }
         let (dir_part, name_part) = split_query(query.text.trim());
-        if name_part.is_empty() && !query.has_filters() {
+        if name_part.is_empty() && (!query.has_filters() || query.names == NameMatch::Similar) {
             return empty;
         }
-        let pattern = (!name_part.is_empty()).then(|| name_pattern(name_part));
+        let pattern = (!name_part.is_empty()).then(|| name_pattern(name_part, query.names));
+        let exact = ExactMatch::of(dir_part, name_part, query.names);
         // With a folder condition, keep more candidates and filter by path afterwards.
         let keep = if dir_part.is_some() {
             s.limit * 20
@@ -1857,6 +1874,9 @@ impl Index {
         let threads = s.threads.max(1).min(total.div_ceil(CHUNK).max(1));
         let matching = Matching {
             pattern: pattern.as_ref(),
+            // Exact names are left out while scanning, so they don't take the places of similar
+            // ones; with a folder part that waits for the folder's path (`finish`).
+            exclude: exact.as_ref().filter(|e| e.dir.is_none()).map(|e| &e.name),
             needle: (!name_part.is_empty()).then(|| Needle::new(name_part)),
             keep,
         };
@@ -1913,7 +1933,13 @@ impl Index {
             m.sort_unstable();
         }
         candidates.sort_unstable_by(|a, b| b.cmp(a));
-        let hits = self.finish(candidates, pattern.as_ref(), dir_part, s.limit);
+        let hits = self.finish(
+            candidates,
+            pattern.as_ref(),
+            dir_part.map(|d| (d, query.names)),
+            exact.as_ref().filter(|e| e.dir.is_some()),
+            s.limit,
+        );
         SearchResult {
             hits,
             matched,
@@ -1971,8 +1997,16 @@ impl Index {
                 // Filters only: newest first.
                 None => mtime,
             };
+            // Before leaving exact names out: narrowing needs every fuzzy match.
             if s.collect_matched {
                 out.ids.push(id);
+            }
+            if let Some(exact) = m.exclude
+                && exact
+                    .score(Utf32Str::new(name, &mut work.buf), &mut work.matcher)
+                    .is_some()
+            {
+                continue;
             }
             let rank = Rank::new(score, node.name_len, id);
             // Heap full and worse than the last: leave the heap alone (most matches stop here).
@@ -1988,22 +2022,24 @@ impl Index {
         }
     }
 
-    /// Builds paths for the selected candidates, applies the folder condition, computes highlights.
+    /// Builds paths for the selected candidates, applies the folder condition (`dir`: the folder
+    /// part and how it matches), leaves out `exact` matches, computes highlights.
     fn finish(
         &self,
         candidates: Vec<Rank>,
         pattern: Option<&Pattern>,
-        dir_part: Option<&str>,
+        dir: Option<(&str, NameMatch)>,
+        exact: Option<&ExactMatch>,
         limit: usize,
     ) -> Vec<IndexHit> {
-        let dir_pattern =
-            dir_part.map(|d| Pattern::parse(d, CaseMatching::Smart, Normalization::Smart));
+        let dir_pattern = dir.map(|(d, names)| dir_pattern(d, names));
         let mut matcher = Matcher::new(nucleo::Config::DEFAULT.match_paths());
         let mut buf = Vec::new();
         let mut indices = Vec::new();
         let mut hits = Vec::new();
         // Check each folder once (candidates often cluster in one folder).
         let mut dir_ok: HashMap<u32, bool> = HashMap::new();
+        let mut dir_exact: HashMap<u32, bool> = HashMap::new();
         for rank in candidates {
             let (score, id) = (rank.0, rank.id());
             if hits.len() >= limit {
@@ -2020,6 +2056,19 @@ impl Index {
                     }
                 });
                 if !ok {
+                    continue;
+                }
+            }
+            if let Some(exact) = exact {
+                let parent = node.parent;
+                let is_exact = exact.name_matches(self.name(node), &mut matcher, &mut buf)
+                    && *dir_exact.entry(parent).or_insert_with(|| {
+                        parent != NO_PARENT && {
+                            let dir = self.path_of(parent).to_string_lossy().into_owned();
+                            exact.dir_matches(&dir, &mut matcher, &mut buf)
+                        }
+                    });
+                if is_exact {
                     continue;
                 }
             }
@@ -2518,6 +2567,8 @@ impl Names {
 /// Matching state shared by a query.
 struct Matching<'a> {
     pattern: Option<&'a Pattern>,
+    /// Names that match this are left out ([`NameMatch::Similar`] without a folder part).
+    exclude: Option<&'a Pattern>,
     needle: Option<Needle>,
     /// Results kept per thread.
     keep: usize,
@@ -2626,24 +2677,71 @@ impl Needle {
     }
 }
 
-/// Name pattern. Alphanumeric terms of 1-2 chars match as substrings (like Everything): fuzzy
-/// matching that short hits almost every name (`ca` matches anything with c then a, over a
-/// million names on C:), which is useless and slow. Fuzzy only from 3 chars.
-fn name_pattern(name_part: &str) -> Pattern {
-    let text: Vec<String> = name_part
-        .split_whitespace()
-        .map(|atom| {
-            let plain = !atom.starts_with(['!', '^', '\'']) && !atom.ends_with('$');
-            // ASCII only: two CJK chars are already specific, and the char mask already filtered
-            // out pure-ASCII names.
-            if plain && atom.is_ascii() && atom.len() <= 2 {
-                format!("'{atom}")
-            } else {
-                atom.to_string()
-            }
+/// Name pattern. As typed for [`NameMatch::Exact`]; otherwise fuzzy from 3 chars, with shorter
+/// terms as substrings ([`crate::index_query::fuzzy_text`]).
+fn name_pattern(name_part: &str, names: NameMatch) -> Pattern {
+    let text = match names {
+        NameMatch::Exact => exact_text(name_part),
+        NameMatch::Any | NameMatch::Similar => fuzzy_text(name_part),
+    };
+    Pattern::parse(&text, CaseMatching::Smart, Normalization::Smart)
+}
+
+/// Pattern for the folder part of a query (`docs` in `docs\report`), matched against the full
+/// path of the containing folder: as typed for [`NameMatch::Exact`], fuzzy otherwise.
+fn dir_pattern(dir_part: &str, names: NameMatch) -> Pattern {
+    match names {
+        NameMatch::Exact => Pattern::parse(
+            &exact_text(dir_part),
+            CaseMatching::Smart,
+            Normalization::Smart,
+        ),
+        NameMatch::Any | NameMatch::Similar => {
+            Pattern::parse(dir_part, CaseMatching::Smart, Normalization::Smart)
+        }
+    }
+}
+
+/// What [`NameMatch::Similar`] leaves out: the paths an exact search finds (name and folder part
+/// both as typed), which are listed above the similar ones.
+struct ExactMatch {
+    name: Pattern,
+    dir: Option<Pattern>,
+}
+
+impl ExactMatch {
+    /// `None` unless the query asks for similar matches of a name.
+    fn of(dir_part: Option<&str>, name_part: &str, names: NameMatch) -> Option<Self> {
+        (names == NameMatch::Similar && !name_part.is_empty()).then(|| Self {
+            name: name_pattern(name_part, NameMatch::Exact),
+            dir: dir_part.map(|d| dir_pattern(d, NameMatch::Exact)),
         })
-        .collect();
-    Pattern::parse(&text.join(" "), CaseMatching::Smart, Normalization::Smart)
+    }
+
+    /// Whether the name has every term as typed.
+    fn name_matches(&self, name: &str, matcher: &mut Matcher, buf: &mut Vec<char>) -> bool {
+        self.name.score(Utf32Str::new(name, buf), matcher).is_some()
+    }
+
+    /// Whether the containing folder's path has the folder part as typed (always, without one).
+    fn dir_matches(&self, dir: &str, matcher: &mut Matcher, buf: &mut Vec<char>) -> bool {
+        self.dir
+            .as_ref()
+            .is_none_or(|d| d.score(Utf32Str::new(dir, buf), matcher).is_some())
+    }
+
+    /// Whether `name` in the folder `dir` (built only when the query has a folder part) is an
+    /// exact match.
+    fn matches(
+        &self,
+        name: &str,
+        dir: impl FnOnce() -> String,
+        matcher: &mut Matcher,
+        buf: &mut Vec<char>,
+    ) -> bool {
+        self.name_matches(name, matcher, buf)
+            && (self.dir.is_none() || self.dir_matches(&dir(), matcher, buf))
+    }
 }
 
 /// `docs\report` -> (Some("docs"), "report"); without a separator the whole string is the name.
@@ -2990,13 +3088,15 @@ impl Overlay {
             })
             .collect();
         let (dir_part, name_part) = split_query(query.text.trim());
-        if self.added.is_empty() || (name_part.is_empty() && !query.has_filters()) {
+        if self.added.is_empty()
+            || (name_part.is_empty() && (!query.has_filters() || query.names == NameMatch::Similar))
+        {
             out.truncate(limit);
             return out;
         }
-        let pattern = (!name_part.is_empty()).then(|| name_pattern(name_part));
-        let dir_pattern =
-            dir_part.map(|d| Pattern::parse(d, CaseMatching::Smart, Normalization::Smart));
+        let pattern = (!name_part.is_empty()).then(|| name_pattern(name_part, query.names));
+        let dir_pattern = dir_part.map(|d| dir_pattern(d, query.names));
+        let exact = ExactMatch::of(dir_part, name_part, query.names);
         let mut matcher = Matcher::new(nucleo::Config::DEFAULT.match_paths());
         let mut buf = Vec::new();
         let mut indices = Vec::new();
@@ -3032,6 +3132,19 @@ impl Overlay {
                 {
                     continue;
                 }
+            }
+            if let Some(exact) = &exact
+                && exact.matches(
+                    &name,
+                    || {
+                        path.parent()
+                            .map_or_default(|p| p.to_string_lossy().into_owned())
+                    },
+                    &mut matcher,
+                    &mut buf,
+                )
+            {
+                continue;
             }
             // Inside a folder removed since (a folder made after the build, removed with what
             // it held).
@@ -4241,6 +4354,115 @@ mod tests {
         assert!(Index::read_from(&mut &b"garbage!"[..]).is_err());
         bytes.truncate(bytes.len() - 3);
         assert!(Index::read_from(&mut bytes.as_slice()).is_err());
+    }
+
+    /// #396: an exact search lists the names that have the text as typed, a similar one the
+    /// other fuzzy matches only; together they are what a fuzzy search finds. A folder part
+    /// counts too: a name as typed in a folder that only matches fuzzily is a similar match.
+    #[test]
+    fn exact_and_similar_searches_split_the_fuzzy_matches() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\", vec![dir("tools"), dir("misc")]);
+        fs.insert_dir(
+            r"C:\tools",
+            vec![file("validrive.exe"), file("ValiDrive-manual.pdf")],
+        );
+        fs.insert_dir(
+            r"C:\misc",
+            vec![
+                file("vacation_list_drive.txt"),
+                file("validrive.exe"),
+                file("other.txt"),
+            ],
+        );
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        let with = |text: &str, names: NameMatch| {
+            let mut found = paths(&index.find(&Query { names, ..q(text) }, 50, false, 2));
+            found.sort();
+            found
+        };
+        let exact = [
+            r"C:\misc\validrive.exe",
+            r"C:\tools\ValiDrive-manual.pdf",
+            r"C:\tools\validrive.exe",
+        ];
+        assert_eq!(with("validrive", NameMatch::Exact), exact);
+        assert_eq!(
+            with("validrive", NameMatch::Similar),
+            [r"C:\misc\vacation_list_drive.txt"]
+        );
+        assert_eq!(with("validrive", NameMatch::Any).len(), 4);
+        // Short terms are substrings in every mode: nothing similar to add.
+        assert!(with("va", NameMatch::Similar).is_empty());
+        // The folder part as typed for exact matches, fuzzily for similar ones.
+        assert_eq!(
+            with(r"tools\validrive", NameMatch::Exact),
+            [r"C:\tools\ValiDrive-manual.pdf", r"C:\tools\validrive.exe"]
+        );
+        assert!(with(r"tls\validrive", NameMatch::Exact).is_empty());
+        assert_eq!(
+            with(r"tls\validrive", NameMatch::Similar),
+            [r"C:\tools\ValiDrive-manual.pdf", r"C:\tools\validrive.exe"]
+        );
+        assert!(with(r"tools\validrive", NameMatch::Similar).is_empty());
+        // Filters alone have no similar matches.
+        assert!(with("ext:exe", NameMatch::Similar).is_empty());
+        assert_eq!(with("ext:exe", NameMatch::Exact).len(), 2);
+
+        // Files added since the build split the same way.
+        let mut overlay = Overlay::default();
+        let seen = Some(Seen {
+            is_dir: false,
+            hidden: false,
+            size: 1,
+            modified: 0,
+        });
+        overlay.record(PathBuf::from(r"C:\new\validrive-old.exe"), seen);
+        overlay.record(PathBuf::from(r"C:\new\vxalidrive.zip"), seen);
+        let added = |names: NameMatch| {
+            let query = Query {
+                names,
+                ..q("validrive")
+            };
+            paths(&overlay.apply(Vec::new(), &query, 10, false))
+        };
+        assert_eq!(added(NameMatch::Exact), [r"C:\new\validrive-old.exe"]);
+        assert_eq!(added(NameMatch::Similar), [r"C:\new\vxalidrive.zip"]);
+    }
+
+    /// Exact names are left out while scanning, not afterwards: many exact matches scoring
+    /// better than the similar one don't take all the places kept.
+    #[test]
+    fn similar_matches_leave_exact_names_out_while_scanning() {
+        let fs = FakeFs::new();
+        let mut files: Vec<Entry> = (0..30).map(|i| file(&format!("report{i}.txt"))).collect();
+        files.push(file("r_e_p_o_r_t.txt"));
+        fs.insert_dir(r"C:\", files);
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        let query = Query {
+            names: NameMatch::Similar,
+            ..q("report")
+        };
+        assert_eq!(
+            paths(&index.find(&query, 5, false, 2)),
+            [r"C:\r_e_p_o_r_t.txt"]
+        );
     }
 
     /// Files added after the build that score the same come back in the same order every time,

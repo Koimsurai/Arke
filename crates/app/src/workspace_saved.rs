@@ -74,6 +74,14 @@ impl Workspace {
         let Some(pane) = tab.panes.get_mut(pane_ix) else {
             return;
         };
+        // The mark of "Open folders in Arke" (#285) holds only while this side stays on its folder.
+        if pane
+            .early
+            .as_ref()
+            .is_some_and(|(early, _)| !crate::explorer::same_folder(early, path))
+        {
+            pane.early = None;
+        }
         let old = pane.last.replace(path.to_path_buf());
         if old.as_deref() == Some(path) {
             // A refresh: the comparison picks the new listing up by itself.

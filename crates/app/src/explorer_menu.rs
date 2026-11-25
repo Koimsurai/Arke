@@ -4097,9 +4097,9 @@ mod compress_name_tests {
     fn a_root_has_no_folder_name() {
         let targets = items(&[r"C:\a.txt", r"C:\b.txt"]);
         assert_eq!(zip_stem_for_selection(Path::new(r"C:\"), &targets), None);
-        let share = items(&[r"\srv\share\a.txt", r"\srv\share\b.txt"]);
+        let share = items(&[r"\\srv\share\a.txt", r"\\srv\share\b.txt"]);
         assert_eq!(
-            zip_stem_for_selection(Path::new(r"\srv\share"), &share),
+            zip_stem_for_selection(Path::new(r"\\srv\share"), &share),
             None
         );
     }

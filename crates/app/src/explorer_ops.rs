@@ -1682,9 +1682,9 @@ impl Explorer {
         }
     }
 
-    /// A new archive from "Compress" is listed: it is already selected, and is renamed too unless
-    /// the user went on to something else (other items selected, typing in another text field).
-    /// Focus is never taken from a text field.
+    /// A new archive from "Compress" is listed: it is already selected, and is renamed too, but
+    /// only while this list still has the keyboard and nothing else was selected meanwhile. Focus
+    /// is never taken from a text field, another pane, the sidebar or the tab strip.
     fn poll_rename_after_compress(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.rename_after_compress.clone() else {
             return;
@@ -1698,22 +1698,10 @@ impl Explorer {
         self.rename_after_compress = None;
         if self.selection.len() == 1
             && self.selection.contains(&name)
-            && !self.text_field_focused(window, cx)
+            && self.list_focus.is_focused(window)
         {
             self.start_rename(name, window, cx);
         }
-    }
-
-    /// Whether a text box has the keyboard: the rename box, the path bar, the search box, or any
-    /// other `TextInput` (a dialog's) in the focused element's context chain.
-    fn text_field_focused(&self, window: &Window, cx: &App) -> bool {
-        self.renaming.is_some()
-            || (self.editing_path && self.path_input.read(cx).focus_handle(cx).is_focused(window))
-            || self.filter_input.read(cx).focus_handle(cx).is_focused(window)
-            || window
-                .context_stack()
-                .iter()
-                .any(|ctx| ctx.contains("TextInput"))
     }
 
     // ───────────────────────── Undo ─────────────────────────

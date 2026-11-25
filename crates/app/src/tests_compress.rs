@@ -238,3 +238,35 @@ fn a_failed_compression_changes_nothing(cx: &mut TestAppContext) {
     assert!(view.update(cx, |v, _| v.error.is_some()));
     cleanup(&dir);
 }
+
+#[gpui::test]
+fn the_sidebar_keeps_the_keyboard(cx: &mut TestAppContext) {
+    let dir = sandbox("sidebar");
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        &dir,
+        vec![file("a.txt", 5), file("b.txt", 5), file("c.txt", 5)],
+    );
+    let dir_str = dir.to_string_lossy().into_owned();
+    let (ws, cx) = setup_workspace(cx, Arc::clone(&fs), &dir_str);
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(&dir_str));
+    wait_watcher(&fs, &dir);
+    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(900.)));
+    compress(&view, cx, &["a.txt", "b.txt"]);
+    // F6 moves the keyboard from the list to the sidebar while the archive is being listed.
+    cx.simulate_keystrokes("f6");
+    for _ in 0..3 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    let region = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| ws.read(cx).region_for_test(window, cx))
+    };
+    assert_eq!(region(cx), "sidebar");
+    list(&fs, &view, cx, &dir, "Report.zip");
+    assert_eq!(renaming(&view, cx), None);
+    assert_eq!(selected(&view, cx), ["Report.zip"]);
+    assert_eq!(region(cx), "sidebar", "focus stays where the user put it");
+    cleanup(&dir);
+}

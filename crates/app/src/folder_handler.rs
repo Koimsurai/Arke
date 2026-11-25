@@ -12,12 +12,18 @@ use gpui::{App, Entity};
 
 use crate::settings::SettingsStore;
 
+/// Whether the shell reaches Arke's folder-open COM class (`win_folder_com::works`).
+pub(crate) type ComCheck = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Registers and unregisters Arke as the folder handler.
 pub(crate) struct Handler {
     registry: Arc<dyn Registry>,
     backup: Arc<dyn BackupStore>,
     /// The exe the registered commands start.
     exe: PathBuf,
+    /// Decides whether the folder verbs call Arke over COM (#340); without it (an Arke that is not
+    /// resident, which doesn't answer COM) the verbs keep the way they are registered.
+    com_check: Option<ComCheck>,
 }
 
 impl Handler {
@@ -47,14 +53,52 @@ impl Handler {
             registry,
             backup,
             exe,
+            com_check: None,
         }
+    }
+
+    /// Lets `check` decide whether the folder verbs use COM each time the handler is registered.
+    pub(crate) fn with_com_check(mut self, check: ComCheck) -> Self {
+        self.com_check = Some(check);
+        self
+    }
+
+    /// Registers in the mode the verbs have now, then, with a check, in the mode it finds: the
+    /// check needs the class's registration in place, and a check that passes again changes
+    /// nothing.
+    fn register(&self, win_e: bool) -> Result<folder_handler::Applied, folder_handler::Error> {
+        let now = folder_handler::uses_com(&*self.registry);
+        let first =
+            folder_handler::apply_mode(&*self.registry, &*self.backup, &self.exe, win_e, now)?;
+        let Some(check) = &self.com_check else {
+            return Ok(first);
+        };
+        let com = check();
+        if com == now {
+            return Ok(first);
+        }
+        log::info!(
+            "folder handler: folder verbs {}",
+            if com {
+                "call Arke over COM"
+            } else {
+                "run the command (COM does not reach Arke)"
+            }
+        );
+        let second =
+            folder_handler::apply_mode(&*self.registry, &*self.backup, &self.exe, win_e, com)?;
+        Ok(folder_handler::Applied {
+            written: first.written + second.written,
+            repaired: first.repaired + second.repaired,
+            dropped: first.dropped + second.dropped,
+        })
     }
 
     /// Makes the registry match `wanted`: on registers (or repairs) the handler, Win+E included
     /// only with `win_e`; off restores the previous values when Arke registered anything.
     pub(crate) fn sync(&self, wanted: bool, win_e: bool) {
         if wanted {
-            match folder_handler::apply_scoped(&*self.registry, &*self.backup, &self.exe, win_e) {
+            match self.register(win_e) {
                 Ok(done) if done.dropped > 0 => log::info!(
                     "folder handler: Win+E back to File Explorer ({} values)",
                     done.dropped
@@ -261,6 +305,43 @@ mod tests {
             reg.snapshot(),
             before,
             "the other program's command is back"
+        );
+    }
+
+    /// The resident Arke's check decides whether the folder verbs call it over COM, both ways;
+    /// without a check the verbs stay as they are (#340).
+    #[test]
+    fn the_com_check_decides_how_the_folder_verbs_reach_arke() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let reg = Arc::new(MemoryRegistry::default());
+        let backup = Arc::new(MemoryBackup::default());
+        let reaches = Arc::new(AtomicBool::new(true));
+        let answer = Arc::clone(&reaches);
+        let handler = |check: bool| {
+            let h = Handler::new(
+                Arc::clone(&reg) as Arc<dyn Registry>,
+                Arc::clone(&backup) as Arc<dyn BackupStore>,
+                PathBuf::from(r"C:\Apps\Arke\arke.exe"),
+            );
+            if check {
+                let answer = Arc::clone(&answer);
+                h.with_com_check(Arc::new(move || answer.load(Ordering::SeqCst)))
+            } else {
+                h
+            }
+        };
+        let delegate = || reg.text(DIR_CMD, "DelegateExecute");
+        handler(true).sync(true, false);
+        assert_eq!(delegate().as_deref(), Some(folder_handler::ARKE_CLSID));
+        handler(false).sync(true, false);
+        assert_eq!(delegate().as_deref(), Some(folder_handler::ARKE_CLSID));
+        reaches.store(false, Ordering::SeqCst);
+        handler(true).sync(true, false);
+        assert_eq!(delegate().as_deref(), Some(""));
+        handler(true).sync(false, false);
+        assert!(
+            reg.snapshot().is_empty(),
+            "turning off removes the class too"
         );
     }
 

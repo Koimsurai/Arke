@@ -15,10 +15,10 @@ use std::ops::Range;
 
 use gpui::{
     AnimationExt as _, AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
-    DispatchPhase, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill, point,
+    DispatchPhase, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style,
+    TextRun, UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill, point,
     prelude::*, px, relative, size, svg,
 };
 use rust_i18n::t;
@@ -1283,7 +1283,9 @@ impl Element for TextElement {
         if self.input.read(cx).is_selecting {
             let input = self.input.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture && event.pressed_button == Some(MouseButton::Left) {
+                if phase == DispatchPhase::Capture
+                    && event.pressed_button == Some(MouseButton::Left)
+                {
                     input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
                 }
             });
@@ -1781,6 +1783,46 @@ mod stale_layout_tests {
             });
         }
     }
+    /// Dragging a selection out of the field keeps extending it to the nearest end; a move
+    /// without a press does nothing (#410).
+    #[gpui::test]
+    fn drag_selection_follows_the_pointer_outside_the_field(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_, cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_text("hello world", cx);
+            input
+        });
+        cx.run_until_parked();
+        let (bounds, line) = input.update(cx, |input, _| {
+            (
+                input.last_bounds.expect("drawn"),
+                input.last_layout.clone().expect("drawn"),
+            )
+        });
+        let mid = point(bounds.left() + line.x_for_index(5), bounds.center().y);
+        let right = point(bounds.right() + px(300.), bounds.center().y);
+        let left = point(bounds.left() - px(300.), bounds.center().y);
+        let range = |cx: &mut gpui::VisualTestContext| {
+            input.update(cx, |input, _| input.selected_range.clone())
+        };
+
+        // No press: moving outside changes nothing.
+        cx.simulate_mouse_move(right, None, gpui::Modifiers::none());
+        assert_eq!(range(cx), 11..11);
+
+        cx.simulate_mouse_down(mid, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(right, Some(MouseButton::Left), gpui::Modifiers::none());
+        assert_eq!(range(cx), 5..11);
+        cx.simulate_mouse_move(left, Some(MouseButton::Left), gpui::Modifiers::none());
+        assert_eq!(range(cx), 0..5);
+        cx.simulate_mouse_move(right, Some(MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(right, MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(range(cx), 5..11);
+
+        // After the release, moving does not extend the selection any more.
+        cx.simulate_mouse_move(left, None, gpui::Modifiers::none());
+        assert_eq!(range(cx), 5..11);
+    }
 }
 
 /// Whether a character (the first of a grapheme) belongs to a word: letters, digits and `_`.
@@ -1859,45 +1901,4 @@ pub(crate) fn next_word(text: &str, offset: usize) -> usize {
         }
     }
     text.len()
-
-    /// Dragging a selection out of the field keeps extending it to the nearest end; a move
-    /// without a press does nothing (#410).
-    #[gpui::test]
-    fn drag_selection_follows_the_pointer_outside_the_field(cx: &mut gpui::TestAppContext) {
-        let (input, cx) = cx.add_window_view(|_, cx| {
-            let mut input = TextInput::new("", cx);
-            input.set_text("hello world", cx);
-            input
-        });
-        cx.run_until_parked();
-        let (bounds, line) = input.update(cx, |input, _| {
-            (
-                input.last_bounds.expect("drawn"),
-                input.last_layout.clone().expect("drawn"),
-            )
-        });
-        let mid = point(bounds.left() + line.x_for_index(5), bounds.center().y);
-        let right = point(bounds.right() + px(300.), bounds.center().y);
-        let left = point(bounds.left() - px(300.), bounds.center().y);
-        let range = |cx: &mut gpui::VisualTestContext| {
-            input.update(cx, |input, _| input.selected_range.clone())
-        };
-
-        // No press: moving outside changes nothing.
-        cx.simulate_mouse_move(right, None, gpui::Modifiers::none());
-        assert_eq!(range(cx), 11..11);
-
-        cx.simulate_mouse_down(mid, MouseButton::Left, gpui::Modifiers::none());
-        cx.simulate_mouse_move(right, Some(MouseButton::Left), gpui::Modifiers::none());
-        assert_eq!(range(cx), 5..11);
-        cx.simulate_mouse_move(left, Some(MouseButton::Left), gpui::Modifiers::none());
-        assert_eq!(range(cx), 0..5);
-        cx.simulate_mouse_move(right, Some(MouseButton::Left), gpui::Modifiers::none());
-        cx.simulate_mouse_up(right, MouseButton::Left, gpui::Modifiers::none());
-        assert_eq!(range(cx), 5..11);
-
-        // After the release, moving does not extend the selection any more.
-        cx.simulate_mouse_move(left, None, gpui::Modifiers::none());
-        assert_eq!(range(cx), 5..11);
-    }
 }

@@ -249,9 +249,7 @@ fn f6_names_each_area(cx: &mut TestAppContext) {
 /// to start on: F6 still reaches the sidebar, and the arrows move onto a row a screen reader can
 /// name.
 #[gpui::test]
-fn the_sidebar_is_usable_from_the_keyboard_when_the_tree_does_not_follow(
-    cx: &mut TestAppContext,
-) {
+fn the_sidebar_is_usable_from_the_keyboard_when_the_tree_does_not_follow(cx: &mut TestAppContext) {
     let (_ws, cx) = window_following(cx, false);
     cx.simulate_keystrokes("f6");
     let start = focused(&tree(cx));

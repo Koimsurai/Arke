@@ -757,10 +757,9 @@ mod tests {
             quit_at(&name, &me, Duration::from_millis(100)),
             Quit::StillRunning
         );
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            Request::Quit
-        );
+        // `quit_at` stops waiting for its pipe thread after `CLIENT_TIMEOUT`; on a busy CI runner
+        // the request can still be on its way then.
+        assert_eq!(rx.recv_timeout(CLIENT_TIMEOUT).unwrap(), Request::Quit);
     }
 
     #[test]

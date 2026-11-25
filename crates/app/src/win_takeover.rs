@@ -27,8 +27,10 @@
 //! that window, the launcher is ended before it hands over (ending it up to 300 ms in never left a
 //! window) and Arke opens the folder. If it had handed over already, the window still comes and the
 //! watcher closes it without opening the folder again ([`takeover::Claims`]). Never touched: the
-//! shell itself, `explorer.exe` without arguments, launchers Arke started, launchers above Arke's
-//! integrity level, and everything the watcher leaves alone. `ARKE_EARLY_TAKEOVER=0` turns it off.
+//! shell itself, `explorer.exe` without arguments, File Explorer processes older than
+//! [`takeover::LAUNCHER_MAX_AGE`] (which may show windows themselves), launchers Arke started or
+//! gave a folder back to, launchers above Arke's integrity level, and everything the watcher leaves
+//! alone. `ARKE_EARLY_TAKEOVER=0` turns it off.
 //!
 //! Left alone: File Explorer opened on purpose (a window at Home or This PC: the taskbar, Start or a
 //! bare `explorer.exe`), windows opened while Shift is held, windows of elevated processes, windows Arke
@@ -893,6 +895,9 @@ struct Early {
     seen: Vec<(u32, Instant)>,
     /// What was opened in Arke, for the window that may come anyway.
     claims: takeover::Claims,
+    /// What Arke could not open and gave back to File Explorer: that launcher is Arke's own and is
+    /// left alone even when its parent can't be read, or ending it would only loop.
+    given_back: takeover::Claims,
     /// Requests waiting for Arke's answer.
     pending: Vec<Pending>,
 }
@@ -948,6 +953,7 @@ fn start_early(tx: &flume::Sender<OpenRequest>, test_root: Option<PathBuf>) -> O
             ours,
             seen: Vec::new(),
             claims: takeover::Claims::default(),
+            given_back: takeover::Claims::default(),
             pending: Vec::new(),
         });
     });
@@ -1005,9 +1011,9 @@ unsafe extern "system" fn on_window_created(
         let Ok(mut early) = early.try_borrow_mut() else {
             return false;
         };
-        early
-            .as_mut()
-            .is_some_and(|early| early.first_sight(pid, Instant::now()) && early.examine(pid))
+        early.as_mut().is_some_and(|early| {
+            early.first_sight(pid, Instant::now()) && early.examine(hwnd, pid)
+        })
     });
     if opened {
         // Wake the message loop so the fast timer waits for Arke's answer (see `sink`).
@@ -1031,8 +1037,8 @@ impl Early {
         true
     }
 
-    /// Looks at a process that made a window; true when its folder went to Arke.
-    fn examine(&mut self, pid: u32) -> bool {
+    /// Looks at the process that made window `hwnd`; true when its folder went to Arke.
+    fn examine(&mut self, hwnd: HWND, pid: u32) -> bool {
         // SAFETY: a query-only handle, closed when `process` drops. Holding it keeps the id from
         // being reused.
         let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
@@ -1040,13 +1046,27 @@ impl Early {
             return false;
         };
         let process = Process(handle);
-        if !self.is_file_explorer(&process) {
+        // The process may have ended between the event and `OpenProcess`, and its id gone to a new
+        // one. A window ends with its process, so if the window still names `pid`, the handle is
+        // its process.
+        let mut owner = 0u32;
+        // SAFETY: valid out pointer; a window already gone gives 0.
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut owner)) };
+        if owner != pid {
+            return false;
+        }
+        // Most windows come from processes running for a while: one cheap call leaves them.
+        let age = process_age(&process);
+        if !takeover::launcher_young(age) || !self.is_file_explorer(&process) {
             return false;
         }
         let Some((target, select)) = self.wanted(pid, &process) else {
             return false;
         };
-        self.take(pid, &process, target, select)
+        // `process` stays open until `take` returns, so `pid` can't name another process there.
+        let taken = self.take(pid, age, target, select);
+        drop(process);
+        taken
     }
 
     fn is_file_explorer(&self, process: &Process) -> bool {
@@ -1065,8 +1085,9 @@ impl Early {
     }
 
     /// What File Explorer's launcher would open, when the watcher would take that window; `None`
-    /// leaves it alone.
-    fn wanted(&self, pid: u32, process: &Process) -> Option<(Target, Vec<String>)> {
+    /// leaves it alone. Only cheap checks come before the command line is read, and nothing touches
+    /// the disk before the arguments are understood.
+    fn wanted(&mut self, pid: u32, process: &Process) -> Option<(Target, Vec<String>)> {
         // The shell itself; with no shell running, File Explorer may be starting as the shell.
         if shell_pid()? == pid {
             return None;
@@ -1081,6 +1102,14 @@ impl Early {
             log::debug!("takeover: early: leaving explorer.exe {args}");
             return None;
         };
+        if shift_down() {
+            log::info!("takeover: early: Shift held, leaving explorer.exe {args}");
+            return None;
+        }
+        if leaves_to_explorer(integrity_level(process.0), self.ours) {
+            log::info!("takeover: early: launcher above Arke's integrity level, leaving it");
+            return None;
+        }
         let Some(target) = takeover::launch_target(&launch, on_disk) else {
             log::debug!("takeover: early: leaving explorer.exe {args} (not a folder Arke takes)");
             return None;
@@ -1090,18 +1119,15 @@ impl Early {
         {
             return None;
         }
-        if shift_down() {
-            log::info!("takeover: early: Shift held, leaving explorer.exe {args}");
-            return None;
-        }
-        if leaves_to_explorer(integrity_level(process.0), self.ours) {
-            log::info!("takeover: early: launcher above Arke's integrity level, leaving it");
-            return None;
-        }
+        let now = Instant::now();
         // Arke's own request that didn't come from Arke's process; the watcher uses up the mark.
         if let Target::Folder(folder) = &target
-            && BYPASS.lock().holds(folder, Instant::now())
+            && BYPASS.lock().holds(folder, now)
         {
+            return None;
+        }
+        if self.given_back.take(&target, now) {
+            log::info!("takeover: early: Arke gave {target:?} back to File Explorer, leaving it");
             return None;
         }
         Some((target, launch.select.into_iter().collect()))
@@ -1109,16 +1135,23 @@ impl Early {
 
     /// Ends the launcher and opens its folder in Arke. Ending fails once the launcher is gone (it
     /// handed the folder to the shell): then nothing more happens and the watcher sees the window.
-    fn take(&mut self, pid: u32, process: &Process, target: Target, select: Vec<String>) -> bool {
-        let age = process_age_ms(process);
+    /// The caller holds a handle to the launcher, so `pid` is still its id.
+    fn take(
+        &mut self,
+        pid: u32,
+        age: Option<Duration>,
+        target: Target,
+        select: Vec<String>,
+    ) -> bool {
         // SAFETY: a terminate-only handle, closed when it drops.
         let Ok(handle) = (unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }) else {
             log::info!("takeover: early: cannot end File Explorer's launcher for {target:?}");
             return false;
         };
         let killer = Process(handle);
-        // SAFETY: ends `explorer.exe <folder>`, the launcher looked at above (`process` keeps its
-        // id from being reused); the shell and every other File Explorer process are left alone.
+        // SAFETY: ends `explorer.exe <folder>`, the launcher looked at above (the caller's handle
+        // keeps its id from being reused); the shell and every other File Explorer process are left
+        // alone. Exit code 1 is what File Explorer's launcher returns on its own, too.
         if let Err(err) = unsafe { TerminateProcess(killer.0, 1) } {
             log::debug!("takeover: early: launcher gone ({err}), leaving it to the watcher");
             return false;
@@ -1127,7 +1160,7 @@ impl Early {
         log::info!(
             "takeover: early: ended File Explorer's launcher {} ms after it started, opening \
              {target:?} in Arke ({} selected)",
-            age.map_or_else(|| "?".to_owned(), |ms| ms.to_string()),
+            age.map_or_else(|| "?".to_owned(), |age| age.as_millis().to_string()),
             select.len()
         );
         self.claims.add(target.clone(), now);
@@ -1168,9 +1201,11 @@ impl Early {
                 waiting
             }
         });
-        // Explorer's window for those must not be closed.
         for (target, _) in &failed {
+            // Explorer's window for those must not be closed, and the launcher that reopens them
+            // must not be ended.
             self.claims.take(target, now);
+            self.given_back.add(target.clone(), now);
         }
         failed
     }
@@ -1288,14 +1323,23 @@ fn command_line(process: &Process) -> Option<String> {
             )
         };
         if status.0 >= 0 {
-            // SAFETY: on success `buf` starts with a UNICODE_STRING whose text (`Length` bytes)
-            // lies within `buf`, which outlives the copy below.
+            // SAFETY: on success `buf` starts with a UNICODE_STRING (it is large and aligned
+            // enough); its text is only read after checking that it lies within `buf`, which
+            // outlives the copy below.
             let text = unsafe {
                 let string = &*buf.as_ptr().cast::<UNICODE_STRING>();
-                if string.Buffer.is_null() {
+                let start = buf.as_ptr().addr() + size_of::<UNICODE_STRING>();
+                let end = buf.as_ptr().addr() + buf.len() * 8;
+                let text = string.Buffer.0.addr();
+                let len = usize::from(string.Length);
+                if string.Buffer.is_null()
+                    || text < start
+                    || text.saturating_add(len) > end
+                    || !text.is_multiple_of(2)
+                {
                     return None;
                 }
-                std::slice::from_raw_parts(string.Buffer.0, usize::from(string.Length) / 2)
+                std::slice::from_raw_parts(string.Buffer.0, len / 2)
             };
             return Some(String::from_utf16_lossy(text));
         }
@@ -1307,8 +1351,8 @@ fn command_line(process: &Process) -> Option<String> {
     None
 }
 
-/// How long ago `process` started, in milliseconds.
-fn process_age_ms(process: &Process) -> Option<u64> {
+/// How long ago `process` started.
+fn process_age(process: &Process) -> Option<Duration> {
     let (mut created, mut exited, mut kernel, mut user) = (
         FILETIME::default(),
         FILETIME::default(),
@@ -1329,7 +1373,10 @@ fn process_age_ms(process: &Process) -> Option<u64> {
     // SAFETY: plain Win32 call.
     let now = unsafe { GetSystemTimeAsFileTime() };
     let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
-    Some(ticks(now).saturating_sub(ticks(created)) / 10_000)
+    // 100 ns ticks. A clock set back gives 0: young, and the other checks still apply.
+    Some(Duration::from_nanos(
+        ticks(now).saturating_sub(ticks(created)).saturating_mul(100),
+    ))
 }
 
 /// What `path` is, looked at only on local drives: a network path could keep the takeover thread
@@ -1404,6 +1451,101 @@ mod tests {
         ));
         assert!(!is_explorer_image(&wide(r"C:\Windows\notepad.exe"), &dir));
         assert!(!is_explorer_image(&wide(r"C:\Win"), &dir));
+    }
+
+    fn early() -> (Early, flume::Receiver<OpenRequest>) {
+        let (tx, rx) = flume::unbounded();
+        let early = Early {
+            tx,
+            test_root: None,
+            windows_dir: Vec::new(),
+            ours: None,
+            seen: Vec::new(),
+            claims: takeover::Claims::default(),
+            given_back: takeover::Claims::default(),
+            pending: Vec::new(),
+        };
+        (early, rx)
+    }
+
+    fn pending(target: &Target, since: Instant) -> (Pending, flume::Sender<bool>) {
+        let (reply, answer) = flume::bounded(1);
+        let pending = Pending {
+            target: target.clone(),
+            select: vec!["a.txt".to_owned()],
+            reply: answer,
+            since,
+        };
+        (pending, reply)
+    }
+
+    #[test]
+    fn a_process_is_looked_at_once_until_its_id_may_be_reused() {
+        let (mut early, _rx) = early();
+        let t0 = Instant::now();
+        assert!(early.first_sight(7, t0));
+        assert!(!early.first_sight(7, t0 + Duration::from_secs(1)));
+        assert!(early.first_sight(8, t0));
+        assert!(early.first_sight(7, t0 + PID_MEMORY), "forgotten");
+        for pid in 100..100 + PID_CAP as u32 {
+            assert!(early.first_sight(pid, t0 + PID_MEMORY));
+        }
+        assert_eq!(early.seen.len(), PID_CAP);
+    }
+
+    #[test]
+    fn what_arke_could_not_open_goes_back_to_explorer_once() {
+        let (mut early, _rx) = early();
+        let t0 = Instant::now();
+        let target = Target::Folder(PathBuf::from(r"C:\Work"));
+        early.claims.add(target.clone(), t0);
+        let (p, reply) = pending(&target, t0);
+        early.pending.push(p);
+        assert!(early.poll(t0).is_empty(), "no answer yet");
+        assert!(reply.send(false).is_ok());
+        assert_eq!(
+            early.poll(t0),
+            vec![(target.clone(), vec!["a.txt".to_owned()])]
+        );
+        assert!(early.pending.is_empty());
+        assert!(
+            !early.claims.take(&target, t0),
+            "File Explorer's window for it stays"
+        );
+        assert!(
+            early.given_back.take(&target, t0),
+            "the launcher that reopens it is left alone"
+        );
+        assert!(!early.given_back.take(&target, t0), "once");
+    }
+
+    #[test]
+    fn opened_or_unanswered_requests_are_not_given_back() {
+        let (mut early, _rx) = early();
+        let t0 = Instant::now();
+        let opened = Target::RecycleBin;
+        let silent = Target::Folder(PathBuf::from(r"C:\Slow"));
+        let gone = Target::Folder(PathBuf::from(r"C:\Gone"));
+        for target in [&opened, &silent, &gone] {
+            early.claims.add(target.clone(), t0);
+        }
+        let (p, opened_reply) = pending(&opened, t0);
+        early.pending.push(p);
+        let (p, _silent_reply) = pending(&silent, t0);
+        early.pending.push(p);
+        let (p, gone_reply) = pending(&gone, t0);
+        early.pending.push(p);
+        assert!(opened_reply.send(true).is_ok());
+        drop(gone_reply);
+        let failed = early.poll(t0 + OPEN_TIMEOUT + Duration::from_millis(1));
+        assert_eq!(failed, vec![(gone.clone(), vec!["a.txt".to_owned()])]);
+        assert!(early.pending.is_empty());
+        let now = t0 + OPEN_TIMEOUT;
+        assert!(early.claims.take(&opened, now), "a late window is closed");
+        assert!(early.claims.take(&silent, now));
+        assert!(!early.claims.take(&gone, now));
+        assert!(!early.given_back.take(&opened, now));
+        assert!(!early.given_back.take(&silent, now));
     }
 
     /// On a thread without the early path (or with it off) nothing is awaited or claimed.

@@ -72,7 +72,11 @@ fn list(fs: &FakeFs, view: &Entity<Explorer>, cx: &mut VisualTestContext, dir: &
     wait_until(cx, view, "archive listed", |v| {
         view_names(v).iter().any(|n| n == name)
     });
-    // A few more frames, so anything that waits for the listing has had its turn.
+    frames(cx);
+}
+
+/// A few frames, so anything that waits for the listing has had its turn.
+fn frames(cx: &mut VisualTestContext) {
     for _ in 0..3 {
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
@@ -190,10 +194,22 @@ fn another_folder_is_left_alone(cx: &mut TestAppContext) {
     wait_until(cx, &view, "other folder", loaded(&other_str));
     wait_until(cx, &view, "compressed", |v| v.extract_job.is_none());
     assert!(dir.join("Report.zip").is_file());
-    list(&fs, &view, cx, &dir, "Report.zip");
+    // The archive lands in the folder left behind; this view isn't showing it.
+    fs.add_file(&dir, "Report.zip", 100);
+    fs.emit_changed(&dir, &["Report.zip"]);
+    frames(cx);
     assert_eq!(renaming(&view, cx), None);
     assert!(selected(&view, cx).is_empty());
     assert_eq!(view.update(cx, |v, _| view_names(v)), ["z.txt"]);
+    // Back in the folder: the archive is listed, and nothing waited to rename it.
+    let dir_str = dir.to_string_lossy().into_owned();
+    view.update(cx, |v, cx| v.navigate(dir.clone(), NavKind::New, cx));
+    wait_until(cx, &view, "back", loaded(&dir_str));
+    wait_until(cx, &view, "archive listed", |v| {
+        view_names(v).iter().any(|n| n == "Report.zip")
+    });
+    frames(cx);
+    assert_eq!(renaming(&view, cx), None);
     cleanup(&dir);
 }
 

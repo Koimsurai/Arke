@@ -47,12 +47,13 @@ pub(crate) trait KeyStop: StatefulInteractiveElement + Sized {
 
 impl<E: StatefulInteractiveElement> KeyStop for E {}
 
-/// The keyboard focus ring: a line in the accent color just inside the control's edge. Inside,
-/// drawn over the control, so it moves nothing; a shadow outside would show through the
-/// translucent fill of dropdowns and selected rows and tint them whole.
+/// The keyboard focus ring: a line in the text color just inside the control's edge, as Windows
+/// draws it. The text color, not the accent, so it shows on what the accent fills (a switch that
+/// is on, the picked tile). Inside, drawn over the control, so it moves nothing; a shadow outside
+/// would show through the translucent fill of dropdowns and selected rows and tint them whole.
 pub(crate) fn ring() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: theme::signal_line().into(),
+        color: theme::text().into(),
         offset: point(px(0.), px(0.)),
         blur_radius: px(0.),
         spread_radius: px(2.),
@@ -126,7 +127,9 @@ fn reveal(bounds: Bounds<Pixels>, window: &mut Window, _: &mut App) {
         let max = scroll.max_offset().y;
         let y = (offset.y + shift).min(px(0.)).max(-max);
         scroll.set_offset(point(offset.x, y));
-        window.refresh();
+        // This runs while the window draws, when a refresh is ignored: the next frame shows the
+        // page at its new place.
+        window.on_next_frame(|window, _| window.refresh());
     }
 }
 

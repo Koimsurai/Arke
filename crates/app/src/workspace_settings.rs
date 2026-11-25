@@ -3049,7 +3049,7 @@ fn tile(
     (apply, claim, ring): &Pick,
 ) -> AnyElement {
     let apply = Rc::clone(apply);
-    div()
+    let tile = div()
         .id(id)
         .a11y_lazy(gpui::Role::RadioButton, || label.clone())
         .aria_toggled(crate::a11y::toggled(selected))
@@ -3057,7 +3057,6 @@ fn tile(
             *claim,
             gpui::StatefulInteractiveElement::aria_active_descendant,
         )
-        .when(*ring, |d| d.shadow(crate::keynav::ring()))
         .w(px(width))
         .flex()
         .flex_col()
@@ -3092,7 +3091,18 @@ fn tile(
         .on_click(move |_, _, cx| {
             let apply = Rc::clone(&apply);
             set(cx, move |s| apply(s));
-        })
+        });
+    // The keyboard ring: outside the tile, whose preview covers its inside, and in the text color,
+    // as the accent already marks the picked tile. The frame is always there (clear when not
+    // shown) and its room is taken back with a negative margin, so nothing moves.
+    let room = px(4.);
+    div()
+        .m(-room)
+        .p(px(2.))
+        .rounded(theme::r_8() + room)
+        .border_2()
+        .border_color(if *ring { theme::text() } else { theme::clear() })
+        .child(tile)
         .into_any_element()
 }
 
@@ -3297,6 +3307,7 @@ fn accent_body(
     );
     let focused = input.focus_handle(cx).is_focused(window);
     let code = div()
+        .debug_selector(|| "accent-code".to_owned())
         .w(crate::theme::scaled_px(96.))
         .h(theme::h_ctl_sm())
         .px(theme::s_8())

@@ -675,3 +675,35 @@ fn tab_stays_in_the_remove_dialog(cx: &mut TestAppContext) {
         "Tab moves between the dialog's controls: {went:?}"
     );
 }
+
+/// A text field Tab moves to below the end of the view comes into view too (#322).
+#[gpui::test]
+fn tab_brings_a_text_field_into_view(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(520.)));
+    settings_at(cx, 0);
+    let view = cx.update(|window, _| window.viewport_size());
+    let out = cx.debug_bounds("accent-code").expect("the field is drawn");
+    assert!(
+        out.bottom() > view.height,
+        "it starts below the view: {out:?}"
+    );
+    let mut path = Vec::new();
+    while path.len() < 20 {
+        cx.simulate_keystrokes("tab");
+        let at = focus_desc(&tree(cx)).unwrap_or_default();
+        path.push(at.clone());
+        if at.starts_with("TextInput ") {
+            break;
+        }
+    }
+    assert!(
+        path.last().is_some_and(|d| d.starts_with("TextInput ")),
+        "{path:?}"
+    );
+    let now = cx.debug_bounds("accent-code").expect("the field is drawn");
+    assert!(
+        now.top() >= gpui::px(0.) && now.bottom() <= view.height,
+        "in view: {now:?} in {view:?}"
+    );
+}

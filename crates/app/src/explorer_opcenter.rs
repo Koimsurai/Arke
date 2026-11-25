@@ -623,7 +623,7 @@ fn clear_button(enabled: bool, cx: &mut Context<Explorer>) -> AnyElement {
         enabled,
         cx.listener(|this, _: &ClickEvent, _, cx| {
             OpCenter::clear_finished(cx);
-            // The button disappears once everything is cleared, so close the list too.
+            // Nothing left in the list once everything is cleared, so close it.
             if OpCenter::jobs(cx).is_empty() {
                 this.ops_open = false;
             }

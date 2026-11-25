@@ -162,7 +162,10 @@ fn the_ops_list_always_offers_the_same_header_buttons(cx: &mut TestAppContext) {
         drawn(cx, "op-center-pause") && drawn(cx, "op-center-clear"),
         "once it finished"
     );
-    assert!(!drawn(cx, "op-center-rule-1"), "one job, no hairline after it");
+    assert!(
+        !drawn(cx, "op-center-rule-1"),
+        "one job, no hairline after it"
+    );
 
     let clear = bounds(cx, "op-center-clear");
     cx.simulate_click(clear.center(), gpui::Modifiers::none());

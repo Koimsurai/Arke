@@ -2340,9 +2340,7 @@ fn toast_row(
             .gap(theme::s_8())
             .child(glyph)
             .child({
-                let message = div()
-                    .debug_selector(move || format!("{id}-text"))
-                    .min_w_0();
+                let message = div().debug_selector(move || format!("{id}-text")).min_w_0();
                 let message = if wrap {
                     message.line_clamp(TOAST_LINES).text_ellipsis()
                 } else {

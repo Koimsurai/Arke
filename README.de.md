@@ -292,9 +292,12 @@ können ihn an derselben Stelle wieder entfernen.
 ## Suchsyntax
 
 Geben Sie im Suchfeld etwas ein (Strg+F). Das Feld darunter legt den Bereich (dieser Ordner,
-Unterordner oder der ganze Computer) und die Filter fest; mit Tab gelangen Sie dorthin. Wörter werden
-unscharf abgeglichen, sodass `rprt` den Treffer `report` findet. Filter lassen sich auch eintippen und
-kombinieren:
+Unterordner oder der ganze Computer) und die Filter fest; mit Tab gelangen Sie dorthin. Dieser Ordner
+wird unscharf gefiltert, sodass `rprt` den Treffer `report` findet. Unterordner und der ganze Computer
+listen die Namen, die die Wörter wie eingegeben enthalten; Namen, die nur deren Buchstaben in der
+Reihenfolge haben, warten unter „Ähnliche Ergebnisse“, bis Sie es öffnen, und erscheinen sofort, wenn
+nichts genau passt. Mit `'` am Anfang (`'report`) nur genaue Treffer. Filter lassen sich auch eintippen
+und kombinieren:
 
 | Filter | Beispiel | Bedeutung |
 | --- | --- | --- |

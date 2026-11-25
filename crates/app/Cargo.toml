@@ -109,6 +109,10 @@ features = [
     "Wdk_Storage_FileSystem",
     # RtlGetVersion, to detect Windows 11 for Mica
     "Wdk_System_SystemServices",
+    # Launcher command lines and parents for "Open folders in Arke" (NtQueryInformationProcess)
+    "Wdk_System_Threading",
+    # New windows of File Explorer's launcher, for "Open folders in Arke" (SetWinEventHook)
+    "Win32_UI_Accessibility",
     # System image list (IImageList) for drag images
     "Win32_UI_Controls",
     # Re-enable Arke's window if the file dialog process dies while modal (EnableWindow)

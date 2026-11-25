@@ -2,7 +2,8 @@
 //!
 //! | Syntax | Meaning |
 //! |---|---|
-//! | `report` | fuzzy name match (`rprt` finds report) |
+//! | `report` | name match: as typed first, fuzzy (`rprt` finds report) only on request, see [`NameMatch`] |
+//! | `'report` | as typed only (no similar results) |
 //! | `docs\report` | last segment matches the name, the rest the containing folder |
 //! | `ext:pdf`, `ext:pdf;docx`, `*.pdf` | extension |
 //! | `size:>10mb`, `size:<1kb`, `size:1mb..10mb`, `size:large` | size (files only); `empty` `tiny` `small` `medium` `large` `huge` `gigantic` as in Everything |
@@ -151,6 +152,23 @@ pub struct Query {
     pub types: Vec<TypeFilter>,
     /// Text to find inside files (`content:`); may be empty while still being typed.
     pub content: Option<String>,
+    /// How the name text matches (not part of the typed text; [`Self::parse`] gives
+    /// [`NameMatch::Any`]).
+    pub names: NameMatch,
+}
+
+/// How a search matches the name text (#396). Searches list the names that have the text as
+/// typed ([`Self::Exact`]); the ones that only have its letters in order ([`Self::Similar`])
+/// are looked for only when asked, or when nothing matches as typed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NameMatch {
+    /// Fuzzy, exact matches included (the filter of this folder and Ctrl+T).
+    #[default]
+    Any,
+    /// As typed: every term appears in the name as it was typed.
+    Exact,
+    /// Fuzzy matches that aren't [`Self::Exact`] ones.
+    Similar,
 }
 
 const DAY: i64 = 86_400;
@@ -741,6 +759,59 @@ fn parse_date_filter(value: &str, clock: Clock) -> Option<(i64, i64)> {
     parse_date_span(value.strip_prefix('=').unwrap_or(value), clock)
 }
 
+// ───────────────────────── Exact and similar ─────────────────────────
+
+/// A term with no marks of its own (`!` `^` `'` `$`, or a `\` escaping one): fuzzy unless made a
+/// substring.
+fn is_plain(term: &str) -> bool {
+    !term.starts_with(['!', '^', '\'', '\\']) && !term.ends_with('$')
+}
+
+/// Name text for [`NameMatch::Exact`]: every plain term becomes a substring term (`'term`), so a
+/// name matches only when it contains each term as typed. Marked terms keep their meaning.
+pub fn exact_text(text: &str) -> String {
+    let terms: Vec<String> = text
+        .split_whitespace()
+        .map(|term| {
+            if is_plain(term) {
+                format!("'{term}")
+            } else {
+                term.to_string()
+            }
+        })
+        .collect();
+    terms.join(" ")
+}
+
+/// Name text for fuzzy matching ([`NameMatch::Any`] and [`NameMatch::Similar`]): plain ASCII
+/// terms of 1-2 chars match as substrings (like Everything). Fuzzy matching that short hits
+/// almost every name (`ca` matches anything with c then a, over a million names on C:), which is
+/// useless and slow. Two CJK chars are already specific, so those stay fuzzy.
+pub fn fuzzy_text(text: &str) -> String {
+    let terms: Vec<String> = text
+        .split_whitespace()
+        .map(|term| {
+            if is_plain(term) && term.is_ascii() && term.len() <= 2 {
+                format!("'{term}")
+            } else {
+                term.to_string()
+            }
+        })
+        .collect();
+    terms.join(" ")
+}
+
+/// Whether similar results can add anything to the exact ones for this name text
+/// ([`Query::text`]): it has a term that matches fuzzily, and doesn't start with `'` (which asks
+/// for exact matches only).
+pub fn has_similar(text: &str) -> bool {
+    let text = text.trim_start();
+    !text.starts_with('\'')
+        && text
+            .split_whitespace()
+            .any(|term| is_plain(term) && (!term.is_ascii() || term.len() > 2))
+}
+
 /// Looks like filter syntax (Ctrl+T uses it to tell it's not a path).
 pub fn has_filter_syntax(input: &str) -> bool {
     Query::parse(input, Clock::default()).has_filters()
@@ -968,5 +1039,31 @@ mod tests {
             set_facet(r#"content:"x y" size:empty"#, Facet::Size, None),
             r#"content:"x y""#
         );
+    }
+
+    /// #396: exact text makes every plain term a substring; fuzzy text only the short ones.
+    /// Marked terms keep their meaning in both.
+    #[test]
+    fn exact_and_fuzzy_name_text() {
+        assert_eq!(exact_text("validrive"), "'validrive");
+        assert_eq!(exact_text("  cargo  ab 中文 "), "'cargo 'ab '中文");
+        assert_eq!(
+            exact_text("^src !test .md$ 'x"),
+            "^src !test .md$ 'x",
+            "already exact"
+        );
+        assert_eq!(fuzzy_text("cargo ab 中文"), "cargo 'ab 中文");
+        assert_eq!(fuzzy_text("^a b$"), "^a b$");
+        // Similar results only when a term matches fuzzily, never with a leading `'`.
+        assert!(has_similar("validrive"));
+        assert!(has_similar("ab 相簿"), "CJK terms match fuzzily");
+        assert!(!has_similar("ab cd"), "short terms are substrings anyway");
+        assert!(!has_similar("'validrive"), "exact only");
+        assert!(!has_similar("  'validrive other"), "exact only");
+        assert!(!has_similar("^report .pdf$ !old"));
+        assert!(!has_similar(""));
+        // The parsed name text: filters aren't part of it.
+        assert!(!has_similar(&Query::parse("ext:pdf dm:today", tw()).text));
+        assert_eq!(Query::parse("report", tw()).names, NameMatch::Any);
     }
 }

@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arke_core::format::format_count;
-use arke_core::index::IndexHit;
 use arke_core::index_query as iq;
 use arke_core::index_query::Facet;
 use arke_core::{Entry, EntryKind, SearchHit, SearchResults};
@@ -33,7 +32,7 @@ use rust_i18n::t;
 use super::Explorer;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
-use crate::global_search::GlobalSearch;
+use crate::global_search::{Found, GlobalSearch};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
 
@@ -184,10 +183,13 @@ impl Scope {
 }
 
 /// Convert index hits to search results: empty root, full path in `rel` (`root.join(rel)` is the
-/// path).
-fn to_results(hits: Vec<IndexHit>, generation: arke_core::service::Gen) -> SearchResults {
-    let hits: Vec<Arc<SearchHit>> = hits
+/// path). Similar hits, when looked for, come after the exact ones (#396).
+fn to_results(found: Found, generation: arke_core::service::Gen) -> SearchResults {
+    let similar = found.similar.as_ref().map_or(0, Vec::len);
+    let hits: Vec<Arc<SearchHit>> = found
+        .exact
         .into_iter()
+        .chain(found.similar.into_iter().flatten())
         .map(|hit| {
             let name = hit.path.file_name().map_or_else(
                 || hit.path.display().to_string(),
@@ -216,6 +218,7 @@ fn to_results(hits: Vec<IndexHit>, generation: arke_core::service::Gen) -> Searc
         truncated: false,
         contents: false,
         read: 0,
+        similar,
     }
 }
 
@@ -242,6 +245,10 @@ impl Explorer {
             return;
         }
         let global = scope == Scope::Computer;
+        // Similar results open (or shown because nothing matched as typed) in one scope stay
+        // closed in another until asked for there.
+        self.similar_open = None;
+        self.similar_fallback = None;
         if self.search_mode && global != self.search_global {
             // Subfolders <-> this PC: old results can't stay.
             self.search.stop();
@@ -569,7 +576,8 @@ impl Explorer {
             if query.is_empty() || !g.enabled() {
                 None
             } else {
-                g.search(query.clone(), MAX_COMPUTER_HITS, cx)
+                // Similar names (#396) only once asked for, or when none match as typed.
+                g.search(query.clone(), MAX_COMPUTER_HITS, self.similar_opened(), cx)
             }
         });
         let Some(search) = search else {
@@ -580,17 +588,19 @@ impl Explorer {
             return;
         };
         self.global_task = Some(cx.spawn(async move |this, cx| {
-            let hits = search.await;
+            let found = search.await;
             let _ = this.update(cx, |this, cx| {
                 if this.global_serial != serial || this.scope() != Scope::Computer {
                     return;
                 }
-                let results = this.without_gone(to_results(hits, this.search.current_gen()));
+                let results = this.without_gone(to_results(found, this.search.current_gen()));
                 let results = this.arrange_results(results);
                 let len = results.hits.len();
                 this.search_cursor = match this.search_cursor {
                     _ if len == 0 => None,
                     Some(ix) => Some(ix.min(len - 1)),
+                    // On "Similar results" (just opened): it stays there.
+                    None if this.similar_focused() => None,
                     None => Some(0),
                 };
                 this.search_results = Some(results);
@@ -628,12 +638,16 @@ impl Explorer {
     pub(super) fn computer_info(&self, cx: &App) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some(r) = &self.search_results {
-            // The index returns only the top matches, so the total is unknown.
-            parts.push(if r.hits.len() >= MAX_COMPUTER_HITS {
-                t!("scope.top_hits", count = format_count(MAX_COMPUTER_HITS)).into_owned()
-            } else {
-                tn!("info.matched", r.hits.len()).into_owned()
-            });
+            // The index returns only the top matches, so the total is unknown. Exact and similar
+            // matches are capped apart.
+            let exact = r.hits.len() - r.similar;
+            parts.push(
+                if exact >= MAX_COMPUTER_HITS || r.similar >= MAX_COMPUTER_HITS {
+                    t!("scope.top_hits", count = format_count(MAX_COMPUTER_HITS)).into_owned()
+                } else {
+                    tn!("info.matched", r.hits.len()).into_owned()
+                },
+            );
         }
         if let Some(status) = index_status_text(cx) {
             parts.push(status);

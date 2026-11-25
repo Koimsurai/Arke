@@ -286,8 +286,11 @@ perfil de outros usuários. Você pode removê-lo no mesmo lugar.
 ## Sintaxe de pesquisa
 
 Digite na caixa de pesquisa (Ctrl+F). O painel abaixo dela escolhe o escopo (esta pasta, subpastas
-ou todo o computador) e os filtros; Tab move o foco para ele. As palavras são comparadas de forma
-aproximada, então `rprt` encontra `report`. Os filtros também podem ser digitados e combinados:
+ou todo o computador) e os filtros; Tab move o foco para ele. Esta pasta é filtrada de forma
+aproximada, então `rprt` encontra `report`. Subpastas e todo o computador listam os nomes que contêm as
+palavras como foram digitadas; os que só têm as letras na ordem ficam em "Resultados semelhantes" até
+que seja aberto, e aparecem na hora quando nada corresponde exatamente. Comece com `'` (`'report`) para
+ver só correspondências exatas. Os filtros também podem ser digitados e combinados:
 
 | Filtro | Exemplo | Significado |
 | --- | --- | --- |

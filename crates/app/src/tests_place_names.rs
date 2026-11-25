@@ -437,3 +437,36 @@ fn network_menus_keep_the_folder_order(cx: &mut TestAppContext) {
         "{share:?}"
     );
 }
+
+/// With Network hidden, a mapped drive stays in reach: it is listed under This PC, as File Explorer
+/// lists it, and goes back under Network when Network shows again (#387).
+#[gpui::test]
+fn a_mapped_drive_moves_under_this_pc_while_network_is_hidden(cx: &mut TestAppContext) {
+    use crate::settings::SidebarSection;
+    let (_ws, cx) = window(cx);
+    let label = r"docs (\\nas) (Z:)";
+    let row = |cx: &mut VisualTestContext| {
+        refresh(cx);
+        let id: &'static str = Box::leak(format!("sidebar {label}").into_boxed_str());
+        cx.debug_bounds(id).expect("the drive is listed")
+    };
+    let under_network = row(cx);
+    let network = cx.debug_bounds("network-header").expect("Network is shown");
+    assert!(under_network.top() > network.top(), "under Network");
+
+    change(cx, |st| st.set_hidden(SidebarSection::Network, true));
+    let under_this_pc = row(cx);
+    assert!(
+        cx.debug_bounds("network-header").is_none(),
+        "Network hidden"
+    );
+    let this_pc = cx.debug_bounds("this-pc-header").expect("This PC is shown");
+    assert!(under_this_pc.top() > this_pc.top(), "under This PC");
+    assert!(
+        sidebar_shows(cx, "Local Disk (C:)"),
+        "the local drive stays too"
+    );
+
+    change(cx, |st| st.set_hidden(SidebarSection::Network, false));
+    assert!(row(cx).top() > cx.debug_bounds("network-header").unwrap().top());
+}

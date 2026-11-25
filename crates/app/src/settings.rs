@@ -760,6 +760,10 @@ pub(crate) struct Settings {
     /// Download route for updates (`update_route.rs`): empty for GitHub directly, an https prefix
     /// or an HTTP proxy `host:port`. Only update checks and downloads use it.
     pub(crate) update_route: String,
+    /// Windows' RedirectionGuard is on for every program on this PC (a policy): the copy Arke
+    /// started again through the desktop shell still had it, so later starts don't try that
+    /// (`redirection_guard.rs`). Cleared by a start without it. Per machine: not exported.
+    pub(crate) redirection_guard_by_policy: bool,
     /// What's new (`whats_new.rs`): open it after an update, and the version it last saw (`None`
     /// before Arke 0.4 recorded it).
     pub(crate) whats_new_auto: bool,
@@ -891,6 +895,7 @@ impl Default for Settings {
             update_checked: None,
             update_dismissed: None,
             update_route: String::new(),
+            redirection_guard_by_policy: false,
             whats_new_auto: true,
             whats_new_seen: None,
             open_with_extra: Vec::new(),
@@ -1257,6 +1262,9 @@ impl SettingsStore {
         self.loaded = true;
         self.last_session_folder = loaded.recent.first().cloned();
         let file = loaded.clone();
+        // What this start found out about RedirectionGuard, written like any change.
+        loaded.redirection_guard_by_policy =
+            crate::redirection_guard::remembered_policy(loaded.redirection_guard_by_policy);
         for path in self.settings.recent.iter().rev() {
             loaded.remember(path);
         }
@@ -1372,19 +1380,28 @@ pub(crate) fn turn_off_takeover(path: &Path) -> bool {
 /// file before anything else starts (the folder handler deciding where Home goes). Off when the
 /// file is missing or unreadable; nothing is written.
 pub(crate) fn home_opens_arke() -> bool {
-    default_path()
-        .and_then(|path| std::fs::read(path).ok())
-        .is_some_and(|bytes| win_e_switch(&bytes))
+    file_switch("win_e_opens_arke")
 }
 
-fn win_e_switch(bytes: &[u8]) -> bool {
+/// `redirection_guard_by_policy`, read straight from the settings file like [`home_opens_arke`]:
+/// startup decides with it before the settings are loaded, and only when RedirectionGuard is on.
+pub(crate) fn redirection_guard_by_policy() -> bool {
+    file_switch("redirection_guard_by_policy")
+}
+
+/// One on/off setting from the settings file, without loading the rest. Off when the file is
+/// missing or unreadable.
+fn file_switch(key: &str) -> bool {
+    default_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .is_some_and(|bytes| switch(&bytes, key))
+}
+
+fn switch(bytes: &[u8], key: &str) -> bool {
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
-        .and_then(|v| {
-            v.get("win_e_opens_arke")
-                .and_then(serde_json::Value::as_bool)
-        })
+        .and_then(|v| v.get(key).and_then(serde_json::Value::as_bool))
         .unwrap_or(false)
 }
 
@@ -1639,6 +1656,7 @@ impl Settings {
         out.session_windows.clear();
         out.window = None;
         out.recent.clear();
+        out.redirection_guard_by_policy = false;
         out
     }
 
@@ -1648,6 +1666,7 @@ impl Settings {
         from.session_windows.clone_from(&self.session_windows);
         from.window = self.window;
         from.recent.clone_from(&self.recent);
+        from.redirection_guard_by_policy = self.redirection_guard_by_policy;
         from
     }
 }
@@ -1858,14 +1877,19 @@ mod tests {
     fn hidden_sections_are_kept() {
         let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
         assert!(Settings::default().hidden_sections.is_empty());
-        let later = read(br#"{"hidden_sections": ["home", "someday", "this_pc", "home"]}"#);
+        let later =
+            read(br#"{"hidden_sections": ["home", "someday", "this_pc", "home", "network"]}"#);
         assert_eq!(
             later.hidden_sections,
-            vec![SidebarSection::Home, SidebarSection::ThisPc]
+            vec![
+                SidebarSection::Home,
+                SidebarSection::ThisPc,
+                SidebarSection::Network
+            ]
         );
         let json = serde_json::to_string(&later).unwrap();
         assert!(
-            json.contains(r#""hidden_sections":["home","this_pc"]"#),
+            json.contains(r#""hidden_sections":["home","this_pc","network"]"#),
             "{json}"
         );
 
@@ -2276,14 +2300,45 @@ mod tests {
 
     #[test]
     fn the_win_e_switch_is_read_without_loading_the_rest() {
-        assert!(win_e_switch(br#"{"win_e_opens_arke":true,"pinned":[]}"#));
-        assert!(win_e_switch(b"\xEF\xBB\xBF{\"win_e_opens_arke\":true}"));
-        assert!(!win_e_switch(br#"{"win_e_opens_arke":false}"#));
+        assert!(switch(
+            br#"{"win_e_opens_arke":true,"pinned":[]}"#,
+            "win_e_opens_arke"
+        ));
+        assert!(switch(
+            b"\xEF\xBB\xBF{\"win_e_opens_arke\":true}",
+            "win_e_opens_arke"
+        ));
+        assert!(!switch(
+            br#"{"win_e_opens_arke":false}"#,
+            "win_e_opens_arke"
+        ));
         assert!(
-            !win_e_switch(br#"{"open_folders_in_arke":true}"#),
+            !switch(br#"{"open_folders_in_arke":true}"#, "win_e_opens_arke"),
             "off unless set"
         );
-        assert!(!win_e_switch(b"{ broken"));
+        assert!(!switch(b"{ broken", "win_e_opens_arke"));
+    }
+
+    #[test]
+    fn the_redirection_guard_policy_is_off_by_default_and_per_machine() {
+        let key = "redirection_guard_by_policy";
+        assert!(!Settings::default().redirection_guard_by_policy);
+        let old = parse_settings(br#"{"pinned":[]}"#, Path::new("settings.json")).unwrap();
+        assert!(!old.redirection_guard_by_policy, "missing in older files");
+        let on = Settings {
+            redirection_guard_by_policy: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_vec(&on).unwrap();
+        assert!(switch(&json, key), "read early without loading the rest");
+        assert!(!switch(br#"{"pinned":[]}"#, key));
+        let back: Settings = serde_json::from_slice(&json).unwrap();
+        assert!(back.redirection_guard_by_policy);
+        // A policy of this PC: not exported, and an import keeps this PC's.
+        let exported = export_json(&on).unwrap();
+        assert!(!parse_export(&exported).unwrap().redirection_guard_by_policy);
+        assert!(on.imported(Settings::default()).redirection_guard_by_policy);
+        assert!(!Settings::default().imported(on).redirection_guard_by_policy);
     }
 
     #[test]

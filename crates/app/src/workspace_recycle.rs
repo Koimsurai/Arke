@@ -20,6 +20,10 @@ pub(super) struct RecyclePage {
     view: Entity<RecycleBin>,
     /// Tab that owns the page.
     pub(super) owner: super::pages::Owner,
+    /// "Open folders in Arke" showed it after ending File Explorer's launcher (#285), with the
+    /// mark's place in order: a File Explorer window on the Recycle Bin that comes anyway shows
+    /// here once (`Workspace::merge_early`). Goes with the page.
+    pub(super) early: Option<u64>,
     _events: Subscription,
 }
 
@@ -53,6 +57,7 @@ impl Workspace {
         self.recycle_page = Some(RecyclePage {
             view,
             owner: self.owner_here(new_tab, cx),
+            early: None,
             _events: events,
         });
         cx.notify();

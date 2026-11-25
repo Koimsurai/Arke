@@ -387,6 +387,7 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     let hide = t!("sidebar.hide_section").into_owned();
     let this_pc = t!("sidebar.this_pc").into_owned();
     let favorites = t!("sidebar.favorites").into_owned();
+    let network = t!("sidebar.network").into_owned();
 
     let at = bounds(cx, "this-pc-header").center();
     right_click(cx, at);
@@ -398,7 +399,7 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
         "hidden, not collapsed"
     );
     assert!(!drawn(cx, "this-pc-header"), "gone, heading and all");
-    assert!(drawn(cx, "network-header"), "Network stays");
+    assert!(drawn(cx, "network-header"), "Network stays until hidden");
 
     let at = bounds(cx, "pin-list-label").center();
     right_click(cx, at);
@@ -417,17 +418,18 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
         Some(vec![
             t!("home.title").into_owned(),
             favorites.clone(),
-            this_pc.clone()
+            this_pc.clone(),
+            network
         ])
     );
-    assert_eq!(checks(&ws, cx), Some(vec![true, false, false]));
+    assert_eq!(checks(&ws, cx), Some(vec![true, false, false, true]));
     pick(&ws, cx, &this_pc);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Favorites]);
     assert!(drawn(cx, "this-pc-header"), "back");
 
     let at = bounds(cx, "tab-list-end").center();
     right_click(cx, at);
-    assert_eq!(checks(&ws, cx), Some(vec![true, false, true]));
+    assert_eq!(checks(&ws, cx), Some(vec![true, false, true, true]));
     pick(&ws, cx, &favorites);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(
@@ -437,7 +439,7 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
 }
 
 /// Home hides from its row's menu, its tiles with it; the list under Favorites stays. A right
-/// click on a heading that can't be hidden (Network) is the sidebar's: it brings Home back.
+/// click on the Network heading hides it; the sidebar's empty space brings Home back.
 #[gpui::test]
 fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
@@ -457,9 +459,9 @@ fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
     assert!(!drawn(cx, "open-home") && !drawn(cx, "tile-slot-0"));
     assert!(drawn(cx, "pin-row-0"), "the list stays");
 
-    let at = bounds(cx, "network-header").center();
+    let at = bounds(cx, "tab-list-end").center();
     right_click(cx, at);
-    assert_eq!(checks(&ws, cx), Some(vec![false, true, true]));
+    assert_eq!(checks(&ws, cx), Some(vec![false, true, true, true]));
     pick(&ws, cx, &home);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "open-home") && drawn(cx, "tile-slot-0"));
@@ -494,4 +496,27 @@ fn the_recycle_bin_comes_back_from_the_sidebars_menu(cx: &mut TestAppContext) {
         !settings.is_hidden(SidebarSection::Favorites),
         "the favorites show, with it"
     );
+}
+
+/// Network hides from its heading's menu and comes back from the sidebar's empty space (#387).
+#[gpui::test]
+fn network_hides_and_comes_back(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let hide = t!("sidebar.hide_section").into_owned();
+    let network = t!("sidebar.network").into_owned();
+
+    let at = bounds(cx, "network-header").center();
+    right_click(cx, at);
+    assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
+    pick(&ws, cx, &hide);
+    assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Network]);
+    assert!(!drawn(cx, "network-header"), "gone, heading and all");
+    assert!(drawn(cx, "this-pc-header"), "This PC stays");
+
+    let at = bounds(cx, "tab-list-end").center();
+    right_click(cx, at);
+    assert_eq!(checks(&ws, cx), Some(vec![true, true, true, false]));
+    pick(&ws, cx, &network);
+    assert!(current(cx).hidden_sections.is_empty());
+    assert!(drawn(cx, "network-header"), "back");
 }

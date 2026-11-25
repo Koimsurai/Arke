@@ -1,0 +1,31 @@
+# Installs the Inno Setup that builds installer/arke.iss and points ISCC at it (xtask reads ISCC
+# first, so a different Inno Setup on the runner image isn't used).
+#
+# 6.7.4 or later: 6.7.0 to 6.7.3 pass Windows' RedirectionGuard on to the Arke that Setup starts,
+# which then can't open junctions such as Scoop's `current` (#406). Chocolatey only has 6.7.1, so
+# it comes from the project's own release, checked against its SHA-256 (the release asset's
+# `digest`). Update the version and the hash together.
+name: install Inno Setup
+description: Installs a pinned Inno Setup, checked against its SHA-256, and sets ISCC
+
+runs:
+  using: composite
+  steps:
+    - name: install Inno Setup
+      shell: pwsh
+      env:
+        INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
+        INNO_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $setup = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+        Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
+        $hash = (Get-FileHash -Path $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -ne $env:INNO_SHA256) { throw "Inno Setup SHA-256 mismatch: $hash" }
+        $dir = Join-Path $env:RUNNER_TEMP 'inno-setup'
+        $switches = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/ALLUSERS', '/NOICONS', "/DIR=$dir"
+        $installed = Start-Process -FilePath $setup -ArgumentList $switches -Wait -PassThru
+        if ($installed.ExitCode -ne 0) { throw "Inno Setup install failed ($($installed.ExitCode))" }
+        $iscc = Join-Path $dir 'ISCC.exe'
+        if (-not (Test-Path $iscc)) { throw "$iscc not found" }
+        "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

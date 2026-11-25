@@ -775,6 +775,23 @@ fn a_tile_back_over_the_empty_cell_is_a_tile_again(cx: &mut TestAppContext) {
     );
 }
 
+/// A press on the line above the tabs that doesn't move keeps the room shared by itself: only a
+/// drag sets the places' height.
+#[gpui::test]
+fn a_click_on_the_line_above_the_tabs_changes_nothing(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.pinned = vec![p("a"), p("b"), p("c"), p("d")];
+    });
+    cx.simulate_resize(gpui::size(px(1200.), px(700.)));
+    refresh(cx);
+    let line = bounds(cx, "sidebar-split").center();
+    cx.simulate_mouse_down(line, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(line, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(current(cx).sidebar_split, 0.);
+}
+
 /// The line between the places and the tabs: dragged down, the places take that much more room
 /// (saved, at 100% scale); double-clicked, the room is shared by itself again.
 #[gpui::test]

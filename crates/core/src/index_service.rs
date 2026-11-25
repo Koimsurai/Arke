@@ -37,7 +37,7 @@ use crate::fs::{Fs, WatchEvent};
 use crate::index::{
     BuildProgress, BuildRules, Index, IndexHit, Overlay, Search, Seen, descends_into, is_indexable,
 };
-use crate::index_query::{Clock, Query};
+use crate::index_query::{Clock, NameMatch, Query};
 use crate::journal::{Change, Cursor, Journal, JournalEvent};
 use crate::rank::Stat;
 
@@ -326,7 +326,7 @@ struct Shared {
     /// Which roots are caught up with the journal (same order as `opts.roots`).
     caught_up: Mutex<Vec<bool>>,
     /// Matches of the previous query, used to narrow the next one.
-    narrow: Mutex<Option<Narrow>>,
+    narrow: Mutex<Narrows>,
     /// The folder watcher works: attached to every watched root, and no events lost since.
     watch_alive: AtomicBool,
     /// Bumped each time the watcher is attached to every watched root.
@@ -345,6 +345,32 @@ struct Narrow {
     input: String,
     show_hidden: bool,
     ids: Arc<Vec<u32>>,
+}
+
+impl Narrow {
+    /// The ids if `input` can be searched within them.
+    fn for_input(
+        &self,
+        index: &Arc<Index>,
+        show_hidden: bool,
+        input: &str,
+    ) -> Option<&Arc<Vec<u32>>> {
+        (Weak::ptr_eq(&self.index, &Arc::downgrade(index))
+            && self.show_hidden == show_hidden
+            && refines(&self.input, input))
+        .then_some(&self.ids)
+    }
+}
+
+/// Matches kept for narrowing, one set per kind of search (#396): the last exact search's, and
+/// the last fuzzy one's ([`NameMatch::Any`] or [`NameMatch::Similar`], exact names included).
+/// An exact search can search within either (an exact match is a fuzzy match too), a fuzzy one
+/// only within fuzzy matches. Kept apart, typing on narrows both kinds when nothing matches as
+/// typed and each keystroke runs both.
+#[derive(Default)]
+struct Narrows {
+    exact: Option<Narrow>,
+    fuzzy: Option<Narrow>,
 }
 
 /// Plain name query (no filters, folders, exclusions or other syntax): can search within the
@@ -416,7 +442,7 @@ impl IndexService {
             followers: Mutex::new(Vec::new()),
             live: std::sync::atomic::AtomicUsize::new(0),
             caught_up: Mutex::new(Vec::new()),
-            narrow: Mutex::new(None),
+            narrow: Mutex::new(Narrows::default()),
             watch_alive: AtomicBool::new(false),
             watch_epoch: std::sync::atomic::AtomicU64::new(0),
             fresh_epoch: std::sync::atomic::AtomicU64::new(0),
@@ -516,7 +542,8 @@ impl IndexService {
         }
     }
 
-    /// Runs a query (on a background thread). `clock` is for date filters like `dm:today`.
+    /// Runs a query (on a background thread), fuzzy with exact matches included
+    /// ([`NameMatch::Any`]). `clock` is for date filters like `dm:today`.
     pub fn search(
         &self,
         input: &str,
@@ -524,16 +551,25 @@ impl IndexService {
         limit: usize,
         show_hidden: bool,
     ) -> Vec<IndexHit> {
-        self.search_until(input, clock, limit, show_hidden, &AtomicBool::new(false))
-            .unwrap_or_default()
+        self.search_until(
+            input,
+            clock,
+            NameMatch::Any,
+            limit,
+            show_hidden,
+            &AtomicBool::new(false),
+        )
+        .unwrap_or_default()
     }
 
-    /// [`IndexService::search`] that gives up once `cancel` is set (the user typed on and a newer
-    /// query replaced this one): `None`, and the scan stops within one chunk.
+    /// [`IndexService::search`] with the name matching `names`, that gives up once `cancel` is set
+    /// (the user typed on and a newer query replaced this one): `None`, and the scan stops within
+    /// one chunk.
     pub fn search_until(
         &self,
         input: &str,
         clock: Clock,
+        names: NameMatch,
         limit: usize,
         show_hidden: bool,
         cancel: &AtomicBool,
@@ -543,15 +579,30 @@ impl IndexService {
         let Some(index) = index.or_else(|| self.shared.progress.partial.lock().clone()) else {
             return Some(Vec::new());
         };
-        let query = Query::parse(input, clock);
+        let query = Query {
+            names,
+            ..Query::parse(input, clock)
+        };
         let narrowable = can_narrow(input);
         let within = if narrowable {
-            self.shared.narrow.lock().as_ref().and_then(|n| {
-                (Weak::ptr_eq(&n.index, &Arc::downgrade(&index))
-                    && n.show_hidden == show_hidden
-                    && refines(&n.input, input))
-                .then(|| Arc::clone(&n.ids))
-            })
+            let narrows = self.shared.narrow.lock();
+            let fuzzy = narrows
+                .fuzzy
+                .as_ref()
+                .and_then(|n| n.for_input(&index, show_hidden, input));
+            let exact = narrows
+                .exact
+                .as_ref()
+                .filter(|_| names == NameMatch::Exact)
+                .and_then(|n| n.for_input(&index, show_hidden, input));
+            // The fewer to look through, the better.
+            let within = match (exact, fuzzy) {
+                (Some(e), Some(f)) if f.len() < e.len() => Some(Arc::clone(f)),
+                (Some(e), _) => Some(Arc::clone(e)),
+                (None, f) => f.map(Arc::clone),
+            };
+            drop(narrows);
+            within
         } else {
             None
         };
@@ -569,12 +620,18 @@ impl IndexService {
             return None;
         }
         if let Some(ids) = result.matched {
-            *self.shared.narrow.lock() = Some(Narrow {
+            let kept = Some(Narrow {
                 index: Arc::downgrade(&index),
                 input: input.trim().to_string(),
                 show_hidden,
                 ids: Arc::new(ids),
             });
+            let mut narrows = self.shared.narrow.lock();
+            if names == NameMatch::Exact {
+                narrows.exact = kept;
+            } else {
+                narrows.fuzzy = kept;
+            }
         }
         Some(
             self.shared
@@ -591,11 +648,15 @@ impl IndexService {
         &self,
         input: &str,
         clock: Clock,
+        names: NameMatch,
         show_hidden: bool,
         snapshot: &FrecencySnapshot,
         max: usize,
     ) -> Vec<IndexHit> {
-        let query = Query::parse(input, clock);
+        let query = Query {
+            names,
+            ..Query::parse(input, clock)
+        };
         let shared = &self.shared;
         crate::rank::frecent_hits(
             snapshot,
@@ -3215,6 +3276,7 @@ mod tests {
             svc.search_until(
                 "report",
                 Clock::default(),
+                NameMatch::Any,
                 10,
                 false,
                 &AtomicBool::new(cancel),
@@ -3223,6 +3285,38 @@ mod tests {
         };
         assert_eq!(run(false), Some(1));
         assert_eq!(run(true), None);
+    }
+
+    /// Narrowing while typing (#396): a similar search never searches within an exact one's
+    /// matches (that would miss names with the letters spread out), while an exact search can
+    /// search within a similar one's (it keeps every fuzzy match, exact names included).
+    #[test]
+    fn similar_searches_dont_narrow_from_exact_ones() {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\a",
+            vec![
+                Entry::new("report.txt", EntryKind::File, 1, None, 0),
+                Entry::new("r_e_p_o_r_t.txt", EntryKind::File, 1, None, 0),
+            ],
+        );
+        let svc = IndexService::start(fs, opts(None), || {});
+        wait("built", || ready(&svc));
+        let run = |input: &str, names: NameMatch| {
+            let cancel = AtomicBool::new(false);
+            let hits = svc.search_until(input, Clock::default(), names, 10, false, &cancel);
+            let mut found: Vec<String> = hits
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|h| Some(h.path.file_name()?.to_string_lossy().into_owned()))
+                .collect();
+            found.sort();
+            found
+        };
+        assert_eq!(run("repo", NameMatch::Exact), ["report.txt"]);
+        assert_eq!(run("report", NameMatch::Similar), ["r_e_p_o_r_t.txt"]);
+        assert_eq!(run("report.", NameMatch::Exact), ["report.txt"]);
+        assert_eq!(run("report.t", NameMatch::Similar), ["r_e_p_o_r_t.txt"]);
     }
 
     /// Every rebuild carries its reason (it goes into the log line): first build, too many

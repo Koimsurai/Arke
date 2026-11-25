@@ -952,6 +952,12 @@ impl Shell for RemoteShell {
         }
         self.inner.cloud_scan(dir, items)
     }
+    fn folder_visit(&self, slot: u64, visit: Option<crate::shell::FolderVisit>) {
+        if visit.as_ref().is_some_and(|v| remote(&v.dir).is_some()) {
+            return;
+        }
+        self.inner.folder_visit(slot, visit);
+    }
 }
 
 /// The phones connected now, as last read ([`refresh_phones`]). Reading them takes WPD a moment

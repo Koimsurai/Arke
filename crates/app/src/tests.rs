@@ -82,6 +82,8 @@ mod sidebar_keys;
 mod sidebar_sections;
 #[path = "tests_sidebar_tree.rs"]
 mod sidebar_tree;
+#[path = "tests_similar_results.rs"]
+mod similar_results;
 #[path = "tests_small_behaviors.rs"]
 mod small_behaviors;
 #[path = "tests_sort_options.rs"]
@@ -129,6 +131,9 @@ struct FakeClipboardData(::windows::Win32::System::Com::IDataObject);
 unsafe impl Send for FakeClipboardData {}
 // SAFETY: as above.
 unsafe impl Sync for FakeClipboardData {}
+
+/// What a folder visit reports when the shell selects items in it.
+type SelectCallback = Box<dyn Fn(Vec<Arc<str>>) + Send>;
 
 #[derive(Default)]
 struct FakeShell {
@@ -238,6 +243,10 @@ struct FakeShell {
     /// What `cloud_scan` reports, and the folders and items it was asked about.
     cloud: Mutex<crate::shell::CloudScan>,
     cloud_scans: Mutex<Vec<(PathBuf, Vec<Arc<str>>)>>,
+    /// What panes told the shell they show (`None`: left), and the last visit's callbacks.
+    folder_visits: Mutex<Vec<(u64, Option<PathBuf>)>>,
+    visit_changed: Mutex<Option<Box<dyn Fn() + Send>>>,
+    visit_select: Mutex<Option<SelectCallback>>,
     /// Network probe handed to the directory service (servers and their shares).
     net_probe: Mutex<Option<Arc<dyn arke_core::net::NetProbe>>>,
     /// Items deletes fail on: why, and the programs holding them.
@@ -1031,6 +1040,16 @@ impl Shell for FakeShell {
             .lock()
             .push((dir.to_path_buf(), items.to_vec()));
         self.cloud.lock().clone()
+    }
+
+    fn folder_visit(&self, slot: u64, visit: Option<crate::shell::FolderVisit>) {
+        self.folder_visits
+            .lock()
+            .push((slot, visit.as_ref().map(|v| v.dir.clone())));
+        if let Some(visit) = visit {
+            *self.visit_changed.lock() = Some(visit.changed);
+            *self.visit_select.lock() = Some(visit.select);
+        }
     }
 
     fn recent_files_enabled(&self) -> bool {
@@ -2123,6 +2142,92 @@ fn setup_workspace_services(
             cx,
         )
     })
+}
+
+/// #285: the Recycle Bin the early path opened is where a File Explorer window on it that comes
+/// anyway shows, while that page is open; a folder window doesn't go there, and once the page
+/// closed nothing is marked.
+#[gpui::test]
+fn a_late_recycle_bin_window_shows_in_the_page_opened_early(cx: &mut TestAppContext) {
+    use arke_core::takeover::Target;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\home", 1);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::default(), r"C:\home");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\home"));
+    let merge = |cx: &mut VisualTestContext, target: &Target| {
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.merge_early(target, Vec::new(), window, cx))
+        })
+    };
+    assert!(!merge(cx, &Target::RecycleBin), "nothing marked yet");
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_external(Target::RecycleBin, Vec::new(), window, cx);
+            ws.mark_early(&Target::RecycleBin, cx);
+        });
+    });
+    cx.run_until_parked();
+    let tabs = ws.update(cx, |ws, _| ws.tab_views().count());
+    assert_eq!(tabs, 2, "the page has a tab of its own");
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.activate(0, window, cx)));
+    assert!(merge(cx, &Target::RecycleBin));
+    ws.update(cx, |ws, _| {
+        assert_eq!(ws.tab_views().count(), tabs, "no other tab");
+        assert_eq!(ws.active, 1, "the page's tab comes forward");
+    });
+    assert!(!merge(cx, &Target::RecycleBin), "used once");
+    assert!(!merge(cx, &Target::Folder(PathBuf::from(r"C:\home"))));
+    // Marked again (another launch), then the page closes: the mark goes with it.
+    cx.update(|_, cx| ws.update(cx, |ws, cx| ws.mark_early(&Target::RecycleBin, cx)));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_recycle_for_test(window, cx)));
+    cx.run_until_parked();
+    assert!(
+        !merge(cx, &Target::RecycleBin),
+        "the mark went with the page"
+    );
+}
+
+/// #285: two tabs of one window marked for the same folder (two quick launches): a late File
+/// Explorer window goes to the newest mark, the next to the other, then none is left.
+#[gpui::test]
+fn the_newest_early_mark_takes_the_late_window(cx: &mut TestAppContext) {
+    use arke_core::takeover::Target;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\home", 1);
+    fs.insert_many(r"C:\work", 2);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::default(), r"C:\home");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\home"));
+    let work = Target::Folder(PathBuf::from(r"C:\work"));
+    let mut views = Vec::new();
+    for at in [1, 2] {
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_tab(PathBuf::from(r"C:\work"), at, true, window, cx);
+                ws.mark_early(&work, cx);
+            });
+        });
+        let view = ws.update(cx, |ws, _| ws.active_view().clone());
+        wait_until(cx, &view, "work", loaded(r"C:\work"));
+        views.push(view);
+    }
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.activate(0, window, cx)));
+    let merge = |cx: &mut VisualTestContext| {
+        let select = vec![Arc::from("file_000001.txt")];
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.merge_early(&work, select, window, cx)))
+    };
+    assert!(merge(cx));
+    assert_eq!(ws.update(cx, |ws, _| ws.active), 2, "the newer tab");
+    assert_eq!(
+        views[1].update(cx, |v, _| selected_names(v)),
+        ["file_000001.txt"]
+    );
+    assert!(views[0].update(cx, |v, _| selected_names(v)).is_empty());
+    assert!(merge(cx));
+    assert_eq!(ws.update(cx, |ws, _| ws.active), 1, "then the older one");
+    assert!(!merge(cx), "both used");
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 3);
 }
 
 fn tab_paths(ws: &Workspace, cx: &App) -> Vec<Option<PathBuf>> {

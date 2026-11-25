@@ -73,6 +73,8 @@ mod preview;
 pub(crate) mod scope;
 #[path = "explorer_shelf.rs"]
 mod shelf_ops;
+#[path = "explorer_similar.rs"]
+pub(crate) mod similar;
 #[path = "explorer_sizes.rs"]
 mod sizes;
 #[path = "explorer_sortopts.rs"]
@@ -391,6 +393,22 @@ pub(crate) enum AppEvent {
         dir: PathBuf,
         version: u64,
         scan: crate::shell::CloudScan,
+    },
+    /// The shell hints that the items of this folder changed (`explorer_cloud.rs`).
+    CloudFolderHint(PathBuf),
+    /// Listing the folder shown as `generation` (at `version`) again finished; `changed`: items
+    /// came or went.
+    CloudRechecked {
+        dir: PathBuf,
+        generation: Gen,
+        version: u64,
+        changed: bool,
+    },
+    /// A "Show in folder" caller selected these items of `dir` through the shell's window list
+    /// (`win_folder_visit.rs`).
+    ShellSelected {
+        dir: PathBuf,
+        names: Vec<Arc<str>>,
     },
     /// The Windows context menu ("Show more options" and pinned commands).
     ShellMenu(menu::ShellMenuEvent),
@@ -788,6 +806,14 @@ pub(crate) struct Explorer {
     /// hits at or below these are left out of every result until the next fresh walk.
     search_gone: Vec<PathBuf>,
     pub(crate) search_cursor: Option<usize>,
+    /// "Similar results" (#396) were opened for this query text; another text closes them.
+    similar_open: Option<String>,
+    /// Nothing in the subfolders matched this query text as typed, so the walk lists similar
+    /// names instead (#396).
+    similar_fallback: Option<String>,
+    /// The keyboard cursor is on the "Similar results" row (`search_cursor` is then `None`: the
+    /// row isn't a hit).
+    similar_focus: bool,
     /// Search scope is the whole PC (`search_mode` is also true; results come from the index).
     search_global: bool,
     /// Whole-PC query: serial (stale results are dropped), background task, and index size at the
@@ -1155,6 +1181,9 @@ impl Explorer {
             search_relevance: None,
             search_gone: Vec::new(),
             search_cursor: None,
+            similar_open: None,
+            similar_fallback: None,
+            similar_focus: false,
             search_global: false,
             global_serial: 0,
             global_task: None,
@@ -1961,6 +1990,16 @@ impl Explorer {
             AppEvent::CloudScan { dir, version, scan } => {
                 self.handle_cloud_scan(dir, version, scan, cx);
             }
+            AppEvent::CloudFolderHint(dir) => self.cloud_folder_hint(&dir),
+            AppEvent::CloudRechecked {
+                dir,
+                generation,
+                version,
+                changed,
+            } => self.cloud_rechecked(&dir, generation, version, changed, cx),
+            AppEvent::ShellSelected { dir, names } => {
+                self.select_in_folder(&dir, names, cx);
+            }
             AppEvent::Search(results) => self.handle_search(results, cx),
             AppEvent::ClipboardSet {
                 result,
@@ -2632,6 +2671,11 @@ impl Explorer {
                 }
             }
             InputEvent::Confirm => {
+                // On "Similar results": opens or closes them.
+                if self.search_mode && self.similar_focused() {
+                    self.toggle_similar(cx);
+                    return;
+                }
                 // Enter opens the item under the cursor, or the first one if there's no cursor.
                 let ix = if self.search_mode {
                     self.search_cursor
@@ -2754,16 +2798,18 @@ impl Explorer {
             return;
         };
         let key = (root.clone(), self.show_hidden);
+        // Names as typed first; similar ones once asked for (#396, `explorer_similar.rs`).
+        let query = self.search_query();
         if self.search_root.as_ref() == Some(&key) {
-            self.search.set_query(&self.query, crate::win::clock());
+            self.search.set_parsed(query);
         } else {
-            self.search
-                .start(root, self.show_hidden, &self.query, crate::win::clock());
+            self.search.start_parsed(root, self.show_hidden, query);
             self.search_root = Some(key);
             self.search_gone.clear();
         }
         self.search_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.search_cursor = None;
+        self.similar_focus = false;
     }
 
     fn handle_search(&mut self, results: SearchResults, cx: &mut Context<Self>) {
@@ -2773,12 +2819,20 @@ impl Explorer {
         {
             return;
         }
+        if self.fall_back_to_similar(&results) {
+            self.search_results = None;
+            self.search_cursor = None;
+            cx.notify();
+            return;
+        }
         let results = self.without_gone(results);
         let results = self.arrange_results(results);
         let len = results.hits.len();
         self.search_cursor = match self.search_cursor {
             _ if len == 0 => None,
             Some(ix) => Some(ix.min(len - 1)),
+            // On "Similar results" (just opened): it stays there.
+            None if self.similar_focused() => None,
             None => Some(0),
         };
         self.search_results = Some(results);
@@ -2791,7 +2845,7 @@ impl Explorer {
         self.search_relevance = None;
         if let Some(sort) = self.search_sort {
             self.search_relevance = Some(Arc::clone(&results.hits));
-            results.hits = Arc::new(arke_core::sort_search_hits(&results.hits, sort));
+            results.hits = Arc::new(similar::sort_hits(&results.hits, results.similar, sort));
         }
         results
     }
@@ -2818,7 +2872,7 @@ impl Explorer {
             .unwrap_or_else(|| Arc::clone(&results.hits));
         match self.search_sort {
             Some(sort) => {
-                results.hits = Arc::new(arke_core::sort_search_hits(&relevance, sort));
+                results.hits = Arc::new(similar::sort_hits(&relevance, results.similar, sort));
                 self.search_relevance = Some(relevance);
             }
             None => results.hits = relevance,
@@ -2827,8 +2881,9 @@ impl Explorer {
             && let Some(ix) = results.hits.iter().position(|h| Arc::ptr_eq(h, &hit))
         {
             self.search_cursor = Some(ix);
+            let row = self.search_row_of(ix);
             self.search_scroll
-                .scroll_to_item(ix, ScrollStrategy::Nearest);
+                .scroll_to_item(row, ScrollStrategy::Nearest);
         } else {
             self.search_scroll.scroll_to_item(0, ScrollStrategy::Top);
         }
@@ -2850,6 +2905,12 @@ impl Explorer {
         }
         let gone = |hit: &arke_core::SearchHit| self.hit_gone(&results.root, hit);
         if results.hits.iter().any(|hit| gone(hit)) {
+            // The similar ones stay last and counted apart.
+            let split = results.hits.len().saturating_sub(results.similar);
+            results.similar = results.hits[split..]
+                .iter()
+                .filter(|hit| !gone(hit))
+                .count();
             let kept: Vec<_> = results
                 .hits
                 .iter()
@@ -2956,6 +3017,10 @@ impl Explorer {
     /// Down in the filter box: focus the list and select the first item (or keep the cursor).
     fn filter_to_list(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.list_focus, cx);
+        if self.search_mode && self.similar_focused() {
+            cx.notify();
+            return;
+        }
         let ix = if self.search_mode {
             self.search_cursor
         } else {
@@ -3000,8 +3065,10 @@ impl Explorer {
         let ix = ix.min(len - 1);
         if self.search_mode {
             self.search_cursor = Some(ix);
+            self.similar_focus = false;
+            let row = self.search_row_of(ix);
             self.search_scroll
-                .scroll_to_item(ix, ScrollStrategy::Nearest);
+                .scroll_to_item(row, ScrollStrategy::Nearest);
         } else if let Some(view) = self.view() {
             // Arrow keys never land in a collapsed section; type to select and the like open it.
             self.reveal_item(ix);
@@ -3283,39 +3350,56 @@ impl Explorer {
     }
 
     fn select_prev(&mut self, _: &SelectPrev, w: &mut Window, cx: &mut Context<Self>) {
+        if self.search_move(Step::Prev, w, cx) {
+            return;
+        }
         self.select_index(self.target(Step::Prev, w), cx);
     }
     fn select_next(&mut self, _: &SelectNext, w: &mut Window, cx: &mut Context<Self>) {
+        if self.search_move(Step::Next, w, cx) {
+            return;
+        }
         self.select_index(self.target(Step::Next, w), cx);
     }
     fn select_page_up(&mut self, _: &SelectPageUp, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::Prev, cx) {
+        if self.turn_pdf_page(preview::PageTurn::Prev, cx) || self.search_move(Step::PageUp, w, cx)
+        {
             return;
         }
         self.select_index(self.target(Step::PageUp, w), cx);
     }
     fn select_page_down(&mut self, _: &SelectPageDown, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::Next, cx) {
+        if self.turn_pdf_page(preview::PageTurn::Next, cx)
+            || self.search_move(Step::PageDown, w, cx)
+        {
             return;
         }
         self.select_index(self.target(Step::PageDown, w), cx);
     }
     fn select_first(&mut self, _: &SelectFirst, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::First, cx) {
+        if self.turn_pdf_page(preview::PageTurn::First, cx) || self.search_move(Step::First, w, cx)
+        {
             return;
         }
         self.select_index(self.target(Step::First, w), cx);
     }
     fn select_last(&mut self, _: &SelectLast, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::Last, cx) {
+        if self.turn_pdf_page(preview::PageTurn::Last, cx) || self.search_move(Step::Last, w, cx) {
             return;
         }
         self.select_index(self.target(Step::Last, w), cx);
     }
     fn extend_prev(&mut self, _: &ExtendPrev, w: &mut Window, cx: &mut Context<Self>) {
+        // Search results take one item at a time: Shift moves like the plain key.
+        if self.search_move(Step::Prev, w, cx) {
+            return;
+        }
         self.extend_index(self.target(Step::Prev, w), cx);
     }
     fn extend_next(&mut self, _: &ExtendNext, w: &mut Window, cx: &mut Context<Self>) {
+        if self.search_move(Step::Next, w, cx) {
+            return;
+        }
         self.extend_index(self.target(Step::Next, w), cx);
     }
     fn extend_page_up(&mut self, _: &ExtendPageUp, w: &mut Window, cx: &mut Context<Self>) {
@@ -3368,6 +3452,11 @@ impl Explorer {
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _: &mut Window, cx: &mut Context<Self>) {
+        // "Similar results" isn't an item: Enter opens or closes them.
+        if self.search_mode && self.similar_focused() {
+            self.toggle_similar(cx);
+            return;
+        }
         if let Some(ix) = self.current_cursor() {
             self.open_index(ix, cx);
         }
@@ -3504,6 +3593,7 @@ impl Explorer {
         }
         if self.search_mode {
             self.search_cursor = Some(ix);
+            self.similar_focus = false;
         } else if let Some(view) = self.view() {
             let in_selection = view
                 .get(ix)
@@ -3744,6 +3834,11 @@ impl Explorer {
             return;
         };
         if text.is_empty() || text.chars().any(char::is_control) {
+            return;
+        }
+        if text == " " && self.search_mode && self.similar_focused() {
+            self.toggle_similar(cx);
+            cx.stop_propagation();
             return;
         }
         if text == " " && !self.typeahead.is_typing(Instant::now()) {

@@ -1483,99 +1483,134 @@ impl Explorer {
         let cursor = self.search_cursor;
         // "Search in this folder": locations start at that folder, below the folder shown.
         let base = self.search_in_name().map(PathBuf::from);
-        range
-            .filter_map(|ix| results.hits.get(ix).map(|hit| (ix, hit)))
-            .map(|(ix, hit)| {
-                let entry = &hit.entry;
-                let parent = Path::new(&*hit.rel)
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty());
-                let location = match (&base, parent) {
-                    (Some(base), Some(parent)) => base.join(parent).display().to_string(),
-                    (Some(base), None) => base.display().to_string(),
-                    (None, Some(parent)) => parent.display().to_string(),
-                    (None, None) => t!("list.here").into_owned(),
-                };
-                self.row_shell(ix, cursor == Some(ix), false, focused, cx)
-                    .a11y_item(ix, cursor == Some(ix), cursor == Some(ix), || {
-                        let modified = entry.modified.map(|t| shell.format_time(t));
-                        let content = hit
-                            .snippet
-                            .as_deref()
-                            .map(|line| t!("search.content_match", line = line).into_owned());
-                        crate::a11y::item_label(
-                            &entry.name,
-                            &[
-                                content.as_deref().unwrap_or_default(),
-                                location.as_str(),
-                                modified.as_deref().unwrap_or_default(),
-                            ],
-                        )
-                    })
-                    // The Name column, as wide as the header's. A content match shows its line
-                    // after the name.
+        // "Similar results" (#396) is a row between hits, not a hit.
+        let similar = self.similar_row();
+        let at = similar.map(|(at, _)| at);
+        let mut rows = Vec::with_capacity(range.len());
+        for row in range {
+            match super::similar::hit_at_row(row, at) {
+                None => {
+                    if let Some((_, kind)) = similar {
+                        rows.push(self.similar_row_element(row, kind, focused, cx));
+                    }
+                }
+                Some(ix) => {
+                    if let Some(hit) = results.hits.get(ix) {
+                        rows.push(self.search_row(
+                            ix,
+                            hit,
+                            cursor,
+                            base.as_deref(),
+                            &shell,
+                            focused,
+                            cx,
+                        ));
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// One search hit's row (`ix` in the hits).
+    fn search_row(
+        &self,
+        ix: usize,
+        hit: &Arc<arke_core::SearchHit>,
+        cursor: Option<usize>,
+        base: Option<&Path>,
+        shell: &Arc<dyn crate::shell::Shell>,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entry = &hit.entry;
+        let parent = Path::new(&*hit.rel)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty());
+        let location = match (base, parent) {
+            (Some(base), Some(parent)) => base.join(parent).display().to_string(),
+            (Some(base), None) => base.display().to_string(),
+            (None, Some(parent)) => parent.display().to_string(),
+            (None, None) => t!("list.here").into_owned(),
+        };
+        self.row_shell(ix, cursor == Some(ix), false, focused, cx)
+            .a11y_item(ix, cursor == Some(ix), cursor == Some(ix), || {
+                let modified = entry.modified.map(|t| shell.format_time(t));
+                let content = hit
+                    .snippet
+                    .as_deref()
+                    .map(|line| t!("search.content_match", line = line).into_owned());
+                crate::a11y::item_label(
+                    &entry.name,
+                    &[
+                        content.as_deref().unwrap_or_default(),
+                        location.as_str(),
+                        modified.as_deref().unwrap_or_default(),
+                    ],
+                )
+            })
+            // The Name column, as wide as the header's. A content match shows its line
+            // after the name.
+            .child(
+                self.name_block()
+                    .child(entry_visual(entry, None, theme::icon(), theme::icon()))
                     .child(
-                        self.name_block()
-                            .child(entry_visual(entry, None, theme::icon(), theme::icon()))
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(theme::s_12())
                             .child(
+                                div()
+                                    .debug_selector({
+                                        let name = Arc::clone(&entry.name);
+                                        move || format!("name:{name}")
+                                    })
+                                    .when(hit.snippet.is_some(), |d| {
+                                        d.flex_none().max_w(crate::theme::scaled_px(240.))
+                                    })
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(SharedString::from(Arc::clone(&entry.name))),
+                            )
+                            .children(hit.snippet.clone().map(|line| {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap(theme::s_12())
-                                    .child(
-                                        div()
-                                            .debug_selector({
-                                                let name = Arc::clone(&entry.name);
-                                                move || format!("name:{name}")
-                                            })
-                                            .when(hit.snippet.is_some(), |d| {
-                                                d.flex_none().max_w(crate::theme::scaled_px(240.))
-                                            })
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(SharedString::from(Arc::clone(&entry.name))),
-                                    )
-                                    .children(hit.snippet.clone().map(|line| {
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(theme::fs_12())
-                                            .text_color(theme::text_muted())
-                                            .child(SharedString::from(line))
-                                    })),
-                            ),
-                    )
+                                    .truncate()
+                                    .text_size(theme::fs_12())
+                                    .text_color(theme::text_muted())
+                                    .child(SharedString::from(line))
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .w(theme::col_location())
+                    .flex_none()
+                    // Keep the end of long paths (the folders nearest the file).
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis_start()
+                    .text_size(theme::fs_12())
+                    .text_color(theme::text_muted())
+                    .child(location),
+            )
+            .child(
+                div()
+                    .w(crate::prefs::modified_width())
+                    .flex_none()
+                    .text_size(theme::fs_12())
+                    .text_color(theme::text_muted())
                     .child(
-                        div()
-                            .w(theme::col_location())
-                            .flex_none()
-                            // Keep the end of long paths (the folders nearest the file).
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis_start()
-                            .text_size(theme::fs_12())
-                            .text_color(theme::text_muted())
-                            .child(location),
-                    )
-                    .child(
-                        div()
-                            .w(crate::prefs::modified_width())
-                            .flex_none()
-                            .text_size(theme::fs_12())
-                            .text_color(theme::text_muted())
-                            .child(
-                                entry
-                                    .modified
-                                    .map_or_default(|t| shell.format_time(t)),
-                            ),
-                    )
-                    .child(size_cell(entry, super::sizes::FolderSize::Unknown))
-                    .into_any_element()
-            })
-            .collect()
+                        entry
+                            .modified
+                            .map_or_default(|t| shell.format_time(t)),
+                    ),
+            )
+            .child(size_cell(entry, super::sizes::FolderSize::Unknown))
+            .into_any_element()
     }
 
     /// List content: rows, tiles, search results, or the empty/loading state.
@@ -1602,10 +1637,10 @@ impl Explorer {
                 Some(r) if r.hits.is_empty() && !r.searching => {
                     self.no_match_state(t!("list.no_match").into_owned(), None, cx)
                 }
-                Some(r) => {
+                Some(_) => {
                     let list = uniform_list(
                         "search-results",
-                        r.hits.len(),
+                        self.search_row_count(),
                         cx.processor(move |this, range: Range<usize>, _window, cx| {
                             this.render_search_rows(range, focused, cx)
                         }),
@@ -1833,7 +1868,7 @@ impl Explorer {
             let cancel = Arc::clone(progress);
             return toast(
                 "toast-ops",
-                Icon::Copy,
+                crate::op_center::op_icon(verb),
                 t!("toast.op_detail", op = op, detail = detail).into_owned(),
                 Tone::Normal,
                 fraction.map_or(Progress::Indeterminate, Progress::Fraction),
@@ -1867,7 +1902,7 @@ impl Explorer {
         let cancel = Arc::clone(progress);
         toast(
             "toast-ops",
-            Icon::Copy,
+            crate::op_center::op_icon(verb),
             text,
             Tone::Normal,
             bar,
@@ -3201,7 +3236,7 @@ impl Explorer {
         self.sync_parent_column();
         self.sync_link_targets();
         self.sync_folder_sizes(cx);
-        self.sync_cloud_states(cx);
+        self.sync_cloud_states(window, cx);
     }
 }
 

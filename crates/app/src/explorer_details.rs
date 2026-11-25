@@ -564,7 +564,12 @@ impl Explorer {
     ) -> Option<Vec<Pixels>> {
         let results = self.search_results.as_ref()?;
         let mut widths = Vec::new();
-        for ix in self.rows_on_screen(&self.search_scroll) {
+        // "Similar results" is a row of its own (`explorer_similar.rs`), not a hit.
+        let similar = self.similar_row().map(|(at, _)| at);
+        for row in self.rows_on_screen(&self.search_scroll) {
+            let Some(ix) = super::similar::hit_at_row(row, similar) else {
+                continue;
+            };
             let Some(hit) = results.hits.get(ix) else {
                 break;
             };

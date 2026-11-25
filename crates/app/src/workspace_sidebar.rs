@@ -702,30 +702,34 @@ fn list_subfolders(
     (dirs, leaves)
 }
 
-/// The places listed under This PC (network drives go under Network).
-const fn in_this_pc(kind: PlaceKind) -> bool {
-    matches!(
-        kind,
-        PlaceKind::Folder(KnownFolder::Profile)
-            | PlaceKind::Cloud
-            | PlaceKind::Drive { remote: false, .. }
-            | PlaceKind::Wsl
-            | PlaceKind::Phone
-    )
+/// The places listed under This PC. Network drives go under Network, unless Network is hidden
+/// (`mapped`): then they stay in reach under This PC, as File Explorer lists them (#387).
+const fn in_this_pc(kind: PlaceKind, mapped: bool) -> bool {
+    match kind {
+        PlaceKind::Drive { remote: true, .. } => mapped,
+        _ => matches!(
+            kind,
+            PlaceKind::Folder(KnownFolder::Profile)
+                | PlaceKind::Cloud
+                | PlaceKind::Drive { remote: false, .. }
+                | PlaceKind::Wsl
+                | PlaceKind::Phone
+        ),
+    }
 }
 
 /// How many places This PC lists.
-fn this_pc_count(places: &[Place]) -> usize {
-    places.iter().filter(|p| in_this_pc(p.kind)).count()
+fn this_pc_count(places: &[Place], mapped: bool) -> usize {
+    places.iter().filter(|p| in_this_pc(p.kind, mapped)).count()
 }
 
 /// The folders the tree opens to show `here` (#241): from the This PC root that holds it (the
 /// innermost one, so the user folder wins over its drive) down to its parent. Empty when `here`
 /// is a root itself or isn't under This PC.
-fn follow_chain(places: &[Place], here: &Path) -> Vec<PathBuf> {
+fn follow_chain(places: &[Place], here: &Path, mapped: bool) -> Vec<PathBuf> {
     let Some(root) = places
         .iter()
-        .filter(|p| in_this_pc(p.kind) && here.starts_with(&p.path))
+        .filter(|p| in_this_pc(p.kind, mapped) && here.starts_with(&p.path))
         .map(|p| p.path.as_path())
         .max_by_key(|root| root.components().count())
     else {
@@ -964,12 +968,13 @@ fn section_id(section: SidebarSection) -> (&'static str, SharedString) {
     (id, title.into_owned().into())
 }
 
-/// The sections that can be hidden (#323), in the order the menu of the sidebar's empty space
-/// lists them.
-const HIDEABLE: [SidebarSection; 3] = [
+/// The sections that can be hidden (#323, #387), in the order the menu of the sidebar's empty
+/// space lists them.
+const HIDEABLE: [SidebarSection; 4] = [
     SidebarSection::Home,
     SidebarSection::Favorites,
     SidebarSection::ThisPc,
+    SidebarSection::Network,
 ];
 
 /// The menu of a hideable section's heading (or Home's row): Hide.
@@ -2159,7 +2164,11 @@ impl Workspace {
         let Some(here) = current else {
             return;
         };
-        let count = this_pc_count(places);
+        let mapped = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .is_hidden(SidebarSection::Network);
+        let count = this_pc_count(places, mapped);
         let followed = self
             .sidebar_ui
             .followed
@@ -2184,11 +2193,12 @@ impl Workspace {
         &self,
         places: &[Place],
         current: Option<&Path>,
+        mapped: bool,
         items: &mut Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) {
         self.sidebar_ui.here_row.set(None);
-        for place in places.iter().filter(|p| in_this_pc(p.kind)) {
+        for place in places.iter().filter(|p| in_this_pc(p.kind, mapped)) {
             self.render_device(place, current, items, cx);
         }
         // The tree just opened to the current folder: scroll its row into view if needed.
@@ -2248,12 +2258,13 @@ impl Workspace {
         }
         let current = self.sidebar_here(cx);
         let places = self.active_view().read(cx).places.clone();
-        let (this_pc_collapsed, this_pc_hidden, network_collapsed) = {
+        let (this_pc_collapsed, this_pc_hidden, network_collapsed, network_hidden) = {
             let settings = &SettingsStore::global(cx).read(cx).settings;
             (
                 settings.is_collapsed(SidebarSection::ThisPc),
                 settings.is_hidden(SidebarSection::ThisPc),
                 settings.is_collapsed(SidebarSection::Network),
+                settings.is_hidden(SidebarSection::Network),
             )
         };
         if !this_pc_collapsed && !this_pc_hidden {
@@ -2279,17 +2290,20 @@ impl Workspace {
             );
             if !this_pc_collapsed {
                 let start = items.len();
-                self.render_this_pc(&places, current.as_deref(), &mut items, cx);
+                self.render_this_pc(&places, current.as_deref(), network_hidden, &mut items, cx);
                 self.drop_in(SidebarSection::ThisPc, &mut items, start);
             }
         }
-        self.render_network(
-            &places,
-            current.as_deref(),
-            network_collapsed,
-            &mut items,
-            cx,
-        );
+        // Hidden (#387): no heading, rows or add button.
+        if !network_hidden {
+            self.render_network(
+                &places,
+                current.as_deref(),
+                network_collapsed,
+                &mut items,
+                cx,
+            );
+        }
         // Under the favorites, rows move with them: a row more or less in the list moves them all.
         if self.tab_drag.rows.wanted() {
             let after: Vec<AnyElement> = items.drain(pins_end..).collect();
@@ -2365,7 +2379,7 @@ impl Workspace {
         if horizontal {
             return sidebar;
         }
-        let sidebar = sidebar.child(self.render_places_split(split.is_some(), cx));
+        let sidebar = sidebar.child(self.render_places_split(cx));
         // The tabs don't collapse: they are what's open (hiding the whole sidebar makes room).
         let header = div()
             .debug_selector(|| "tabs-header".to_owned())
@@ -2468,8 +2482,8 @@ impl Workspace {
 
     /// The line between the places and the tabs (vertical tabs): dragged, it sets how tall the
     /// places are, as the pinned tabs' line in Firefox does; double-clicked, the room is shared
-    /// by itself again. A faint line while it holds a height, so it shows there is one.
-    fn render_places_split(&self, set: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// by itself again. Always a faint line, so it can be found; brighter under the mouse.
+    fn render_places_split(&self, cx: &mut Context<Self>) -> AnyElement {
         let active = self.split_drag.is_some();
         div()
             .id("sidebar-split")
@@ -2502,7 +2516,7 @@ impl Workspace {
                     .mx(theme::s_8())
                     .h(px(2.))
                     .rounded(theme::R_FULL)
-                    .when(set && !active, |d| d.bg(theme::line()))
+                    .when(!active, |d| d.bg(theme::line()))
                     .when(active, |d| d.bg(theme::signal()))
                     .group_hover("sidebar-split", |s| s.bg(theme::signal_line())),
             )
@@ -3184,8 +3198,9 @@ impl Workspace {
         };
         let places = self.active_view().read(cx).places.clone();
         // Followed again when This PC's places change too: they load after the first frame.
-        let key = (here.clone(), this_pc_count(&places));
         let settings = &SettingsStore::global(cx).read(cx).settings;
+        let mapped = settings.is_hidden(SidebarSection::Network);
+        let key = (here.clone(), this_pc_count(&places, mapped));
         // Turned off (#299), the tree is the user's alone.
         if settings.is_collapsed(SidebarSection::ThisPc)
             || settings.is_hidden(SidebarSection::ThisPc)
@@ -3198,7 +3213,7 @@ impl Workspace {
         if let Some(cancel) = self.sidebar_ui.follow_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        let chain = follow_chain(&places, &here);
+        let chain = follow_chain(&places, &here, mapped);
         let stale: Vec<PathBuf> = self
             .sidebar_ui
             .tree_auto
@@ -3366,7 +3381,7 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_section(section, cx);
             }))
-            // Favorites and This PC can be hidden (#323); a right click elsewhere on the
+            // Home, Favorites, This PC and Network can be hidden (#323, #387); a right click elsewhere on the
             // sidebar brings them back.
             .when(HIDEABLE.contains(&section), |d| {
                 d.on_mouse_down(
@@ -4912,23 +4927,36 @@ mod tests {
             chain.iter().map(|p| p.display().to_string()).collect()
         };
         assert_eq!(
-            paths(follow_chain(&places, Path::new(r"C:\work\reports\2026"))),
+            paths(follow_chain(
+                &places,
+                Path::new(r"C:\work\reports\2026"),
+                false
+            )),
             [r"C:\", r"C:\work", r"C:\work\reports"]
         );
         // The user folder is under This PC as well, and nearer.
         assert_eq!(
-            paths(follow_chain(&places, Path::new(r"C:\Users\me\Desktop\a"))),
+            paths(follow_chain(
+                &places,
+                Path::new(r"C:\Users\me\Desktop\a"),
+                false
+            )),
             [r"C:\Users\me", r"C:\Users\me\Desktop"]
         );
         assert!(
-            follow_chain(&places, Path::new(r"C:\")).is_empty(),
+            follow_chain(&places, Path::new(r"C:\"), false).is_empty(),
             "a root"
         );
         assert!(
-            follow_chain(&places, Path::new(r"Z:\docs")).is_empty(),
+            follow_chain(&places, Path::new(r"Z:\docs"), false).is_empty(),
             "network drives are under Network"
         );
-        assert!(follow_chain(&places, Path::new(r"\nas\docs\a")).is_empty());
+        // With Network hidden they are listed under This PC, and the tree opens to them (#387).
+        assert_eq!(
+            paths(follow_chain(&places, Path::new(r"Z:\docs\a"), true)),
+            [r"Z:\", r"Z:\docs"]
+        );
+        assert!(follow_chain(&places, Path::new(r"\nas\docs\a"), false).is_empty());
     }
 
     #[test]

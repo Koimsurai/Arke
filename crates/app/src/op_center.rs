@@ -303,6 +303,17 @@ fn round_eta(left: Duration) -> Duration {
 }
 
 /// "42 s", "3 min 5 s", "2 h 10 min".
+/// The icon of a file operation, by its verb: the same in the operation center and the toast at
+/// the bottom (a move shows scissors, as Cut does).
+pub(crate) fn op_icon(verb: &str) -> crate::assets::Icon {
+    use crate::assets::Icon;
+    match verb {
+        "op.recycle" | "op.delete_permanently" => Icon::Trash,
+        "op.move" => Icon::Cut,
+        _ => Icon::Copy,
+    }
+}
+
 pub(crate) fn duration_text(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
@@ -554,6 +565,15 @@ impl OpCenter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A move shows scissors in the toast and the operation center alike; copies a copy icon.
+    #[test]
+    fn a_move_shows_scissors() {
+        use crate::assets::Icon;
+        assert_eq!(op_icon("op.move"), Icon::Cut);
+        assert_eq!(op_icon("op.copy"), Icon::Copy);
+        assert_eq!(op_icon("op.recycle"), Icon::Trash);
+    }
 
     /// Recycling one big folder reports no finished item for a long time; the line says how many
     /// items the copy engine counted instead of a bare "getting ready".

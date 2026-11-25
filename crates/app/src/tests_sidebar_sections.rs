@@ -419,7 +419,7 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
             t!("home.title").into_owned(),
             favorites.clone(),
             this_pc.clone(),
-            network.clone()
+            network
         ])
     );
     assert_eq!(checks(&ws, cx), Some(vec![true, false, false, true]));

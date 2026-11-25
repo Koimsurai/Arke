@@ -156,11 +156,7 @@ impl Explorer {
             .rev()
             .map(|job| Row {
                 id: job.id,
-                icon: match job.verb {
-                    "op.recycle" | "op.delete_permanently" => Icon::Trash,
-                    "op.move" => Icon::Cut,
-                    _ => Icon::Copy,
-                },
+                icon: crate::op_center::op_icon(job.verb),
                 title: job.title(),
                 detail: job.detail(),
                 state: job.state.clone(),

@@ -974,12 +974,14 @@ pub(crate) fn release_setup() {
 /// without changing anything, and Arke, still open, says the update didn't happen. Quitting right
 /// away would leave the user with no Arke and nothing to say why.
 fn run_setup(exe: &Path, cx: &mut App) {
+    use crate::update_quiet::Host as _;
     use std::sync::atomic::Ordering;
     if SETUP_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
+    let per_user = crate::update_quiet::RealHost.installs_silently();
     match std::process::Command::new(exe)
-        .args(SETUP_SILENT)
+        .args(setup_flags(per_user))
         .arg(SETUP_LAUNCH)
         .spawn()
     {
@@ -993,6 +995,22 @@ fn run_setup(exe: &Path, cx: &mut App) {
 
 /// The installer's flags for an update: no wizard, no questions (`installer/arke.iss`).
 pub(crate) const SETUP_SILENT: [&str; 3] = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"];
+/// With [`SETUP_SILENT`] for a per-user install: no RedirectionGuard. Inno Setup would pass it on
+/// to the Arke it starts, which then couldn't open junctions a standard user made (#406), and a
+/// Setup that runs as the user without approval has nothing for it to guard. An all-users install's
+/// Setup runs elevated and keeps it (Inno Setup 6.7.4 doesn't pass it on to the Arke it starts as
+/// the user).
+pub(crate) const SETUP_NO_REDIRECTION_GUARD: &str = "/NOREDIRECTIONGUARD";
+
+/// What [`run_setup`] and a background update pass the installer: [`SETUP_SILENT`], and
+/// [`SETUP_NO_REDIRECTION_GUARD`] when Arke is installed for this user (`per_user`).
+pub(crate) fn setup_flags(per_user: bool) -> Vec<&'static str> {
+    let mut flags = SETUP_SILENT.to_vec();
+    if per_user {
+        flags.push(SETUP_NO_REDIRECTION_GUARD);
+    }
+    flags
+}
 /// The installer starts Arke again when it is done, with the tabs that were open.
 pub(crate) const SETUP_LAUNCH: &str = "/LAUNCH";
 /// With [`SETUP_LAUNCH`]: in the background instead, no window (`--background`).
@@ -1165,6 +1183,24 @@ mod tests {
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap_or_else(|| panic!("{s}"))
+    }
+
+    #[test]
+    fn per_user_updates_turn_redirection_guard_off() {
+        assert_eq!(
+            setup_flags(true),
+            [
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/NOREDIRECTIONGUARD"
+            ]
+        );
+        // An all-users install's Setup runs elevated: it keeps the protection.
+        assert_eq!(
+            setup_flags(false),
+            ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+        );
     }
 
     #[test]

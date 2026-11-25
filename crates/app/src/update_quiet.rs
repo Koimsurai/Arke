@@ -718,7 +718,7 @@ impl Host for RealHost {
     fn apply(&self, file: &Path, launch: Launch) -> Result<Applied, UpdateError> {
         if update::is_setup(file) {
             let mut setup = std::process::Command::new(file);
-            setup.args(update::SETUP_SILENT);
+            setup.args(update::setup_flags(self.installs_silently()));
             match launch {
                 Launch::Nothing => {}
                 Launch::Background => {

@@ -444,7 +444,7 @@ fn network_menus_keep_the_folder_order(cx: &mut TestAppContext) {
 fn a_mapped_drive_moves_under_this_pc_while_network_is_hidden(cx: &mut TestAppContext) {
     use crate::settings::SidebarSection;
     let (_ws, cx) = window(cx);
-    let label = r"docs (\nas) (Z:)";
+    let label = r"docs (\\nas) (Z:)";
     let row = |cx: &mut VisualTestContext| {
         refresh(cx);
         let id: &'static str = Box::leak(format!("sidebar {label}").into_boxed_str());

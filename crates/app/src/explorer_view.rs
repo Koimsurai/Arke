@@ -1833,7 +1833,7 @@ impl Explorer {
             let cancel = Arc::clone(progress);
             return toast(
                 "toast-ops",
-                Icon::Copy,
+                crate::op_center::op_icon(verb),
                 t!("toast.op_detail", op = op, detail = detail).into_owned(),
                 Tone::Normal,
                 fraction.map_or(Progress::Indeterminate, Progress::Fraction),
@@ -1867,7 +1867,7 @@ impl Explorer {
         let cancel = Arc::clone(progress);
         toast(
             "toast-ops",
-            Icon::Copy,
+            crate::op_center::op_icon(verb),
             text,
             Tone::Normal,
             bar,

@@ -517,7 +517,7 @@ fn network_hides_and_comes_back(cx: &mut TestAppContext) {
 
     let at = bounds(cx, "tab-list-end").center();
     right_click(cx, at);
-    assert_eq!(checks(&ws, cx), Some(vec![true, true, true, false]));
+    assert_eq!(checks(&ws, cx), Some(vec![true, true, true, false, false]));
     pick(&ws, cx, &network);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "network-header"), "back");

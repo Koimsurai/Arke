@@ -109,8 +109,21 @@ fn focused(tree: &Value) -> (String, String) {
     (role(node).to_owned(), label(node).to_owned())
 }
 
-/// A window on `C:\w` with three files, drive `C:` in the sidebar, and a screen reader connected.
+/// A window on `C:\w` with three files, drive `C:` in the sidebar, the tree open to the folder
+/// (off by default since #416, these tests are about it), and a screen reader connected.
 fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+    window_following(cx, true)
+}
+
+/// The same window with the tree following the current folder or not from the first frame.
+fn window_following(
+    cx: &mut TestAppContext,
+    follow: bool,
+) -> (Entity<Workspace>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        crate::settings::SettingsStore::global(cx)
+            .update(cx, |s, cx| s.update(|st| st.sidebar_follow = follow, cx));
+    });
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\", vec![dir("w")]);
     fs.insert_many(r"C:\w", 3);
@@ -230,6 +243,28 @@ fn f6_names_each_area(cx: &mut TestAppContext) {
         stops[2].1, stops[4].1,
         "path bar and search box are told apart"
     );
+}
+
+/// #416: the tree doesn't follow the folder by default, so the sidebar has no current folder's row
+/// to start on: F6 still reaches the sidebar, and the arrows move onto a row a screen reader can
+/// name.
+#[gpui::test]
+fn the_sidebar_is_usable_from_the_keyboard_when_the_tree_does_not_follow(
+    cx: &mut TestAppContext,
+) {
+    let (_ws, cx) = window_following(cx, false);
+    cx.simulate_keystrokes("f6");
+    let start = focused(&tree(cx));
+    assert_eq!(start.0, "Tree", "no row to start on: {start:?}");
+    cx.simulate_keystrokes("down");
+    let first = focused(&tree(cx));
+    assert_ne!(first.0, "Tree", "Down reaches a row: {first:?}");
+    assert!(!first.1.is_empty(), "the row is named: {first:?}");
+    cx.simulate_keystrokes("down");
+    let next = focused(&tree(cx));
+    assert_ne!(next, first, "Down goes on to the next row");
+    cx.simulate_keystrokes("home");
+    assert_eq!(focused(&tree(cx)), first, "Home goes back to the first row");
 }
 
 /// The pane row's buttons from the keyboard: F6 makes the row one stop, the arrows, Home and End

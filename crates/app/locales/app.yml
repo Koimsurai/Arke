@@ -8129,6 +8129,14 @@ sidebar.add_favorite:
   es: Agregar a favoritos
   pt-BR: Adicionar aos favoritos
   ja: お気に入りに追加
+sidebar.follow_folder:
+  en: Expand to open folder
+  zh-TW: 展開到目前資料夾
+  zh-CN: 展开到当前文件夹
+  de: Auf aktuellen Ordner erweitern
+  es: Expandir a la carpeta abierta
+  pt-BR: Expandir para a pasta aberta
+  ja: 開いているフォルダーまで展開
 sidebar.add_recycle:
   en: Add Recycle Bin to favorites
   zh-TW: 將資源回收筒加入最愛

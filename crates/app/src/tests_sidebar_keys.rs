@@ -36,6 +36,11 @@ fn drive(letter: char) -> Place {
 fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
     let shell = Arc::new(FakeShell::default());
     shell.extra_places.lock().extend([drive('C'), drive('D')]);
+    // The tree opens to the folder: off by default (#416), these tests are about it.
+    cx.update(|cx| {
+        crate::settings::SettingsStore::global(cx)
+            .update(cx, |s, cx| s.update(|st| st.sidebar_follow = true, cx));
+    });
     let (ws, cx) = setup_workspace_with(cx, fs(), shell, r"C:\work");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", |v| {

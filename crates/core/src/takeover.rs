@@ -307,7 +307,33 @@ fn explorer_location(object: &str) -> Option<String> {
     if trimmed.len() < 3 {
         return None;
     }
+    // After `X:` or `\\`. Explorer would show a different spelling than the text for empty parts
+    // (`C:\\a`), names Windows trims (`a.`, `a `), streams and device paths (`a::$DATA`,
+    // `\\?\C:`); a `name.{CLSID}` folder shows a shell namespace instead of its files. Claims
+    // compare spellings, so these are left to the watcher, which reads the real folder.
+    let body = &trimmed[2..];
+    // `C:dir` is relative to the launcher's current folder on C:.
+    if (drive && !body.starts_with('\\'))
+        || body.contains(r"\\")
+        || body.contains(':')
+        || body.split('\\').any(|part| {
+            part.ends_with(['.', ' ']) || (part.ends_with('}') && part.contains(".{"))
+        })
+    {
+        return None;
+    }
     Some(trimmed.to_owned())
+}
+
+/// The oldest File Explorer launcher the early path ends (#285). A launcher hands its request to
+/// the shell and exits within about half a second; ending it later can't keep the window away, and
+/// an older `explorer.exe` with a folder on its command line may be one that shows its window itself
+/// (`/separate`, no shell running) and holds the user's work: never ended.
+pub const LAUNCHER_MAX_AGE: Duration = Duration::from_secs(1);
+
+/// Whether a launcher started `age` ago (`None`: unknown) may still be ended.
+pub const fn launcher_young(age: Option<Duration>) -> bool {
+    matches!(age, Some(age) if age.as_nanos() <= LAUNCHER_MAX_AGE.as_nanos())
 }
 
 /// What a path is, as far as the caller looked.
@@ -907,9 +933,118 @@ mod tests {
             r"C:\a C:\b",
             r"/root,C:\a,C:\b",
             r"/select,C:\a\x,/select,C:\b\y",
+            // Switches alone, or with nothing after them.
+            "/separate",
+            "/root,",
+            "/select,",
+            ",",
+            "-Embedding",
+            r"/separate,/idlist,:1:2",
+            // Unquoted spaces split the path.
+            r"/select,C:\a b\x.txt",
+            r#""/select,C:\dir\x.txt""#,
+            // Relative, drive-relative and UNC forms Arke can't name for certain.
+            ".",
+            r"..\dir",
+            r"C:dir",
+            r"\dir",
+            r"\\",
+            r"\\?\C:\dir",
+            r"\\.\C:\dir",
+            // Spellings Explorer shows differently, streams, namespace junctions.
+            r"C:\\dir",
+            r"C:\a\\b",
+            r#""C:\dir ""#,
+            r"C:\dir.",
+            r"C:\dir::$INDEX_ALLOCATION",
+            r"C:\a:b",
+            r"C:\GodMode.{ED7BA470-8E54-465E-825C-99712043E01C}",
+            r"/select,C:\x.{645FF040-5081-101B-9F08-00AA002F954E}\a.txt",
+            // Shell names: only the Recycle Bin and This PC; nothing below a namespace.
+            "shell:RecycleBinFolder\\",
+            "shell:Desktop",
+            "shell:HomeFolder",
+            "/select,shell:RecycleBinFolder",
+            "/select,shell:::{645FF040-5081-101B-9F08-00AA002F954E}",
+            "ms-settings:",
+            "https://example.com",
         ] {
             assert_eq!(parse_explorer_args(args), None, "{args}");
         }
+    }
+
+    #[test]
+    fn parses_other_spellings_explorer_accepts() {
+        assert_eq!(
+            parse_explorer_args(r#"/select,"C:\a,b\x,y.txt""#),
+            launch(r"C:\a,b", Some("x,y.txt")),
+            "quoted commas in a selection"
+        );
+        assert_eq!(
+            parse_explorer_args(r#"/root,"shell:RecycleBinFolder""#),
+            launch(RECYCLE_BIN, None)
+        );
+        assert_eq!(
+            parse_explorer_args("::{645ff040-5081-101b-9f08-00aa002f954e}"),
+            launch("::{645ff040-5081-101b-9f08-00aa002f954e}", None),
+            "CLSIDs as given; classify compares them ignoring case"
+        );
+        assert_eq!(
+            parse_explorer_args("\tC:\\dir\t/n"),
+            launch(r"C:\dir", None),
+            "tabs separate too; a switch after the object"
+        );
+        assert_eq!(
+            parse_explorer_args(r#"C:\"a b"\c"#),
+            launch(r"C:\a b\c", None),
+            "quotes inside a token"
+        );
+        assert_eq!(
+            parse_explorer_args(r"\\wsl$\Ubuntu\home"),
+            launch(r"\\wsl$\Ubuntu\home", None)
+        );
+        assert_eq!(
+            parse_explorer_args(r"C:\a {b}\c"),
+            None,
+            "unquoted space"
+        );
+        assert_eq!(
+            parse_explorer_args(r#""C:\a {b}""#),
+            launch(r"C:\a {b}", None),
+            "braces without `.{` are a plain name"
+        );
+        assert_eq!(
+            parse_explorer_args(r#""C:\v1.{x}""#),
+            None,
+            "anything shaped like a namespace junction is left alone"
+        );
+    }
+
+    #[test]
+    fn command_line_arguments_edge_cases() {
+        assert_eq!(
+            command_line_arguments(r#""C:\Windows\explorer.exe"C:\dir"#),
+            r"C:\dir",
+            "no space after the quoted program"
+        );
+        assert_eq!(
+            command_line_arguments("explorer.exe\t/select,C:\\x.txt"),
+            r"/select,C:\x.txt"
+        );
+        assert_eq!(command_line_arguments(r#""unclosed C:\dir"#), "");
+        assert_eq!(command_line_arguments("   "), "");
+    }
+
+    #[test]
+    fn only_young_launchers_are_ended() {
+        assert!(launcher_young(Some(Duration::ZERO)));
+        assert!(launcher_young(Some(Duration::from_millis(60))));
+        assert!(launcher_young(Some(LAUNCHER_MAX_AGE)));
+        assert!(!launcher_young(Some(
+            LAUNCHER_MAX_AGE + Duration::from_millis(1)
+        )));
+        assert!(!launcher_young(Some(Duration::from_secs(3600))));
+        assert!(!launcher_young(None), "unknown age: left alone");
     }
 
     #[test]

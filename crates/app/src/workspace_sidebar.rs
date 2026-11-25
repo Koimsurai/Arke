@@ -1452,6 +1452,7 @@ impl Workspace {
                 None,
                 icon,
                 0,
+                None,
                 current,
                 true,
                 &mut pinned_rows,
@@ -2616,6 +2617,7 @@ impl Workspace {
                 None,
                 Some(Icon::NetDrive),
                 0,
+                None,
                 current,
                 false,
                 out,
@@ -2637,6 +2639,7 @@ impl Workspace {
                 None,
                 Some(Icon::NetDrive),
                 0,
+                None,
                 current,
                 false,
                 out,
@@ -2749,7 +2752,8 @@ impl Workspace {
             .id(SharedString::from(format!("tile-{}", path.display())))
             .a11y_lazy(gpui::Role::TreeItem, || label.clone())
             .debug_selector(move || format!("tile {label}"))
-            .aria_selected(here)
+            // "Selected" only on the current place, as on tree rows.
+            .when(here, |d| d.aria_selected(true))
             .h(tile_height(large))
             .flex()
             .flex_col()
@@ -2874,6 +2878,7 @@ impl Workspace {
             space,
             Some(icon),
             0,
+            None,
             current,
             false,
             out,
@@ -2895,6 +2900,7 @@ impl Workspace {
         space: Option<DriveSpace>,
         icon: Option<Icon>,
         depth: usize,
+        parent: Option<&SharedString>,
         current: Option<&Path>,
         favorite: bool,
         out: &mut Vec<AnyElement>,
@@ -2926,6 +2932,11 @@ impl Workspace {
         // A drive: what the number on the right is, as File Explorer's navigation pane tells.
         let space_tip = space.as_ref().map(|s| s.bytes);
         let indent = tree_indent() * depth as f32;
+        let key = SharedString::from(format!(
+            "{}tree-{depth}-{}",
+            if favorite { "f" } else { "" },
+            path.display()
+        ));
         let row = div()
                 .id(SharedString::from(format!(
                     "tree-{depth}-{}",
@@ -2936,8 +2947,12 @@ impl Workspace {
                     let label = label.clone();
                     move || format!("sidebar {label}")
                 })
+                // Nesting level, from 0 as AccessKit counts it (UI Automation gets it plus one);
+                // "selected" only on the current row.
                 .aria_level(depth)
-                .aria_selected(here)
+                // Rows are drawn one after another; each is read as under its parent's row.
+                .a11y_tree_row(expanded.then_some(&key), parent)
+                .when(here, |d| d.aria_selected(true))
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
                 .h(theme::h_row())
@@ -3001,15 +3016,10 @@ impl Workspace {
                         cx.new(|_| Tooltip(text.into_owned().into())).into()
                     })
                 });
-        let key = SharedString::from(format!(
-            "{}tree-{depth}-{}",
-            if favorite { "f" } else { "" },
-            path.display()
-        ));
         let (open, at) = (path.to_path_buf(), path.to_path_buf());
         let row = self.nav_row(
             row,
-            key,
+            key.clone(),
             here,
             move || NavRow {
                 depth: depth + 1,
@@ -3041,6 +3051,7 @@ impl Workspace {
                         None,
                         None,
                         depth + 1,
+                        Some(&key),
                         current,
                         false,
                         out,
@@ -3895,12 +3906,17 @@ impl Workspace {
                 .display_path()
                 .is_some_and(|p| on_drive(p, drive));
             if on_drive {
-                // A page over the tab (the Recycle Bin, Home) stays where it is.
-                self.keep_pages_over(view.entity_id(), &home);
+                // A page over the tab (the Recycle Bin, Home) stays where it is, and the folder
+                // it returns to is the user folder with nothing of the drive left.
+                let covered = self.keep_pages_over(view.entity_id(), &home);
                 let home = home.clone();
                 // Pinned tabs too: nothing may keep the drive busy.
                 view.update(cx, |v, cx| {
-                    v.navigate_unlocked(home, arke_core::NavKind::New, cx);
+                    if covered {
+                        v.leave_removed_drive(home, cx);
+                    } else {
+                        v.navigate_unlocked(home, arke_core::NavKind::New, cx);
+                    }
                 });
             }
         }

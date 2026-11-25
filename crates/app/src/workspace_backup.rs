@@ -22,6 +22,7 @@ use rust_i18n::t;
 use super::Workspace;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
+use crate::keynav::KeyStop as _;
 use crate::settings::{BackupError, Settings, SettingsStore};
 use crate::shell::{KnownFolder, PlaceKind};
 use crate::text_input::{InputEvent, TextInput};
@@ -366,6 +367,7 @@ fn button(
     div()
         .id(id)
         .a11y_lazy(gpui::Role::Button, || label.to_string())
+        .key_stop()
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()

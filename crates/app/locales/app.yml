@@ -8973,6 +8973,14 @@ a11y.address:
   es: Dirección
   pt-BR: Endereço
   ja: アドレス
+a11y.toolbar:
+  en: Command bar
+  zh-TW: 命令列
+  zh-CN: 命令栏
+  de: Befehlsleiste
+  es: Barra de comandos
+  pt-BR: Barra de comandos
+  ja: コマンド バー
 a11y.context_menu:
   en: Context menu
   zh-TW: 右鍵選單

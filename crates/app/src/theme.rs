@@ -1072,6 +1072,10 @@ pub(crate) fn clear() -> Rgba {
 pub(crate) fn text() -> Rgba {
     p().ink
 }
+/// The dark theme's text color, whatever theme is showing (for icons made once, drawn only on dark).
+pub(crate) fn dark_text() -> Rgba {
+    dark_palette().ink
+}
 /// Secondary (>= 7:1): dates, types, sizes.
 pub(crate) fn text_muted() -> Rgba {
     alpha(p().ink, p().a_muted)

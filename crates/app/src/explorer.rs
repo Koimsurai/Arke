@@ -77,6 +77,8 @@ mod shelf_ops;
 mod sizes;
 #[path = "explorer_sortopts.rs"]
 mod sortopts;
+#[path = "explorer_toolbar.rs"]
+mod toolbar;
 #[path = "explorer_topbar.rs"]
 mod top_bar;
 #[path = "explorer_tree.rs"]
@@ -555,6 +557,8 @@ struct PendingNav {
     folder_view: folder_view::PendingView,
     /// Opened from Home: `Some(start)`, where `start` says Home was where the tab started.
     from_home: Option<bool>,
+    /// Arriving starts the history over (the drive the folder was on is gone).
+    fresh: bool,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -739,6 +743,8 @@ pub(crate) struct Explorer {
     path_slot: path_bar::SlotWidth,
     /// The title row's search box width and the press-to-drag on the path bar.
     top_row: top_bar::TopRow,
+    /// The pane row's buttons from the keyboard (F6).
+    toolbar: toolbar::ToolbarKeys,
     filter_input: Entity<TextInput>,
     /// Filter box text, excluding uncommitted IME composition.
     pub(crate) query: String,
@@ -1127,6 +1133,7 @@ impl Explorer {
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
             top_row: top_bar::TopRow::default(),
+            toolbar: toolbar::ToolbarKeys::new(cx.focus_handle()),
             filter_input,
             query: String::new(),
             filtered: None,
@@ -1518,6 +1525,7 @@ impl Explorer {
             select,
             folder_view,
             from_home: None,
+            fresh: false,
         });
         self.typeahead.reset();
         self.loading_task = Some(cx.spawn(async move |this, cx| {
@@ -1715,6 +1723,15 @@ impl Explorer {
     pub(crate) const fn opened_from_home(&mut self, start: bool) {
         if let Some(pending) = self.pending.as_mut() {
             pending.from_home = Some(start);
+        }
+    }
+
+    /// The drive this pane was on is gone: opens `home` with nothing of the old folder left, no
+    /// way back to it in the history.
+    pub(crate) fn leave_removed_drive(&mut self, home: PathBuf, cx: &mut Context<Self>) {
+        self.navigate_unlocked(home, NavKind::New, cx);
+        if let Some(pending) = self.pending.as_mut() {
+            pending.fresh = true;
         }
     }
 
@@ -2279,10 +2296,16 @@ impl Explorer {
     fn commit_navigation(&mut self, pending: PendingNav, path: &Path, sorted_by: SortSpec) -> bool {
         self.failed = None;
         let previous = self.model.as_ref().map(|m| m.path.clone());
-        let stepped =
-            pending.kind == NavKind::New && previous.as_deref().is_some_and(|p| p != path);
+        let stepped = pending.kind == NavKind::New
+            && !pending.fresh
+            && previous.as_deref().is_some_and(|p| p != path);
         let depth_before = self.history.depth();
-        self.history.commit(pending.kind, previous.as_deref(), path);
+        if pending.fresh {
+            self.history = History::default();
+            self.from_home = None;
+        } else {
+            self.history.commit(pending.kind, previous.as_deref(), path);
+        }
         if let Some(start) = pending.from_home {
             self.from_home = Some((self.history.depth(), start));
         } else if pending.kind == NavKind::New

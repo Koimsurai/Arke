@@ -174,4 +174,44 @@ pub(crate) mod tests {
     fn the_built_in_key_is_a_key() {
         assert!(KEYS.iter().all(|k| PublicKey::from_base64(k).is_ok()));
     }
+
+    /// A published release, downloaded whole (`gh release download`) into
+    /// `ARKE_TEST_RELEASE_DIR`, of `ARKE_TEST_RELEASE_VERSION`: every file with a `.minisig`
+    /// passes what an update checks, with the key built into Arke.
+    #[test]
+    #[ignore = "needs a downloaded release"]
+    fn live_release_is_signed() {
+        let dir = std::path::PathBuf::from(
+            std::env::var_os("ARKE_TEST_RELEASE_DIR").expect("ARKE_TEST_RELEASE_DIR"),
+        );
+        let version =
+            std::env::var("ARKE_TEST_RELEASE_VERSION").expect("ARKE_TEST_RELEASE_VERSION");
+        let mut checked = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(asset) = name.strip_suffix(".minisig") else {
+                continue;
+            };
+            let data = std::fs::read(dir.join(asset)).unwrap();
+            let signature = std::fs::read_to_string(entry.path()).unwrap();
+            assert_eq!(
+                verify(&data, &signature, asset, &version),
+                Ok(()),
+                "{asset}"
+            );
+            checked.push(asset.to_owned());
+        }
+        assert!(!checked.is_empty(), "no .minisig in {}", dir.display());
+        // Every exe an update could install is signed.
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+            {
+                assert!(checked.contains(&name), "{name} has no signature");
+            }
+        }
+    }
 }

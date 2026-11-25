@@ -526,6 +526,9 @@ impl Explorer {
         };
         spawn_thread("folder-sizes", move || {
             worker.started = true;
+            // Not in tests: a lowest-priority thread can starve for many seconds while the whole
+            // suite saturates the CPU, and the tests wait on it with a wall-clock deadline.
+            #[cfg(not(test))]
             crate::win::lower_io_priority();
             let queue = Arc::clone(&worker.queue);
             let path = &queue.dir;

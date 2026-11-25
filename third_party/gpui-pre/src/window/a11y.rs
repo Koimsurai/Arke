@@ -383,6 +383,11 @@ pub(crate) struct A11yNodeBuilder {
     /// pattern, which allows a focused container to act as if a descendant is
     /// focused.
     active_descendant: Option<NodeId>,
+    /// Arke: nodes named this frame (see `StatefulInteractiveElement::a11y_key`).
+    named: FxHashMap<SharedString, NodeId>,
+    /// Arke: nodes put under another node (see `StatefulInteractiveElement::a11y_parent`), as
+    /// (node, the parent it was pushed under, its new parent). Applied in [`Self::finalize`].
+    moves: Vec<(NodeId, NodeId, NodeId)>,
     #[cfg(debug_assertions)]
     node_info: FxHashMap<NodeId, debug::NodeDebugInfo>,
 }
@@ -396,8 +401,78 @@ impl A11yNodeBuilder {
             seen_ids: FxHashSet::default(),
             focus: None,
             active_descendant: None,
+            named: FxHashMap::default(),
+            moves: Vec::new(),
             #[cfg(debug_assertions)]
             node_info: FxHashMap::default(),
+        }
+    }
+
+    /// Arke: whether `id` is the node on top of the stack, i.e. the element being prepainted
+    /// pushed it.
+    pub(crate) fn is_current(&self, id: NodeId) -> bool {
+        self.ids_stack.len() > 1 && self.ids_stack.last() == Some(&id)
+    }
+
+    /// Arke: names the current node `key` for the rest of this frame (a later node with the same
+    /// key takes the name).
+    pub(crate) fn name_current(&mut self, key: SharedString) {
+        if let Some(&id) = self.ids_stack.last() {
+            self.named.insert(key, id);
+        }
+    }
+
+    /// Arke: makes the current node a child of the node named `key` (see [`Self::name_current`])
+    /// instead of its parent on the stack, at the end of the frame. Does nothing when no node has
+    /// that name yet. A named node was pushed before the current one, so this makes no cycle.
+    pub(crate) fn move_current_under(&mut self, key: &SharedString) {
+        let len = self.ids_stack.len();
+        if len < 2 {
+            return;
+        }
+        let (id, from) = (self.ids_stack[len - 1], self.ids_stack[len - 2]);
+        if let Some(&to) = self.named.get(key)
+            && to != from
+            && to != id
+        {
+            self.moves.push((id, from, to));
+        }
+    }
+
+    /// Arke: applies [`Self::move_current_under`]: takes each moved node out of its parent's
+    /// children and appends it to its new parent's, in the order they were drawn.
+    fn apply_moves(&mut self) {
+        if self.moves.is_empty() {
+            return;
+        }
+        let moves = std::mem::take(&mut self.moves);
+        let at: FxHashMap<NodeId, usize> = self
+            .all_nodes
+            .iter()
+            .enumerate()
+            .map(|(ix, (id, _))| (*id, ix))
+            .collect();
+        let moves: Vec<(NodeId, usize, usize)> = moves
+            .into_iter()
+            .filter_map(|(id, from, to)| Some((id, *at.get(&from)?, *at.get(&to)?)))
+            .collect();
+        let moved: FxHashSet<NodeId> = moves.iter().map(|(id, _, _)| *id).collect();
+        // Out of the old parents first: a node can be both a new parent and an old one.
+        let mut emptied = FxHashSet::default();
+        for &(_, from, _) in &moves {
+            if emptied.insert(from) {
+                let node = &mut self.all_nodes[from].1;
+                let kept: Vec<NodeId> = node
+                    .children()
+                    .iter()
+                    .copied()
+                    .filter(|child| !moved.contains(child))
+                    .collect();
+                node.set_children(kept);
+            }
+        }
+        for (id, _, to) in moves {
+            self.all_nodes[to].1.push_child(id);
         }
     }
 
@@ -476,6 +551,8 @@ impl A11yNodeBuilder {
         self.ids_stack.clear();
         self.nodes_stack.clear();
         self.seen_ids.clear();
+        self.named.clear();
+        self.moves.clear();
         #[cfg(debug_assertions)]
         self.node_info.clear();
         let mut root_node = accesskit::Node::new(accesskit::Role::Window);
@@ -560,6 +637,7 @@ impl A11yNodeBuilder {
                 self.all_nodes.push((id, node));
             }
         }
+        self.apply_moves();
 
         let focus = match self.active_descendant {
             Some(id) if self.has_node(id) => id,
@@ -901,5 +979,40 @@ mod tests {
 
         let update = a11y.end_frame(Default::default());
         assert_eq!(update.focus, a);
+    }
+
+    // Arke: rows drawn one after another under a list, each moved under the row named as its
+    // parent, end up nested; the list keeps only the top row.
+    #[test]
+    fn moved_nodes_nest_under_the_named_node() {
+        let mut builder = new_builder();
+        let list = NodeId(1);
+        let (top, mid, low) = (NodeId(2), NodeId(3), NodeId(4));
+
+        assert!(builder.push(list, test_node()));
+        assert!(builder.push(top, test_node()));
+        builder.name_current("top".into());
+        builder.pop(); // top
+        assert!(builder.push(mid, test_node()));
+        builder.move_current_under(&"top".into());
+        builder.name_current("mid".into());
+        builder.pop(); // mid
+        assert!(builder.push(low, test_node()));
+        builder.move_current_under(&"mid".into());
+        builder.pop(); // low
+        builder.pop(); // list
+
+        let update = builder.finalize();
+        let children = |id: NodeId| {
+            update
+                .nodes
+                .iter()
+                .find(|(n, _)| *n == id)
+                .map(|(_, node)| node.children().to_vec())
+                .unwrap()
+        };
+        assert_eq!(children(list), vec![top]);
+        assert_eq!(children(top), vec![mid]);
+        assert_eq!(children(mid), vec![low]);
     }
 }

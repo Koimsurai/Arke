@@ -24,15 +24,12 @@ Arke's default shortcuts do not use Insert or Caps Lock, the modifier keys of NV
 
 | Keys | Action |
 | --- | --- |
-| F6 | Go to the next area: file list, sidebar, path bar, search box, then back to the list |
+| F6 | Go to the next area: file list, sidebar, path bar, toolbar, search box, then back to the list |
 | Shift+F6 | Go to the previous area |
 | Ctrl+B | Show or hide the sidebar (F6 skips the sidebar while it is hidden) |
 | Ctrl+L or Alt+D | Go straight to the path bar |
 | Ctrl+F | Go straight to the search box |
-| Esc | In the sidebar or the search panel: go back toward the file list |
-
-The toolbar buttons cannot be reached with Tab yet. Use the shortcuts in this guide, or the command
-palette, instead.
+| Esc | In the sidebar, the toolbar or the search panel: go back toward the file list |
 
 ## File list
 
@@ -105,6 +102,19 @@ screen reader announces the row under it.
 | Left | Collapse a folder, or go up to its parent |
 | Enter or Space | Open the row; the keyboard then goes to the file list |
 | Esc | Go back to the file list without opening anything |
+
+## Toolbar
+
+The toolbar is the row of buttons beside the path bar (Up, New folder, Sort, the views, Preview
+pane, Split and the selection's actions). Press F6 until it is reached; it is one stop, and the
+keyboard starts on its first button, which a screen reader announces.
+
+| Keys | Action |
+| --- | --- |
+| Left, Right | Previous or next button |
+| Home, End | First or last button |
+| Space or Enter | Press the button |
+| Esc | Close the Sort or View options panel if it is open, otherwise go back to the file list |
 
 ## Tabs and windows
 

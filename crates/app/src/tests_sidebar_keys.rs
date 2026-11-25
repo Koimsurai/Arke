@@ -81,8 +81,8 @@ fn cursor(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> 
     ws.update(cx, |ws, _| ws.sidebar_cursor_for_test())
 }
 
-/// F6 goes from the list to the sidebar, the path bar, the search box and back; Shift+F6 the
-/// other way. In the sidebar the cursor starts on the current folder.
+/// F6 goes from the list to the sidebar, the path bar, the pane row's buttons, the search box and
+/// back; Shift+F6 the other way. In the sidebar the cursor starts on the current folder.
 #[gpui::test]
 fn f6_goes_round_the_window(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
@@ -93,11 +93,15 @@ fn f6_goes_round_the_window(cx: &mut TestAppContext) {
     key(cx, "f6");
     assert_eq!(region(&ws, cx), "path");
     key(cx, "f6");
+    assert_eq!(region(&ws, cx), "toolbar");
+    key(cx, "f6");
     assert_eq!(region(&ws, cx), "search");
     key(cx, "f6");
     assert_eq!(region(&ws, cx), "list");
     key(cx, "shift-f6");
     assert_eq!(region(&ws, cx), "search");
+    key(cx, "shift-f6");
+    assert_eq!(region(&ws, cx), "toolbar");
     key(cx, "shift-f6");
     assert_eq!(region(&ws, cx), "path");
     key(cx, "shift-f6");

@@ -106,6 +106,10 @@ pub(crate) enum InputEvent {
     Changed,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one field: masked, being selected, a tab stop"
+)]
 pub(crate) struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -120,6 +124,8 @@ pub(crate) struct TextInput {
     is_selecting: bool,
     /// Password field: drawn as dots, copy and cut disabled
     masked: bool,
+    /// Tab stops here and the page scrolls it into view ([`Self::key_stop`]).
+    key_stop: bool,
     /// Earlier states (content and selection), newest last, for Undo.
     undo: Vec<(SharedString, Range<usize>)>,
     /// What the newest Undo step is made of and where the caret sits after it, so the next
@@ -181,6 +187,16 @@ const MASK: &str = "•";
 impl EventEmitter<InputEvent> for TextInput {}
 
 impl TextInput {
+    /// A field Tab stops at, on a page that moves through its controls with Tab (Settings, #322;
+    /// see `keynav.rs`).
+    #[must_use]
+    pub(crate) fn key_stop(mut self) -> Self {
+        // A tracked handle is a tab stop by its own setting, not the element's.
+        self.focus_handle = self.focus_handle.tab_index(0).tab_stop(true);
+        self.key_stop = true;
+        self
+    }
+
     pub(crate) fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -194,6 +210,7 @@ impl TextInput {
             scroll_x: Pixels::ZERO,
             is_selecting: false,
             masked: false,
+            key_stop: false,
             undo: Vec::new(),
             step: None,
             erasing: None,
@@ -1600,6 +1617,7 @@ impl Render for TextInput {
             .flex_1()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle(cx))
+            .when(self.key_stop, crate::keynav::KeyStop::key_stop_plain)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))

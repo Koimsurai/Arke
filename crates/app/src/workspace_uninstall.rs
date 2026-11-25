@@ -16,15 +16,21 @@ use super::Workspace;
 use super::settings_panel::card;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
+use crate::keynav::KeyStop as _;
 use crate::theme::{self, UiFont as _};
 use crate::uninstall::{self, Step};
 
-actions!(workspace, [CancelUninstall]);
+actions!(workspace, [CancelUninstall, DialogNext, DialogPrev]);
 
 const CONTEXT: &str = "UninstallDialog";
 
 pub(super) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("escape", CancelUninstall, Some(CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("escape", CancelUninstall, Some(CONTEXT)),
+        // Tab stays in the dialog (#322).
+        KeyBinding::new("tab", DialogNext, Some(CONTEXT)),
+        KeyBinding::new("shift-tab", DialogPrev, Some(CONTEXT)),
+    ]);
 }
 
 /// The open confirmation.
@@ -49,6 +55,7 @@ fn danger_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
+        .key_stop()
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()
@@ -90,6 +97,7 @@ fn dialog_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
+        .key_stop()
         .h(theme::h_ctl())
         .px(theme::s_16())
         .flex()
@@ -255,6 +263,24 @@ impl Workspace {
             .key_context(CONTEXT)
             .track_focus(&ask.focus)
             .on_action(cx.listener(Self::cancel_uninstall))
+            .on_action(cx.listener(|this, _: &DialogNext, window, cx| {
+                if let Some(ask) = this
+                    .settings_panel
+                    .as_ref()
+                    .and_then(|p| p.uninstall.as_ref())
+                {
+                    crate::keynav::next_within(&ask.focus.clone(), window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &DialogPrev, window, cx| {
+                if let Some(ask) = this
+                    .settings_panel
+                    .as_ref()
+                    .and_then(|p| p.uninstall.as_ref())
+                {
+                    crate::keynav::prev_within(&ask.focus.clone(), window, cx);
+                }
+            }))
             .w(crate::theme::scaled_px(520.))
             .max_w_full()
             .p(theme::s_20())

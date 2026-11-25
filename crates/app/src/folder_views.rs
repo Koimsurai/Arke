@@ -370,8 +370,7 @@ fn save(path: &Path, file: &StoredFile) -> Result<(), FolderViewsError> {
     }
     let json = serde_json::to_vec_pretty(file).map_err(FolderViewsError::Encode)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(write_err)?;
-    std::fs::rename(&tmp, path).map_err(write_err)
+    arke_core::fs::replace_file(path, &tmp, json).map_err(write_err)
 }
 
 /// `%APPDATA%\Arke\folder_views.json`, next to the settings (string work only).

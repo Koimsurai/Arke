@@ -27,6 +27,7 @@ use super::{Workspace, chosen_accent};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::ViewMode;
+use crate::keynav::KeyStop;
 use crate::scrollbar::ScrollbarDrag;
 use crate::settings::{
     Accent, DarkShade, Density, FolderOrder, Language, LastTabAction, Material, NavScope,
@@ -42,7 +43,10 @@ actions!(
         CloseSettings,
         DropdownUp,
         DropdownDown,
-        DropdownAccept
+        DropdownAccept,
+        NextControl,
+        PrevControl,
+        OtherArea
     ]
 );
 
@@ -68,12 +72,20 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", DropdownUp, Some("SettingsPage")),
         KeyBinding::new("down", DropdownDown, Some("SettingsPage")),
         KeyBinding::new("enter", DropdownAccept, Some("SettingsPage")),
+        KeyBinding::new("tab", NextControl, Some("SettingsPage")),
+        KeyBinding::new("shift-tab", PrevControl, Some("SettingsPage")),
+        KeyBinding::new("f6", OtherArea, Some("SettingsPage")),
+        KeyBinding::new("shift-f6", OtherArea, Some("SettingsPage")),
     ]);
 }
 
 /// Open Settings page: which tab owns it and the folder that tab was on (closes if it changes).
 pub(super) struct SettingsPage {
     pub(super) focus: FocusHandle,
+    /// The categories, one tab stop: Up and Down pick the category (#322).
+    nav_focus: FocusHandle,
+    /// The theme, accent and tint tile groups, one tab stop each (#322).
+    radios: [FocusHandle; 3],
     /// Settings is a tab, as in Files; this is the owning tab.
     pub(super) owner: super::pages::Owner,
     scroll: ScrollHandle,
@@ -278,6 +290,12 @@ fn accent_color(accent: Accent) -> u32 {
     chosen_accent(accent).unwrap_or(theme::ARKE_ACCENT)
 }
 
+/// A focus handle Tab stops at (#322): a tracked handle is a tab stop by its own setting, not
+/// the element's.
+fn stop_handle(cx: &mut App) -> FocusHandle {
+    cx.focus_handle().tab_index(0).tab_stop(true)
+}
+
 /// Index of the About category; the "Import Arke settings" context menu opens it directly.
 pub(super) const ABOUT: usize = 7;
 
@@ -287,6 +305,10 @@ pub(super) fn set(cx: &mut App, f: impl FnOnce(&mut Settings)) {
 }
 
 impl Workspace {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the page's whole state is made here, field by field"
+    )]
     pub(super) fn open_settings(
         &mut self,
         _: &OpenSettings,
@@ -308,7 +330,7 @@ impl Workspace {
         let owner = self.owner_here(true, cx);
         let accent = SettingsStore::global(cx).read(cx).settings.accent;
         let accent_input = cx.new(|cx| {
-            let mut input = TextInput::new("#RRGGBB", cx);
+            let mut input = TextInput::new("#RRGGBB", cx).key_stop();
             input.set_text(Accent::hex(accent_color(accent)), cx);
             input
         });
@@ -319,15 +341,17 @@ impl Workspace {
             .background_image
             .clone();
         let image_input = cx.new(|cx| {
-            let mut input = TextInput::new(t!("settings.background_path").to_string(), cx);
+            let mut input =
+                TextInput::new(t!("settings.background_path").to_string(), cx).key_stop();
             input.set_text(image.map_or_default(|p| p.display().to_string()), cx);
             input
         });
         let image_sub = cx.subscribe_in(&image_input, window, Self::on_image_input);
         let import_input =
-            cx.new(|cx| TextInput::new(t!("backup.import_placeholder").to_string(), cx));
+            cx.new(|cx| TextInput::new(t!("backup.import_placeholder").to_string(), cx).key_stop());
         let import_sub = cx.subscribe_in(&import_input, window, Self::on_import_input);
-        let app_input = cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx));
+        let app_input =
+            cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx).key_stop());
         let app_sub = cx.subscribe_in(&app_input, window, Self::on_app_input);
         let route = SettingsStore::global(cx)
             .read(cx)
@@ -335,7 +359,8 @@ impl Workspace {
             .update_route
             .clone();
         let route_input = cx.new(|cx| {
-            let mut input = TextInput::new(t!("update.route_placeholder").to_string(), cx);
+            let mut input =
+                TextInput::new(t!("update.route_placeholder").to_string(), cx).key_stop();
             input.set_text(route, cx);
             input
         });
@@ -364,6 +389,8 @@ impl Workspace {
         .detach();
         self.settings_panel = Some(SettingsPage {
             focus,
+            nav_focus: stop_handle(cx),
+            radios: std::array::from_fn(|_| stop_handle(cx)),
             owner,
             scroll: ScrollHandle::new(),
             scrollbar_drag: ScrollbarDrag::default(),
@@ -799,6 +826,8 @@ impl Workspace {
             .as_mut()
             .and_then(|p| p.dropdown.as_mut())
         else {
+            // No list open: the arrow is for the control with the focus (#322).
+            cx.propagate();
             return;
         };
         let last = dropdown.options.len().saturating_sub(1);
@@ -826,12 +855,73 @@ impl Workspace {
 
     fn dropdown_accept(&mut self, _: &DropdownAccept, _: &mut Window, cx: &mut Context<Self>) {
         let Some(dropdown) = self.settings_panel.as_mut().and_then(|p| p.dropdown.take()) else {
+            // No list open: Enter presses the control with the focus (#322).
+            cx.propagate();
             return;
         };
         if let Some(apply) = dropdown.options.get(dropdown.cursor).cloned() {
             apply(cx);
         }
         cx.notify();
+    }
+
+    /// Tab: the next control on the page; an open list closes first, as in Windows.
+    fn next_control(&mut self, _: &NextControl, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_dropdown(cx);
+        crate::keynav::next(window, cx);
+    }
+
+    /// Shift+Tab: the previous control on the page.
+    fn prev_control(&mut self, _: &PrevControl, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_dropdown(cx);
+        crate::keynav::prev(window, cx);
+    }
+
+    /// F6 and Shift+F6: between the categories and the page's controls.
+    fn other_area(&mut self, _: &OtherArea, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_dropdown(cx);
+        let Some(page) = &self.settings_panel else {
+            return;
+        };
+        if page.nav_focus.is_focused(window) {
+            // The categories come first in Tab order: the next stop is the page's first control.
+            crate::keynav::next(window, cx);
+        } else {
+            window.focus(&page.nav_focus, cx);
+        }
+    }
+
+    fn close_dropdown(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &mut self.settings_panel
+            && page.dropdown.take().is_some()
+        {
+            cx.notify();
+        }
+    }
+
+    /// Up and Down on the categories (Home and End too): selects that category and shows its
+    /// page, as Windows Settings does.
+    fn nav_key(&mut self, key: &str, count: usize, cx: &mut Context<Self>) -> bool {
+        let Some(page) = &mut self.settings_panel else {
+            return false;
+        };
+        let last = count.saturating_sub(1);
+        let at = page.category.min(last);
+        let to = match key {
+            "up" => at.saturating_sub(1),
+            "down" => (at + 1).min(last),
+            "home" => 0,
+            "end" => last,
+            _ => return false,
+        };
+        if to != page.category {
+            page.category = to;
+            page.dropdown = None;
+            LAST_TOGGLE.set(None);
+            page.scroll.set_offset(point(px(0.), px(0.)));
+            cx.notify();
+        }
+        true
     }
 
     /// Whether the active tab is showing Settings.
@@ -923,9 +1013,33 @@ impl Workspace {
         let compact = self.last_viewport_width < nav_compact_below();
         let mut categories = Self::settings_sections(&s, page, window, cx);
         let selected = page.category.min(categories.len().saturating_sub(1));
+        let count = categories.len();
+        // The ring goes on the selected category rather than round the whole column.
+        // The control with the focus went (a row's button that closed with what it did): the page
+        // takes the focus, so the keys keep working (#322).
+        if window.focused(cx).is_none() {
+            let focus = page.focus.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                if window.focused(cx).is_none() {
+                    window.focus(&focus, cx);
+                }
+            });
+        }
+        let nav_held = page.nav_focus.is_focused(window);
+        let nav_ring = nav_held && window.last_input_was_keyboard();
+        crate::keynav::set_view(Some(page.scroll.clone()));
         let nav = div()
             .id("settings-nav")
             .a11y(gpui::Role::TabList, t!("settings.title"))
+            .track_focus(&page.nav_focus)
+            .key_stop_plain()
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                if !event.keystroke.modifiers.modified()
+                    && this.nav_key(&event.keystroke.key, count, cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .flex_none()
             .w(if compact { nav_w_compact() } else { nav_w() })
             .h_full()
@@ -945,6 +1059,10 @@ impl Workspace {
                             .id(("settings-category", ix))
                             .a11y_lazy(gpui::Role::Tab, || title.to_string())
                             .aria_selected(on)
+                            // Read as focused while the categories have the focus, not while a
+                            // control on the page under them does.
+                            .when(on && nav_held, gpui::StatefulInteractiveElement::aria_active_descendant)
+                            .when(on && nav_ring, |d| d.shadow(crate::keynav::ring()))
                             .relative()
                             .h(theme::h_row() + theme::s_4())
                             .px(theme::s_12())
@@ -1055,6 +1173,9 @@ impl Workspace {
                 .on_action(cx.listener(Self::dropdown_up))
                 .on_action(cx.listener(Self::dropdown_down))
                 .on_action(cx.listener(Self::dropdown_accept))
+                .on_action(cx.listener(Self::next_control))
+                .on_action(cx.listener(Self::prev_control))
+                .on_action(cx.listener(Self::other_area))
                 .flex_1()
                 .min_w_0()
                 .h_full()
@@ -1151,6 +1272,11 @@ impl Workspace {
             buttons: Rc::clone(&page.dropdown_buttons),
         };
         let ui = &ui;
+        // Whether a tile group has the focus, and by keyboard (the picked tile shows the ring).
+        let keys = |focus: &FocusHandle| {
+            let focused = focus.is_focused(window);
+            (focused, focused && window.last_input_was_keyboard())
+        };
         let material = theme::mica_available().then(|| {
             card(
                 Icon::Window,
@@ -1176,7 +1302,7 @@ impl Workspace {
             t!("settings.theme_desc"),
             text_summary(theme_label(s.theme, s.dark_shade)),
             page.expanded.contains("theme"),
-            theme_body(s),
+            theme_body(s, &page.radios[0], keys(&page.radios[0])),
             cx,
         )];
         appearance.extend(material);
@@ -1188,7 +1314,7 @@ impl Workspace {
                 t!("settings.accent_desc"),
                 look_summary(theme::signal(), accent_label(s.accent)),
                 page.expanded.contains("accent"),
-                accent_body(s, &page.accent_input, window, cx),
+                accent_body(s, &page.accent_input, &page.radios[1], window, cx),
                 cx,
             ),
             expander(
@@ -1198,7 +1324,7 @@ impl Workspace {
                 t!("settings.tint_desc"),
                 look_summary(theme::tint_preview(tint_color(s)), tint_label(s.tint)),
                 page.expanded.contains("tint"),
-                tint_body(s),
+                tint_body(s, &page.radios[2], keys(&page.radios[2])),
                 cx,
             ),
             expander(
@@ -1939,6 +2065,7 @@ fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
     let chip = div()
         .id("space-quicklook")
         .a11y_toggle(tip.clone(), on)
+        .key_stop()
         .h(theme::s_24())
         .px(theme::s_12())
         .flex()
@@ -2046,6 +2173,7 @@ fn about_link(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y(gpui::Role::Link, name)
+        .key_stop()
         .cursor_pointer()
         .text_color(theme::signal())
         .hover(Styled::underline)
@@ -2369,6 +2497,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_combo(label.clone(), open)
+        .key_stop()
         .h(theme::h_ctl())
         .min_w(dropdown_min_w())
         .pl(theme::s_12())
@@ -2434,7 +2563,8 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let button = button
         .on_click({
             let open_list = std::rc::Rc::clone(&open_list);
-            move |_, _, cx| open_list(false, cx)
+            // Opened by Space or Enter: the keyboard cursor shows in the list.
+            move |event: &ClickEvent, _, cx| open_list(event.is_keyboard(), cx)
         })
         .a11y_on_expand({
             let workspace = workspace.clone();
@@ -2641,6 +2771,7 @@ pub(super) fn expander(
                     }
                     cx.notify();
                 })
+                .key_stop()
                 .min_h(card_min_h())
                 .px(theme::s_16())
                 .py(theme::s_12())
@@ -2836,7 +2967,7 @@ fn look_tile(
     selected: bool,
     surfaces: (gpui::Rgba, gpui::Rgba),
     accent: gpui::Rgba,
-    apply: impl Fn(&mut Settings) + 'static,
+    pick: &Pick,
 ) -> AnyElement {
     let (width, height) = LOOK_TILE;
     let look = TileLook::current(surfaces, accent);
@@ -2846,8 +2977,65 @@ fn look_tile(
         selected,
         (width, height),
         mini_window(look, width).into_any_element(),
-        apply,
+        pick,
     )
+}
+
+/// What picking a tile sets, shared by its click and the arrow keys of its group; whether it is
+/// read as focused (its group has the focus and it is the picked one); whether it shows the
+/// ring (that, by keyboard).
+type Pick = (Apply, bool, bool);
+
+/// Sets what a tile stands for.
+type Apply = Rc<dyn Fn(&mut Settings)>;
+
+/// Whether a tile group has the focus, and whether by keyboard.
+type Held = (bool, bool);
+
+/// [`Pick`] for a tile setting `apply`, picked or not, in a group `held` as given.
+fn pick(apply: impl Fn(&mut Settings) + 'static, (focused, keys): Held, selected: bool) -> Pick {
+    (Rc::new(apply), focused && selected, keys && selected)
+}
+
+/// Tiles of one choice (theme, accent, tint), as a Windows radio group: one tab stop, the arrows
+/// pick the previous or next tile (round from the last to the first), Home and End the first and
+/// last, and a screen reader reads the picked tile as focused (#322).
+fn radio_group(
+    id: &'static str,
+    label: Cow<'static, str>,
+    focus: &FocusHandle,
+    picks: Vec<Apply>,
+    selected: Option<usize>,
+    tiles: Vec<AnyElement>,
+) -> gpui::Stateful<gpui::Div> {
+    let count = picks.len();
+    div()
+        .id(id)
+        .a11y(gpui::Role::RadioGroup, label.into_owned())
+        .track_focus(focus)
+        .key_stop_plain()
+        .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+            if event.keystroke.modifiers.modified() || count == 0 {
+                return;
+            }
+            let at = selected.unwrap_or(0);
+            let to = match event.keystroke.key.as_str() {
+                // None picked yet (a custom color): the first.
+                "left" | "up" | "right" | "down" if selected.is_none() => 0,
+                "left" | "up" => (at + count - 1) % count,
+                "right" | "down" => (at + 1) % count,
+                "home" => 0,
+                "end" => count - 1,
+                _ => return,
+            };
+            cx.stop_propagation();
+            let apply = Rc::clone(&picks[to]);
+            set(cx, move |s| apply(s));
+        })
+        .flex()
+        .flex_wrap()
+        .gap(theme::s_8())
+        .children(tiles)
 }
 
 /// Tile shared by the theme, accent and tint options: `preview` on top (`size` is its width and
@@ -2858,12 +3046,17 @@ fn tile(
     selected: bool,
     (width, height): (f32, f32),
     preview: AnyElement,
-    apply: impl Fn(&mut Settings) + 'static,
+    (apply, claim, ring): &Pick,
 ) -> AnyElement {
-    div()
+    let apply = Rc::clone(apply);
+    let tile = div()
         .id(id)
         .a11y_lazy(gpui::Role::RadioButton, || label.clone())
         .aria_toggled(crate::a11y::toggled(selected))
+        .when(
+            *claim,
+            gpui::StatefulInteractiveElement::aria_active_descendant,
+        )
         .w(px(width))
         .flex()
         .flex_col()
@@ -2895,12 +3088,26 @@ fn tile(
                         .child(label),
                 ),
         )
-        .on_click(move |_, _, cx| set(cx, |s| apply(s)))
+        .on_click(move |_, _, cx| {
+            let apply = Rc::clone(&apply);
+            set(cx, move |s| apply(s));
+        });
+    // The keyboard ring: outside the tile, whose preview covers its inside, and in the text color,
+    // as the accent already marks the picked tile. The frame is always there (clear when not
+    // shown) and its room is taken back with a negative margin, so nothing moves.
+    let room = px(4.);
+    div()
+        .m(-room)
+        .p(px(2.))
+        .rounded(theme::r_8() + room)
+        .border_2()
+        .border_color(if *ring { theme::text() } else { theme::clear() })
+        .child(tile)
         .into_any_element()
 }
 
 /// Theme options: light, dark, and follow Windows (half light, half dark).
-fn theme_body(s: &Settings) -> AnyElement {
+fn theme_body(s: &Settings, focus: &FocusHandle, held: Held) -> AnyElement {
     let (width, height) = THEME_TILE;
     let window = |dark: bool, gray: bool| mini_window(TileLook::mode(dark, gray), width);
     // The dark half shows the right side of the same window, so the two halves line up.
@@ -2952,33 +3159,38 @@ fn theme_body(s: &Settings) -> AnyElement {
         ),
         (ThemeMode::System, None, t!("settings.theme_system"), system),
     ];
-    div()
-        .flex()
-        .flex_wrap()
-        .gap(theme::s_8())
-        .children(
-            options
-                .into_iter()
-                .enumerate()
-                .map(|(ix, (mode, shade, label, preview))| {
-                    let selected =
-                        s.theme == mode && shade.is_none_or(|shade| s.dark_shade == shade);
-                    tile(
-                        ("theme", ix),
-                        label.into_owned(),
-                        selected,
-                        (width, height),
-                        preview,
-                        move |st| {
-                            st.theme = mode;
-                            if let Some(shade) = shade {
-                                st.dark_shade = shade;
-                            }
-                        },
-                    )
-                }),
-        )
-        .into_any_element()
+    let mut picks = Vec::new();
+    let mut at = None;
+    let tiles = options
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (mode, shade, label, preview))| {
+            let selected = s.theme == mode && shade.is_none_or(|shade| s.dark_shade == shade);
+            if selected {
+                at = Some(ix);
+            }
+            let pick = pick(
+                move |st| {
+                    st.theme = mode;
+                    if let Some(shade) = shade {
+                        st.dark_shade = shade;
+                    }
+                },
+                held,
+                selected,
+            );
+            picks.push(Rc::clone(&pick.0));
+            tile(
+                ("theme", ix),
+                label.into_owned(),
+                selected,
+                (width, height),
+                preview,
+                &pick,
+            )
+        })
+        .collect();
+    radio_group("theme-tiles", t!("settings.theme"), focus, picks, at, tiles).into_any_element()
 }
 
 /// Right side of the Theme header: the current choice.
@@ -3029,47 +3241,73 @@ fn tint_color(s: &Settings) -> Option<u32> {
 }
 
 /// Accent options: a preview tile per swatch, plus custom (hue strip and hex input).
-fn accent_body(s: &Settings, input: &Entity<TextInput>, window: &Window, cx: &App) -> AnyElement {
+fn accent_body(
+    s: &Settings,
+    input: &Entity<TextInput>,
+    focus: &FocusHandle,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     let frame = (
         theme::tint_preview(tint_color(s)),
         theme::paper_preview(tint_color(s)),
     );
     let current = s.accent;
-    let mut tiles = vec![look_tile(
+    let focused = focus.is_focused(window);
+    let held = (focused, focused && window.last_input_was_keyboard());
+    let mut options = vec![(
         ("accent", 0),
         t!("accent.arke").into_owned(),
-        current == Accent::Arke,
-        frame,
+        Accent::Arke,
         theme::accent_default(),
-        |st| st.accent = Accent::Arke,
     )];
-    tiles.extend(
+    options.extend(
         theme::ACCENT_PRESETS
             .iter()
             .enumerate()
             .map(|(ix, &(name, color))| {
-                look_tile(
+                (
                     ("accent", ix + 1),
                     accent_name(name).into_owned(),
-                    current == Accent::Color(color),
-                    frame,
+                    Accent::Color(color),
                     theme::accent_preview(color),
-                    move |st| st.accent = Accent::Color(color),
                 )
             }),
     );
     if let Some(system) = crate::win::system_accent() {
-        tiles.push(look_tile(
+        options.push((
             ("accent-windows", 0),
             t!("settings.accent_windows").into_owned(),
-            current == Accent::Windows,
-            frame,
+            Accent::Windows,
             theme::accent_preview(system),
-            |st| st.accent = Accent::Windows,
         ));
     }
+    let mut picks = Vec::new();
+    let mut at = None;
+    let tiles = options
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (id, label, accent, preview))| {
+            let selected = current == accent;
+            if selected {
+                at = Some(ix);
+            }
+            let pick = pick(move |st| st.accent = accent, held, selected);
+            picks.push(Rc::clone(&pick.0));
+            look_tile(id, label, selected, frame, preview, &pick)
+        })
+        .collect();
+    let tiles = radio_group(
+        "accent-tiles",
+        t!("settings.accent"),
+        focus,
+        picks,
+        at,
+        tiles,
+    );
     let focused = input.focus_handle(cx).is_focused(window);
     let code = div()
+        .debug_selector(|| "accent-code".to_owned())
         .w(crate::theme::scaled_px(96.))
         .h(theme::h_ctl_sm())
         .px(theme::s_8())
@@ -3089,7 +3327,7 @@ fn accent_body(s: &Settings, input: &Entity<TextInput>, window: &Window, cx: &Ap
         .flex()
         .flex_col()
         .gap(theme::s_16())
-        .child(div().flex().flex_wrap().gap(theme::s_8()).children(tiles))
+        .child(tiles)
         .child(
             div()
                 .flex()
@@ -3109,54 +3347,41 @@ fn accent_body(s: &Settings, input: &Entity<TextInput>, window: &Window, cx: &Ap
 }
 
 /// Background tint options: neutral gray, follow accent, and a preview tile per swatch.
-fn tint_body(s: &Settings) -> AnyElement {
+fn tint_body(s: &Settings, focus: &FocusHandle, held: Held) -> AnyElement {
     let accent = theme::signal();
     let current = s.tint;
-    let mut tiles = vec![
-        look_tile(
-            ("tint", 0),
-            t!("tint.none").into_owned(),
-            current == Tint::None,
-            (theme::tint_preview(None), theme::paper_preview(None)),
-            accent,
-            |st| st.tint = Tint::None,
-        ),
-        look_tile(
-            ("tint", 1),
+    let surfaces = |color: Option<u32>| (theme::tint_preview(color), theme::paper_preview(color));
+    let mut options = vec![
+        (t!("tint.none").into_owned(), Tint::None, surfaces(None)),
+        (
             t!("tint.accent").into_owned(),
-            current == Tint::Accent,
-            (
-                theme::tint_preview(Some(accent_color(s.accent))),
-                theme::paper_preview(Some(accent_color(s.accent))),
-            ),
-            accent,
-            |st| st.tint = Tint::Accent,
+            Tint::Accent,
+            surfaces(Some(accent_color(s.accent))),
         ),
     ];
-    tiles.extend(
-        theme::ACCENT_PRESETS
-            .iter()
-            .enumerate()
-            .map(|(ix, &(name, color))| {
-                look_tile(
-                    ("tint", ix + 2),
-                    accent_name(name).into_owned(),
-                    current == Tint::Color(color),
-                    (
-                        theme::tint_preview(Some(color)),
-                        theme::paper_preview(Some(color)),
-                    ),
-                    accent,
-                    move |st| st.tint = Tint::Color(color),
-                )
-            }),
-    );
-    div()
-        .flex()
-        .flex_wrap()
-        .gap(theme::s_8())
-        .children(tiles)
-        .into_any_element()
+    options.extend(theme::ACCENT_PRESETS.iter().map(|&(name, color)| {
+        (
+            accent_name(name).into_owned(),
+            Tint::Color(color),
+            surfaces(Some(color)),
+        )
+    }));
+    let mut picks = Vec::new();
+    let mut at = None;
+    let tiles = options
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (label, tint, look))| {
+            let selected = current == tint;
+            if selected {
+                at = Some(ix);
+            }
+            let pick = pick(move |st| st.tint = tint, held, selected);
+            picks.push(Rc::clone(&pick.0));
+            look_tile(("tint", ix), label, selected, look, accent, &pick)
+        })
+        .collect();
+    radio_group("tint-tiles", t!("settings.tint"), focus, picks, at, tiles).into_any_element()
 }
 
 /// Font: every installed font, with the default first.
@@ -3506,16 +3731,50 @@ fn background_body(
 /// Opacity slider, 0 to 100 %. Press anywhere on it to jump there, drag to adjust; the setting
 /// (and the list behind) follows while dragging.
 fn opacity_slider(value: u8, dragging: std::rc::Rc<std::cell::Cell<bool>>) -> AnyElement {
-    crate::slider::slider(
-        f32::from(value.min(100)) / 100.,
+    let value = value.min(100);
+    let track = crate::slider::slider(
+        f32::from(value) / 100.,
         dragging,
         // 0 to 1 in, 0 to 100 out: the cast can't truncate.
         std::rc::Rc::new(|fraction: f32, _: &mut Window, cx: &mut App| {
             set_backdrop_opacity((fraction * 100.).round() as u8, cx);
         }),
     )
-    .w(slider_w())
-    .into_any_element()
+    .w(slider_w());
+    // A tab stop of its own: Left and Right move it by 5, Page Up and Page Down by 20, Home and
+    // End to either end, as a Windows slider (#322).
+    div()
+        .id("backdrop-opacity")
+        .a11y(
+            gpui::Role::Slider,
+            t!("settings.background_opacity").into_owned(),
+        )
+        .a11y_node(move |node| {
+            node.set_numeric_value(f64::from(value));
+            node.set_min_numeric_value(0.);
+            node.set_max_numeric_value(100.);
+            node.set_numeric_value_step(5.);
+        })
+        .key_stop()
+        .rounded(theme::r_8())
+        .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+            let to = match event.keystroke.key.as_str() {
+                "left" | "down" => value.saturating_sub(5),
+                "right" | "up" => value.saturating_add(5).min(100),
+                "pagedown" => value.saturating_sub(20),
+                "pageup" => value.saturating_add(20).min(100),
+                "home" => 0,
+                "end" => 100,
+                _ => return,
+            };
+            cx.stop_propagation();
+            set_backdrop_opacity(to, cx);
+        })
+        .child(track)
+        .into_any_element()
 }
 
 fn set_backdrop_opacity(value: u8, cx: &mut App) {
@@ -3538,6 +3797,7 @@ fn column_toggles(s: &Settings) -> AnyElement {
         div()
             .id(("col-chip", col as usize))
             .a11y_toggle(col.label().into_owned(), on)
+            .key_stop()
             .h(theme::s_24())
             .px(theme::s_12())
             .flex()
@@ -3614,6 +3874,25 @@ pub(crate) fn switch(
     on: bool,
     toggle: impl Fn(&mut Settings) + 'static,
 ) -> AnyElement {
+    switch_with(id, on, toggle, true)
+}
+
+/// [`switch`] that Tab doesn't stop at and a click doesn't focus, for a flyout over the folder:
+/// the keys stay with the folder (the view options' tree switch).
+pub(crate) fn flyout_switch(
+    id: &'static str,
+    on: bool,
+    toggle: impl Fn(&mut Settings) + 'static,
+) -> AnyElement {
+    switch_with(id, on, toggle, false)
+}
+
+fn switch_with(
+    id: &'static str,
+    on: bool,
+    toggle: impl Fn(&mut Settings) + 'static,
+    stop: bool,
+) -> AnyElement {
     // Track inner width is 32 (40 minus border and padding) and the thumb is 14, so it travels 18.
     const TRAVEL: f32 = 18.;
     let track_color = |on: bool| {
@@ -3662,6 +3941,7 @@ pub(crate) fn switch(
     let track = div()
         .id(id)
         .a11y_switch(on)
+        .when(stop, KeyStop::key_stop)
         .debug_selector(|| id.to_owned())
         .w(crate::theme::scaled_px(40.))
         .h(crate::theme::scaled_px(20.))
@@ -3790,6 +4070,7 @@ pub(super) fn text_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_row_button(label.clone())
+        .key_stop()
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()

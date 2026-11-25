@@ -1346,6 +1346,20 @@ pub trait InteractiveElement: Sized {
         self.interactivity().focus_visible_style = Some(Box::new(f(StyleRefinement::default())));
         self
     }
+
+    /// Arke: calls `listener` with this element's bounds each time it is prepainted while it has
+    /// focus, so the app can bring a control that Tab moved to into view. Requires that the
+    /// element is focusable.
+    fn on_focused_bounds(
+        mut self,
+        listener: impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().focused_bounds_listener = Some(Box::new(listener));
+        self
+    }
 }
 
 /// A trait for elements that want to use the standard GPUI interactivity features
@@ -1417,6 +1431,22 @@ pub trait StatefulInteractiveElement: InteractiveElement {
     /// focused, the claim is ignored.
     fn aria_active_descendant(mut self) -> Self {
         self.interactivity().report_active_descendant_focus = true;
+        self
+    }
+
+    /// Arke: names this element's accessibility node `key` for the rest of the frame, so elements
+    /// drawn after it can be put under it with [`Self::a11y_parent`].
+    fn a11y_key(mut self, key: impl Into<SharedString>) -> Self {
+        self.interactivity().a11y_key = Some(key.into());
+        self
+    }
+
+    /// Arke: makes this element's accessibility node a child of the node named `key` earlier in
+    /// the frame (see [`Self::a11y_key`]) instead of its nearest ancestor's, like `aria-owns` on
+    /// the web: rows of a tree drawn one after another then read as nested. Without such a node
+    /// it stays where it is.
+    fn a11y_parent(mut self, key: impl Into<SharedString>) -> Self {
+        self.interactivity().a11y_parent = Some(key.into());
         self
     }
 
@@ -2193,6 +2223,8 @@ pub struct Interactivity {
     pub(crate) key_context: Option<KeyContext>,
     pub(crate) focusable: bool,
     pub(crate) tracked_focus_handle: Option<FocusHandle>,
+    /// Arke: see [`InteractiveElement::on_focused_bounds`].
+    pub(crate) focused_bounds_listener: Option<Box<dyn Fn(Bounds<Pixels>, &mut Window, &mut App)>>,
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
@@ -2245,6 +2277,10 @@ pub struct Interactivity {
         Vec<(accesskit::Action, crate::window::a11y::A11yActionListener)>,
     pub(crate) a11y_synthetic_children: Option<Box<dyn FnOnce(&mut crate::A11ySubtreeBuilder)>>,
     pub(crate) report_active_descendant_focus: bool,
+    /// Arke: see [`StatefulInteractiveElement::a11y_key`].
+    pub(crate) a11y_key: Option<SharedString>,
+    /// Arke: see [`StatefulInteractiveElement::a11y_parent`].
+    pub(crate) a11y_parent: Option<SharedString>,
     pub(crate) override_role: Option<accesskit::Role>,
     pub(crate) aria: AriaProperties,
 
@@ -2393,6 +2429,11 @@ impl Interactivity {
                         .note_focus_without_node(focus_handle.id, "it has no element id");
                 }
             }
+            if let Some(listener) = self.focused_bounds_listener.as_ref()
+                && focus_handle.is_focused(window)
+            {
+                listener(bounds, window, cx);
+            }
         }
 
         if self.report_active_descendant_focus && window.a11y.is_active() {
@@ -2400,6 +2441,20 @@ impl Interactivity {
                 window
                     .a11y
                     .set_active_descendant(global_id.accesskit_node_id());
+            }
+        }
+
+        // Arke: names this element's node and moves it under another (`a11y_key`, `a11y_parent`).
+        if (self.a11y_key.is_some() || self.a11y_parent.is_some())
+            && window.a11y.is_active()
+            && let Some(global_id) = global_id
+            && window.a11y.nodes.is_current(global_id.accesskit_node_id())
+        {
+            if let Some(parent) = self.a11y_parent.take() {
+                window.a11y.nodes.move_current_under(&parent);
+            }
+            if let Some(key) = self.a11y_key.take() {
+                window.a11y.nodes.name_current(key);
             }
         }
         window.with_optional_element_state::<InteractiveElementState, _>(

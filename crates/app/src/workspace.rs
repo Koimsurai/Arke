@@ -78,7 +78,7 @@ mod welcome;
 #[path = "workspace_whats_new.rs"]
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
-pub(crate) use settings_panel::{OpenSettings, switch};
+pub(crate) use settings_panel::{OpenSettings, flyout_switch};
 pub(crate) use sidebar::{leave_drive_everywhere, reload_places_everywhere};
 pub(crate) use tabmove::MovedTab;
 

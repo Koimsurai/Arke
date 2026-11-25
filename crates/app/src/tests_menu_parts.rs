@@ -128,8 +128,12 @@ fn a_pinned_command_shows_before_the_whole_windows_menu(cx: &mut TestAppContext)
     *shell.menu_gate.lock() = Some(gate);
     shell.extensions_read.lock().clear();
     right_click(&view, cx, Some(0));
+    // The row is drawn ahead as soon as the menu opens (seen on this kind before, #325), maybe
+    // before 7-Zip's menu has been read: wait for both, not just the row.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !rows_above_more_options(&view, cx).contains(&"Compress with 7-Zip".to_owned()) {
+    while !rows_above_more_options(&view, cx).contains(&"Compress with 7-Zip".to_owned())
+        || shell.extensions_read.lock().is_empty()
+    {
         assert!(Instant::now() < deadline, "pinned row didn't show early");
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));

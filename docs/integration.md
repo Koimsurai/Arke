@@ -69,7 +69,7 @@ ignored.
 
 | `cmd` | Parameters | What it does |
 | --- | --- | --- |
-| `state` | none | Replies with every window, its tabs and panes, what each shows and what is selected |
+| `state` | `selection` (default `true`) | Replies with every window, its tabs and panes, what each shows and what is selected; `"selection": false` leaves the selected items out |
 | `open` | `path` (required), `new_tab` (default `false`), `select` (array of names, optional) | Shows `path` in the active pane of the window (or in a new tab with `new_tab`) and brings the window to the front; `select` selects those items once the folder is listed |
 | `run` | `id` (a command id) | Runs a command palette command in the window's active pane |
 | `commands` | none | Lists the ids and names `run` takes, so tools don't have to hard-code them |
@@ -127,6 +127,9 @@ ignored.
 - `hwnd` is the window's handle in hex, for sending it `WM_COPYDATA` or activating it.
 - `selection` holds full paths (URLs on a server), in list order. In search results it is the
   result under the cursor, also as a full path.
+- With `"selection": false` in the request the panes have no `selection` field. A tool that only
+  needs the folders (dialog jumps, a folder list) should ask this way: with thousands of items
+  selected the full reply runs to megabytes, built while Arke's window waits.
 - Keys may come in any order.
 
 `location.kind` (more kinds may be added):

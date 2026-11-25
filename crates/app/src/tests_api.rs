@@ -36,9 +36,12 @@ fn start(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext)
 fn state(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Value {
     cx.run_until_parked();
     let window = ws.update(cx, |ws, cx| ws.api_state_for_test(cx));
-    api::state_json(&Snapshot {
-        windows: vec![Arc::new(window)],
-    })
+    api::state_json(
+        &Snapshot {
+            windows: vec![Arc::new(window)],
+        },
+        true,
+    )
 }
 
 /// Exactly one `active: true` among these.
@@ -163,7 +166,7 @@ fn the_published_state_follows_the_window(cx: &mut TestAppContext) {
     let selection_now = |cx: &mut VisualTestContext| {
         cx.run_until_parked();
         ws.update(cx, |ws, cx| ws.api_publish_for_test(id, hwnd, cx));
-        let value = api::state_json(&api::snapshot(Some(&[hwnd][..])));
+        let value = api::state_json(&api::snapshot(Some(&[hwnd][..])), true);
         assert_eq!(value["windows"].as_array().unwrap().len(), 1);
         value["windows"][0]["tabs"][0]["panes"][0]["selection"].clone()
     };

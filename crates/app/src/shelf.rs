@@ -224,8 +224,7 @@ fn save(path: &Path, items: Vec<ShelfItem>) -> Result<(), ShelfError> {
     };
     let json = serde_json::to_vec_pretty(&file).map_err(ShelfError::Encode)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(write_err)?;
-    std::fs::rename(&tmp, path).map_err(write_err)
+    arke_core::fs::replace_file(path, &tmp, json).map_err(write_err)
 }
 
 /// `%APPDATA%\Arke\shelf.json`, next to the settings.

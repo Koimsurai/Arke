@@ -457,7 +457,7 @@ fn exact_first(hits: Vec<Arc<SearchHit>>, text: &str) -> (Vec<Arc<SearchHit>>, u
     let mut matcher = nucleo::Matcher::new(Config::DEFAULT.match_paths());
     let mut buf = Vec::new();
     let (mut exact, similar): (Vec<_>, Vec<_>) = hits.into_iter().partition(|hit| {
-        let haystack: &str = if path { &*hit.rel } else { &*hit.entry.name };
+        let haystack: &str = if path { &hit.rel } else { &hit.entry.name };
         pattern
             .score(nucleo::Utf32Str::new(haystack, &mut buf), &mut matcher)
             .is_some()
@@ -967,7 +967,10 @@ mod tests {
         assert!(settle(&rx, g).hits.is_empty());
         let g = svc.set_parsed(query(r"tls\valid", NameMatch::Similar));
         let r = settle(&rx, g);
-        assert_eq!((rels(&r), r.similar), (vec![r"tools\validrive.exe".to_owned()], 1));
+        assert_eq!(
+            (rels(&r), r.similar),
+            (vec![r"tools\validrive.exe".to_owned()], 1)
+        );
     }
 
     /// A tab that never searches has no search thread, and what it is told before its first search

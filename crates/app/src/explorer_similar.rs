@@ -249,9 +249,13 @@ impl Explorer {
             let kept = relevance[..exact.min(relevance.len())].to_vec();
             self.search_relevance = Some(Arc::new(kept));
         }
-        self.search_cursor = self
-            .search_cursor
-            .and_then(|ix| if ix < exact { Some(ix) } else { exact.checked_sub(1) });
+        self.search_cursor = self.search_cursor.and_then(|ix| {
+            if ix < exact {
+                Some(ix)
+            } else {
+                exact.checked_sub(1)
+            }
+        });
     }
 
     /// The extra row at list row `row`: "Similar results" with a chevron, opened and closed by a

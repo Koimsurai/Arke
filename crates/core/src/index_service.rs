@@ -596,11 +596,13 @@ impl IndexService {
                 .filter(|_| names == NameMatch::Exact)
                 .and_then(|n| n.for_input(&index, show_hidden, input));
             // The fewer to look through, the better.
-            match (exact, fuzzy) {
+            let within = match (exact, fuzzy) {
                 (Some(e), Some(f)) if f.len() < e.len() => Some(Arc::clone(f)),
                 (Some(e), _) => Some(Arc::clone(e)),
                 (None, f) => f.map(Arc::clone),
-            }
+            };
+            drop(narrows);
+            within
         } else {
             None
         };

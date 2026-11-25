@@ -74,7 +74,7 @@ fn whole_pc_lists_names_as_typed_and_similar_ones_on_request(cx: &mut TestAppCon
     assert_eq!(shown_count(&view, cx), tn!("info.matched", 1));
 
     // Open: the similar names come after the exact one, and count.
-    view.update(cx, |v, cx| v.toggle_similar(cx));
+    view.update(cx, Explorer::toggle_similar);
     wait_until(cx, &view, "similar results", |v| final_hits(v).len() == 3);
     let hits = view.update(cx, |v, _| final_hits(v));
     assert_eq!(hits[0], exact);
@@ -119,7 +119,7 @@ fn whole_pc_lists_names_as_typed_and_similar_ones_on_request(cx: &mut TestAppCon
     });
     assert_eq!(shown_count(&view, cx), tn!("info.matched", 1));
     // Closed stays closed when the results come in again (the index changed).
-    view.update(cx, |v, cx| v.run_global(cx));
+    view.update(cx, Explorer::run_global);
     cx.run_until_parked();
     std::thread::sleep(Duration::from_millis(50));
     cx.run_until_parked();
@@ -132,10 +132,7 @@ fn whole_pc_lists_names_as_typed_and_similar_ones_on_request(cx: &mut TestAppCon
 fn whole_pc_shows_similar_names_when_none_match_as_typed(cx: &mut TestAppContext) {
     let (view, cx) = whole_pc(
         cx,
-        vec![
-            file("vacation_list_drive.txt", 1),
-            file("other.txt", 1),
-        ],
+        vec![file("vacation_list_drive.txt", 1), file("other.txt", 1)],
         "validrive",
     );
     wait_until(cx, &view, "similar results", |v| {
@@ -180,12 +177,14 @@ fn subfolder_search_lists_similar_names_after_exact_ones(cx: &mut TestAppContext
     wait_until(cx, &view, "load", loaded(r"C:\s"));
     cx.dispatch_action(FocusSearch);
     cx.simulate_input("notes");
-    wait_until(cx, &view, "the exact hit", |v| final_hits(v) == ["notes.txt"]);
+    wait_until(cx, &view, "the exact hit", |v| {
+        final_hits(v) == ["notes.txt"]
+    });
     view.update(cx, |v, _| {
         assert_eq!(v.similar_row(), Some((1, SimilarRow::Closed)));
     });
     let listed = fs.read_dir_calls();
-    view.update(cx, |v, cx| v.toggle_similar(cx));
+    view.update(cx, Explorer::toggle_similar);
     wait_until(cx, &view, "similar results", |v| {
         final_hits(v) == ["notes.txt", r"sub\n_o_t_e_s.md"]
     });
@@ -270,7 +269,10 @@ fn the_similar_results_row_is_a_keyboard_stop(cx: &mut TestAppContext) {
         final_hits(v).len() == 3 && v.similar_row() == Some((2, SimilarRow::Open))
     });
     assert_eq!(at(&view, cx), (None, true), "the cursor stays on the row");
-    assert!(shell.opened.lock().is_empty(), "Enter on the row opens nothing");
+    assert!(
+        shell.opened.lock().is_empty(),
+        "Enter on the row opens nothing"
+    );
     press(cx, "down");
     assert_eq!(at(&view, cx), (Some(2), false), "the first similar hit");
     assert_eq!(

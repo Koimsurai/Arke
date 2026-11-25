@@ -641,11 +641,13 @@ impl Explorer {
             // The index returns only the top matches, so the total is unknown. Exact and similar
             // matches are capped apart.
             let exact = r.hits.len() - r.similar;
-            parts.push(if exact >= MAX_COMPUTER_HITS || r.similar >= MAX_COMPUTER_HITS {
-                t!("scope.top_hits", count = format_count(MAX_COMPUTER_HITS)).into_owned()
-            } else {
-                tn!("info.matched", r.hits.len()).into_owned()
-            });
+            parts.push(
+                if exact >= MAX_COMPUTER_HITS || r.similar >= MAX_COMPUTER_HITS {
+                    t!("scope.top_hits", count = format_count(MAX_COMPUTER_HITS)).into_owned()
+                } else {
+                    tn!("info.matched", r.hits.len()).into_owned()
+                },
+            );
         }
         if let Some(status) = index_status_text(cx) {
             parts.push(status);

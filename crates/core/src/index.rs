@@ -1876,10 +1876,7 @@ impl Index {
             pattern: pattern.as_ref(),
             // Exact names are left out while scanning, so they don't take the places of similar
             // ones; with a folder part that waits for the folder's path (`finish`).
-            exclude: exact
-                .as_ref()
-                .filter(|e| e.dir.is_none())
-                .map(|e| &e.name),
+            exclude: exact.as_ref().filter(|e| e.dir.is_none()).map(|e| &e.name),
             needle: (!name_part.is_empty()).then(|| Needle::new(name_part)),
             keep,
         };
@@ -2723,9 +2720,7 @@ impl ExactMatch {
 
     /// Whether the name has every term as typed.
     fn name_matches(&self, name: &str, matcher: &mut Matcher, buf: &mut Vec<char>) -> bool {
-        self.name
-            .score(Utf32Str::new(name, buf), matcher)
-            .is_some()
+        self.name.score(Utf32Str::new(name, buf), matcher).is_some()
     }
 
     /// Whether the containing folder's path has the folder part as typed (always, without one).
@@ -3094,8 +3089,7 @@ impl Overlay {
             .collect();
         let (dir_part, name_part) = split_query(query.text.trim());
         if self.added.is_empty()
-            || (name_part.is_empty()
-                && (!query.has_filters() || query.names == NameMatch::Similar))
+            || (name_part.is_empty() && (!query.has_filters() || query.names == NameMatch::Similar))
         {
             out.truncate(limit);
             return out;
@@ -4434,7 +4428,10 @@ mod tests {
         overlay.record(PathBuf::from(r"C:\new\validrive-old.exe"), seen);
         overlay.record(PathBuf::from(r"C:\new\vxalidrive.zip"), seen);
         let added = |names: NameMatch| {
-            let query = Query { names, ..q("validrive") };
+            let query = Query {
+                names,
+                ..q("validrive")
+            };
             paths(&overlay.apply(Vec::new(), &query, 10, false))
         };
         assert_eq!(added(NameMatch::Exact), [r"C:\new\validrive-old.exe"]);

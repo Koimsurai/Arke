@@ -6,6 +6,8 @@ body:
     attributes:
       value: |
         The quickest way to report a bug is from Arke itself: **Settings › About › Report a problem › Open an issue on GitHub**. It opens this form with your version, Windows build, settings and recent log already filled in, with your account, computer, server and file names taken out. Fill it in yourself if Arke won't start.
+
+        **One problem per issue.** Unrelated problems go in separate issues, so each one can be fixed and closed on its own.
   - type: textarea
     id: what-happened
     attributes:

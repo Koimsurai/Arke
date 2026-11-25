@@ -2,6 +2,10 @@ name: Feature request
 description: Suggest something Arke should do.
 labels: [enhancement]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **One request per issue.** Got several ideas? Open an issue for each, so each one can be discussed, planned and closed on its own.
   - type: textarea
     id: problem
     attributes:

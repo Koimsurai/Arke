@@ -1397,10 +1397,6 @@ fn file_switch(key: &str) -> bool {
         .is_some_and(|bytes| switch(&bytes, key))
 }
 
-fn win_e_switch(bytes: &[u8]) -> bool {
-    switch(bytes, "win_e_opens_arke")
-}
-
 fn switch(bytes: &[u8], key: &str) -> bool {
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     serde_json::from_slice::<serde_json::Value>(bytes)
@@ -2299,14 +2295,23 @@ mod tests {
 
     #[test]
     fn the_win_e_switch_is_read_without_loading_the_rest() {
-        assert!(win_e_switch(br#"{"win_e_opens_arke":true,"pinned":[]}"#));
-        assert!(win_e_switch(b"\xEF\xBB\xBF{\"win_e_opens_arke\":true}"));
-        assert!(!win_e_switch(br#"{"win_e_opens_arke":false}"#));
+        assert!(switch(
+            br#"{"win_e_opens_arke":true,"pinned":[]}"#,
+            "win_e_opens_arke"
+        ));
+        assert!(switch(
+            b"\xEF\xBB\xBF{\"win_e_opens_arke\":true}",
+            "win_e_opens_arke"
+        ));
+        assert!(!switch(
+            br#"{"win_e_opens_arke":false}"#,
+            "win_e_opens_arke"
+        ));
         assert!(
-            !win_e_switch(br#"{"open_folders_in_arke":true}"#),
+            !switch(br#"{"open_folders_in_arke":true}"#, "win_e_opens_arke"),
             "off unless set"
         );
-        assert!(!win_e_switch(b"{ broken"));
+        assert!(!switch(b"{ broken", "win_e_opens_arke"));
     }
 
     #[test]

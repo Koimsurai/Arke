@@ -235,9 +235,10 @@ fn relaunch() -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;
     let file: Vec<u16> = exe.as_os_str().encode_wide().collect();
-    let dir: Vec<u16> = std::env::current_dir()
-        .map(|dir| dir.as_os_str().encode_wide().collect())
-        .unwrap_or_default();
+    let dir: Vec<u16> = std::env::current_dir().map_or_else(
+        |_| Vec::new(),
+        |dir| dir.as_os_str().encode_wide().collect(),
+    );
     // SAFETY: no arguments; it returns this process's command line, valid for its life.
     let command_line = unsafe { windows::Win32::System::Environment::GetCommandLineW() };
     // SAFETY: `command_line` is a valid NUL-terminated string (above), copied right away.

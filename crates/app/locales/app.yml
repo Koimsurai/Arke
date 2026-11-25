@@ -4014,6 +4014,22 @@ list.no_match:
   es: No hay elementos coincidentes
   pt-BR: Nenhum item correspondente
   ja: 一致する項目はありません
+list.similar:
+  en: Similar results
+  zh-TW: 相近結果
+  zh-CN: 相近结果
+  de: Ähnliche Ergebnisse
+  es: Resultados similares
+  pt-BR: Resultados semelhantes
+  ja: 類似の結果
+list.similar_only:
+  en: No exact matches; showing similar results
+  zh-TW: 沒有完全符合的項目，改為顯示相近結果
+  zh-CN: 没有完全匹配的项目，改为显示相近结果
+  de: Keine genauen Treffer, ähnliche Ergebnisse werden angezeigt
+  es: No hay coincidencias exactas; se muestran resultados similares
+  pt-BR: Nenhuma correspondência exata; mostrando resultados semelhantes
+  ja: 完全に一致する項目はありません。類似の結果を表示しています
 list.searching:
   en: Searching…
   zh-TW: 搜尋中…

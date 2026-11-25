@@ -73,6 +73,8 @@ mod preview;
 pub(crate) mod scope;
 #[path = "explorer_shelf.rs"]
 mod shelf_ops;
+#[path = "explorer_similar.rs"]
+pub(crate) mod similar;
 #[path = "explorer_sizes.rs"]
 mod sizes;
 #[path = "explorer_sortopts.rs"]
@@ -788,6 +790,11 @@ pub(crate) struct Explorer {
     /// hits at or below these are left out of every result until the next fresh walk.
     search_gone: Vec<PathBuf>,
     pub(crate) search_cursor: Option<usize>,
+    /// "Similar results" (#396) were opened for this query text; another text closes them.
+    similar_open: Option<String>,
+    /// Nothing in the subfolders matched this query text as typed, so the walk lists similar
+    /// names instead (#396).
+    similar_fallback: Option<String>,
     /// Search scope is the whole PC (`search_mode` is also true; results come from the index).
     search_global: bool,
     /// Whole-PC query: serial (stale results are dropped), background task, and index size at the
@@ -1155,6 +1162,8 @@ impl Explorer {
             search_relevance: None,
             search_gone: Vec::new(),
             search_cursor: None,
+            similar_open: None,
+            similar_fallback: None,
             search_global: false,
             global_serial: 0,
             global_task: None,
@@ -2754,11 +2763,12 @@ impl Explorer {
             return;
         };
         let key = (root.clone(), self.show_hidden);
+        // Names as typed first; similar ones once asked for (#396, `explorer_similar.rs`).
+        let query = self.search_query();
         if self.search_root.as_ref() == Some(&key) {
-            self.search.set_query(&self.query, crate::win::clock());
+            self.search.set_parsed(query);
         } else {
-            self.search
-                .start(root, self.show_hidden, &self.query, crate::win::clock());
+            self.search.start_parsed(root, self.show_hidden, query);
             self.search_root = Some(key);
             self.search_gone.clear();
         }
@@ -2771,6 +2781,12 @@ impl Explorer {
             || self.search_global
             || results.generation != self.search.current_gen()
         {
+            return;
+        }
+        if self.fall_back_to_similar(&results) {
+            self.search_results = None;
+            self.search_cursor = None;
+            cx.notify();
             return;
         }
         let results = self.without_gone(results);
@@ -2791,7 +2807,7 @@ impl Explorer {
         self.search_relevance = None;
         if let Some(sort) = self.search_sort {
             self.search_relevance = Some(Arc::clone(&results.hits));
-            results.hits = Arc::new(arke_core::sort_search_hits(&results.hits, sort));
+            results.hits = Arc::new(similar::sort_hits(&results.hits, results.similar, sort));
         }
         results
     }
@@ -2818,7 +2834,7 @@ impl Explorer {
             .unwrap_or_else(|| Arc::clone(&results.hits));
         match self.search_sort {
             Some(sort) => {
-                results.hits = Arc::new(arke_core::sort_search_hits(&relevance, sort));
+                results.hits = Arc::new(similar::sort_hits(&relevance, results.similar, sort));
                 self.search_relevance = Some(relevance);
             }
             None => results.hits = relevance,
@@ -2827,8 +2843,9 @@ impl Explorer {
             && let Some(ix) = results.hits.iter().position(|h| Arc::ptr_eq(h, &hit))
         {
             self.search_cursor = Some(ix);
+            let row = self.search_row_of(ix);
             self.search_scroll
-                .scroll_to_item(ix, ScrollStrategy::Nearest);
+                .scroll_to_item(row, ScrollStrategy::Nearest);
         } else {
             self.search_scroll.scroll_to_item(0, ScrollStrategy::Top);
         }
@@ -2850,6 +2867,12 @@ impl Explorer {
         }
         let gone = |hit: &arke_core::SearchHit| self.hit_gone(&results.root, hit);
         if results.hits.iter().any(|hit| gone(hit)) {
+            // The similar ones stay last and counted apart.
+            let split = results.hits.len().saturating_sub(results.similar);
+            results.similar = results.hits[split..]
+                .iter()
+                .filter(|hit| !gone(hit))
+                .count();
             let kept: Vec<_> = results
                 .hits
                 .iter()
@@ -3000,8 +3023,9 @@ impl Explorer {
         let ix = ix.min(len - 1);
         if self.search_mode {
             self.search_cursor = Some(ix);
+            let row = self.search_row_of(ix);
             self.search_scroll
-                .scroll_to_item(ix, ScrollStrategy::Nearest);
+                .scroll_to_item(row, ScrollStrategy::Nearest);
         } else if let Some(view) = self.view() {
             // Arrow keys never land in a collapsed section; type to select and the like open it.
             self.reveal_item(ix);

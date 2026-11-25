@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use arke_core::Fs;
 use arke_core::index::IndexHit;
+use arke_core::index_query::{self as iq, NameMatch};
 use arke_core::index_service::{IndexOptions, IndexService, IndexStatus};
 use arke_core::journal::Journal;
 use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
@@ -537,13 +538,16 @@ impl GlobalSearch {
         Self::global(cx).and_then(|g| g.read(cx).service.clone())
     }
 
-    /// Query in the background; `None` when there's no index yet.
+    /// Query in the background; `None` when there's no index yet. Names that match as typed
+    /// come first (#396); similar ones (fuzzy) are looked for when `similar` asks, or when nothing
+    /// matches as typed, and only if the query can have any ([`iq::has_similar`]).
     pub(crate) fn search(
         &self,
         query: String,
         limit: usize,
+        similar: bool,
         cx: &App,
-    ) -> Option<Task<Vec<IndexHit>>> {
+    ) -> Option<Task<Found>> {
         let service = self.service.clone()?;
         let net: Vec<Arc<IndexService>> =
             self.net.iter().filter_map(|n| n.service.clone()).collect();
@@ -560,27 +564,41 @@ impl GlobalSearch {
             let clock = crate::win::clock();
             // Top hits from each index, merged and ordered by match quality, then by what the
             // user opens and where it is (`arke_core::rank`).
-            let Some(mut hits) = service.search_until(&query, clock, limit, false, cancel) else {
+            let pass = |names: NameMatch| -> Option<Vec<IndexHit>> {
+                let mut hits = service.search_until(&query, clock, names, limit, false, cancel)?;
+                for service in &net {
+                    hits.extend(service.search_until(&query, clock, names, limit, false, cancel)?);
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
+                // Visited items the local index matched but didn't rank high enough to return.
+                // Not for network locations: reading an item there can hang on a sleeping NAS.
+                let extra = history.as_ref().map_or_else(Vec::new, |history| {
+                    service.frecent_hits(&query, clock, names, false, history, FRECENT_MAX)
+                });
+                let parsed = iq::Query {
+                    names,
+                    ..iq::Query::parse(&query, clock)
+                };
+                Some(arke_core::rank::merge(
+                    hits, extra, &parsed, &signals, limit,
+                ))
+            };
+            let Some(exact) = pass(NameMatch::Exact) else {
                 return;
             };
-            for service in &net {
-                let Some(more) = service.search_until(&query, clock, limit, false, cancel) else {
+            let wanted = (similar || exact.is_empty())
+                && iq::has_similar(&iq::Query::parse(&query, clock).text);
+            let similar = if wanted {
+                let Some(similar) = pass(NameMatch::Similar) else {
                     return;
                 };
-                hits.extend(more);
-            }
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            // Visited items the local index matched but didn't rank high enough to return. Not
-            // for network locations: reading an item there can hang on a sleeping NAS.
-            let extra = history.map_or_else(Vec::new, |history| {
-                service.frecent_hits(&query, clock, false, &history, FRECENT_MAX)
-            });
-            let parsed = arke_core::index_query::Query::parse(&query, clock);
-            let _ = tx.send(arke_core::rank::merge(
-                hits, extra, &parsed, &signals, limit,
-            ));
+                Some(similar)
+            } else {
+                None
+            };
+            let _ = tx.send(Found { exact, similar });
         });
         Some(cx.background_executor().spawn(async move {
             let _cancel_on_drop = CancelOnDrop(cancel);
@@ -675,6 +693,15 @@ fn service_outdated(installed: Option<String>) -> Option<String> {
             Some(String::from("?"))
         }
     }
+}
+
+/// What a "this PC" query found: the names that match as typed and, when looked for, the similar
+/// ones (fuzzy, the exact ones left out).
+#[derive(Default)]
+pub(crate) struct Found {
+    pub(crate) exact: Vec<IndexHit>,
+    /// `None` when similar names weren't looked for.
+    pub(crate) similar: Option<Vec<IndexHit>>,
 }
 
 /// Sets the flag when dropped (a search task dropped before its result arrived).

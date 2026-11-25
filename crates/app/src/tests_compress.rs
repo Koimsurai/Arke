@@ -286,3 +286,29 @@ fn the_sidebar_keeps_the_keyboard(cx: &mut TestAppContext) {
     assert_eq!(region(cx), "sidebar", "focus stays where the user put it");
     cleanup(&dir);
 }
+
+/// The menu says the name the command will use (#409).
+#[gpui::test]
+fn the_menu_names_the_archive_as_the_command_will(cx: &mut TestAppContext) {
+    let dir = sandbox("label");
+    let (_fs, view, cx) = open(cx, &dir, Vec::new());
+    let label = |view: &Entity<Explorer>, cx: &mut VisualTestContext| {
+        menu_labels(view, cx)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|l| l.contains(".zip"))
+            .expect("a Compress row")
+    };
+
+    view.update(cx, |v, _| {
+        v.selection
+            .select_names(["a.txt", "b.txt"].map(Arc::<str>::from));
+    });
+    right_click(&view, cx, Some(0));
+    assert!(label(&view, cx).contains("Report.zip"));
+
+    view.update(cx, |v, _| v.selection.select_name(Arc::from("b.txt")));
+    right_click(&view, cx, Some(1));
+    assert!(label(&view, cx).contains("b.zip"));
+    cleanup(&dir);
+}

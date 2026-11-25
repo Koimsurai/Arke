@@ -1284,21 +1284,29 @@ pub(crate) fn elev_menu() -> Vec<BoxShadow> {
         vec![hairline(line()), drop]
     }
 }
-/// Dialogs, Ctrl+T, Quick Look.
+/// Dialogs, Ctrl+T, Quick Look and the flyouts (view, sort and search options, the operation
+/// center).
+///
+/// Shaped like a real shadow: darkest right at the edge, fading out smoothly all round and only a
+/// little heavier below (#403). GPUI's `blur_radius` is the Gaussian's sigma (a CSS blur of
+/// twice that). The dark theme has a short contact shadow (1 px down, sigma 3) under an ambient
+/// one (6 px down, sigma 12), and no dark outline: a black line darker than the shadow beside it
+/// read as a pen stroke, and the old drop (24 px down, sigma 56) hung a gray smudge far below the
+/// surface. The lit inner edge still separates gray from gray. The light theme keeps its
+/// hairline as the edge, with one close drop (3 px down, sigma 8) in between the two sizes, so it
+/// stays at two layers.
 pub(crate) fn elev_3() -> Vec<BoxShadow> {
-    let drop = drop_shadow(
-        alpha(p().veil, if is_dark() { 0.5 } else { 0.22 }),
-        24.,
-        56.,
-    );
     if is_dark() {
         vec![
-            dark_outline(),
-            drop,
+            drop_shadow(alpha(p().veil, 0.35), 1., 3.),
+            drop_shadow(alpha(p().veil, 0.40), 6., 12.),
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop]
+        vec![
+            hairline(line()),
+            drop_shadow(alpha(p().veil, 0.16), 3., 8.),
+        ]
     }
 }
 

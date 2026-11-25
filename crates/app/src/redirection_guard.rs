@@ -9,7 +9,11 @@
 //! So an Arke started that way, after an install or an update, starts again through the desktop
 //! shell, whose processes don't have it, with the same arguments, and exits. The copy it starts
 //! carries [`RELAUNCHED_ARG`] first, so it never does that again; when anything is in the way it
-//! logs why and starts as usual.
+//! logs why and starts as usual. When that copy still has the mitigation, it is on for every
+//! program (a policy): the settings remember it (`redirection_guard_by_policy`), so later starts
+//! don't try again, until a start finds it off.
+
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Marks the copy [`restart_unguarded`] starts, which only warns if it still has the mitigation.
 /// It goes first: an argument left open at the end of the command line (a drive root, `"C:\"`)
@@ -21,6 +25,8 @@ pub(crate) const RELAUNCHED_ARG: &str = "--relaunched";
 pub(crate) enum Action {
     /// Not on: start as usual.
     Start,
+    /// On by a policy the settings remember: start as usual, without trying again.
+    Known,
     /// Start again through the desktop shell, then exit.
     Relaunch,
     /// On, but starting again wouldn't help: say why, then start as usual.
@@ -30,22 +36,75 @@ pub(crate) enum Action {
 /// Why [`Action::Warn`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Why {
-    /// This copy already is the one started through the desktop shell (it has the mitigation
-    /// from somewhere else, such as a policy).
+    /// This copy already is the one started through the desktop shell: the mitigation comes from
+    /// a policy, which the settings then remember.
     StillOn,
     /// No desktop shell to start from (Explorer isn't running, or another shell replaces it).
     NoShell,
 }
 
 /// The decision, from whether the mitigation is on (`enforced`), whether this copy was started by
-/// a relaunch (`relaunched`) and whether there is a desktop shell (`shell`).
-pub(crate) const fn decide(enforced: bool, relaunched: bool, shell: bool) -> Action {
-    match (enforced, relaunched, shell) {
-        (false, _, _) => Action::Start,
-        (true, true, _) => Action::Warn(Why::StillOn),
-        (true, false, false) => Action::Warn(Why::NoShell),
-        (true, false, true) => Action::Relaunch,
+/// a relaunch (`relaunched`), whether the settings say a policy turns it on (`by_policy`) and
+/// whether there is a desktop shell (`shell`).
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "four yes/no facts; a struct of four bools trips the struct lint instead"
+)]
+pub(crate) const fn decide(
+    enforced: bool,
+    relaunched: bool,
+    by_policy: bool,
+    shell: bool,
+) -> Action {
+    match (enforced, relaunched, by_policy, shell) {
+        (false, ..) => Action::Start,
+        (true, _, true, _) => Action::Known,
+        (true, true, false, _) => Action::Warn(Why::StillOn),
+        (true, false, false, false) => Action::Warn(Why::NoShell),
+        (true, false, false, true) => Action::Relaunch,
     }
+}
+
+/// What a start found out, for the settings once they are read ([`remembered_policy`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum Finding {
+    /// Not checked (tests, and the commands that exit before the check).
+    NotChecked = 0,
+    /// Off: a policy the settings remember is gone.
+    Off = 1,
+    /// On, nothing new about a policy.
+    On = 2,
+    /// Still on in the copy started through the desktop shell: a policy.
+    OnAfterRelaunch = 3,
+}
+
+/// The `redirection_guard_by_policy` setting after a start that found `found`, from what the file
+/// says (`stored`).
+pub(crate) const fn policy_setting(stored: bool, found: Finding) -> bool {
+    match found {
+        Finding::NotChecked | Finding::On => stored,
+        Finding::Off => false,
+        Finding::OnAfterRelaunch => true,
+    }
+}
+
+/// This start's [`Finding`], as its `u8`.
+static FOUND: AtomicU8 = AtomicU8::new(Finding::NotChecked as u8);
+
+fn found(finding: Finding) {
+    FOUND.store(finding as u8, Ordering::Relaxed);
+}
+
+/// [`policy_setting`] for this start: the settings store applies it to the file it reads.
+pub(crate) fn remembered_policy(stored: bool) -> bool {
+    let finding = match FOUND.load(Ordering::Relaxed) {
+        1 => Finding::Off,
+        2 => Finding::On,
+        3 => Finding::OnAfterRelaunch,
+        _ => Finding::NotChecked,
+    };
+    policy_setting(stored, finding)
 }
 
 /// The parameters for the copy the relaunch starts: [`RELAUNCHED_ARG`], then this copy's own
@@ -91,18 +150,28 @@ fn relaunched() -> bool {
 
 /// Checks this process for RedirectionGuard and, when it's on, starts Arke again without it.
 /// `true`: the new copy is starting, this one exits now. Without the mitigation (almost always)
-/// this is a single system call.
+/// this is a single system call; with it, the settings file is read for the one setting.
 pub(crate) fn restart_unguarded() -> bool {
     if !enforced() {
+        found(Finding::Off);
         return false;
     }
-    match decide(true, relaunched(), shell_available()) {
+    found(Finding::On);
+    let relaunched = relaunched();
+    let by_policy = crate::settings::redirection_guard_by_policy();
+    match decide(true, relaunched, by_policy, shell_available()) {
         Action::Start => false,
+        Action::Known => {
+            log::debug!("RedirectionGuard is on by a policy (remembered): not starting again");
+            false
+        }
         Action::Warn(Why::StillOn) => {
+            found(Finding::OnAfterRelaunch);
             log::warn!(
-                "RedirectionGuard is on, also after starting again through the desktop shell: \
-                 junctions and symbolic links a standard user made (Scoop's, for one) can't be \
-                 opened (os error 448)"
+                "RedirectionGuard is on, also after starting again through the desktop shell, so \
+                 a policy turns it on for every program; later starts won't try again. Junctions \
+                 and symbolic links a standard user made (Scoop's, for one) can't be opened (os \
+                 error 448)"
             );
             false
         }
@@ -255,17 +324,38 @@ mod tests {
 
     #[test]
     fn relaunches_only_a_guarded_first_copy_with_a_shell() {
+        let both = [false, true];
         // Not guarded: whatever else, start as usual.
-        for relaunched in [false, true] {
-            for shell in [false, true] {
-                assert_eq!(decide(false, relaunched, shell), Action::Start);
+        for relaunched in both {
+            for by_policy in both {
+                for shell in both {
+                    assert_eq!(decide(false, relaunched, by_policy, shell), Action::Start);
+                }
             }
         }
-        assert_eq!(decide(true, false, true), Action::Relaunch);
+        // A policy the settings remember: never try again.
+        for relaunched in both {
+            for shell in both {
+                assert_eq!(decide(true, relaunched, true, shell), Action::Known);
+            }
+        }
+        assert_eq!(decide(true, false, false, true), Action::Relaunch);
         // The relaunched copy never relaunches again.
-        assert_eq!(decide(true, true, true), Action::Warn(Why::StillOn));
-        assert_eq!(decide(true, true, false), Action::Warn(Why::StillOn));
-        assert_eq!(decide(true, false, false), Action::Warn(Why::NoShell));
+        let still_on = Action::Warn(Why::StillOn);
+        assert_eq!(decide(true, true, false, true), still_on);
+        assert_eq!(decide(true, true, false, false), still_on);
+        let no_shell = Action::Warn(Why::NoShell);
+        assert_eq!(decide(true, false, false, false), no_shell);
+    }
+
+    #[test]
+    fn a_policy_is_remembered_until_a_start_finds_the_guard_off() {
+        for stored in [false, true] {
+            assert_eq!(policy_setting(stored, Finding::NotChecked), stored);
+            assert_eq!(policy_setting(stored, Finding::On), stored);
+            assert!(policy_setting(stored, Finding::OnAfterRelaunch));
+            assert!(!policy_setting(stored, Finding::Off), "policy removed");
+        }
     }
 
     fn parameters(command_line: &str) -> String {

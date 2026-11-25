@@ -77,6 +77,7 @@ mod properties;
 mod quick_access;
 mod quicklook;
 mod recycle_bin;
+mod redirection_guard;
 mod remote_shell;
 mod resident;
 mod saved_workspaces;
@@ -244,6 +245,8 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
                     .map(|text| text.trim().to_owned())
                     .filter(|text| !text.is_empty());
             }
+            // Started again without RedirectionGuard (`redirection_guard.rs`): nothing to do.
+            Some(redirection_guard::RELAUNCHED_ARG) => {}
             // Just updated: the old process's pid follows (already waited for at the start of
             // app_main).
             Some(update::AFTER_UPDATE_ARG) => {
@@ -434,6 +437,14 @@ fn app_main(mut args: Args) {
                 other.display()
             ),
         }
+        return;
+    }
+    // Started by Inno Setup with Windows' RedirectionGuard on (#406): start again through the
+    // desktop shell without it, and exit. Here, after the one-shot commands the installer waits for
+    // (`--quit` above, `--uninstall` in main), with the log open for why, and before this copy
+    // opens a window or takes over residency, which the new copy does instead.
+    if redirection_guard::restart_unguarded() {
+        crashlog::flush(Duration::from_millis(200));
         return;
     }
     let linger = shell_window(&args);
@@ -2243,6 +2254,17 @@ mod arg_tests {
             Some(PathBuf::from(r"D:\my docs"))
         );
         assert_eq!(parse(&[r"C:\"]).path, Some(PathBuf::from(r"C:\")));
+    }
+
+    /// The copy started again without RedirectionGuard reads its arguments like the first one.
+    #[test]
+    fn the_relaunch_marker_is_not_a_path() {
+        use crate::redirection_guard::RELAUNCHED_ARG;
+        let args = parse(&[RELAUNCHED_ARG]);
+        assert!(args.path.is_none() && args.page.is_none() && !args.new_window);
+        let args = parse(&[RELAUNCHED_ARG, r"D:\work", "--new-window"]);
+        assert_eq!(args.path, Some(PathBuf::from(r"D:\work")));
+        assert!(args.new_window);
     }
 
     #[test]

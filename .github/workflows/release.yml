@@ -72,9 +72,9 @@ jobs:
         id: version
         shell: bash
         run: bash .github/release-tag.sh
-      # The installers (installer/arke.iss) need Inno Setup 6.6 or later for dark mode.
+      # The installers (installer/arke.iss) need Inno Setup 6.7.4 or later (#406).
       - name: install Inno Setup
-        run: choco install innosetup --version 6.7.1 --no-progress -y
+        uses: ./.github/actions/install-inno-setup
       - name: build
         shell: bash
         env:

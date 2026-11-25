@@ -433,22 +433,21 @@ fn items_changed(
 ) -> bool {
     let known: HashMap<&str, &EntryKind> = shown.iter().map(|e| (&*e.name, &e.kind)).collect();
     let mut seen = 0;
+    let mut changed = false;
     for entry in listed {
+        // A listing that fails part way says nothing, even about what it found before failing.
         let Ok(entry) = entry else {
             return false;
         };
         if entry.concealed(show_hidden) {
             continue;
         }
-        if known
+        changed |= known
             .get(&*entry.name)
-            .is_none_or(|kind| **kind != entry.kind)
-        {
-            return true;
-        }
+            .is_none_or(|kind| **kind != entry.kind);
         seen += 1;
     }
-    seen != known.len()
+    changed || seen != known.len()
 }
 
 #[cfg(test)]
@@ -465,12 +464,11 @@ mod tests {
         assert!(!rule.scanned(true), "a rescan of the same folder");
         assert!(rule.folder_changed(), "leaving ends it");
         assert!(!rule.scanned(false), "a folder outside sync roots");
-        assert!(!rule.folder_changed(), "nothing to end");
         assert!(
             !rule.scanned(true),
             "only the first scan of a folder counts"
         );
-        assert!(!rule.folder_changed());
+        assert!(!rule.folder_changed(), "nothing to end");
         assert!(rule.scanned(true), "coming back announces again");
     }
 

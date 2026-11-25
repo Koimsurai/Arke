@@ -331,6 +331,25 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
         }
     }
 
+    /// A row of a tree drawn as a flat list of rows: names its node `key` (for the rows under it,
+    /// when it has some) and puts it under the row named `parent`. NVDA counts a tree item's level
+    /// from the tree items it sits under, not from `aria_level`, so flat rows were all "level 1"
+    /// (#322). Only while a client is attached.
+    #[must_use]
+    fn a11y_tree_row(self, key: Option<&SharedString>, parent: Option<&SharedString>) -> Self {
+        if !active() {
+            return self;
+        }
+        let this = match key {
+            Some(key) => self.a11y_key(key.clone()),
+            None => self,
+        };
+        match parent {
+            Some(parent) => this.a11y_parent(parent.clone()),
+            None => this,
+        }
+    }
+
     /// Runs `act` when a screen reader asks to click this element (Enter on it, UIA Invoke, or
     /// Select on a tree item). Without it GPUI clicks where the element is drawn, which misses an
     /// element scrolled out of its area: a sidebar row out of sight couldn't be opened (#322).

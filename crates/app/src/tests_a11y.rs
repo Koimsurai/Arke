@@ -371,16 +371,7 @@ fn a_pinned_drive_is_named_like_the_drive(cx: &mut TestAppContext) {
 #[gpui::test]
 fn sidebar_tree_rows_tell_their_level(cx: &mut TestAppContext) {
     let (_ws, cx) = window(cx);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let t = loop {
-        let t = tree(cx);
-        let here = nodes(&t).any(|n| role(n) == "TreeItem" && label(n) == "w");
-        if here || Instant::now() > deadline {
-            break t;
-        }
-        cx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    let t = tree_with_here(cx);
     let level = |n: &Value| n["aria"]["level"].as_u64();
     let rows = || nodes(&t).filter(|n| role(n) == "TreeItem");
     let drive = rows()
@@ -399,6 +390,66 @@ fn sidebar_tree_rows_tell_their_level(cx: &mut TestAppContext) {
     assert!(
         drive_row["aria"]["selected"].is_null(),
         "other rows are not marked not selected: {drive_row}"
+    );
+}
+
+/// The tree once the sidebar shows the current folder's row ("w", under the drive).
+fn tree_with_here(cx: &mut VisualTestContext) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let t = tree(cx);
+        let here = nodes(&t).any(|n| role(n) == "TreeItem" && label(n) == "w");
+        if here || Instant::now() > deadline {
+            return t;
+        }
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The key of the node that lists `key` among its children.
+fn parent_key<'a>(tree: &'a Value, key: &str) -> Option<&'a str> {
+    tree["nodes"]
+        .as_object()?
+        .iter()
+        .find(|(_, n)| {
+            n["children"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c.as_str() == Some(key)))
+        })
+        .map(|(k, _)| k.as_str())
+}
+
+/// The sidebar's rows are drawn one after another, but a folder's row sits under its parent's
+/// row in the tree: NVDA counts a row's level from the rows it is under, and read every row as
+/// "level 1" (#322).
+#[gpui::test]
+fn sidebar_tree_rows_sit_under_their_parent(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    let t = tree_with_here(cx);
+    let mut at: &str = t["nodes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, n)| role(n) == "TreeItem" && label(n) == "w")
+        .map(|(k, _)| k.as_str())
+        .expect("the current folder's row");
+    let mut above: Vec<(&str, &str)> = Vec::new();
+    while let Some(up) = parent_key(&t, at) {
+        let node = &t["nodes"][up];
+        above.push((role(node), label(node)));
+        assert!(above.len() < 100, "a loop in the tree: {above:?}");
+        at = up;
+    }
+    let rows: Vec<&str> = above
+        .iter()
+        .filter(|(r, _)| *r == "TreeItem")
+        .map(|(_, l)| *l)
+        .collect();
+    assert_eq!(rows, ["Local Disk (C:)"], "the rows above w: {above:?}");
+    assert!(
+        above.iter().any(|(r, _)| *r == "Tree"),
+        "in the sidebar's tree: {above:?}"
     );
 }
 

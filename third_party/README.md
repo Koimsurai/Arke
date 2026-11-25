@@ -139,6 +139,15 @@ Zed's GPUI (Apache-2.0), unchanged except for:
   location…" in a short window, a Settings button below the fold) couldn't be pressed with a
   screen reader, and the click could land on whatever was drawn there instead. Elements that
   handle Click themselves (`on_a11y_action`) are left alone. (#322)
+- `src/elements/div.rs` `StatefulInteractiveElement::a11y_key` and `a11y_parent` (applied in the
+  accessibility block of `Interactivity::prepaint`) and `src/window/a11y.rs` `A11yNodeBuilder`
+  `name_current`, `move_current_under` and `apply_moves` (run in `finalize`): an element's node
+  can be put under a node named earlier in the frame instead of its nearest ancestor's, like
+  `aria-owns`. Arke's sidebar draws its folder tree as a flat list of rows, so every row was a
+  sibling of the others under the tree, and NVDA, which counts a tree item's level from the tree
+  items above it rather than reading its level, read every folder as "level 1". Each row now goes
+  under its parent folder's row (`crates/app/src/a11y.rs` `a11y_tree_row`), with no change to
+  layout. (#322)
 
 The test platform, which only builds with the `test-support` feature:
 

@@ -1452,6 +1452,7 @@ impl Workspace {
                 None,
                 icon,
                 0,
+                None,
                 current,
                 true,
                 &mut pinned_rows,
@@ -2616,6 +2617,7 @@ impl Workspace {
                 None,
                 Some(Icon::NetDrive),
                 0,
+                None,
                 current,
                 false,
                 out,
@@ -2637,6 +2639,7 @@ impl Workspace {
                 None,
                 Some(Icon::NetDrive),
                 0,
+                None,
                 current,
                 false,
                 out,
@@ -2875,6 +2878,7 @@ impl Workspace {
             space,
             Some(icon),
             0,
+            None,
             current,
             false,
             out,
@@ -2896,6 +2900,7 @@ impl Workspace {
         space: Option<DriveSpace>,
         icon: Option<Icon>,
         depth: usize,
+        parent: Option<&SharedString>,
         current: Option<&Path>,
         favorite: bool,
         out: &mut Vec<AnyElement>,
@@ -2927,6 +2932,11 @@ impl Workspace {
         // A drive: what the number on the right is, as File Explorer's navigation pane tells.
         let space_tip = space.as_ref().map(|s| s.bytes);
         let indent = tree_indent() * depth as f32;
+        let key = SharedString::from(format!(
+            "{}tree-{depth}-{}",
+            if favorite { "f" } else { "" },
+            path.display()
+        ));
         let row = div()
                 .id(SharedString::from(format!(
                     "tree-{depth}-{}",
@@ -2940,6 +2950,8 @@ impl Workspace {
                 // Nesting level, from 0 as AccessKit counts it (UI Automation gets it plus one);
                 // "selected" only on the current row.
                 .aria_level(depth)
+                // Rows are drawn one after another; each is read as under its parent's row.
+                .a11y_tree_row(expanded.then_some(&key), parent)
                 .when(here, |d| d.aria_selected(true))
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
@@ -3004,15 +3016,10 @@ impl Workspace {
                         cx.new(|_| Tooltip(text.into_owned().into())).into()
                     })
                 });
-        let key = SharedString::from(format!(
-            "{}tree-{depth}-{}",
-            if favorite { "f" } else { "" },
-            path.display()
-        ));
         let (open, at) = (path.to_path_buf(), path.to_path_buf());
         let row = self.nav_row(
             row,
-            key,
+            key.clone(),
             here,
             move || NavRow {
                 depth: depth + 1,
@@ -3044,6 +3051,7 @@ impl Workspace {
                         None,
                         None,
                         depth + 1,
+                        Some(&key),
                         current,
                         false,
                         out,

@@ -599,6 +599,8 @@ impl Explorer {
                 this.search_cursor = match this.search_cursor {
                     _ if len == 0 => None,
                     Some(ix) => Some(ix.min(len - 1)),
+                    // On "Similar results" (just opened): it stays there.
+                    None if this.similar_focused() => None,
                     None => Some(0),
                 };
                 this.search_results = Some(results);

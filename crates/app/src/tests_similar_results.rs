@@ -213,3 +213,86 @@ fn subfolder_search_lists_similar_names_after_exact_ones(cx: &mut TestAppContext
         assert_eq!(v.similar_row(), Some((0, SimilarRow::Only)));
     });
 }
+
+/// A key pressed and let go (some actions wait for the release, see `tests_a11y.rs`).
+fn press(cx: &mut VisualTestContext, key: &'static str) {
+    cx.simulate_keystrokes(key);
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+}
+
+/// "Similar results" is a stop for the cursor keys like a row: Down from the last exact hit
+/// lands on it (and stays there while it is closed), Enter and Space open and close it with the
+/// cursor kept on it, so Down goes on to the first similar hit and Up comes back. On it, no hit
+/// is under the cursor: Enter opens nothing and the count stays that of the hits.
+#[gpui::test]
+fn the_similar_results_row_is_a_keyboard_stop(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\k",
+        vec![dir("sub"), file("notes.txt", 1), file("notes-old.txt", 1)],
+    );
+    fs.insert_dir(r"C:\k\sub", vec![file("n_o_t_e_s.md", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\k");
+    wait_until(cx, &view, "load", loaded(r"C:\k"));
+    cx.dispatch_action(FocusSearch);
+    cx.simulate_input("notes");
+    wait_until(cx, &view, "the exact hits", |v| {
+        final_hits(v).len() == 2 && v.similar_row() == Some((2, SimilarRow::Closed))
+    });
+    let at = |view: &Entity<Explorer>, cx: &mut VisualTestContext| {
+        view.update(cx, |v, _| (v.search_cursor, v.similar_focused()))
+    };
+
+    // From the box into the list, onto the first hit; then the second, then the row.
+    press(cx, "down");
+    assert_eq!(at(&view, cx), (Some(0), false));
+    press(cx, "down");
+    assert_eq!(at(&view, cx), (Some(1), false));
+    press(cx, "down");
+    assert_eq!(at(&view, cx), (None, true), "on the row");
+    press(cx, "down");
+    assert_eq!(at(&view, cx), (None, true), "closed, it is the last stop");
+    press(cx, "end");
+    assert_eq!(at(&view, cx), (None, true));
+    assert_eq!(shown_count(&view, cx), tn!("info.matched", 2));
+
+    // Enter opens it; the cursor stays, Down goes to the first similar hit, Up comes back.
+    press(cx, "enter");
+    wait_until(cx, &view, "similar results", |v| {
+        final_hits(v).len() == 3 && v.similar_row() == Some((2, SimilarRow::Open))
+    });
+    assert_eq!(at(&view, cx), (None, true), "the cursor stays on the row");
+    assert!(shell.opened.lock().is_empty(), "Enter on the row opens nothing");
+    press(cx, "down");
+    assert_eq!(at(&view, cx), (Some(2), false), "the first similar hit");
+    assert_eq!(
+        view.update(cx, |v, _| final_hits(v)[2].clone()),
+        r"sub\n_o_t_e_s.md"
+    );
+    press(cx, "up");
+    assert_eq!(at(&view, cx), (None, true));
+    press(cx, "up");
+    assert_eq!(at(&view, cx), (Some(1), false), "the last exact hit");
+
+    // Space closes it, from the row.
+    press(cx, "down");
+    press(cx, "space");
+    wait_until(cx, &view, "closed again", |v| {
+        final_hits(v).len() == 2 && v.similar_row() == Some((2, SimilarRow::Closed))
+    });
+    assert_eq!(at(&view, cx), (None, true));
+    assert_eq!(shown_count(&view, cx), tn!("info.matched", 2));
+    // Up leaves it for the hits; Home goes to the first.
+    press(cx, "up");
+    assert_eq!(at(&view, cx), (Some(1), false));
+    press(cx, "home");
+    assert_eq!(at(&view, cx), (Some(0), false));
+}

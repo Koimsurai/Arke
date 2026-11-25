@@ -8,18 +8,24 @@
 //!
 //! - The hits keep the exact ones first and the similar ones last
 //!   ([`arke_core::SearchResults::similar`]), in any sort order.
-//! - The row is a list row, not a hit: the cursor, Enter, the menus and the count in the status bar
-//!   only see hits (so similar results left closed aren't counted). Rows and hits are converted
-//!   for drawing and scrolling only, as with group headers (`explorer_groups.rs`).
+//! - The row is a list row, not a hit: the menus, opening and the count in the status bar only see
+//!   hits (so similar results left closed aren't counted). Rows and hits are converted for drawing
+//!   and scrolling only, as with group headers (`explorer_groups.rs`).
+//! - The keyboard stops on it like on a row (`similar_focus`, with no hit under the cursor): Up
+//!   and Down go through it, Enter and Space open or close it, and the cursor stays on it, so Down
+//!   then goes to the first similar hit. Closed, it is the last stop.
 
 use std::sync::Arc;
 
 use arke_core::index_query::{self as iq, NameMatch};
 use arke_core::{SearchHit, SearchSort};
-use gpui::{AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, div, prelude::*, px, svg};
+use gpui::{
+    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollStrategy, Window, div,
+    prelude::*, px, svg,
+};
 use rust_i18n::t;
 
-use super::Explorer;
+use super::{Explorer, Step};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::theme;
@@ -132,6 +138,61 @@ impl Explorer {
         ))
     }
 
+    /// Whether the keyboard cursor is on "Similar results" (and the row is there to be on).
+    pub(crate) fn similar_focused(&self) -> bool {
+        self.similar_focus
+            && matches!(
+                self.similar_row(),
+                Some((_, SimilarRow::Closed | SimilarRow::Open))
+            )
+    }
+
+    /// Puts the keyboard cursor on "Similar results": no hit is under it then.
+    fn focus_similar_row(&mut self, at: usize, cx: &mut Context<Self>) {
+        self.search_cursor = None;
+        self.similar_focus = true;
+        self.search_scroll
+            .scroll_to_item(at, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// A cursor key in search results that have "Similar results" to stop on: moves by list
+    /// rows, the row included. Returns `false` (nothing done) without such a row, so the key
+    /// moves by hits as before.
+    pub(super) fn search_move(
+        &mut self,
+        step: Step,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.search_mode || matches!(step, Step::Left | Step::Right) {
+            return false;
+        }
+        let Some((at, SimilarRow::Closed | SimilarRow::Open)) = self.similar_row() else {
+            return false;
+        };
+        let last = self.search_row_count().saturating_sub(1);
+        let current = if self.similar_focused() {
+            Some(at)
+        } else {
+            self.search_cursor.map(|ix| row_of_hit(ix, Some(at)))
+        };
+        let page = self.page_rows(window);
+        let to = match step {
+            Step::Prev => current.map_or(0, |r| r.saturating_sub(1)),
+            Step::Next => current.map_or(0, |r| (r + 1).min(last)),
+            Step::PageUp => current.map_or(0, |r| r.saturating_sub(page)),
+            Step::PageDown => current.map_or(0, |r| (r + page).min(last)),
+            Step::First => 0,
+            Step::Last | Step::Left | Step::Right => last,
+        };
+        match hit_at_row(to, Some(at)) {
+            None => self.focus_similar_row(at, cx),
+            Some(ix) => self.select_index(ix, cx),
+        }
+        true
+    }
+
     /// Rows in the results list: the hits and the extra row.
     pub(crate) fn search_row_count(&self) -> usize {
         let hits = self.search_results.as_ref().map_or(0, |r| r.hits.len());
@@ -141,11 +202,6 @@ impl Explorer {
     /// List row of hit `ix` (for scrolling to it).
     pub(crate) fn search_row_of(&self, ix: usize) -> usize {
         row_of_hit(ix, self.similar_row().map(|(at, _)| at))
-    }
-
-    /// Hit at list row `row`; `None` for the extra row.
-    pub(crate) fn search_hit_at_row(&self, row: usize) -> Option<usize> {
-        hit_at_row(row, self.similar_row().map(|(at, _)| at))
     }
 
     /// Opens or closes "Similar results" (a click on the row, or a screen reader's expand and
@@ -204,6 +260,7 @@ impl Explorer {
         &self,
         row: usize,
         kind: SimilarRow,
+        focused: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let shell = div()
@@ -219,7 +276,7 @@ impl Explorer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, _| {
-                    // Not a press on empty space: no marquee, the cursor stays.
+                    // Not a press on empty space: no marquee.
                     this.row_pressed = true;
                 }),
             );
@@ -239,15 +296,20 @@ impl Explorer {
                 .into_any_element();
         }
         let open = kind == SimilarRow::Open;
+        // Under the cursor it looks and reads like a hit under the cursor (search rows show the
+        // cursor as the selection).
+        let on = self.similar_focused();
         shell
-            .a11y_lazy(gpui::Role::Heading, || t!("list.similar").into_owned())
-            .aria_level(1)
+            .a11y_item(row, on, on, || t!("list.similar").into_owned())
             .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
                 this.toggle_similar(cx);
             })
             .cursor_pointer()
             .rounded(theme::r_8())
-            .hover(|s| s.bg(theme::wash()))
+            .border_1()
+            .border_color(theme::clear())
+            .when(on, |d| d.bg(theme::list_selection(focused)))
+            .when(!on, |d| d.hover(|s| s.bg(theme::wash())))
             .child(
                 div()
                     .size(theme::tree_chevron())
@@ -277,8 +339,10 @@ impl Explorer {
                     .child(t!("list.similar").into_owned()),
             )
             .child(div().flex_1().h(px(1.)).bg(theme::line()))
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 window.focus(&this.list_focus, cx);
+                // The cursor goes there, as on a clicked hit.
+                this.focus_similar_row(row, cx);
                 this.toggle_similar(cx);
             }))
             .into_any_element()

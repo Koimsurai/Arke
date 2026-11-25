@@ -1491,7 +1491,7 @@ impl Explorer {
             match super::similar::hit_at_row(row, at) {
                 None => {
                     if let Some((_, kind)) = similar {
-                        rows.push(self.similar_row_element(row, kind, cx));
+                        rows.push(self.similar_row_element(row, kind, focused, cx));
                     }
                 }
                 Some(ix) => {

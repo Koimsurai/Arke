@@ -795,6 +795,9 @@ pub(crate) struct Explorer {
     /// Nothing in the subfolders matched this query text as typed, so the walk lists similar
     /// names instead (#396).
     similar_fallback: Option<String>,
+    /// The keyboard cursor is on the "Similar results" row (`search_cursor` is then `None`: the
+    /// row isn't a hit).
+    similar_focus: bool,
     /// Search scope is the whole PC (`search_mode` is also true; results come from the index).
     search_global: bool,
     /// Whole-PC query: serial (stale results are dropped), background task, and index size at the
@@ -1164,6 +1167,7 @@ impl Explorer {
             search_cursor: None,
             similar_open: None,
             similar_fallback: None,
+            similar_focus: false,
             search_global: false,
             global_serial: 0,
             global_task: None,
@@ -2641,6 +2645,11 @@ impl Explorer {
                 }
             }
             InputEvent::Confirm => {
+                // On "Similar results": opens or closes them.
+                if self.search_mode && self.similar_focused() {
+                    self.toggle_similar(cx);
+                    return;
+                }
                 // Enter opens the item under the cursor, or the first one if there's no cursor.
                 let ix = if self.search_mode {
                     self.search_cursor
@@ -2774,6 +2783,7 @@ impl Explorer {
         }
         self.search_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.search_cursor = None;
+        self.similar_focus = false;
     }
 
     fn handle_search(&mut self, results: SearchResults, cx: &mut Context<Self>) {
@@ -2795,6 +2805,8 @@ impl Explorer {
         self.search_cursor = match self.search_cursor {
             _ if len == 0 => None,
             Some(ix) => Some(ix.min(len - 1)),
+            // On "Similar results" (just opened): it stays there.
+            None if self.similar_focused() => None,
             None => Some(0),
         };
         self.search_results = Some(results);
@@ -2979,6 +2991,10 @@ impl Explorer {
     /// Down in the filter box: focus the list and select the first item (or keep the cursor).
     fn filter_to_list(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.list_focus, cx);
+        if self.search_mode && self.similar_focused() {
+            cx.notify();
+            return;
+        }
         let ix = if self.search_mode {
             self.search_cursor
         } else {
@@ -3023,6 +3039,7 @@ impl Explorer {
         let ix = ix.min(len - 1);
         if self.search_mode {
             self.search_cursor = Some(ix);
+            self.similar_focus = false;
             let row = self.search_row_of(ix);
             self.search_scroll
                 .scroll_to_item(row, ScrollStrategy::Nearest);
@@ -3307,39 +3324,56 @@ impl Explorer {
     }
 
     fn select_prev(&mut self, _: &SelectPrev, w: &mut Window, cx: &mut Context<Self>) {
+        if self.search_move(Step::Prev, w, cx) {
+            return;
+        }
         self.select_index(self.target(Step::Prev, w), cx);
     }
     fn select_next(&mut self, _: &SelectNext, w: &mut Window, cx: &mut Context<Self>) {
+        if self.search_move(Step::Next, w, cx) {
+            return;
+        }
         self.select_index(self.target(Step::Next, w), cx);
     }
     fn select_page_up(&mut self, _: &SelectPageUp, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::Prev, cx) {
+        if self.turn_pdf_page(preview::PageTurn::Prev, cx) || self.search_move(Step::PageUp, w, cx)
+        {
             return;
         }
         self.select_index(self.target(Step::PageUp, w), cx);
     }
     fn select_page_down(&mut self, _: &SelectPageDown, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::Next, cx) {
+        if self.turn_pdf_page(preview::PageTurn::Next, cx)
+            || self.search_move(Step::PageDown, w, cx)
+        {
             return;
         }
         self.select_index(self.target(Step::PageDown, w), cx);
     }
     fn select_first(&mut self, _: &SelectFirst, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::First, cx) {
+        if self.turn_pdf_page(preview::PageTurn::First, cx) || self.search_move(Step::First, w, cx)
+        {
             return;
         }
         self.select_index(self.target(Step::First, w), cx);
     }
     fn select_last(&mut self, _: &SelectLast, w: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_pdf_page(preview::PageTurn::Last, cx) {
+        if self.turn_pdf_page(preview::PageTurn::Last, cx) || self.search_move(Step::Last, w, cx) {
             return;
         }
         self.select_index(self.target(Step::Last, w), cx);
     }
     fn extend_prev(&mut self, _: &ExtendPrev, w: &mut Window, cx: &mut Context<Self>) {
+        // Search results take one item at a time: Shift moves like the plain key.
+        if self.search_move(Step::Prev, w, cx) {
+            return;
+        }
         self.extend_index(self.target(Step::Prev, w), cx);
     }
     fn extend_next(&mut self, _: &ExtendNext, w: &mut Window, cx: &mut Context<Self>) {
+        if self.search_move(Step::Next, w, cx) {
+            return;
+        }
         self.extend_index(self.target(Step::Next, w), cx);
     }
     fn extend_page_up(&mut self, _: &ExtendPageUp, w: &mut Window, cx: &mut Context<Self>) {
@@ -3392,6 +3426,11 @@ impl Explorer {
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _: &mut Window, cx: &mut Context<Self>) {
+        // "Similar results" isn't an item: Enter opens or closes them.
+        if self.search_mode && self.similar_focused() {
+            self.toggle_similar(cx);
+            return;
+        }
         if let Some(ix) = self.current_cursor() {
             self.open_index(ix, cx);
         }
@@ -3528,6 +3567,7 @@ impl Explorer {
         }
         if self.search_mode {
             self.search_cursor = Some(ix);
+            self.similar_focus = false;
         } else if let Some(view) = self.view() {
             let in_selection = view
                 .get(ix)
@@ -3768,6 +3808,11 @@ impl Explorer {
             return;
         };
         if text.is_empty() || text.chars().any(char::is_control) {
+            return;
+        }
+        if text == " " && self.search_mode && self.similar_focused() {
+            self.toggle_similar(cx);
+            cx.stop_propagation();
             return;
         }
         if text == " " && !self.typeahead.is_typing(Instant::now()) {

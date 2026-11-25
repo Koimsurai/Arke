@@ -519,6 +519,56 @@ fn the_context_menu_tells_its_highlighted_row(cx: &mut TestAppContext) {
     assert_eq!(focused(&tree(cx)).0, "ListBoxOption", "back on the file");
 }
 
+/// "Similar results" in search results (#396) is read like the item under the cursor once the
+/// keyboard is on it, tells whether it is open, and opens by Enter and by a screen reader's
+/// Expand.
+#[gpui::test]
+fn the_similar_results_row_reads_as_the_focused_item(cx: &mut TestAppContext) {
+    use crate::explorer::similar::SimilarRow;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\k", vec![dir("sub"), file("notes.txt", 1)]);
+    fs.insert_dir(r"C:\k\sub", vec![file("n_o_t_e_s.md", 1)]);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::new(FakeShell::default()), r"C:\k");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\k"));
+    cx.simulate_a11y_activation();
+    cx.dispatch_action(FocusSearch);
+    cx.simulate_input("notes");
+    wait_until(cx, &view, "the exact hit", |v| {
+        final_hits(v) == ["notes.txt"] && v.similar_row() == Some((1, SimilarRow::Closed))
+    });
+    let similar = t!("list.similar").into_owned();
+    // Into the list (the hit), then the row.
+    press(cx, "down");
+    let hit = focused(&tree(cx));
+    assert_eq!(hit.0, "ListBoxOption", "{hit:?}");
+    assert!(hit.1.starts_with("notes.txt"), "{hit:?}");
+    press(cx, "down");
+    let t = tree(cx);
+    assert_eq!(focused(&t), ("ListBoxOption".to_owned(), similar.clone()));
+    assert_eq!(named(&t, &similar)["aria"]["selected"], Value::Bool(true));
+    assert_eq!(named(&t, &similar)["aria"]["expanded"], Value::Bool(false));
+
+    press(cx, "enter");
+    wait_until(cx, &view, "open", |v| {
+        v.similar_row() == Some((1, SimilarRow::Open)) && final_hits(v).len() == 2
+    });
+    let t = tree(cx);
+    assert_eq!(focused(&t).1, similar, "still on the row");
+    assert_eq!(named(&t, &similar)["aria"]["expanded"], Value::Bool(true));
+
+    // A screen reader's Collapse and Expand work too.
+    cx.simulate_a11y_action(node_id(&t, &similar), gpui::AccessibleAction::Collapse);
+    wait_until(cx, &view, "closed", |v| {
+        v.similar_row() == Some((1, SimilarRow::Closed))
+    });
+    let t = tree(cx);
+    cx.simulate_a11y_action(node_id(&t, &similar), gpui::AccessibleAction::Expand);
+    wait_until(cx, &view, "open again", |v| {
+        v.similar_row() == Some((1, SimilarRow::Open))
+    });
+}
+
 /// The node the focus is on as "Role label", for comparing across frames.
 fn focus_desc(tree: &Value) -> Option<String> {
     let key = tree["active_descendant_focus"]

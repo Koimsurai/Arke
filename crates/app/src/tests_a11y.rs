@@ -202,7 +202,7 @@ fn every_control_is_named(cx: &mut TestAppContext) {
 fn f6_names_each_area(cx: &mut TestAppContext) {
     let (_ws, cx) = window(cx);
     let mut stops = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         stops.push(focused(&tree(cx)));
         cx.simulate_keystrokes("f6");
     }
@@ -210,15 +210,93 @@ fn f6_names_each_area(cx: &mut TestAppContext) {
     let roles: Vec<&str> = stops.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(
         roles,
-        ["ListBox", "TreeItem", "TextInput", "TextInput", "ListBox"],
+        [
+            "ListBox",
+            "TreeItem",
+            "TextInput",
+            "Button",
+            "TextInput",
+            "ListBox"
+        ],
         "{stops:?}"
     );
     assert!(stops.iter().all(|(_, l)| !l.is_empty()), "{stops:?}");
     assert_eq!(stops[1].1, "w", "the sidebar starts on the folder shown");
+    assert!(
+        stops[3].1.starts_with("Up"),
+        "the pane row starts on its first button: {stops:?}"
+    );
     assert_ne!(
-        stops[2].1, stops[3].1,
+        stops[2].1, stops[4].1,
         "path bar and search box are told apart"
     );
+}
+
+/// The pane row's buttons from the keyboard: F6 makes the row one stop, the arrows, Home and End
+/// move between its buttons (each read as focused), Space and Enter press the one it is on, and
+/// Escape goes back to the list (#322).
+#[gpui::test]
+fn the_pane_row_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    // The list, the sidebar, the path bar, then the row.
+    for _ in 0..3 {
+        cx.simulate_keystrokes("f6");
+        tree(cx);
+    }
+    let t = tree(cx);
+    assert!(
+        t["gpui_focus"]
+            .as_str()
+            .is_some_and(|key| role(&t["nodes"][key]) == "Toolbar"),
+        "the row has the focus: {:?}",
+        t["gpui_focus"]
+    );
+    let first = focused(&t);
+    assert_eq!(first.0, "Button", "{first:?}");
+    assert!(first.1.starts_with("Up"), "{first:?}");
+
+    cx.simulate_keystrokes("right");
+    let next = focused(&tree(cx));
+    assert_ne!(next, first, "Right moves to the next button");
+    cx.simulate_keystrokes("left left");
+    assert_eq!(
+        focused(&tree(cx)),
+        first,
+        "Left moves back and stops at the first"
+    );
+
+    let mut path = Vec::new();
+    while !focused(&tree(cx)).1.starts_with("Preview pane") {
+        assert!(path.len() < 30, "no preview pane button: {path:?}");
+        cx.simulate_keystrokes("right");
+        path.push(focused(&tree(cx)));
+    }
+    let before = settings_now(cx).preview_pane;
+    press(cx, "space");
+    assert_eq!(settings_now(cx).preview_pane, !before, "Space presses it");
+    let after = focused(&tree(cx));
+    assert!(
+        after.1.starts_with("Preview pane"),
+        "the focus stays: {after:?}"
+    );
+    press(cx, "enter");
+    assert_eq!(settings_now(cx).preview_pane, before, "and so does Enter");
+
+    cx.simulate_keystrokes("end");
+    let last = focused(&tree(cx));
+    assert_ne!(last, first, "{last:?}");
+    cx.simulate_keystrokes("right");
+    assert_eq!(
+        focused(&tree(cx)),
+        last,
+        "End goes to the last, Right stops there"
+    );
+    cx.simulate_keystrokes("home");
+    assert_eq!(focused(&tree(cx)), first, "Home goes to the first");
+
+    cx.simulate_keystrokes("escape");
+    let region = cx.update(|window, cx| ws.read(cx).region_for_test(window, cx));
+    assert_eq!(region, "list", "Escape goes back to the list");
 }
 
 /// What a screen reader presses works: a toggle button by Click, a menu button by Expand (it

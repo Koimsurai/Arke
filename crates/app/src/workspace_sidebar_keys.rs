@@ -1,11 +1,12 @@
 //! The keyboard in the sidebar, and F6 between the parts of the window (#322).
 //!
 //! F6 (Shift+F6 back) moves the keyboard from the file list to the sidebar, the path bar, the
-//! search box and back to the list, as in File Explorer. In the sidebar the arrow keys move a
-//! cursor over its rows (favorites, the Recycle Bin, section headings, the folder tree): Right
-//! expands or steps into a folder, Left collapses it or goes up to its parent, Enter or Space opens
-//! it (the keyboard then goes to the list, as after a click) and Escape goes back to the list. The
-//! row under the cursor is reported to screen readers as the focused item.
+//! pane row's buttons (`explorer_toolbar.rs`), the search box and back to the list, as in File
+//! Explorer. In the sidebar the arrow keys move a cursor over its rows (favorites, the Recycle
+//! Bin, section headings, the folder tree): Right expands or steps into a folder, Left collapses
+//! it or goes up to its parent, Enter or Space opens it (the keyboard then goes to the list, as
+//! after a click) and Escape goes back to the list. The row under the cursor is reported to
+//! screen readers as the focused item.
 //!
 //! The sidebar takes the keyboard only through F6: it tracks its focus handle only while that
 //! handle is focused, so a click in the sidebar leaves the keyboard where it was (in the list), as
@@ -32,7 +33,8 @@ use crate::theme;
 actions!(
     sidebar_keys,
     [
-        /// F6: the keyboard goes to the next part of the window (list, sidebar, path bar, search).
+        /// F6: the keyboard goes to the next part of the window (list, sidebar, path bar, the pane
+        /// row's buttons, search).
         FocusNextRegion,
         /// Shift+F6: the previous part.
         FocusPrevRegion,
@@ -233,7 +235,11 @@ impl Workspace {
         if self.sidebar_focus.is_focused(window) {
             return Region::Sidebar;
         }
-        match self.active_view().read(cx).typing_in(window, cx) {
+        let view = self.active_view().read(cx);
+        if view.toolbar_held(window) {
+            return Region::Toolbar;
+        }
+        match view.typing_in(window, cx) {
             Some(crate::explorer::TypingIn::PathBar) => Region::PathBar,
             Some(crate::explorer::TypingIn::Search) => Region::Search,
             None => Region::List,
@@ -302,6 +308,7 @@ impl Workspace {
             Region::PathBar => view.update(cx, |e, cx| {
                 e.focus_path_bar(&crate::explorer::FocusPathBar, window, cx);
             }),
+            Region::Toolbar => view.update(cx, |e, cx| e.focus_toolbar(window, cx)),
             Region::Search => view.update(cx, |e, cx| {
                 e.focus_filter(&crate::explorer::FocusFilter, window, cx);
             }),
@@ -427,11 +434,19 @@ enum Region {
     List,
     Sidebar,
     PathBar,
+    /// The pane row's buttons, beside the path bar.
+    Toolbar,
     Search,
 }
 
 impl Region {
-    const ORDER: [Self; 4] = [Self::List, Self::Sidebar, Self::PathBar, Self::Search];
+    const ORDER: [Self; 5] = [
+        Self::List,
+        Self::Sidebar,
+        Self::PathBar,
+        Self::Toolbar,
+        Self::Search,
+    ];
 }
 
 #[cfg(test)]
@@ -452,6 +467,7 @@ impl Workspace {
             Region::List => "list",
             Region::Sidebar => "sidebar",
             Region::PathBar => "path",
+            Region::Toolbar => "toolbar",
             Region::Search => "search",
         }
     }

@@ -19,6 +19,7 @@ use gpui::{
 };
 use rust_i18n::t;
 
+use super::toolbar::ToolbarStop as _;
 use super::{Explorer, IconSize, ViewColumns, ViewDetails, ViewMode};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -115,6 +116,12 @@ impl Explorer {
                     this.toggle_view_options(cx);
                 }),
             )
+            .toolbar_menu("view-options", {
+                let this = cx.entity().downgrade();
+                move |_, cx| {
+                    let _ = this.update(cx, Self::toggle_view_options);
+                }
+            })
             .when(!open, |d| d.tooltip_below(t!("view.options")));
         let mut root = div().relative().flex_none().child(button);
         if open {

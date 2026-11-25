@@ -77,6 +77,8 @@ mod shelf_ops;
 mod sizes;
 #[path = "explorer_sortopts.rs"]
 mod sortopts;
+#[path = "explorer_toolbar.rs"]
+mod toolbar;
 #[path = "explorer_topbar.rs"]
 mod top_bar;
 #[path = "explorer_tree.rs"]
@@ -741,6 +743,8 @@ pub(crate) struct Explorer {
     path_slot: path_bar::SlotWidth,
     /// The title row's search box width and the press-to-drag on the path bar.
     top_row: top_bar::TopRow,
+    /// The pane row's buttons from the keyboard (F6).
+    toolbar: toolbar::ToolbarKeys,
     filter_input: Entity<TextInput>,
     /// Filter box text, excluding uncommitted IME composition.
     pub(crate) query: String,
@@ -1129,6 +1133,7 @@ impl Explorer {
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
             top_row: top_bar::TopRow::default(),
+            toolbar: toolbar::ToolbarKeys::new(cx.focus_handle()),
             filter_input,
             query: String::new(),
             filtered: None,

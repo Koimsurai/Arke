@@ -11,6 +11,7 @@ use arke_core::compare::Mark;
 use gpui::{App, ClickEvent, Context, SharedString, Window, div, prelude::*, svg};
 use rust_i18n::t;
 
+use super::toolbar::ToolbarStop as _;
 use super::{Explorer, ExplorerEvent};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -102,9 +103,12 @@ impl Explorer {
                             .hover(|s| s.bg(theme::wash_strong()))
                             .child(t!("compare.select").into_owned())
                             .tooltip_below(t!("compare.select_tip").into_owned())
-                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                cx.emit(ExplorerEvent::SelectDifferences);
-                            })),
+                            .toolbar_button(
+                                "compare-select",
+                                cx.listener(|_, _: &ClickEvent, _, cx| {
+                                    cx.emit(ExplorerEvent::SelectDifferences);
+                                }),
+                            ),
                     )
                 }),
         )
@@ -163,7 +167,8 @@ fn toggle(
         .cursor_pointer()
         .when(on, |d| d.bg(theme::wash_strong()))
         .when(!on, |d| d.hover(|s| s.bg(theme::wash())))
-        .on_click(on_click)
+        // The id without the state, so the keyboard stays on it.
+        .toolbar_button(id, on_click)
         .child(svg().path(icon.path()).size(theme::icon()).text_color(if on {
             theme::text()
         } else {

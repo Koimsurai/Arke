@@ -18,6 +18,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::Explorer;
+use super::toolbar::ToolbarStop as _;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::theme;
@@ -173,6 +174,12 @@ impl Explorer {
                     this.toggle_sort_options(cx);
                 }),
             )
+            .toolbar_menu("sort-options", {
+                let this = cx.entity().downgrade();
+                move |_, cx| {
+                    let _ = this.update(cx, Self::toggle_sort_options);
+                }
+            })
             .when(!open, |d| d.tooltip_below(t!("view.sort")));
         let mut root = div().relative().flex_none().child(button);
         if open {

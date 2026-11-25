@@ -29,6 +29,7 @@ use gpui::{
 };
 
 use super::layout;
+use super::toolbar::ToolbarStop as _;
 use super::{
     CopyFiles, CutFiles, DeleteFiles, ErrorAction, Escape, Explorer, ExplorerEvent, FocusOtherPane,
     GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, RenameFile, ViewColumns,
@@ -526,17 +527,10 @@ impl Explorer {
                             .text_color(theme::text_muted()),
                     )
                     .tooltip_below(t!("sel.more").to_string())
-                    // A screen reader's Enter: opens where Shift+F10 would (#322).
-                    .a11y_on_click({
-                        let this = cx.entity().downgrade();
-                        move |window, cx| {
-                            let size = window.viewport_size();
-                            let at = gpui::point(size.width / 2., size.height / 3.);
-                            let _ = this.update(cx, |this, cx| {
-                                this.open_context_menu(at, window, cx);
-                            });
-                        }
-                    })
+                    // A screen reader's Enter and the keyboard in the pane row: opens where
+                    // Shift+F10 would (#322).
+                    .a11y_on_click(open_selection_menu(cx.entity().downgrade()))
+                    .toolbar_menu("sel-more", open_selection_menu(cx.entity().downgrade()))
                     // Opens on press, like the other menus.
                     .on_mouse_down(
                         MouseButton::Left,
@@ -2393,6 +2387,20 @@ pub(super) fn vertical_divider() -> impl IntoElement {
         .bg(theme::line())
 }
 
+/// Opens the selection's menu where Shift+F10 would: "⋯" pressed by a screen reader or from the
+/// keyboard.
+fn open_selection_menu(
+    this: gpui::WeakEntity<Explorer>,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |window, cx| {
+        let size = window.viewport_size();
+        let at = gpui::point(size.width / 2., size.height / 3.);
+        let _ = this.update(cx, |this, cx| {
+            this.open_context_menu(at, window, cx);
+        });
+    }
+}
+
 /// Top bar icon button: no background until hover.
 pub(crate) fn ghost_button(
     id: &'static str,
@@ -2427,7 +2435,7 @@ pub(crate) fn ghost_button_turned(
         .when(enabled, |d| {
             d.cursor_pointer()
                 .hover(|s| s.bg(theme::wash_strong()))
-                .on_click(on_click)
+                .toolbar_button(id, on_click)
         })
         .child(
             svg()
@@ -2496,7 +2504,7 @@ fn action_button(
         // At half width keep only the icon and move the label to the tooltip.
         .when(compact, |d| d.px(theme::s_6()).tooltip_below(label.clone()))
         .when(!compact, |d| d.child(label.clone()))
-        .on_click(on_click)
+        .toolbar_button(id, on_click)
 }
 
 /// "Clear selection Esc"; just × when narrow.
@@ -2528,7 +2536,7 @@ fn clear_selection_button(
             d.child(t!("sel.clear").to_string()).child(kbd("Esc"))
         })
         .tooltip_below(t!("sel.clear").to_string() + " (Esc)")
-        .on_click(on_click)
+        .toolbar_button("sel-clear", on_click)
 }
 
 /// Outlined button ("Retry", "Up" on the error screen).
@@ -2600,9 +2608,13 @@ fn preview_button(on: bool, cx: &mut Context<Explorer>) -> impl IntoElement + us
                     theme::text_subtle()
                 }),
         )
-        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-            SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.preview_pane = !on, cx));
-        }))
+        .toolbar_button(
+            "toggle-preview",
+            cx.listener(move |_, _: &ClickEvent, _, cx| {
+                SettingsStore::global(cx)
+                    .update(cx, |s, cx| s.update(|st| st.preview_pane = !on, cx));
+            }),
+        )
         .tooltip_below(t!("ctx.preview"))
 }
 
@@ -2632,7 +2644,8 @@ fn split_button(
         .cursor_pointer()
         .when(split, |d| d.bg(theme::wash_strong()))
         .when(!split, |d| d.hover(|s| s.bg(theme::wash())))
-        .on_click(on_click)
+        // One id in both states, so the keyboard stays on it.
+        .toolbar_button("toggle-split", on_click)
         .child(
             svg()
                 .path(Icon::Split.path())
@@ -2689,7 +2702,7 @@ fn peer_button(
         .a11y_lazy(gpui::Role::Button, || label.to_string())
         .aria_keyshortcuts(key)
         .tooltip_below(format!("{label} ({key})"))
-        .on_click(on_click)
+        .toolbar_button(id, on_click)
 }
 
 /// One segment of a segmented toggle.
@@ -2713,7 +2726,7 @@ fn segment(
             d.bg(theme::segment_thumb()).shadow(theme::elev_thumb())
         })
         .when(!active, |d| d.hover(|s| s.bg(theme::wash())))
-        .on_click(on_click)
+        .toolbar_button(id, on_click)
         .child(
             svg()
                 .path(icon.path())

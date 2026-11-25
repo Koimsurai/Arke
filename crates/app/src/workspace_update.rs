@@ -379,8 +379,7 @@ impl gpui::Global for OpenedUrls {}
 #[cfg(test)]
 pub(crate) fn opened_urls_for_test(cx: &App) -> Vec<String> {
     cx.try_global::<OpenedUrls>()
-        .map(|o| o.0.clone())
-        .unwrap_or_default()
+        .map_or_default(|o| o.0.clone())
 }
 
 fn row(

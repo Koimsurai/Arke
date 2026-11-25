@@ -2324,9 +2324,14 @@ impl Workspace {
     }
 
     /// Saves the places' height the drag of the line above the tabs ended on (at 100% scale), as
-    /// tall as they were drawn: a drag past what the tabs leave stops where they stopped.
+    /// tall as they were drawn: a drag past what the tabs leave stops where they stopped. A press
+    /// that didn't move saves nothing.
     pub(crate) fn finish_split_drag(&mut self, cx: &mut Context<Self>) {
-        if self.split_drag.take().is_none() {
+        let Some((_, from, to)) = self.split_drag.take() else {
+            return;
+        };
+        if from == to {
+            cx.notify();
             return;
         }
         let drawn = f32::from(self.sidebar_ui.places_scroll.bounds().size.height);

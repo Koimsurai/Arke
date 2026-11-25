@@ -923,3 +923,40 @@ fn tab_brings_a_text_field_into_view(cx: &mut TestAppContext) {
         "in view: {now:?} in {view:?}"
     );
 }
+
+/// What's new works from the keyboard: Tab goes through the versions and the links at the
+/// bottom, each named, and Enter on the GitHub line opens it (#322).
+#[gpui::test]
+fn whats_new_links_work_from_the_keyboard(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_whats_new(crate::workspace::whats_new_page::Mode::Browse, window, cx);
+    });
+    let page = tree(cx);
+    assert_eq!(unnamed(&page), Vec::<String>::new(), "what's new");
+    let changelog = format!("Link {}", t!("whats_new.changelog"));
+    let star = format!("Link {}", t!("whats_new.star"));
+    let mut path = Vec::new();
+    for _ in 0..100 {
+        cx.simulate_keystrokes("tab");
+        let at = focus_desc(&tree(cx)).unwrap_or_default();
+        if at == star {
+            break;
+        }
+        path.push(at);
+    }
+    assert_eq!(
+        focus_desc(&tree(cx)).as_deref(),
+        Some(star.as_str()),
+        "Tab reaches the GitHub line; went {path:#?}"
+    );
+    assert!(
+        path.contains(&changelog),
+        "and the changelog before it; went {path:#?}"
+    );
+    press(cx, "enter");
+    assert_eq!(
+        cx.update(|_, cx| crate::workspace::update_page::opened_urls_for_test(cx)),
+        [crate::build_info::SOURCE_URL]
+    );
+}

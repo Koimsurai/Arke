@@ -194,6 +194,53 @@ fn settings_about_shows_it_and_turns_it_off(cx: &mut TestAppContext) {
     );
 }
 
+/// What `update_page::open_url` was asked to open (tests open no browser).
+fn opened_urls(cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| crate::workspace::update_page::opened_urls_for_test(cx))
+}
+
+/// Settings › About › "Star Arke on GitHub" only opens the repository in the browser, once:
+/// nothing is written to the settings.
+#[gpui::test]
+fn the_about_star_button_only_opens_github(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+    });
+    cx.run_until_parked();
+    let before = settings(cx);
+    assert_eq!(opened_urls(cx), Vec::<String>::new());
+
+    click(cx, "about-star");
+    assert_eq!(opened_urls(cx), [crate::build_info::SOURCE_URL]);
+    assert_eq!(settings(cx), before, "no setting changes");
+}
+
+/// The line at the bottom of What's new only opens the repository in the browser, once:
+/// nothing is written to the settings.
+#[gpui::test]
+fn the_whats_new_star_line_only_opens_github(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_whats_new(crate::workspace::whats_new_page::Mode::Browse, window, cx);
+    });
+    cx.run_until_parked();
+    let before = settings(cx);
+    assert_eq!(opened_urls(cx), Vec::<String>::new());
+
+    click(cx, "whats-new-star");
+    assert_eq!(opened_urls(cx), [crate::build_info::SOURCE_URL]);
+    assert_eq!(settings(cx), before, "no setting changes");
+}
+
 fn release(version: &str) -> Release {
     Release {
         version: version.into(),

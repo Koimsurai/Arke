@@ -54,6 +54,8 @@ mod menu_customize;
 mod menu_parts;
 #[path = "tests_motion.rs"]
 mod motion;
+#[path = "tests_ops_panel.rs"]
+mod ops_panel;
 #[path = "tests_place_names.rs"]
 mod place_names;
 #[path = "tests_popup_menus.rs"]

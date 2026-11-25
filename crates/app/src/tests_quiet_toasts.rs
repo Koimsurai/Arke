@@ -22,7 +22,7 @@ fn notice_toast(cx: &mut VisualTestContext) -> bool {
 
 /// Makes the fake shell's file operations wait for a message, like a big copy. Returns the sender
 /// that lets them finish.
-fn hold_operations(shell: &FakeShell) -> flume::Sender<()> {
+pub(super) fn hold_operations(shell: &FakeShell) -> flume::Sender<()> {
     let (tx, gate) = flume::unbounded::<()>();
     *shell.on_op.lock() = Some(Box::new(move |_| {
         let _ = gate.recv_timeout(Duration::from_secs(20));
@@ -31,7 +31,7 @@ fn hold_operations(shell: &FakeShell) -> flume::Sender<()> {
 }
 
 /// Copies `a.txt` from `C:\q` and pastes it into `C:\q2`; returns once the paste is running.
-fn start_paste<'a>(
+pub(super) fn start_paste<'a>(
     cx: &'a mut TestAppContext,
     shell: &Arc<FakeShell>,
 ) -> (Entity<Explorer>, &'a mut VisualTestContext) {

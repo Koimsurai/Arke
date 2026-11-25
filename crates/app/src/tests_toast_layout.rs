@@ -1,6 +1,6 @@
 //! GPUI tests for how a toast lays out its message and buttons: a message too long to sit beside
 //! its buttons gets the toast's whole width with the buttons on a line below, and a short notice
-//! keeps its buttons beside it on one line.
+//! keeps its buttons beside it on one line; a progress toast keeps its text on one line.
 
 use gpui::{Bounds, Pixels, px};
 
@@ -60,4 +60,42 @@ fn a_long_error_gets_the_whole_width_and_a_short_notice_stays_on_one_line(cx: &m
         text.size.height > notice.size.height * 1.5,
         "the message wraps rather than running off: {text:?}"
     );
+}
+
+/// A progress toast keeps its text on one line, ending in "…" when it is too long to sit beside
+/// Cancel, so the icon, the text and Cancel share one middle (#403). It used to wrap to two lines
+/// with the icon and Cancel off the text.
+#[gpui::test]
+fn the_progress_toast_keeps_its_text_on_one_line(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let shell = Arc::new(FakeShell::default());
+    let release = super::quiet_toasts::hold_operations(&shell);
+    let (view, cx) = super::quiet_toasts::start_paste(cx, &shell);
+    // A count this long doesn't fit beside Cancel.
+    view.update(cx, |v, cx| {
+        let (progress, _) = v.op_progress.as_ref().expect("the paste reports progress");
+        progress.done.store(10u64.pow(18), Ordering::Relaxed);
+        cx.notify();
+    });
+    cx.executor()
+        .advance_clock(crate::op_center::TOAST_DELAY + std::time::Duration::from_millis(50));
+    cx.run_until_parked();
+
+    let text = bounds(cx, "toast-ops-text");
+    let cancel = bounds(cx, "toast-ops-action-0");
+    assert!(
+        text.size.height < cancel.size.height * 2.,
+        "one line: {text:?} / {cancel:?}"
+    );
+    assert!(
+        text.right() <= cancel.left(),
+        "Cancel beside the text: {text:?} / {cancel:?}"
+    );
+    assert!(
+        (text.center().y - cancel.center().y).abs() <= px(0.5),
+        "the text and Cancel on one middle: {text:?} / {cancel:?}"
+    );
+
+    release.send(()).unwrap();
+    wait_until(cx, &view, "copy done", |v| v.ops_running == 0);
 }

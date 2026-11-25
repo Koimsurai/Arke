@@ -360,6 +360,31 @@ fn a_screen_reader_can_press_and_open(cx: &mut TestAppContext) {
     assert_eq!(unnamed(&t), Vec::<String>::new(), "view options open");
 }
 
+/// The operation center's list keeps its names and roles (#403): the list, the queue's two
+/// header buttons (there even while nothing has finished) and a running job's Cancel.
+#[gpui::test]
+fn the_ops_list_is_named(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let _running = cx.update(|_, cx| {
+        crate::op_center::OpCenter::begin(cx, "op.copy", Some(("a.txt".to_owned(), 4))).1
+    });
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    view.update(cx, |v, cx| {
+        v.ops_open = true;
+        cx.notify();
+    });
+    let t = tree(cx);
+    assert_eq!(unnamed(&t), Vec::<String>::new(), "operation center open");
+    assert_eq!(role(named(&t, &t!("ops.center_title"))), "List");
+    for button in [
+        t!("ops.queue_pause"),
+        t!("ops.center_clear"),
+        t!("toast.cancel"),
+    ] {
+        assert_eq!(role(named(&t, &button)), "Button", "{button}");
+    }
+}
+
 /// A screen reader's Click reaches a button scrolled out of view: it runs the button's click,
 /// rather than a mouse click where the button would be, which hit nothing or another control.
 #[gpui::test]

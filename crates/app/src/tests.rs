@@ -4601,9 +4601,11 @@ fn sorting_by_size_reorders_once_when_sizes_are_done(cx: &mut TestAppContext) {
     }) {
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for the quick ones: {} ({} reads)",
+            "timed out waiting for the quick ones: {} ({} reads; known: {:?})",
             view.update(cx, |v, _| v.folder_sizes_state()),
-            fs.read_dir_calls()
+            fs.read_dir_calls(),
+            view.update(cx, |v, _| ["a-small", "b-big", "c-tiny", "d-mid"]
+                .map(|n| (n, v.folder_size(n))))
         );
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));

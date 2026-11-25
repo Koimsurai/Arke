@@ -309,8 +309,9 @@ fn explorer_location(object: &str) -> Option<String> {
     }
     // After `X:` or `\\`. Explorer would show a different spelling than the text for empty parts
     // (`C:\\a`), names Windows trims (`a.`, `a `), streams and device paths (`a::$DATA`,
-    // `\\?\C:`); a `name.{CLSID}` folder shows a shell namespace instead of its files. Claims
-    // compare spellings, so these are left to the watcher, which reads the real folder.
+    // `\\?\C:`); a `name.{CLSID}` folder shows a shell namespace instead of its files. The tab the
+    // early path opens is matched to a late window by spelling, so these are left to the watcher,
+    // which reads the real folder.
     let body = &trimmed[2..];
     // `C:dir` is relative to the launcher's current folder on C:.
     if (drive && !body.starts_with('\\'))
@@ -323,17 +324,6 @@ fn explorer_location(object: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_owned())
-}
-
-/// The oldest File Explorer launcher the early path ends (#285). A launcher hands its request to
-/// the shell and exits within about half a second; ending it later can't keep the window away, and
-/// an older `explorer.exe` with a folder on its command line may be one that shows its window itself
-/// (`/separate`, no shell running) and holds the user's work: never ended.
-pub const LAUNCHER_MAX_AGE: Duration = Duration::from_secs(1);
-
-/// Whether a launcher started `age` ago (`None`: unknown) may still be ended.
-pub const fn launcher_young(age: Option<Duration>) -> bool {
-    matches!(age, Some(age) if age.as_nanos() <= LAUNCHER_MAX_AGE.as_nanos())
 }
 
 /// What a path is, as far as the caller looked.
@@ -375,35 +365,104 @@ pub fn launch_target(launch: &ExplorerLaunch, on_disk: impl Fn(&Path) -> OnDisk)
     Some(target)
 }
 
-/// How long a folder the early path opened is waited for in an Explorer window (#285).
-pub const CLAIM_TTL: Duration = Duration::from_secs(3);
-
-/// Targets the early path opened in Arke after ending File Explorer's launcher. When the launcher
-/// had already handed its request to the shell, Explorer's window still appears; the watcher then
-/// closes it instead of opening the folder a second time.
-#[derive(Debug, Default)]
-pub struct Claims {
-    entries: Vec<(Target, Instant)>,
+/// A process as the early path (#285) tells them apart: its id and when it started (100 ns ticks
+/// since 1601, as `GetProcessTimes` gives it), since a later process may get the same id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessKey {
+    /// The process id.
+    pub pid: u32,
+    /// When it started; `None` when that wasn't read (it isn't File Explorer, or can't be opened).
+    pub created: Option<u64>,
 }
 
-impl Claims {
-    /// Notes that Arke opened `target` at `now`.
-    pub fn add(&mut self, target: Target, now: Instant) {
-        self.entries.retain(|(_, until)| *until > now);
-        self.entries.push((target, now + CLAIM_TTL));
+/// Size at which [`Judged`] first drops the processes that have ended.
+pub const JUDGED_BOUND: usize = 64;
+
+/// The processes the early path has judged (#285). Each is judged once, at the first window of it
+/// that shows up, and never again while it runs, however many windows it makes later: one that was
+/// left alone (Shift held, Arke's own, a `/separate` window) stays alone. `P` is what the caller
+/// keeps for each, normally an open handle, which also keeps the id from going to another process
+/// while it is noted: so on the hot path a process is found by id alone. Processes that ended are
+/// dropped only when the list grows past its bound.
+#[derive(Debug)]
+pub struct Judged<P> {
+    entries: Vec<(ProcessKey, P)>,
+    bound: usize,
+}
+
+impl<P> Default for Judged<P> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            bound: JUDGED_BOUND,
+        }
+    }
+}
+
+impl<P> Judged<P> {
+    /// Whether the process with id `pid` was judged already. No allocation, no system call.
+    pub fn contains(&self, pid: u32) -> bool {
+        self.entries.iter().any(|(key, _)| key.pid == pid)
     }
 
-    /// Whether an Explorer window on `target` is one Arke already opened; uses up the claim.
-    pub fn take(&mut self, target: &Target, now: Instant) -> bool {
-        self.entries.retain(|(_, until)| *until > now);
-        let Some(ix) = self
-            .entries
+    /// The key noted for `pid`.
+    pub fn key(&self, pid: u32) -> Option<ProcessKey> {
+        self.entries
             .iter()
-            .position(|(t, _)| same_target(t, target))
-        else {
+            .find(|(key, _)| key.pid == pid)
+            .map(|(key, _)| *key)
+    }
+
+    /// Notes a judged process. When the list has reached its bound, first drops the processes
+    /// `ended` says are gone, and the bound grows with the ones still running. A process noted
+    /// with the id of one still in the list (it ended and the id was reused) replaces it.
+    pub fn note(&mut self, key: ProcessKey, process: P, ended: impl Fn(&ProcessKey, &P) -> bool) {
+        if self.entries.len() >= self.bound {
+            self.entries.retain(|(k, p)| !ended(k, p));
+            self.bound = (self.entries.len() * 2).max(JUDGED_BOUND);
+        }
+        self.entries.retain(|(noted, _)| noted.pid != key.pid);
+        self.entries.push((key, process));
+    }
+
+    /// Number of processes noted.
+    pub const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether none are noted.
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Whether a process that started at `created` came after the early path's hook was set at
+/// `hooked` (same clock): File Explorer processes that were running before are never ended, whatever
+/// their command line says (#285).
+pub const fn started_after(created: u64, hooked: u64) -> bool {
+    created > hooked
+}
+
+/// What Arke could not open after the early path ended its launcher, and gave back to File Explorer
+/// (#285). The launcher that reopens each is left alone once, so a folder Arke keeps failing on
+/// can't go round in a loop; the next launcher for that target uses the mark up.
+#[derive(Debug, Default)]
+pub struct GivenBack {
+    targets: Vec<Target>,
+}
+
+impl GivenBack {
+    /// Notes that `target` went back to File Explorer.
+    pub fn add(&mut self, target: Target) {
+        self.targets.push(target);
+    }
+
+    /// Whether a launcher for `target` is one Arke started to give it back; uses up the mark.
+    pub fn take(&mut self, target: &Target) -> bool {
+        let Some(ix) = self.targets.iter().position(|t| same_target(t, target)) else {
             return false;
         };
-        self.entries.remove(ix);
+        self.targets.remove(ix);
         true
     }
 }
@@ -1035,16 +1094,107 @@ mod tests {
         assert_eq!(command_line_arguments("   "), "");
     }
 
+    /// Stands in for a process handle: whether that process still runs.
+    #[derive(Debug)]
+    struct Proc {
+        running: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    fn spawn() -> (Proc, std::rc::Rc<std::cell::Cell<bool>>) {
+        let running = std::rc::Rc::new(std::cell::Cell::new(true));
+        let handle = Proc {
+            running: std::rc::Rc::clone(&running),
+        };
+        (handle, running)
+    }
+
+    const fn key(pid: u32, created: u64) -> ProcessKey {
+        ProcessKey {
+            pid,
+            created: Some(created),
+        }
+    }
+
+    fn ended(_: &ProcessKey, p: &Proc) -> bool {
+        !p.running.get()
+    }
+
     #[test]
-    fn only_young_launchers_are_ended() {
-        assert!(launcher_young(Some(Duration::ZERO)));
-        assert!(launcher_young(Some(Duration::from_millis(60))));
-        assert!(launcher_young(Some(LAUNCHER_MAX_AGE)));
-        assert!(!launcher_young(Some(
-            LAUNCHER_MAX_AGE + Duration::from_millis(1)
-        )));
-        assert!(!launcher_young(Some(Duration::from_secs(3600))));
-        assert!(!launcher_young(None), "unknown age: left alone");
+    fn each_process_is_judged_once() {
+        let mut judged = Judged::default();
+        assert!(!judged.contains(7));
+        let (p, _running) = spawn();
+        judged.note(key(7, 100), p, ended);
+        assert!(judged.contains(7), "never judged again while it runs");
+        // However many processes come and go after it, a running one stays noted.
+        for pid in 1000..1000 + 10 * JUDGED_BOUND as u32 {
+            let (p, running) = spawn();
+            judged.note(key(pid, 200), p, ended);
+            running.set(false);
+        }
+        assert!(judged.contains(7));
+        assert!(judged.len() <= JUDGED_BOUND, "{}", judged.len());
+    }
+
+    #[test]
+    fn a_reused_id_is_judged_again_once_its_process_ended() {
+        let mut judged = Judged::default();
+        let (p, running) = spawn();
+        judged.note(key(7, 100), p, ended);
+        running.set(false);
+        // Still noted until the list is pruned: the handle keeps the id from being reused.
+        assert_eq!(judged.key(7), Some(key(7, 100)));
+        for pid in 1000..1000 + JUDGED_BOUND as u32 {
+            let (p, _) = spawn();
+            judged.note(key(pid, 200), p, ended);
+        }
+        assert!(!judged.contains(7), "pruned once it ended");
+        // The id now names a new process, started later: judged on its own.
+        let (p, _running) = spawn();
+        judged.note(key(7, 300), p, ended);
+        assert_eq!(judged.key(7), Some(key(7, 300)));
+        // A key for an id still noted replaces it rather than doubling it.
+        let (p, _running) = spawn();
+        judged.note(key(7, 400), p, ended);
+        assert_eq!(judged.key(7), Some(key(7, 400)));
+        assert_eq!(
+            judged.entries.iter().filter(|(k, _)| k.pid == 7).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_bound_grows_with_running_processes() {
+        let mut judged = Judged::default();
+        for pid in 0..3 * JUDGED_BOUND as u32 {
+            let (p, _running) = spawn();
+            judged.note(key(pid, 1), p, ended);
+        }
+        assert_eq!(judged.len(), 3 * JUDGED_BOUND, "none ended, none dropped");
+        assert!((0..3 * JUDGED_BOUND as u32).all(|pid| judged.contains(pid)));
+    }
+
+    #[test]
+    fn processes_from_before_the_hook_are_left_alone() {
+        let hooked = 1_000;
+        assert!(!started_after(999, hooked));
+        assert!(!started_after(hooked, hooked), "same tick: not after");
+        assert!(started_after(1_001, hooked));
+    }
+
+    #[test]
+    fn a_target_goes_back_once_per_give_back() {
+        let mut back = GivenBack::default();
+        assert!(!back.take(&Target::RecycleBin));
+        back.add(folder(r"C:\Work"));
+        back.add(Target::RecycleBin);
+        back.add(Target::RecycleBin);
+        assert!(!back.take(&folder(r"C:\Other")));
+        assert!(back.take(&folder(r"c:\work\")));
+        assert!(!back.take(&folder(r"C:\Work")), "used up");
+        assert!(back.take(&Target::RecycleBin));
+        assert!(back.take(&Target::RecycleBin), "given back twice");
+        assert!(!back.take(&Target::RecycleBin));
     }
 
     #[test]
@@ -1080,18 +1230,6 @@ mod tests {
             target("shell:::{26EE0668-A00A-44D7-9371-BEB064C98683}"),
             None
         );
-    }
-
-    #[test]
-    fn claims_are_used_once_and_expire() {
-        let t0 = Instant::now();
-        let mut claims = Claims::default();
-        claims.add(folder(r"C:\Work"), t0);
-        claims.add(Target::RecycleBin, t0);
-        assert!(!claims.take(&folder(r"C:\Other"), t0));
-        assert!(claims.take(&folder(r"c:\work\"), t0));
-        assert!(!claims.take(&folder(r"C:\Work"), t0), "used up");
-        assert!(!claims.take(&Target::RecycleBin, t0 + CLAIM_TTL), "expired");
     }
 
     #[test]

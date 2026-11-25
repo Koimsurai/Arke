@@ -79,6 +79,7 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
 **Navegar**
 - Vistas de detalles, iconos (cualquier tamaño hasta 256 px, Ctrl+rueda del mouse) y columnas. En Detalles, las carpetas
   se pueden expandir en su sitio, y se puede ordenar por varias columnas, reordenar columnas y mostrar los destinos de los vínculos.
+  Los elementos se pueden agrupar, y un clic en el encabezado de un grupo lo contrae.
 - Cada carpeta recuerda su vista y su ordenación.
 - Pestañas que se pueden anclar o guardar como espacios de trabajo. Divida una pestaña en dos paneles con una única vista previa compartida,
   navegación sincronizada y comparación de carpetas. Clic central o Ctrl+clic en una carpeta de la barra lateral, en
@@ -103,8 +104,10 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
 - La barra lateral se puede ensanchar arrastrando su borde y se contrae en una columna de iconos (Ctrl+B),
   que se puede configurar para abrirse sobre el contenido al dejar el puntero encima (desactivado
   de forma predeterminada). Favoritos, Este equipo y Red se contraen por separado haciendo clic en
-  su encabezado, y el árbol de carpetas sigue a la carpeta en la que está. Las columnas de la vista de
-  columnas se pueden redimensionar.
+  su encabezado, Inicio, Favoritos y Este equipo se pueden ocultar, y el árbol de carpetas sigue a la
+  carpeta en la que está. Las columnas de la vista de columnas se pueden redimensionar. El › delante de
+  la unidad en la barra de ruta lleva a Inicio, Documentos, cualquier unidad o un recurso compartido de
+  red que haya abierto.
 - Escala de la interfaz del 80 % al 150 %, además de la propia escala de Windows.
 - Paleta de comandos (Ctrl+Shift+P) para todos los comandos, y atajos de teclado que se pueden cambiar.
 
@@ -123,7 +126,8 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
 **Archivos**
 - Copie y mueva con el motor del shell de Windows, con progreso, deshacer y rehacer. Las tareas en la misma
   unidad se ponen en cola y se pueden pausar, con verificación opcional tras copiar o traspaso a TeraCopy
-  (experimental).
+  (experimental). Muchos archivos pequeños entre SSD locales se copian varios a la vez, mucho más rápido
+  que uno por uno.
 - Cambio de nombre por lotes, «Mover a una carpeta nueva» y un menú de mover/copiar/acceso directo al arrastrar con el botón derecho
   del mouse o al soltar con Alt pulsada.
 - Una ventana Propiedades propia (Alt+Enter): tamaños, adónde va el espacio de una carpeta, atributos, la
@@ -137,6 +141,8 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
   lo permita para esa ubicación). Las unidades asignadas y los lugares de red pueden tener nombres propios, guardados
   solo en Arke.
 - OneDrive y otras carpetas en la nube con estado de sincronización. Las vistas previas nunca descargan archivos solo en línea.
+- Los teléfonos y otros dispositivos conectados por USB aparecen en Este equipo: explórelos, abra archivos y cópielos al
+  equipo (por ahora solo lectura, así que nada cambia en el dispositivo).
 - Archivos comprimidos: vista previa y extracción de zip y 7z (también con contraseña), tar (.gz, .xz, .bz2, .zst) y RAR, compresión a zip.
   RAR y los tar xz / bzip2 / zstd usan la libarchive integrada en Windows (mejor en Windows 11
   23H2 y posteriores).
@@ -146,7 +152,8 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
   segundo en lugar de 40 s, ya que Windows no comprueba antes cada archivo. Restaurar funciona como siempre, y
   todo lo que no puede garantizar (unidades de red, OneDrive, archivos en uso, directivas) se deja a Windows.
   Se puede desactivar en la configuración. Los archivos sueltos tardan unos pocos milisegundos cada uno, todavía de dos a seis veces
-  más rápido que Windows.
+  más rápido que Windows. Cuando la Papelera de reciclaje está llena, los elementos más antiguos dejan sitio, como en el
+  Explorador de archivos, sin hacer más lento el borrado.
 - Las actualizaciones se descargan discretamente en segundo plano y se instalan la próxima vez que se reinicie Arke, nunca mientras
   se copian archivos y nunca en una conexión de uso medido.
 - Los menús se abren en ventanas propias, como los menús de Windows, de modo que cerca del borde sobresalen de la ventana de Arke
@@ -165,8 +172,8 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
   active «Win+E y el icono del Explorador de archivos también abren Arke».
 - Compatibilidad con lectores de pantalla, compilaciones x64 y ARM64 (ambas probadas en hardware real),
   lista de salto de la barra de tareas, expulsión segura de USB, bandeja del sistema, copia de seguridad de la configuración. Inglés, chino simplificado y
-  tradicional, japonés, alemán, español y portugués de Brasil (los cuatro últimos son nuevos
-  en la 0.8; las correcciones de redacción son bienvenidas en las incidencias).
+  tradicional, japonés, alemán, español y portugués de Brasil (las correcciones de redacción son
+  bienvenidas en las incidencias).
 
 Las funciones *experimentales* están cubiertas por pruebas automatizadas y servidores de prueba locales, pero todavía no se
 usan ampliamente; consulte el [registro de cambios](CHANGELOG.md). Los comentarios en las incidencias son bienvenidos.
@@ -285,12 +292,14 @@ aparece más arriba; puede desactivarlo o borrarlo en Configuración › Búsque
 | --- | --- |
 | Ctrl+T | Ir a una carpeta (lugares recientes, pestañas abiertas y rutas) |
 | Ctrl+Shift+P | Paleta de comandos: busque cualquier comando y ejecútelo; todos los atajos se pueden cambiar en Configuración › Atajos de teclado |
+| Ctrl+N | Ventana nueva con la carpeta actual |
 | Ctrl+W · Ctrl+Shift+T | Cerrar pestaña (en la vista dividida, el lado activo) · reabrir la pestaña cerrada |
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | Cambiar de pestaña |
 | Ctrl+Shift+S · Ctrl+Shift+D | Panel doble: navegación sincronizada · comparar carpetas |
 | Tab · Alt+C · Alt+M | Vista dividida: cambiar de panel · copiar · mover la selección al otro panel |
 | Ctrl+F · Ctrl+Shift+F · Ctrl+K | Buscar en esta carpeta · en esta carpeta y subcarpetas · en todo el equipo; Tab pasa al ámbito y los filtros |
 | Ctrl+L · Alt+D | Editar la ruta |
+| F6 · Shift+F6 | Área siguiente · anterior: lista de archivos, barra lateral, barra de ruta, barra de herramientas, cuadro de búsqueda |
 | Alt+← · Alt+→ · Alt+↑ | Atrás · adelante · subir |
 | F5 · Ctrl+R | Actualizar |
 | Space | Vista rápida |
@@ -311,14 +320,13 @@ aparece más arriba; puede desactivarlo o borrarlo en Configuración › Búsque
 ## Accesibilidad
 
 Arke funciona con los lectores de pantalla de Windows a través de UI Automation, la interfaz que usan
-Narrator y NVDA; JAWS también debería funcionar. Hasta ahora se ha comprobado con herramientas de UI
-Automation, todavía no con personas que usen un lector de pantalla a diario, así que se agradece la
-ayuda para probarlo.
+Narrator y NVDA; JAWS también debería funcionar. Se ha comprobado con NVDA y con herramientas de UI
+Automation. Los comentarios de personas que usan un lector de pantalla a diario son muy bienvenidos,
+también sobre otros lectores de pantalla.
 
-Lo que funciona: la lista de archivos, la barra lateral, las pestañas, la barra de ruta, la búsqueda,
-Configuración, los menús y la ventana de Propiedades. Lo que sigue incompleto: a los botones de la
-barra de herramientas aún no se llega con Tab (usa F6 y los atajos) y algunos cuadros de diálogo no se
-han revisado.
+Se puede usar con el teclado y con un lector de pantalla: la lista de archivos, la barra lateral, las
+pestañas, la barra de ruta, la barra de herramientas, la búsqueda, Configuración, los menús y la ventana
+de Propiedades. F6 y Shift+F6 pasan de un área a otra. Algunos cuadros de diálogo aún no se han revisado.
 
 La [guía de teclado](docs/keyboard.md) (en inglés) enumera todos los atajos por zona. Si algo no se
 puede alcanzar o no se anuncia, [abre un issue](https://github.com/Koimsurai/Arke/issues) e indica tu
@@ -395,7 +403,7 @@ cuando Arke se reinicia tras una actualización, Arke restituye la versión que 
 <summary><b>¿Habrá una versión para Linux o macOS?</b></summary>
 
 Todavía no. `crates/core` es en su mayor parte independiente de la plataforma, pero las partes que hacen rápido a Arke en
-Windows (el índice MFT, la integración con el shell) son específicas de Windows. Cuéntenos en una incidencia qué
+Windows (el índice MFT, la integración con el shell) son específicas de Windows. Cuénteme en una incidencia qué
 necesitaría.
 
 </details>

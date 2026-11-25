@@ -83,7 +83,8 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
 **Navigieren**
 - Detail-, Symbol- (jede Größe bis 256 px, Strg+Mausrad) und Spaltenansicht. In der Detailansicht
   lassen sich Ordner direkt in der Liste aufklappen, Sie können nach mehreren Spalten sortieren,
-  Spalten umordnen und Verknüpfungsziele anzeigen.
+  Spalten umordnen und Verknüpfungsziele anzeigen. Elemente lassen sich gruppieren, und ein Klick auf
+  die Überschrift einer Gruppe klappt sie ein.
 - Jeder Ordner merkt sich seine Ansicht und Sortierung.
 - Registerkarten, die Sie anheften oder als Arbeitsbereiche speichern können. Teilen Sie eine
   Registerkarte mit einer gemeinsamen Vorschau in zwei Bereiche, mit synchronem Navigieren und
@@ -114,8 +115,10 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
 - Die Seitenleiste lässt sich durch Ziehen am Rand verbreitern und auf eine Spalte mit Symbolen
   einklappen (Strg+B); auf Wunsch öffnet sie sich über dem Inhalt, wenn Sie den Zeiger darauf
   ruhen lassen (standardmäßig aus). Favoriten, Dieser PC und Netzwerk lassen sich mit einem Klick
-  auf ihre Überschrift einzeln einklappen, und der Ordnerbaum folgt dem
-  Ordner, in dem Sie sich befinden. Die Spalten der Spaltenansicht lassen sich in der Größe ändern.
+  auf ihre Überschrift einzeln einklappen, Start, Favoriten und Dieser PC lassen sich ausblenden, und
+  der Ordnerbaum folgt dem Ordner, in dem Sie sich befinden. Die Spalten der Spaltenansicht lassen sich
+  in der Größe ändern. Das › vor dem Laufwerk in der Pfadleiste springt zu Start, Dokumente, jedem
+  Laufwerk oder einer Netzwerkfreigabe, die Sie geöffnet haben.
 - Oberflächenskalierung von 80 % bis 150 %, zusätzlich zur Skalierung von Windows.
 - Befehlspalette (Strg+Umschalt+P) für jeden Befehl und Tastenkombinationen, die Sie ändern können.
 
@@ -137,6 +140,8 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
 - Kopieren und Verschieben über die Windows-Shell-Engine mit Fortschritt, Rückgängig und
   Wiederholen. Aufträge auf demselben Laufwerk reihen sich in eine Warteschlange ein und lassen sich
   anhalten, optional mit Überprüfung nach dem Kopieren oder Übergabe an TeraCopy (experimentell).
+  Viele kleine Dateien zwischen lokalen SSDs werden zu mehreren gleichzeitig kopiert, viel schneller
+  als eine nach der anderen.
 - Stapelweises Umbenennen, „In neuen Ordner verschieben“ und ein Menü zum Verschieben/Kopieren/
   Erstellen einer Verknüpfung, wenn Sie mit der rechten Maustaste ziehen oder bei gedrückter Alt-Taste
   ablegen.
@@ -153,6 +158,8 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
   Netzwerkorte können eigene Namen erhalten, die nur in Arke gespeichert werden.
 - OneDrive und andere Cloud-Ordner mit Synchronisierungsstatus. Vorschauen laden nie Dateien herunter,
   die nur online verfügbar sind.
+- Smartphones und andere per USB verbundene Geräte erscheinen unter Dieser PC: durchsuchen, Dateien
+  öffnen und auf den PC kopieren (vorerst nur lesend, auf dem Gerät ändert sich nichts).
 - Archive: zip und 7z (auch kennwortgeschützte), tar (.gz, .xz, .bz2, .zst) und RAR in der Vorschau anzeigen und extrahieren, als
   zip komprimieren. RAR und die tar-Varianten xz / bzip2 / zstd nutzen die in Windows enthaltene
   libarchive (am besten ab Windows 11 23H2).
@@ -163,7 +170,8 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
   funktioniert wie gewohnt, und alles, wofür Arke nicht einstehen kann (Netzlaufwerke, OneDrive,
   Dateien in Verwendung, Richtlinien), überlässt es Windows. In den Einstellungen lässt sich das
   ausschalten. Einzelne Dateien brauchen wenige Millisekunden, immer noch zwei- bis sechsmal schneller
-  als Windows.
+  als Windows. Ist der Papierkorb voll, machen wie im Datei-Explorer die ältesten Elemente Platz, ohne
+  das Löschen zu verlangsamen.
 - Updates werden leise im Hintergrund heruntergeladen und beim nächsten Neustart von Arke installiert,
   nie während Dateien kopiert werden und nie über eine getaktete Verbindung.
 - Menüs öffnen sich wie die Menüs von Windows in eigenen Fenstern und ragen daher am Rand über das
@@ -186,8 +194,7 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
 - Unterstützung für Sprachausgaben, Builds für x64 und ARM64 (beide auf echter Hardware getestet),
   Sprungliste der Taskleiste, sicheres Auswerfen von USB-Geräten, Infobereich, Sicherung der
   Einstellungen. Englisch, Vereinfachtes und Traditionelles Chinesisch, Japanisch, Deutsch, Spanisch
-  und brasilianisches Portugiesisch (die letzten vier sind neu in 0.8; Korrekturen am Wortlaut sind
-  in Issues willkommen).
+  und brasilianisches Portugiesisch (Korrekturen am Wortlaut sind in Issues willkommen).
 
 *Experimentelle* Funktionen werden von automatisierten Tests und lokalen Testservern abgedeckt, sind
 aber noch nicht weit verbreitet im Einsatz; siehe das [Änderungsprotokoll](CHANGELOG.md).
@@ -313,12 +320,14 @@ ausschalten oder zurücksetzen.
 | --- | --- |
 | Strg+T | Zu einem Ordner gehen (zuletzt besuchte Orte, geöffnete Registerkarten und Pfade) |
 | Strg+Umschalt+P | Befehlspalette: einen beliebigen Befehl suchen und ausführen; jede Tastenkombination lässt sich unter Einstellungen › Tastenkombinationen ändern |
+| Strg+N | Neues Fenster mit dem aktuellen Ordner |
 | Strg+W · Strg+Umschalt+T | Registerkarte schließen (in der geteilten Ansicht die aktive Seite) · geschlossene Registerkarte wieder öffnen |
 | Strg+Tab · Strg+Umschalt+Tab · Strg+1…9 | Registerkarten wechseln |
 | Strg+Umschalt+S · Strg+Umschalt+D | Zwei Bereiche: synchrones Navigieren · Ordner vergleichen |
 | Tab · Alt+C · Alt+M | Geteilte Ansicht: Bereiche wechseln · Auswahl in den anderen Bereich kopieren · verschieben |
 | Strg+F · Strg+Umschalt+F · Strg+K | Diesen Ordner durchsuchen · diesen Ordner und Unterordner · den ganzen Computer; mit Tab gelangen Sie zu Bereich und Filtern |
 | Strg+L · Alt+D | Pfad bearbeiten |
+| F6 · Umschalt+F6 | Nächster · vorheriger Bereich: Dateiliste, Seitenleiste, Pfadleiste, Symbolleiste, Suchfeld |
 | Alt+← · Alt+→ · Alt+↑ | Zurück · vor · nach oben |
 | F5 · Strg+R | Aktualisieren |
 | Leertaste | Schnellansicht |
@@ -339,13 +348,13 @@ ausschalten oder zurücksetzen.
 ## Barrierefreiheit
 
 Arke arbeitet über UI Automation mit Windows-Screenreadern zusammen, der Schnittstelle von Narrator
-und NVDA; JAWS sollte ebenfalls funktionieren. Bisher wurde es mit UI-Automation-Werkzeugen geprüft,
-noch nicht von Menschen, die täglich einen Screenreader nutzen. Hilfe beim Testen ist willkommen.
+und NVDA; JAWS sollte ebenfalls funktionieren. Es wurde mit NVDA und mit UI-Automation-Werkzeugen
+geprüft. Rückmeldungen von Menschen, die täglich einen Screenreader nutzen, sind sehr willkommen,
+auch zu anderen Screenreadern.
 
-Das funktioniert: Dateiliste, Seitenleiste, Tabs, Pfadleiste, Suche, Einstellungen, Menüs und das
-Eigenschaften-Fenster. Noch unvollständig: Die Schaltflächen der Symbolleiste sind noch nicht mit der
-Tab-Taste erreichbar (nutzen Sie stattdessen F6 und die Tastenkombinationen), und einige Dialoge
-wurden noch nicht geprüft.
+Mit der Tastatur und mit einem Screenreader bedienbar: Dateiliste, Seitenleiste, Tabs, Pfadleiste,
+Symbolleiste, Suche, Einstellungen, Menüs und das Eigenschaften-Fenster. F6 und Umschalt+F6 wechseln
+zwischen den Bereichen. Einige Dialoge wurden noch nicht geprüft.
 
 Die [Tastaturanleitung](docs/keyboard.md) (auf Englisch) listet alle Tastenkombinationen nach Bereich.
 Wenn etwas nicht erreichbar ist oder nicht vorgelesen wird, [eröffnen Sie bitte ein
@@ -432,7 +441,7 @@ und sagt es Ihnen; erlauben Sie `arke.exe` in Ihrem Virenscanner und aktualisier
 <summary><b>Wird es eine Linux- oder macOS-Version geben?</b></summary>
 
 Noch nicht. `crates/core` ist größtenteils plattformunabhängig, aber die Teile, die Arke unter
-Windows schnell machen (der MFT-Index, die Shell-Integration), sind Windows-spezifisch. Sagen Sie uns
+Windows schnell machen (der MFT-Index, die Shell-Integration), sind Windows-spezifisch. Sagen Sie mir
 in einem Issue, was Sie bräuchten.
 
 </details>

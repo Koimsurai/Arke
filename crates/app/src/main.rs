@@ -957,8 +957,10 @@ fn open_taken_over(cx: &mut App, services: &Services, request: &win_takeover::Op
 }
 
 /// A File Explorer window on `target` while a tab the early path opened still shows it (see
-/// [`open_taken_over`]): that tab comes forward, in whichever window it is, with `select` selected.
-/// False when there is no such tab (it was closed or went elsewhere).
+/// [`open_taken_over`]): that tab comes forward, in whichever window it is, with `select` selected,
+/// and its mark is used up. With several, the newest mark wins: two quick launches of the same
+/// folder each get their own tab, and the window the second couldn't keep away goes to the
+/// second's. False when there is no such tab (closed, gone elsewhere, or used already).
 fn merge_into_early_tab(
     cx: &mut App,
     target: &Target,
@@ -966,26 +968,30 @@ fn merge_into_early_tab(
     explorer_thread: Option<u32>,
 ) -> bool {
     let select: Vec<Arc<str>> = select.iter().map(|n| Arc::from(n.as_str())).collect();
-    let windows: Vec<_> = cx
-        .windows()
-        .into_iter()
-        .filter_map(|w| w.downcast::<Workspace>())
-        .collect();
-    for handle in windows {
-        let merged = handle.update(cx, |workspace, window, cx| {
-            let merged = workspace.merge_early(target, select.clone(), window, cx);
-            if merged {
-                bring_to_front(window, explorer_thread);
-            }
-            merged
-        });
-        if matches!(merged, Ok(true)) {
-            log::info!("takeover: shown in the tab opened early for {target:?}");
-            cx.activate(true);
-            return true;
+    let newest = {
+        let app: &App = cx;
+        app.windows()
+            .into_iter()
+            .filter_map(|w| w.downcast::<Workspace>())
+            .filter_map(|w| Some((w, w.read(app).ok()?.early_mark(target, app)?)))
+            .max_by_key(|&(_, mark)| mark)
+    };
+    let Some((handle, _)) = newest else {
+        return false;
+    };
+    let merged = handle.update(cx, |workspace, window, cx| {
+        let merged = workspace.merge_early(target, select, window, cx);
+        if merged {
+            bring_to_front(window, explorer_thread);
         }
+        merged
+    });
+    if !matches!(merged, Ok(true)) {
+        return false;
     }
-    false
+    log::info!("takeover: shown in the tab opened early for {target:?}");
+    cx.activate(true);
+    true
 }
 
 /// Shows a folder, Home or the Recycle Bin (with `select` selected) and brings it to the front: in

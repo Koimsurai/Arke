@@ -77,8 +77,8 @@ impl Workspace {
         // The mark of "Open folders in Arke" (#285) holds only while this side stays on its folder.
         if pane
             .early
-            .as_deref()
-            .is_some_and(|early| !crate::explorer::same_folder(early, path))
+            .as_ref()
+            .is_some_and(|(early, _)| !crate::explorer::same_folder(early, path))
         {
             pane.early = None;
         }

@@ -181,9 +181,9 @@ struct Pane {
     /// (synchronized browsing repeats it in the other pane).
     last: Option<PathBuf>,
     /// The folder "Open folders in Arke" opened here after ending File Explorer's launcher (#285),
-    /// until this side moves elsewhere: a File Explorer window that comes anyway shows here
-    /// ([`Workspace::merge_early`]).
-    early: Option<PathBuf>,
+    /// and the mark's place in order ([`next_early_mark`]), until this side moves elsewhere or a
+    /// File Explorer window that came anyway used it ([`Workspace::merge_early`]).
+    early: Option<(PathBuf, u64)>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -233,6 +233,15 @@ thread_local! {
     static PIN_FLASH: std::cell::RefCell<Option<(PathBuf, u32)>> =
         const { std::cell::RefCell::new(None) };
     static PIN_FLASH_SERIAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Orders the marks "Open folders in Arke" leaves on the tabs it opens early (#285), across windows:
+/// a late File Explorer window uses the newest. A count, not a clock.
+static EARLY_MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The next (newest) early-takeover mark.
+fn next_early_mark() -> u64 {
+    EARLY_MARKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }
 
 /// Flashes this sidebar list row, e.g. after pinning overflowed from the tiles into the list.
@@ -1604,9 +1613,11 @@ impl Workspace {
     /// "Open folders in Arke" just showed `target` here after ending File Explorer's launcher
     /// (#285; [`Self::open_external`] or [`Self::show_taken_over`]): marks the side of the active
     /// tab showing it, or the Recycle Bin page. The mark lives with that tab: it goes when the tab
-    /// closes or moves elsewhere, or the page closes.
+    /// closes or moves elsewhere, or the page closes, or a late window used it. Marked again, it
+    /// becomes the newest.
     pub(crate) fn mark_early(&mut self, target: &arke_core::takeover::Target, cx: &App) {
         use arke_core::takeover::Target;
+        let mark = next_early_mark();
         match target {
             Target::Folder(path) => {
                 let active = self.active;
@@ -1622,22 +1633,38 @@ impl Workspace {
                     .display_path()
                     .is_some_and(|p| crate::explorer::same_folder(p, path))
                 {
-                    pane.early = Some(path.clone());
+                    pane.early = Some((path.clone(), mark));
                 }
             }
             Target::RecycleBin => {
                 if let Some(page) = &mut self.recycle_page {
-                    page.early = true;
+                    page.early = Some(mark);
                 }
             }
             Target::Home => {}
         }
     }
 
+    /// The newest mark here ([`Self::mark_early`]) a File Explorer window on `target` would use,
+    /// to compare windows: the newest of all of them wins (`main.rs` `merge_into_early_tab`).
+    pub(crate) fn early_mark(&self, target: &arke_core::takeover::Target, cx: &App) -> Option<u64> {
+        use arke_core::takeover::Target;
+        match target {
+            Target::Folder(path) => self.early_pane(path, cx).map(|(_, _, mark)| mark),
+            Target::RecycleBin => self
+                .recycle_page
+                .as_ref()
+                .filter(|page| self.tab_of(&page.owner).is_some())
+                .and_then(|page| page.early),
+            Target::Home => None,
+        }
+    }
+
     /// A File Explorer window on `target` came although "Open folders in Arke" ended its launcher
-    /// (#285: the launcher had handed it over already), or some other program opened it again: if
-    /// the tab marked by [`Self::mark_early`] still shows it, that tab comes forward with `select`
-    /// selected there, and nothing else opens. False when no tab here holds such a mark.
+    /// (#285: the launcher had handed it over already), or some other program opened it then: if a
+    /// tab marked by [`Self::mark_early`] still shows it, the newest such tab comes forward with
+    /// `select` selected there, and nothing else opens. The mark is used up: one launch merges at
+    /// most once. False when no tab here holds such a mark.
     pub(crate) fn merge_early(
         &mut self,
         target: &arke_core::takeover::Target,
@@ -1648,9 +1675,10 @@ impl Workspace {
         use arke_core::takeover::Target;
         match target {
             Target::Folder(path) => {
-                let Some((tab, pane)) = self.early_pane(path, cx) else {
+                let Some((tab, pane, _)) = self.early_pane(path, cx) else {
                     return false;
                 };
+                self.tabs[tab].panes[pane].early = None;
                 self.activate_pane(tab, pane, window, cx);
                 // No selection read from the window: what the tab has selected stays.
                 if !select.is_empty() {
@@ -1660,40 +1688,45 @@ impl Workspace {
                 true
             }
             Target::RecycleBin => {
-                let Some(owner) = self
-                    .recycle_page
-                    .as_ref()
-                    .filter(|page| page.early)
-                    .map(|page| page.owner.clone())
-                else {
+                if self.early_mark(target, cx).is_none() {
+                    return false;
+                }
+                let Some(page) = self.recycle_page.as_mut() else {
                     return false;
                 };
+                page.early = None;
+                let owner = page.owner.clone();
                 self.go_to_page(Some(&owner), window, cx)
             }
             Target::Home => false,
         }
     }
 
-    /// The tab side [`Self::mark_early`] marked for `path`, while it still shows it with no page
-    /// over it.
-    fn early_pane(&self, path: &Path, cx: &App) -> Option<(usize, usize)> {
-        let shows = |pane: &Pane| {
-            pane.early
-                .as_deref()
-                .is_some_and(|early| crate::explorer::same_folder(early, path))
+    /// The tab side with the newest [`Self::mark_early`] mark for `path` that still shows it with
+    /// no page over it, and that mark.
+    fn early_pane(&self, path: &Path, cx: &App) -> Option<(usize, usize, u64)> {
+        let mark = |pane: &Pane| {
+            let (early, mark) = pane.early.as_ref()?;
+            let shows = crate::explorer::same_folder(early, path)
                 && self.page_title(pane.view.entity_id()).is_none()
                 && pane
                     .view
                     .read(cx)
                     .display_path()
-                    .is_some_and(|p| crate::explorer::same_folder(p, path))
+                    .is_some_and(|p| crate::explorer::same_folder(p, path));
+            shows.then_some(*mark)
         };
-        self.tabs.iter().enumerate().find_map(|(t, tab)| {
-            tab.panes
-                .iter()
-                .position(&shows)
-                .map(|pane| (t, pane))
-        })
+        let mut newest: Option<(usize, usize, u64)> = None;
+        for (t, tab) in self.tabs.iter().enumerate() {
+            for (p, pane) in tab.panes.iter().enumerate() {
+                if let Some(m) = mark(pane)
+                    && newest.is_none_or(|(_, _, n)| m > n)
+                {
+                    newest = Some((t, p, m));
+                }
+            }
+        }
+        newest
     }
 
     /// [`Self::open_tab`], returning where the tab went: new tabs never go among the pinned ones.

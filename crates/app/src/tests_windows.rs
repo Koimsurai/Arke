@@ -257,12 +257,46 @@ fn until(cx: &mut TestAppContext, what: &str, mut done: impl FnMut(&mut TestAppC
     }
 }
 
+/// The window `open` made, among those not in `before`.
+fn opened_window(
+    cx: &mut TestAppContext,
+    before: &[gpui::WindowId],
+    open: impl FnOnce(&mut TestAppContext) -> bool,
+) -> gpui::WindowHandle<Workspace> {
+    assert!(open(cx));
+    cx.run_until_parked();
+    workspaces(cx)
+        .into_iter()
+        .find(|w| !before.contains(&w.window_id()))
+        .expect("a window of its own")
+}
+
+fn window_ids(cx: &TestAppContext) -> Vec<gpui::WindowId> {
+    workspaces(cx).iter().map(|w| w.window_id()).collect()
+}
+
+/// The active list of `window`, once it shows `path`.
+fn loaded_view(
+    cx: &mut TestAppContext,
+    window: gpui::WindowHandle<Workspace>,
+    path: &str,
+) -> Entity<Explorer> {
+    let view = cx.update(|cx| window.read(cx).unwrap().active_view().clone());
+    let done = loaded(path);
+    until(cx, path, |cx| cx.update(|cx| done(view.read(cx))));
+    view
+}
+
+fn selection(cx: &mut TestAppContext, view: &Entity<Explorer>) -> Vec<String> {
+    cx.update(|cx| selected_names(view.read(cx)))
+}
+
 /// #285, single window mode off: the folder the early path opened gets a window. A File Explorer
-/// window on it that comes anyway (its launcher had handed it over already), or that another
-/// program opens later, shows in that tab with its selection instead of in a window of its own,
-/// until the tab goes elsewhere: then it opens as any other.
+/// window on it that comes anyway (its launcher had handed it over already) shows in that tab with
+/// its selection instead of in a window of its own, once: the next one opens as any other. A tab
+/// that went elsewhere keeps no mark, even once it is back.
 #[gpui::test]
-fn a_late_explorer_window_shows_in_the_tab_opened_early(cx: &mut TestAppContext) {
+fn a_late_explorer_window_uses_the_early_tab_once(cx: &mut TestAppContext) {
     let fs = fake_fs();
     let (ws, vcx) = setup_workspace(cx, Arc::clone(&fs), r"C:\a");
     let first = ws.update(vcx, |ws, _| ws.active_view().clone());
@@ -274,13 +308,9 @@ fn a_late_explorer_window_shows_in_the_tab_opened_early(cx: &mut TestAppContext)
         cx.update(|cx| crate::open_taken_over(cx, &services, &request))
     };
 
-    assert!(open(cx, taken_over(r"C:\b", &[], true)));
-    cx.run_until_parked();
-    assert_eq!(workspaces(cx).len(), 2);
-    let early = window_on(cx, r"C:\b");
-    let view = cx.update(|cx| early.read(cx).unwrap().active_view().clone());
-    let b_loaded = loaded(r"C:\b");
-    until(cx, "b", |cx| cx.update(|cx| b_loaded(view.read(cx))));
+    let before = window_ids(cx);
+    let early = opened_window(cx, &before, |cx| open(cx, taken_over(r"C:\b", &[], true)));
+    let view = loaded_view(cx, early, r"C:\b");
 
     // The window comes anyway, with the item selected.
     assert!(open(cx, taken_over(r"C:\b", &["file_000000.txt"], false)));
@@ -288,37 +318,77 @@ fn a_late_explorer_window_shows_in_the_tab_opened_early(cx: &mut TestAppContext)
     assert_eq!(workspaces(cx).len(), 2, "no window of its own");
     assert_eq!(tabs_of(early, cx), [Some(p(r"C:\b"))], "no second tab");
     until(cx, "the window's selection", |cx| {
-        cx.update(|cx| selected_name(view.read(cx)).as_deref() == Some("file_000000.txt"))
+        cx.update(|cx| selected_names(view.read(cx)) == ["file_000000.txt"])
     });
-    // Another one without a selection: shown there, the selection left as it is.
+    // The mark is used up: the next window on it opens as usual.
     assert!(open(cx, taken_over(r"C:\b", &[], false)));
     cx.run_until_parked();
-    assert_eq!(workspaces(cx).len(), 2);
-    assert_eq!(
-        cx.update(|cx| selected_name(view.read(cx))).as_deref(),
-        Some("file_000000.txt")
-    );
+    assert_eq!(workspaces(cx).len(), 3, "a window as usual");
 
-    // The tab goes elsewhere: the mark goes with it, even once it is back.
+    // A tab that goes elsewhere loses its mark, even once it is back.
+    let before = window_ids(cx);
+    let early = opened_window(cx, &before, |cx| open(cx, taken_over(r"C:\c", &[], true)));
+    let view = loaded_view(cx, early, r"C:\c");
+    cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.navigate(p(r"C:\d"), arke_core::NavKind::New, cx);
+        });
+    });
+    let _ = loaded_view(cx, early, r"C:\d");
     cx.update(|cx| {
         view.update(cx, |v, cx| {
             v.navigate(p(r"C:\c"), arke_core::NavKind::New, cx);
         });
     });
-    let c_loaded = loaded(r"C:\c");
-    until(cx, "c", |cx| cx.update(|cx| c_loaded(view.read(cx))));
-    assert!(open(cx, taken_over(r"C:\b", &[], false)));
+    let _ = loaded_view(cx, early, r"C:\c");
+    assert!(open(cx, taken_over(r"C:\c", &[], false)));
     cx.run_until_parked();
-    assert_eq!(workspaces(cx).len(), 3, "a window as usual");
-    cx.update(|cx| {
-        view.update(cx, |v, cx| {
-            v.navigate(p(r"C:\b"), arke_core::NavKind::New, cx);
-        });
+    assert_eq!(workspaces(cx).len(), 5, "not marked any more");
+}
+
+/// #285: two quick `explorer.exe C:\b`, both launchers ended, the second just too late, so its
+/// window comes anyway. Each launch has a window, and the late window goes to the second's (the
+/// newest mark), not the first's: no duplicate. Each mark is used once.
+#[gpui::test]
+fn two_quick_launches_each_get_their_own_merge(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    let (ws, vcx) = setup_workspace(cx, Arc::clone(&fs), r"C:\a");
+    let first = ws.update(vcx, |ws, _| ws.active_view().clone());
+    wait_until(vcx, &first, "a", loaded(r"C:\a"));
+    let cx = &mut vcx.cx;
+    settings(cx, |s| s.single_window = false);
+    let services = services(&fs);
+    let open = |cx: &mut TestAppContext, request: crate::win_takeover::OpenRequest| {
+        cx.update(|cx| crate::open_taken_over(cx, &services, &request))
+    };
+
+    let before = window_ids(cx);
+    let one = opened_window(cx, &before, |cx| open(cx, taken_over(r"C:\b", &[], true)));
+    let before = window_ids(cx);
+    let two = opened_window(cx, &before, |cx| open(cx, taken_over(r"C:\b", &[], true)));
+    let one_view = loaded_view(cx, one, r"C:\b");
+    let two_view = loaded_view(cx, two, r"C:\b");
+    assert_eq!(workspaces(cx).len(), 3);
+
+    // The second launch's window, with its item selected: the newest mark.
+    assert!(open(cx, taken_over(r"C:\b", &["file_000000.txt"], false)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 3, "no duplicate");
+    until(cx, "the second tab's selection", |cx| {
+        cx.update(|cx| selected_names(two_view.read(cx)) == ["file_000000.txt"])
     });
-    until(cx, "b again", |cx| cx.update(|cx| b_loaded(view.read(cx))));
+    assert!(selection(cx, &one_view).is_empty(), "the first tab untouched");
+
+    // One more on it goes to the first launch's tab, whose mark is left; then none are.
+    assert!(open(cx, taken_over(r"C:\b", &["file_000000.txt"], false)));
+    cx.run_until_parked();
+    assert_eq!(workspaces(cx).len(), 3);
+    until(cx, "the first tab's selection", |cx| {
+        cx.update(|cx| selected_names(one_view.read(cx)) == ["file_000000.txt"])
+    });
     assert!(open(cx, taken_over(r"C:\b", &[], false)));
     cx.run_until_parked();
-    assert_eq!(workspaces(cx).len(), 4, "not marked any more");
+    assert_eq!(workspaces(cx).len(), 4, "every mark used: a window as usual");
 }
 
 /// The forum report: with two windows open, the second one's tabs no longer replace the

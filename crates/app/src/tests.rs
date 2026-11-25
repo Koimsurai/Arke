@@ -2155,10 +2155,55 @@ fn a_late_recycle_bin_window_shows_in_the_page_opened_early(cx: &mut TestAppCont
         assert_eq!(ws.tab_views().count(), tabs, "no other tab");
         assert_eq!(ws.active, 1, "the page's tab comes forward");
     });
+    assert!(!merge(cx, &Target::RecycleBin), "used once");
     assert!(!merge(cx, &Target::Folder(PathBuf::from(r"C:\home"))));
+    // Marked again (another launch), then the page closes: the mark goes with it.
+    cx.update(|_, cx| ws.update(cx, |ws, cx| ws.mark_early(&Target::RecycleBin, cx)));
     cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_recycle_for_test(window, cx)));
     cx.run_until_parked();
     assert!(!merge(cx, &Target::RecycleBin), "the mark went with the page");
+}
+
+/// #285: two tabs of one window marked for the same folder (two quick launches): a late File
+/// Explorer window goes to the newest mark, the next to the other, then none is left.
+#[gpui::test]
+fn the_newest_early_mark_takes_the_late_window(cx: &mut TestAppContext) {
+    use arke_core::takeover::Target;
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\home", 1);
+    fs.insert_many(r"C:\work", 2);
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::default(), r"C:\home");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\home"));
+    let work = Target::Folder(PathBuf::from(r"C:\work"));
+    let mut views = Vec::new();
+    for at in [1, 2] {
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_tab(PathBuf::from(r"C:\work"), at, true, window, cx);
+                ws.mark_early(&work, cx);
+            });
+        });
+        let view = ws.update(cx, |ws, _| ws.active_view().clone());
+        wait_until(cx, &view, "work", loaded(r"C:\work"));
+        views.push(view);
+    }
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.activate(0, window, cx)));
+    let merge = |cx: &mut VisualTestContext| {
+        let select = vec![Arc::from("file_000001.txt")];
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.merge_early(&work, select, window, cx)))
+    };
+    assert!(merge(cx));
+    assert_eq!(ws.update(cx, |ws, _| ws.active), 2, "the newer tab");
+    assert_eq!(
+        views[1].update(cx, |v, _| selected_names(v)),
+        ["file_000001.txt"]
+    );
+    assert!(views[0].update(cx, |v, _| selected_names(v)).is_empty());
+    assert!(merge(cx));
+    assert_eq!(ws.update(cx, |ws, _| ws.active), 1, "then the older one");
+    assert!(!merge(cx), "both used");
+    assert_eq!(ws.update(cx, |ws, _| ws.tab_views().count()), 3);
 }
 
 fn tab_paths(ws: &Workspace, cx: &App) -> Vec<Option<PathBuf>> {

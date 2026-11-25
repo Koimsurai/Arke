@@ -629,6 +629,8 @@ fn app_main(mut args: Args) {
             update_quiet::mark_resident(resident, background);
             cx.on_app_quit(|cx| {
                 update_quiet::on_quit(cx);
+                // Arke's windows leave the shell's window list with it (#319).
+                win_folder_visit::end_all();
                 // The process ends right after: the last lines (why it quit) go in the file first.
                 crashlog::flush(Duration::from_millis(200));
                 async {}

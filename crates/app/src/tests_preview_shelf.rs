@@ -164,9 +164,10 @@ fn cloud_states_come_from_the_scan(cx: &mut TestAppContext) {
     assert_eq!(view.update(cx, |v, _| v.cloud.sync_of("x.txt")), None);
 }
 
-/// A folder inside a sync root is announced to the shell once per visit (some sync clients only
-/// fill a folder when a shell window shows it, #319); one outside isn't. Once a sync client heard
-/// it, items it added without a watcher event show without F5.
+/// A folder inside a sync root is announced to the shell while the pane shows it (some sync
+/// clients only fill a folder when a shell window shows it, #319); one outside isn't. A hint that
+/// its items changed shows items added without a watcher event, without F5; a "Show in folder"
+/// caller that found the announcement selects in the pane.
 #[gpui::test]
 fn cloud_folders_are_announced_and_rechecked(cx: &mut TestAppContext) {
     const ONLINE_ONLY: u32 = 0x400 | 0x40_0000;
@@ -191,14 +192,27 @@ fn cloud_folders_are_announced_and_rechecked(cx: &mut TestAppContext) {
         cloud,
         Entry::new("remote.txt", EntryKind::File, 12, None, ONLINE_ONLY),
     );
-    let heard = shell.visit_heard.lock().take().expect("the visit's callback");
-    heard();
+    let changed = shell.visit_changed.lock().take().expect("the visit's hint");
+    changed();
     wait_until(cx, &view, "the client's item", |v| {
         names(v) == ["local.txt", "remote.txt"]
     });
     // The list changed, so the folder was scanned again, but it isn't announced twice.
     cx.run_until_parked();
     assert_eq!(*shell.folder_visits.lock(), [announced.clone()]);
+
+    // "Show in folder" through the announcement selects in the pane, item by item.
+    let select = shell.visit_select.lock().take().expect("the visit's selection");
+    select(vec![Arc::from("remote.txt")]);
+    wait_until(cx, &view, "one selected", |v| {
+        selected_names(v) == ["remote.txt"]
+    });
+    select(vec![Arc::from("remote.txt"), Arc::from("local.txt")]);
+    wait_until(cx, &view, "both selected", |v| {
+        let mut names = selected_names(v);
+        names.sort();
+        names == ["local.txt", "remote.txt"]
+    });
 
     // Leaving ends the visit; a folder outside a sync root isn't announced.
     *shell.cloud.lock() = crate::shell::CloudScan::default();

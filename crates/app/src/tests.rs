@@ -238,9 +238,10 @@ struct FakeShell {
     /// What `cloud_scan` reports, and the folders and items it was asked about.
     cloud: Mutex<crate::shell::CloudScan>,
     cloud_scans: Mutex<Vec<(PathBuf, Vec<Arc<str>>)>>,
-    /// What tabs told the shell they show (`None`: left), and the last visit's `heard`.
+    /// What panes told the shell they show (`None`: left), and the last visit's callbacks.
     folder_visits: Mutex<Vec<(u64, Option<PathBuf>)>>,
-    visit_heard: Mutex<Option<Box<dyn Fn() + Send>>>,
+    visit_changed: Mutex<Option<Box<dyn Fn() + Send>>>,
+    visit_select: Mutex<Option<Box<dyn Fn(Vec<Arc<str>>) + Send>>>,
     /// Network probe handed to the directory service (servers and their shares).
     net_probe: Mutex<Option<Arc<dyn arke_core::net::NetProbe>>>,
     /// Items deletes fail on: why, and the programs holding them.
@@ -1041,7 +1042,8 @@ impl Shell for FakeShell {
             .lock()
             .push((slot, visit.as_ref().map(|v| v.dir.clone())));
         if let Some(visit) = visit {
-            *self.visit_heard.lock() = Some(visit.heard);
+            *self.visit_changed.lock() = Some(visit.changed);
+            *self.visit_select.lock() = Some(visit.select);
         }
     }
 

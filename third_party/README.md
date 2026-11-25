@@ -127,6 +127,11 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
 
 Zed's GPUI (Apache-2.0), unchanged except for:
 
+- `src/elements/div.rs` `InteractiveElement::on_focused_bounds` (`Interactivity::focused_bounds_listener`,
+  called in `Interactivity::prepaint`): a listener given the element's bounds each time it is
+  prepainted while it has the focus. Arke's Settings scroll the control Tab moved to into view with
+  it (`crates/app/src/keynav.rs`); upstream has no way to learn where an implicitly focusable element
+  is. (#322)
 - `src/elements/div.rs` `a11y_click_listeners` and the accessibility block of `Interactivity::paint`:
   an assistive technology's Click on an element with click listeners runs them, as Enter on the
   focused element does (`ClickEvent::Keyboard`). Upstream, Click falls back to a synthetic mouse

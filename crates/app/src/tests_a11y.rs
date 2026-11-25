@@ -352,3 +352,326 @@ fn the_context_menu_tells_its_highlighted_row(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     assert_eq!(focused(&tree(cx)).0, "ListBoxOption", "back on the file");
 }
+
+/// The node the focus is on as "Role label", for comparing across frames.
+fn focus_desc(tree: &Value) -> Option<String> {
+    let key = tree["active_descendant_focus"]
+        .as_str()
+        .or_else(|| tree["gpui_focus"].as_str())?;
+    let node = &tree["nodes"][key];
+    Some(format!("{} {}", role(node), label(node)))
+}
+
+/// Whether the keyboard focus is on the Settings categories (not just a page under them, whose
+/// selected category is then read as focused).
+fn on_categories(tree: &Value) -> bool {
+    tree["gpui_focus"]
+        .as_str()
+        .is_some_and(|key| role(&tree["nodes"][key]) == "TabList")
+}
+
+/// Roles Tab stops at.
+const KEYED: &[&str] = &[
+    "Button",
+    "CheckBox",
+    "ComboBox",
+    "Link",
+    "RadioButton",
+    "Slider",
+    "Switch",
+    "TextInput",
+];
+
+/// The controls on the Settings page as "Role label": what Tab must reach. The categories are one
+/// stop of their own; the window's caption buttons and tabs aren't the page's.
+fn settings_controls(tree: &Value) -> std::collections::BTreeSet<String> {
+    let page = nodes(tree)
+        .find(|n| role(n) == "Group" && label(n) == "Settings")
+        .expect("the settings page");
+    let mut out = std::collections::BTreeSet::new();
+    let mut stack: Vec<&Value> = vec![page];
+    while let Some(node) = stack.pop() {
+        if matches!(role(node), "TabList") {
+            continue;
+        }
+        if KEYED.contains(&role(node))
+            && !matches!(
+                label(node),
+                "Minimize" | "Maximize" | "Restore" | "Close window"
+            )
+            && !(role(node) == "RadioButton"
+                && node["aria"]["toggled"] != Value::String("True".into()))
+        {
+            out.insert(format!("{} {}", role(node), label(node)));
+        }
+        if let Some(children) = node["children"].as_array() {
+            stack.extend(
+                children
+                    .iter()
+                    .filter_map(|c| c.as_str())
+                    .map(|k| &tree["nodes"][k]),
+            );
+        }
+    }
+    out
+}
+
+/// Tab reaches every control of Settings, on every page with every section open, and goes round
+/// to the categories after the last one (#322).
+#[gpui::test]
+fn tab_reaches_every_settings_control(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    let first = tree(cx);
+    let pages: Vec<String> = nodes(&first)
+        .filter(|n| role(n) == "Tab" && n["aria"]["selected"].is_boolean())
+        .map(|n| label(n).to_owned())
+        .filter(|l| l != "w" && l != "Settings")
+        .collect();
+    let mut missed = Vec::new();
+    for page in &pages {
+        let t = tree(cx);
+        cx.simulate_a11y_action(node_id(&t, page), gpui::AccessibleAction::Click);
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let t = tree(cx);
+            let next = nodes(&t).find(|n| {
+                role(n) == "Button"
+                    && n["aria"]["expanded"] == Value::Bool(false)
+                    && !seen.contains(label(n))
+            });
+            let Some(next) = next else { break };
+            seen.insert(label(next).to_owned());
+            let id = accesskit::NodeId(next["accesskit_id"].as_str().unwrap().parse().unwrap());
+            cx.simulate_a11y_action(id, gpui::AccessibleAction::Expand);
+        }
+        let t = tree(cx);
+        let want = settings_controls(&t);
+        // From the categories round to them again.
+        if !on_categories(&tree(cx)) {
+            cx.simulate_keystrokes("f6");
+        }
+        assert!(
+            on_categories(&tree(cx)),
+            "{page}: F6 goes to the categories"
+        );
+        let mut got = std::collections::BTreeSet::new();
+        let mut path = Vec::new();
+        let mut round = false;
+        for _ in 0..want.len() + 20 {
+            cx.simulate_keystrokes("tab");
+            let t = tree(cx);
+            let at = focus_desc(&t).unwrap_or_else(|| format!("none ({:?})", t["gpui_focus"]));
+            path.push(at.clone());
+            if on_categories(&t) {
+                round = true;
+                break;
+            }
+            got.insert(at);
+        }
+        assert!(
+            round,
+            "{page}: Tab goes round to the categories; went {path:#?}"
+        );
+        missed.extend(want.difference(&got).map(|d| format!("{page} › {d}")));
+    }
+    assert_eq!(missed, Vec::<String>::new(), "not reached with Tab");
+}
+
+/// The settings as they are now.
+fn settings_now(cx: &mut VisualTestContext) -> crate::settings::Settings {
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .clone()
+    })
+}
+
+/// Presses and releases `key`, as a person does: GPUI presses the focused control on the release
+/// of Space or Enter, which `simulate_keystrokes` doesn't send.
+fn press(cx: &mut VisualTestContext, key: &'static str) {
+    cx.simulate_keystrokes(key);
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+}
+
+/// Opens Settings on the category `down` steps below the first, with the focus on the categories.
+fn settings_at(cx: &mut VisualTestContext, down: usize) {
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.simulate_keystrokes("f6");
+    assert!(on_categories(&tree(cx)), "F6 goes to the categories");
+    for _ in 0..down {
+        cx.simulate_keystrokes("down");
+    }
+}
+
+/// Up and Down on the categories show each page; Space presses a switch; Enter opens a dropdown,
+/// whose arrows and Enter pick (#322).
+#[gpui::test]
+fn settings_work_from_the_keyboard(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    settings_at(cx, 1);
+    let t = tree(cx);
+    assert_eq!(focus_desc(&t).as_deref(), Some("Tab Files and folders"));
+
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        focus_desc(&tree(cx)).as_deref(),
+        Some("Switch Show hidden items")
+    );
+    let before = settings_now(cx).show_hidden;
+    press(cx, "space");
+    assert_eq!(
+        settings_now(cx).show_hidden,
+        !before,
+        "Space toggles the switch"
+    );
+    press(cx, "enter");
+    assert_eq!(settings_now(cx).show_hidden, before, "and so does Enter");
+
+    cx.simulate_keystrokes("shift-tab");
+    assert!(
+        on_categories(&tree(cx)),
+        "Shift+Tab goes back to the categories"
+    );
+    cx.simulate_keystrokes("down tab");
+    assert_eq!(focus_desc(&tree(cx)).as_deref(), Some("ComboBox View"));
+    let before = settings_now(cx).default_view;
+    press(cx, "enter");
+    assert_eq!(
+        named(&tree(cx), "View")["aria"]["expanded"],
+        Value::Bool(true),
+        "Enter opens the list"
+    );
+    cx.simulate_keystrokes("down");
+    press(cx, "enter");
+    assert_ne!(
+        settings_now(cx).default_view,
+        before,
+        "Down and Enter pick the next view"
+    );
+    assert_eq!(
+        focus_desc(&tree(cx)).as_deref(),
+        Some("ComboBox View"),
+        "the focus stays"
+    );
+}
+
+/// The theme tiles are one stop: the arrows pick the next or previous tile, and the picked one is
+/// read as focused (#322).
+#[gpui::test]
+fn arrows_pick_a_theme(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    settings_at(cx, 0);
+    // The Theme section is open from the start: its header, then its tiles.
+    cx.simulate_keystrokes("tab tab");
+    let first = focus_desc(&tree(cx)).expect("a tile has the focus");
+    assert!(first.starts_with("RadioButton "), "{first}");
+    let before = settings_now(cx).theme;
+    cx.simulate_keystrokes("right");
+    let next = focus_desc(&tree(cx)).expect("a tile has the focus");
+    assert!(
+        next.starts_with("RadioButton ") && next != first,
+        "{first} then {next}"
+    );
+    assert_ne!(settings_now(cx).theme, before, "Right picks the next theme");
+    cx.simulate_keystrokes("left");
+    assert_eq!(focus_desc(&tree(cx)), Some(first), "Left picks it back");
+    cx.simulate_keystrokes("tab");
+    assert!(
+        !focus_desc(&tree(cx))
+            .unwrap_or_default()
+            .starts_with("RadioButton "),
+        "Tab leaves the tiles"
+    );
+}
+
+/// A control Tab moves to below the end of the view comes into view (#322).
+#[gpui::test]
+fn tab_brings_the_control_into_view(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(420.)));
+    settings_at(cx, 1);
+    let view = cx.update(|window, _| window.viewport_size());
+    let out = cx.debug_bounds("fast-copy").expect("the switch is drawn");
+    assert!(
+        out.bottom() > view.height,
+        "it starts below the view: {out:?}"
+    );
+    let mut path = Vec::new();
+    while path.len() < 60 {
+        cx.simulate_keystrokes("tab");
+        let at = focus_desc(&tree(cx)).unwrap_or_default();
+        path.push(at.clone());
+        if at == "Switch Fast copy" {
+            break;
+        }
+    }
+    assert_eq!(
+        path.last().map(String::as_str),
+        Some("Switch Fast copy"),
+        "{path:?}"
+    );
+    let now = cx.debug_bounds("fast-copy").expect("the switch is drawn");
+    assert!(
+        now.top() >= gpui::px(0.) && now.bottom() <= view.height,
+        "in view: {now:?} in {view:?}"
+    );
+}
+
+/// Tab and Shift+Tab stay in the "Remove Arke" dialog over Settings (#322).
+#[gpui::test]
+fn tab_stays_in_the_remove_dialog(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    let t = tree(cx);
+    cx.simulate_a11y_action(node_id(&t, "About"), gpui::AccessibleAction::Click);
+    let t = tree(cx);
+    cx.simulate_a11y_action(node_id(&t, "Remove…"), gpui::AccessibleAction::Click);
+    let t = tree(cx);
+    let dialog = nodes(&t)
+        .find(|n| role(n) == "AlertDialog")
+        .expect("the dialog opens");
+    let mut inside = std::collections::BTreeSet::new();
+    let mut stack = vec![dialog];
+    while let Some(node) = stack.pop() {
+        inside.insert(format!("{} {}", role(node), label(node)));
+        if let Some(children) = node["children"].as_array() {
+            stack.extend(
+                children
+                    .iter()
+                    .filter_map(|c| c.as_str())
+                    .map(|k| &t["nodes"][k]),
+            );
+        }
+    }
+    let mut went = Vec::new();
+    for key in [
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "shift-tab",
+        "shift-tab",
+        "shift-tab",
+    ] {
+        cx.simulate_keystrokes(key);
+        went.push(focus_desc(&tree(cx)).unwrap_or_default());
+    }
+    assert!(
+        went.iter().all(|d| inside.contains(d)),
+        "{went:?} in {inside:?}"
+    );
+    assert!(
+        went.iter().collect::<std::collections::BTreeSet<_>>().len() > 1,
+        "Tab moves between the dialog's controls: {went:?}"
+    );
+}

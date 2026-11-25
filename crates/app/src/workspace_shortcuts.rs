@@ -13,6 +13,7 @@ use rust_i18n::t;
 use super::Workspace;
 use crate::a11y::A11yExt as _;
 use crate::commands::{self, COMMANDS, Command, Overrides};
+use crate::keynav::KeyStop as _;
 use crate::settings::SettingsStore;
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme;
@@ -35,7 +36,7 @@ struct Recording {
 
 impl Page {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
-        let search = cx.new(|cx| TextInput::new(t!("shortcuts.search").to_string(), cx));
+        let search = cx.new(|cx| TextInput::new(t!("shortcuts.search").to_string(), cx).key_stop());
         let subscription = cx.subscribe_in(&search, window, |_, _, event, _, cx| {
             if matches!(event, InputEvent::Changed) {
                 cx.notify();
@@ -143,6 +144,7 @@ fn button(
         .id(id)
         .debug_selector(move || selector)
         .a11y_button(label.clone())
+        .key_stop()
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()
@@ -290,6 +292,7 @@ fn command_row(
     let key_button = div()
         .id(("shortcut-key", ix))
         .debug_selector(move || format!("shortcut-key-{id}"))
+        .key_stop()
         // The command and its keys, or that new keys are being waited for (#322).
         .a11y_lazy(gpui::Role::Button, || {
             let keys = if mine.is_some() {

@@ -497,7 +497,7 @@ fn toggle_row(
         .child(
             div()
                 .flex_none()
-                .child(crate::workspace::switch(id, on, toggle)),
+                .child(crate::workspace::flyout_switch(id, on, toggle)),
         )
         .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()

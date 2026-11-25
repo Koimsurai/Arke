@@ -14,6 +14,7 @@ use super::settings_panel::{Ui, choice_with, expander, set, switch};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::build_info::{self, Channel};
+use crate::keynav::KeyStop as _;
 use crate::settings::Settings;
 use crate::theme;
 use crate::update::{self, UpdateState};
@@ -442,6 +443,7 @@ pub(super) fn button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_lazy(gpui::Role::Button, || label.to_string())
+        .key_stop()
         .h(theme::h_ctl_sm())
         .px(theme::s_12())
         .flex()

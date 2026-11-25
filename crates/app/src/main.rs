@@ -59,6 +59,7 @@ mod frame_probe;
 mod global_search;
 mod home;
 mod instance;
+mod keynav;
 mod localized;
 mod media;
 mod menu_order;

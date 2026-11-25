@@ -1346,6 +1346,20 @@ pub trait InteractiveElement: Sized {
         self.interactivity().focus_visible_style = Some(Box::new(f(StyleRefinement::default())));
         self
     }
+
+    /// Arke: calls `listener` with this element's bounds each time it is prepainted while it has
+    /// focus, so the app can bring a control that Tab moved to into view. Requires that the
+    /// element is focusable.
+    fn on_focused_bounds(
+        mut self,
+        listener: impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().focused_bounds_listener = Some(Box::new(listener));
+        self
+    }
 }
 
 /// A trait for elements that want to use the standard GPUI interactivity features
@@ -2193,6 +2207,8 @@ pub struct Interactivity {
     pub(crate) key_context: Option<KeyContext>,
     pub(crate) focusable: bool,
     pub(crate) tracked_focus_handle: Option<FocusHandle>,
+    /// Arke: see [`InteractiveElement::on_focused_bounds`].
+    pub(crate) focused_bounds_listener: Option<Box<dyn Fn(Bounds<Pixels>, &mut Window, &mut App)>>,
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
@@ -2392,6 +2408,11 @@ impl Interactivity {
                         .a11y
                         .note_focus_without_node(focus_handle.id, "it has no element id");
                 }
+            }
+            if let Some(listener) = self.focused_bounds_listener.as_ref()
+                && focus_handle.is_focused(window)
+            {
+                listener(bounds, window, cx);
             }
         }
 

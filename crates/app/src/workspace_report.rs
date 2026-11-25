@@ -21,6 +21,7 @@ use super::settings_panel::expander;
 use super::update_page::{button, open_url};
 use crate::assets::Icon;
 use crate::build_info;
+use crate::keynav::KeyStop as _;
 use crate::settings::{Settings, SettingsStore};
 use crate::theme;
 
@@ -642,6 +643,7 @@ pub(super) fn check_row(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y(gpui::Role::CheckBox, label.to_string())
+        .key_stop()
         .aria_toggled(crate::a11y::toggled(on))
         .flex()
         .items_center()

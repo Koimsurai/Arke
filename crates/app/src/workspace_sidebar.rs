@@ -2365,7 +2365,7 @@ impl Workspace {
         if horizontal {
             return sidebar;
         }
-        let sidebar = sidebar.child(self.render_places_split(split.is_some(), cx));
+        let sidebar = sidebar.child(self.render_places_split(cx));
         // The tabs don't collapse: they are what's open (hiding the whole sidebar makes room).
         let header = div()
             .debug_selector(|| "tabs-header".to_owned())
@@ -2468,8 +2468,8 @@ impl Workspace {
 
     /// The line between the places and the tabs (vertical tabs): dragged, it sets how tall the
     /// places are, as the pinned tabs' line in Firefox does; double-clicked, the room is shared
-    /// by itself again. A faint line while it holds a height, so it shows there is one.
-    fn render_places_split(&self, set: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// by itself again. Always a faint line, so it can be found; brighter under the mouse.
+    fn render_places_split(&self, cx: &mut Context<Self>) -> AnyElement {
         let active = self.split_drag.is_some();
         div()
             .id("sidebar-split")
@@ -2502,7 +2502,7 @@ impl Workspace {
                     .mx(theme::s_8())
                     .h(px(2.))
                     .rounded(theme::R_FULL)
-                    .when(set && !active, |d| d.bg(theme::line()))
+                    .when(!active, |d| d.bg(theme::line()))
                     .when(active, |d| d.bg(theme::signal()))
                     .group_hover("sidebar-split", |s| s.bg(theme::signal_line())),
             )

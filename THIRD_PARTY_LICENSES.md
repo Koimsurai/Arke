@@ -2682,7 +2682,7 @@ Used by:
 - anstyle-wincon 3.0.11 (https://github.com/rust-cli/anstyle.git)
 - anstyle 1.0.14 (https://github.com/rust-cli/anstyle.git)
 - colorchoice 1.0.5 (https://github.com/rust-cli/anstyle.git)
-- crc32fast 1.5.4 (https://github.com/srijs/rust-crc32fast)
+- crc32fast 1.5.5 (https://github.com/srijs/rust-crc32fast)
 - env_filter 2.0.0 (https://github.com/rust-cli/env_logger)
 - env_logger 0.11.11 (https://github.com/rust-cli/env_logger)
 - hex 0.4.3 (https://github.com/KokaKiwi/rust-hex)
@@ -5810,7 +5810,7 @@ Used by:
 - sponge-cursor 0.1.0 (https://github.com/RustCrypto/utils)
 - ssh-cipher 0.3.0 (https://github.com/RustCrypto/SSH)
 - ssh-encoding 0.3.0 (https://github.com/RustCrypto/SSH)
-- ssh-key 0.7.0-rc.11 (https://github.com/RustCrypto/SSH)
+- ssh-key 0.7.0-rc.12 (https://github.com/RustCrypto/SSH)
 - universal-hash 0.6.1 (https://github.com/RustCrypto/traits)
 - wnaf 0.14.1 (https://github.com/RustCrypto/elliptic-curves)
 
@@ -7608,7 +7608,7 @@ Used by:
 - resvg 0.46.0 (https://github.com/linebender/resvg)
 - russh-cryptovec 0.62.0 (https://github.com/warp-tech/russh)
 - russh-util 0.52.0 (https://github.com/warp-tech/russh)
-- russh 0.65.1 (https://github.com/warp-tech/russh)
+- russh 0.65.2 (https://github.com/warp-tech/russh)
 - rustc-hash 2.1.3 (https://github.com/rust-lang/rustc-hash)
 - rustversion 1.0.23 (https://github.com/dtolnay/rustversion)
 - ryu 1.0.23 (https://github.com/dtolnay/ryu)
@@ -8712,7 +8712,7 @@ this CC0 or use of the Work.
 
 Used by:
 
-- notify 8.2.1 (https://github.com/notify-rs/notify.git)
+- notify 8.2.2 (https://github.com/notify-rs/notify.git)
 
 ````text
 Creative Commons CC0 1.0 Universal
@@ -10801,7 +10801,7 @@ SOFTWARE.
 Used by:
 
 - tracing-core 0.1.36 (https://github.com/tokio-rs/tracing)
-- zip 9.4.2 (https://github.com/zip-rs/zip2)
+- zip 9.6.1 (https://github.com/zip-rs/zip2)
 
 ````text
 The MIT License (MIT)

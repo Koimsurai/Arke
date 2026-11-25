@@ -501,7 +501,14 @@ impl Explorer {
         el.on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                this.top_row.search_focused_on_press = collapsed || summary;
+                // A press in the box already being typed in only moves the caret; the click
+                // must not select everything over it.
+                let typing = this
+                    .filter_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window);
+                this.top_row.search_focused_on_press = collapsed || summary || typing;
                 if collapsed {
                     this.focus_filter_input(window, cx);
                 } else if summary {

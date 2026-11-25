@@ -575,6 +575,14 @@ fn the_search_box_holding_a_query_takes_clicks_like_a_text_box(cx: &mut TestAppC
     let at = input.read_with(cx, |i, _| i.selection());
     assert!(at.is_empty() && at.start > 0 && at.start < 16, "{at:?}");
 
+    // Clicking again in the box now being typed in keeps the caret there (#390).
+    let again = gpui::point(summary.left() + gpui::px(60.), summary.center().y);
+    cx.simulate_click(again, Modifiers::none());
+    cx.run_until_parked();
+    assert!(focused(cx));
+    let at = input.read_with(cx, |i, _| i.selection());
+    assert!(at.is_empty(), "the click doesn't select everything: {at:?}");
+
     // Right-click on it, once it shows its query again.
     cx.simulate_keystrokes("down");
     cx.run_until_parked();

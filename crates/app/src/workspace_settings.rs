@@ -2134,8 +2134,24 @@ fn about_header() -> AnyElement {
                             .into_owned(),
                         ),
                 )
-                .child(about_legal()),
+                .child(about_legal())
+                .child(about_star()),
         )
+        .into_any_element()
+}
+
+/// "Star Arke on GitHub": only opens the repository in the browser. Nothing is recorded and
+/// nothing depends on it.
+fn about_star() -> AnyElement {
+    // A row of its own so the button keeps its width instead of filling the column.
+    div()
+        .pt(theme::s_8())
+        .flex()
+        .child(text_button(
+            "about-star",
+            t!("settings.star_on_github"),
+            |_, _, cx| super::update_page::open_url(crate::build_info::SOURCE_URL, cx),
+        ))
         .into_any_element()
 }
 

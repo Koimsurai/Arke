@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
-    ScrollHandle, Subscription, Window, div, prelude::*, svg,
+    ScrollHandle, StyledText, Subscription, Window, div, prelude::*, svg,
 };
 use rust_i18n::t;
 
@@ -14,6 +14,7 @@ use super::Workspace;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::build_info;
+use crate::keynav::KeyStop as _;
 use crate::settings::SettingsStore;
 use crate::theme;
 use crate::update::{self, UpdateState};
@@ -225,6 +226,7 @@ impl WhatsNewPage {
             .id(("whats-new-section", ix))
             .debug_selector(move || format!("whats-new-section-{ix}"))
             .a11y(gpui::Role::Button, release.version.clone())
+            .key_stop()
             .h(theme::h_row())
             .px(theme::s_12())
             .flex()
@@ -332,6 +334,8 @@ impl Render for WhatsNewPage {
             build_info::SOURCE_URL,
             whats_new::changelog_file(whats_new::notes_lang())
         );
+        // Tab brings the control it moves to into view in this page's scroll.
+        crate::keynav::set_view(Some(self.scroll.clone()));
         div()
             .id("whats-new-scroll")
             .key_context("WhatsNewPage")
@@ -339,9 +343,20 @@ impl Render for WhatsNewPage {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .on_key_down(cx.listener(|_, e: &gpui::KeyDownEvent, _, cx| {
-                if e.keystroke.key == "escape" {
-                    cx.emit(WhatsNewEvent::Close);
+            .on_key_down(cx.listener(|_, e: &gpui::KeyDownEvent, window, cx| {
+                let m = &e.keystroke.modifiers;
+                match e.keystroke.key.as_str() {
+                    "escape" => cx.emit(WhatsNewEvent::Close),
+                    // Tab and Shift+Tab: from control to control, as in Settings (#322).
+                    "tab" if !(m.control || m.alt || m.platform) => {
+                        if m.shift {
+                            crate::keynav::prev(window, cx);
+                        } else {
+                            crate::keynav::next(window, cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                    _ => {}
                 }
             }))
             .child(
@@ -403,7 +418,8 @@ impl Render for WhatsNewPage {
                                         t!("whats_new.changelog"),
                                         changelog,
                                     )),
-                            ),
+                            )
+                            .child(div().flex().child(star_line())),
                     ),
             )
     }
@@ -413,12 +429,43 @@ fn link(id: &'static str, label: std::borrow::Cow<'static, str>, url: String) ->
     let name = label.to_string();
     div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .a11y(gpui::Role::Link, name)
+        .key_stop()
         .cursor_pointer()
         .text_color(theme::signal())
         .hover(Styled::underline)
         .child(label.into_owned())
         .on_click(move |_, _, cx| super::update_page::open_url(&url, cx))
+        .into_any_element()
+}
+
+/// The page's last line: if Arke is useful, a star on GitHub helps other people find it. Small
+/// and muted, since the page opens after every update; "GitHub" is drawn as a link and the whole
+/// line opens the repository. Nothing is recorded and nothing depends on it.
+fn star_line() -> AnyElement {
+    const NAME: &str = "GitHub";
+    let text = t!("whats_new.star").into_owned();
+    let github = text.find(NAME).map(|at| {
+        (
+            at..at + NAME.len(),
+            gpui::HighlightStyle {
+                color: Some(theme::signal().into()),
+                ..gpui::HighlightStyle::default()
+            },
+        )
+    });
+    div()
+        .id("whats-new-star")
+        .debug_selector(|| "whats-new-star".to_owned())
+        .a11y(gpui::Role::Link, text.clone())
+        .key_stop()
+        .cursor_pointer()
+        .hover(Styled::underline)
+        .text_size(theme::fs_12())
+        .text_color(theme::text_muted())
+        .child(StyledText::new(text).with_highlights(github))
+        .on_click(|_, _, cx| super::update_page::open_url(build_info::SOURCE_URL, cx))
         .into_any_element()
 }
 

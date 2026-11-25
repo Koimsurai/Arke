@@ -2572,6 +2572,14 @@ whats_new.changelog:
   es: Registro de cambios completo
   pt-BR: Histórico de alterações completo
   ja: 変更履歴の全文
+whats_new.star:
+  en: "If Arke is useful to you, a ⭐ on GitHub helps other people find it."
+  zh-TW: "覺得 Arke 好用的話，到 GitHub 點個 ⭐，能讓更多人找到它。"
+  zh-CN: "觉得 Arke 好用的话，到 GitHub 点个 ⭐，能让更多人找到它。"
+  de: "Wenn Arke Ihnen nützlich ist, hilft ein ⭐ auf GitHub anderen, es zu finden."
+  es: "Si Arke le resulta útil, una ⭐ en GitHub ayuda a que otras personas lo encuentren."
+  pt-BR: "Se o Arke for útil para você, uma ⭐ no GitHub ajuda outras pessoas a encontrá-lo."
+  ja: "Arke が役に立ったら、GitHub で ⭐ を付けると、ほかの人が見つけやすくなります。"
 channel.stable:
   en: Stable
   zh-TW: 正式版
@@ -3844,6 +3852,14 @@ settings.licenses:
   es: Licencias
   pt-BR: Licenças
   ja: ライセンス
+settings.star_on_github:
+  en: "Star Arke on GitHub"
+  zh-TW: "到 GitHub 幫 Arke 點星"
+  zh-CN: "到 GitHub 给 Arke 点星"
+  de: Arke auf GitHub einen Stern geben
+  es: Dar una estrella a Arke en GitHub
+  pt-BR: Dar uma estrela ao Arke no GitHub
+  ja: GitHub で Arke にスターを付ける
 settings.settings_file:
   en: Settings file
   zh-TW: 設定檔

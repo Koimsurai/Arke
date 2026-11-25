@@ -309,7 +309,9 @@ fn sidebar_tree_rows_tell_their_level(cx: &mut TestAppContext) {
         .filter_map(level)
         .min();
     assert_eq!(drive, Some(1), "a top-level row is level 1");
-    let w = rows().find(|n| label(n) == "w").expect("the current folder's row");
+    let w = rows()
+        .find(|n| label(n) == "w")
+        .expect("the current folder's row");
     assert!(level(w) > Some(1), "a nested row is deeper: {w}");
     assert_eq!(w["aria"]["selected"], Value::Bool(true));
     let drive_row = rows()

@@ -2749,7 +2749,8 @@ impl Workspace {
             .id(SharedString::from(format!("tile-{}", path.display())))
             .a11y_lazy(gpui::Role::TreeItem, || label.clone())
             .debug_selector(move || format!("tile {label}"))
-            .aria_selected(here)
+            // "Selected" only on the current place, as on tree rows.
+            .when(here, |d| d.aria_selected(true))
             .h(tile_height(large))
             .flex()
             .flex_col()
@@ -2936,8 +2937,9 @@ impl Workspace {
                     let label = label.clone();
                     move || format!("sidebar {label}")
                 })
-                .aria_level(depth)
-                .aria_selected(here)
+                // Real nesting level (1 for top-level rows); "selected" only on the current row.
+                .aria_level(depth + 1)
+                .when(here, |d| d.aria_selected(true))
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
                 .h(theme::h_row())

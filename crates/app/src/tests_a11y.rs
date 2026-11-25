@@ -287,6 +287,40 @@ fn a_pinned_drive_is_named_like_the_drive(cx: &mut TestAppContext) {
     );
 }
 
+/// A sidebar tree row reads its real depth, and only the current folder's row says it is
+/// selected, so a screen reader does not call every row "level 1" or "not selected" (#322).
+#[gpui::test]
+fn sidebar_tree_rows_tell_their_level(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let t = loop {
+        let t = tree(cx);
+        let here = nodes(&t).any(|n| role(n) == "TreeItem" && label(n) == "w");
+        if here || Instant::now() > deadline {
+            break t;
+        }
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let level = |n: &Value| n["aria"]["level"].as_u64();
+    let rows = || nodes(&t).filter(|n| role(n) == "TreeItem");
+    let drive = rows()
+        .filter(|n| label(n) == "Local Disk (C:)")
+        .filter_map(level)
+        .min();
+    assert_eq!(drive, Some(1), "a top-level row is level 1");
+    let w = rows().find(|n| label(n) == "w").expect("the current folder's row");
+    assert!(level(w) > Some(1), "a nested row is deeper: {w}");
+    assert_eq!(w["aria"]["selected"], Value::Bool(true));
+    let drive_row = rows()
+        .find(|n| label(n) == "Local Disk (C:)" && level(n) == Some(1))
+        .expect("the drive's row");
+    assert!(
+        drive_row["aria"]["selected"].is_null(),
+        "other rows are not marked not selected: {drive_row}"
+    );
+}
+
 /// A folder named by its `desktop.ini`, as Windows names the user folder's Documents in other
 /// languages, is shown (and read out) by that name; a folder without the read-only or system
 /// attribute keeps its own, as in File Explorer (#370).

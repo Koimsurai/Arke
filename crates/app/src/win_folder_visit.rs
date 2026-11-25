@@ -76,13 +76,12 @@ use windows::Win32::UI::Shell::{
     _SVGIO, DWebBrowserEvents, DWebBrowserEvents2, FOLDERSETTINGS, IFolderView, IFolderView_Impl,
     ILCombine, ILGetSize, IPersistIDList, IPersistIDList_Impl, IShellBrowser, IShellBrowser_Impl,
     IShellFolder, IShellItem, IShellView, IShellView_Impl, IShellWindows, IWebBrowser_Impl,
-    IWebBrowser2, IWebBrowser2_Impl, IWebBrowserApp_Impl, SHBindToObject,
-    SHCNE_CREATE, SHCNE_DELETE, SHCNE_MKDIR, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM, SHCNE_RMDIR,
-    SHCNE_UPDATEDIR, SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHChangeNotification_Lock,
-    SHChangeNotification_Unlock, SHChangeNotifyDeregister, SHChangeNotifyEntry,
-    SHChangeNotifyRegister, SHCreateItemFromIDList, SHParseDisplayName, SIGDN_FILESYSPATH,
-    SVSI_DESELECTOTHERS, SVSI_EDIT, SVSI_ENSUREVISIBLE, SVSI_FOCUSED, SVSI_SELECT, SWC_BROWSER,
-    ShellWindows, UrlCreateFromPathW,
+    IWebBrowser2, IWebBrowser2_Impl, IWebBrowserApp_Impl, SHBindToObject, SHCNE_CREATE,
+    SHCNE_DELETE, SHCNE_MKDIR, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM, SHCNE_RMDIR, SHCNE_UPDATEDIR,
+    SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHChangeNotification_Lock, SHChangeNotification_Unlock,
+    SHChangeNotifyDeregister, SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList,
+    SHParseDisplayName, SIGDN_FILESYSPATH, SVSI_DESELECTOTHERS, SVSI_EDIT, SVSI_ENSUREVISIBLE,
+    SVSI_FOCUSED, SVSI_SELECT, SWC_BROWSER, ShellWindows, UrlCreateFromPathW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HMENU,
@@ -284,7 +283,7 @@ impl Events {
 struct Sink {
     cookie: u32,
     events: Events,
-    sink: IDispatch,
+    dispatch: IDispatch,
     /// Told about the navigation already.
     told: bool,
 }
@@ -354,7 +353,9 @@ fn child_name(folder: *const ITEMIDLIST, item: *const ITEMIDLIST) -> Option<Arc<
         let name = shell_item.ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let path = name.to_string().ok().map(PathBuf::from);
         CoTaskMemFree(Some(name.0.cast_const().cast()));
-        path?.file_name().map(|n| Arc::from(n.to_string_lossy().as_ref()))
+        path?
+            .file_name()
+            .map(|n| Arc::from(n.to_string_lossy().as_ref()))
     }
 }
 
@@ -751,14 +752,7 @@ mod com {
         fn GetControlWindow(&self, _: u32) -> Res<HWND> {
             Err(E_NOTIMPL.into())
         }
-        fn SendControlMsg(
-            &self,
-            _: u32,
-            _: u32,
-            _: WPARAM,
-            _: LPARAM,
-            _: *mut LRESULT,
-        ) -> Res<()> {
+        fn SendControlMsg(&self, _: u32, _: u32, _: WPARAM, _: LPARAM, _: *mut LRESULT) -> Res<()> {
             Err(E_NOTIMPL.into())
         }
         fn QueryActiveShellView(&self) -> Res<IShellView> {
@@ -814,14 +808,14 @@ mod com {
             } else {
                 unknown
                     .cast::<IDispatch>()
-                    .map_err(|_| windows::core::Error::from(CONNECT_E_CANNOTCONNECT))?
+                    .map_err(|_not_dispatch| windows::core::Error::from(CONNECT_E_CANNOTCONNECT))?
             };
             let cookie = self.state.next_cookie.get() + 1;
             self.state.next_cookie.set(cookie);
             self.state.sinks.borrow_mut().push(Sink {
                 cookie,
                 events: self.events,
-                sink,
+                dispatch: sink,
                 told: false,
             });
             log::info!("folder visit: a listener subscribed to {:?}", self.events);
@@ -1098,7 +1092,7 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
         .filter(|s| !s.told)
         .map(|s| {
             s.told = true;
-            (s.events, s.sink.clone())
+            (s.events, s.dispatch.clone())
         })
         .collect();
     if !due.is_empty() {
@@ -1258,11 +1252,7 @@ fn message_window() -> windows::core::Result<HWND> {
     }
 }
 
-fn announce(
-    hwnd: HWND,
-    visit: FolderVisit,
-    running: &Arc<Running>,
-) -> windows::core::Result<()> {
+fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::core::Result<()> {
     let FolderVisit {
         dir,
         changed,

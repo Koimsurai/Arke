@@ -466,7 +466,10 @@ mod tests {
         assert!(rule.folder_changed(), "leaving ends it");
         assert!(!rule.scanned(false), "a folder outside sync roots");
         assert!(!rule.folder_changed(), "nothing to end");
-        assert!(!rule.scanned(true), "only the first scan of a folder counts");
+        assert!(
+            !rule.scanned(true),
+            "only the first scan of a folder counts"
+        );
         assert!(!rule.folder_changed());
         assert!(rule.scanned(true), "coming back announces again");
     }

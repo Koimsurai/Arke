@@ -130,6 +130,9 @@ unsafe impl Send for FakeClipboardData {}
 // SAFETY: as above.
 unsafe impl Sync for FakeClipboardData {}
 
+/// What a folder visit reports when the shell selects items in it.
+type SelectCallback = Box<dyn Fn(Vec<Arc<str>>) + Send>;
+
 #[derive(Default)]
 struct FakeShell {
     /// What Windows' Quick Access has pinned (`None`: unreadable).
@@ -241,7 +244,7 @@ struct FakeShell {
     /// What panes told the shell they show (`None`: left), and the last visit's callbacks.
     folder_visits: Mutex<Vec<(u64, Option<PathBuf>)>>,
     visit_changed: Mutex<Option<Box<dyn Fn() + Send>>>,
-    visit_select: Mutex<Option<Box<dyn Fn(Vec<Arc<str>>) + Send>>>,
+    visit_select: Mutex<Option<SelectCallback>>,
     /// Network probe handed to the directory service (servers and their shares).
     net_probe: Mutex<Option<Arc<dyn arke_core::net::NetProbe>>>,
     /// Items deletes fail on: why, and the programs holding them.

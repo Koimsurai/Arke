@@ -185,7 +185,10 @@ fn cloud_folders_are_announced_and_rechecked(cx: &mut TestAppContext) {
     wait_shell_in(cx, "announced", || !shell.folder_visits.lock().is_empty());
     let slot = view.entity_id().as_u64();
     let announced = (slot, Some(PathBuf::from(r"C:\wps")));
-    assert_eq!(*shell.folder_visits.lock(), [announced.clone()]);
+    assert_eq!(
+        *shell.folder_visits.lock(),
+        std::slice::from_ref(&announced)
+    );
 
     // The sync client adds an online-only placeholder, and no watcher event comes.
     fs.add_entry(
@@ -199,10 +202,17 @@ fn cloud_folders_are_announced_and_rechecked(cx: &mut TestAppContext) {
     });
     // The list changed, so the folder was scanned again, but it isn't announced twice.
     cx.run_until_parked();
-    assert_eq!(*shell.folder_visits.lock(), [announced.clone()]);
+    assert_eq!(
+        *shell.folder_visits.lock(),
+        std::slice::from_ref(&announced)
+    );
 
     // "Show in folder" through the announcement selects in the pane, item by item.
-    let select = shell.visit_select.lock().take().expect("the visit's selection");
+    let select = shell
+        .visit_select
+        .lock()
+        .take()
+        .expect("the visit's selection");
     select(vec![Arc::from("remote.txt")]);
     wait_until(cx, &view, "one selected", |v| {
         selected_names(v) == ["remote.txt"]

@@ -39,6 +39,7 @@ use super::ops::{CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, Rename
 use super::{AppEvent, Explorer, ExplorerEvent, Refresh, ViewDetails, ViewMode, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
+use crate::media::MenuIcon;
 use crate::settings::SettingsStore;
 use crate::shell::{ShellMenu, ShellMenuEntry};
 
@@ -335,7 +336,7 @@ pub(crate) struct MenuItem {
     shortcut: Option<&'static str>,
     pub(crate) command: MenuCommand,
     pub(crate) enabled: bool,
-    icon: Option<Arc<RenderImage>>,
+    icon: Option<MenuIcon>,
     /// Arke's own icon (`icon` is the one carried by Windows menu items).
     glyph: Option<Icon>,
     checked: bool,
@@ -356,7 +357,7 @@ pub(crate) enum MenuEntry {
     Submenu {
         label: SharedString,
         enabled: bool,
-        icon: Option<Arc<RenderImage>>,
+        icon: Option<MenuIcon>,
         /// Arke's own icon for its own submenus (`icon` is the one Windows gives its submenus).
         glyph: Option<Icon>,
         children: Vec<Self>,
@@ -400,8 +401,9 @@ impl MenuEntry {
     /// `session` is set for an item from one extension's menu (read on its own), which runs in
     /// that menu rather than the whole Windows menu.
     fn from_shell_in(entry: ShellMenuEntry, parent: &[&str], session: Option<u64>) -> Self {
-        let icon =
-            |t: Option<arke_core::thumbs::Thumbnail>| t.and_then(crate::media::to_render_image);
+        let icon = |t: Option<arke_core::thumbs::Thumbnail>| {
+            t.and_then(crate::media::to_render_image).map(MenuIcon::new)
+        };
         match entry {
             ShellMenuEntry::Item {
                 id,
@@ -1619,7 +1621,7 @@ impl Explorer {
                 );
                 // Use the app's own icon, or a generic one if unreadable or user-added.
                 if let MenuEntry::Item(row) = &mut entry {
-                    row.icon.clone_from(&app.icon);
+                    row.icon = app.icon.clone().map(MenuIcon::new);
                 }
                 entries.push(entry);
             }
@@ -3494,7 +3496,7 @@ impl Explorer {
 struct RowParts {
     label: SharedString,
     enabled: bool,
-    icon: Option<Arc<RenderImage>>,
+    icon: Option<MenuIcon>,
     checked: bool,
     bold: bool,
     danger: bool,
@@ -3597,14 +3599,14 @@ impl RowParts {
 
 /// Icon or check mark on the left of a row. If any row in a level has one, the whole level reserves
 /// the space.
-fn row_mark(icon: Option<Arc<RenderImage>>, glyph: Option<Icon>, checked: bool) -> gpui::Div {
+fn row_mark(icon: Option<MenuIcon>, glyph: Option<Icon>, checked: bool) -> gpui::Div {
     div()
         .size(theme::icon())
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .children(icon.map(|image| img(image).size(theme::icon())))
+        .children(icon.map(|icon| img(icon.shown()).size(theme::icon())))
         .children(glyph.filter(|_| !checked).map(|glyph| {
             svg()
                 .path(glyph.path())
@@ -3833,8 +3835,8 @@ pub(crate) fn pin_key(path: &[&str]) -> String {
 /// Remembers how pinned row `key` looked, for drawing it ahead next time (`menu_pin_looks`).
 fn remember_pin(key: &str, entry: &MenuEntry) {
     let (icon, submenu) = match entry {
-        MenuEntry::Item(item) => (item.icon.as_ref(), false),
-        MenuEntry::Submenu { icon, .. } => (icon.as_ref(), true),
+        MenuEntry::Item(item) => (item.icon.as_ref().map(MenuIcon::original), false),
+        MenuEntry::Submenu { icon, .. } => (icon.as_ref().map(MenuIcon::original), true),
         MenuEntry::Actions(_) | MenuEntry::Separator => return,
     };
     crate::menu_pin_looks::remember(key, icon, submenu);
@@ -3854,7 +3856,7 @@ fn coming_row(key: &str, ix: usize) -> Option<MenuEntry> {
     if label.is_empty() || label.contains('…') {
         return None;
     }
-    let icon = crate::menu_pin_looks::icon(key);
+    let icon = crate::menu_pin_looks::icon(key).map(MenuIcon::new);
     if pin_is_submenu(key) {
         return Some(MenuEntry::Submenu {
             label: label.to_string().into(),

@@ -276,6 +276,81 @@ pub(crate) fn to_render_image(t: Thumbnail) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
 }
 
+/// Pixels with less alpha than this are ignored when judging an icon (rounding noise).
+const FAINT_ALPHA: u8 = 16;
+/// Brightest channel a "dark" glyph pixel may have.
+const DARK_MAX: u8 = 96;
+/// Widest spread between a pixel's channels for it to count as gray.
+const GRAY_SPREAD: u8 = 24;
+
+/// Whether BGRA `pixels` are a monochrome dark glyph: every visible pixel is a dark, near-gray
+/// color. Windows hands out these for the light theme, and they vanish on a dark menu.
+pub(crate) fn is_dark_mono(pixels: &[u8]) -> bool {
+    let mut seen = false;
+    for p in pixels.as_chunks::<4>().0 {
+        if p[3] < FAINT_ALPHA {
+            continue;
+        }
+        let hi = p[0].max(p[1]).max(p[2]);
+        let lo = p[0].min(p[1]).min(p[2]);
+        if hi > DARK_MAX || hi - lo > GRAY_SPREAD {
+            return false;
+        }
+        seen = true;
+    }
+    seen
+}
+
+/// A Windows menu icon, with a copy drawn in the dark theme's text color when the icon is a dark
+/// monochrome glyph. Made once, where the icon is decoded, not per frame.
+#[derive(Clone)]
+pub(crate) struct MenuIcon {
+    image: Arc<RenderImage>,
+    light_on_dark: Option<Arc<RenderImage>>,
+}
+
+impl MenuIcon {
+    pub(crate) fn new(image: Arc<RenderImage>) -> Self {
+        let light_on_dark = recolored(&image);
+        Self {
+            image,
+            light_on_dark,
+        }
+    }
+
+    /// The image to draw in the current theme.
+    pub(crate) fn shown(&self) -> Arc<RenderImage> {
+        match &self.light_on_dark {
+            Some(twin) if crate::theme::is_dark() => Arc::clone(twin),
+            _ => Arc::clone(&self.image),
+        }
+    }
+
+    /// The icon as Windows gave it.
+    pub(crate) const fn original(&self) -> &Arc<RenderImage> {
+        &self.image
+    }
+}
+
+/// `image` redrawn in the dark theme's text color, keeping each pixel's alpha, if it is a dark
+/// monochrome glyph.
+fn recolored(image: &RenderImage) -> Option<Arc<RenderImage>> {
+    let size = image.size(0);
+    let (w, h) = (
+        u32::try_from(size.width.0).ok()?,
+        u32::try_from(size.height.0).ok()?,
+    );
+    let bytes = image.as_bytes(0).filter(|b| is_dark_mono(b))?;
+    let ink = crate::theme::dark_text();
+    let [b, g, r] = [ink.b, ink.g, ink.r].map(|c| (c.clamp(0., 1.) * 255.).round() as u8);
+    let mut pixels = bytes.to_vec();
+    for p in pixels.as_chunks_mut::<4>().0 {
+        p[..3].copy_from_slice(&[b, g, r]);
+    }
+    let buffer = image::RgbaImage::from_raw(w, h, pixels)?;
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
+}
+
 impl MediaStore {
     /// Get the global media cache, creating it on first use.
     pub(crate) fn global(services: &Services, cx: &mut App) -> Entity<Self> {
@@ -677,4 +752,69 @@ fn image_bytes(image: &RenderImage) -> usize {
 /// kept every picture it had shown, about 7 MB each.
 pub(crate) fn drop_image_later(image: Arc<RenderImage>, cx: &mut App) {
     cx.defer(move |cx| cx.drop_image(image, None));
+}
+
+#[cfg(test)]
+mod dark_mono_tests {
+    use super::{MenuIcon, is_dark_mono};
+    use gpui::RenderImage;
+    use std::sync::Arc;
+
+    /// BGRA pixels from (b, g, r, a) tuples.
+    fn px(list: &[[u8; 4]]) -> Vec<u8> {
+        list.concat()
+    }
+
+    #[test]
+    fn dark_gray_glyph_is_mono() {
+        assert!(is_dark_mono(&px(&[
+            [20, 20, 20, 255],
+            [30, 30, 30, 255],
+            [0, 0, 0, 0]
+        ])));
+    }
+
+    #[test]
+    fn colored_icon_is_not_mono() {
+        assert!(!is_dark_mono(&px(&[
+            [200, 120, 30, 255],
+            [20, 20, 20, 255]
+        ])));
+        assert!(!is_dark_mono(&px(&[[30, 30, 90, 255]])));
+    }
+
+    #[test]
+    fn gray_antialiased_edges_stay_mono() {
+        assert!(is_dark_mono(&px(&[
+            [10, 10, 10, 255],
+            [60, 60, 60, 128],
+            [90, 90, 90, 40],
+            [0, 0, 0, 0],
+        ])));
+    }
+
+    #[test]
+    fn empty_or_transparent_is_not_mono() {
+        assert!(!is_dark_mono(&[]));
+        assert!(!is_dark_mono(&px(&[[0, 0, 0, 0], [5, 5, 5, 0]])));
+    }
+
+    #[test]
+    fn light_gray_glyph_is_not_mono() {
+        assert!(!is_dark_mono(&px(&[[220, 220, 220, 255]])));
+    }
+
+    #[test]
+    fn twin_keeps_alpha_and_changes_color() {
+        let buffer =
+            image::RgbaImage::from_raw(2, 1, px(&[[10, 10, 10, 255], [0, 0, 0, 0]])).unwrap();
+        let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+        let icon = MenuIcon::new(image);
+        let twin = icon.light_on_dark.as_ref().expect("dark glyph gets a twin");
+        let bytes = twin.as_bytes(0).unwrap();
+        assert_eq!([bytes[3], bytes[7]], [255, 0]);
+        assert!(bytes[0] > 100);
+        // The original is untouched.
+        assert_eq!(icon.original().as_bytes(0).unwrap()[0], 10);
+    }
 }

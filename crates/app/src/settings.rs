@@ -1971,7 +1971,10 @@ mod tests {
             ..Settings::default()
         };
         let bytes = serde_json::to_vec(&on).unwrap();
-        assert!(read(&bytes).sidebar_follow, "written, so stored from then on");
+        assert!(
+            read(&bytes).sidebar_follow,
+            "written, so stored from then on"
+        );
     }
 
     #[test]

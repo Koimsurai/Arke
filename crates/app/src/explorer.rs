@@ -394,6 +394,22 @@ pub(crate) enum AppEvent {
         version: u64,
         scan: crate::shell::CloudScan,
     },
+    /// The shell hints that the items of this folder changed (`explorer_cloud.rs`).
+    CloudFolderHint(PathBuf),
+    /// Listing the folder shown as `generation` (at `version`) again finished; `changed`: items
+    /// came or went.
+    CloudRechecked {
+        dir: PathBuf,
+        generation: Gen,
+        version: u64,
+        changed: bool,
+    },
+    /// A "Show in folder" caller selected these items of `dir` through the shell's window list
+    /// (`win_folder_visit.rs`).
+    ShellSelected {
+        dir: PathBuf,
+        names: Vec<Arc<str>>,
+    },
     /// The Windows context menu ("Show more options" and pinned commands).
     ShellMenu(menu::ShellMenuEvent),
 }
@@ -1973,6 +1989,16 @@ impl Explorer {
             AppEvent::Io(event) => self.handle_io(event, cx),
             AppEvent::CloudScan { dir, version, scan } => {
                 self.handle_cloud_scan(dir, version, scan, cx);
+            }
+            AppEvent::CloudFolderHint(dir) => self.cloud_folder_hint(&dir),
+            AppEvent::CloudRechecked {
+                dir,
+                generation,
+                version,
+                changed,
+            } => self.cloud_rechecked(&dir, generation, version, changed, cx),
+            AppEvent::ShellSelected { dir, names } => {
+                self.select_in_folder(&dir, names, cx);
             }
             AppEvent::Search(results) => self.handle_search(results, cx),
             AppEvent::ClipboardSet {

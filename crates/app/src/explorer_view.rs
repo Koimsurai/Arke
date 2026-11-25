@@ -3236,7 +3236,7 @@ impl Explorer {
         self.sync_parent_column();
         self.sync_link_targets();
         self.sync_folder_sizes(cx);
-        self.sync_cloud_states(cx);
+        self.sync_cloud_states(window, cx);
     }
 }
 

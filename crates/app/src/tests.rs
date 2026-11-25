@@ -132,6 +132,9 @@ unsafe impl Send for FakeClipboardData {}
 // SAFETY: as above.
 unsafe impl Sync for FakeClipboardData {}
 
+/// What a folder visit reports when the shell selects items in it.
+type SelectCallback = Box<dyn Fn(Vec<Arc<str>>) + Send>;
+
 #[derive(Default)]
 struct FakeShell {
     /// What Windows' Quick Access has pinned (`None`: unreadable).
@@ -240,6 +243,10 @@ struct FakeShell {
     /// What `cloud_scan` reports, and the folders and items it was asked about.
     cloud: Mutex<crate::shell::CloudScan>,
     cloud_scans: Mutex<Vec<(PathBuf, Vec<Arc<str>>)>>,
+    /// What panes told the shell they show (`None`: left), and the last visit's callbacks.
+    folder_visits: Mutex<Vec<(u64, Option<PathBuf>)>>,
+    visit_changed: Mutex<Option<Box<dyn Fn() + Send>>>,
+    visit_select: Mutex<Option<SelectCallback>>,
     /// Network probe handed to the directory service (servers and their shares).
     net_probe: Mutex<Option<Arc<dyn arke_core::net::NetProbe>>>,
     /// Items deletes fail on: why, and the programs holding them.
@@ -1033,6 +1040,16 @@ impl Shell for FakeShell {
             .lock()
             .push((dir.to_path_buf(), items.to_vec()));
         self.cloud.lock().clone()
+    }
+
+    fn folder_visit(&self, slot: u64, visit: Option<crate::shell::FolderVisit>) {
+        self.folder_visits
+            .lock()
+            .push((slot, visit.as_ref().map(|v| v.dir.clone())));
+        if let Some(visit) = visit {
+            *self.visit_changed.lock() = Some(visit.changed);
+            *self.visit_select.lock() = Some(visit.select);
+        }
     }
 
     fn recent_files_enabled(&self) -> bool {

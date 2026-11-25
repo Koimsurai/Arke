@@ -964,12 +964,13 @@ fn section_id(section: SidebarSection) -> (&'static str, SharedString) {
     (id, title.into_owned().into())
 }
 
-/// The sections that can be hidden (#323), in the order the menu of the sidebar's empty space
-/// lists them.
-const HIDEABLE: [SidebarSection; 3] = [
+/// The sections that can be hidden (#323, #387), in the order the menu of the sidebar's empty
+/// space lists them.
+const HIDEABLE: [SidebarSection; 4] = [
     SidebarSection::Home,
     SidebarSection::Favorites,
     SidebarSection::ThisPc,
+    SidebarSection::Network,
 ];
 
 /// The menu of a hideable section's heading (or Home's row): Hide.
@@ -2248,12 +2249,13 @@ impl Workspace {
         }
         let current = self.sidebar_here(cx);
         let places = self.active_view().read(cx).places.clone();
-        let (this_pc_collapsed, this_pc_hidden, network_collapsed) = {
+        let (this_pc_collapsed, this_pc_hidden, network_collapsed, network_hidden) = {
             let settings = &SettingsStore::global(cx).read(cx).settings;
             (
                 settings.is_collapsed(SidebarSection::ThisPc),
                 settings.is_hidden(SidebarSection::ThisPc),
                 settings.is_collapsed(SidebarSection::Network),
+                settings.is_hidden(SidebarSection::Network),
             )
         };
         if !this_pc_collapsed && !this_pc_hidden {
@@ -2283,13 +2285,16 @@ impl Workspace {
                 self.drop_in(SidebarSection::ThisPc, &mut items, start);
             }
         }
-        self.render_network(
-            &places,
-            current.as_deref(),
-            network_collapsed,
-            &mut items,
-            cx,
-        );
+        // Hidden (#387): no heading, rows or add button.
+        if !network_hidden {
+            self.render_network(
+                &places,
+                current.as_deref(),
+                network_collapsed,
+                &mut items,
+                cx,
+            );
+        }
         // Under the favorites, rows move with them: a row more or less in the list moves them all.
         if self.tab_drag.rows.wanted() {
             let after: Vec<AnyElement> = items.drain(pins_end..).collect();
@@ -3366,7 +3371,7 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_section(section, cx);
             }))
-            // Favorites and This PC can be hidden (#323); a right click elsewhere on the
+            // Home, Favorites, This PC and Network can be hidden (#323, #387); a right click elsewhere on the
             // sidebar brings them back.
             .when(HIDEABLE.contains(&section), |d| {
                 d.on_mouse_down(

@@ -1877,14 +1877,19 @@ mod tests {
     fn hidden_sections_are_kept() {
         let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
         assert!(Settings::default().hidden_sections.is_empty());
-        let later = read(br#"{"hidden_sections": ["home", "someday", "this_pc", "home"]}"#);
+        let later =
+            read(br#"{"hidden_sections": ["home", "someday", "this_pc", "home", "network"]}"#);
         assert_eq!(
             later.hidden_sections,
-            vec![SidebarSection::Home, SidebarSection::ThisPc]
+            vec![
+                SidebarSection::Home,
+                SidebarSection::ThisPc,
+                SidebarSection::Network
+            ]
         );
         let json = serde_json::to_string(&later).unwrap();
         assert!(
-            json.contains(r#""hidden_sections":["home","this_pc"]"#),
+            json.contains(r#""hidden_sections":["home","this_pc","network"]"#),
             "{json}"
         );
 

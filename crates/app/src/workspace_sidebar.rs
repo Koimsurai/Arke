@@ -128,6 +128,9 @@ pub(super) enum SidebarAction {
     /// A section's row in the menu of the sidebar's empty space, checked while it is shown
     /// (`true`): picked, it is hidden or shown again (#323).
     ShowSection(SidebarSection, bool),
+    /// "Expand to open folder" in the menu of the sidebar's empty space, checked while the tree
+    /// follows the current folder (`true`): picked, it is turned off or on (#416).
+    ToggleFollow(bool),
     /// Copy or move the shelf's items into the active tab's folder.
     ShelfToHere {
         is_move: bool,
@@ -214,8 +217,11 @@ const fn menu_glyph(action: &SidebarAction) -> Option<Icon> {
         A::OpenSettings => Icon::Settings,
         A::SetSidebarPeek(_) => Icon::Sidebar,
         A::HideSection(_) => Icon::EyeOff,
-        A::ShowSection(_, true) => Icon::Check,
-        A::ShowSection(_, false) | A::CloseOtherTabs(_) | A::CloseAllTabs => return None,
+        A::ShowSection(_, true) | A::ToggleFollow(true) => Icon::Check,
+        A::ShowSection(_, false)
+        | A::ToggleFollow(false)
+        | A::CloseOtherTabs(_)
+        | A::CloseAllTabs => return None,
     })
 }
 
@@ -294,6 +300,7 @@ const fn menu_group(action: &SidebarAction) -> u8 {
         A::HistoryJump { .. } | A::TimelineStep { .. } => 11,
         A::SetSidebarPeek(_) => 12,
         A::HideSection(_) | A::ShowSection(..) => 13,
+        A::ToggleFollow(_) => 14,
     }
 }
 
@@ -3417,8 +3424,8 @@ impl Workspace {
     }
 
     /// The menu of the sidebar's empty space (#323): the sections that can be hidden, checked
-    /// while shown, then the Recycle Bin once it was removed from the favorites, which had no
-    /// way back there but its page's pin button (#308).
+    /// while shown, then "Expand to open folder" (#416), then the Recycle Bin once it was removed
+    /// from the favorites, which had no way back there but its page's pin button (#308).
     fn sidebar_space_menu(cx: &App) -> Vec<SidebarRow> {
         let mut items: Vec<SidebarRow> = HIDEABLE
             .into_iter()
@@ -3429,6 +3436,12 @@ impl Workspace {
                 )
             })
             .collect();
+        let follow =
+            SettingsStore::try_global(cx).is_some_and(|s| s.read(cx).settings.sidebar_follow);
+        items.push(row(
+            t!("sidebar.follow_folder"),
+            SidebarAction::ToggleFollow(follow),
+        ));
         if SettingsStore::try_global(cx).is_some_and(|s| !s.read(cx).settings.recycle_pinned) {
             items.push(row(
                 t!("sidebar.add_recycle"),
@@ -3436,6 +3449,21 @@ impl Workspace {
             ));
         }
         items
+    }
+
+    /// Turns the tree's following of the current folder on or off (#416). Turned on, the tree
+    /// opens to the folder at once; turned off, it stays as it is.
+    fn set_follow(&mut self, on: bool, cx: &mut Context<Self>) {
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.sidebar_follow = on, cx);
+        });
+        if on {
+            // The folder was followed before: forget it, so the tree opens to it again.
+            self.sidebar_ui.followed = None;
+            let here = self.sidebar_here(cx);
+            self.follow_tree(here, cx);
+        }
+        cx.notify();
     }
 
     /// Collapses a section or expands it again. This PC expanded again catches up with the
@@ -3744,6 +3772,7 @@ impl Workspace {
             SidebarAction::SetSidebarPeek(on) => Self::set_sidebar_peek(on, cx),
             SidebarAction::HideSection(section) => Self::show_section(section, false, cx),
             SidebarAction::ShowSection(section, shown) => Self::show_section(section, !shown, cx),
+            SidebarAction::ToggleFollow(on) => self.set_follow(!on, cx),
             SidebarAction::OpenFile(path) => {
                 crate::search_history::SearchHistory::record(&path, false, cx);
                 let shell = Arc::clone(&self.services.shell);
@@ -4146,7 +4175,10 @@ impl Workspace {
             let detail = menu_detail(&action);
             let shortcut = self.menu_shortcut(&action, cx);
             // A shown section's row in the menu of the sidebar's empty space has its check.
-            let checked = matches!(action, SidebarAction::ShowSection(_, true));
+            let checked = matches!(
+                action,
+                SidebarAction::ShowSection(_, true) | SidebarAction::ToggleFollow(true)
+            );
             // A history folder is drawn as a folder; the other rows get their command's icon.
             let glyph = if folder { None } else { menu_glyph(&action) };
             let mark = div()
@@ -4767,7 +4799,12 @@ impl Workspace {
         Some(
             menu.items
                 .iter()
-                .map(|(_, a)| matches!(a, SidebarAction::ShowSection(_, true)))
+                .map(|(_, a)| {
+                    matches!(
+                        a,
+                        SidebarAction::ShowSection(_, true) | SidebarAction::ToggleFollow(true)
+                    )
+                })
                 .collect(),
         )
     }

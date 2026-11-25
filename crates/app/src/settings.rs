@@ -591,7 +591,8 @@ pub(crate) struct Settings {
     /// The collapsed sidebar opens over the content while the pointer rests on it (#122).
     pub(crate) sidebar_peek: bool,
     /// This PC's tree opens down to the current folder and scrolls to it (#241); off, the tree
-    /// only opens where the user opens it (#299).
+    /// only opens where the user opens it (#299). Off for new installs, as in File Explorer
+    /// (#416); a settings file that stores a value keeps it.
     pub(crate) sidebar_follow: bool,
     /// Sidebar sections collapsed to their heading. Before 0.8 only This PC could collapse
     /// (`this_pc_collapsed`, see [`Settings::migrate_this_pc_collapsed`]).
@@ -826,7 +827,7 @@ impl Default for Settings {
             dark_shade: DarkShade::default(),
             sidebar_collapsed: false,
             sidebar_peek: false,
-            sidebar_follow: true,
+            sidebar_follow: false,
             collapsed_sections: Vec::new(),
             hidden_sections: Vec::new(),
             font: String::new(),
@@ -1954,6 +1955,23 @@ mod tests {
         let unpinned =
             parse_settings(br#"{"recycle_pinned": false}"#, Path::new("settings.json")).unwrap();
         assert!(!unpinned.recycle_pinned);
+    }
+
+    /// #416: the tree doesn't follow the folder on a new install, and a file that stores the
+    /// switch keeps it, either way.
+    #[test]
+    fn sidebar_follow_is_off_unless_the_file_says_otherwise() {
+        assert!(!Settings::default().sidebar_follow);
+        let read = |json: &[u8]| parse_settings(json, Path::new("settings.json")).unwrap();
+        assert!(!read(b"{}").sidebar_follow, "no value stored");
+        assert!(read(br#"{"sidebar_follow": true}"#).sidebar_follow);
+        assert!(!read(br#"{"sidebar_follow": false}"#).sidebar_follow);
+        let on = Settings {
+            sidebar_follow: true,
+            ..Settings::default()
+        };
+        let bytes = serde_json::to_vec(&on).unwrap();
+        assert!(read(&bytes).sidebar_follow, "written, so stored from then on");
     }
 
     #[test]

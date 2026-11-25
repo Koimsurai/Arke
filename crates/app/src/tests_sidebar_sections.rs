@@ -419,17 +419,19 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
             t!("home.title").into_owned(),
             favorites.clone(),
             this_pc.clone(),
-            network
+            network,
+            "-".to_owned(),
+            t!("sidebar.follow_folder").into_owned(),
         ])
     );
-    assert_eq!(checks(&ws, cx), Some(vec![true, false, false, true]));
+    assert_eq!(checks(&ws, cx), Some(vec![true, false, false, true, false]));
     pick(&ws, cx, &this_pc);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Favorites]);
     assert!(drawn(cx, "this-pc-header"), "back");
 
     let at = bounds(cx, "tab-list-end").center();
     right_click(cx, at);
-    assert_eq!(checks(&ws, cx), Some(vec![true, false, true, true]));
+    assert_eq!(checks(&ws, cx), Some(vec![true, false, true, true, false]));
     pick(&ws, cx, &favorites);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(
@@ -461,7 +463,7 @@ fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
 
     let at = bounds(cx, "tab-list-end").center();
     right_click(cx, at);
-    assert_eq!(checks(&ws, cx), Some(vec![false, true, true, true]));
+    assert_eq!(checks(&ws, cx), Some(vec![false, true, true, true, false]));
     pick(&ws, cx, &home);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "open-home") && drawn(cx, "tile-slot-0"));

@@ -1669,6 +1669,7 @@ impl Explorer {
     /// Starts renaming the new folder once it appears. Checked during render because moving focus
     /// needs a Window.
     pub(super) fn poll_pending_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.poll_rename_after_compress(window, cx);
         let Some((name, fresh)) = self.rename_when_appears.clone() else {
             return;
         };
@@ -1678,6 +1679,28 @@ impl Explorer {
         {
             self.rename_when_appears = None;
             self.start_rename_as(name, fresh, window, cx);
+        }
+    }
+
+    /// A new archive from "Compress" is listed: it is already selected, and is renamed too, but
+    /// only while this list still has the keyboard and nothing else was selected meanwhile. Focus
+    /// is never taken from a text field, another pane, the sidebar or the tab strip.
+    fn poll_rename_after_compress(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.rename_after_compress.clone() else {
+            return;
+        };
+        if !self
+            .view()
+            .is_some_and(|v| v.iter().any(|e| e.name == name))
+        {
+            return;
+        }
+        self.rename_after_compress = None;
+        if self.selection.len() == 1
+            && self.selection.contains(&name)
+            && self.list_focus.is_focused(window)
+        {
+            self.start_rename(name, window, cx);
         }
     }
 

@@ -33,6 +33,8 @@ mod a11y_tree;
 mod archive_password;
 #[path = "tests_column_view.rs"]
 mod column_view;
+#[path = "tests_compress.rs"]
+mod compress;
 #[path = "tests_favorites.rs"]
 mod favorites;
 #[path = "tests_folder_views.rs"]

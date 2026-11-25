@@ -375,15 +375,17 @@ pub struct ProcessKey {
     pub created: Option<u64>,
 }
 
-/// Size at which [`Judged`] first drops the processes that have ended.
+/// Size at which [`Judged`] looks for processes that ended but were not removed with
+/// [`Judged::forget`] (a safety net: normally each goes the moment it ends).
 pub const JUDGED_BOUND: usize = 64;
 
 /// The processes the early path has judged (#285). Each is judged once, at the first window of it
 /// that shows up, and never again while it runs, however many windows it makes later: one that was
 /// left alone (Shift held, Arke's own, a `/separate` window) stays alone. `P` is what the caller
 /// keeps for each, normally an open handle, which also keeps the id from going to another process
-/// while it is noted: so on the hot path a process is found by id alone. Processes that ended are
-/// dropped only when the list grows past its bound.
+/// while it is noted: so on the hot path a process is found by id alone. The caller removes a
+/// process when it ends ([`Self::forget`]); one whose end it couldn't learn of is dropped when the
+/// list reaches its bound.
 #[derive(Debug)]
 pub struct Judged<P> {
     entries: Vec<(ProcessKey, P)>,
@@ -423,6 +425,13 @@ impl<P> Judged<P> {
         }
         self.entries.retain(|(noted, _)| noted.pid != key.pid);
         self.entries.push((key, process));
+    }
+
+    /// Removes and returns the first process `which` picks (one that ended); `None` when it is no
+    /// longer noted (dropped or replaced already).
+    pub fn forget(&mut self, which: impl Fn(&ProcessKey, &P) -> bool) -> Option<(ProcessKey, P)> {
+        let ix = self.entries.iter().position(|(k, p)| which(k, p))?;
+        Some(self.entries.remove(ix))
     }
 
     /// Number of processes noted.
@@ -1161,6 +1170,27 @@ mod tests {
             judged.entries.iter().filter(|(k, _)| k.pid == 7).count(),
             1
         );
+    }
+
+    #[test]
+    fn an_ended_process_is_forgotten_at_once() {
+        // `P` is the serial the caller's exit wait reports, as Arke's entries carry one.
+        let mut judged = Judged::default();
+        let never = |_: &ProcessKey, _: &u32| false;
+        judged.note(key(7, 100), 1, never);
+        judged.note(key(8, 100), 2, never);
+        assert_eq!(
+            judged.forget(|_, serial| *serial == 1),
+            Some((key(7, 100), 1))
+        );
+        assert!(!judged.contains(7), "gone at once, not when the list fills");
+        assert!(judged.contains(8));
+        assert_eq!(judged.forget(|_, serial| *serial == 1), None, "gone already");
+        // A later process that got the id is judged on its own; a late report for the old one
+        // doesn't remove it.
+        judged.note(key(7, 300), 3, never);
+        assert_eq!(judged.forget(|_, serial| *serial == 1), None);
+        assert_eq!(judged.key(7), Some(key(7, 300)));
     }
 
     #[test]

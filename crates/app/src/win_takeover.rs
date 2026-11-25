@@ -58,7 +58,8 @@ use windows::Wdk::System::Threading::{
     NtQueryInformationProcess, ProcessBasicInformation, ProcessCommandLineInformation,
 };
 use windows::Win32::Foundation::{
-    CloseHandle, FILETIME, HANDLE, HWND, LPARAM, NTSTATUS, UNICODE_STRING, WPARAM,
+    CloseHandle, FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, LPARAM, NTSTATUS, UNICODE_STRING,
+    WPARAM,
 };
 use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY};
 use windows::Win32::Storage::FileSystem::GetDriveTypeW;
@@ -71,10 +72,11 @@ use windows::Win32::System::Com::{DISPATCH_FLAGS, DISPPARAMS, EXCEPINFO, ITypeIn
 use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows::Win32::System::SystemServices::{SFGAO_FILESYSTEM, SFGAO_STREAM};
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThreadId, GetExitCodeProcess, GetProcessTimes, OpenProcess,
-    OpenProcessToken,
-    PROCESS_BASIC_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+    GetCurrentProcess, GetCurrentThreadId, GetExitCodeProcess, GetProcessTimes, INFINITE,
+    OpenProcess, OpenProcessToken, PROCESS_BASIC_INFORMATION, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    QueryFullProcessImageNameW, RegisterWaitForSingleObject, TerminateProcess, UnregisterWaitEx,
+    WT_EXECUTEONLYONCE,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
@@ -88,7 +90,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_CREATE, GetClassNameW, GetMessageW, GetShellWindow,
     GetWindowThreadProcessId, IsWindow, KillTimer, MSG, OBJID_WINDOW, PostThreadMessageW, SW_HIDE,
     SW_SHOWNA, SetTimer, ShowWindowAsync, TranslateMessage, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_NULL, WM_QUIT, WM_TIMER,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_NULL, WM_QUIT, WM_TIMER,
 };
 use windows::core::{GUID, Interface, PCWSTR, PWSTR, implement};
 
@@ -358,6 +360,8 @@ fn run(tx: &flume::Sender<OpenRequest>, thread_id: &AtomicU32, stopped: &AtomicB
                 watch.step();
                 poll_early();
             }
+        } else if msg.message == WM_PROCESS_EXITED && msg.hwnd.0.is_null() {
+            forget_exited(msg.wParam.0 as u32);
         } else {
             // SAFETY: msg came from GetMessageW.
             unsafe {
@@ -861,6 +865,8 @@ impl Watch {
 
 /// `GetExitCodeProcess` for a process still running.
 const STILL_ACTIVE: u32 = 259;
+/// Thread message to the takeover thread: a judged process ended (`wParam`: its entry's serial).
+const WM_PROCESS_EXITED: u32 = WM_APP + 0x285;
 /// Command lines longer than this (bytes) are left to the watcher.
 const COMMAND_LINE_MAX: u32 = 0x1_0000;
 /// `GetDriveTypeW` answers for drives that answer at once.
@@ -887,9 +893,13 @@ struct Early {
     /// When the hook was set (FILETIME ticks): File Explorer processes started before are never
     /// ended.
     hooked: u64,
-    /// Every process judged so far, each with an open handle (`None`: it couldn't be opened, so
-    /// it can't be ended either; dropped at the next prune).
-    judged: takeover::Judged<Option<Process>>,
+    /// Every running process judged so far, each with its handle and a wait that removes it when
+    /// it ends ([`forget_exited`]).
+    judged: takeover::Judged<Kept>,
+    /// The takeover thread, where the exit waits post to.
+    thread: u32,
+    /// Serial of the next entry in `judged`, so an exit report finds its own entry only.
+    next_serial: u32,
     /// What Arke could not open and gave back to File Explorer: that launcher is Arke's own and is
     /// left alone even when its parent can't be read, or ending it would only loop.
     given_back: takeover::GivenBack,
@@ -904,7 +914,9 @@ struct Pending {
     since: Instant,
 }
 
-/// Unhooks (and drops the state) when the takeover thread ends.
+/// Unhooks and drops the state when the takeover thread ends: every exit wait is unregistered
+/// (waiting for a running callback) before its handle closes. Reports still in the queue then find
+/// nothing.
 struct EarlyHook(HWINEVENTHOOK);
 
 impl Drop for EarlyHook {
@@ -923,6 +935,97 @@ impl Drop for Process {
         // SAFETY: the handle came from OpenProcess and is closed once.
         let _ = unsafe { CloseHandle(self.0) };
     }
+}
+
+/// What is kept for a judged process. Fields drop in order: the wait is unregistered before the
+/// handle it waits on closes.
+struct Kept {
+    /// Reported by `wait` when the process ends.
+    serial: u32,
+    /// `None` when it couldn't be registered (no `SYNCHRONIZE` access): the entry then goes when
+    /// [`takeover::Judged`] reaches its bound.
+    wait: Option<ExitWait>,
+    /// Keeps the id from going to another process while noted. `None`: it couldn't be opened, so
+    /// it can't be ended either; dropped when the list reaches its bound.
+    process: Option<Process>,
+}
+
+/// A thread pool wait on a process handle that posts [`WM_PROCESS_EXITED`] once it ends.
+struct ExitWait(HANDLE);
+
+impl Drop for ExitWait {
+    fn drop(&mut self) {
+        // SAFETY: the wait came from RegisterWaitForSingleObject and is unregistered once.
+        // INVALID_HANDLE_VALUE waits for a callback that is running to return (it only posts a
+        // message), so the handle can be closed after this. Never called from that callback.
+        let _ = unsafe { UnregisterWaitEx(self.0, Some(INVALID_HANDLE_VALUE)) };
+    }
+}
+
+/// Opens a process to keep while it is noted: with `SYNCHRONIZE` so its end can be waited for,
+/// else query-only.
+fn open_kept(pid: u32) -> Option<Process> {
+    // SAFETY: OpenProcess only returns handles, each closed when its `Process` drops.
+    unsafe {
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid)
+            .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
+    }
+    .ok()
+    .map(Process)
+}
+
+/// Registers a wait on `handle` that posts [`WM_PROCESS_EXITED`] with `serial` to `thread` once,
+/// when it is signaled (a process: when it ends).
+fn watch_exit(handle: &Process, thread: u32, serial: u32) -> Option<ExitWait> {
+    // The thread and the serial travel as the context value; nothing is allocated or shared.
+    let context = usize::try_from((u64::from(thread) << 32) | u64::from(serial)).ok()?;
+    let mut wait = HANDLE::default();
+    // SAFETY: `wait` is a valid out pointer; `handle` stays open until the wait is unregistered
+    // (`Kept` drops the wait first). The callback only reads the context value and posts.
+    unsafe {
+        RegisterWaitForSingleObject(
+            &raw mut wait,
+            handle.0,
+            Some(on_process_exited),
+            Some(std::ptr::without_provenance(context)),
+            INFINITE,
+            WT_EXECUTEONLYONCE,
+        )
+    }
+    .ok()?;
+    Some(ExitWait(wait))
+}
+
+/// Runs on a thread pool thread when a judged process ends: only tells the takeover thread, which
+/// owns the list ([`forget_exited`]).
+///
+/// # Safety
+///
+/// Called by Windows for a wait set by [`watch_exit`], with its context value.
+unsafe extern "system" fn on_process_exited(context: *mut std::ffi::c_void, _: bool) {
+    let value = context.addr() as u64;
+    let (thread, serial) = ((value >> 32) as u32, value as u32);
+    // SAFETY: posts a message to the takeover thread's queue; fails harmlessly once it is gone.
+    let _ = unsafe {
+        PostThreadMessageW(
+            thread,
+            WM_PROCESS_EXITED,
+            WPARAM(serial as usize),
+            LPARAM(0),
+        )
+    };
+}
+
+/// [`WM_PROCESS_EXITED`] on the takeover thread: the process with that serial ended, so its entry
+/// goes now (the wait is unregistered and the handle closed, releasing its id) rather than when
+/// the list fills.
+fn forget_exited(serial: u32) {
+    let gone = EARLY.with(|early| {
+        let mut early = early.try_borrow_mut().ok()?;
+        early.as_mut()?.judged.forget(|_, kept| kept.serial == serial)
+    });
+    // Dropped outside the borrow: unregistering waits for the callback to return.
+    drop(gone);
 }
 
 /// Starts the early path on the takeover thread, unless `ARKE_EARLY_TAKEOVER=0` (for comparing
@@ -952,6 +1055,9 @@ fn start_early(tx: &flume::Sender<OpenRequest>, test_root: Option<PathBuf>) -> O
             ours,
             hooked,
             judged: takeover::Judged::default(),
+            // SAFETY: plain Win32 call; this is the takeover thread.
+            thread: unsafe { GetCurrentThreadId() },
+            next_serial: 0,
             given_back: takeover::GivenBack::default(),
             pending: Vec::new(),
         });
@@ -1035,25 +1141,35 @@ impl Early {
         if self.judged.contains(pid) {
             return false;
         }
-        // SAFETY: a query-only handle, kept while the process is noted: that keeps its id from
-        // going to another process, so the id alone finds it later.
-        let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
-        else {
+        // Kept while the process is noted: that keeps its id from going to another process, so
+        // the id alone finds it later.
+        let Some(process) = open_kept(pid) else {
             // Can't be looked at, so can't be ended either.
             self.note(pid, None, None);
             return false;
         };
-        let process = Process(handle);
         let (taken, created) = self.judge(hwnd, pid, &process);
         self.note(pid, created, Some(process));
         taken
     }
 
-    /// Notes a judged process; when the list is full, those that ended are dropped first.
+    /// Notes a judged process, with a wait that removes it the moment it ends. When the list is
+    /// full (ends nobody heard of), those that ended are dropped first.
     fn note(&mut self, pid: u32, created: Option<u64>, process: Option<Process>) {
+        let serial = self.next_serial;
+        self.next_serial = self.next_serial.wrapping_add(1);
+        let wait = process
+            .as_ref()
+            .and_then(|p| watch_exit(p, self.thread, serial));
+        let kept = Kept {
+            serial,
+            wait,
+            process,
+        };
         let key = takeover::ProcessKey { pid, created };
-        self.judged
-            .note(key, process, |_, p| p.as_ref().is_none_or(exited));
+        self.judged.note(key, kept, |_, kept| {
+            kept.process.as_ref().is_none_or(exited)
+        });
     }
 
     /// Notes the processes whose first window came while the state was in use, as left alone.
@@ -1066,10 +1182,7 @@ impl Early {
         });
         for pid in missed {
             if !self.judged.contains(pid) {
-                // SAFETY: a query-only handle, kept while noted (see `examine`).
-                let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
-                    .ok()
-                    .map(Process);
+                let process = open_kept(pid);
                 self.note(pid, None, process);
             }
         }
@@ -1487,6 +1600,8 @@ mod tests {
             ours: None,
             hooked: 0,
             judged: takeover::Judged::default(),
+            thread: 0,
+            next_serial: 0,
             given_back: takeover::GivenBack::default(),
             pending: Vec::new(),
         };
@@ -1591,6 +1706,74 @@ mod tests {
         let hooked = ticks(unsafe { GetSystemTimePreciseAsFileTime() });
         assert!(!takeover::started_after(created, hooked));
         assert!(!exited(&process), "it runs");
+    }
+
+    /// A process is removed when its end is reported, by its own entry's serial: a report for an
+    /// entry that is gone already removes nothing.
+    #[test]
+    fn an_ended_process_goes_when_its_report_comes() {
+        let (mut early, _rx) = early();
+        let me = std::process::id();
+        early.note(me, None, open_kept(me));
+        let serial = early.next_serial.wrapping_sub(1);
+        let other = 0x7FFF_0001;
+        early.note(other, None, None);
+        EARLY.with(|state| *state.borrow_mut() = Some(early));
+        let noted = |pid: u32| {
+            EARLY.with(|state| {
+                state
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|e| e.judged.contains(pid))
+            })
+        };
+        forget_exited(serial.wrapping_add(100));
+        assert!(noted(me) && noted(other), "a stale report removes nothing");
+        forget_exited(serial);
+        assert!(!noted(me), "gone on its report, not when the list fills");
+        assert!(noted(other));
+        EARLY.with(|state| state.borrow_mut().take());
+    }
+
+    /// The exit wait posts its serial to the thread that registered it, once the handle is
+    /// signaled. An event stands in for a process: both are waitable handles.
+    #[test]
+    fn the_exit_wait_posts_its_serial() {
+        use windows::Win32::System::Threading::{CreateEventW, SetEvent};
+        use windows::Win32::UI::WindowsAndMessaging::{PM_NOREMOVE, PM_REMOVE, PeekMessageW};
+        let mut msg = MSG::default();
+        // SAFETY: valid out pointer; creates this thread's message queue.
+        let _ = unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_NOREMOVE) };
+        // SAFETY: an unnamed manual-reset event, closed when `event` drops.
+        let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) };
+        let event = Process(event.expect("an event"));
+        // SAFETY: plain Win32 call.
+        let thread = unsafe { GetCurrentThreadId() };
+        let wait = watch_exit(&event, thread, 7).expect("the wait is registered");
+        // SAFETY: `event` is a valid event handle.
+        assert!(unsafe { SetEvent(event.0) }.is_ok());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let serial = loop {
+            // SAFETY: valid out pointer; takes only the exit report.
+            let got = unsafe {
+                PeekMessageW(
+                    &raw mut msg,
+                    None,
+                    WM_PROCESS_EXITED,
+                    WM_PROCESS_EXITED,
+                    PM_REMOVE,
+                )
+            };
+            if got.as_bool() {
+                break msg.wParam.0;
+            }
+            assert!(Instant::now() < deadline, "no report");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(serial, 7);
+        // The wait goes before the handle it waited on.
+        drop(wait);
+        drop(event);
     }
 
     /// On a thread without the early path (or with it off) nothing is awaited.

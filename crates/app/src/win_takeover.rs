@@ -944,7 +944,7 @@ struct Kept {
     serial: u32,
     /// `None` when it couldn't be registered (no `SYNCHRONIZE` access): the entry then goes when
     /// [`takeover::Judged`] reaches its bound.
-    wait: Option<ExitWait>,
+    _wait: Option<ExitWait>,
     /// Keeps the id from going to another process while noted. `None`: it couldn't be opened, so
     /// it can't be ended either; dropped when the list reaches its bound.
     process: Option<Process>,
@@ -967,8 +967,12 @@ impl Drop for ExitWait {
 fn open_kept(pid: u32) -> Option<Process> {
     // SAFETY: OpenProcess only returns handles, each closed when its `Process` drops.
     unsafe {
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid)
-            .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        )
+        .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
     }
     .ok()
     .map(Process)
@@ -1022,7 +1026,10 @@ unsafe extern "system" fn on_process_exited(context: *mut std::ffi::c_void, _: b
 fn forget_exited(serial: u32) {
     let gone = EARLY.with(|early| {
         let mut early = early.try_borrow_mut().ok()?;
-        early.as_mut()?.judged.forget(|_, kept| kept.serial == serial)
+        early
+            .as_mut()?
+            .judged
+            .forget(|_, kept| kept.serial == serial)
     });
     // Dropped outside the borrow: unregistering waits for the callback to return.
     drop(gone);
@@ -1163,7 +1170,7 @@ impl Early {
             .and_then(|p| watch_exit(p, self.thread, serial));
         let kept = Kept {
             serial,
-            wait,
+            _wait: wait,
             process,
         };
         let key = takeover::ProcessKey { pid, created };
@@ -1177,8 +1184,7 @@ impl Early {
         let missed = MISSED.with(|missed| {
             missed
                 .try_borrow_mut()
-                .map(|mut missed| std::mem::take(&mut *missed))
-                .unwrap_or_default()
+                .map_or_else(|_| Vec::new(), |mut missed| std::mem::take(&mut *missed))
         });
         for pid in missed {
             if !self.judged.contains(pid) {

@@ -933,8 +933,7 @@ fn follow_win_e_hook(
 /// without Arke showing it.
 fn open_taken_over(cx: &mut App, services: &Services, request: &win_takeover::OpenRequest) -> bool {
     let explorer_thread = Some(request.explorer_thread);
-    if !request.early
-        && merge_into_early_tab(cx, &request.target, &request.select, explorer_thread)
+    if !request.early && merge_into_early_tab(cx, &request.target, &request.select, explorer_thread)
     {
         return true;
     }

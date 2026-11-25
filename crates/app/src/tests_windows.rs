@@ -377,7 +377,10 @@ fn two_quick_launches_each_get_their_own_merge(cx: &mut TestAppContext) {
     until(cx, "the second tab's selection", |cx| {
         cx.update(|cx| selected_names(two_view.read(cx)) == ["file_000000.txt"])
     });
-    assert!(selection(cx, &one_view).is_empty(), "the first tab untouched");
+    assert!(
+        selection(cx, &one_view).is_empty(),
+        "the first tab untouched"
+    );
 
     // One more on it goes to the first launch's tab, whose mark is left; then none are.
     assert!(open(cx, taken_over(r"C:\b", &["file_000000.txt"], false)));
@@ -388,7 +391,11 @@ fn two_quick_launches_each_get_their_own_merge(cx: &mut TestAppContext) {
     });
     assert!(open(cx, taken_over(r"C:\b", &[], false)));
     cx.run_until_parked();
-    assert_eq!(workspaces(cx).len(), 4, "every mark used: a window as usual");
+    assert_eq!(
+        workspaces(cx).len(),
+        4,
+        "every mark used: a window as usual"
+    );
 }
 
 /// The forum report: with two windows open, the second one's tabs no longer replace the

@@ -2137,7 +2137,9 @@ fn a_late_recycle_bin_window_shows_in_the_page_opened_early(cx: &mut TestAppCont
     let first = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &first, "load", loaded(r"C:\home"));
     let merge = |cx: &mut VisualTestContext, target: &Target| {
-        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.merge_early(target, Vec::new(), window, cx)))
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.merge_early(target, Vec::new(), window, cx))
+        })
     };
     assert!(!merge(cx, &Target::RecycleBin), "nothing marked yet");
     cx.update(|window, cx| {
@@ -2161,7 +2163,10 @@ fn a_late_recycle_bin_window_shows_in_the_page_opened_early(cx: &mut TestAppCont
     cx.update(|_, cx| ws.update(cx, |ws, cx| ws.mark_early(&Target::RecycleBin, cx)));
     cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_recycle_for_test(window, cx)));
     cx.run_until_parked();
-    assert!(!merge(cx, &Target::RecycleBin), "the mark went with the page");
+    assert!(
+        !merge(cx, &Target::RecycleBin),
+        "the mark went with the page"
+    );
 }
 
 /// #285: two tabs of one window marked for the same folder (two quick launches): a late File

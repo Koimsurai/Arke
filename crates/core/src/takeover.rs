@@ -317,9 +317,9 @@ fn explorer_location(object: &str) -> Option<String> {
     if (drive && !body.starts_with('\\'))
         || body.contains(r"\\")
         || body.contains(':')
-        || body.split('\\').any(|part| {
-            part.ends_with(['.', ' ']) || (part.ends_with('}') && part.contains(".{"))
-        })
+        || body
+            .split('\\')
+            .any(|part| part.ends_with(['.', ' ']) || (part.ends_with('}') && part.contains(".{")))
     {
         return None;
     }
@@ -1071,15 +1071,11 @@ mod tests {
             parse_explorer_args(r"\\wsl$\Ubuntu\home"),
             launch(r"\\wsl$\Ubuntu\home", None)
         );
-        assert_eq!(
-            parse_explorer_args(r"C:\a {b}\c"),
-            None,
-            "unquoted space"
-        );
+        assert_eq!(parse_explorer_args(r"C:\a {b}\c"), None, "unquoted space");
         assert_eq!(
             parse_explorer_args(r#""C:\a {b}""#),
             launch(r"C:\a {b}", None),
-            "braces without `.{` are a plain name"
+            "braces without a dot before them are a plain name"
         );
         assert_eq!(
             parse_explorer_args(r#""C:\v1.{x}""#),
@@ -1166,10 +1162,7 @@ mod tests {
         let (p, _running) = spawn();
         judged.note(key(7, 400), p, ended);
         assert_eq!(judged.key(7), Some(key(7, 400)));
-        assert_eq!(
-            judged.entries.iter().filter(|(k, _)| k.pid == 7).count(),
-            1
-        );
+        assert_eq!(judged.entries.iter().filter(|(k, _)| k.pid == 7).count(), 1);
     }
 
     #[test]
@@ -1185,7 +1178,11 @@ mod tests {
         );
         assert!(!judged.contains(7), "gone at once, not when the list fills");
         assert!(judged.contains(8));
-        assert_eq!(judged.forget(|_, serial| *serial == 1), None, "gone already");
+        assert_eq!(
+            judged.forget(|_, serial| *serial == 1),
+            None,
+            "gone already"
+        );
         // A later process that got the id is judged on its own; a late report for the old one
         // doesn't remove it.
         judged.note(key(7, 300), 3, never);

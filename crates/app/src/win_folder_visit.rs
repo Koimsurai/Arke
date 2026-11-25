@@ -392,7 +392,14 @@ mod com {
     }
 
     /// The window's folder view.
-    #[implement(IShellView, IFolderView, IPersistIDList, IDispatch, IServiceProvider, Agile = false)]
+    #[implement(
+        IShellView,
+        IFolderView,
+        IPersistIDList,
+        IDispatch,
+        IServiceProvider,
+        Agile = false
+    )]
     pub(super) struct View {
         pub(super) state: Rc<State>,
     }

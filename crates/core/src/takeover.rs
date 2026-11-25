@@ -2,7 +2,10 @@
 //! ones it must leave alone.
 //!
 //! The shell side (watching new Explorer windows, reading where they are, closing them) lives in the
-//! app's `win_takeover.rs`; this module only decides from strings, so it can be tested anywhere.
+//! app's `win_takeover.rs`; this module only decides from strings, so it can be tested anywhere:
+//! from the folder a window shows ([`classify`]) and, before any window exists, from the command
+//! line of File Explorer's launcher ([`parse_explorer_args`], [`launch_target`]), with the same
+//! answers.
 //!
 //! Only plain file-system folders Arke can list are taken over (local, mapped, UNC shares,
 //! `\\wsl$`), plus Home / This PC / Quick access (Arke's Home page) and the Recycle Bin. Everything
@@ -170,6 +173,222 @@ pub const fn watcher_takes(target: &Target) -> bool {
     !matches!(target, Target::Home)
 }
 
+/// What `explorer.exe <arguments>` asks File Explorer to show (#285: read from the launcher process
+/// before it hands the request to the shell).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplorerLaunch {
+    /// The folder the window opens on: an absolute path or a `::{CLSID}` parsing name.
+    pub location: String,
+    /// The item `/select,` picks in that folder (a name directly in it).
+    pub select: Option<String>,
+}
+
+/// The arguments of a command line: everything after the program name, which may be quoted (the
+/// way `CommandLineToArgvW` reads the first argument).
+pub fn command_line_arguments(command_line: &str) -> &str {
+    let line = command_line.trim_start();
+    let rest = if let Some(quoted) = line.strip_prefix('"') {
+        quoted.find('"').map_or("", |end| &quoted[end + 1..])
+    } else {
+        line.find(char::is_whitespace)
+            .map_or("", |end| &line[end..])
+    };
+    rest.trim()
+}
+
+/// Reads `explorer.exe`'s arguments as File Explorer does: switches and objects separated by commas
+/// or spaces, quotes keeping both inside a path. Understood: one object (an absolute path,
+/// `::{CLSID}`, `shell:::{CLSID}`, `shell:RecycleBinFolder`, `shell:MyComputerFolder`), given
+/// plainly, after `/root,` or after `/select,` (which opens the parent and selects the item);
+/// `/n`, `/e` and `/separate` change nothing about where. Anything else (no object, relative
+/// paths, other `shell:` names, `/idlist`, `/factory`, `-Embedding`, more than one object) is
+/// `None`: left to the window watcher.
+pub fn parse_explorer_args(args: &str) -> Option<ExplorerLaunch> {
+    let mut object: Option<String> = None;
+    let mut select = false;
+    let mut tokens = explorer_tokens(args)?.into_iter();
+    while let Some(token) = tokens.next() {
+        let lower = token.to_ascii_lowercase();
+        match lower.as_str() {
+            "/n" | "/e" | "/separate" => {}
+            "/select" | "/root" => {
+                let value = tokens.next()?;
+                if object.is_some() {
+                    return None;
+                }
+                select = lower == "/select";
+                object = Some(value);
+            }
+            _ if token.starts_with(['/', '-']) => return None,
+            _ => {
+                if object.is_some() {
+                    return None;
+                }
+                object = Some(token);
+            }
+        }
+    }
+    let location = explorer_location(&object?)?;
+    if !select {
+        return Some(ExplorerLaunch {
+            location,
+            select: None,
+        });
+    }
+    if location.starts_with("::") {
+        return None;
+    }
+    // Selecting a drive shows This PC, which the watcher leaves alone anyway.
+    let (parent, name) = location.rsplit_once('\\')?;
+    if name.is_empty() {
+        return None;
+    }
+    let parent = if parent.len() == 2 && parent.ends_with(':') {
+        format!("{parent}\\")
+    } else {
+        parent.to_owned()
+    };
+    Some(ExplorerLaunch {
+        location: parent,
+        select: Some(name.to_owned()),
+    })
+}
+
+/// Splits at commas and whitespace outside quotes; quotes are dropped, empty tokens skipped.
+/// `None` for an unclosed quote.
+fn explorer_tokens(args: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for c in args.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            ',' if !quoted => tokens.push(std::mem::take(&mut current)),
+            c if c.is_whitespace() && !quoted => tokens.push(std::mem::take(&mut current)),
+            c => current.push(c),
+        }
+    }
+    if quoted {
+        return None;
+    }
+    tokens.push(current);
+    tokens.retain(|t| !t.is_empty());
+    Some(tokens)
+}
+
+/// The parsing name Explorer's window will show for one object, when that is certain from the text
+/// alone: absolute paths (trailing separators dropped, `.`/`..` and `/` refused) and the shell
+/// names Arke knows.
+fn explorer_location(object: &str) -> Option<String> {
+    let lower = object.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("shell:") {
+        return match rest {
+            "recyclebinfolder" => Some(RECYCLE_BIN.to_owned()),
+            "mycomputerfolder" => Some(THIS_PC.to_owned()),
+            _ if rest.starts_with("::{") => Some(object["shell:".len()..].to_owned()),
+            _ => None,
+        };
+    }
+    if object.starts_with("::") {
+        return Some(object.to_owned());
+    }
+    let bytes = object.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if !(drive || object.starts_with(r"\\")) || object.contains('/') {
+        return None;
+    }
+    if object.split('\\').any(|part| part == "." || part == "..") {
+        return None;
+    }
+    let trimmed = object.trim_end_matches('\\');
+    if drive && trimmed.len() == 2 {
+        return Some(format!("{trimmed}\\"));
+    }
+    if trimmed.len() < 3 {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+/// What a path is, as far as the caller looked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnDisk {
+    /// A folder.
+    Folder,
+    /// A file (Explorer opens it in its program, or shows a .zip as a folder).
+    File,
+    /// Missing, or not looked at (network paths, which could take long to answer).
+    Unknown,
+}
+
+/// The target Arke would take from the window `launch` is about to open: the same answer
+/// [`classify`] gives for that window. A folder must be one on disk (a file such as a .zip shown as
+/// a folder is a stream, left alone); a `/select,` item must exist (Explorer opens its default
+/// folder otherwise). `on_disk` is asked only for paths [`classify`] could take.
+pub fn launch_target(launch: &ExplorerLaunch, on_disk: impl Fn(&Path) -> OnDisk) -> Option<Target> {
+    if launch.location.starts_with("::") {
+        return if launch.select.is_some() {
+            None
+        } else {
+            classify(&launch.location, ShellAttrs::default())
+        };
+    }
+    let fs = ShellAttrs {
+        filesystem: true,
+        stream: false,
+    };
+    let target = classify(&launch.location, fs)?;
+    if on_disk(Path::new(&launch.location)) != OnDisk::Folder {
+        return None;
+    }
+    if let Some(name) = &launch.select
+        && on_disk(Path::new(&launch.location).join(name).as_path()) == OnDisk::Unknown
+    {
+        return None;
+    }
+    Some(target)
+}
+
+/// How long a folder the early path opened is waited for in an Explorer window (#285).
+pub const CLAIM_TTL: Duration = Duration::from_secs(3);
+
+/// Targets the early path opened in Arke after ending File Explorer's launcher. When the launcher
+/// had already handed its request to the shell, Explorer's window still appears; the watcher then
+/// closes it instead of opening the folder a second time.
+#[derive(Debug, Default)]
+pub struct Claims {
+    entries: Vec<(Target, Instant)>,
+}
+
+impl Claims {
+    /// Notes that Arke opened `target` at `now`.
+    pub fn add(&mut self, target: Target, now: Instant) {
+        self.entries.retain(|(_, until)| *until > now);
+        self.entries.push((target, now + CLAIM_TTL));
+    }
+
+    /// Whether an Explorer window on `target` is one Arke already opened; uses up the claim.
+    pub fn take(&mut self, target: &Target, now: Instant) -> bool {
+        self.entries.retain(|(_, until)| *until > now);
+        let Some(ix) = self
+            .entries
+            .iter()
+            .position(|(t, _)| same_target(t, target))
+        else {
+            return false;
+        };
+        self.entries.remove(ix);
+        true
+    }
+}
+
+fn same_target(a: &Target, b: &Target) -> bool {
+    match (a, b) {
+        (Target::Folder(a), Target::Folder(b)) => same_path(a, b),
+        (a, b) => a == b,
+    }
+}
+
 /// Test-only restriction (`ARKE_TAKEOVER_TEST_ROOT`): with a root set, only folders inside it are
 /// taken over, so live checks never touch the tester's own Explorer windows.
 pub fn allowed_by_test_root(target: &Target, root: Option<&Path>) -> bool {
@@ -251,6 +470,14 @@ impl Bypass {
         };
         self.entries.remove(ix);
         true
+    }
+
+    /// Whether there is a live mark for `location`, without using it up (the early path looks; the
+    /// watcher, which sees the window Arke asked for, takes it).
+    pub fn holds(&self, location: &Path, now: Instant) -> bool {
+        self.entries
+            .iter()
+            .any(|(folder, until)| *until > now && same_path(folder, location))
     }
 
     /// Number of live marks.
@@ -541,6 +768,207 @@ mod tests {
             Path::new(r"C:\Work"),
             Path::new(r"C:\Work\Docs")
         ));
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "compared with what the parser gives, an Option"
+    )]
+    fn launch(location: &str, select: Option<&str>) -> Option<ExplorerLaunch> {
+        Some(ExplorerLaunch {
+            location: location.to_owned(),
+            select: select.map(str::to_owned),
+        })
+    }
+
+    #[test]
+    fn command_line_arguments_follow_the_program_name() {
+        assert_eq!(
+            command_line_arguments(r#""C:\Windows\explorer.exe" /select,"C:\a b\x.txt""#),
+            r#"/select,"C:\a b\x.txt""#
+        );
+        assert_eq!(command_line_arguments(r"explorer.exe  C:\dir "), r"C:\dir");
+        assert_eq!(command_line_arguments(r"C:\Windows\explorer.exe"), "");
+        assert_eq!(command_line_arguments(r#""C:\Windows\explorer.exe""#), "");
+        assert_eq!(command_line_arguments(""), "");
+    }
+
+    #[test]
+    fn parses_what_explorer_is_asked_to_show() {
+        assert_eq!(parse_explorer_args(r"C:\dir"), launch(r"C:\dir", None));
+        assert_eq!(parse_explorer_args(r"C:\dir\"), launch(r"C:\dir", None));
+        assert_eq!(parse_explorer_args("C:"), launch(r"C:\", None));
+        assert_eq!(parse_explorer_args(r"C:\"), launch(r"C:\", None));
+        assert_eq!(
+            parse_explorer_args(r#""D:\a b\報告""#),
+            launch(r"D:\a b\報告", None)
+        );
+        assert_eq!(
+            parse_explorer_args(r#""C:\a,b""#),
+            launch(r"C:\a,b", None),
+            "quotes keep commas"
+        );
+        assert_eq!(
+            parse_explorer_args(r"\\nas\share\docs"),
+            launch(r"\\nas\share\docs", None)
+        );
+        // Switches that don't change where.
+        assert_eq!(parse_explorer_args(r"/e,C:\dir"), launch(r"C:\dir", None));
+        assert_eq!(
+            parse_explorer_args(r"/n, /e, C:\dir"),
+            launch(r"C:\dir", None)
+        );
+        assert_eq!(
+            parse_explorer_args(r#"/separate,"C:\a b""#),
+            launch(r"C:\a b", None)
+        );
+        assert_eq!(
+            parse_explorer_args(r"/root,C:\dir"),
+            launch(r"C:\dir", None)
+        );
+        assert_eq!(
+            parse_explorer_args(r"/E,/ROOT,C:\dir"),
+            launch(r"C:\dir", None)
+        );
+    }
+
+    #[test]
+    fn parses_select_as_the_parent_folder_and_a_name() {
+        assert_eq!(
+            parse_explorer_args(r"/select,C:\dir\x.txt"),
+            launch(r"C:\dir", Some("x.txt"))
+        );
+        assert_eq!(
+            parse_explorer_args(r#"/select,"C:\a b\x y.txt""#),
+            launch(r"C:\a b", Some("x y.txt"))
+        );
+        assert_eq!(
+            parse_explorer_args(r#"/select, "C:\a b\x.txt""#),
+            launch(r"C:\a b", Some("x.txt")),
+            "a space after the comma"
+        );
+        assert_eq!(
+            parse_explorer_args(r"/SELECT,C:\dir\sub\"),
+            launch(r"C:\dir", Some("sub")),
+            "selecting a folder opens its parent"
+        );
+        assert_eq!(
+            parse_explorer_args(r"/select,C:\x.txt"),
+            launch(r"C:\", Some("x.txt"))
+        );
+        assert_eq!(
+            parse_explorer_args(r"/e,/select,\\nas\share\a.txt"),
+            launch(r"\\nas\share", Some("a.txt"))
+        );
+        // A drive (This PC) or a namespace item: not understood.
+        assert_eq!(parse_explorer_args(r"/select,C:\"), None);
+        assert_eq!(
+            parse_explorer_args("/select,::{645FF040-5081-101B-9F08-00AA002F954E}"),
+            None
+        );
+        assert_eq!(parse_explorer_args("/select"), None);
+    }
+
+    #[test]
+    fn parses_shell_names_arke_knows() {
+        for bin in [
+            "shell:RecycleBinFolder",
+            r#""shell:recyclebinfolder""#,
+            "::{645FF040-5081-101B-9F08-00AA002F954E}",
+            "shell:::{645FF040-5081-101B-9F08-00AA002F954E}",
+        ] {
+            assert_eq!(parse_explorer_args(bin), launch(RECYCLE_BIN, None), "{bin}");
+        }
+        assert_eq!(
+            parse_explorer_args("shell:MyComputerFolder"),
+            launch(THIS_PC, None)
+        );
+        assert_eq!(parse_explorer_args(HOME), launch(HOME, None));
+    }
+
+    #[test]
+    fn leaves_arguments_it_does_not_understand() {
+        for args in [
+            "",
+            "/n",
+            "/e,",
+            "/factory,{75dff2b7-6936-4c06-a8bb-676a7b00b24b} -Embedding",
+            "/idlist,:1234:5678",
+            "/root,/idlist,:1234:5678",
+            "docs",
+            r".\docs",
+            r"C:\Program Files",
+            r"C:\a,b",
+            r#""C:\unclosed"#,
+            r"C:\a\..\b",
+            "C:/dir",
+            "shell:Downloads",
+            "file:///C:/dir",
+            r"C:\a C:\b",
+            r"/root,C:\a,C:\b",
+            r"/select,C:\a\x,/select,C:\b\y",
+        ] {
+            assert_eq!(parse_explorer_args(args), None, "{args}");
+        }
+    }
+
+    #[test]
+    fn launch_target_gives_the_watchers_answer() {
+        let disk = |p: &Path| match p.to_str().unwrap_or_default() {
+            r"C:\dir" | r"C:\dir\sub" | r"C:\" | r"C:\t.zip\inner" => OnDisk::Folder,
+            r"C:\dir\x.txt" | r"C:\t.zip" | r"C:\x.txt" => OnDisk::File,
+            _ => OnDisk::Unknown,
+        };
+        let target = |args: &str| launch_target(&parse_explorer_args(args)?, disk);
+        assert_eq!(target(r"C:\dir"), Some(folder(r"C:\dir")));
+        assert_eq!(target(r"/select,C:\dir\x.txt"), Some(folder(r"C:\dir")));
+        assert_eq!(target(r"/select,C:\dir\sub"), Some(folder(r"C:\dir")));
+        assert_eq!(target(r"/select,C:\x.txt"), Some(folder(r"C:\")));
+        assert_eq!(target("shell:RecycleBinFolder"), Some(Target::RecycleBin));
+        // Home and This PC: what File Explorer started on purpose shows; the watcher leaves it.
+        for home in [HOME, THIS_PC, "shell:MyComputerFolder"] {
+            let got = target(home);
+            assert_eq!(got, Some(Target::Home), "{home}");
+            assert!(!got.as_ref().is_some_and(watcher_takes), "{home}");
+        }
+        // A file opens in its program; a .zip shows as a folder (a stream); missing paths and
+        // missing selections make Explorer open its default folder.
+        assert_eq!(target(r"C:\dir\x.txt"), None);
+        assert_eq!(target(r"C:\t.zip"), None);
+        assert_eq!(target(r"C:\t.zip\inner"), None);
+        assert_eq!(target(r"C:\missing"), None);
+        assert_eq!(target(r"/select,C:\dir\gone.txt"), None);
+        assert_eq!(target(r"\\nas\share"), None, "not looked at");
+        assert_eq!(target(r"\\nas"), None, "a bare server");
+        // Control Panel stays in Explorer.
+        assert_eq!(
+            target("shell:::{26EE0668-A00A-44D7-9371-BEB064C98683}"),
+            None
+        );
+    }
+
+    #[test]
+    fn claims_are_used_once_and_expire() {
+        let t0 = Instant::now();
+        let mut claims = Claims::default();
+        claims.add(folder(r"C:\Work"), t0);
+        claims.add(Target::RecycleBin, t0);
+        assert!(!claims.take(&folder(r"C:\Other"), t0));
+        assert!(claims.take(&folder(r"c:\work\"), t0));
+        assert!(!claims.take(&folder(r"C:\Work"), t0), "used up");
+        assert!(!claims.take(&Target::RecycleBin, t0 + CLAIM_TTL), "expired");
+    }
+
+    #[test]
+    fn bypass_holds_without_using_up() {
+        let t0 = Instant::now();
+        let mut bypass = Bypass::default();
+        bypass.add(Path::new(r"C:\t\a.txt"), true, t0);
+        assert!(bypass.holds(Path::new(r"C:\T"), t0));
+        assert!(bypass.holds(Path::new(r"C:\t"), t0), "still there");
+        assert!(!bypass.holds(Path::new(r"C:\t\a.txt"), t0));
+        assert!(!bypass.holds(Path::new(r"C:\t"), t0 + BYPASS_TTL));
+        assert!(bypass.take(Path::new(r"C:\t"), t0));
     }
 
     #[test]

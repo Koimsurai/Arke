@@ -286,7 +286,7 @@ fn run_in_shell(file: &[u16], parameters: &[u16], dir: &[u16]) -> windows_core::
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows_core::{BSTR, Interface};
     // SAFETY: COM calls on this thread (COM initialized by the caller) on interfaces it got here;
-    // each result is checked with `?` before it is used. The VARIANTs, BSTRs and `hwnd` outlive the
+    // each result is checked with `?` before it is used. The variants, BSTR strings and `hwnd` outlive the
     // calls that read them, and the interfaces are released when they go out of scope.
     unsafe {
         let shell_windows: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_ALL)?;

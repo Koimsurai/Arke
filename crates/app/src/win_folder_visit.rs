@@ -17,6 +17,9 @@
 //! - an `IWebBrowser2` answering for the window (its `HWND`, `LocationURL`, `LocationName`, late
 //!   bound calls through the `SHDocVw` type library), reaching an `IShellBrowser` and its view
 //!   (`IShellView`, `IFolderView::GetFolder`, `IPersistIDList`) through `IServiceProvider`;
+//! - the view as the window's `Document`, giving itself for `SID_SFolderView`: that is how
+//!   `SHOpenFolderAndSelectItems` reaches a window it found in the list to select items, and it
+//!   fails instead of opening File Explorer when the document is missing;
 //! - `DWebBrowserEvents` and `DWebBrowserEvents2` connection points: every listener is told the
 //!   navigation completed (`NavigateComplete`, `NavigateComplete2`, `DownloadComplete`,
 //!   `DocumentComplete`) as soon as it subscribes, once.
@@ -389,7 +392,7 @@ mod com {
     }
 
     /// The window's folder view.
-    #[implement(IShellView, IFolderView, IPersistIDList, Agile = false)]
+    #[implement(IShellView, IFolderView, IPersistIDList, IDispatch, IServiceProvider, Agile = false)]
     pub(super) struct View {
         pub(super) state: Rc<State>,
     }
@@ -502,7 +505,7 @@ mod com {
             self.Application()
         }
         fn Document(&self) -> Res<IDispatch> {
-            Err(E_NOTIMPL.into())
+            self.view.cast()
         }
         fn TopLevelContainer(&self) -> Res<VARIANT_BOOL> {
             Ok(VARIANT_TRUE)
@@ -836,6 +839,58 @@ mod com {
         }
         fn EnumConnections(&self) -> Res<IEnumConnections> {
             Err(E_NOTIMPL.into())
+        }
+    }
+
+    /// The view as a document: nothing to automate, only `IServiceProvider` behind it.
+    impl IDispatch_Impl for View_Impl {
+        fn GetTypeInfoCount(&self) -> Res<u32> {
+            Ok(0)
+        }
+        fn GetTypeInfo(&self, _: u32, _: u32) -> Res<ITypeInfo> {
+            Err(DISP_E_BADINDEX.into())
+        }
+        fn GetIDsOfNames(
+            &self,
+            _: *const GUID,
+            _: *const PCWSTR,
+            _: u32,
+            _: u32,
+            _: *mut i32,
+        ) -> Res<()> {
+            Err(DISP_E_UNKNOWNNAME.into())
+        }
+        fn Invoke(
+            &self,
+            _: i32,
+            _: *const GUID,
+            _: u32,
+            _: DISPATCH_FLAGS,
+            _: *const DISPPARAMS,
+            _: *mut VARIANT,
+            _: *mut EXCEPINFO,
+            _: *mut u32,
+        ) -> Res<()> {
+            Err(DISP_E_MEMBERNOTFOUND.into())
+        }
+    }
+
+    impl IServiceProvider_Impl for View_Impl {
+        fn QueryService(
+            &self,
+            _: *const GUID,
+            riid: *const GUID,
+            ppv: *mut *mut c_void,
+        ) -> Res<()> {
+            if riid.is_null() || ppv.is_null() {
+                return Err(E_POINTER.into());
+            }
+            // SAFETY: ppv is a valid out pointer supplied by the caller.
+            unsafe { *ppv = std::ptr::null_mut() };
+            // Every service (SID_SFolderView, ...) is this view.
+            let unknown: IUnknown = self.to_interface();
+            // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
+            unsafe { unknown.query(riid, ppv) }.ok()
         }
     }
 
@@ -1469,6 +1524,62 @@ mod tests {
             }),
         );
         assert!(!VISITS.lock().contains_key(&(u64::MAX - 1)));
+    }
+
+    /// A "Show in folder" caller that found the window goes through its document: the view for
+    /// `SID_SFolderView`, whose `SelectItem` selects in the pane.
+    #[test]
+    fn show_in_folder_reaches_the_view_through_the_document() {
+        use windows::Win32::UI::Shell::ILFindLastID;
+        const SID_SFOLDERVIEW: GUID = GUID::from_u128(0xcde7_25b0_ccc9_4519_917e_325d_72fa_b4ce);
+        // SAFETY: this test thread's apartment.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let dir = std::env::temp_dir().join(format!("arke-visit-doc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let parse = |path: &Path| {
+            let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut raw = std::ptr::null_mut();
+            // SAFETY: NUL-terminated name; raw receives an allocated list.
+            unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut raw, 0, None) }
+                .unwrap();
+            Pidl(raw)
+        };
+        let picked: Rc<RefCell<Vec<Arc<str>>>> = Rc::default();
+        let into = Rc::clone(&picked);
+        let state = Rc::new(State {
+            hwnd: HWND::default(),
+            messages: HWND::default(),
+            folder: parse(&dir),
+            url: String::new(),
+            name: String::new(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(|| {}),
+            select: Box::new(move |names| *into.borrow_mut() = names),
+            running: Arc::default(),
+        });
+        let view: IShellView = com::View {
+            state: Rc::clone(&state),
+        }
+        .into();
+        let browser: IWebBrowser2 = com::Browser { state, view }.into();
+        let file = parse(&dir.join("a.txt"));
+        // SAFETY: the calls a "Show in folder" caller makes; `file` outlives them.
+        unsafe {
+            let document = browser.Document().unwrap();
+            let provider: IServiceProvider = document.cast().unwrap();
+            let view: IShellView = provider.QueryService(&SID_SFOLDERVIEW).unwrap();
+            view.SelectItem(
+                ILFindLastID(file.0.cast_const()),
+                (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0) as u32,
+            )
+            .unwrap();
+        }
+        assert_eq!(*picked.borrow(), [Arc::<str>::from("a.txt")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Ending a visit before its thread got going still ends it: the thread sees the request.

@@ -1583,7 +1583,10 @@ impl Explorer {
             entries.push(item(
                 t!(
                     "menu.compress",
-                    name = menu_name(&format!("{}.zip", zip_stem_for(path, *is_dir)))
+                    name = menu_name(&format!(
+                        "{}.zip",
+                        zip_stem_for_targets(self.current_path(), targets)
+                    ))
                 ),
                 None,
                 C::Compress,
@@ -2796,12 +2799,11 @@ impl Explorer {
             self.notice = Some(t!("extract.busy").into_owned());
             return;
         }
-        let (Some((first, first_is_dir)), Some(model)) = (targets.first(), self.model.as_ref())
+        let (Some((first, _)), Some(model)) = (targets.first(), self.model.as_ref())
         else {
             return;
         };
-        let stem = zip_stem_for_selection(&model.path, targets)
-            .unwrap_or_else(|| zip_stem_for(first, *first_is_dir));
+        let stem = zip_stem_for_targets(Some(&model.path), targets);
         let existing: std::collections::HashSet<String> = model
             .entries
             .iter()
@@ -3996,6 +3998,13 @@ fn zip_stem_for_selection(dir: &std::path::Path, targets: &[(PathBuf, bool)]) ->
     }
     let name = dir.file_name()?.to_string_lossy();
     (!name.trim().is_empty()).then(|| name.into_owned())
+}
+
+/// The archive name (without `.zip`) for `targets` compressed in `dir`: what the menu label says
+/// and what [`Explorer::start_compress`] uses. `targets` is not empty.
+fn zip_stem_for_targets(dir: Option<&std::path::Path>, targets: &[(PathBuf, bool)]) -> String {
+    dir.and_then(|dir| zip_stem_for_selection(dir, targets))
+        .unwrap_or_else(|| zip_stem_for(&targets[0].0, targets[0].1))
 }
 
 fn pin_label(pinned: bool) -> std::borrow::Cow<'static, str> {

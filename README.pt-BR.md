@@ -82,7 +82,8 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
 **Navegar**
 - Exibições de detalhes, ícones (qualquer tamanho até 256 px, Ctrl+roda do mouse) e colunas. Em
   Detalhes, as pastas podem ser expandidas no próprio lugar, e você pode ordenar por várias colunas,
-  reordenar colunas e mostrar os destinos de atalhos.
+  reordenar colunas e mostrar os destinos de atalhos. Os itens podem ser agrupados, e um clique no
+  título de um grupo o recolhe.
 - Cada pasta lembra a sua exibição e a sua ordenação.
 - Guias que você pode fixar ou salvar como espaços de trabalho. Divida uma guia em dois painéis com
   uma única visualização compartilhada, navegação sincronizada e comparação de pastas. Clique com o
@@ -111,8 +112,10 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
 - A barra lateral pode ser alargada arrastando a borda e se recolhe em uma coluna de ícones
   (Ctrl+B), que pode ser configurada para abrir sobre o conteúdo quando você pausa o ponteiro
   sobre ela (desativado por padrão). Favoritos, Este Computador e Rede se recolhem separadamente
-  com um clique no título, e a árvore de pastas acompanha a pasta em que você
-  está. As colunas da exibição de colunas podem ser redimensionadas.
+  com um clique no título, Início, Favoritos e Este Computador podem ser ocultados, e a árvore de
+  pastas acompanha a pasta em que você está. As colunas da exibição de colunas podem ser
+  redimensionadas. O › antes da unidade na barra de caminho leva a Início, Documentos, qualquer
+  unidade ou um compartilhamento de rede que você abriu.
 - Escala da interface de 80% a 150%, somada à escala do próprio Windows.
 - Paleta de comandos (Ctrl+Shift+P) para todos os comandos, e atalhos que você pode alterar.
 
@@ -133,7 +136,8 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
 **Arquivos**
 - Copiar e mover pelo mecanismo do shell do Windows, com progresso, desfazer e refazer. Tarefas no
   mesmo disco entram em fila e podem ser pausadas, com verificação opcional após a cópia ou
-  delegação ao TeraCopy (experimental).
+  delegação ao TeraCopy (experimental). Muitos arquivos pequenos entre SSDs locais são copiados
+  vários de uma vez, bem mais rápido que um por um.
 - Renomear em lote, "Mover para nova pasta" e um menu de mover/copiar/atalho quando você arrasta com
   o botão direito do mouse ou solta com Alt pressionado.
 - Uma janela de Propriedades própria (Alt+Enter): tamanhos, para onde vai o espaço de uma pasta,
@@ -149,6 +153,8 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   mapeadas e locais de rede podem ter nomes próprios, guardados apenas no Arke.
 - OneDrive e outras pastas na nuvem com status de sincronização. As visualizações nunca baixam
   arquivos que existem apenas online.
+- Celulares e outros dispositivos conectados por USB aparecem em Este Computador: navegue por eles,
+  abra arquivos e copie-os para o PC (por enquanto só leitura, então nada muda no dispositivo).
 - Arquivos compactados: visualize e extraia zip e 7z (também com senha), tar (.gz, .xz, .bz2, .zst) e RAR, compacte em
   zip. RAR e os tars xz / bzip2 / zstd usam a libarchive incluída no Windows (melhor no Windows 11
   23H2 e posterior).
@@ -158,7 +164,9 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   um quarto de segundo, em vez de 40 s, já que o Windows não verifica cada arquivo antes. Restaurar
   funciona normalmente, e tudo o que ele não pode garantir (unidades de rede, OneDrive, arquivos em
   uso, políticas) fica a cargo do Windows. Pode ser desativado nas configurações. Arquivos soltos
-  levam alguns milissegundos cada, ainda de duas a seis vezes mais rápido que o Windows.
+  levam alguns milissegundos cada, ainda de duas a seis vezes mais rápido que o Windows. Quando a
+  Lixeira está cheia, os itens mais antigos abrem espaço, como no Explorador de Arquivos, sem deixar a
+  exclusão mais lenta.
 - As atualizações são baixadas em silêncio em segundo plano e instaladas na próxima vez que o Arke
   reiniciar, nunca enquanto arquivos estão sendo copiados e nunca em uma conexão limitada.
 - Os menus abrem em janelas próprias, como os menus do Windows, então perto da borda eles passam
@@ -179,8 +187,8 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   você também ative "Win+E e o ícone do Explorador de Arquivos também abrem o Arke".
 - Suporte a leitores de tela, versões x64 e ARM64 (ambas testadas em hardware real), lista de
   atalhos da barra de tarefas, ejeção segura de USB, bandeja do sistema, backup das configurações.
-  Inglês, chinês simplificado e tradicional, japonês, alemão, espanhol e português do Brasil (os
-  quatro últimos são novidade na 0.8; correções no texto são bem-vindas nas issues).
+  Inglês, chinês simplificado e tradicional, japonês, alemão, espanhol e português do Brasil
+  (correções no texto são bem-vindas nas issues).
 
 Os recursos *experimentais* são cobertos por testes automatizados e servidores de teste locais, mas
 ainda não são amplamente usados; veja o [changelog](CHANGELOG.md). Comentários nas issues são
@@ -305,12 +313,14 @@ limpe em Configurações › Pesquisa.
 | --- | --- |
 | Ctrl+T | Ir para uma pasta (locais recentes, guias abertas e caminhos) |
 | Ctrl+Shift+P | Paleta de comandos: pesquise qualquer comando e execute-o; todos os atalhos podem ser alterados em Configurações › Atalhos de teclado |
+| Ctrl+N | Nova janela na pasta atual |
 | Ctrl+W · Ctrl+Shift+T | Fechar guia (na exibição dividida, o lado ativo) · reabrir a guia fechada |
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | Alternar entre guias |
 | Ctrl+Shift+S · Ctrl+Shift+D | Painel duplo: navegação sincronizada · comparar pastas |
 | Tab · Alt+C · Alt+M | Exibição dividida: alternar entre painéis · copiar · mover a seleção para o outro painel |
 | Ctrl+F · Ctrl+Shift+F · Ctrl+K | Pesquisar nesta pasta · nesta pasta e subpastas · em todo o computador; Tab move o foco para o escopo e os filtros |
 | Ctrl+L · Alt+D | Editar o caminho |
+| F6 · Shift+F6 | Próxima · anterior área: lista de arquivos, barra lateral, barra de caminho, barra de ferramentas, caixa de pesquisa |
 | Alt+← · Alt+→ · Alt+↑ | Voltar · avançar · acima |
 | F5 · Ctrl+R | Atualizar |
 | Espaço | Visualização rápida |
@@ -331,14 +341,13 @@ limpe em Configurações › Pesquisa.
 ## Acessibilidade
 
 O Arke funciona com os leitores de tela do Windows por meio do UI Automation, a interface usada pelo
-Narrator e pelo NVDA; o JAWS também deve funcionar. Até agora foi verificado com ferramentas de UI
-Automation, ainda não por pessoas que usam leitor de tela no dia a dia, então ajuda nos testes é
-bem-vinda.
+Narrator e pelo NVDA; o JAWS também deve funcionar. Foi verificado com o NVDA e com ferramentas de UI
+Automation. Retornos de pessoas que usam leitor de tela no dia a dia são muito bem-vindos, também
+sobre outros leitores de tela.
 
-O que funciona: a lista de arquivos, a barra lateral, as guias, a barra de caminho, a pesquisa, as
-Configurações, os menus e a janela de Propriedades. O que ainda está incompleto: os botões da barra de
-ferramentas ainda não são alcançados com Tab (use F6 e os atalhos) e alguns diálogos não foram
-verificados.
+Funciona pelo teclado e com leitor de tela: a lista de arquivos, a barra lateral, as guias, a barra
+de caminho, a barra de ferramentas, a pesquisa, as Configurações, os menus e a janela de
+Propriedades. F6 e Shift+F6 passam de uma área para outra. Alguns diálogos ainda não foram verificados.
 
 O [guia de teclado](docs/keyboard.md) (em inglês) lista todos os atalhos por área. Se algo não puder
 ser alcançado ou não for anunciado, [abra uma issue](https://github.com/Koimsurai/Arke/issues) e

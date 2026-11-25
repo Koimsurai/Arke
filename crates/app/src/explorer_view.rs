@@ -2296,7 +2296,9 @@ const TOAST_LINES: usize = 6;
 /// A toast's icon and message, then its buttons. Like a WinUI InfoBar, the buttons sit beside a
 /// message that fits on one line next to them ("Copied", Close) and, when `wrap` is set and it
 /// doesn't, move to a line of their own below it, right-aligned, so the message gets the toast's
-/// whole width instead of a narrow column beside them.
+/// whole width instead of a narrow column beside them. Without `wrap` (progress) the message stays
+/// on one line, ending in "…" when it is too long, so the icon, the text and Cancel stay lined
+/// up on its middle (the operation center shows the whole line).
 fn toast_row(
     id: &'static str,
     glyph: impl IntoElement,
@@ -2337,14 +2339,17 @@ fn toast_row(
             .items_center()
             .gap(theme::s_8())
             .child(glyph)
-            .child(
-                div()
+            .child({
+                let message = div()
                     .debug_selector(move || format!("{id}-text"))
-                    .min_w_0()
-                    .line_clamp(TOAST_LINES)
-                    .text_ellipsis()
-                    .child(text),
-            ),
+                    .min_w_0();
+                let message = if wrap {
+                    message.line_clamp(TOAST_LINES).text_ellipsis()
+                } else {
+                    message.truncate()
+                };
+                message.child(text)
+            }),
     )
     .children(buttons)
 }

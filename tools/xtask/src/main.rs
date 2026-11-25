@@ -26,7 +26,7 @@
 //! ```
 //!
 //! Both architectures are built unless `--arch` picks one: `arke-<version>.exe` (x64) and
-//! `arke-<version>-arm64.exe`, and with Inno Setup 6.6+ installed (or `ISCC` pointing at
+//! `arke-<version>-arm64.exe`, and with Inno Setup 6.7.4+ installed (or `ISCC` pointing at
 //! `ISCC.exe`) their installers `arke-<version>[-arm64]-setup.exe` (`installer/arke.iss`).
 //! `ARKE_REQUIRE_SETUP` makes a missing Inno Setup an error, as the release workflow wants. ARM64 needs the MSVC ARM64 build tools (Visual Studio component
 //! "MSVC ARM64/ARM64EC build tools") and `rustup target add aarch64-pc-windows-msvc`.

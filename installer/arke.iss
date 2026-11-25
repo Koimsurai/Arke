@@ -1,4 +1,4 @@
-﻿; Arke's installer (Inno Setup 6.6 or later, for dark mode).
+﻿; Arke's installer (Inno Setup 6.7.4 or later; 6.6 brought dark mode).
 ;
 ;   iscc /DAppVersion=0.4.0 /DArch=x64 /DSourceExe=..\dist\arke-0.4.0.exe /O..\dist installer\arke.iss
 ;
@@ -7,12 +7,25 @@
 ; "all users" (Program Files). Besides the files it only writes the uninstall entry Windows lists
 ; under Settings > Apps.
 ;
-; Arke's own updater runs a newer setup with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART, and /LAUNCH
-; to start Arke again when it is done (with /BACKGROUND: in the background, no window). Without
-; /LAUNCH (Arke was quit) nothing starts; the next start is the new version.
+; Arke's own updater runs a newer setup with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+; /NOREDIRECTIONGUARD, and /LAUNCH to start Arke again when it is done (with /BACKGROUND: in the
+; background, no window). Without /LAUNCH (Arke was quit) nothing starts; the next start is the new
+; version.
+;
+; RedirectionGuard (#406): Inno Setup 6.7.0 and later turn on this Windows mitigation for Setup,
+; and a process with it can't follow junctions a standard user made (Scoop's `current`: os error
+; 448). 6.7.0 to 6.7.3 pass it on to the Arke started by [Run], and so does 6.7.4 when Setup didn't
+; have to ask for elevation, as in a per-user install; Arke then starts itself again through the
+; desktop shell (redirection_guard.rs). An update is per-user and silent, so the updater turns the
+; mitigation off for it (/NOREDIRECTIONGUARD); an install started by hand keeps it.
 ; Uninstalling runs `arke.exe --uninstall --quiet` first, which undoes what Arke changed itself
 ; (the search service, "Open folders in Arke", saved passwords, its data folders). Settings are
 ; kept or removed as asked; /KEEPSETTINGS or /REMOVESETTINGS answer for the in-app "Remove Arke".
+
+; 6.7.0 to 6.7.3 pass RedirectionGuard on to the programs [Run] starts (see above).
+#if Ver < EncodeVer(6,7,4)
+  #error Inno Setup 6.7.4 or later is needed (6.7.0 to 6.7.3 pass RedirectionGuard on to Arke, #406)
+#endif
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"

@@ -365,8 +365,9 @@ fn a_pinned_drive_is_named_like_the_drive(cx: &mut TestAppContext) {
     );
 }
 
-/// A sidebar tree row reads its real depth, and only the current folder's row says it is
-/// selected, so a screen reader does not call every row "level 1" or "not selected" (#322).
+/// A sidebar tree row tells its depth (from 0, as AccessKit counts it; UI Automation adds one),
+/// and only the current folder's row says it is selected, so a screen reader doesn't call every
+/// row "not selected" (#322).
 #[gpui::test]
 fn sidebar_tree_rows_tell_their_level(cx: &mut TestAppContext) {
     let (_ws, cx) = window(cx);
@@ -386,14 +387,14 @@ fn sidebar_tree_rows_tell_their_level(cx: &mut TestAppContext) {
         .filter(|n| label(n) == "Local Disk (C:)")
         .filter_map(level)
         .min();
-    assert_eq!(drive, Some(1), "a top-level row is level 1");
+    assert_eq!(drive, Some(0), "a top-level row is at depth 0");
     let w = rows()
         .find(|n| label(n) == "w")
         .expect("the current folder's row");
-    assert!(level(w) > Some(1), "a nested row is deeper: {w}");
+    assert!(level(w) > Some(0), "a nested row is deeper: {w}");
     assert_eq!(w["aria"]["selected"], Value::Bool(true));
     let drive_row = rows()
-        .find(|n| label(n) == "Local Disk (C:)" && level(n) == Some(1))
+        .find(|n| label(n) == "Local Disk (C:)" && level(n) == Some(0))
         .expect("the drive's row");
     assert!(
         drive_row["aria"]["selected"].is_null(),

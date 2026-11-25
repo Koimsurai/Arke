@@ -2937,8 +2937,9 @@ impl Workspace {
                     let label = label.clone();
                     move || format!("sidebar {label}")
                 })
-                // Real nesting level (1 for top-level rows); "selected" only on the current row.
-                .aria_level(depth + 1)
+                // Nesting level, from 0 as AccessKit counts it (UI Automation gets it plus one);
+                // "selected" only on the current row.
+                .aria_level(depth)
                 .when(here, |d| d.aria_selected(true))
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()

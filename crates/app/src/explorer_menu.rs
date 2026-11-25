@@ -2799,8 +2799,7 @@ impl Explorer {
             self.notice = Some(t!("extract.busy").into_owned());
             return;
         }
-        let (Some((first, _)), Some(model)) = (targets.first(), self.model.as_ref())
-        else {
+        let (Some((first, _)), Some(model)) = (targets.first(), self.model.as_ref()) else {
             return;
         };
         let stem = zip_stem_for_targets(Some(&model.path), targets);

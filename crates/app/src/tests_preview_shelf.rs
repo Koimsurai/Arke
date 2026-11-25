@@ -164,6 +164,59 @@ fn cloud_states_come_from_the_scan(cx: &mut TestAppContext) {
     assert_eq!(view.update(cx, |v, _| v.cloud.sync_of("x.txt")), None);
 }
 
+/// A folder inside a sync root is announced to the shell once per visit (some sync clients only
+/// fill a folder when a shell window shows it, #319); one outside isn't. Once a sync client heard
+/// it, items it added without a watcher event show without F5.
+#[gpui::test]
+fn cloud_folders_are_announced_and_rechecked(cx: &mut TestAppContext) {
+    const ONLINE_ONLY: u32 = 0x400 | 0x40_0000;
+    let fs = FakeFs::new();
+    let cloud = Path::new(r"C:\wps");
+    fs.insert_dir(cloud, vec![file("local.txt", 2)]);
+    fs.insert_dir(r"C:\plain", vec![file("x.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    *shell.cloud.lock() = crate::shell::CloudScan {
+        sync_root: true,
+        ..Default::default()
+    };
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\wps");
+    wait_until(cx, &view, "load", loaded(r"C:\wps"));
+    wait_shell_in(cx, "announced", || !shell.folder_visits.lock().is_empty());
+    let slot = view.entity_id().as_u64();
+    let announced = (slot, Some(PathBuf::from(r"C:\wps")));
+    assert_eq!(*shell.folder_visits.lock(), [announced.clone()]);
+
+    // The sync client adds an online-only placeholder, and no watcher event comes.
+    fs.add_entry(
+        cloud,
+        Entry::new("remote.txt", EntryKind::File, 12, None, ONLINE_ONLY),
+    );
+    let heard = shell.visit_heard.lock().take().expect("the visit's callback");
+    heard();
+    wait_until(cx, &view, "the client's item", |v| {
+        names(v) == ["local.txt", "remote.txt"]
+    });
+    // The list changed, so the folder was scanned again, but it isn't announced twice.
+    cx.run_until_parked();
+    assert_eq!(*shell.folder_visits.lock(), [announced.clone()]);
+
+    // Leaving ends the visit; a folder outside a sync root isn't announced.
+    *shell.cloud.lock() = crate::shell::CloudScan::default();
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\plain"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "plain", loaded(r"C:\plain"));
+    wait_shell_in(cx, "plain scanned", || {
+        shell
+            .cloud_scans
+            .lock()
+            .iter()
+            .any(|(dir, _)| dir == Path::new(r"C:\plain"))
+    });
+    cx.run_until_parked();
+    assert_eq!(*shell.folder_visits.lock(), [announced, (slot, None)]);
+}
+
 fn shelf_paths(cx: &mut VisualTestContext) -> Vec<(PathBuf, bool, bool)> {
     cx.update(|_, cx| {
         ShelfStore::global(cx)

@@ -1265,6 +1265,24 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (dir, items);
         CloudScan::default()
     }
+    /// Tells the shell that the tab `slot` shows `visit.dir`, a folder inside a cloud sync root,
+    /// the way File Explorer announces every folder it opens: some sync clients only fill a folder
+    /// with its online-only items once a shell window shows it (#319, `win_folder_visit.rs`).
+    /// `None`: the tab left the folder. Names the folder only, nothing is downloaded. Returns at
+    /// once (the announcement runs on its own thread), so it may be called on the UI thread.
+    fn folder_visit(&self, slot: u64, visit: Option<FolderVisit>) {
+        let _ = (slot, visit);
+    }
+}
+
+/// A folder a tab shows, for [`Shell::folder_visit`].
+pub(crate) struct FolderVisit {
+    /// The tab's window (`HWND`); `None` when it has none (tests).
+    pub(crate) window: Option<isize>,
+    pub(crate) dir: PathBuf,
+    /// Called from another thread once something in the shell looked at the announcement (a
+    /// sync client may be adding placeholders now), and a few times after that.
+    pub(crate) heard: Box<dyn Fn() + Send>,
 }
 
 /// A rendered PDF page.

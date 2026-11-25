@@ -1670,6 +1670,10 @@ impl Shell for WinShell {
         crate::win_cloud::scan(dir, items)
     }
 
+    fn folder_visit(&self, slot: u64, visit: Option<crate::shell::FolderVisit>) {
+        crate::win_folder_visit::visit(slot, visit);
+    }
+
     fn decode_ansi(&self, bytes: &[u8]) -> String {
         use windows::Win32::Globalization::{
             CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar,

@@ -69,7 +69,7 @@ struct Shared {
 }
 
 /// A folder's absolute item id list, freed on drop.
-struct Pidl(*mut ITEMIDLIST);
+pub(crate) struct Pidl(pub(crate) *mut ITEMIDLIST);
 
 impl Drop for Pidl {
     fn drop(&mut self) {

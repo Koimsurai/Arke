@@ -111,6 +111,7 @@ mod win_eject;
 mod win_fast_copy;
 mod win_fast_recycle;
 mod win_fileops;
+mod win_folder_visit;
 mod win_http;
 mod win_icons;
 mod win_inuse;

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use windows::Win32::Foundation::{CloseHandle, ERROR_MORE_DATA};
 use windows::Win32::Storage::CloudFilters::{
     CF_IN_SYNC_STATE_NOT_IN_SYNC, CF_PLACEHOLDER_BASIC_INFO, CF_PLACEHOLDER_INFO_BASIC,
-    CF_SYNC_ROOT_BASIC_INFO, CF_SYNC_ROOT_INFO_BASIC, CfGetPlaceholderInfo,
-    CfGetSyncRootInfoByPath,
+    CF_SYNC_ROOT_BASIC_INFO, CF_SYNC_ROOT_INFO_BASIC, CF_SYNC_ROOT_INFO_STANDARD,
+    CF_SYNC_ROOT_STANDARD_INFO, CfGetPlaceholderInfo, CfGetSyncRootInfoByPath,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
@@ -46,6 +46,35 @@ pub(crate) fn in_sync_root(dir: &Path) -> bool {
         )
     };
     result.is_ok() || result.is_err_and(|e| e.code() == ERROR_MORE_DATA.to_hresult())
+}
+
+/// The name of the sync client whose root `dir` is in and the root's population policy
+/// (`CF_POPULATION_POLICY_PRIMARY`: 2 the cloud filter asks the client when a folder is listed, 3
+/// it never does), for the log. Reads the registration only.
+pub(crate) fn sync_root_provider(dir: &Path) -> Option<(String, u16)> {
+    let wide = HSTRING::from(dir.as_os_str());
+    // Room for the fixed part and the largest sync root identity (64 KB).
+    let mut buffer = vec![0_u64; (size_of::<CF_SYNC_ROOT_STANDARD_INFO>() + 65_536) / 8 + 1];
+    let len = u32::try_from(std::mem::size_of_val(buffer.as_slice())).ok()?;
+    // SAFETY: `buffer` is u64-aligned (enough for CF_SYNC_ROOT_STANDARD_INFO) and `len` bytes long.
+    unsafe {
+        CfGetSyncRootInfoByPath(
+            &wide,
+            CF_SYNC_ROOT_INFO_STANDARD,
+            buffer.as_mut_ptr().cast(),
+            len,
+            None,
+        )
+    }
+    .ok()?;
+    // SAFETY: the call succeeded, so the buffer starts with a CF_SYNC_ROOT_STANDARD_INFO.
+    let info = unsafe { &*buffer.as_ptr().cast::<CF_SYNC_ROOT_STANDARD_INFO>() };
+    let name = &info.ProviderName;
+    let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    Some((
+        String::from_utf16_lossy(&name[..end]),
+        info.PopulationPolicy.Primary.0,
+    ))
 }
 
 /// Whether the placeholder at `path` is marked not in sync. `None` if it can't be opened or isn't
@@ -118,6 +147,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"a").unwrap();
         assert!(!in_sync_root(&dir));
+        assert_eq!(sync_root_provider(&dir), None);
         let mut buffer = vec![0_u64; 520];
         assert_eq!(not_in_sync(&dir.join("a.txt"), &mut buffer), None);
         assert_eq!(scan(&dir, &[Arc::from("a.txt")]), CloudScan::default());

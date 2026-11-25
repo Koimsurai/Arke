@@ -392,6 +392,13 @@ pub(crate) enum AppEvent {
         version: u64,
         scan: crate::shell::CloudScan,
     },
+    /// A sync client heard that this tab shows this folder (`explorer_cloud.rs`).
+    CloudFolderHeard(PathBuf),
+    /// Listing the folder shown as `generation` (at `version`) again found items come or go.
+    CloudFolderChanged {
+        generation: Gen,
+        version: u64,
+    },
     /// The Windows context menu ("Show more options" and pinned commands).
     ShellMenu(menu::ShellMenuEvent),
 }
@@ -1961,6 +1968,11 @@ impl Explorer {
             AppEvent::CloudScan { dir, version, scan } => {
                 self.handle_cloud_scan(dir, version, scan, cx);
             }
+            AppEvent::CloudFolderHeard(dir) => self.recheck_cloud_folder(&dir),
+            AppEvent::CloudFolderChanged {
+                generation,
+                version,
+            } => self.cloud_folder_changed(generation, version, cx),
             AppEvent::Search(results) => self.handle_search(results, cx),
             AppEvent::ClipboardSet {
                 result,

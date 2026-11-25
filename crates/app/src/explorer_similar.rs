@@ -269,9 +269,11 @@ impl Explorer {
     ) -> AnyElement {
         let shell = div()
             .id(("similar-row", row))
-            // Full width, and at least as wide as Details rows when they scroll sideways.
-            .w_full()
-            .when_some(self.cols, |d, c| d.min_w(c.row))
+            // As wide as the hit rows: Details rows end with their last column.
+            .map(|d| match self.cols {
+                Some(c) => d.w(c.row).flex_none(),
+                None => d.w_full(),
+            })
             .h(self.row_height())
             .px(theme::s_12())
             .flex()

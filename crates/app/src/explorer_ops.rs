@@ -1669,6 +1669,7 @@ impl Explorer {
     /// Starts renaming the new folder once it appears. Checked during render because moving focus
     /// needs a Window.
     pub(super) fn poll_pending_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.poll_rename_after_compress(window, cx);
         let Some((name, fresh)) = self.rename_when_appears.clone() else {
             return;
         };
@@ -1679,6 +1680,40 @@ impl Explorer {
             self.rename_when_appears = None;
             self.start_rename_as(name, fresh, window, cx);
         }
+    }
+
+    /// A new archive from "Compress" is listed: it is already selected, and is renamed too unless
+    /// the user went on to something else (other items selected, typing in another text field).
+    /// Focus is never taken from a text field.
+    fn poll_rename_after_compress(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.rename_after_compress.clone() else {
+            return;
+        };
+        if !self
+            .view()
+            .is_some_and(|v| v.iter().any(|e| e.name == name))
+        {
+            return;
+        }
+        self.rename_after_compress = None;
+        if self.selection.len() == 1
+            && self.selection.contains(&name)
+            && !self.text_field_focused(window, cx)
+        {
+            self.start_rename(name, window, cx);
+        }
+    }
+
+    /// Whether a text box has the keyboard: the rename box, the path bar, the search box, or any
+    /// other `TextInput` (a dialog's) in the focused element's context chain.
+    fn text_field_focused(&self, window: &Window, cx: &App) -> bool {
+        self.renaming.is_some()
+            || (self.editing_path && self.path_input.read(cx).focus_handle(cx).is_focused(window))
+            || self.filter_input.read(cx).focus_handle(cx).is_focused(window)
+            || window
+                .context_stack()
+                .iter()
+                .any(|ctx| ctx.contains("TextInput"))
     }
 
     // ───────────────────────── Undo ─────────────────────────

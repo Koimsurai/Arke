@@ -2789,8 +2789,8 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Zips into the same folder, named after the first item (made unique). Runs in the background
-    /// with cancellable progress in the banner.
+    /// Zips into the same folder, named after the first item, or after the folder for several
+    /// items (made unique). Runs in the background with cancellable progress in the banner.
     fn start_compress(&mut self, targets: &[(PathBuf, bool)], cx: &mut Context<Self>) {
         if self.extract_job.is_some() {
             self.notice = Some(t!("extract.busy").into_owned());
@@ -2800,15 +2800,14 @@ impl Explorer {
         else {
             return;
         };
+        let stem = zip_stem_for_selection(&model.path, targets)
+            .unwrap_or_else(|| zip_stem_for(first, *first_is_dir));
         let existing: std::collections::HashSet<String> = model
             .entries
             .iter()
             .map(|e| e.name.to_lowercase())
             .collect();
-        let name =
-            arke_core::path::unique_file_name(&zip_stem_for(first, *first_is_dir), "zip", |n| {
-                existing.contains(n)
-            });
+        let name = arke_core::path::unique_file_name(&stem, "zip", |n| existing.contains(n));
         let dest = model.path.join(&name);
         let sources: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
         let first_name = first.file_name().map_or_else(
@@ -2898,6 +2897,10 @@ impl Explorer {
                     self.selection.select_name(Arc::from(name.as_str()));
                     self.scroll_to_cursor = Some(gpui::ScrollStrategy::Nearest);
                     self.resolve_cursor();
+                    // Named in the render, where focus can be checked once it is listed (#409).
+                    if !self.search_mode {
+                        self.rename_after_compress = Some(Arc::from(name.as_str()));
+                    }
                 }
             }
         }
@@ -2987,6 +2990,18 @@ impl Explorer {
             }
         }
         cx.notify();
+    }
+
+    /// Delivers a compression's end without running one, so a test decides how it ended.
+    #[cfg(test)]
+    pub(crate) fn compress_done_for_test(
+        &mut self,
+        result: Result<archive::CompressSummary, archive::ArchiveError>,
+        name: &str,
+        dest: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_compress_done(result, name.to_owned(), dest, cx);
     }
 
     pub(crate) fn cancel_extract(&mut self) {
@@ -3971,6 +3986,18 @@ fn zip_stem_for(path: &std::path::Path, is_dir: bool) -> String {
     stem.map_or_else(|| "archive".into(), |s| s.to_string_lossy().into_owned())
 }
 
+/// The archive name for several items that all sit directly in `dir`: the folder's name, as
+/// WinRAR, 7-Zip and Bandizip do (#409). `None` for one item, for items from other folders (a
+/// nested tree view), and for a folder without a name (a drive or share root); the first item's
+/// name is used then.
+fn zip_stem_for_selection(dir: &std::path::Path, targets: &[(PathBuf, bool)]) -> Option<String> {
+    if targets.len() < 2 || targets.iter().any(|(p, _)| p.parent() != Some(dir)) {
+        return None;
+    }
+    let name = dir.file_name()?.to_string_lossy();
+    (!name.trim().is_empty()).then(|| name.into_owned())
+}
+
 fn pin_label(pinned: bool) -> std::borrow::Cow<'static, str> {
     if pinned {
         t!("sidebar.remove_favorite")
@@ -4036,5 +4063,53 @@ mod menu_name_tests {
         let short = menu_name(&emoji);
         assert!(short.starts_with(family), "{short}");
         assert!(short.ends_with(&format!("x{family}.zip")), "{short}");
+    }
+}
+
+#[cfg(test)]
+mod compress_name_tests {
+    use super::zip_stem_for_selection;
+    use std::path::{Path, PathBuf};
+
+    fn items(paths: &[&str]) -> Vec<(PathBuf, bool)> {
+        paths.iter().map(|p| (PathBuf::from(p), false)).collect()
+    }
+
+    #[test]
+    fn several_items_take_the_folder_name() {
+        let targets = items(&[r"C:\Work\Report\a.txt", r"C:\Work\Report\b.txt"]);
+        assert_eq!(
+            zip_stem_for_selection(Path::new(r"C:\Work\Report"), &targets).as_deref(),
+            Some("Report")
+        );
+    }
+
+    #[test]
+    fn one_item_keeps_its_own_name() {
+        let targets = items(&[r"C:\Work\Report\a.txt"]);
+        assert_eq!(
+            zip_stem_for_selection(Path::new(r"C:\Work\Report"), &targets),
+            None
+        );
+    }
+
+    #[test]
+    fn a_root_has_no_folder_name() {
+        let targets = items(&[r"C:\a.txt", r"C:\b.txt"]);
+        assert_eq!(zip_stem_for_selection(Path::new(r"C:\"), &targets), None);
+        let share = items(&[r"\srv\share\a.txt", r"\srv\share\b.txt"]);
+        assert_eq!(
+            zip_stem_for_selection(Path::new(r"\srv\share"), &share),
+            None
+        );
+    }
+
+    #[test]
+    fn items_from_other_folders_keep_the_first_name() {
+        let targets = items(&[r"C:\Work\Report\a.txt", r"C:\Work\Report\sub\b.txt"]);
+        assert_eq!(
+            zip_stem_for_selection(Path::new(r"C:\Work\Report"), &targets),
+            None
+        );
     }
 }

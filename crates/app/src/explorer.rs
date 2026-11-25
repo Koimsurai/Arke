@@ -865,6 +865,9 @@ pub(crate) struct Explorer {
     /// After creating a folder, start renaming it once it shows up in the list (`true`: whole name
     /// selected, see [`ops::NewItem::File`]).
     rename_when_appears: Option<(Arc<str>, bool)>,
+    /// A finished compression's archive: renamed once it is listed, unless the user is typing
+    /// somewhere else by then (#409).
+    rename_after_compress: Option<Arc<str>>,
     /// "New folder…" / "New file…" on a folder item, waiting for that folder's listing.
     pending_create: Option<ops::PendingCreate>,
     /// After delete, wait for the items to disappear, then select the item at the old position.
@@ -1217,6 +1220,7 @@ impl Explorer {
             closing_menu: None,
             extract_job: None,
             rename_when_appears: None,
+            rename_after_compress: None,
             pending_create: None,
             pending_reselect: None,
             ops_running: 0,
@@ -1537,6 +1541,7 @@ impl Explorer {
             self.notice = None;
             self.renaming = None;
             self.rename_when_appears = None;
+            self.rename_after_compress = None;
             self.pending_create = None;
             self.pending_reselect = None;
             // Filter and search belong to the old folder, and so does a folder comparison.

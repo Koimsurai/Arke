@@ -83,15 +83,15 @@ use windows::Win32::System::Variant::{
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     _SVGIO, DWebBrowserEvents, DWebBrowserEvents2, FOLDERSETTINGS, IFolderView, IFolderView_Impl,
-    ILCombine, ILGetSize, ILIsEqual, ILIsParent, IPersistIDList, IPersistIDList_Impl, IShellBrowser,
-    IShellBrowser_Impl, IShellFolder, IShellItem, IShellView, IShellView_Impl, IShellWindows,
-    IWebBrowser_Impl, IWebBrowser2, IWebBrowser2_Impl, IWebBrowserApp_Impl, SHBindToObject,
-    SHCNE_CREATE, SHCNE_DELETE, SHCNE_ID, SHCNE_MKDIR, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM,
-    SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNE_UPDATEITEM, SHCNRF_NewDelivery, SHCNRF_ShellLevel,
-    SHChangeNotification_Lock, SHChangeNotification_Unlock, SHChangeNotifyDeregister,
-    SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList, SHParseDisplayName,
-    SIGDN_FILESYSPATH, SVSI_DESELECTOTHERS, SVSI_EDIT, SVSI_ENSUREVISIBLE, SVSI_FOCUSED,
-    SVSI_SELECT, SWC_BROWSER, ShellWindows, UrlCreateFromPathW,
+    ILCombine, ILGetSize, ILIsEqual, ILIsParent, IPersistIDList, IPersistIDList_Impl,
+    IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellItem, IShellView, IShellView_Impl,
+    IShellWindows, IWebBrowser_Impl, IWebBrowser2, IWebBrowser2_Impl, IWebBrowserApp_Impl,
+    SHBindToObject, SHCNE_CREATE, SHCNE_DELETE, SHCNE_ID, SHCNE_MKDIR, SHCNE_RENAMEFOLDER,
+    SHCNE_RENAMEITEM, SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNE_UPDATEITEM, SHCNRF_NewDelivery,
+    SHCNRF_ShellLevel, SHChangeNotification_Lock, SHChangeNotification_Unlock,
+    SHChangeNotifyDeregister, SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList,
+    SHParseDisplayName, SIGDN_FILESYSPATH, SVSI_DESELECTOTHERS, SVSI_EDIT, SVSI_ENSUREVISIBLE,
+    SVSI_FOCUSED, SVSI_SELECT, SWC_BROWSER, ShellWindows, UrlCreateFromPathW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HMENU,
@@ -208,7 +208,10 @@ fn target_of(item: &Path, folder: &Path) -> Target {
     let folder = path_key(folder);
     if path_key(item) == folder {
         Target::Folder
-    } else if item.parent().is_some_and(|parent| path_key(parent) == folder) {
+    } else if item
+        .parent()
+        .is_some_and(|parent| path_key(parent) == folder)
+    {
         Target::Inside
     } else {
         Target::Elsewhere
@@ -1978,7 +1981,11 @@ mod tests {
             (r"\\?\C:\Users\me\WPS Cloud", root, Target::Folder),
             (r"C:\Users\me\WPS Cloud\a.docx", root, Target::Inside),
             (r"C:\Users\me\WPS Cloud\Team", root, Target::Inside),
-            (r"C:\Users\me\WPS Cloud\Team\b.docx", root, Target::Elsewhere),
+            (
+                r"C:\Users\me\WPS Cloud\Team\b.docx",
+                root,
+                Target::Elsewhere,
+            ),
             (r"C:\Users\me", root, Target::Elsewhere),
             (r"C:\Users\me\WPS Cloud 2", root, Target::Elsewhere),
             (r"C:\", Path::new(r"C:\"), Target::Folder),
@@ -2103,8 +2110,7 @@ mod tests {
         let name: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut raw = std::ptr::null_mut();
         // SAFETY: NUL-terminated name; raw receives an allocated list.
-        unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut raw, 0, None) }
-            .unwrap();
+        unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut raw, 0, None) }.unwrap();
         let count = Rc::new(Cell::new(0));
         let counted = Rc::clone(&count);
         let state = Rc::new(State {

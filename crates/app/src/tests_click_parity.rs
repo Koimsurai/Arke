@@ -122,6 +122,17 @@ fn ctrl_double_click_opens_a_tab_on_even_counts_only(cx: &mut TestAppContext) {
     );
 }
 
+/// Turns "Open items with a single click" on in the settings store, not only in the list prefs:
+/// the workspace applies the stored settings again whenever they change (navigating can change
+/// them), which would switch a prefs-only setting back off in the middle of a test.
+fn store_single_click(cx: &mut VisualTestContext) {
+    use crate::settings::SettingsStore;
+    cx.update(|_, cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.single_click = true, cx));
+        crate::prefs::apply(&SettingsStore::global(cx).read(cx).settings);
+    });
+}
+
 /// A folder tree where each level has one subfolder: `C:\t\a\b\c\d`.
 fn nested_fs() -> Arc<FakeFs> {
     let fs = FakeFs::new();
@@ -140,8 +151,7 @@ fn single_click_mode_opens_on_every_click_of_a_run(cx: &mut TestAppContext) {
     let (ws, cx) = setup_workspace(cx, nested_fs(), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
-    // After the workspace is built: it applies the stored settings, single click off.
-    single_click(true);
+    store_single_click(cx);
     cx.run_until_parked();
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     let at = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
@@ -189,8 +199,7 @@ fn single_click_mode_launches_a_file_once_per_run(cx: &mut TestAppContext) {
     let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
-    // After the workspace is built: it applies the stored settings, single click off.
-    single_click(true);
+    store_single_click(cx);
     cx.run_until_parked();
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     let at = |n: f32| point(bounds.left() + px(60.), bounds.top() + row * (n + 0.5));

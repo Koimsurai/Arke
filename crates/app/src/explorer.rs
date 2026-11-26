@@ -104,7 +104,7 @@ pub(crate) use menu::{app_name, open_with_list, pin_is_submenu};
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
 #[cfg(test)]
-pub(crate) use preview::{Saved, saved_since};
+pub(crate) use preview::{Saved, saved_since, take_built_rows_for_test};
 pub(crate) use top_bar::TitleLayout;
 
 pub(crate) use ops::commit_problem;
@@ -365,6 +365,11 @@ pub(crate) enum AppEvent {
     },
     /// A page rendered for the preview pane's page list
     PanePdfPage(preview::RenderedPage),
+    /// More of a previewed text file: its index, or lines read as they come into view.
+    PreviewText {
+        generation: u64,
+        update: preview::TextUpdate,
+    },
     /// Creation time of the previewed item, read when its entry came without one (search hits).
     PreviewCreated {
         generation: u64,
@@ -2119,6 +2124,9 @@ impl Explorer {
             AppEvent::ArchiveJobDropped(job) => self.handle_archive_job_dropped(job, cx),
             AppEvent::Preview { generation, data } => self.handle_preview(generation, data, cx),
             AppEvent::PanePdfPage(page) => self.handle_pane_pdf_page(page, cx),
+            AppEvent::PreviewText { generation, update } => {
+                self.handle_preview_text(generation, update, cx);
+            }
             AppEvent::PreviewCreated {
                 generation,
                 created,

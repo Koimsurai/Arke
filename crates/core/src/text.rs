@@ -65,8 +65,19 @@ pub fn decode_text(
     }
 }
 
+/// Length of the byte order mark [`decode_text`] skips at the start of `bytes` (0 without one).
+pub fn bom_len(bytes: &[u8]) -> usize {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        2
+    } else {
+        0
+    }
+}
+
 /// Valid UTF-8 prefix (truncated last char dropped); invalid bytes in the middle become U+FFFD.
-fn utf8_prefix(bytes: &[u8]) -> String {
+pub(crate) fn utf8_prefix(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_owned(),
         Err(e) if e.error_len().is_none() => {
@@ -76,7 +87,7 @@ fn utf8_prefix(bytes: &[u8]) -> String {
     }
 }
 
-fn utf16(bytes: &[u8], little_endian: bool) -> String {
+pub(crate) fn utf16(bytes: &[u8], little_endian: bool) -> String {
     let units: Vec<u16> = bytes
         .as_chunks::<2>()
         .0
@@ -157,6 +168,14 @@ mod tests {
         );
         // Binary.
         assert_eq!(decode_text(&[0, 1, 2, 3, 0, 9, 7], &fake_big5), None);
+    }
+
+    #[test]
+    fn bom_lengths() {
+        assert_eq!(bom_len(&[0xEF, 0xBB, 0xBF, b'a']), 3);
+        assert_eq!(bom_len(&[0xFF, 0xFE, b'a', 0]), 2);
+        assert_eq!(bom_len(&[0xFE, 0xFF, 0, b'a']), 2);
+        assert_eq!(bom_len(b"plain"), 0);
     }
 
     #[test]

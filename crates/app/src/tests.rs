@@ -79,6 +79,8 @@ mod preview_media;
 mod preview_resave;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
+#[path = "tests_preview_text.rs"]
+mod preview_text;
 #[path = "tests_properties_card.rs"]
 mod properties_card;
 #[path = "tests_properties.rs"]

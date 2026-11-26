@@ -4,13 +4,16 @@
 //! its storage, ending a drop that finishes later. The worker writing the files only asks and
 //! waits for the answers, watching Cancel meanwhile. A source that never answers (a remote
 //! control program whose stream waits for its network) can't hold the copy: the worker stops
-//! waiting, and once the source has been slow, Cancel also interrupts the call (`CoCancelCall`,
-//! which ends a call into another process or apartment on the caller's side). The thread then
-//! ends by itself once its call returns, and releases what it holds there.
+//! waiting, and once the source has been slow or reads have grown, Cancel also interrupts the
+//! call (`CoCancelCall`, which ends a call into another process or apartment on the caller's
+//! side). The thread then ends by itself once its call returns, and releases what it holds
+//! there.
 //!
 //! Streams are read a little at a time at first and in bigger pieces while the source keeps up
 //! ([`ChunkSize`]), and one read ahead of the writing, so local sources (zip folders, Outlook)
 //! copy at least as fast as before and slow ones aren't asked for more than they give at once.
+//! A bigger read that doesn't come back within [`RECOVER_AFTER`] is given up on, and the stream
+//! is read on from where it started in small reads ([`Link::watch`]).
 
 use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
@@ -19,10 +22,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{CloseHandle, E_ABORT, E_UNEXPECTED, HANDLE, RPC_S_CALLPENDING};
+use parking_lot::Mutex;
+use windows::Win32::Foundation::{
+    CloseHandle, E_ABORT, E_UNEXPECTED, HANDLE, RPC_E_CALL_CANCELED, RPC_S_CALLPENDING,
+};
 use windows::Win32::System::Com::{
     CoCancelCall, CoDisableCallCancellation, CoEnableCallCancellation, CoWaitForMultipleHandles,
-    IDataObject, STREAM_SEEK_SET,
+    IDataObject, IStream, STREAM_SEEK_SET,
 };
 use windows::Win32::System::Threading::{CreateEventW, GetThreadId, SetEvent, WaitForSingleObject};
 use windows::core::{AgileReference, HRESULT, PCWSTR};
@@ -52,6 +58,9 @@ const GRACE: Duration = Duration::from_millis(500);
 /// cancellable calls into other processes on the same computer slower (File Explorer's zip
 /// folders, Outlook), which only matters next to fast reads.
 const CANCELLABLE_AFTER: Duration = Duration::from_millis(50);
+/// A read bigger than [`FIRST_CHUNK`] that takes this long is given up on: the source may never
+/// answer reads that big (#456). Well above [`SLOW`], so a source that is only slow isn't.
+const RECOVER_AFTER: Duration = Duration::from_secs(3);
 
 /// How much to ask of a stream at a time.
 ///
@@ -59,12 +68,15 @@ const CANCELLABLE_AFTER: Duration = Duration::from_millis(50);
 /// that ran at [`KEEPING_UP`] or faster: a source reading from its own disk or memory gets there
 /// within a few megabytes, so it pays for as few calls as before. A source that answers more
 /// slowly (one round trip over the network a read) stays at small reads, where a call costs
-/// nothing next to the wait; a read slower than [`SLOW`] halves the size again.
+/// nothing next to the wait. A read slower than [`SLOW`] halves the size again, and the reads of
+/// that drop never grow after it; nor after a read that was given up on ([`ChunkSize::pin`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ChunkSize {
     size: usize,
     /// Reads of the current size in a row that kept up.
     streak: u32,
+    /// A read of the drop was slow or given up on: no more growing.
+    settled: bool,
 }
 
 impl ChunkSize {
@@ -72,7 +84,24 @@ impl ChunkSize {
         Self {
             size: FIRST_CHUNK,
             streak: 0,
+            settled: false,
         }
+    }
+
+    /// For the drop's next item: small reads first again, still never growing if settled.
+    pub(super) const fn next_item(self) -> Self {
+        Self {
+            size: FIRST_CHUNK,
+            streak: 0,
+            settled: self.settled,
+        }
+    }
+
+    /// A read was given up on: [`FIRST_CHUNK`] from now on.
+    pub(super) const fn pin(&mut self) {
+        self.size = FIRST_CHUNK;
+        self.streak = 0;
+        self.settled = true;
     }
 
     /// The size of the next read.
@@ -86,7 +115,8 @@ impl ChunkSize {
         if took >= SLOW {
             self.size = (asked / 2).max(FIRST_CHUNK).min(self.size);
             self.streak = 0;
-        } else if asked == self.size {
+            self.settled = true;
+        } else if asked == self.size && !self.settled {
             if got >= asked && keeps_up(asked, took) {
                 self.streak += 1;
                 if self.streak >= STREAK {
@@ -146,6 +176,22 @@ pub(super) struct ReadDone {
     pub(super) hr: HRESULT,
     /// How long the source took.
     pub(super) took: Duration,
+    /// The stream is read [`FIRST_CHUNK`] at a time from now on: a read was given up on.
+    pub(super) pinned: bool,
+}
+
+impl ReadDone {
+    /// A read that wasn't made, or failed before any bytes arrived.
+    const fn none(buffer: Vec<u8>, asked: usize, hr: HRESULT) -> Self {
+        Self {
+            buffer,
+            asked,
+            got: 0,
+            hr,
+            took: Duration::ZERO,
+            pinned: false,
+        }
+    }
 }
 
 /// The error for a source thread that is gone (it panicked) or answered out of turn.
@@ -203,6 +249,10 @@ struct Shared {
     stop: AtomicBool,
     /// The thread has let go of everything and is ending.
     done: AtomicBool,
+    /// The read being made: when it started and its size.
+    reading: Mutex<Option<(Instant, usize)>>,
+    /// The worker gave up on that read (cancelled it to read on in small pieces).
+    recover: AtomicBool,
 }
 
 /// The worker's end: asks, waits for answers while watching Cancel, and lets go.
@@ -223,6 +273,8 @@ impl Link {
             signal: Signal::new()?,
             stop: AtomicBool::new(false),
             done: AtomicBool::new(false),
+            reading: Mutex::new(None),
+            recover: AtomicBool::new(false),
         });
         let (asks, asked) = flume::unbounded();
         let (answer, answers) = flume::unbounded();
@@ -262,8 +314,29 @@ impl Link {
                 self.interrupt();
                 return Err(Stop::Cancelled);
             }
+            self.watch();
             self.shared.signal.wait(POLL_MS);
         }
+    }
+
+    /// Gives up on a read bigger than [`FIRST_CHUNK`] that hasn't come back within
+    /// [`RECOVER_AFTER`]: a source may hang on reads bigger than it can carry (#456). The call
+    /// is cancelled (bigger reads are always cancellable), and the thread reads on from where it
+    /// started, [`FIRST_CHUNK`] at a time.
+    fn watch(&self) {
+        if self.thread.is_none() || self.finished() {
+            return;
+        }
+        let reading = self.shared.reading.lock();
+        if let Some((since, len)) = *reading
+            && len > FIRST_CHUNK
+            && since.elapsed() >= RECOVER_AFTER
+            && !self.shared.recover.swap(true, Ordering::AcqRel)
+        {
+            // Under the lock: the thread can't have moved on to another read.
+            cancel_call(self.thread_id);
+        }
+        drop(reading);
     }
 
     /// Stops the thread's work: what is still asked isn't done, and a call into another
@@ -272,9 +345,7 @@ impl Link {
     fn interrupt(&self) {
         self.shared.stop.store(true, Ordering::Relaxed);
         if self.thread.is_some() && !self.finished() {
-            // SAFETY: names this link's thread, whose handle `thread` holds open, so the id is
-            // no other thread's. Fails harmlessly when it isn't calling out.
-            let _ = unsafe { CoCancelCall(self.thread_id, 0) };
+            cancel_call(self.thread_id);
         }
     }
 
@@ -295,6 +366,8 @@ impl Link {
                     return;
                 }
                 self.interrupt();
+            } else {
+                self.watch();
             }
             self.shared.signal.wait(POLL_MS);
         }
@@ -303,6 +376,16 @@ impl Link {
             let _ = thread.join();
         }
     }
+}
+
+/// Cancels the call thread `id` is making into another process or apartment, if any. Callers
+/// name the source thread while its handle is held open (see [`Link`]), so the id is no other
+/// thread's.
+fn cancel_call(id: u32) {
+    // SAFETY: plain call; fails harmlessly when the thread isn't calling out.
+    let _ = unsafe { CoCancelCall(id, 0) };
+    #[cfg(test)]
+    super::tests::cancel_call(id);
 }
 
 /// The source thread: answers asks until the worker lets go, then releases everything here.
@@ -327,7 +410,7 @@ fn serve(
         let cancellable = server.cancellable;
         drop(server);
         if cancellable {
-            // SAFETY: pairs with the call in `Server::read`, on this thread.
+            // SAFETY: pairs with `enable_cancellation`, on this thread.
             let _ = unsafe { CoDisableCallCancellation(None) };
         }
     }
@@ -345,6 +428,12 @@ struct Server {
     bodies: Bodies,
     /// The worker can interrupt this thread's calls (`CoEnableCallCancellation`).
     cancellable: bool,
+    /// Bytes of the open stream read so far.
+    pos: u64,
+    /// The open stream was put at its start, so `pos` is where it is.
+    from_start: bool,
+    /// The open stream is read [`FIRST_CHUNK`] at a time: a read was given up on.
+    pinned: bool,
 }
 
 enum Bodies {
@@ -379,6 +468,9 @@ impl Server {
             format,
             bodies,
             cancellable: false,
+            pos: 0,
+            from_start: false,
+            pinned: false,
         }
     }
 
@@ -419,8 +511,9 @@ impl Server {
             Contents::Bytes(bytes) => Opened::Bytes(bytes),
             Contents::Stream(stream) => {
                 // Some sources leave the stream's position at its end.
-                // SAFETY: seeking a live stream.
-                let _ = unsafe { stream.Seek(0, STREAM_SEEK_SET, None) };
+                self.from_start = seek_to(&stream, 0).is_ok();
+                self.pos = 0;
+                self.pinned = false;
                 self.open = Some(Contents::Stream(stream));
                 Opened::Stream
             }
@@ -431,35 +524,63 @@ impl Server {
         })
     }
 
-    fn read(&mut self, mut buffer: Vec<u8>, len: usize, shared: &Shared) -> ReadDone {
-        let (got, hr, took) = match &self.open {
-            Some(Contents::Stream(_)) if shared.stop.load(Ordering::Relaxed) => {
-                (0, E_ABORT, Duration::ZERO)
+    /// Reads up to `asked` bytes of the open stream ([`FIRST_CHUNK`] at most once pinned). A
+    /// bigger read the worker gave up on is made again from where it started, a [`FIRST_CHUNK`]
+    /// big, and the stream stays pinned; if it can't be put back there, the item fails.
+    fn read(&mut self, mut buffer: Vec<u8>, asked: usize, shared: &Shared) -> ReadDone {
+        let stream = match &self.open {
+            Some(Contents::Stream(stream)) if !shared.stop.load(Ordering::Relaxed) => {
+                stream.clone()
             }
-            Some(Contents::Stream(stream)) => {
-                if buffer.len() < len {
-                    buffer.resize(len, 0);
-                }
-                let mut got = 0u32;
-                let started = Instant::now();
-                // SAFETY: `buffer` has room for `len` bytes; `got` receives the count.
-                let hr = unsafe {
-                    stream.Read(buffer.as_mut_ptr().cast(), len as u32, Some(&raw mut got))
-                };
-                (got as usize, hr, started.elapsed())
-            }
-            _ => (0, E_UNEXPECTED, Duration::ZERO),
+            Some(Contents::Stream(_)) => return ReadDone::none(buffer, asked, E_ABORT),
+            _ => return ReadDone::none(buffer, asked, E_UNEXPECTED),
         };
-        if took >= CANCELLABLE_AFTER && !self.cancellable {
-            // SAFETY: plain call on this thread, undone when it ends (`serve`).
-            self.cancellable = unsafe { CoEnableCallCancellation(None) }.is_ok();
+        let len = if self.pinned {
+            asked.min(FIRST_CHUNK)
+        } else {
+            asked
+        };
+        if len > FIRST_CHUNK && !self.cancellable {
+            // The worker may give up on a bigger read, which takes a cancellable call.
+            self.cancellable = enable_cancellation();
         }
+        if buffer.len() < len {
+            buffer.resize(len, 0);
+        }
+        let (mut got, mut hr, mut took, given_up) = read_once(&stream, &mut buffer, len, shared);
+        if given_up && hr == RPC_E_CALL_CANCELED && !shared.stop.load(Ordering::Relaxed) {
+            log::info!(
+                "a {} KiB read of a dropped file didn't come back in {RECOVER_AFTER:?}; reading \
+                 on {} KiB at a time",
+                len >> 10,
+                FIRST_CHUNK >> 10
+            );
+            self.pinned = true;
+            let back = if self.from_start {
+                seek_to(&stream, self.pos)
+            } else {
+                Err(hr)
+            };
+            if let Err(e) = back {
+                // Where the stream is can't be known: the item fails, and what is still asked
+                // of it with it.
+                self.open = None;
+                return ReadDone::none(buffer, asked, e);
+            }
+            (got, hr, took, _) = read_once(&stream, &mut buffer, FIRST_CHUNK, shared);
+        }
+        if took >= CANCELLABLE_AFTER && !self.cancellable {
+            self.cancellable = enable_cancellation();
+        }
+        let got = got.min(len);
+        self.pos += got as u64;
         ReadDone {
             buffer,
-            asked: len,
-            got: got.min(len),
+            asked,
+            got,
             hr,
             took,
+            pinned: self.pinned,
         }
     }
 
@@ -477,4 +598,40 @@ impl Server {
         }
         saved
     }
+}
+
+/// One read of `len` bytes (at most the buffer's), published while it runs for the worker's
+/// [`Link::watch`]. Also says whether the worker gave up on it meanwhile.
+fn read_once(
+    stream: &IStream,
+    buffer: &mut [u8],
+    len: usize,
+    shared: &Shared,
+) -> (usize, HRESULT, Duration, bool) {
+    let len = len.min(buffer.len());
+    let started = Instant::now();
+    *shared.reading.lock() = Some((started, len));
+    let mut got = 0u32;
+    // SAFETY: `buffer` has room for `len` bytes; `got` receives the count.
+    let hr = unsafe { stream.Read(buffer.as_mut_ptr().cast(), len as u32, Some(&raw mut got)) };
+    let took = started.elapsed();
+    let given_up = {
+        let mut reading = shared.reading.lock();
+        *reading = None;
+        shared.recover.swap(false, Ordering::AcqRel)
+    };
+    (got as usize, hr, took, given_up)
+}
+
+/// Puts a stream at `pos` bytes from its start.
+fn seek_to(stream: &IStream, pos: u64) -> Result<(), HRESULT> {
+    let pos = i64::try_from(pos).ok().ok_or(E_UNEXPECTED)?;
+    // SAFETY: seeking a live stream.
+    unsafe { stream.Seek(pos, STREAM_SEEK_SET, None) }.map_err(|e| e.code())
+}
+
+/// Makes this thread's calls cancellable (`CoCancelCall`); undone when it ends (`serve`).
+fn enable_cancellation() -> bool {
+    // SAFETY: plain call on this thread, paired in `serve`.
+    unsafe { CoEnableCallCancellation(None) }.is_ok()
 }

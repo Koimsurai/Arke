@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{
-    DV_E_FORMATETC, E_FAIL, E_NOTIMPL, FILETIME, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT, S_FALSE,
-    S_OK,
+    DV_E_FORMATETC, E_FAIL, E_NOTIMPL, FILETIME, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT,
+    RPC_E_CALL_CANCELED, S_FALSE, S_OK,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     IStorage, STGFMT_STORAGE, StgCreateStorageEx,
@@ -30,6 +30,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
     DROPFILES, FD_ATTRIBUTES, FD_FILESIZE, FD_WRITESTIME, FILEDESCRIPTORA, FILEDESCRIPTORW,
     IDataObjectAsyncCapability, IDataObjectAsyncCapability_Impl,
@@ -122,6 +123,31 @@ pub(crate) enum Pace {
     Trickle(u64),
     /// No read comes back until the gate opens.
     Stuck(Gate),
+    /// Small reads at once, but a read of more than `limit` bytes only comes back when cancelled
+    /// (as `CoCancelCall` would end it), with the stream moved on regardless. `seekable: false`
+    /// can't be put back.
+    Choke { limit: usize, seekable: bool },
+}
+
+/// Reads of [`Pace::Choke`] streams waiting to be cancelled: the thread making each, and how to
+/// end it.
+static CHOKED: Mutex<Vec<(u32, flume::Sender<()>)>> = Mutex::new(Vec::new());
+
+/// What `CoCancelCall` would do to the call of thread `id` if the fake were in another process:
+/// ends its choked read.
+pub(crate) fn cancel_call(id: u32) {
+    CHOKED.lock().retain(|(thread, end)| {
+        if *thread == id {
+            let _ = end.send(());
+        }
+        *thread != id
+    });
+}
+
+/// The fake streams' bytes from the start, long enough to copy any read from in one go.
+fn patterned() -> &'static [u8] {
+    static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BYTES.get_or_init(|| (0..(CHUNK + 251) as u64).map(pattern).collect())
 }
 
 /// Holds reads of fake streams until the test opens it.
@@ -178,6 +204,9 @@ pub(crate) struct Seen {
     /// The largest read asked of a stream, and how many reads there were.
     pub(crate) largest_read: AtomicUsize,
     pub(crate) reads: AtomicUsize,
+    /// Reads of a [`Pace::Choke`] stream that were too big, and the largest read after one.
+    pub(crate) choked: AtomicUsize,
+    pub(crate) largest_after_choke: AtomicUsize,
 }
 
 #[implement(IDataObject, IDataObjectAsyncCapability)]
@@ -522,6 +551,11 @@ impl ISequentialStream_Impl for FakeStream_Impl {
         {
             progress.cancel.store(true, Ordering::Relaxed);
         }
+        if self.seen.choked.load(Ordering::Relaxed) > 0 {
+            self.seen
+                .largest_after_choke
+                .fetch_max(cb as usize, Ordering::Relaxed);
+        }
         let mut give = u64::from(cb);
         match &self.pace {
             Pace::Instant => {}
@@ -538,13 +572,30 @@ impl ISequentialStream_Impl for FakeStream_Impl {
                 gate.wait();
                 return E_FAIL;
             }
+            Pace::Choke { limit, .. } if cb as usize > *limit => {
+                let (end, ended) = flume::bounded(1);
+                // SAFETY: plain call.
+                CHOKED.lock().push((unsafe { GetCurrentThreadId() }, end));
+                self.seen.choked.fetch_add(1, Ordering::Relaxed);
+                let _ = ended.recv();
+                // The source went on with the read it was asked for.
+                self.pos.fetch_add(u64::from(cb) / 2, Ordering::Relaxed);
+                return RPC_E_CALL_CANCELED;
+            }
+            Pace::Choke { .. } => {}
         }
         let pos = self.pos.load(Ordering::Relaxed);
         let n = give.min(self.len.saturating_sub(pos));
         // SAFETY: the caller's buffer has room for `cb` bytes.
         let out = unsafe { std::slice::from_raw_parts_mut(pv.cast::<u8>(), n as usize) };
-        for (i, b) in out.iter_mut().enumerate() {
-            *b = pattern(pos + i as u64);
+        let phase = (pos % 251) as usize;
+        match patterned().get(phase..phase + out.len()) {
+            Some(bytes) => out.copy_from_slice(bytes),
+            None => {
+                for (i, b) in out.iter_mut().enumerate() {
+                    *b = pattern(pos + i as u64);
+                }
+            }
         }
         self.pos.store(pos + n, Ordering::Relaxed);
         if !read.is_null() {
@@ -561,6 +612,12 @@ impl ISequentialStream_Impl for FakeStream_Impl {
 
 impl IStream_Impl for FakeStream_Impl {
     fn Seek(&self, offset: i64, origin: STREAM_SEEK, new: *mut u64) -> windows::core::Result<()> {
+        if let Pace::Choke {
+            seekable: false, ..
+        } = self.pace
+        {
+            return Err(E_NOTIMPL.into());
+        }
         let base = match origin {
             STREAM_SEEK_SET => 0,
             STREAM_SEEK_CUR => self.pos.load(Ordering::Relaxed).cast_signed(),
@@ -930,6 +987,36 @@ fn reads_grow_while_the_source_keeps_up() {
         chunk.learn(size, size, Duration::from_secs(1));
     }
     assert_eq!(chunk.get(), FIRST_CHUNK, "never below the first size");
+    for _ in 0..20 {
+        chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(chunk.get(), FIRST_CHUNK, "no growing after a slow read");
+    let mut next = chunk.next_item();
+    for _ in 0..20 {
+        next.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(next.get(), FIRST_CHUNK, "nor for the drop's next item");
+
+    // A read given up on pins it to small reads, for the item and the next ones.
+    let mut pinned = ChunkSize::new();
+    for _ in 0..4 {
+        pinned.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(pinned.get(), 2 * FIRST_CHUNK);
+    pinned.pin();
+    assert_eq!(pinned.get(), FIRST_CHUNK);
+    let mut next = pinned.next_item();
+    for _ in 0..20 {
+        pinned.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+        next.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!((pinned.get(), next.get()), (FIRST_CHUNK, FIRST_CHUNK));
+    // Each item starts small again.
+    let mut grown = ChunkSize::new();
+    for _ in 0..4 {
+        grown.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(grown.next_item().get(), FIRST_CHUNK);
 
     // 64 KiB in 2 ms (32 MB/s, a round trip a read) doesn't keep up: reads stay small.
     let mut remote = ChunkSize::new();
@@ -952,6 +1039,68 @@ fn reads_grow_while_the_source_keeps_up() {
         short.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
     }
     assert_eq!(short.get(), FIRST_CHUNK);
+}
+
+/// A source that answers small reads at once but hangs on reads bigger than it carries (#456):
+/// reads grow while it keeps up, the first one too big is given up on, and the copy goes on from
+/// where it stood in small reads, intact, the next item too.
+#[test]
+fn a_read_too_big_for_the_source_is_given_up_and_made_again_small() {
+    let _com = ComThread::init();
+    let len = 4 * CHUNK as u64 + 3;
+    let mut source = FakeSource::new(vec![
+        FakeItem::stream("choke.bin", len),
+        FakeItem::stream("next.bin", 2 * CHUNK as u64),
+    ]);
+    source.pace = Pace::Choke {
+        limit: FIRST_CHUNK,
+        seekable: true,
+    };
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("choke");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_in_background(drop, &stage, &progress)
+        .recv_timeout(NEVER)
+        .expect("the copy ends");
+    assert!(out.failed.is_none() && !out.cancelled, "{:?}", out.failed);
+    assert_eq!(
+        std::fs::read(stage.join("choke.bin")).unwrap(),
+        expected_stream(len)
+    );
+    assert_eq!(
+        std::fs::read(stage.join("next.bin")).unwrap(),
+        expected_stream(2 * CHUNK as u64)
+    );
+    assert_eq!(seen.choked.load(Ordering::Relaxed), 1, "given up on once");
+    assert!(seen.largest_after_choke.load(Ordering::Relaxed) <= FIRST_CHUNK);
+}
+
+/// A read given up on, of a stream that can't be put back where it started: that item fails
+/// and its partial file goes, the next item is still written.
+#[test]
+fn a_read_given_up_on_a_stream_that_cant_seek_fails_the_item() {
+    let _com = ComThread::init();
+    let mut source = FakeSource::new(vec![
+        FakeItem::stream("choke.bin", 4 * CHUNK as u64),
+        FakeItem::memory("after.txt", b"after"),
+    ]);
+    source.pace = Pace::Choke {
+        limit: FIRST_CHUNK,
+        seekable: false,
+    };
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("choke-noseek");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_in_background(drop, &stage, &progress)
+        .recv_timeout(NEVER)
+        .expect("the copy ends");
+    assert!(!out.cancelled);
+    assert!(out.failed.is_some());
+    assert_eq!(seen.choked.load(Ordering::Relaxed), 1);
+    assert!(!stage.join("choke.bin").exists());
+    assert_eq!(std::fs::read(stage.join("after.txt")).unwrap(), b"after");
 }
 
 /// Names from the source can't leave the target folder or use names Windows refuses.

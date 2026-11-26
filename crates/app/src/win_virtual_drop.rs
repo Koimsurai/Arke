@@ -524,6 +524,8 @@ struct Writer<'a> {
     by_bytes: bool,
     /// Folders made so far: the source's relative path and where it went.
     dirs: Vec<(Vec<String>, PathBuf)>,
+    /// How much to read at a time, learned across the drop's items.
+    chunk: std::cell::Cell<reader::ChunkSize>,
     out: Extraction,
 }
 
@@ -552,6 +554,7 @@ impl<'a> Writer<'a> {
             progress,
             by_bytes,
             dirs: Vec::new(),
+            chunk: std::cell::Cell::new(reader::ChunkSize::new()),
             out: Extraction::default(),
         }
     }
@@ -670,7 +673,7 @@ impl<'a> Writer<'a> {
     /// in pieces sized by how fast the source answers ([`reader::ChunkSize`]).
     fn copy_stream(&self, link: &Link, path: &Path, size: Option<u64>) -> Result<(), Stop> {
         let mut file = std::fs::File::create_new(path)?;
-        let mut chunk = reader::ChunkSize::new();
+        let mut chunk = self.chunk.get().next_item();
         let mut spare: Vec<Vec<u8>> = Vec::with_capacity(reader::AHEAD);
         let (mut asked, mut on_the_way) = (0u64, 0usize);
         loop {
@@ -692,6 +695,10 @@ impl<'a> Writer<'a> {
             };
             on_the_way -= 1;
             chunk.learn(done.asked, done.got, done.took);
+            if done.pinned {
+                chunk.pin();
+            }
+            self.chunk.set(chunk);
             done.hr.ok()?;
             let bytes = done.buffer.get(..done.got).unwrap_or_default();
             if !bytes.is_empty() {

@@ -7008,6 +7008,11 @@ fn whole_pc_results_say_when_the_index_is_still_being_built(cx: &mut TestAppCont
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\t", vec![]);
     fs.insert_dir(r"C:\a", vec![file("found.txt", 1)]);
+    // The walk hands searches a copy of what it has after a folder is listed, at most every 2 s
+    // (outside arke-core's own tests): C:\b, listed after 2.5 s, publishes C:\a's file. Listed in
+    // this order (even with one walker thread), the hung C:\slow comes last.
+    fs.insert_dir(r"C:\b", vec![file("other.txt", 1)]);
+    fs.set_delay(r"C:\b", Duration::from_millis(2500));
     fs.insert_dir(r"C:\slow", vec![file("late.txt", 1)]);
     fs.hang(r"C:\slow");
     let shell = Arc::new(FakeShell::default());

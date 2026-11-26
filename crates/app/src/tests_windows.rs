@@ -778,13 +778,14 @@ fn restoring_answers_after_the_front_window_and_opens_at_most_twenty(cx: &mut Te
     assert_eq!(workspaces(cx).len(), crate::settings::RESTORED_WINDOWS_MAX);
 }
 
-fn settings_file(name: &str, json: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("arke-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("settings.json");
+fn settings_file(name: &str, json: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-{name}-"))
+        .tempdir()
+        .unwrap();
+    let path = guard.path().join("settings.json");
     std::fs::write(&path, json).unwrap();
-    path
+    (path, guard)
 }
 
 /// The settings file read slowly (%APPDATA% on a network share): a folder visited and Arke
@@ -792,7 +793,7 @@ fn settings_file(name: &str, json: &str) -> PathBuf {
 #[gpui::test]
 fn nothing_is_written_before_the_settings_file_is_read(cx: &mut TestAppContext) {
     let saved = r#"{"show_hidden": true, "recent": ["C:\\old"]}"#;
-    let path = settings_file("unread", saved);
+    let (path, _guard) = settings_file("unread", saved);
     let store = cx.update(|cx| SettingsStore::reading_slowly(path.clone(), cx));
     store.update(cx, |s, cx| {
         s.update(|st| st.remember(Path::new(r"C:\new")), cx);
@@ -805,14 +806,13 @@ fn nothing_is_written_before_the_settings_file_is_read(cx: &mut TestAppContext) 
     cx.quit();
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 /// Folders visited before the file was read join it, and are written even when Arke quits right
 /// after (the write at quit is for a change newer than any written).
 #[gpui::test]
 fn folders_visited_before_the_file_is_read_are_written_with_it(cx: &mut TestAppContext) {
-    let path = settings_file("late", r#"{"show_hidden": true, "recent": ["C:\\old"]}"#);
+    let (path, _guard) = settings_file("late", r#"{"show_hidden": true, "recent": ["C:\\old"]}"#);
     let store = cx.update(|cx| SettingsStore::reading_slowly(path.clone(), cx));
     store.update(cx, |s, cx| {
         s.update(|st| st.remember(Path::new(r"C:\new")), cx);
@@ -838,7 +838,6 @@ fn folders_visited_before_the_file_is_read_are_written_with_it(cx: &mut TestAppC
         serde_json::json!([r"C:\new", r"C:\old"]),
         "{written}"
     );
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 /// A saved window whose tabs are the given folders, the ones in `pinned` pinned.

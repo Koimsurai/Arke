@@ -1217,8 +1217,8 @@ mod tests {
     /// subfolder times the way a listing shows them.
     #[test]
     fn real_fs_walk_matches_listing() {
-        let root = std::env::temp_dir().join(format!("arke-dirsize-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let root = tmp_dir.path().to_path_buf();
         std::fs::create_dir_all(root.join(r"a\b")).unwrap();
         std::fs::write(root.join("one"), [0u8; 10]).unwrap();
         std::fs::write(root.join(r"a\two"), [0u8; 200]).unwrap();
@@ -1232,6 +1232,5 @@ mod tests {
         let listed = real.stat(&root.join("a")).unwrap().modified;
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].size.bytes, found[0].modified), (3200, listed));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

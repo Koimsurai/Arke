@@ -900,8 +900,8 @@ mod tests {
     )]
     fn this_machines_send_to_reads_quickly() {
         let _com = crate::win_fileops::Com::init().unwrap();
-        let file = crate::win::long_temp_dir()
-            .join(format!("arke-sendto-real-{}.txt", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-sendto-real-");
+        let file = tmp_dir.path().join("sendto.txt");
         std::fs::write(&file, "x").unwrap();
         let handler = MenuHandler::send_to();
         let read = || {
@@ -919,7 +919,6 @@ mod tests {
         let (_, first) = read();
         let (menu, took) = read();
         eprintln!("first {first:?}, again {took:?}");
-        let _ = std::fs::remove_file(&file);
         let Some(ShellMenuEntry::Submenu {
             label, children, ..
         }) = menu.entries.first()
@@ -981,14 +980,14 @@ mod tests {
 
     #[test]
     fn send_to_lists_its_folder_as_explorer_names_it() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-sendto-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-sendto-");
+        let dir = tmp_dir.path().to_path_buf();
         let _com = crate::win_fileops::Com::init().unwrap();
         let send_to = send_to_folder_with_shortcut(&dir);
         let names: Vec<String> = send_to_targets(&send_to)
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(names, ["Args tool"]);
     }
 
@@ -997,8 +996,8 @@ mod tests {
     #[test]
     #[ignore = "starts cmd.exe through the shell; run by hand"]
     fn a_file_sent_to_a_shortcut_reaches_its_program() {
-        let dir =
-            crate::win::long_temp_dir().join(format!("arke-sendto-run-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-sendto-run-");
+        let dir = tmp_dir.path().to_path_buf();
         let _com = crate::win_fileops::Com::init().unwrap();
         let send_to = send_to_folder_with_shortcut(&dir);
         let file = dir.join("sent.txt");
@@ -1018,7 +1017,6 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        let _ = std::fs::remove_dir_all(&dir);
         let got = got.expect("the program never ran");
         assert!(got.contains("sent.txt"), "{got:?}");
     }

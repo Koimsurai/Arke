@@ -1021,14 +1021,7 @@ fn counted() -> &'static Counted {
         let file = if cfg!(test) {
             None
         } else {
-            version.and_then(|_| {
-                std::env::var_os("LOCALAPPDATA").map(|d| {
-                    PathBuf::from(d)
-                        .join("Arke")
-                        .join("bin-usage")
-                        .join("counted.txt")
-                })
-            })
+            version.and_then(|_| crate::paths::bin_usage_dir().map(|d| d.join("counted.txt")))
         };
         let version = version.map_or_else(
             || "unknown".to_owned(),
@@ -1085,28 +1078,23 @@ pub(crate) mod test_support {
     use crate::shell::OpOutcome;
 
     /// A folder under %TEMP% named for this test and process; only it is ever touched.
-    pub(crate) struct Sandbox(pub(crate) PathBuf);
+    pub(crate) struct Sandbox(
+        pub(crate) PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         pub(crate) fn new(tag: &str) -> Self {
             purge_leftovers(tag);
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-test-fastbin-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = crate::win::long_tempdir(&format!("arke-test-fastbin-{tag}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
         pub(crate) fn file(&self, rel: &str, body: &str) -> PathBuf {
             let path = self.0.join(rel);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, body).unwrap();
             path
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
 
@@ -1314,21 +1302,16 @@ mod tests {
     }
 
     /// A folder under %TEMP% for tests that only write and list their own files; removed after.
-    struct Scratch(PathBuf);
+    struct Scratch(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-test-binlimit-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let guard = crate::win::long_tempdir(&format!("arke-test-binlimit-{tag}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 
@@ -1702,7 +1685,7 @@ mod tests {
         assert_eq!(Path::new(&items[0].now), now);
         let back = Undo::PutBack(vec![PutBack {
             now: items[0].now.clone(),
-            parent: sb.0.clone(),
+            parent: sb.0,
             name: "project".into(),
         }]);
         assert_eq!(
@@ -1794,7 +1777,6 @@ mod tests {
             assert!(fast_item.join("x.txt").exists());
         }
         purge(&recycled_from(engine_item.parent().unwrap()));
-        let _ = fs::remove_dir_all(arke_core::path::verbatim(&sb.0));
     }
 
     /// Many items at once from several threads (as with two windows deleting together): each gets

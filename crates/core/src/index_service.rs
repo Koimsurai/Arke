@@ -2322,7 +2322,7 @@ mod tests {
     /// before the rewalk that catches up on changes made meanwhile.
     #[test]
     fn items_come_from_the_index_only_while_it_is_current() {
-        let (dir, cache) = temp_cache("current");
+        let (_, cache, _tmp) = temp_cache("current");
         let fs = share_fs();
         let svc = IndexService::start(
             Arc::clone(&fs) as Arc<dyn Fs>,
@@ -2352,7 +2352,6 @@ mod tests {
         assert_eq!(items(&svc), Some(2));
         assert_eq!(svc.last_rebuild(), Some(Rebuild::Resumed));
         drop(svc);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// An index cut off at the item limit never stands in for a walk: folders it didn't get to
@@ -2475,7 +2474,7 @@ mod tests {
     /// inside ignored. Changing the exclusions invalidates the saved index.
     #[test]
     fn excluded_folders_are_not_indexed_and_invalidate_the_cache() {
-        let (dir, cache) = temp_cache("excluded");
+        let (_, cache, _tmp) = temp_cache("excluded");
         let fs = FakeFs::new();
         fs.insert_dir(
             r"C:\",
@@ -2521,7 +2520,6 @@ mod tests {
         let svc = IndexService::start(fs, excluded(&[]), || {});
         wait("rebuild", || found(&svc, "level-report").len() == 1);
         drop(svc);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2549,7 +2547,7 @@ mod tests {
     /// watches.
     #[test]
     fn passive_mode_only_reads_the_cache() {
-        let (dir, cache) = temp_cache("passive");
+        let (_, cache, _tmp) = temp_cache("passive");
         let fs = FakeFs::new();
         fs.insert_dir(
             r"C:\nas",
@@ -2574,7 +2572,6 @@ mod tests {
         assert_eq!(fs.read_dir_calls(), 0, "no walk");
         assert_eq!(fs.watcher_count(Path::new(r"C:\")), 0, "no watch");
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Tight resources (`can_build` says no): no walk, status shows deferred; catches up once
@@ -2730,7 +2727,8 @@ mod tests {
 
     #[test]
     fn serves_the_cached_index_while_rebuilding() {
-        let dir = std::env::temp_dir().join(format!("arke-index-test-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let cache = dir.join("index.bin");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -2760,12 +2758,12 @@ mod tests {
         wait("rebuild done", || ready(&svc));
         assert_eq!(found(&svc, "report"), [r"C:\new\new-report.txt"]);
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_fresh_cache_is_used_without_rescanning() {
-        let dir = std::env::temp_dir().join(format!("arke-index-fresh-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let cache = dir.join("index.bin");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -2806,7 +2804,6 @@ mod tests {
         wait("new cache loaded", || ready(&svc));
         assert_eq!(found(&svc, "report"), [r"C:\new\new-report.txt"]);
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn journal_opts(cache: &Path, journal: &Arc<FakeJournal>) -> IndexOptions {
@@ -2817,15 +2814,20 @@ mod tests {
         o
     }
 
-    fn temp_cache(tag: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("arke-journal-{tag}-{}", std::process::id()));
+    /// A folder of its own and the index file in it; the folder goes when the last is dropped.
+    fn temp_cache(tag: &str) -> (PathBuf, PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("arke-journal-{tag}-"))
+            .tempdir()
+            .unwrap();
+        let dir = tmp.path().to_path_buf();
         let cache = dir.join("index.bin");
-        (dir, cache)
+        (dir, cache, tmp)
     }
 
     #[test]
     fn journal_catches_up_on_changes_made_while_closed() {
-        let (dir, cache) = temp_cache("catchup");
+        let (_, cache, _tmp) = temp_cache("catchup");
         let me = Path::new(r"C:\Users\me");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -2878,7 +2880,6 @@ mod tests {
         journal.push(me.join("live-report.txt"), false);
         wait("live change", || found(&svc, "live-report").len() == 1);
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A folder replaced by a new one at the same path (`rm -rf build && mkdir build`, or an
@@ -2887,7 +2888,7 @@ mod tests {
     /// old contents may come back, after catching up or live.
     #[test]
     fn a_folder_replaced_at_the_same_path_leaves_nothing_behind() {
-        let (dir, cache) = temp_cache("replaced");
+        let (_, cache, _tmp) = temp_cache("replaced");
         let me = Path::new(r"C:\Users\me");
         let build = me.join("build");
         let app = me.join("app");
@@ -2966,12 +2967,11 @@ mod tests {
             "the previous contents are gone live too"
         );
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn folder_sizes_come_from_the_index_only_when_journaled_and_live() {
-        let (dir, cache) = temp_cache("sizes");
+        let (_, cache, _tmp) = temp_cache("sizes");
         let me = Path::new(r"C:\Users\me");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -3006,7 +3006,6 @@ mod tests {
         });
         assert_eq!(fs.read_dir_calls(), calls, "answered from the index");
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The service lists other people's profile folders without contents, so an index built from
@@ -3017,7 +3016,7 @@ mod tests {
     fn hidden_profiles_count_from_the_index() {
         use crate::dirsize::Profiles;
         use crate::journal::{LISTED_ROOT, Listed};
-        let (dir, cache) = temp_cache("profiles");
+        let (dir, cache, _tmp) = temp_cache("profiles");
         let fs = FakeFs::new();
         let file = |name: &str, size| Entry::new(name, EntryKind::File, size, None, 0);
         let folder = |name: &str| Entry::new(name, EntryKind::Dir, 0, None, 0x10);
@@ -3078,7 +3077,6 @@ mod tests {
             assert_eq!(inside, None, "walked instead");
             drop(svc);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Checkpoints are saved periodically while running. If the journal overwrites the build-time
@@ -3086,7 +3084,7 @@ mod tests {
     /// and earlier recorded changes are kept.
     #[test]
     fn checkpoints_avoid_rebuilding_after_the_journal_wraps() {
-        let (dir, cache) = temp_cache("checkpoint");
+        let (dir, cache, _tmp) = temp_cache("checkpoint");
         let fs = FakeFs::new();
         let a = Path::new(r"C:\a");
         fs.insert_dir(
@@ -3131,12 +3129,11 @@ mod tests {
         journal.push(a.join("later-report.txt"), false);
         wait("later changes", || found(&svc, "later-report").len() == 1);
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn journal_gaps_trigger_a_rebuild() {
-        let (dir, cache) = temp_cache("gap");
+        let (_, cache, _tmp) = temp_cache("gap");
         let fs = FakeFs::new();
         fs.insert_dir(
             r"C:\a",
@@ -3169,7 +3166,6 @@ mod tests {
         wait("second rebuild", || found(&svc, "second-report").len() == 1);
         wait("journal refollowed", || journal.follow_calls() > calls);
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #343: the index service going away (stopped, updated) isn't a journal gap. Following
@@ -3177,7 +3173,7 @@ mod tests {
     /// nothing is walked again.
     #[test]
     fn the_service_going_away_is_followed_again_not_rebuilt() {
-        let (dir, cache) = temp_cache("refollow");
+        let (_, cache, _tmp) = temp_cache("refollow");
         let fs = FakeFs::new();
         let a = Path::new(r"C:\a");
         fs.insert_dir(
@@ -3207,7 +3203,6 @@ mod tests {
         assert_eq!(fs.read_dir_calls(), walked, "nothing walked again");
         assert_eq!(svc.rebuilds(), rebuilds, "no rebuild");
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A rebuild asked for while one runs isn't dropped: it follows the running one (a journal gap
@@ -3324,7 +3319,7 @@ mod tests {
     /// rebuild: they are folded into the index without walking.
     #[test]
     fn rebuilds_say_why() {
-        let (dir, cache) = temp_cache("reasons");
+        let (_, cache, _tmp) = temp_cache("reasons");
         let me = Path::new(r"C:\Users\me");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -3392,7 +3387,6 @@ mod tests {
         wait("settings rebuild", || ready(&svc));
         assert_eq!(svc.last_rebuild(), Some(Rebuild::SettingsChanged));
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             Rebuild::OverlayFull(100_001).to_string(),
             "100001 changes since the last build"
@@ -3404,7 +3398,7 @@ mod tests {
     /// it follows, and a restart after the journal wrapped picks both up without a rewalk.
     #[test]
     fn merged_changes_survive_a_restart() {
-        let (dir, cache) = temp_cache("merge");
+        let (_, cache, _tmp) = temp_cache("merge");
         let a = Path::new(r"C:\a");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -3450,7 +3444,6 @@ mod tests {
             OVERLAY_MAX + 1
         );
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Steady churn (a change every few ms, like a build running) no longer rewrites the
@@ -3458,7 +3451,7 @@ mod tests {
     /// enough, and the final state still makes it to disk.
     #[test]
     fn checkpoints_are_spaced_out_under_steady_churn() {
-        let (dir, cache) = temp_cache("churn");
+        let (_, cache, _tmp) = temp_cache("churn");
         let a = Path::new(r"C:\a");
         let fs = FakeFs::new();
         fs.insert_dir(
@@ -3511,7 +3504,6 @@ mod tests {
         assert_eq!(found(&svc, "last-report"), [r"C:\a\last-report.txt"]);
         assert_eq!(svc.last_rebuild(), None);
         drop(svc);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Write volume of checkpoints over a day on a busy developer disk, old rule against new.

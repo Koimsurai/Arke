@@ -534,9 +534,8 @@ fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
     let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
-    let dir = std::env::temp_dir().join(format!("arke-test-restart-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let dir = tmp_dir.path().to_path_buf();
     let exe = dir.join("arke.exe");
     std::fs::write(&exe, b"not a program").unwrap();
     std::fs::write(dir.join("arke.exe.old"), b"the version that runs").unwrap();
@@ -550,5 +549,4 @@ fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
         }
         other => panic!("{other:?}"),
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }

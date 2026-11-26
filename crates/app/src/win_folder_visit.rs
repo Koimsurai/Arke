@@ -1916,8 +1916,8 @@ mod tests {
         const SID_SFOLDERVIEW: GUID = GUID::from_u128(0xcde7_25b0_ccc9_4519_917e_325d_72fa_b4ce);
         // SAFETY: this test thread's apartment.
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-visit-doc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         let parse = |path: &Path| {
             let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -1964,7 +1964,6 @@ mod tests {
             .unwrap();
         }
         assert_eq!(*picked.borrow(), [Arc::<str>::from("a.txt")]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Ending a visit before its thread got going still ends it: the thread sees the request.
@@ -2164,8 +2163,8 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::PM_REMOVE;
         // SAFETY: this test thread's apartment.
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-visit-notify-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         let name: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut raw = std::ptr::null_mut();
@@ -2252,6 +2251,5 @@ mod tests {
             let _ = DestroyWindow(state.messages);
         }
         CURRENT.with(|c| *c.borrow_mut() = None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

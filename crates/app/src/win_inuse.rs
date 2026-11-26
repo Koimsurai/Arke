@@ -382,23 +382,16 @@ mod tests {
     use super::*;
     use std::process::{Command, Stdio};
 
-    struct Sandbox(PathBuf);
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-inuse-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            if self.0.starts_with(crate::win::long_temp_dir()) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
+            let guard = crate::win::long_tempdir(&format!("arke-inuse-{tag}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 

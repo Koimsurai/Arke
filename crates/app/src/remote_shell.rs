@@ -241,8 +241,7 @@ pub(crate) fn start(
     store: &gpui::Entity<crate::settings::SettingsStore>,
     cx: &gpui::App,
 ) -> Arc<Remotes> {
-    let known_hosts =
-        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Arke").join("known_hosts"));
+    let known_hosts = crate::paths::known_hosts_file();
     let transport: Arc<dyn arke_remote::dav::Transport> = match arke_remote::http::WinHttp::new() {
         Ok(http) => Arc::new(http),
         Err(err) => {
@@ -252,7 +251,7 @@ pub(crate) fn start(
     };
     let remotes = Remotes::new(arke_remote::RemotesConfig {
         known_hosts,
-        cache_dir: std::env::temp_dir().join("Arke").join("remote"),
+        cache_dir: crate::paths::remote_cache_dir(),
         secrets: Arc::new(arke_remote::creds::CredentialManager),
         transport,
         portable: Arc::new(arke_remote::wpd::Wpd::new()),

@@ -519,12 +519,13 @@ impl IStream_Impl for FakeStream_Impl {
     }
 }
 
-/// An empty scratch folder for one test.
-pub(crate) fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("arke-virtual-test-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// An empty scratch folder for one test, and the guard that deletes it when dropped.
+pub(crate) fn scratch(name: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-virtual-test-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 /// Writes a drop into `stage` on a worker thread, as Arke does.
@@ -594,7 +595,7 @@ fn writes_memory_and_stream_items_with_folders() {
         "folders aren't asked for contents"
     );
 
-    let stage = scratch("mixed");
+    let (stage, _guard) = scratch("mixed");
     let progress = Arc::new(OpProgress::default());
     let out = extract_on_worker(drop, &stage, &progress);
     assert!(!out.cancelled);
@@ -627,7 +628,6 @@ fn writes_memory_and_stream_items_with_folders() {
     );
     assert_eq!(progress.done.load(Ordering::Relaxed), 5);
     assert_eq!(progress.bytes.load(Ordering::Relaxed), 5 + 3000 + 10);
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// A big stream is copied a chunk at a time, never read whole.
@@ -638,7 +638,7 @@ fn large_streams_are_copied_in_chunks() {
     let source = FakeSource::new(vec![FakeItem::stream("big.iso", len)]);
     let seen = source.seen();
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("large");
+    let (stage, _guard) = scratch("large");
     let progress = Arc::new(OpProgress::default());
     let out = extract_on_worker(drop, &stage, &progress);
     assert!(out.failed.is_none() && !out.cancelled);
@@ -650,7 +650,6 @@ fn large_streams_are_copied_in_chunks() {
     assert!(seen.reads.load(Ordering::Relaxed) >= 6);
     assert_eq!(progress.work_total.load(Ordering::Relaxed), len);
     assert_eq!(progress.work_done.load(Ordering::Relaxed), len);
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Cancel stops mid-stream: the half-written file is removed and nothing after it is written.
@@ -664,12 +663,11 @@ fn cancel_stops_mid_stream() {
     ]);
     source.cancel_after = Some((2, Arc::clone(&progress)));
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("cancel");
+    let (stage, _guard) = scratch("cancel");
     let out = extract_on_worker(drop, &stage, &progress);
     assert!(out.cancelled);
     assert!(!stage.join("first.bin").exists());
     assert!(!stage.join("second.txt").exists());
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Names from the source can't leave the target folder or use names Windows refuses.
@@ -694,7 +692,7 @@ fn names_stay_inside_and_are_valid() {
         FakeItem::memory(r"..", b"nameless"),
     ]);
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("names");
+    let (stage, _guard) = scratch("names");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert_eq!(
         out.top,
@@ -702,7 +700,6 @@ fn names_stay_inside_and_are_valid() {
         "the nameless item is skipped"
     );
     assert!(!stage.parent().unwrap().join("escaped.txt").exists());
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Older programs only give the ANSI descriptor.
@@ -712,11 +709,10 @@ fn ansi_descriptor_is_read() {
     let mut source = FakeSource::new(vec![FakeItem::memory("old.txt", b"ansi")]);
     source.ansi = true;
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("ansi");
+    let (stage, _guard) = scratch("ansi");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert_eq!(out.top, [stage.join("old.txt")]);
     assert_eq!(std::fs::read(stage.join("old.txt")).unwrap(), b"ansi");
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// An Outlook message comes as a storage and is saved as a compound file.
@@ -731,7 +727,7 @@ fn storage_items_are_saved_as_compound_files() {
         body: Body::Storage,
     }]);
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("storage");
+    let (stage, _guard) = scratch("storage");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert!(out.failed.is_none(), "{:?}", out.failed);
     let saved = stage.join("Re_ hello.msg");
@@ -743,7 +739,6 @@ fn storage_items_are_saved_as_compound_files() {
         .collect();
     // SAFETY: a null-terminated path.
     assert!(unsafe { StgIsStorageFile(PCWSTR(wide.as_ptr())) }.is_ok());
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// A source that can finish later is read by the worker, and told when the drop is over.
@@ -759,7 +754,7 @@ fn sources_that_finish_later_are_read_on_the_worker() {
         seen.contents.lock().is_empty(),
         "nothing read during the drop"
     );
-    let stage = scratch("later");
+    let (stage, _guard) = scratch("later");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert_eq!(std::fs::read(stage.join("zip.txt")).unwrap(), b"zipped");
     assert!(out.failed.is_none());
@@ -776,7 +771,6 @@ fn sources_that_finish_later_are_read_on_the_worker() {
         *seen.ended.lock(),
         [(windows::Win32::Foundation::E_ABORT, 0)]
     );
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Files on disk win when a source offers both; otherwise the drop stands for virtual files.
@@ -816,7 +810,7 @@ fn zip_folder_items_are_taken_like_a_drop() {
     let _ = env_logger::builder().is_test(true).try_init();
     // SAFETY: this test's thread becomes an STA, as a window thread is; undone at the end.
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.unwrap();
-    let base = scratch("zip");
+    let (base, _guard) = scratch("zip");
     let zip_path = base.join("album.zip");
     let photo: Vec<u8> = (0..3 * CHUNK as u64 + 7).map(pattern).collect();
     {
@@ -886,7 +880,6 @@ fn zip_folder_items_are_taken_like_a_drop() {
             assert_eq!(std::fs::read(stage.join(rel)).unwrap(), bytes, "{rel}");
         }
     }
-    let _ = std::fs::remove_dir_all(&base);
     // SAFETY: pairs with CoInitializeEx above.
     unsafe { CoUninitialize() };
 }

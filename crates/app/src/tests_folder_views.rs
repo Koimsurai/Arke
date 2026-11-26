@@ -364,10 +364,8 @@ fn picks_while_opening_and_failed_opens(cx: &mut TestAppContext) {
 /// Saved to `folder_views.json` in the background and read back at the next start.
 #[gpui::test]
 fn remembered_views_survive_a_restart(cx: &mut TestAppContext) {
-    let dir =
-        std::env::temp_dir().join(format!("arke-folder-views-restart-{}", std::process::id()));
-    let file = dir.join("folder_views.json");
-    let _ = std::fs::remove_dir_all(&dir);
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let file = tmp_dir.path().join("folder_views.json");
     cx.update(|cx| {
         FolderViewStore::init(Some(file.clone()), cx);
     });
@@ -406,7 +404,6 @@ fn remembered_views_survive_a_restart(cx: &mut TestAppContext) {
     });
     wait_until(cx, &again, "load a after restart", loaded(r"C:\a"));
     assert_eq!(view_mode(&again, cx), ViewMode::Icons);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn downloads_shell() -> Arc<FakeShell> {

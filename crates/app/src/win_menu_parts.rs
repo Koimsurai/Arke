@@ -487,10 +487,10 @@ mod tests {
     /// file, each class once.
     #[test]
     fn real_handlers_for_a_file() {
-        let file = std::env::temp_dir().join(format!("arke-menu-parts-{}.txt", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file = tmp_dir.path().join("menu-parts.txt");
         std::fs::write(&file, b"x").unwrap();
         let found = handlers(std::slice::from_ref(&file), false);
-        let _ = std::fs::remove_file(&file);
         let star = crate::win::reg_subkeys(
             windows::Win32::System::Registry::HKEY_CLASSES_ROOT,
             r"*\shellex\ContextMenuHandlers",
@@ -628,8 +628,8 @@ mod timing {
     #[test]
     #[ignore = "loads this machine's shell extensions; run by hand"]
     fn menu_extension_timing() {
-        let dir = std::env::temp_dir().join("arke-menu-timing");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         for name in ["a.txt", "b.zip", "c.png", "d.pdf"] {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
@@ -761,8 +761,8 @@ mod leftovers {
     #[ignore = "loads this machine's shell extensions; run by hand"]
     fn menu_thread_leftovers() {
         const ROUNDS: usize = 10;
-        let dir = std::env::temp_dir().join("arke-menu-leftovers");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let file = dir.join("a.txt");
         std::fs::write(&file, b"x").unwrap();
         // Warm up once so one-time threads don't count.

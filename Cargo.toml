@@ -55,6 +55,9 @@ zip = { version = "9", default-features = false, features = ["deflate", "deflate
 ruzstd = "0.9"
 # CRC-32 of the zstd entries ruzstd decodes; already in the build through flate2
 crc32fast = "1"
+# Content search: SIMD block scan for the needle (already in the build through regex and gpui)
+aho-corasick = "1"
+memchr = "2"
 tar = "0.4"
 # Office Open XML previews (.docx/.xlsx/.pptx): streaming XML reader, no DTD or entity expansion
 quick-xml = "0.42"

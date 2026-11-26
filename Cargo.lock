@@ -327,6 +327,7 @@ dependencies = [
 name = "arke-core"
 version = "0.9.2"
 dependencies = [
+ "aho-corasick",
  "crc32fast",
  "flate2",
  "flume",
@@ -335,6 +336,7 @@ dependencies = [
  "jpeg-decoder",
  "log",
  "lopdf",
+ "memchr",
  "memmap2",
  "notify",
  "nucleo",

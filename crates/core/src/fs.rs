@@ -82,6 +82,11 @@ pub trait Fs: Send + Sync + 'static {
         let bytes = self.read(path, OPEN_IN_MEMORY_MAX)?;
         Ok(Box::new(io::Cursor::new(bytes)))
     }
+    /// Opens for one pass from start to end (content search), so the system can read ahead.
+    /// Same as [`Fs::open`] unless the file system can do better.
+    fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
+        self.open(path)
+    }
     /// Where the symlink or junction at `path` points, as an absolute path (see
     /// [`crate::link::link_target`]). Never follows the link any further.
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
@@ -234,6 +239,25 @@ impl Fs for RealFs {
     fn open(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
         debug_assert_not_ui_thread("open", path);
         Ok(Box::new(io::BufReader::new(std::fs::File::open(path)?)))
+    }
+
+    fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
+        debug_assert_not_ui_thread("open_sequential", path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows::Win32::Storage::FileSystem::FILE_FLAG_SEQUENTIAL_SCAN;
+            // Unbuffered here: the reader fills its own 64 KB blocks.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN.0)
+                .open(path)?;
+            Ok(Box::new(file))
+        }
+        #[cfg(not(windows))]
+        {
+            self.open(path)
+        }
     }
 
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>> {

@@ -3760,8 +3760,9 @@ mod tests {
             })
         });
         assert_eq!(all_paths(&index), [r"C:\", r"D:\", r"D:\walked.txt"]);
-        // The name pool shrank too, so dedup never points into the removed span.
-        assert_eq!(&*index.names, r"C:\D:\walked.txt");
+        // The name pool shrank too, so dedup never points into the removed span. Each name is
+        // after its length.
+        assert_eq!(&*index.names, "\u{3}C:\\\u{3}D:\\\u{a}walked.txt");
     }
 
     /// A NAS share's snapshots are each a full copy of the share: walking them never ends on a
@@ -4587,10 +4588,10 @@ mod tests {
         let fs = FakeFs::new();
         let mut truth: Vec<Truth> = vec![(r"C:\".into(), r"C:\".into(), false, true, 0)];
         let long = "long".repeat(40);
-        let mut top = Vec::new();
+        // `insert_dir` adds each folder to its parent's listing itself (adding it again would list
+        // it twice).
         for i in 0..20u64 {
             let folder = format!("proj{i}");
-            top.push(dir(&folder));
             truth.push((format!(r"C:\{folder}"), folder.clone(), false, true, 0));
             let mut entries = vec![dir("sub")];
             truth.push((format!(r"C:\{folder}\sub"), "sub".into(), false, true, 0));
@@ -4621,7 +4622,6 @@ mod tests {
             );
             truth.push((format!(r"C:\{folder}\sub\{name}"), name, false, false, 7));
         }
-        fs.insert_dir(r"C:\", top);
         let index = Index::build(
             fs.as_ref(),
             &[PathBuf::from(r"C:\")],

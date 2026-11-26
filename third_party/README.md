@@ -138,6 +138,34 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   change to it: anchored popups (menus) are left out, since they have no frame and are never
   active. Re-apply on every GPUI upgrade until upstream has it, then take upstream's version.
   (#420)
+- DirectX devices made ahead on another thread (`src/directx_devices.rs` `PendingDevices`;
+  `src/platform.rs` `new`, `pending_devices`, `attach_pending`, `connect_initially`,
+  `finish_attach`, `attach_gpu`, `detach_gpu`, `is_windowed`, `run` and `open_window`). Upstream
+  makes the devices in `run` on the UI thread before the app's launch callback, and loading the
+  driver and making the shaders took about 220 ms of a 370 ms cold start. `WindowsPlatform::new`
+  now starts a `DirectXDevices` thread when the default windowed start can show windows (the
+  check `connect_initially` makes). It makes the devices with the same `DirectXDevices::new` (same
+  adapter loop from 0, same flags), hands them over, then makes the renderer's shaders while
+  holding the device's shader cache. `run` no longer waits for them: the platform counts as
+  windowed, and the first `open_window` (or the end of the launch callback, if it opened none)
+  takes them and does the rest of `attach_gpu` (DirectWrite's GPU state, vsync) as before. So the
+  work overlaps DirectWrite, the platform window and the app's launch callback, and the first
+  window waits only for what isn't ready yet. If the app starts headless after all, the devices
+  are dropped unused; if the thread can't start or panics, they are made on the UI thread. A
+  failure still panics with "failed to initialize DirectX", now at the first window instead of
+  before the launch callback. Device lost is handled as before. The log says how long the devices
+  took and how long the UI thread waited for them.
+- Shaders shared per device (`src/directx_renderer.rs` `PipelineShader`, `PipelineShaders`,
+  `ShaderCache`, `PipelineState::new`, `DirectXRenderPipelines::new`, `DirectXRenderer::new`,
+  `handle_device_lost_impl`; `src/directx_devices.rs` `DirectXDevices::shaders`). Upstream every
+  window's renderer made the eight pipelines' sixteen shaders and their blend states again, so
+  each menu level (an `AnchoredPopup` window) did too, and debug builds compiled them from
+  source each time. They are made once per device and shared; each window only makes its
+  instance buffers. New devices after a device lost start with an empty cache, which the first
+  window recovering onto them fills. `RUST_LOG=gpui_windows=debug` logs each window renderer's
+  creation time.
+
+  Both worth offering upstream.
 
 ## gpui-pre 0.3.11
 

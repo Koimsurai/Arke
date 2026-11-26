@@ -2336,6 +2336,7 @@ impl Index {
     ) -> Option<NameMatches> {
         let pattern = m.pattern?;
         let pool: &str = &self.names;
+        let pool_len = pool.len();
         let marks: &[u32] = &self.name_marks;
         let next = AtomicUsize::new(0);
         let found: parking_lot::Mutex<NamePieces> = parking_lot::Mutex::new(Vec::new());
@@ -2348,7 +2349,7 @@ impl Index {
                     if k >= marks.len() || cancelled() {
                         break;
                     }
-                    let end = marks.get(k + 1).map_or(pool.len(), |&at| at as usize);
+                    let end = marks.get(k + 1).map_or(pool_len, |&at| at as usize);
                     let mut hits = Vec::new();
                     let mut at = marks[k] as usize;
                     while at < end {
@@ -2398,7 +2399,7 @@ impl Index {
         }
         let mut found = found.into_inner();
         found.sort_unstable_by_key(|(k, _)| *k);
-        Some(NameMatches::new(pool.len() / 4 + 1, found))
+        Some(NameMatches::new(pool_len / 4 + 1, found))
     }
 
     /// Builds paths for the selected candidates, applies the folder condition (`dir`: the folder
@@ -3161,13 +3162,13 @@ impl NameMatches {
     /// From the first pass's pieces in pool order, each with its (slot, hit) pairs ascending.
     fn new(slots: usize, pieces: NamePieces) -> Self {
         let mut bits = vec![0u64; slots.div_ceil(64)];
-        let mut hits = Vec::with_capacity(pieces.iter().map(|(_, h)| h.len()).sum());
+        let mut matched = Vec::with_capacity(pieces.iter().map(|(_, h)| h.len()).sum());
         for (_, piece) in pieces {
             for (slot, hit) in piece {
                 let slot = slot as usize;
                 if let Some(word) = bits.get_mut(slot / 64) {
                     *word |= 1 << (slot % 64);
-                    hits.push(hit);
+                    matched.push(hit);
                 }
             }
         }
@@ -3177,7 +3178,11 @@ impl NameMatches {
             before.push(set);
             set += word.count_ones();
         }
-        Self { bits, before, hits }
+        Self {
+            bits,
+            before,
+            hits: matched,
+        }
     }
 
     /// How the name whose entry starts at byte `at` matched, if it did.

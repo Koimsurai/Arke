@@ -41,6 +41,8 @@ use windows::core::{HRESULT, PCWSTR, w};
 
 use crate::shell::{ClipboardFiles, FileOp, ItemFailure, OpOutcome, PutBack, ShellError, Undo};
 
+mod lazy_clipboard;
+
 /// Cancel pressed in a copy engine dialog.
 const COPYENGINE_E_USER_CANCELLED: HRESULT = HRESULT(0x8027_0000_u32.cast_signed());
 const DROPEFFECT_COPY: u32 = 1;
@@ -1887,7 +1889,13 @@ fn set_clipboard_shell(files: &ClipboardFiles) -> Result<(), ShellError> {
 }
 
 pub(crate) fn set_clipboard_files(files: &ClipboardFiles) -> Result<u32, ShellError> {
-    // Prefer the shell data object (most formats); if e.g. a path can't be parsed, fall back
+    // Paths and drop effect at once, shell IDs only when a program asks for them: nothing is
+    // parsed here, so thousands of files cost no more than a few.
+    match lazy_clipboard::set(files) {
+        Ok(seq) => return Ok(seq),
+        Err(err) => log::info!("clipboard without delayed rendering: {err}"),
+    }
+    // Otherwise the shell data object (most formats); if e.g. a path can't be parsed, fall back
     // to a hand-built CF_HDROP.
     match set_clipboard_shell(files) {
         // SAFETY: only reads the sequence number.
@@ -1918,6 +1926,12 @@ pub(crate) fn set_clipboard_files(files: &ClipboardFiles) -> Result<u32, ShellEr
     }
     // SAFETY: only reads the sequence number.
     Ok(unsafe { GetClipboardSequenceNumber() })
+}
+
+/// Before Arke exits: renders the clipboard formats no program has asked for yet, so the files
+/// stay pasteable in full after Arke is gone. Does nothing if Arke put no files on the clipboard.
+pub(crate) fn render_clipboard_on_quit() {
+    lazy_clipboard::render_all_now();
 }
 
 pub(crate) fn set_clipboard_text(text: &str) -> Result<(), ShellError> {

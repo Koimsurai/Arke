@@ -671,6 +671,8 @@ fn app_main(mut args: Args) {
                 update_quiet::on_quit(cx);
                 // Arke's windows leave the shell's window list with it (#319).
                 win_folder_visit::end_all();
+                // Clipboard formats nobody asked for yet are made now, or they die with Arke.
+                win_fileops::render_clipboard_on_quit();
                 // The process ends right after: the last lines (why it quit) go in the file first.
                 crashlog::flush(Duration::from_millis(200));
                 async {}

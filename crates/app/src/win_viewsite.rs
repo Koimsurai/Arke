@@ -405,9 +405,9 @@ pub(crate) mod open_thread {
             }
             // Wakes for an open, a message or the next site to release. An open sent after the
             // queue was found empty has already set the event, so the wait returns at once.
-            let timeout = kept
-                .front()
-                .map_or(INFINITE, |(until, _)| millis(until.saturating_duration_since(now)));
+            let timeout = kept.front().map_or(INFINITE, |(until, _)| {
+                millis(until.saturating_duration_since(now))
+            });
             wake.wait(timeout);
         }
         // The sites go before the apartment that serves them.

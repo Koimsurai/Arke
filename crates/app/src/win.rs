@@ -629,10 +629,13 @@ fn disk_space(root: &[u16]) -> Option<(u64, u64)> {
 
 /// Opens `path` with `ShellExecuteEx` on this thread, which is in an STA. Returns the result and
 /// the site handed out, which must stay answerable after the call (`win_viewsite::open_thread`).
-fn shell_execute(
+fn execute_with_site(
     path: &Path,
     sort: Option<arke_core::SortSpec>,
-) -> (windows::core::Result<()>, Option<windows::Win32::System::Com::IServiceProvider>) {
+) -> (
+    windows::core::Result<()>,
+    Option<windows::Win32::System::Com::IServiceProvider>,
+) {
     let file = wide(path.as_os_str());
     let dir = path.parent().map(|p| wide(p.as_os_str()));
     // The folder view it is opened from, so Photos and the like can step through the folder in
@@ -803,7 +806,7 @@ impl Shell for WinShell {
         let (done, opened) = flume::bounded(1);
         let file = path.to_path_buf();
         let job: OpenJob = Box::new(move || {
-            let (result, site) = shell_execute(&file, sort);
+            let (result, site) = execute_with_site(&file, sort);
             let _ = done.send(result);
             site
         });

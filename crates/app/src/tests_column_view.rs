@@ -271,3 +271,123 @@ fn a_wide_parent_column_gives_way_in_a_smaller_window(cx: &mut TestAppContext) {
     );
     crate::prefs::set_view_column_width(ViewColumn::Parent, None);
 }
+
+/// Parent column drop setup: `C:\m` holds `aaa`, `one` (the current folder, with `x.txt` and
+/// `y.txt`) and `b.txt`; the column view is open.
+fn drop_columns(
+    cx: &mut TestAppContext,
+) -> (Arc<FakeShell>, Entity<Explorer>, &mut VisualTestContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![dir("aaa"), dir("one"), file("b.txt", 1)]);
+    fs.insert_dir(r"C:\m\aaa", vec![]);
+    fs.insert_dir(r"C:\m\one", vec![file("x.txt", 1), file("y.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\m\one");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\m\one"));
+    cx.simulate_resize(gpui::size(px(1800.), px(800.)));
+    cx.dispatch_action(crate::explorer::ViewColumns);
+    wait_until(cx, &view, "parent column", |v| {
+        v.parent_column_names().len() == 3
+    });
+    cx.run_until_parked();
+    (shell, view, cx)
+}
+
+/// Centre of the current column's first row (`x.txt`).
+fn x_txt_row(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Point<Pixels> {
+    let (list, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let parent = crate::prefs::view_column_width(ViewColumn::Parent).unwrap_or(px(240.));
+    point(
+        list.left() + parent + px(60.),
+        list.top() + px(4.) + row * 0.5,
+    )
+}
+
+fn centre(cx: &mut VisualTestContext, selector: &'static str) -> Point<Pixels> {
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} drawn"))
+        .center()
+}
+
+/// Drags from `from` to `to` and releases there holding `modifiers`.
+fn drag_and_drop(
+    cx: &mut VisualTestContext,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+    modifiers: Modifiers,
+) {
+    cx.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    cx.simulate_mouse_move(from + point(px(30.), px(4.)), MouseButton::Left, modifiers);
+    cx.simulate_mouse_move(to, MouseButton::Left, modifiers);
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| cx.has_active_drag()), "the drag started");
+    cx.simulate_mouse_up(to, MouseButton::Left, modifiers);
+    cx.run_until_parked();
+}
+
+/// #430: a folder in the parent column takes drops like a folder row in the list: same volume
+/// moves, Ctrl copies, and the current folder (where the items already are) takes none.
+#[gpui::test]
+fn dropping_on_a_parent_column_folder_moves_or_copies_into_it(cx: &mut TestAppContext) {
+    let (shell, view, cx) = drop_columns(cx);
+    let from = x_txt_row(&view, cx);
+    let aaa = centre(cx, "parent-row-0");
+    drag_and_drop(cx, from, aaa, Modifiers::none());
+    wait_shell_in(cx, "the move", || !shell.ops().is_empty());
+    assert_eq!(
+        shell.ops(),
+        [FileOp::Move {
+            sources: vec![PathBuf::from(r"C:\m\one\x.txt")],
+            dest: PathBuf::from(r"C:\m\aaa"),
+        }]
+    );
+    let from = x_txt_row(&view, cx);
+    let aaa = centre(cx, "parent-row-0");
+    let ctrl = Modifiers {
+        control: true,
+        ..Modifiers::none()
+    };
+    drag_and_drop(cx, from, aaa, ctrl);
+    wait_shell_in(cx, "the copy", || shell.ops().len() == 2);
+    assert!(
+        matches!(&shell.ops()[1], FileOp::Copy { dest, .. } if dest == Path::new(r"C:\m\aaa")),
+        "{:?}",
+        shell.ops()
+    );
+    // The current folder's own row: the items are there already, so nothing happens.
+    let from = x_txt_row(&view, cx);
+    let one = centre(cx, "parent-row-1");
+    drag_and_drop(cx, from, one, Modifiers::none());
+    std::thread::sleep(Duration::from_millis(50));
+    cx.run_until_parked();
+    assert_eq!(shell.ops().len(), 2, "{:?}", shell.ops());
+}
+
+/// #430: the empty space of the parent column takes drops for the folder it shows, and so does a
+/// file row in it (like the list's background under a file).
+#[gpui::test]
+fn dropping_on_parent_column_empty_space_goes_to_its_folder(cx: &mut TestAppContext) {
+    let (shell, view, cx) = drop_columns(cx);
+    let column = cx.debug_bounds("parent-column").expect("column drawn");
+    let empty = point(column.left() + px(60.), column.bottom() - px(40.));
+    let from = x_txt_row(&view, cx);
+    drag_and_drop(cx, from, empty, Modifiers::none());
+    wait_shell_in(cx, "the move", || !shell.ops().is_empty());
+    assert_eq!(
+        shell.ops(),
+        [FileOp::Move {
+            sources: vec![PathBuf::from(r"C:\m\one\x.txt")],
+            dest: PathBuf::from(r"C:\m"),
+        }]
+    );
+    let from = x_txt_row(&view, cx);
+    let file_row = centre(cx, "parent-row-2");
+    drag_and_drop(cx, from, file_row, Modifiers::none());
+    wait_shell_in(cx, "the second move", || shell.ops().len() == 2);
+    assert!(
+        matches!(&shell.ops()[1], FileOp::Move { dest, .. } if dest == Path::new(r"C:\m")),
+        "{:?}",
+        shell.ops()
+    );
+}

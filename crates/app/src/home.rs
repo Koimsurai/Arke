@@ -1419,7 +1419,12 @@ impl Render for HomePage {
         }
         // The cards record themselves again as they are drawn.
         self.focused = self.focus.is_focused(window);
-        self.ring = self.focused && window.last_input_was_keyboard();
+        let ring = self.focused && window.last_input_was_keyboard();
+        // The ring comes up (Tab to the page): its card comes into view.
+        if ring && !self.ring {
+            self.reveal.set(true);
+        }
+        self.ring = ring;
         self.spots.borrow_mut().clear();
         let quick: Vec<AnyElement> = self
             .favorites

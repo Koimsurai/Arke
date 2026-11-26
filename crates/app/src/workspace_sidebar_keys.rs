@@ -339,7 +339,8 @@ impl Workspace {
 
     /// Every stop, in the order Tab goes (see [`Stop`]).
     fn stops(&self, cx: &mut gpui::App) -> Vec<Stop> {
-        let lists = if self.page_focus(cx).is_some() {
+        let page = self.page_focus(cx).is_some();
+        let lists = if page {
             1
         } else {
             self.tabs[self.active].panes.len()
@@ -348,7 +349,11 @@ impl Workspace {
         if Self::sidebar_takes_keys(cx) {
             ring.push(Stop::Sidebar);
         }
-        ring.extend([Stop::PathBar, Stop::Toolbar, Stop::Search]);
+        // A page replaces the panes, the path bar, the pane row and the search box with it: they
+        // aren't drawn, so the keyboard can't be left on them.
+        if !page {
+            ring.extend([Stop::PathBar, Stop::Toolbar, Stop::Search]);
+        }
         ring
     }
 
@@ -588,6 +593,8 @@ impl Workspace {
 /// 4. each button of the pane row, one by one;
 /// 5. the search box, then, with Tab, its panel (scope, filters, contents), whose last row hands
 ///    Tab on to the first list.
+///
+/// On a page that replaces the panes (Home...), the stops are the page and the sidebar only.
 ///
 /// File Explorer's own order jumps around the window; this one follows F6, so the two keys
 /// agree about where things are. The tab strip and the preview are not stops.

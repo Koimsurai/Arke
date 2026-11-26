@@ -238,7 +238,7 @@ impl Sizes<'_> {
                 .ok()
                 .and_then(|id| self.big_ids.binary_search(&id).ok())
                 .and_then(|k| self.big.get(k).copied())
-                .unwrap_or(u64::from(SIZE_BIG)),
+                .unwrap_or_else(|| u64::from(SIZE_BIG)),
             Some(&small) => u64::from(small),
             None => 0,
         }
@@ -5011,9 +5011,9 @@ mod tests {
 
         // A failed listing takes its big sizes back out with its items.
         let mut index = flat(2);
-        let (before, names) = (index.len(), index.name_bytes());
+        let (before, pool_len) = (index.len(), index.name_bytes());
         index.push(0, "huge.iso", 0, 6 << 40, 0).unwrap();
-        index.truncate(before, names);
+        index.truncate(before, pool_len);
         assert_eq!((index.len(), index.big_ids.len()), (before, 0));
         index.push(0, "next.txt", 0, 3, 0).unwrap();
         assert_eq!(index.size(before), 3);
@@ -5997,6 +5997,7 @@ mod tests {
         reason = "a benchmark run by hand prints its numbers"
     )]
     fn index_bench_from_paths() {
+        use std::fmt::Write as _;
         let Ok(list) = std::env::var("ARKE_INDEX_BENCH_NAMES") else {
             println!("set ARKE_INDEX_BENCH_NAMES to a file with one full path per line");
             return;
@@ -6050,7 +6051,7 @@ mod tests {
             let hits = index.find(&query, 100, false, threads);
             let mut listed = String::new();
             for h in &hits {
-                listed.push_str(&format!("{}|{}\n", h.score, h.path.display()));
+                let _ = writeln!(listed, "{}|{}", h.score, h.path.display());
             }
             let mut times: Vec<Duration> = (0..20)
                 .map(|_| {

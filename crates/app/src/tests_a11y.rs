@@ -1037,3 +1037,35 @@ fn a_favorite_that_is_the_current_folder_is_the_selected_row(cx: &mut TestAppCon
         .count();
     assert_eq!(selected, 1, "one row of w is the selected one");
 }
+
+/// Settings search (#400): the box is named, its hits are a named list whose items say the
+/// setting and its page, and nothing on the way is unnamed.
+#[gpui::test]
+fn the_settings_search_is_named(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    let page = tree(cx);
+    let find = t!("settings.find_setting");
+    assert!(
+        nodes(&page).any(|n| role(n) == "TextInput" && label(n) == find),
+        "the box is named after its placeholder"
+    );
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("hidden");
+    let found = tree(cx);
+    assert_eq!(unnamed(&found), Vec::<String>::new(), "settings search");
+    assert!(
+        nodes(&found).any(|n| role(n) == "ListBox" && label(n) == t!("a11y.results")),
+        "the hits are a named list"
+    );
+    let item = crate::a11y::item_label(&t!("settings.show_hidden"), &[t!("settings.files")]);
+    assert!(
+        nodes(&found).any(|n| role(n) == "ListBoxOption" && label(n) == item),
+        "{item:?} is listed"
+    );
+    assert!(
+        nodes(&found).any(|n| role(n) == "Button" && label(n) == t!("a11y.clear_filter")),
+        "the clear button is named"
+    );
+}

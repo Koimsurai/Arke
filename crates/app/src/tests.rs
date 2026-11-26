@@ -95,6 +95,8 @@ mod sidebar_keys;
 mod sidebar_sections;
 #[path = "tests_sidebar_tree.rs"]
 mod sidebar_tree;
+#[path = "tests_settings_search.rs"]
+mod settings_search;
 #[path = "tests_similar_results.rs"]
 mod similar_results;
 #[path = "tests_small_behaviors.rs"]

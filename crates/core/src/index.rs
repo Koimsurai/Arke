@@ -2594,7 +2594,7 @@ impl Index {
         let name_marks: Vec<u32> = (0..layout.mark_count)
             .map(|k| le32(layout.name_marks + k * 4))
             .collect();
-        validate(&nodes, &names, &name_marks, layout.name_count)?;
+        validate(&nodes, names.as_bytes(), &name_marks, layout.name_count)?;
         validate_big(&big_ids, count)?;
         Ok(Self {
             roots: layout.roots,
@@ -2638,8 +2638,6 @@ impl Index {
             offset: layout.names,
             len: layout.names_len,
         };
-        std::str::from_utf8(&map[layout.names..layout.names + layout.names_len])
-            .map_err(|_not_utf8| bad_format())?;
         let column = |offset: usize| (Arc::clone(&map), offset, layout.count);
         let (m, o, n) = column(layout.nodes);
         let nodes: Column<Node> = Column::Mapped {
@@ -2674,7 +2672,9 @@ impl Index {
             offset: layout.name_marks,
             len: layout.mark_count,
         };
-        validate(&nodes, &names, &name_marks, layout.name_count)?;
+        // The pool's bytes: `names` can't be read as text before this checked them.
+        let pool = &map[layout.names..layout.names + layout.names_len];
+        validate(&nodes, pool, &name_marks, layout.name_count)?;
         validate_big(&big_ids, layout.count)?;
         Ok(Self {
             roots: layout.roots,
@@ -2784,45 +2784,155 @@ fn bad_format() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "index format")
 }
 
-/// Checks the name pool is a run of well-formed entries (`name_count` of them, `marks` at every
-/// [`NAME_CHUNK`]-th) and every node's parent and name are in bounds, so a corrupt file can't
-/// make queries go out of range or misread names. One pass along the pool notes where entries
-/// start (a bit per 4-byte slot); each node then only looks its bit up, instead of reading the
-/// pool at a random place.
-fn validate(nodes: &[Node], names: &str, marks: &[u32], name_count: usize) -> io::Result<()> {
+/// Checks the name pool is a run of well-formed UTF-8 entries (`name_count` of them, `marks` at
+/// every [`NAME_CHUNK`]-th) and every node's parent and name are in bounds, so a corrupt file
+/// can't make queries go out of range or misread names. A big index is checked by a few threads
+/// at once (the work splits at the marks and into runs of nodes).
+fn validate(nodes: &[Node], pool: &[u8], marks: &[u32], name_count: usize) -> io::Result<()> {
+    // Below a few MB, starting threads costs more than they save.
+    let threads = if pool.len() + nodes.len() * size_of::<Node>() < 4 * 1024 * 1024 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(VALIDATE_THREADS)
+    };
+    validate_on(threads, nodes, pool, marks, name_count)
+}
+
+/// Most threads that validate an index on load.
+const VALIDATE_THREADS: usize = 4;
+/// Nodes a validating thread takes at a time.
+const VALIDATE_NODES: usize = 64 * 1024;
+
+/// [`validate`] on `threads` threads (this one included).
+fn validate_on(
+    threads: usize,
+    nodes: &[Node],
+    pool: &[u8],
+    marks: &[u32],
+    name_count: usize,
+) -> io::Result<()> {
     let count = nodes.len();
-    if count > MAX_ITEMS {
+    let marks_ok = marks.len() == name_count.div_ceil(NAME_CHUNK)
+        && pool.is_empty() == marks.is_empty()
+        && marks.first().is_none_or(|&at| at == 0)
+        && marks.windows(2).all(|w| w[0] < w[1])
+        && marks
+            .iter()
+            .all(|&at| at.is_multiple_of(4) && (at as usize) < pool.len());
+    if count > MAX_ITEMS || !marks_ok {
         return Err(bad_format());
     }
-    let mut starts = vec![0u64; (names.len() / 4).div_ceil(64) + 1];
-    let (mut at, mut entries) = (0usize, 0usize);
-    while at < names.len() {
-        if entries.is_multiple_of(NAME_CHUNK)
-            && marks.get(entries / NAME_CHUNK).copied() != u32::try_from(at).ok()
-        {
-            return Err(bad_format());
+    let bad = AtomicBool::new(false);
+    // Where entries start: a bit per 4-byte slot of the pool.
+    let starts: Vec<AtomicU64> = (0..(pool.len() / 4).div_ceil(64) + 1)
+        .map(|_| AtomicU64::new(0))
+        .collect();
+    let next = AtomicUsize::new(0);
+    run_on(threads, || {
+        while !bad.load(Ordering::Relaxed) {
+            let k = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&from) = marks.get(k) else {
+                break;
+            };
+            let end = marks.get(k + 1).map_or(pool.len(), |&at| at as usize);
+            let want = if k + 1 < marks.len() {
+                NAME_CHUNK
+            } else {
+                name_count - k * NAME_CHUNK
+            };
+            if !pool_piece_ok(pool, from as usize, end, want, &starts) {
+                bad.store(true, Ordering::Relaxed);
+            }
         }
-        let (_, next) = entry_name(names, at).ok_or_else(bad_format)?;
-        starts[at / 256] |= 1 << ((at / 4) % 64);
+    });
+    if bad.load(Ordering::Relaxed) {
+        return Err(bad_format());
+    }
+    let starts: Vec<u64> = starts.into_iter().map(AtomicU64::into_inner).collect();
+    let node_ok = |node: &Node| {
+        let parent = node.parent();
+        let at = node.name as usize;
+        (parent == NO_PARENT || (parent as usize) < count)
+            && at.is_multiple_of(4)
+            && starts
+                .get(at / 256)
+                .is_some_and(|w| w & (1 << ((at / 4) % 64)) != 0)
+    };
+    let next = AtomicUsize::new(0);
+    run_on(threads, || {
+        while !bad.load(Ordering::Relaxed) {
+            let first = next.fetch_add(VALIDATE_NODES, Ordering::Relaxed);
+            let Some(run) = nodes.get(first..(first + VALIDATE_NODES).min(count)) else {
+                break;
+            };
+            if run.is_empty() {
+                break;
+            }
+            if !run.iter().all(&node_ok) {
+                bad.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+    if bad.load(Ordering::Relaxed) {
+        return Err(bad_format());
+    }
+    Ok(())
+}
+
+/// One piece of the name pool (`from..end`, from a mark to the next): valid UTF-8, checked here
+/// while it's in cache rather than the whole pool in a pass of its own, and exactly `want`
+/// well-formed entries filling it. Notes where each entry starts in `starts`.
+fn pool_piece_ok(pool: &[u8], from: usize, end: usize, want: usize, starts: &[AtomicU64]) -> bool {
+    let Some(piece) = pool
+        .get(from..end)
+        .and_then(|b| std::str::from_utf8(b).ok())
+    else {
+        return false;
+    };
+    let flush = |(index, set): (usize, u64)| {
+        if set != 0
+            && let Some(cell) = starts.get(index)
+        {
+            cell.fetch_or(set, Ordering::Relaxed);
+        }
+    };
+    // The word of `starts` being filled and its bits so far.
+    let mut pending = (usize::MAX, 0u64);
+    let (mut at, mut entries) = (0usize, 0usize);
+    while at < piece.len() {
+        // `from` is a multiple of 4, so alignment within the piece is alignment in the pool.
+        let Some((_, next)) = entry_name(piece, at) else {
+            return false;
+        };
+        let slot = (from + at) / 4;
+        if slot / 64 != pending.0 {
+            flush(pending);
+            pending = (slot / 64, 0);
+        }
+        pending.1 |= 1 << (slot % 64);
         at = next;
         entries += 1;
     }
-    if at != names.len() || entries != name_count || marks.len() != entries.div_ceil(NAME_CHUNK) {
-        return Err(bad_format());
-    }
-    for node in nodes {
-        let parent = node.parent();
-        let at = node.name as usize;
-        let parent_ok = parent == NO_PARENT || (parent as usize) < count;
-        let name_ok = at.is_multiple_of(4)
-            && starts
-                .get(at / 256)
-                .is_some_and(|w| w & (1 << ((at / 4) % 64)) != 0);
-        if !parent_ok || !name_ok {
-            return Err(bad_format());
+    flush(pending);
+    at == piece.len() && entries == want
+}
+
+/// Runs `work` on `threads` threads, this one included, and waits for them. Threads that can't
+/// be started leave their share to the others (`work` takes its pieces from a shared counter).
+fn run_on(threads: usize, work: impl Fn() + Sync) {
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            let started = std::thread::Builder::new()
+                .name("index-validate".into())
+                .spawn_scoped(scope, &work);
+            if started.is_err() {
+                break;
+            }
         }
-    }
-    Ok(())
+        work();
+    });
 }
 
 /// Checks the ids of big sizes are ascending and in range (so the lookup's binary search holds).
@@ -5522,7 +5632,7 @@ mod tests {
         assert_eq!(index.name_marks.len(), 4);
         assert_eq!(index.name_marks[0], 0);
         let check = |index: &Index, marks: &[u32], count: usize| {
-            validate(&index.nodes, &index.names, marks, count)
+            validate_on(3, &index.nodes, index.names.as_bytes(), marks, count)
         };
         check(&index, &index.name_marks, index.name_count).unwrap();
         same_both_ways(&index, &q("report_0004"), false);
@@ -5566,8 +5676,14 @@ mod tests {
         // A node pointing inside an entry: refused.
         let mut nodes = index.nodes.to_vec();
         nodes[1].name += 4;
-        assert!(validate(&nodes, &index.names, &marks, index.name_count).is_err());
-        assert!(validate(&[], "", &[], 0).is_ok());
+        assert!(validate_on(3, &nodes, index.names.as_bytes(), &marks, index.name_count).is_err());
+        assert!(validate(&[], b"", &[], 0).is_ok());
+        // Not UTF-8 in a name: refused, whatever the threads.
+        let mut pool = index.names.as_bytes().to_vec();
+        pool[MASK_BYTES + 1] = 0xFF;
+        for threads in [1, 3] {
+            assert!(validate_on(threads, &index.nodes, &pool, &marks, index.name_count).is_err());
+        }
     }
 
     #[test]

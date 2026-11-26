@@ -1007,8 +1007,9 @@ pub(crate) trait Shell: Send + Sync + 'static {
 
     /// The icon Windows has for files of type `ext` (lowercase, no dot) from the program
     /// registered for it; `None` when none is registered (the theme icon stays). Reads no file.
-    /// Background thread.
-    fn type_icon(&self, _ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+    /// `px` is the physical size it will be drawn at (the system's own frame for it is used when
+    /// it has one; 0 for the largest available). Background thread.
+    fn type_icon(&self, _ext: &str, _px: u32) -> Option<arke_core::thumbs::Thumbnail> {
         None
     }
 

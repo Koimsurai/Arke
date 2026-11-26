@@ -653,6 +653,12 @@ impl Explorer {
         self.folder_sizes.computing()
     }
 
+    /// How many subfolders were handed to the worker and are not computed yet.
+    #[cfg(test)]
+    pub(crate) fn folder_sizes_pending(&self) -> usize {
+        self.folder_sizes.pending.len()
+    }
+
     /// The folder sizes' bookkeeping, for a test that timed out waiting on them.
     #[cfg(test)]
     pub(crate) fn folder_sizes_state(&self) -> String {

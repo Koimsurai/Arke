@@ -58,11 +58,51 @@ fn an_idle_window_asks_for_no_redraws(cx: &mut TestAppContext) {
     let (ws, cx) = setup_workspace(cx, fs, r"C:\idle");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\idle"));
+    // Opening a folder starts work on real threads (a check of the drive, then the folder sizes),
+    // each answering with a redraw. The test clock runs far faster than they do, so letting it
+    // pass first would end the settling before they answered, and the answers would count as
+    // redraws of an idle window. Wait for them instead.
+    let media = view.update(cx, |v, _| v.media.clone());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        // Only the foreground changes what the check found, so once it says yes, the redraw it
+        // asked for has been drawn and has handed the folders to the size worker.
+        let drive_known = media.update(cx, |m, _| m.media_allowed(Path::new(r"C:\idle")));
+        if drive_known && !view.update(cx, |v, _| v.folder_sizes_computing()) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the drive check and the folder sizes"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let_time_pass(cx, Duration::from_secs(2));
 
     let redraws = Rc::new(Cell::new(0));
     let _workspace = count_notifies(cx, &ws, &redraws);
     let _explorer = count_notifies(cx, &view, &redraws);
+    // Other real threads (the places list, the drives' free space) answer in their own time too:
+    // let a stretch of real time go by without a redraw before counting.
+    let mut quiet = 0;
+    while quiet < 10 {
+        let before = redraws.get();
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+        cx.run_until_parked();
+        quiet = if redraws.get() == before {
+            quiet + 1
+        } else {
+            0
+        };
+        assert!(
+            Instant::now() < deadline,
+            "the window never stopped redrawing"
+        );
+    }
+    let_time_pass(cx, Duration::from_secs(2));
+    redraws.set(0);
     let_time_pass(cx, Duration::from_secs(5));
     assert_eq!(redraws.get(), 0, "an idle window kept asking for redraws");
 }

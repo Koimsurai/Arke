@@ -739,6 +739,46 @@ impl Explorer {
         true
     }
 
+    /// A group heading's chevron: collapses and expands the group `label`.
+    fn group_chevron(
+        row: usize,
+        label: SharedString,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        div()
+            .id(("group-chevron", row))
+            .size(theme::tree_chevron())
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::r_4())
+            .hover(|s| s.bg(theme::wash_strong()))
+            // Toggles without selecting the section or starting a marquee.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&this.list_focus, cx);
+                    this.toggle_group(&label, cx);
+                }),
+            )
+            .child(
+                svg()
+                    .path(Icon::ChevronRight.path())
+                    .size(theme::icon_sm())
+                    .text_color(theme::text_subtle())
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        if collapsed {
+                            0.
+                        } else {
+                            std::f32::consts::FRAC_PI_2
+                        },
+                    ))),
+            )
+    }
+
     /// Section header with label, count and a rule. Clicking selects the section: `span` items
     /// from `start` (expanded folders' items included). The chevron, or a double click, collapses
     /// and expands it.
@@ -780,39 +820,7 @@ impl Explorer {
             .cursor_pointer()
             .rounded(theme::r_8())
             .hover(|s| s.bg(theme::wash()))
-            .child(
-                div()
-                    .id(("group-chevron", row))
-                    .size(theme::tree_chevron())
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(theme::r_4())
-                    .hover(|s| s.bg(theme::wash_strong()))
-                    // Toggles without selecting the section or starting a marquee.
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            window.focus(&this.list_focus, cx);
-                            this.toggle_group(&on_chevron, cx);
-                        }),
-                    )
-                    .child(
-                        svg()
-                            .path(Icon::ChevronRight.path())
-                            .size(theme::icon_sm())
-                            .text_color(theme::text_subtle())
-                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                if collapsed {
-                                    0.
-                                } else {
-                                    std::f32::consts::FRAC_PI_2
-                                },
-                            ))),
-                    ),
-            )
+            .child(Self::group_chevron(row, on_chevron, collapsed, cx))
             // A heading, not a caption: item size, semibold, full ink.
             .child(
                 div()

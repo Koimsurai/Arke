@@ -139,7 +139,7 @@ fn space_goes_to_the_external_preview_program_when_set(cx: &mut TestAppContext) 
     assert!(!view.update(cx, |v, _| v.quick_look), "on: not Arke's");
     wait_runs(cx, &shell, 1);
     let run = (PathBuf::from(exe), r#""C:\q\a b.txt""#.to_owned());
-    assert_eq!(runs(&shell), [run.clone()]);
+    assert_eq!(runs(&shell), std::slice::from_ref(&run));
     cx.simulate_keystrokes("space");
     wait_runs(cx, &shell, 2);
     assert_eq!(runs(&shell), [run.clone(), run]);

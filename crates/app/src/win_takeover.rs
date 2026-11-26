@@ -35,6 +35,14 @@
 //! started or gave a folder back to, launchers above Arke's integrity level, and everything the
 //! watcher leaves alone. `ARKE_EARLY_TAKEOVER=0` turns it off.
 //!
+//! Only local drives are looked at on the takeover thread. A network folder (`\\server\share`,
+//! `\\wsl$`, a mapped drive) could keep it waiting on the server for longer than the launcher takes
+//! to hand over, so it is taken without looking ([`OnDisk::Network`]): the launcher is ended and the
+//! request says it is unchecked. Arke then looks at it off the UI thread and opens it only if it is
+//! a folder and the request is still awaited; anything else (missing, a file, an unreachable server,
+//! credentials needed) is answered `false`, and the folder goes back to File Explorer, which shows
+//! its own prompt or error. No answer within [`OPEN_TIMEOUT`] counts as a failure for these, too.
+//!
 //! Left alone: File Explorer opened on purpose (a window at Home or This PC: the taskbar, Start or a
 //! bare `explorer.exe`), windows opened while Shift is held, windows of elevated processes, windows Arke
 //! itself asked Explorer for ("Show in File Explorer", see [`note_reveal`]), and every folder Arke
@@ -135,6 +143,11 @@ pub(crate) struct OpenRequest {
     /// tab it opens is marked, and a File Explorer window on the same target that comes anyway
     /// (the launcher had handed it over already) shows in that tab while it still shows it.
     pub(crate) early: bool,
+    /// From the early path, on the network: nobody looked whether the folder is there
+    /// ([`OnDisk::Network`]). Arke checks it off the UI thread first, answers `false` when it is
+    /// not a folder it can list (File Explorer then gets it back), and opens nothing once `reply`
+    /// is no longer awaited (no answer in time: File Explorer has it already).
+    pub(crate) unchecked: bool,
     /// Answered `true` once Arke has a window for it; Explorer's window is closed only then.
     pub(crate) reply: flume::Sender<bool>,
 }
@@ -755,6 +768,7 @@ impl Watch {
                     select,
                     explorer_thread,
                     early: false,
+                    unchecked: false,
                     reply,
                 };
                 if self.tx.send(request).is_err() {
@@ -873,6 +887,8 @@ const COMMAND_LINE_MAX: u32 = 0x1_0000;
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 const DRIVE_RAMDISK: u32 = 6;
+/// `GetDriveTypeW` for a mapped network drive: taken without looking.
+const DRIVE_REMOTE: u32 = 4;
 
 thread_local! {
     /// The early path's state. It lives on the takeover thread, where the hook calls in.
@@ -912,6 +928,9 @@ struct Pending {
     select: Vec<String>,
     reply: flume::Receiver<bool>,
     since: Instant,
+    /// A network folder nobody looked at ([`OpenRequest::unchecked`]): no answer in time gives it
+    /// back to File Explorer instead of leaving it to Arke.
+    unchecked: bool,
 }
 
 /// Unhooks and drops the state when the takeover thread ends: every exit wait is unregistered
@@ -1213,10 +1232,10 @@ impl Early {
             log::debug!("takeover: early: explorer.exe {pid} predates the hook, leaving it");
             return (false, Some(created));
         }
-        let Some((target, select)) = self.wanted(pid, process) else {
+        let Some((launched, select)) = self.wanted(pid, process) else {
             return (false, Some(created));
         };
-        (self.take(pid, created, target, select), Some(created))
+        (self.take(pid, created, launched, select), Some(created))
     }
 
     fn is_file_explorer(&self, process: &Process) -> bool {
@@ -1235,9 +1254,9 @@ impl Early {
     }
 
     /// What File Explorer's launcher would open, when the watcher would take that window; `None`
-    /// leaves it alone. Only cheap checks come before the command line is read, and nothing touches
-    /// the disk before the arguments are understood.
-    fn wanted(&mut self, pid: u32, process: &Process) -> Option<(Target, Vec<String>)> {
+    /// leaves it alone. Only cheap checks come before the command line is read, nothing touches
+    /// the disk before the arguments are understood, and network folders aren't touched at all.
+    fn wanted(&mut self, pid: u32, process: &Process) -> Option<(takeover::Launched, Vec<String>)> {
         // The shell itself; with no shell running, File Explorer may be starting as the shell.
         if shell_pid()? == pid {
             return None;
@@ -1257,17 +1276,18 @@ impl Early {
             log::info!("takeover: early: launcher above Arke's integrity level, leaving it");
             return None;
         }
-        let Some(target) = takeover::launch_target(&launch, on_disk) else {
+        let Some(launched) = takeover::launch_target(&launch, on_disk) else {
             log::debug!("takeover: early: leaving explorer.exe {args} (not a folder Arke takes)");
             return None;
         };
-        if !takeover::watcher_takes(&target)
-            || !takeover::allowed_by_test_root(&target, self.test_root.as_deref())
+        let target = &launched.target;
+        if !takeover::watcher_takes(target)
+            || !takeover::allowed_by_test_root(target, self.test_root.as_deref())
         {
             return None;
         }
         // Before the parent check, so Arke's own launcher uses the mark up.
-        if self.given_back.take(&target) {
+        if self.given_back.take(target) {
             log::info!("takeover: early: Arke gave {target:?} back to File Explorer, leaving it");
             return None;
         }
@@ -1276,12 +1296,12 @@ impl Early {
             return None;
         }
         // Arke's own request that didn't come from Arke's process; the watcher uses up the mark.
-        if let Target::Folder(folder) = &target
+        if let Target::Folder(folder) = target
             && BYPASS.lock().holds(folder, Instant::now())
         {
             return None;
         }
-        Some((target, launch.select.into_iter().collect()))
+        Some((launched, launch.select.into_iter().collect()))
     }
 
     /// Ends the launcher and opens its folder in Arke, as soon as it is seen. Ending fails once the
@@ -1289,7 +1309,14 @@ impl Early {
     /// handed the folder to the shell already, the window comes anyway and the watcher takes it as
     /// usual; Arke shows it in the tab opened here, if that tab still shows it (`main.rs`
     /// `open_taken_over`). The caller holds a handle to the launcher, so `pid` is still its id.
-    fn take(&mut self, pid: u32, created: u64, target: Target, select: Vec<String>) -> bool {
+    fn take(
+        &mut self,
+        pid: u32,
+        created: u64,
+        launched: takeover::Launched,
+        select: Vec<String>,
+    ) -> bool {
+        let takeover::Launched { target, unchecked } = launched;
         // SAFETY: a terminate-only handle, closed when it drops.
         let Ok(handle) = (unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }) else {
             log::info!("takeover: early: cannot end File Explorer's launcher for {target:?}");
@@ -1308,9 +1335,14 @@ impl Early {
         let now_ticks = ticks(unsafe { GetSystemTimePreciseAsFileTime() });
         log::info!(
             "takeover: early: ended File Explorer's launcher {} ms after it started, opening \
-             {target:?} in Arke ({} selected)",
+             {target:?} in Arke ({} selected{})",
             now_ticks.saturating_sub(created) / 10_000,
-            select.len()
+            select.len(),
+            if unchecked {
+                ", on the network: Arke checks it first"
+            } else {
+                ""
+            }
         );
         let (reply, answer) = flume::bounded(1);
         let request = OpenRequest {
@@ -1319,6 +1351,7 @@ impl Early {
             // No Explorer window; Arke comes to the front through the foreground thread.
             explorer_thread: 0,
             early: true,
+            unchecked,
             reply,
         };
         // Arke shutting down drops the request; `poll` then sees no answer and gives the folder
@@ -1329,11 +1362,15 @@ impl Early {
             select,
             reply: answer,
             since: Instant::now(),
+            unchecked,
         });
         true
     }
 
-    /// Takes Arke's answers; returns what Arke could not open.
+    /// Takes Arke's answers; returns what Arke could not open. A request with no answer in time is
+    /// dropped (Arke is only slow to open a local folder), unless it is an unchecked network
+    /// folder: that goes back to File Explorer, and dropping its receiver tells Arke not to open
+    /// it any more.
     fn poll(&mut self, now: Instant) -> Vec<(Target, Vec<String>)> {
         let mut failed = Vec::new();
         self.pending.retain(|p| match p.reply.try_recv() {
@@ -1344,7 +1381,14 @@ impl Early {
             }
             Err(flume::TryRecvError::Empty) => {
                 let waiting = now.duration_since(p.since) <= OPEN_TIMEOUT;
-                if !waiting {
+                if !waiting && p.unchecked {
+                    log::info!(
+                        "takeover: early: no answer from Arke in time for network folder {:?}, \
+                         giving it back to File Explorer",
+                        p.target
+                    );
+                    failed.push((p.target.clone(), p.select.clone()));
+                } else if !waiting {
                     log::info!("takeover: early: no answer from Arke for {:?}", p.target);
                 }
                 waiting
@@ -1523,24 +1567,60 @@ fn exited(process: &Process) -> bool {
     read.is_err() || code != STILL_ACTIVE
 }
 
-/// What `path` is, looked at only on local drives: a network path could keep the takeover thread
-/// (and the launcher) waiting; the watcher handles those.
+/// What `path` is, looked at only on local drives. A network path is not touched at all
+/// ([`OnDisk::Network`]): its server could keep the takeover thread (and the launcher) waiting, so
+/// Arke checks it after the launcher is ended. Other drives (CD drives, unassigned letters) are
+/// [`OnDisk::Unknown`] and left to the watcher.
 fn on_disk(path: &Path) -> OnDisk {
+    match how_to_look(path, drive_type) {
+        Look::Disk => match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => OnDisk::Folder,
+            Ok(_) => OnDisk::File,
+            Err(_) => OnDisk::Unknown,
+        },
+        Look::Network => OnDisk::Network,
+        Look::Skip => OnDisk::Unknown,
+    }
+}
+
+/// How [`on_disk`] treats a path, from its text and its drive's type alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    /// A local drive that answers at once: looked at.
+    Disk,
+    /// A share or a mapped network drive: taken without looking.
+    Network,
+    /// Neither: not looked at, not taken.
+    Skip,
+}
+
+/// [`Look`] for `path`; `drive_type` gives `GetDriveTypeW`'s answer for a drive letter (asked only
+/// for `X:\...` paths).
+fn how_to_look(path: &Path, drive_type: impl FnOnce(u8) -> u32) -> Look {
     let bytes = path.as_os_str().as_encoded_bytes();
+    if let Some(rest) = bytes.strip_prefix(br"\\") {
+        // `\\?\` and `\\.\` are device paths, not shares (`classify` refuses them anyway).
+        return if rest.starts_with(b"?") || rest.starts_with(b".") {
+            Look::Skip
+        } else {
+            Look::Network
+        };
+    }
     if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
-        return OnDisk::Unknown;
+        return Look::Skip;
     }
-    let root = [u16::from(bytes[0]), u16::from(b':'), u16::from(b'\\'), 0];
+    match drive_type(bytes[0]) {
+        DRIVE_REMOVABLE | DRIVE_FIXED | DRIVE_RAMDISK => Look::Disk,
+        DRIVE_REMOTE => Look::Network,
+        _ => Look::Skip,
+    }
+}
+
+/// `GetDriveTypeW` for the drive `letter`.
+fn drive_type(letter: u8) -> u32 {
+    let root = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
     // SAFETY: `root` is NUL-terminated. GetDriveTypeW reads local mount info only.
-    let kind = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
-    if !matches!(kind, DRIVE_REMOVABLE | DRIVE_FIXED | DRIVE_RAMDISK) {
-        return OnDisk::Unknown;
-    }
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => OnDisk::Folder,
-        Ok(_) => OnDisk::File,
-        Err(_) => OnDisk::Unknown,
-    }
+    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) }
 }
 
 /// `<windows_dir>explorer.exe` or `<windows_dir>SysWOW64\explorer.exe`, ignoring case;
@@ -1621,6 +1701,7 @@ mod tests {
             select: vec!["a.txt".to_owned()],
             reply: answer,
             since,
+            unchecked: false,
         };
         (pending, reply)
     }
@@ -1675,6 +1756,64 @@ mod tests {
         assert!(!early.given_back.take(&opened));
         assert!(!early.given_back.take(&silent));
         assert!(early.given_back.take(&gone), "Arke dropped it: given back");
+    }
+
+    /// #285: a network folder nobody looked at that Arke doesn't answer in time goes back to File
+    /// Explorer (a sleeping server is then File Explorer's to wait on); a local one is only
+    /// dropped, as before. Dropping the pending request tells Arke not to open it any more.
+    #[test]
+    fn an_unchecked_request_without_an_answer_in_time_is_given_back() {
+        let (mut early, _rx) = early();
+        let t0 = Instant::now();
+        let network = Target::Folder(PathBuf::from(r"\\nas\share\pic"));
+        let local = Target::Folder(PathBuf::from(r"C:\Slow"));
+        let (mut p, network_reply) = pending(&network, t0);
+        p.unchecked = true;
+        early.pending.push(p);
+        let (p, local_reply) = pending(&local, t0);
+        early.pending.push(p);
+        assert!(early.poll(t0 + OPEN_TIMEOUT).is_empty(), "still waiting");
+        let failed = early.poll(t0 + OPEN_TIMEOUT + Duration::from_millis(1));
+        assert_eq!(failed, vec![(network.clone(), vec!["a.txt".to_owned()])]);
+        assert!(early.pending.is_empty());
+        assert!(early.given_back.take(&network), "given back");
+        assert!(!early.given_back.take(&local), "only dropped");
+        assert!(network_reply.is_disconnected(), "Arke sees nobody waits");
+        assert!(local_reply.is_disconnected());
+    }
+
+    /// #285: shares and mapped network drives are taken without looking; local drives are looked
+    /// at; device paths, CD drives and unassigned letters are neither.
+    #[test]
+    fn only_local_drives_are_looked_at() {
+        let look = |path: &str, kind: u32| {
+            how_to_look(Path::new(path), |letter| {
+                assert!(letter.is_ascii_alphabetic(), "{path}");
+                kind
+            })
+        };
+        let no_drive = |path: &str| {
+            how_to_look(Path::new(path), |_| -> u32 {
+                panic!("{path}: no drive type for a share")
+            })
+        };
+        assert_eq!(no_drive(r"\\nas\share"), Look::Network);
+        assert_eq!(no_drive(r"\\192.168.0.56\pic\2026"), Look::Network);
+        assert_eq!(no_drive(r"\\wsl$\Ubuntu\home"), Look::Network);
+        assert_eq!(no_drive(r"\\wsl.localhost\Ubuntu"), Look::Network);
+        assert_eq!(no_drive(r"\\?\C:\dir"), Look::Skip);
+        assert_eq!(no_drive(r"\\.\PhysicalDrive0"), Look::Skip);
+        assert_eq!(look(r"Z:\share", DRIVE_REMOTE), Look::Network);
+        assert_eq!(look(r"Z:\", DRIVE_REMOTE), Look::Network);
+        for kind in [DRIVE_FIXED, DRIVE_REMOVABLE, DRIVE_RAMDISK] {
+            assert_eq!(look(r"C:\dir", kind), Look::Disk, "{kind}");
+        }
+        // DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_CDROM.
+        for kind in [0, 1, 5] {
+            assert_eq!(look(r"E:\dir", kind), Look::Skip, "{kind}");
+        }
+        assert_eq!(no_drive(r"C:dir"), Look::Skip);
+        assert_eq!(no_drive("dir"), Look::Skip);
     }
 
     /// A process whose first window came while the state was in use is noted as left alone, and

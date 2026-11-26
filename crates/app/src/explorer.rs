@@ -220,15 +220,14 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // Details view with the folder tree on: expand/collapse.
         KeyBinding::new("left", MoveLeft, list),
         KeyBinding::new("right", MoveRight, list),
-        // Dual pane: Alt+C copies and Alt+M moves to the other side (as in OneCommander), Tab
-        // and Shift+Tab switch (there are only two sides, so both go to the other one).
+        // Dual pane: Alt+C copies and Alt+M moves to the other side (as in OneCommander). Tab and
+        // Shift+Tab reach the other pane as the next and previous stop (`workspace.rs`), so
+        // there is no separate key to switch (`FocusOtherPane` stays as a command).
         // Total Commander's F5/F6 are avoided on purpose: F5 is refresh on Windows, and a slip
         // would copy files.
         // Without a split these keys fall through to other handlers.
         KeyBinding::new("alt-c", CopyToPeer, list),
         KeyBinding::new("alt-m", MoveToPeer, list),
-        KeyBinding::new("tab", FocusOtherPane, list),
-        KeyBinding::new("shift-tab", FocusOtherPane, list),
         // Only while Quick Look is open; otherwise they pass on.
         KeyBinding::new("ctrl-=", LookZoomIn, list),
         KeyBinding::new("ctrl--", LookZoomOut, list),
@@ -463,6 +462,9 @@ pub(crate) enum ExplorerEvent {
     Activated,
     /// Dual pane: switch to the other side.
     FocusOtherPane,
+    /// Tab (`true`) or Shift+Tab was pressed where the pane has its own meaning for the key and
+    /// has nothing to do with it: the window moves to the next or previous stop.
+    StepStop(bool),
     /// A copy or move from this pane finished in `dir`, which this pane isn't showing: the other
     /// side selects `names` if it shows `dir` (Alt+C/Alt+M, drags between the panes).
     Arrived {
@@ -3993,6 +3995,16 @@ impl Explorer {
         } else {
             None
         }
+    }
+
+    /// The search panel under the box has the keyboard.
+    pub(crate) fn panel_held(&self, window: &Window) -> bool {
+        self.panel_focus.is_focused(window)
+    }
+
+    /// Something over the list owns Tab: Quick Look, or an open menu or rename.
+    pub(crate) fn list_keeps_tab(&self) -> bool {
+        self.quick_look || self.context_menu.is_some() || self.renaming.is_some()
     }
 
     pub(crate) fn cancel_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {

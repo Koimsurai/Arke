@@ -29,7 +29,7 @@ use gpui::{
 };
 use rust_i18n::t;
 
-use super::Explorer;
+use super::{Explorer, ExplorerEvent};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::global_search::{Found, GlobalSearch};
@@ -40,7 +40,6 @@ actions!(
     explorer,
     [
         PanelEnter,
-        PanelEnterLast,
         PanelUp,
         PanelDown,
         PanelLeft,
@@ -62,9 +61,9 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let filter = Some("FilterBar");
     let panel = Some(PANEL_CONTEXT);
     cx.bind_keys([
-        // Tab in the filter box moves into the search panel (Shift+Tab: its last row).
+        // Tab in the filter box moves into the search panel, and on past its last row to the
+        // window's next stop. Shift+Tab goes to the previous stop (`workspace.rs`).
         KeyBinding::new("tab", PanelEnter, filter),
-        KeyBinding::new("shift-tab", PanelEnterLast, filter),
         KeyBinding::new("up", PanelUp, panel),
         KeyBinding::new("down", PanelDown, panel),
         KeyBinding::new("left", PanelLeft, panel),
@@ -336,14 +335,6 @@ impl Explorer {
             let at = PanelItem::Scope(this.scope());
             this.focus_panel(at, window, cx);
         }))
-        .on_action(cx.listener(|this, _: &PanelEnterLast, window, cx| {
-            let at = this
-                .panel_rows(cx)
-                .last()
-                .and_then(|row| row.first().copied())
-                .unwrap_or(PanelItem::Contents);
-            this.focus_panel(at, window, cx);
-        }))
     }
 
     /// Keyboard stops of the panel, row by row, as drawn.
@@ -431,7 +422,12 @@ impl Explorer {
         let rows = self.panel_rows(cx);
         let at = self.panel_at(&rows);
         let Some(next) = step(&rows, at, mv) else {
-            self.panel_to_box(window, cx);
+            // Tab past the last row leaves the search for the next stop of the window.
+            if mv == Move::NextRow {
+                cx.emit(ExplorerEvent::StepStop(true));
+            } else {
+                self.panel_to_box(window, cx);
+            }
             return;
         };
         match (next, mv) {

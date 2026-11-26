@@ -31,6 +31,15 @@ const EXPLORER_PAGES: &[&str] = &[
     "WhatsNewPage",
 ];
 const LIST: &[&str] = &["FileList"];
+/// Where Tab walks the window's stops (`workspace_sidebar_keys.rs`).
+const TAB_STOPS: &[&str] = &[
+    "FileList",
+    "Sidebar",
+    "HomePage",
+    "Toolbar",
+    "PathBar",
+    "FilterBar",
+];
 
 /// Command palette rows for recently run commands.
 const RECENT_MAX: usize = 8;
@@ -353,8 +362,20 @@ pub(crate) static COMMANDS: &[Command] = &[
     command!(
         "focus_other_pane",
         LIST,
-        ["tab", "shift-tab"],
+        [],
         crate::explorer::FocusOtherPane
+    ),
+    command!(
+        "focus_next_stop",
+        TAB_STOPS,
+        ["tab"],
+        crate::workspace::sidebar_keys::FocusNextStop
+    ),
+    command!(
+        "focus_prev_stop",
+        TAB_STOPS,
+        ["shift-tab"],
+        crate::workspace::sidebar_keys::FocusPrevStop
     ),
     command!(
         files "copy_to_peer",

@@ -28,7 +28,7 @@ use gpui::{
 };
 use rust_i18n::t;
 
-use super::{AppEvent, Explorer, kind_icon, spawn_thread};
+use super::{AppEvent, Explorer, ExplorerEvent, kind_icon, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::theme::{self, UiFont as _};
@@ -603,6 +603,15 @@ impl Explorer {
         self.move_path_highlight(true, cx);
     }
 
+    /// The text is still the folder's own path (the keyboard just came here), or no folder
+    /// matches what was typed.
+    fn nothing_to_complete(&self, cx: &Context<Self>) -> bool {
+        let shown = self
+            .display_path()
+            .map_or_default(|p| p.display().to_string());
+        self.suggest.items.is_empty() || self.path_input.read(cx).text() == shown
+    }
+
     pub(super) fn path_accept(
         &mut self,
         _: &PathAccept,
@@ -611,6 +620,11 @@ impl Explorer {
     ) {
         match self.path_popup.as_ref().and_then(|p| p.highlighted) {
             Some(ix) => self.popup_go(ix, window, cx),
+            // Nothing typed, or nothing to complete: Tab is the window's, and moves on to the
+            // next stop.
+            None if self.path_popup.is_none() && self.nothing_to_complete(cx) => {
+                cx.emit(ExplorerEvent::StepStop(true));
+            }
             None if self.path_popup.is_none() => self.complete_suggestion(cx),
             None => {}
         }

@@ -407,7 +407,8 @@ impl Explorer {
             .a11y(gpui::Role::Toolbar, t!("a11y.toolbar"))
             // Only while F6 put the keyboard here, so a click leaves it where it was.
             .when(held, |d| {
-                d.track_focus(&self.toolbar.focus)
+                d.key_context("Toolbar")
+                    .track_focus(&self.toolbar.focus)
                     .on_key_down(cx.listener(Self::toolbar_key))
                     .on_click(move |event, window, cx| {
                         Self::toolbar_press(&this, event, window, cx);

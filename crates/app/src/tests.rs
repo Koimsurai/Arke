@@ -5935,8 +5935,8 @@ fn split_panes_copy_to_the_other_side_and_switch_with_tab(cx: &mut TestAppContex
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 1);
 
-    // Tab to the left side, select the first item, Alt+C copies to the right.
-    cx.simulate_keystrokes("tab");
+    // Shift+Tab to the left side, select the first item, Alt+C copies to the right.
+    cx.simulate_keystrokes("shift-tab");
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
     left.update(cx, |e, cx| e.select_index(0, cx));

@@ -297,10 +297,11 @@ ranks higher; turn it off or clear it in Settings › Search.
 | Ctrl+W · Ctrl+Shift+T | Close tab (in split view, the active side) · reopen closed tab |
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | Switch tabs |
 | Ctrl+Shift+S · Ctrl+Shift+D | Dual pane: synchronized browsing · compare folders |
-| Tab · Alt+C · Alt+M | Split view: switch panes · copy · move the selection to the other pane |
+| Alt+C · Alt+M | Split view: copy · move the selection to the other pane |
 | Ctrl+F · Ctrl+Shift+F · Ctrl+K | Search this folder · this folder and subfolders · the whole computer; Tab moves into the scope and filters |
 | Ctrl+L · Alt+D | Edit the path |
 | F6 · Shift+F6 | Next · previous area: file list, sidebar, path bar, toolbar, search box |
+| Tab · Shift+Tab | Next · previous stop: each file list (so also the other pane), sidebar, path bar, each toolbar button, search box |
 | Alt+← · Alt+→ · Alt+↑ | Back · forward · up |
 | F5 · Ctrl+R | Refresh |
 | Space | Quick look |

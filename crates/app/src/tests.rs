@@ -37,6 +37,8 @@ mod click_parity;
 mod column_view;
 #[path = "tests_compress.rs"]
 mod compress;
+#[path = "tests_drag_threshold.rs"]
+mod drag_threshold;
 #[path = "tests_favorites.rs"]
 mod favorites;
 #[path = "tests_folder_views.rs"]

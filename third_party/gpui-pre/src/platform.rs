@@ -584,6 +584,14 @@ pub trait Platform: 'static {
 
     fn should_auto_hide_scrollbars(&self) -> bool;
 
+    /// How far the pointer must move away from where a button went down before the press counts
+    /// as a drag, in logical pixels, per axis (a rectangle centered on the press, like
+    /// `SM_CXDRAG` and `SM_CYDRAG` on Windows). Platforms with a system setting report it; the
+    /// default is 2 px.
+    fn drag_threshold(&self) -> Size<Pixels> {
+        size(px(2.), px(2.))
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn write_to_clipboard(&self, item: ClipboardItem);
 

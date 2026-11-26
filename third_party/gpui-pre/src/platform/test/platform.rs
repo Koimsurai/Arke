@@ -9,7 +9,7 @@ use crate::{
     PlatformKeyboardMapper, PlatformTextSystem, PromptButton, ScreenCaptureFrame,
     ScreenCaptureSource, ScreenCaptureStream, SharedString, SourceMetadata, SystemNotification,
     SystemNotificationResponse, Task, TestDisplay, TestWindow, ThermalState, WindowAppearance,
-    WindowParams, size,
+    Pixels, Size, WindowParams, px, size,
 };
 use anyhow::Result;
 #[cfg(any(test, feature = "test-support"))]
@@ -53,6 +53,7 @@ pub(crate) struct TestPlatform {
     idle_sleep_prevention_count: Arc<AtomicUsize>,
     idle_sleep_prevention_delay: Cell<Duration>,
     idle_sleep_prevention_fails: Cell<bool>,
+    drag_threshold: Cell<Size<Pixels>>,
     headless_renderer_factory:
         Option<Box<dyn Fn() -> anyhow::Result<Option<Box<dyn PlatformHeadlessRenderer>>>>>,
     weak: Weak<Self>,
@@ -255,6 +256,7 @@ impl TestPlatform {
             idle_sleep_prevention_count: Arc::new(AtomicUsize::new(0)),
             idle_sleep_prevention_delay: Cell::new(Duration::ZERO),
             idle_sleep_prevention_fails: Cell::new(false),
+            drag_threshold: Cell::new(size(px(2.), px(2.))),
             weak: weak.clone(),
             opened_url: Default::default(),
             system_notifications: Default::default(),
@@ -418,6 +420,11 @@ impl TestPlatform {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_idle_sleep_prevention_delay(&self, delay: Duration) {
         self.idle_sleep_prevention_delay.set(delay);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_drag_threshold(&self, threshold: Size<Pixels>) {
+        self.drag_threshold.set(threshold);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -785,6 +792,10 @@ impl Platform for TestPlatform {
 
     fn should_auto_hide_scrollbars(&self) -> bool {
         false
+    }
+
+    fn drag_threshold(&self) -> Size<Pixels> {
+        self.drag_threshold.get()
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {

@@ -133,9 +133,6 @@ pub(crate) struct RightPress {
     pub(crate) at: Point<Pixels>,
 }
 
-/// How far the right button must move before the press becomes a drag (a little more than GPUI's
-/// own threshold, so a shaky right click still opens the menu).
-const RIGHT_DRAG_THRESHOLD: f64 = 4.;
 /// Most bytes downloaded so remote items can be dragged into other programs.
 const DRAG_STAGE_MAX: u64 = 64 * 1024 * 1024;
 
@@ -615,7 +612,10 @@ impl Explorer {
             cx.notify();
             return;
         }
-        if (event.position - press.at).magnitude() <= RIGHT_DRAG_THRESHOLD {
+        // The same distance as every other drag (the system's drag rectangle).
+        let moved = event.position - press.at;
+        let threshold = cx.drag_threshold();
+        if moved.x.abs() <= threshold.width && moved.y.abs() <= threshold.height {
             return;
         }
         self.right_press = None;

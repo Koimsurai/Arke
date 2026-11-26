@@ -1101,6 +1101,25 @@ impl Platform for WindowsPlatform {
         should_auto_hide_scrollbars().log_err().unwrap_or(false)
     }
 
+    fn drag_threshold(&self) -> Size<Pixels> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetricsForDpi, SM_CXDRAG, SM_CYDRAG,
+        };
+        // Logical pixels: the metric at 96 DPI follows the user's setting, and GPUI's scale
+        // factor turns it into the physical distance Windows itself uses.
+        let (width, height) = unsafe {
+            (
+                GetSystemMetricsForDpi(SM_CXDRAG, 96),
+                GetSystemMetricsForDpi(SM_CYDRAG, 96),
+            )
+        };
+        if width > 0 && height > 0 {
+            size(px(width as f32), px(height as f32))
+        } else {
+            size(px(2.), px(2.))
+        }
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
         write_to_clipboard(item);
     }

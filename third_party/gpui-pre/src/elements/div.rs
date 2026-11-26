@@ -49,7 +49,6 @@ type StackSafe<T> = stacksafe::StackSafe<T>;
 #[cfg(not(feature = "stacker"))]
 type StackSafe<T> = T;
 
-const DRAG_THRESHOLD: f64 = 2.;
 const DEFAULT_TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
 
@@ -3135,7 +3134,11 @@ impl Interactivity {
                         let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                         if let Some(mouse_down) = pending_mouse_down.clone()
                             && !cx.has_active_drag()
-                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
+                            && {
+                                let moved = event.position - mouse_down.position;
+                                let threshold = cx.drag_threshold();
+                                moved.x.abs() > threshold.width || moved.y.abs() > threshold.height
+                            }
                             && let Some(listener) = drag_listener.take()
                             && mouse_down.button == MouseButton::Left
                         {

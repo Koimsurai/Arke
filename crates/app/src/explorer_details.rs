@@ -175,7 +175,13 @@ impl Explorer {
             .items_center()
             .pl(layout::row_pad_l())
             .pr(layout::row_pad_r())
-            .gap(layout::col_gap());
+            .gap(layout::col_gap())
+            // Thin line between header and list to give the columns structure. It belongs to the
+            // row, so it scrolls with the columns like the rows' own washes do; the minimum width
+            // keeps it running to the pane's right edge while everything fits.
+            .border_b_1()
+            .border_color(theme::line())
+            .min_w(self.pane_width);
         let row = if self.search_mode {
             // Search results start in relevance order; a click on a header sorts them.
             row.child(
@@ -225,16 +231,16 @@ impl Explorer {
         };
         let header = div()
             .id("details-header")
+            .debug_selector(|| "details-header-box".to_owned())
             .flex()
             .flex_none()
             .h(theme::h_header())
-            // Over the rows: from the list's left inset to its right padding.
-            .ml(theme::list_inset())
+            // Clipped where the rows are, at the list's left edge and 8 px short of its right one,
+            // so the columns slide into the inset together with the rows; they start at the
+            // inset when not scrolled.
+            .pl(theme::list_inset())
             .mr(theme::s_8())
             .overflow_hidden()
-            // Thin line between header and list to give the columns structure.
-            .border_b_1()
-            .border_color(theme::line())
             .text_size(theme::fs_12())
             .text_color(theme::text_muted())
             // Moved with the list when it scrolls sideways (see `SideScroll`).
@@ -261,7 +267,9 @@ impl Explorer {
             child: header,
             handle: self.header_list(),
             seen: Rc::default(),
-            content: self.cols.map(|c| c.row + layout::list_gutter()),
+            content: self
+                .cols
+                .map(|c| c.row + theme::list_inset() + layout::list_gutter()),
         }
         .into_any_element()
     }
@@ -922,8 +930,8 @@ pub(crate) fn with_link_badge(visual: AnyElement, icon: Pixels) -> AnyElement {
 ///
 /// With `content` set it wraps the whole header and, before anything is laid out under it,
 /// clamps the handle's offset to the range the list will have this frame: `content` (the row plus
-/// the blank strip after it) less the header's own width, which is the list's width less its left
-/// inset and right padding. Without `content` it wraps the row and moves it by the handle's
+/// the inset before it and the blank strip after it) less the header's own width, which is the
+/// list's width less its right padding. Without `content` it wraps the row and moves it by the handle's
 /// offset, which is therefore already the one the list will use: header and rows can never differ,
 /// whatever a wheel overshot or however the columns and the pane just changed, and the element
 /// tree keeps its order (the header stays before the rows for screen readers and focus).

@@ -561,6 +561,22 @@ fn widening_a_column_past_the_pane_scrolls_the_columns(cx: &mut TestAppContext) 
         size_right(cx),
         list.right()
     );
+    // Header and rows clip at the same left edge (the list's, where the inset is), and a column's
+    // header sits right over its cells, scrolled or not.
+    assert_eq!(
+        drawn(cx, "details-header-box").left(),
+        list.left(),
+        "the header clips where the rows do"
+    );
+    let type_header = columns(&view, cx)
+        .iter()
+        .find(|c| c.0 == Col::Type)
+        .map_or_default(|c| c.1);
+    assert!(
+        (drawn(cx, "cell-type").left() - type_header).abs() < px(1.),
+        "Type's cells at {:?}, its header at {type_header:?}",
+        drawn(cx, "cell-type").left()
+    );
     let first_row = drawn(cx, "row-0");
     assert!(
         (first_row.right() - size_right(cx) - crate::theme::s_16()).abs() < px(1.),

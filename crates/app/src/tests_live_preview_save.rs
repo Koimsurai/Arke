@@ -99,6 +99,10 @@ fn replace_file(file: &Path, text: &str) {
     .expect("ReplaceFileW");
 }
 
+#[allow(
+    clippy::print_stderr,
+    reason = "a live test run by hand reports what it did"
+)]
 fn save_and_check(tag: &str, save: fn(&Path, &str), cx: &mut TestAppContext) {
     let folder = Folder::new(tag);
     let file = folder.0.join("note.txt");

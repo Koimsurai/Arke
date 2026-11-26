@@ -66,7 +66,10 @@ fn a_run_of_clicks_opens_on_the_even_ones_only(cx: &mut TestAppContext) {
     let at = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
 
     click(cx, at, Modifiers::none(), 1);
-    assert!(view.update(cx, |v, _| loaded(r"C:\t")(v)), "1: only selects");
+    assert!(
+        view.update(cx, |v, _| loaded(r"C:\t")(v)),
+        "1: only selects"
+    );
     click(cx, at, Modifiers::none(), 2);
     wait_until(cx, &view, "2: opens", loaded(r"C:\t\one"));
     click(cx, at, Modifiers::none(), 3);

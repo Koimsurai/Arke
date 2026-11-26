@@ -25,7 +25,7 @@ use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::{
     CLSID_DragDropHelper, DSH_ALLOWDROPDESCRIPTIONTEXT, IDragSourceHelper, IDragSourceHelper2,
     SHDRAGIMAGE, SHFILEINFOW, SHGFI_SYSICONINDEX, SHGFI_TYPENAME, SHGFI_USEFILEATTRIBUTES,
-    SHGetFileInfoW, SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE,
+    SHGetFileInfoW, SHGetImageList, SHIL_EXTRALARGE, SHIL_JUMBO, SHIL_LARGE, SHIL_SMALL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 use windows::core::{Interface, PCWSTR, w};
@@ -169,7 +169,11 @@ fn type_icon(path: &Path, is_dir: bool) -> Option<Thumbnail> {
 /// when no program registered one and Windows would show its blank document: the theme's icon
 /// is better then. Like [`type_icon`], only the extension is looked at (no file read, no
 /// per-file icon handler loaded), so it's the same for every file of that type.
-pub(crate) fn registered_type_icon(ext: &str) -> Option<Thumbnail> {
+///
+/// `px` is the physical size it is drawn at: the system image list whose icons are that size is
+/// asked first (Windows' own 16/32/48 px frame, no resampling), then the next larger ones to shrink
+/// from; 0 takes the largest.
+pub(crate) fn registered_type_icon(ext: &str, px: u32) -> Option<Thumbnail> {
     let _com = Com::init().ok()?;
     let index = icon_index(std::ffi::OsStr::new(&format!("file.{ext}")), 0x80)?;
     // A type nothing registered: Windows' blank document.
@@ -177,7 +181,11 @@ pub(crate) fn registered_type_icon(ext: &str) -> Option<Thumbnail> {
     if index == blank {
         return None;
     }
-    index_icon(index)
+    pick_icon(
+        list_sizes_for(px)
+            .into_iter()
+            .map(|side| list_icon(list_of_size(side), index)),
+    )
 }
 
 /// Windows' type name for files with extension `ext` (no dot), as File Explorer's Type column
@@ -349,6 +357,31 @@ fn index_icon(index: i32) -> Option<Thumbnail> {
             .into_iter()
             .map(|list| list_icon(list, index)),
     )
+}
+
+/// Nominal sides of the system image lists, smallest first.
+const LIST_SIDES: [u32; 4] = [16, 32, 48, 256];
+
+/// The image list of nominal side `side` (one of [`LIST_SIDES`]).
+const fn list_of_size(side: u32) -> u32 {
+    match side {
+        16 => SHIL_SMALL,
+        32 => SHIL_LARGE,
+        48 => SHIL_EXTRALARGE,
+        _ => SHIL_JUMBO,
+    }
+}
+
+/// The lists to try, in order, for an icon drawn `px` pixels wide: the smallest list at least that
+/// big (an exact fit needs no resampling), then the bigger ones (to shrink from), and last the
+/// smaller ones, biggest first. 0 means as large as possible, the way Windows' drag image wants it.
+fn list_sizes_for(px: u32) -> Vec<u32> {
+    if px == 0 {
+        return vec![256, 48, 32];
+    }
+    let mut sizes: Vec<u32> = LIST_SIDES.into_iter().filter(|&s| s >= px).collect();
+    sizes.extend(LIST_SIDES.into_iter().rev().filter(|&s| s < px));
+    sizes
 }
 
 /// The first of `icons` (largest list first) whose picture fills at least [`FILLS`] of its
@@ -733,6 +766,22 @@ mod tests {
             .filter(|&(x, y)| at(x, y) == [255, 255, 255, 255])
             .count();
         assert!(white > 10, "count not drawn ({white} white pixels)");
+    }
+
+    #[test]
+    fn the_list_nearest_the_drawn_size_is_asked_first() {
+        assert_eq!(list_sizes_for(16), [16, 32, 48, 256]);
+        assert_eq!(list_sizes_for(20), [32, 48, 256, 16]);
+        assert_eq!(list_sizes_for(24), [32, 48, 256, 16]);
+        assert_eq!(list_sizes_for(32), [32, 48, 256, 16]);
+        assert_eq!(list_sizes_for(48), [48, 256, 32, 16]);
+        assert_eq!(list_sizes_for(64), [256, 48, 32, 16]);
+        assert_eq!(list_sizes_for(0), [256, 48, 32]);
+        for side in LIST_SIDES {
+            assert_eq!(list_sizes_for(side)[0], side, "exact fit first");
+        }
+        assert_eq!(list_of_size(16), SHIL_SMALL);
+        assert_eq!(list_of_size(256), SHIL_JUMBO);
     }
 
     #[test]

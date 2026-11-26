@@ -181,6 +181,8 @@ struct FakeShell {
     icons: Mutex<Vec<PathBuf>>,
     /// Extensions asked for their registered type icon. Only `dwg` has one (a CAD program's).
     type_icons: Mutex<Vec<String>>,
+    /// The sizes those type icons were asked at, in the same order.
+    type_icon_sizes: Mutex<Vec<u32>>,
     /// Videos asked for a thumbnail; ones named `broken*` have none.
     video_thumbs: Mutex<Vec<PathBuf>>,
     system_menus: Mutex<Vec<Vec<PathBuf>>>,
@@ -1143,12 +1145,13 @@ impl Shell for FakeShell {
         })
     }
 
-    fn type_icon(&self, ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+    fn type_icon(&self, ext: &str, px: u32) -> Option<arke_core::thumbs::Thumbnail> {
         assert!(
             !arke_core::fs::is_ui_thread(),
             "type_icon called on the UI thread"
         );
         self.type_icons.lock().push(ext.to_owned());
+        self.type_icon_sizes.lock().push(px);
         (ext == "dwg").then(|| arke_core::thumbs::Thumbnail {
             width: 48,
             height: 48,
@@ -5251,6 +5254,12 @@ fn unknown_types_get_the_registered_icon(cx: &mut TestAppContext) {
         asked,
         ["dwg", "qqq"],
         "once per type; never for .txt or .exe"
+    );
+    let sizes = shell.type_icon_sizes.lock().clone();
+    assert_eq!(sizes.len(), 2);
+    assert!(
+        sizes.iter().all(|px| (16..=64).contains(px)),
+        "asked at the drawn size, not the largest: {sizes:?}"
     );
 
     // A network share: the type icon is already there; no file icon is loaded.

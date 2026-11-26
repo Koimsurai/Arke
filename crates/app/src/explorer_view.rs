@@ -1140,6 +1140,15 @@ impl Explorer {
         // Elsewhere (network shares) only type icons: they read no file.
         let allowed = self.media_ok(&dir, cx);
         let thumb_px = (thumbnails && self.show_thumbnails).then(|| self.thumbnail_px());
+        // System icons come at the size they are drawn at, so they map 1:1 onto screen pixels.
+        let icon_px = crate::media::icon_source_px(
+            f32::from(if thumbnails {
+                self.tile().icon
+            } else {
+                theme::icon()
+            }),
+            self.ui_scale,
+        );
         let key = |ix: usize| {
             entries.get(ix).and_then(|e| {
                 if allowed {
@@ -1147,6 +1156,7 @@ impl Explorer {
                 } else {
                     MediaKey::type_icon(e)
                 }
+                .map(|k| k.with_icon_px(icon_px))
             })
         };
         let keys: Vec<Option<MediaKey>> = range.clone().map(key).collect();

@@ -2070,8 +2070,9 @@ impl Explorer {
         let view = cx.entity_id();
         // Progress toasts wait: short jobs are only in the operation center.
         if let Some(job) = self
-            .extract_job
-            .as_ref()
+            .extract_jobs
+            // The one running; the others wait in the progress center.
+            .first()
             .filter(|_| ToastDelays::shown(cx, view, EXTRACT_TOAST))
         {
             let p = job.progress;
@@ -2200,7 +2201,7 @@ impl Explorer {
     /// Starts the delay of the progress toasts when a job begins and forgets it when the job ends.
     fn track_progress_toasts(&mut self, cx: &mut Context<Self>) {
         ToastDelays::track(cx, OPS_TOAST, self.ops_running > 0);
-        ToastDelays::track(cx, EXTRACT_TOAST, self.extract_job.is_some());
+        ToastDelays::track(cx, EXTRACT_TOAST, !self.extract_jobs.is_empty());
     }
 
     /// The toasts up now, or else a notice that is fading out.

@@ -17,7 +17,7 @@
 use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +42,7 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::media::MenuIcon;
 use crate::settings::SettingsStore;
-use crate::shell::{ShellMenu, ShellMenuEntry};
+use crate::shell::{OpProgress, ShellMenu, ShellMenuEntry};
 use crate::win_menu::Access;
 
 #[path = "explorer_menu_lazy.rs"]
@@ -1252,6 +1252,36 @@ pub(crate) struct ExtractJob {
     job: u64,
     ops: Arc<crate::shell::OpProgress>,
     pub(crate) progress: ExtractProgress,
+    /// The folder it makes its new folder or zip in, and that name (lowercase): taken for the jobs
+    /// queued after it, before it exists.
+    claim: Option<(PathBuf, String)>,
+}
+
+/// The file's name says it is an archive Arke extracts.
+fn is_archive(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| archive_kind(&name.to_string_lossy()).is_some())
+}
+
+/// A new tab's key in the archive queue: unique in the process (entity ids start over in every
+/// test app, and those share the queue).
+pub(crate) fn next_archive_line() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The progress callback an archive job's thread passes to `arke_core::archive`.
+type ArchiveProgress<'a> = dyn Fn(ExtractProgress) + Sync + 'a;
+
+/// How many threads to extract `archive` into `folder` with: several only when both are on
+/// solid-state drives, where writing many small files at once is faster; one on a hard disk, a
+/// network share, or when that can't be told. Background thread.
+fn archive_workers(shell: &dyn crate::shell::Shell, archive: &Path, folder: &Path) -> usize {
+    if shell.solid_state(archive) && shell.solid_state(folder) {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    } else {
+        1
+    }
 }
 
 /// Writes background compress/extract progress (items, bytes) into the progress center entry.
@@ -1848,6 +1878,19 @@ impl Explorer {
                 None,
                 C::ExtractHere,
             ));
+        } else if !single && targets.iter().all(|(path, dir)| !dir && is_archive(path)) {
+            // Several archives: each into a folder of its own, one after another (#407).
+            entries.push(MenuEntry::Separator);
+            entries.push(item(
+                lab("extract_each", t!("menu.extract_each")),
+                None,
+                C::ExtractToFolder,
+            ));
+            entries.push(item(
+                lab("extract_here", t!("menu.extract_here")),
+                None,
+                C::ExtractHere,
+            ));
         }
         if single && !*is_dir && is_backdrop_image(&name) {
             entries.push(MenuEntry::Separator);
@@ -2328,8 +2371,11 @@ impl Explorer {
                 }
             }
             C::ExtractToFolder | C::ExtractHere => {
-                if let Some((path, false)) = targets.first().cloned() {
-                    self.extract_archive(path, command == C::ExtractHere, None, cx);
+                // Several selected: each in turn, in the order of the selection (#407).
+                for (path, dir) in &targets {
+                    if !dir && is_archive(path) {
+                        self.extract_archive(path.clone(), command == C::ExtractHere, None, cx);
+                    }
                 }
             }
             C::Cut => self.cut_files(&CutFiles, window, cx),
@@ -3108,7 +3154,8 @@ impl Explorer {
     // ───────────────────────── Extraction ─────────────────────────
 
     /// Extracts `archive_path` into a new folder next to it, or `here`; `password` for a
-    /// protected zip or 7z (#346), asked for after a first try without one.
+    /// protected zip or 7z (#346), asked for after a first try without one. Waits for this tab's
+    /// extraction or compression running now, if any (#407).
     pub(crate) fn extract_archive(
         &mut self,
         archive_path: PathBuf,
@@ -3116,45 +3163,165 @@ impl Explorer {
         password: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if self.extract_job.is_some() {
-            self.notice = Some(t!("extract.busy").into_owned());
-            return;
-        }
         let name = archive_path
             .file_name()
             .map_or_default(|n| n.to_string_lossy().into_owned());
         let (Some(kind), Some(model)) = (archive_kind(&name), self.model.as_ref()) else {
             return;
         };
-        // Extracting into a new folder picks a unique name. Only listed items are checked; on a
-        // collision
-        // existing files still aren't overwritten.
+        let parent = model.path.clone();
+        // Extracting into a new folder picks a unique name, among the items listed and the folders
+        // the jobs before it will make. On a collision existing files still aren't overwritten.
         let (dest, folder) = if here {
-            (model.path.clone(), None)
+            (parent.clone(), None)
         } else {
-            let existing: std::collections::HashSet<String> = model
-                .entries
-                .iter()
-                .map(|e| e.name.to_lowercase())
-                .collect();
+            let taken = self.taken_names(&parent);
             let folder =
-                arke_core::path::unique_name(&folder_name_for(&name), |n| existing.contains(n));
-            (model.path.join(&folder), Some(folder))
+                arke_core::path::unique_name(&folder_name_for(&name), |n| taken.contains(n));
+            (parent.join(&folder), Some(folder))
         };
         let (job, ops) =
             crate::op_center::OpCenter::begin(cx, "op.extract", Some((name.clone(), 1)));
-        self.extract_job = Some(ExtractJob {
-            name,
-            archive: Some((archive_path.clone(), here)),
-            compress: false,
-            job,
-            ops: Arc::clone(&ops),
-            progress: ExtractProgress::default(),
-        });
+        let claim = folder.as_ref().map(|f| (parent.clone(), f.to_lowercase()));
+        self.queue_archive_job(
+            ExtractJob {
+                name,
+                archive: Some((archive_path.clone(), here)),
+                compress: false,
+                job,
+                ops,
+                progress: ExtractProgress::default(),
+                claim,
+            },
+            "extract",
+            move |shell, progress, ops| {
+                let decode = |bytes: &[u8]| shell.decode_ansi(bytes);
+                let result = archive::extract(
+                    &archive_path,
+                    &dest,
+                    kind,
+                    &ExtractOptions {
+                        cancel: &ops.cancel,
+                        progress,
+                        decode_legacy: &decode,
+                        password: password.as_deref(),
+                        workers: archive_workers(shell, &archive_path, &parent),
+                    },
+                );
+                drop(password);
+                // Stopped before writing anything (a password to ask for, a method Arke can't
+                // read): the new folder goes. Only while it is empty, so nothing extracted is lost.
+                if folder.is_some() && result.is_err() {
+                    let _ = std::fs::remove_dir(&dest);
+                }
+                AppEvent::ExtractDone {
+                    job,
+                    result,
+                    folder,
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Zips into the same folder, named after the first item, or after the folder for several
+    /// items (made unique). Runs in the background with cancellable progress in the banner, after
+    /// this tab's extraction or compression running now, if any (#407).
+    fn start_compress(&mut self, targets: &[(PathBuf, bool)], cx: &mut Context<Self>) {
+        let (Some((first, _)), Some(model)) = (targets.first(), self.model.as_ref()) else {
+            return;
+        };
+        let stem = zip_stem_for_targets(Some(&model.path), targets);
+        let parent = model.path.clone();
+        let taken = self.taken_names(&parent);
+        let name = arke_core::path::unique_file_name(&stem, "zip", |n| taken.contains(n));
+        let dest = parent.join(&name);
+        let sources: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
+        let first_name = first.file_name().map_or_else(
+            || first.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let (job, ops) =
+            crate::op_center::OpCenter::begin(cx, "op.compress", Some((first_name, sources.len())));
+        let claim = Some((parent, name.to_lowercase()));
+        self.queue_archive_job(
+            ExtractJob {
+                name: name.clone(),
+                archive: None,
+                compress: true,
+                job,
+                ops,
+                progress: ExtractProgress::default(),
+                claim,
+            },
+            "compress",
+            move |shell, progress, ops| {
+                let local_time = |t: std::time::SystemTime| shell.local_parts(t);
+                let result = archive::compress(
+                    &sources,
+                    &dest,
+                    &archive::CompressOptions {
+                        cancel: &ops.cancel,
+                        progress,
+                        local_time: &local_time,
+                    },
+                );
+                AppEvent::CompressDone {
+                    job,
+                    result,
+                    name,
+                    dest,
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Names in `folder` (lowercase) that a new folder or zip can't take: the items listed, and
+    /// what this tab's queued and running jobs will make there before it shows up.
+    fn taken_names(&self, folder: &Path) -> std::collections::HashSet<String> {
+        let listed = self
+            .model
+            .as_ref()
+            .filter(|model| model.path == folder)
+            .into_iter()
+            .flat_map(|model| model.entries.iter().map(|e| e.name.to_lowercase()));
+        let claimed = self
+            .extract_jobs
+            .iter()
+            .filter_map(|job| job.claim.as_ref())
+            .filter(|(parent, _)| parent == folder)
+            .map(|(_, name)| name.clone());
+        listed.chain(claimed).collect()
+    }
+
+    /// Puts `job` in this tab's line (#407) and starts its thread, which waits for the jobs before
+    /// it (Cancel while waiting takes it out of the line), then runs `work` with the progress
+    /// callback and sends back the event `work` returns.
+    fn queue_archive_job(
+        &mut self,
+        job: ExtractJob,
+        thread: &'static str,
+        work: impl FnOnce(&dyn crate::shell::Shell, &ArchiveProgress<'_>, &OpProgress) -> AppEvent
+        + Send
+        + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let (id, ops) = (job.job, Arc::clone(&job.ops));
+        // Behind another job: "Queued" in the progress center from the start.
+        if !self.extract_jobs.is_empty() {
+            ops.queued.store(true, Ordering::Relaxed);
+        }
+        self.extract_jobs.push(job);
         self.notice = None;
+        let tab = self.archive_line;
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
-        spawn_thread("extract", move || {
+        spawn_thread(thread, move || {
+            let Some(_turn) = crate::op_queue::enter_archive(tab, &ops) else {
+                let _ = tx.send(AppEvent::ArchiveJobDropped(id));
+                return;
+            };
             // Banner progress is sent at most every 100 ms to avoid flooding the UI; the progress
             // center reads counters directly.
             let last = Mutex::new(Instant::now());
@@ -3166,104 +3333,46 @@ impl Explorer {
                 if last.elapsed() >= Duration::from_millis(100) {
                     *last = Instant::now();
                     drop(last);
-                    let _ = progress_tx.send(AppEvent::ExtractProgress(p));
+                    let _ = progress_tx.send(AppEvent::ExtractProgress {
+                        job: id,
+                        progress: p,
+                    });
                 }
             };
-            let decode = |bytes: &[u8]| shell.decode_ansi(bytes);
-            let result = archive::extract(
-                &archive_path,
-                &dest,
-                kind,
-                &ExtractOptions {
-                    cancel: &ops.cancel,
-                    progress: &progress,
-                    decode_legacy: &decode,
-                    password: password.as_deref(),
-                },
-            );
-            drop(password);
-            // Stopped before writing anything (a password to ask for, a method Arke can't read):
-            // the new folder goes. Only while it is empty, so nothing extracted is lost.
-            if folder.is_some() && result.is_err() {
-                let _ = std::fs::remove_dir(&dest);
-            }
-            let _ = tx.send(AppEvent::ExtractDone { result, folder });
+            let done = work(shell.as_ref(), &progress, ops.as_ref());
+            let _ = tx.send(done);
         });
         cx.notify();
     }
 
-    /// Zips into the same folder, named after the first item, or after the folder for several
-    /// items (made unique). Runs in the background with cancellable progress in the banner.
-    fn start_compress(&mut self, targets: &[(PathBuf, bool)], cx: &mut Context<Self>) {
-        if self.extract_job.is_some() {
-            self.notice = Some(t!("extract.busy").into_owned());
-            return;
-        }
-        let (Some((first, _)), Some(model)) = (targets.first(), self.model.as_ref()) else {
-            return;
-        };
-        let stem = zip_stem_for_targets(Some(&model.path), targets);
-        let existing: std::collections::HashSet<String> = model
-            .entries
-            .iter()
-            .map(|e| e.name.to_lowercase())
-            .collect();
-        let name = arke_core::path::unique_file_name(&stem, "zip", |n| existing.contains(n));
-        let dest = model.path.join(&name);
-        let sources: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
-        let first_name = first.file_name().map_or_else(
-            || first.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let (job, ops) =
-            crate::op_center::OpCenter::begin(cx, "op.compress", Some((first_name, sources.len())));
-        self.extract_job = Some(ExtractJob {
-            name: name.clone(),
-            archive: None,
-            compress: true,
-            job,
-            ops: Arc::clone(&ops),
-            progress: ExtractProgress::default(),
-        });
-        self.notice = None;
-        let shell = Arc::clone(&self.services.shell);
-        let tx = self.events_tx.clone();
-        spawn_thread("compress", move || {
-            let last = Mutex::new(Instant::now());
-            let progress_tx = tx.clone();
-            let counters = Arc::clone(&ops);
-            let progress = move |p: ExtractProgress| {
-                report(&counters, p);
-                let mut last = last.lock();
-                if last.elapsed() >= Duration::from_millis(100) {
-                    *last = Instant::now();
-                    drop(last);
-                    let _ = progress_tx.send(AppEvent::ExtractProgress(p));
-                }
+    /// Takes the job with this progress center id out of the line.
+    fn take_extract_job(&mut self, id: u64) -> Option<ExtractJob> {
+        let at = self.extract_jobs.iter().position(|job| job.job == id)?;
+        Some(self.extract_jobs.remove(at))
+    }
+
+    /// A job cancelled before its turn came: it did nothing, so it only leaves the line.
+    pub(super) fn handle_archive_job_dropped(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(job) = self.take_extract_job(id) {
+            let verb = if job.compress {
+                "op.compress"
+            } else {
+                "op.extract"
             };
-            let local_time = |t: std::time::SystemTime| shell.local_parts(t);
-            let result = archive::compress(
-                &sources,
-                &dest,
-                &archive::CompressOptions {
-                    cancel: &ops.cancel,
-                    progress: &progress,
-                    local_time: &local_time,
-                },
-            );
-            let _ = tx.send(AppEvent::CompressDone { result, name, dest });
-        });
+            crate::op_center::OpCenter::finish(cx, job.job, verb, &outcome(Ok(true)));
+        }
         cx.notify();
     }
 
     pub(super) fn handle_compress_done(
         &mut self,
+        id: u64,
         result: Result<archive::CompressSummary, archive::ArchiveError>,
         name: String,
         dest: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        if let Some(job) = self.extract_job.take() {
+        if let Some(job) = self.take_extract_job(id) {
             let state = outcome(result.as_ref().map(|s| s.cancelled));
             crate::op_center::OpCenter::finish(cx, job.job, "op.compress", &state);
         }
@@ -3308,8 +3417,13 @@ impl Explorer {
         cx.notify();
     }
 
-    pub(super) fn handle_extract_progress(&mut self, p: ExtractProgress, cx: &mut Context<Self>) {
-        if let Some(job) = self.extract_job.as_mut() {
+    pub(super) fn handle_extract_progress(
+        &mut self,
+        id: u64,
+        p: ExtractProgress,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(job) = self.extract_jobs.iter_mut().find(|job| job.job == id) {
             job.progress = p;
             cx.notify();
         }
@@ -3317,11 +3431,12 @@ impl Explorer {
 
     pub(super) fn handle_extract_done(
         &mut self,
+        id: u64,
         result: Result<ExtractSummary, archive::ArchiveError>,
         folder: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let job = self.extract_job.take();
+        let job = self.take_extract_job(id);
         // A protected archive: ask for its password (again, if this one was wrong) instead of
         // failing. The try that stopped to ask isn't a job in the operation center.
         if let (Err(e), Some(job)) = (&result, &job)
@@ -3402,11 +3517,13 @@ impl Explorer {
         dest: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        self.handle_compress_done(result, name.to_owned(), dest, cx);
+        // Not a job of this tab's line: only the end is delivered.
+        self.handle_compress_done(0, result, name.to_owned(), dest, cx);
     }
 
+    /// Cancels the job the banner shows: the first in line, the one running.
     pub(crate) fn cancel_extract(&mut self) {
-        if let Some(job) = &self.extract_job {
+        if let Some(job) = self.extract_jobs.first() {
             job.ops.cancel.store(true, Ordering::Relaxed);
         }
     }
@@ -4574,6 +4691,11 @@ mod access_tests {
          delete extract_to extract_here copy_rel link keep free",
         ),
         (
+            "files_archives",
+            "open compress move_new shelf copy_path reveal props more cut copy rename delete \
+         extract_each extract_here copy_rel keep free",
+        ),
+        (
             "file_image",
             "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
          delete set_bg copy_rel link keep free",
@@ -4625,7 +4747,7 @@ mod access_tests {
          new_text=menu.new_text_file new_file_in=menu.new_file_in \
          new_folder_in=menu.new_folder_in search_folder=menu.search_in_folder \
          fav_add=sidebar.add_favorite fav_remove=sidebar.remove_favorite \
-         terminal=menu.open_terminal extract_to=menu.extract_to \
+         terminal=menu.open_terminal extract_to=menu.extract_to extract_each=menu.extract_each \
          extract_here=menu.extract_here set_bg=menu.set_background \
          import=menu.import_settings compress=menu.compress move_new=menu.move_to_new_folder \
          new_window=menu.open_new_window link=menu.go_to_link_target \

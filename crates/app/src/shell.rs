@@ -1192,6 +1192,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
     }
     /// Decodes non-UTF-8 archive entry names with the system ANSI code page (Big5 on Traditional Chinese Windows). Pure.
     fn decode_ansi(&self, bytes: &[u8]) -> String;
+    /// The local drive holding `path` is solid state, where reading or writing many files at once
+    /// beats one after another (a zip is extracted on several threads). `false` when unknown.
+    /// Background thread.
+    fn solid_state(&self, path: &Path) -> bool {
+        let _ = path;
+        false
+    }
 
     /// Network location checks (probing servers, mapped drives). `None` disables probing and network folder tracking (tests).
     fn net_probe(&self) -> Option<std::sync::Arc<dyn arke_core::net::NetProbe>> {

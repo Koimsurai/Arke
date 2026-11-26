@@ -208,12 +208,15 @@ impl Job {
             JobState::Running if self.progress.cancel.load(Ordering::Relaxed) => {
                 t!("ops.state_stopping").into_owned()
             }
-            JobState::Running if self.queued() => if crate::op_queue::paused() {
-                t!("ops.state_queued_paused")
-            } else {
-                t!("ops.state_queued")
+            // Extractions and compressions wait in a queue of their own, which doesn't pause.
+            JobState::Running if self.queued() => {
+                if crate::op_queue::paused() && !matches!(self.verb, "op.extract" | "op.compress") {
+                    t!("ops.state_queued_paused")
+                } else {
+                    t!("ops.state_queued")
+                }
+                .into_owned()
             }
-            .into_owned(),
             JobState::Running if self.progress.verifying.load(Ordering::Relaxed) => {
                 self.fraction().map_or_else(
                     || t!("ops.state_verifying").into_owned(),

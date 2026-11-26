@@ -476,6 +476,23 @@ fn solid_state(volume: &str) -> bool {
     ssd
 }
 
+/// The local drive holding `path` is solid state (see [`solid_state`]); `false` for a network
+/// path or when that can't be read. Background thread.
+pub(crate) fn solid_state_at(path: &Path) -> bool {
+    let Some(root) = volume_root(path) else {
+        return false;
+    };
+    let wide = HSTRING::from(root.as_os_str());
+    let mut name = [0u16; 64];
+    // SAFETY: wide is NUL-terminated; the buffer and its length are passed together.
+    if unsafe { GetVolumeNameForVolumeMountPointW(&wide, &mut name) }.is_err() {
+        return false;
+    }
+    name.iter()
+        .position(|&c| c == 0)
+        .is_some_and(|len| solid_state(&String::from_utf16_lossy(&name[..len])))
+}
+
 /// Whether the drive under `volume` (`\\?\Volume{GUID}\`) has a seek penalty, as its driver
 /// reports it. `None` when it can't be read (a volume over several disks, an old driver).
 fn seek_penalty(volume: &str) -> Option<bool> {

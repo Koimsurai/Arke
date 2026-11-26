@@ -1255,6 +1255,11 @@ impl Shell for WinShell {
         win_fileops::set_clipboard_text(text)
     }
 
+    fn solid_state(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_fast_copy::solid_state_at(path)
+    }
+
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         let t = local_time(time)?;
         Some([t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond])

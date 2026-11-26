@@ -1,13 +1,17 @@
-//! Arke never runs as administrator (#451).
+//! Arke doesn't run as administrator alone (#451).
 //!
 //! A program running as administrator that opens a folder while the folder verbs run the command
 //! (not Arke's COM class: registrations from before 0.9.2, or a per-machine install where COM
 //! refuses the class) starts `arke.exe` as administrator too. Such an Arke hands the folder to the
 //! resident Arke as usual, but never becomes the resident Arke itself: with none running it starts
 //! again through the desktop shell, whose programs run as the user, and exits
-//! (`redirection_guard::relaunch`). Only when the shell can't give it a standard copy (no shell, the
-//! shell itself runs as administrator, or the copy it started is elevated again) does it open its
-//! window as administrator, without residency, and say so in the log.
+//! (`redirection_guard::relaunch`). When no standard copy can be had (no shell, or the copy the
+//! shell started is elevated again) it opens its window as administrator, without residency, and
+//! says so in the log.
+//!
+//! When the shell itself runs as administrator (UAC off, the built-in Administrator account), the
+//! whole session is elevated: that is the normal environment there, and Arke starts as usual,
+//! resident included.
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
@@ -27,12 +31,16 @@ pub(crate) enum Shell {
     Standard,
 }
 
-/// What an elevated Arke does when it would otherwise become the resident Arke.
+/// What a starting Arke does about running as administrator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Plan {
-    /// Start again through the desktop shell, then exit.
+    /// Not elevated, or the whole session is (the shell too): start as usual, resident included.
+    Normal,
+    /// Elevated alone: never become resident; with no resident Arke to hand over to, start again
+    /// through the desktop shell and exit.
     Relaunch,
-    /// A standard copy can't be had: open the window here, without residency.
+    /// Elevated alone, and a standard copy can't be had: never become resident; open the window
+    /// here.
     Standalone(Why),
 }
 
@@ -42,25 +50,37 @@ pub(crate) enum Why {
     /// This is the copy the shell started, and it is elevated all the same.
     StillElevated,
     NoShell,
-    ShellElevated,
 }
 
-/// The plan, from whether this copy is the one a relaunch started (`relaunched`) and the shell.
-/// A relaunched copy never relaunches again, so nothing loops.
-pub(crate) const fn decide(relaunched: bool, shell: Shell) -> Plan {
-    match (relaunched, shell) {
-        (true, _) => Plan::Standalone(Why::StillElevated),
-        (false, Shell::Missing) => Plan::Standalone(Why::NoShell),
-        (false, Shell::Elevated) => Plan::Standalone(Why::ShellElevated),
-        (false, Shell::Standard) => Plan::Relaunch,
+/// The plan, from whether this process is `elevated`, whether it is the copy a relaunch started
+/// (`relaunched`) and the shell. A relaunched copy never relaunches again, so nothing loops.
+pub(crate) const fn decide(elevated: bool, relaunched: bool, shell: Shell) -> Plan {
+    match (elevated, relaunched, shell) {
+        (false, ..) | (true, _, Shell::Elevated) => Plan::Normal,
+        (true, true, _) => Plan::Standalone(Why::StillElevated),
+        (true, false, Shell::Missing) => Plan::Standalone(Why::NoShell),
+        (true, false, Shell::Standard) => Plan::Relaunch,
     }
 }
 
-/// An elevated Arke that would become resident: starts again through the desktop shell when that
-/// gives a standard copy. `true`: the new copy is starting, this one exits now; `false`: it runs
-/// here, without residency (the log says why).
-pub(crate) fn start_unelevated() -> bool {
-    match decide(crate::redirection_guard::relaunched(), shell()) {
+/// [`decide`] for this process; the shell is only looked at when this process is elevated.
+pub(crate) fn plan() -> Plan {
+    if !is_elevated() {
+        return Plan::Normal;
+    }
+    let plan = decide(true, crate::redirection_guard::relaunched(), shell());
+    if plan == Plan::Normal {
+        log::info!("running as administrator like the desktop shell: starting as usual");
+    }
+    plan
+}
+
+/// An elevated Arke ([`plan`] isn't [`Plan::Normal`]) that would become resident: starts again
+/// through the desktop shell when that gives a standard copy. `true`: the new copy is starting,
+/// this one exits now; `false`: it runs here, without residency (the log says why).
+pub(crate) fn start_unelevated(plan: Plan) -> bool {
+    match plan {
+        Plan::Normal => false,
         Plan::Relaunch => match crate::redirection_guard::relaunch() {
             Ok(()) => {
                 log::info!("started as administrator: started again through the desktop shell");
@@ -146,20 +166,40 @@ fn process_elevated(process: HANDLE) -> Option<bool> {
 mod tests {
     use super::*;
 
+    const SHELLS: [Shell; 3] = [Shell::Standard, Shell::Missing, Shell::Elevated];
+
+    #[test]
+    fn a_standard_start_is_left_alone() {
+        for relaunched in [false, true] {
+            for shell in SHELLS {
+                assert_eq!(decide(false, relaunched, shell), Plan::Normal);
+            }
+        }
+    }
+
     #[test]
     fn an_elevated_start_relaunches_only_when_the_shell_gives_a_standard_copy() {
-        assert_eq!(decide(false, Shell::Standard), Plan::Relaunch);
+        assert_eq!(decide(true, false, Shell::Standard), Plan::Relaunch);
         assert_eq!(
-            decide(false, Shell::Missing),
+            decide(true, false, Shell::Missing),
             Plan::Standalone(Why::NoShell)
         );
-        assert_eq!(
-            decide(false, Shell::Elevated),
-            Plan::Standalone(Why::ShellElevated)
-        );
         // The copy the shell started is elevated again: never a second relaunch.
-        for shell in [Shell::Standard, Shell::Missing, Shell::Elevated] {
-            assert_eq!(decide(true, shell), Plan::Standalone(Why::StillElevated));
-        }
+        assert_eq!(
+            decide(true, true, Shell::Standard),
+            Plan::Standalone(Why::StillElevated)
+        );
+        assert_eq!(
+            decide(true, true, Shell::Missing),
+            Plan::Standalone(Why::StillElevated)
+        );
+    }
+
+    /// UAC off or the built-in Administrator: the shell is elevated too, and that is the normal
+    /// environment there.
+    #[test]
+    fn a_session_elevated_as_a_whole_starts_as_usual() {
+        assert_eq!(decide(true, false, Shell::Elevated), Plan::Normal);
+        assert_eq!(decide(true, true, Shell::Elevated), Plan::Normal);
     }
 }

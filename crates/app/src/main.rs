@@ -463,13 +463,19 @@ fn app_main(mut args: Args) {
         crashlog::flush(Duration::from_millis(200));
         return;
     }
-    // Started as administrator (a program running elevated opened a folder, #451): hand over to the
-    // resident Arke as usual, but never become it. With none running, start again as the user
-    // through the desktop shell before anything else (`elevation.rs`). Not when COM started this
-    // copy, for the same reason as above (and COM doesn't start it elevated: its class is per user).
-    let elevated = !args.embedding && elevation::is_elevated();
+    // Started as administrator while the shell isn't (a program running elevated opened a folder,
+    // #451): hand over to the resident Arke as usual, but never become it. With none running, start
+    // again as the user through the desktop shell before anything else (`elevation.rs`). Not when
+    // COM started this copy, for the same reason as above (and COM doesn't start it elevated: its
+    // class is per user).
+    let admin = if args.embedding {
+        elevation::Plan::Normal
+    } else {
+        elevation::plan()
+    };
+    let elevated = admin != elevation::Plan::Normal;
     let relaunch_tried = elevated && !instance::resident_exists();
-    if relaunch_tried && elevation::start_unelevated() {
+    if relaunch_tried && elevation::start_unelevated(admin) {
         crashlog::flush(Duration::from_millis(200));
         return;
     }
@@ -516,7 +522,7 @@ fn app_main(mut args: Args) {
             outcome if elevated => {
                 // Closes the pipe first, so the new copy can become the resident Arke.
                 drop(outcome);
-                if !relaunch_tried && elevation::start_unelevated() {
+                if !relaunch_tried && elevation::start_unelevated(admin) {
                     crashlog::flush(Duration::from_millis(200));
                     return;
                 }

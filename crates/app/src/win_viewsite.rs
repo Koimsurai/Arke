@@ -703,8 +703,8 @@ mod tests {
     fn site_reports_the_folder_and_sort_of_the_view() {
         // SAFETY: COM for this test thread; paired below.
         let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-viewsite-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let file = dir.join("b.png");
         std::fs::write(&file, b"x").unwrap();
         {
@@ -758,7 +758,6 @@ mod tests {
                 );
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };
@@ -774,8 +773,8 @@ mod tests {
         use windows::Win32::UI::Shell::{IShellFolder, SIGDN_FILESYSPATH, SVGIO_ALLVIEW};
         // SAFETY: COM for this test thread; paired below.
         let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-bgview-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         {
             let site = background_site(&dir).expect("site");
@@ -812,7 +811,6 @@ mod tests {
                 assert!(view.Item(0).is_err());
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };

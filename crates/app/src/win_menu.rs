@@ -1425,8 +1425,8 @@ mod tests {
         reason = "a by-hand measurement prints what it found"
     )]
     fn the_whole_menu_doesnt_wait_for_send_to() {
-        let file = crate::win::long_temp_dir()
-            .join(format!("arke-whole-sendto-{}.txt", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-whole-sendto-");
+        let file = tmp_dir.path().join("sendto.txt");
         std::fs::write(&file, "x").unwrap();
         let read = || {
             let started = std::time::Instant::now();
@@ -1440,7 +1440,6 @@ mod tests {
         warm_send_to(&file);
         let label = one::cached_send_to_label().expect("Send To's label");
         let (after, took) = read();
-        let _ = std::fs::remove_file(&file);
         let send_to = |menu: &ShellMenu| {
             menu.entries.iter().find_map(|e| match e {
                 ShellMenuEntry::Submenu {
@@ -1498,8 +1497,8 @@ mod tests {
             })
         }
         let part = std::env::var("ARKE_BG_VERB").unwrap_or_else(|_| "Everything".into());
-        let folder = std::env::temp_dir().join("arke-bg-verb-test");
-        std::fs::create_dir_all(&folder).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let folder = tmp_dir.path().to_path_buf();
         let menu = query(std::slice::from_ref(&folder), true, false).unwrap();
         let (id, label) = find(&menu.entries, &part).expect("the command is in the menu");
         let result = invoke(menu.session, id, (0, 0), None);
@@ -1540,8 +1539,8 @@ mod tests {
                 })
                 .collect()
         }
-        let dir = std::env::temp_dir().join("arke-give-access-to");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         // The submenu's name, from the Sharing extension's own menu for the folder.
         let sharing = crate::win_menu_parts::handlers(std::slice::from_ref(&dir), false)
             .into_iter()
@@ -1586,8 +1585,8 @@ mod tests {
     #[test]
     #[ignore = "reads this machine's Windows menu; run by hand"]
     fn items_from_two_folders_get_one_menu() {
-        let base =
-            crate::win::long_temp_dir().join(format!("arke-two-folders-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-two-folders-");
+        let base = tmp_dir.path().to_path_buf();
         let files: Vec<PathBuf> = ["a", "b"]
             .iter()
             .map(|dir| {
@@ -1600,7 +1599,6 @@ mod tests {
             })
             .collect();
         let menu = query(&files, false, false);
-        let _ = std::fs::remove_dir_all(&base);
         let menu = menu.expect("a menu for both items");
         let verbs: Vec<String> = menu
             .entries

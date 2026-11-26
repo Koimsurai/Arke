@@ -1529,9 +1529,8 @@ mod tests {
     /// The same on the real file system, in the temp directory.
     #[test]
     fn real_fs_case_only_rename_leaves_one_item() {
-        let dir = std::env::temp_dir().join(format!("arke-core-case-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("report.txt"), b"x").unwrap();
         let (svc, events) = service(Arc::new(RealFs));
         svc.navigate(dir.clone(), opts(true));
@@ -1544,15 +1543,13 @@ mod tests {
             shown(&events)
         );
         svc.cancel();
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Real file system: only touches the temp directory.
     #[test]
     fn real_fs_lists_and_watches_temp_dir() {
-        let dir = std::env::temp_dir().join(format!("arke-core-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         for i in 0..20 {
             std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
         }
@@ -1572,6 +1569,5 @@ mod tests {
             IoEvent::Delta { delta, .. } if delta.upserts.iter().any(|u| &*u.name == "new.txt")
         )));
         svc.cancel();
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

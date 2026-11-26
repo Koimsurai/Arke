@@ -490,23 +490,19 @@ impl ThumbCache {
 mod tests {
     use super::*;
 
-    struct TempDir(PathBuf);
+    struct TempDir(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "arke-thumbcache-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            let _ = fs::remove_dir_all(&dir);
-            Self(dir)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-thumbcache-{tag}-"))
+                .tempdir()
+                .unwrap();
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 

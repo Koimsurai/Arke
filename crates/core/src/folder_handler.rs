@@ -953,7 +953,8 @@ mod tests {
     /// folder: the same exe, so "Remove Arke" hands folders back to File Explorer.
     #[test]
     fn a_registration_through_a_junction_is_this_exe() {
-        let base = std::env::temp_dir().join(format!("arke-test-junction-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let base = tmp_dir.path().to_path_buf();
         let version = base.join("0.8.0");
         std::fs::create_dir_all(&version).unwrap();
         std::fs::write(version.join("arke.exe"), b"x").unwrap();
@@ -974,7 +975,6 @@ mod tests {
         let mine = handled_by(&reg, &version.join("arke.exe"));
         let other = handled_by(&reg, &base.join("other").join("arke.exe"));
         let _ = std::fs::remove_dir(&current);
-        let _ = std::fs::remove_dir_all(&base);
         assert!(mine);
         assert!(!other);
     }
@@ -1426,7 +1426,8 @@ mod tests {
 
     #[test]
     fn the_backup_file_round_trips_and_a_broken_one_is_set_aside() {
-        let dir = std::env::temp_dir().join(format!("arke-fh-test-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let file = FileBackup(dir.join(BACKUP_FILE));
         assert!(file.load().unwrap().is_none());
         let reg = MemoryRegistry::default();
@@ -1442,6 +1443,5 @@ mod tests {
         std::fs::write(dir.join(BACKUP_FILE), b"{ not json").unwrap();
         assert!(file.load().unwrap().is_none());
         assert!(dir.join("folder-handler-backup.json.bad").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4195,8 +4195,8 @@ mod tests {
     /// fails to open.
     #[test]
     fn opens_the_saved_file_without_copying_it() {
-        let dir = std::env::temp_dir().join(format!("arke-index-map-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("index.bin");
         let cursor = Cursor {
             journal: 7,
@@ -4223,7 +4223,6 @@ mod tests {
         bytes.truncate(bytes.len() - 5);
         std::fs::write(&path, &bytes).unwrap();
         assert!(Index::open(&path).is_err(), "truncated");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Identical names are stored once in the pool and paths stay correct.
@@ -5146,8 +5145,8 @@ mod tests {
         reason = "a benchmark run by hand prints its timings"
     )]
     fn folder_size_speed() {
-        let root = std::env::temp_dir().join(format!("arke-dirsize-bench-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let root = tmp_dir.path().to_path_buf();
         for top in 0..20 {
             for sub in 0..50 {
                 let dir = root
@@ -5227,7 +5226,6 @@ mod tests {
             usage.len(),
             t.elapsed()
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Query speed over many items (`cargo test -p arke-core -- --ignored --nocapture

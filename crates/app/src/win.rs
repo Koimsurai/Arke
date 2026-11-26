@@ -230,7 +230,7 @@ fn volume_label(root: &[u16]) -> Option<String> {
 /// Common editors found at their default install paths. Only checks for the exe: no registry,
 /// nothing launched.
 fn editor_apps() -> Vec<(String, PathBuf)> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let local = crate::paths::local_root();
     let programs = std::env::var_os("ProgramFiles").map(PathBuf::from);
     let candidates: [(&str, Option<PathBuf>); 5] = [
         (
@@ -297,9 +297,7 @@ pub(crate) fn start_menu_shortcut(appdata: &std::path::Path) -> PathBuf {
 }
 
 fn appdata() -> Result<PathBuf, ShellError> {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .ok_or(ShellError::MissingEnv("APPDATA"))
+    crate::paths::roaming_root().ok_or(ShellError::MissingEnv("APPDATA"))
 }
 
 /// Creates or removes the Startup folder shortcut. It points at this exe with `--background`
@@ -533,6 +531,16 @@ pub(crate) fn long_temp_dir() -> PathBuf {
         return short;
     }
     PathBuf::from(String::from_utf16_lossy(&buf[..len]))
+}
+
+/// A new folder under [`long_temp_dir`], named from `prefix`, deleted when dropped (also when a
+/// test panics).
+#[cfg(test)]
+pub(crate) fn long_tempdir(prefix: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(long_temp_dir())
+        .unwrap()
 }
 
 fn locale_for(system: &str) -> &'static str {
@@ -2031,7 +2039,8 @@ mod tests {
     /// Real shortcuts in a temp folder: the target reads back, and a name clash gets a number.
     #[test]
     fn creates_shortcuts_that_point_back() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-lnk-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-lnk-");
+        let dir = tmp_dir.path().to_path_buf();
         // Non-ASCII name: the target must read back intact through the shell link API.
         let target = dir.join("報告.txt");
         let dest = dir.join("dest");
@@ -2051,7 +2060,6 @@ mod tests {
         );
         assert!(first[0].exists() && second[0].exists());
         assert_eq!(shell.shortcut_target(&first[0]), Some((target, false)));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

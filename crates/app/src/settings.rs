@@ -1358,7 +1358,7 @@ fn save_change(path: &Path, settings: &Settings, change: u64, written: &parking_
 
 /// `%APPDATA%\Arke\settings.json` (string handling only).
 pub(crate) fn default_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Arke").join("settings.json"))
+    crate::paths::settings_file()
 }
 
 /// Turns "Open folders in Arke" off in the settings file (for `--restore-explorer`, which runs
@@ -1928,7 +1928,8 @@ mod tests {
     /// leaves the newer one in the file.
     #[test]
     fn an_older_write_never_replaces_a_newer_one() {
-        let dir = std::env::temp_dir().join(format!("arke-save-order-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("settings.json");
         let written = parking_lot::Mutex::new(0);
         let with_recent = |p: &str| Settings {
@@ -1944,7 +1945,6 @@ mod tests {
         save_change(&path, &with_recent(r"C:\newer"), 3, &written);
         assert_eq!(load(&path).unwrap().recent, [PathBuf::from(r"C:\newer")]);
         assert_eq!(*written.lock(), 3);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Settings saved before the Recycle Bin moved into the pinned list keep it pinned.
@@ -2170,7 +2170,8 @@ mod tests {
 
     #[test]
     fn round_trips_and_tolerates_missing_fields() {
-        let dir = std::env::temp_dir().join(format!("arke-settings-test-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("settings.json");
         let mut s = Settings::default();
         s.toggle_pin(Path::new(r"C:\a"), &[]);
@@ -2248,7 +2249,6 @@ mod tests {
         // A corrupt file does not panic.
         std::fs::write(&path, b"{not json").unwrap();
         assert_eq!(load(&path), None);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2364,9 +2364,9 @@ mod tests {
 
     #[test]
     fn uninstall_keeps_settings_but_turns_takeover_off() {
-        let dir = std::env::temp_dir().join(format!("arke-test-takeover-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("settings.json");
-        let _ = std::fs::remove_dir_all(&dir);
         assert!(turn_off_takeover(&path), "no file, nothing to do");
         let settings = Settings {
             open_folders_in_arke: true,
@@ -2378,6 +2378,5 @@ mod tests {
         let kept = load(&path).unwrap();
         assert!(!kept.open_folders_in_arke);
         assert!(kept.show_hidden, "other settings stay");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

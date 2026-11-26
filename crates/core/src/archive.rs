@@ -1425,24 +1425,21 @@ mod tests {
 
     mod formats;
 
-    /// Tests run only in their own folder under %TEMP%, deleted afterwards.
-    struct Sandbox(PathBuf);
+    /// Tests run only in their own folder under %TEMP%, deleted afterwards (also when a test
+    /// panics). The second field is what deletes it.
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("arke-archive-test-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            if self.0.starts_with(std::env::temp_dir()) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-archive-test-{tag}-"))
+                .tempdir()
+                .unwrap();
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 

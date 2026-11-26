@@ -494,15 +494,16 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    struct Sandbox(PathBuf);
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(name: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-purge-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = crate::win::long_tempdir(&format!("arke-purge-{name}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
         fn file(&self, rel: &str, text: &str) -> PathBuf {
             let path = self.0.join(rel);

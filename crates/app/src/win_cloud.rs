@@ -143,14 +143,13 @@ mod tests {
     /// A plain temp folder is no sync root and nothing in it is read as syncing.
     #[test]
     fn temp_folders_are_not_cloud() {
-        let dir = std::env::temp_dir().join(format!("arke-cloud-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), b"a").unwrap();
         assert!(!in_sync_root(&dir));
         assert_eq!(sync_root_provider(&dir), None);
         let mut buffer = vec![0_u64; 520];
         assert_eq!(not_in_sync(&dir.join("a.txt"), &mut buffer), None);
         assert_eq!(scan(&dir, &[Arc::from("a.txt")]), CloudScan::default());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

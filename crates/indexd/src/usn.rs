@@ -846,7 +846,8 @@ pub(crate) mod tests {
         let stop = stop_event();
 
         // A file created a little later wakes the wait long before its timeout.
-        let file = std::env::temp_dir().join(format!("arke-usn-wait-{}.txt", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file = tmp_dir.path().join("wait.txt");
         let writer = {
             let file = file.clone();
             std::thread::spawn(move || {
@@ -857,7 +858,6 @@ pub(crate) mod tests {
         let started = Instant::now();
         let woke = waiter.wait(journal, next, Duration::from_secs(10), stop.0);
         writer.join().unwrap();
-        let _ = std::fs::remove_file(&file);
         assert_eq!(woke.unwrap(), Wait::Ready);
         assert!(
             started.elapsed() < Duration::from_secs(2),

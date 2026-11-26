@@ -403,9 +403,8 @@ mod tests {
     #[test]
     fn overflowing_watch_asks_for_a_rescan_and_keeps_watching() {
         const FILES: usize = 3000;
-        let dir = std::env::temp_dir().join(format!("arke-watch-overflow-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let seen: Arc<Mutex<HashSet<String>>> = Arc::default();
         let rescans = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(Instant::now()));
@@ -470,7 +469,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         drop(watch);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 
@@ -481,8 +479,8 @@ mod replace_tests {
     /// The new content replaces the old whole, and the temporary file doesn't stay behind.
     #[test]
     fn a_replaced_file_has_the_new_content_and_no_temporary_file_is_left() {
-        let dir = std::env::temp_dir().join(format!("arke-test-replace-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("settings.json");
         let tmp = dir.join("settings.json.tmp");
         std::fs::write(&path, "old").unwrap();
@@ -491,6 +489,5 @@ mod replace_tests {
         assert!(!tmp.exists());
         replace_file(&path, &tmp, b"bytes too").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"bytes too");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

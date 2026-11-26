@@ -650,8 +650,8 @@ mod tests {
     /// is an error.
     #[test]
     fn listing_matches_std() {
-        let dir = std::env::temp_dir().join(format!("arke-winfs-list-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::create_dir(dir.join("empty")).unwrap();
         std::fs::write(dir.join("a.txt"), b"hello").unwrap();
@@ -696,7 +696,6 @@ mod tests {
         assert_eq!(read_dir(&dir.join("empty")).unwrap().unwrap().count(), 0);
         assert!(read_dir(&dir.join("missing")).unwrap().is_err());
         let _ = std::fs::remove_dir(dir.join("link"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A path with a NUL in it is refused, as std refuses it, instead of listing what comes

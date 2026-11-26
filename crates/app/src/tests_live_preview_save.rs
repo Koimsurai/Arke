@@ -11,22 +11,16 @@ use gpui::px;
 use super::*;
 use crate::explorer::PreviewBody;
 
-/// A folder under %TEMP% named for this process; removed when dropped.
-struct Folder(PathBuf);
+/// A folder under %TEMP%; removed when dropped.
+struct Folder(
+    PathBuf,
+    #[allow(dead_code, reason = "held for its Drop, which deletes the folder")] tempfile::TempDir,
+);
 
 impl Folder {
     fn new(tag: &str) -> Self {
-        let dir = crate::win::long_temp_dir()
-            .join(format!("arke-test-presave-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("the temp folder can be made");
-        Self(dir)
-    }
-}
-
-impl Drop for Folder {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let guard = crate::win::long_tempdir(&format!("arke-test-presave-{tag}-"));
+        Self(guard.path().to_path_buf(), guard)
     }
 }
 

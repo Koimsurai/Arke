@@ -82,6 +82,8 @@ parking_lot = "0.13"
 # Typed errors for library and platform code (domain layers); tools use anyhow
 thiserror = "2"
 anyhow = "1"
+# Tests' temp folders: removed on drop, so also when a test panics
+tempfile = "3"
 # UI translations, embedded at compile time
 rust-i18n = "4"
 # Settings file (%APPDATA%\Arke\settings.json)

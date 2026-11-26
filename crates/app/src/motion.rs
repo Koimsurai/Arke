@@ -74,6 +74,8 @@ pub(crate) fn refresh_system_setting() {
 /// startup and whenever a window is activated.
 pub(crate) fn sync_app(cx: &mut App) {
     refresh_system_setting();
+    // The scrollbar setting rides along: same moments, no polling.
+    crate::scrollbar::refresh_system_setting();
     cx.set_reduce_motion(!enabled());
 }
 

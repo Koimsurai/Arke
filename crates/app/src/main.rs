@@ -435,6 +435,7 @@ fn app_main(mut args: Args) {
     let launched_unix_ms = unix_ms_now();
     crashlog::init();
     motion::refresh_system_setting();
+    scrollbar::refresh_system_setting();
     rust_i18n::set_locale(&win::ui_locale());
     theme::set_mica_available(use_mica());
     // From here any filesystem call on this thread trips a debug assertion.

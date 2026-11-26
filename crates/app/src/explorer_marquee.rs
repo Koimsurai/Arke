@@ -248,7 +248,7 @@ impl Explorer {
 
     /// Tests: the sideways scroll the header was drawn at (`None`: no header).
     #[cfg(test)]
-    pub(crate) const fn header_offset_for_test(&self) -> Option<Pixels> {
+    pub(crate) fn header_offset_for_test(&self) -> Option<Pixels> {
         self.header_x.get()
     }
 
@@ -265,20 +265,10 @@ impl Explorer {
     pub(super) fn render_marquee(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let bounds = Rc::clone(&self.list_bounds);
         let active = self.marquee.is_some();
-        let follow = self.header_follow();
         let this = cx.entity();
         let capture = canvas(
             move |b, _, _| bounds.set(b),
-            move |_, (), window, cx| {
-                // The list clamped its sideways scroll after the header was laid out: draw once
-                // more. The view must be notified too, or its cached render (which sets the
-                // header's offset) is reused as it was.
-                if let Some((x, list)) = follow
-                    && list.offset().x.min(px(0.)) != x
-                {
-                    cx.notify(this.entity_id());
-                    window.refresh();
-                }
+            move |_, (), window, _| {
                 if !active {
                     return;
                 }

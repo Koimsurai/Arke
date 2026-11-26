@@ -26,12 +26,25 @@ use windows::Win32::Storage::FileSystem::{
 use windows::core::{HSTRING, PCWSTR};
 
 use crate::shell::CloudScan;
+use crate::win_dll::system_dll;
+
+/// The Cloud Files API. A Windows without it (a stripped install) has no cloud status: every
+/// function here answers as if nothing were in the cloud, before anything calls into the DLL.
+const CLDAPI: &str = "cldapi.dll";
+
+/// Whether the Cloud Files API is there to call.
+pub(crate) fn available() -> bool {
+    system_dll(CLDAPI)
+}
 
 /// Most items read per folder; past that the rest show their attribute state only.
 const MAX_ITEMS: usize = 20_000;
 
 /// Whether `dir` is inside a Cloud Files sync root.
 pub(crate) fn in_sync_root(dir: &Path) -> bool {
+    if !available() {
+        return false;
+    }
     let wide = HSTRING::from(dir.as_os_str());
     let mut info = CF_SYNC_ROOT_BASIC_INFO::default();
     let size = size_of::<CF_SYNC_ROOT_BASIC_INFO>() as u32;
@@ -52,6 +65,9 @@ pub(crate) fn in_sync_root(dir: &Path) -> bool {
 /// (`CF_POPULATION_POLICY_PRIMARY`: 2 the cloud filter asks the client when a folder is listed, 3
 /// it never does), for the log. Reads the registration only.
 pub(crate) fn sync_root_provider(dir: &Path) -> Option<(String, u16)> {
+    if !available() {
+        return None;
+    }
     let wide = HSTRING::from(dir.as_os_str());
     // Room for the fixed part and the largest sync root identity (64 KB).
     let mut buffer = vec![0_u64; (size_of::<CF_SYNC_ROOT_STANDARD_INFO>() + 65_536) / 8 + 1];
@@ -80,6 +96,9 @@ pub(crate) fn sync_root_provider(dir: &Path) -> Option<(String, u16)> {
 /// Whether the placeholder at `path` is marked not in sync. `None` if it can't be opened or isn't
 /// a placeholder.
 fn not_in_sync(path: &Path, buffer: &mut [u64]) -> Option<bool> {
+    if !available() {
+        return None;
+    }
     let wide = HSTRING::from(path.as_os_str());
     // SAFETY: plain CreateFileW with a NUL-terminated path; the handle is closed below.
     let handle = unsafe {
@@ -118,7 +137,7 @@ fn not_in_sync(path: &Path, buffer: &mut [u64]) -> Option<bool> {
 
 /// See [`crate::shell::Shell::cloud_scan`].
 pub(crate) fn scan(dir: &Path, items: &[Arc<str>]) -> CloudScan {
-    if !in_sync_root(dir) {
+    if !available() || !in_sync_root(dir) {
         return CloudScan::default();
     }
     // Room for the fixed part and the largest file identity (4 KB).
@@ -151,5 +170,21 @@ mod tests {
         let mut buffer = vec![0_u64; 520];
         assert_eq!(not_in_sync(&dir.join("a.txt"), &mut buffer), None);
         assert_eq!(scan(&dir, &[Arc::from("a.txt")]), CloudScan::default());
+    }
+
+    /// Without `cldapi.dll` nothing reaches the Cloud Files API: no sync root, no status, and the
+    /// scan is empty.
+    #[test]
+    fn a_missing_cloud_api_means_no_cloud_status() {
+        crate::win_dll::assert_not_loaded(&[CLDAPI], "before the test");
+        let _missing = crate::win_dll::pretend_missing(&[CLDAPI]);
+        let dir = std::env::temp_dir();
+        assert!(!available());
+        assert!(!in_sync_root(&dir));
+        assert_eq!(sync_root_provider(&dir), None);
+        let mut buffer = vec![0_u64; 520];
+        assert_eq!(not_in_sync(&dir.join("a.txt"), &mut buffer), None);
+        assert_eq!(scan(&dir, &[Arc::from("a.txt")]), CloudScan::default());
+        crate::win_dll::assert_not_loaded(&[CLDAPI], "after the gated calls");
     }
 }

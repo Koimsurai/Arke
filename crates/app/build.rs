@@ -66,7 +66,15 @@ fn pending_changesets(manifest: &std::path::Path, channel: &str) {
 /// DLLs that only the window (graphics, text, accessibility, networking, devices) needs are
 /// loaded on first use instead of at start. A short-lived `arke.exe` that only hands a folder to
 /// the running Arke (Win+E, opening a folder from another program, `--api`) then skips them.
-/// Every one ships with all supported Windows versions, so a delayed load can't fail.
+/// A delayed load that fails is an exception that ends the process, so what is here must be
+/// there or never called:
+/// - Core DLLs every Windows has (graphics, text, window manager, common controls, crypto,
+///   sockets, devices, shell properties, process and version info, multimedia): Windows can't
+///   run without them.
+/// - Optional ones that a stripped install can lack: `uiautomationcore.dll` (checked where GPUI
+///   sets up accessibility, `third_party/gpui-pre-windows`), `winhttp.dll`, `mpr.dll`,
+///   `netapi32.dll`, `cldapi.dll` and `rstrtmgr.dll`. Their callers ask
+///   `win_dll::system_dll` first and turn the feature off when it is missing.
 const DELAY_LOADED: &[&str] = &[
     "d3d11.dll",
     "dxgi.dll",
@@ -90,7 +98,6 @@ const DELAY_LOADED: &[&str] = &[
     "psapi.dll",
     "userenv.dll",
     "version.dll",
-    "icuuc.dll",
 ];
 
 fn delay_load() {

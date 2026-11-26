@@ -191,6 +191,13 @@ fn fetch(
     proxy: Option<&str>,
 ) -> Result<(), HttpError> {
     let parts = https_url(url)?;
+    // A stripped Windows can lack winhttp.dll; a delayed load of it would end the process.
+    if !crate::win_dll::system_dll("winhttp.dll") {
+        return Err(windows::core::Error::from(
+            windows::Win32::Foundation::ERROR_MOD_NOT_FOUND.to_hresult(),
+        )
+        .into());
+    }
     // Resolve 10 s, connect 15 s, send and receive 30 s each.
     let session = Session::open(
         &format!("Arke/{}", crate::build_info::VERSION),
@@ -249,6 +256,17 @@ mod tests {
             https_url("https://example.com:port/x"),
             Err(HttpError::BadUrl { .. })
         ));
+    }
+
+    /// Without `winhttp.dll` a request fails with an error, before anything calls into the DLL.
+    #[test]
+    fn a_missing_winhttp_is_an_error() {
+        crate::win_dll::assert_not_loaded(&["winhttp.dll"], "before the test");
+        let _missing = crate::win_dll::pretend_missing(&["winhttp.dll"]);
+        let error = super::get_text("https://example.invalid/", &[]).unwrap_err();
+        assert!(matches!(error, super::HttpError::Windows(_)), "{error}");
+        assert!(!error.to_string().is_empty());
+        crate::win_dll::assert_not_loaded(&["winhttp.dll"], "after the gated call");
     }
 
     /// #343: a WinHTTP failure (here "name not resolved") says what went wrong instead of

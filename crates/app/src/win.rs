@@ -1614,6 +1614,25 @@ impl Shell for WinShell {
             FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, OPEN_EXISTING,
         };
         debug_assert!(!arke_core::fs::is_ui_thread());
+        // The menu items are hidden without the Cloud Files API; this is the backstop, so a
+        // delayed load can't fail.
+        if !crate::win_cloud::available() {
+            return Err(ShellError::CloudPin {
+                failed: paths
+                    .iter()
+                    .map(|path| {
+                        let name = path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        (
+                            name,
+                            windows::Win32::Foundation::ERROR_MOD_NOT_FOUND.to_hresult().into(),
+                        )
+                    })
+                    .collect(),
+            });
+        }
         let state = match pin {
             CloudPin::Keep => CF_PIN_STATE_PINNED,
             CloudPin::Free => CF_PIN_STATE_UNPINNED,

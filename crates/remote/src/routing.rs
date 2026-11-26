@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arke_core::Entry;
-use arke_core::fs::{DirIter, Fs, WatchCallback};
+use arke_core::fs::{ChangeCallback, DirIter, Fs, WatchCallback};
 use arke_core::remote::RemoteUrl;
 
 use crate::hub::Remotes;
@@ -62,6 +62,13 @@ impl Fs for RoutingFs {
             return Err(unsupported());
         }
         self.local.watch_tree(path, on_event)
+    }
+
+    fn watch_changes(&self, path: &Path, on_change: ChangeCallback) -> io::Result<Box<dyn Send>> {
+        if RemoteUrl::from_path(path).is_some() {
+            return Err(unsupported());
+        }
+        self.local.watch_changes(path, on_change)
     }
 
     fn read(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {

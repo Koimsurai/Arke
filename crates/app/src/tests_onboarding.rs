@@ -52,6 +52,17 @@ fn click(cx: &mut VisualTestContext, id: &str) {
     cx.run_until_parked();
 }
 
+/// The settings without what the window itself records as it goes (its tabs, place and
+/// recent folders), which no step of the guide sets.
+fn chosen(cx: &mut VisualTestContext) -> Settings {
+    let mut s = settings(cx);
+    s.session = crate::settings::Session::default();
+    s.session_windows.clear();
+    s.window = None;
+    s.recent.clear();
+    s
+}
+
 fn step(cx: &mut VisualTestContext) -> Option<usize> {
     cx.update(|_, cx| Workspace::guide_step_for_test(cx))
 }
@@ -68,10 +79,10 @@ fn shows_on_a_first_run_until_skipped(cx: &mut TestAppContext) {
     first_run(cx);
     assert!(shown(cx));
     assert_eq!(step(cx), Some(0));
-    let before = settings(cx);
+    let before = chosen(cx);
     click(cx, "welcome-skip");
     assert!(!shown(cx));
-    let after = settings(cx);
+    let after = chosen(cx);
     assert!(after.onboarding_done && after.start_menu_offered);
     let mut expected = before;
     expected.onboarding_done = true;
@@ -89,9 +100,9 @@ fn each_preset_applies_exactly_its_settings_on_next(cx: &mut TestAppContext) {
         cx.dispatch_action(crate::workspace::OpenSetupGuide);
         cx.run_until_parked();
         assert_eq!(step(cx), Some(0));
-        let before = settings(cx);
+        let before = chosen(cx);
         click(cx, &format!("welcome-source-{ix}"));
-        assert_eq!(settings(cx), before, "{source:?}: nothing until Next");
+        assert_eq!(chosen(cx), before, "{source:?}: nothing until Next");
         assert!(
             source.changes(&before).is_empty() || cx.debug_bounds("welcome-changes").is_some(),
             "{source:?}: what it changes is listed"
@@ -100,7 +111,7 @@ fn each_preset_applies_exactly_its_settings_on_next(cx: &mut TestAppContext) {
         assert_eq!(step(cx), Some(1));
         let mut expected = before;
         source.apply(&mut expected);
-        assert_eq!(settings(cx), expected, "{source:?}");
+        assert_eq!(chosen(cx), expected, "{source:?}");
     }
 }
 
@@ -109,10 +120,10 @@ fn each_preset_applies_exactly_its_settings_on_next(cx: &mut TestAppContext) {
 fn no_program_picked_changes_nothing(cx: &mut TestAppContext) {
     let (_ws, cx) = start(cx);
     first_run(cx);
-    let before = settings(cx);
+    let before = chosen(cx);
     click(cx, "welcome-next");
     assert_eq!(step(cx), Some(1));
-    assert_eq!(settings(cx), before);
+    assert_eq!(chosen(cx), before);
 }
 
 /// The look applies as it is picked (the window behind shows it), as in Settings; Back keeps it.
@@ -140,10 +151,10 @@ fn folder_handling_waits_for_next(cx: &mut TestAppContext) {
     click(cx, "welcome-next");
     click(cx, "welcome-next");
     assert_eq!(step(cx), Some(2));
-    let before = settings(cx);
+    let before = chosen(cx);
     click(cx, "welcome-takeover-2");
     click(cx, "welcome-autostart");
-    assert_eq!(settings(cx), before, "nothing until Next");
+    assert_eq!(chosen(cx), before, "nothing until Next");
     assert!(!before.open_folders_in_arke && !before.win_e_opens_arke);
 
     click(cx, "welcome-next");

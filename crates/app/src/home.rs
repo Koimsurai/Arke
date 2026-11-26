@@ -130,6 +130,18 @@ impl KeySpot {
     }
 }
 
+/// The focus ring, as of the last frame drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ring {
+    /// Not shown: the page doesn't have the keyboard, or the mouse is in use.
+    Off,
+    /// Brought up by the key being handled now: the user hasn't seen where it is, so that key
+    /// only shows it.
+    Fresh,
+    /// Shown since an earlier frame (the keyboard came to the page, or an earlier key).
+    Shown,
+}
+
 /// An arrow key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
@@ -459,8 +471,9 @@ pub(crate) struct HomePage {
     spots: RefCell<Vec<KeySpot>>,
     /// The page has the keyboard (as of the last frame).
     focused: bool,
-    /// The focus ring shows: the page has the keyboard and it is in use (as of the last frame).
-    ring: bool,
+    /// The focus ring: whether it shows (the page has the keyboard and it is in use) and since
+    /// when (as of the last frame).
+    ring: Ring,
     /// Scroll the cursor's card into view when it is next drawn.
     reveal: Rc<Cell<bool>>,
 }
@@ -583,7 +596,7 @@ impl HomePage {
             card_shift: std::collections::HashMap::new(),
             spots: RefCell::new(Vec::new()),
             focused: false,
-            ring: false,
+            ring: Ring::Off,
             reveal: Rc::new(Cell::new(false)),
         };
         this.reload(cx);
@@ -1270,7 +1283,7 @@ impl HomePage {
                 .size_full(),
             )
             .when(cursor, |d| d.aria_active_descendant())
-            .when(cursor && self.ring, |d| {
+            .when(cursor && self.ring != Ring::Off, |d| {
                 d.child(
                     div()
                         .debug_selector(|| "home-focus-ring".to_owned())
@@ -1304,7 +1317,9 @@ impl HomePage {
         spots
             .iter()
             .position(|s| self.is_picked(&s.spot))
-            .or_else(|| (self.ring && !self.has_pick() && !spots.is_empty()).then_some(0))
+            .or_else(|| {
+                (self.ring == Ring::Shown && !self.has_pick() && !spots.is_empty()).then_some(0)
+            })
     }
 
     fn move_cursor(&mut self, to: Move, cx: &mut Context<Self>) {
@@ -1418,13 +1433,19 @@ impl Render for HomePage {
             self.dragging = None;
         }
         // The cards record themselves again as they are drawn.
+        let (was_focused, was_ring) = (self.focused, self.ring);
         self.focused = self.focus.is_focused(window);
-        let ring = self.focused && window.last_input_was_keyboard();
-        // The ring comes up (Tab to the page): its card comes into view.
-        if ring && !self.ring {
+        self.ring = match (self.focused && window.last_input_was_keyboard(), was_ring) {
+            (false, _) => Ring::Off,
+            // The page already had the keyboard and the mouse was in use: a key was just pressed
+            // (GPUI draws this frame right before handling it), so the ring wasn't seen yet.
+            (true, Ring::Off) if was_focused => Ring::Fresh,
+            (true, _) => Ring::Shown,
+        };
+        // The ring comes up (Tab to the page, or the first key): its card comes into view.
+        if self.ring != Ring::Off && was_ring == Ring::Off {
             self.reveal.set(true);
         }
-        self.ring = ring;
         self.spots.borrow_mut().clear();
         let quick: Vec<AnyElement> = self
             .favorites

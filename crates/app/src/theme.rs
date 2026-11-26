@@ -1303,10 +1303,7 @@ pub(crate) fn elev_3() -> Vec<BoxShadow> {
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![
-            hairline(line()),
-            drop_shadow(alpha(p().veil, 0.16), 3., 8.),
-        ]
+        vec![hairline(line()), drop_shadow(alpha(p().veil, 0.16), 3., 8.)]
     }
 }
 

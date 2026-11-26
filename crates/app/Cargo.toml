@@ -127,6 +127,7 @@ features = [
 embed-resource = "3"
 
 [dev-dependencies]
+tempfile.workspace = true
 # Node ids for accessibility actions in tests; the version gpui uses.
 accesskit = "0.24"
 # Signs test downloads with a throwaway key

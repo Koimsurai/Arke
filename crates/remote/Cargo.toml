@@ -42,5 +42,8 @@ features = [
 # A local SFTP server for the app's end-to-end tests (`testing`)
 test-support = []
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

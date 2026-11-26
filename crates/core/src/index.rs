@@ -7,14 +7,15 @@
 //!   mtime and attributes without opening files). Symlinks and junctions are not followed
 //!   (cycles), and a few system folders are skipped.
 //! - **Storage**: each node holds its parent with the flags in its top bits and a name offset in
-//!   a string pool (8 bytes); size, mtime and a char mask live in separate columns (12 bytes;
-//!   sizes of 4 GiB - 1 and more in a small table of their own). The pool is one big string
-//!   holding each distinct name once, after its length.
-//! - **Query** (syntax in [`crate::index_query`]): threads take small chunks (faster cores do
-//!   more), apply filters, then reject impossible names with the char mask (a single AND, no
-//!   name read), and hand the rest to nucleo; per-thread top results are merged. Full paths
-//!   are built only for the winners. Can search only within the previous matches (narrowing
-//!   while typing).
+//!   a string pool (8 bytes); size and mtime live in separate columns (8 bytes; the few sizes
+//!   of 4 GiB and more in a small table of their own). The pool is one big string holding each
+//!   distinct name once, with its char mask and length.
+//! - **Query** (syntax in [`crate::index_query`]): a first pass goes over the distinct names
+//!   (a name shared by many items is matched once), rejecting impossible ones with the char
+//!   mask (a single AND) and handing the rest to nucleo. Then threads take small chunks of
+//!   items (faster cores do more), apply filters and look each name up in the first pass;
+//!   per-thread top results are merged. Full paths are built only for the winners. Can search
+//!   only within the previous matches (narrowing while typing; item by item, no first pass).
 //! - **Updates**: changes after the build go into an [`Overlay`] (added/removed paths) that
 //!   queries merge in; too many triggers a rebuild.
 //! - **Folder sizes** ([`Index::child_dir_sizes`]): one pass over the nodes sums every file under
@@ -28,7 +29,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
@@ -155,8 +156,8 @@ fn name_hash(name: &str) -> u64 {
 }
 
 /// File format magic (a version mismatch fails to load and we just rebuild). 7 (0.10): 8-byte
-/// nodes with the flags in the parent's top bits, each distinct name once with a length prefix,
-/// 4-byte sizes with the few of 4 GiB - 1 and more in a table of their own (see
+/// nodes with the flags in the parent's top bits, each distinct name once with its char mask and
+/// length, 4-byte sizes with the few of 4 GiB - 1 and more in a table of their own (see
 /// [`Index::write_to`]).
 const MAGIC: &[u8; 8] = b"ARKEIDX7";
 /// Items taken per chunk when querying.
@@ -245,12 +246,36 @@ impl Sizes<'_> {
     }
 }
 
-/// The name whose pool entry starts at `at`: a length prefix (see [`LONG_NAME`]), then the name.
-/// `None` when the entry isn't well formed (only in a corrupt file, which [`validate`] rejects).
-/// The prefix sits right before the name, so this reads no other memory than the name itself.
-fn name_entry(pool: &str, at: u32) -> Option<&str> {
-    let at = at as usize;
+/// One entry of the name pool ([`pool_entry`]).
+struct PoolEntry<'a> {
+    /// Char mask of the name ([`char_mask`]).
+    mask: u32,
+    name: &'a str,
+    /// Where the next entry starts.
+    next: usize,
+}
+
+/// The pool entry starting at byte `at`, a multiple of 4: the name's char mask (all 32 bits) in
+/// [`MASK_BYTES`] bytes of 7 bits, its length prefix (see [`LONG_NAME`]), the name, then zeros to the next multiple of 4.
+/// Every byte but the name's is ASCII, so the pool stays valid UTF-8. `None` when the entry isn't
+/// well formed (only in a corrupt file, which [`validate`] rejects). Mask, prefix and name sit
+/// together, so this reads no other memory than the name itself.
+fn pool_entry(pool: &str, at: usize) -> Option<PoolEntry<'_>> {
+    let (name, next) = entry_name(pool, at)?;
+    let mask = pool
+        .as_bytes()
+        .get(at..at + MASK_BYTES)?
+        .iter()
+        .rev()
+        .fold(0u32, |mask, &b| (mask << 7) | u32::from(b));
+    Some(PoolEntry { mask, name, next })
+}
+
+/// The name of the pool entry at `at` and where the next entry starts, without reading the
+/// mask ([`pool_entry`]).
+fn entry_name(pool: &str, at: usize) -> Option<(&str, usize)> {
     let bytes = pool.as_bytes();
+    let at = at + MASK_BYTES;
     let (len, skip) = match *bytes.get(at)? {
         n if n < LONG_NAME => (usize::from(n), 1),
         LONG_NAME => {
@@ -262,27 +287,77 @@ fn name_entry(pool: &str, at: u32) -> Option<&str> {
         }
         _ => return None,
     };
-    pool.get(at + skip..at + skip + len)
+    let start = at + skip;
+    let name = pool.get(start..start + len)?;
+    Some((name, (start + len).div_ceil(4) * 4))
 }
 
-/// Appends `name`'s pool entry (length prefix, then the name). The caller checked it is at most
-/// [`NAME_MAX`] bytes.
+/// The pool entry a node points to (`at`, a multiple of 4; [`pool_entry`]).
+fn node_entry(pool: &str, at: u32) -> Option<PoolEntry<'_>> {
+    if !at.is_multiple_of(4) {
+        return None;
+    }
+    pool_entry(pool, at as usize)
+}
+
+/// The name whose pool entry starts at `at`, a multiple of 4 ([`entry_name`]).
+fn name_entry(pool: &str, at: u32) -> Option<&str> {
+    if !at.is_multiple_of(4) {
+        return None;
+    }
+    entry_name(pool, at as usize).map(|(name, _)| name)
+}
+
+/// Appends `name`'s pool entry ([`pool_entry`]). The caller checked it is at most [`NAME_MAX`]
+/// bytes; the pool's length is a multiple of 4 before and after.
 fn push_entry(names: &mut Names, name: &str) {
+    let mask = char_mask(name);
     let len = name.len();
-    let mut prefix = [0u8; 3];
+    let mut head = [0u8; MASK_BYTES + 3];
+    for (k, b) in head[..MASK_BYTES].iter_mut().enumerate() {
+        *b = ((mask >> (7 * k)) & 0x7F) as u8;
+    }
     let used = if len < usize::from(LONG_NAME) {
-        prefix[0] = len as u8;
-        1
+        head[MASK_BYTES] = len as u8;
+        MASK_BYTES + 1
     } else {
-        prefix = [LONG_NAME, (len & 0x7F) as u8, ((len >> 7) & 0x7F) as u8];
-        3
+        head[MASK_BYTES..].copy_from_slice(&[
+            LONG_NAME,
+            (len & 0x7F) as u8,
+            ((len >> 7) & 0x7F) as u8,
+        ]);
+        MASK_BYTES + 3
     };
-    // All three are below 0x80 (ASCII), so this never fails.
-    if let Ok(prefix) = std::str::from_utf8(&prefix[..used]) {
-        names.push_str(prefix);
+    // All below 0x80 (ASCII), so these never fail.
+    if let Ok(head) = std::str::from_utf8(&head[..used]) {
+        names.push_str(head);
     }
     names.push_str(name);
+    let pad = (4 - (used + len) % 4) % 4;
+    if let Ok(pad) = std::str::from_utf8(&[0u8; 3][..pad]) {
+        names.push_str(pad);
+    }
 }
+
+/// Appends `name`'s entry to an index's pool, marking every [`NAME_CHUNK`]-th one in `marks`
+/// (`count` entries so far).
+fn push_name(names: &mut Names, marks: &mut Column<u32>, count: &mut usize, name: &str) {
+    if count.is_multiple_of(NAME_CHUNK)
+        && let Ok(at) = u32::try_from(names.len())
+    {
+        marks.push(at);
+    }
+    *count += 1;
+    push_entry(names, name);
+}
+
+/// Distinct names per piece of a query's first pass ([`Index::match_names`]).
+const NAME_CHUNK: usize = 4096;
+
+/// Bytes of a pool entry's char mask: 7 bits each (ASCII, so the pool stays valid UTF-8), enough
+/// for all 32 bits of [`char_mask`].
+const MASK_BYTES: usize = 5;
+const _: () = assert!(MASK_BYTES * 7 >= u32::BITS as usize);
 
 /// One search hit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -468,9 +543,12 @@ pub struct Index {
     big_sizes: Column<u64>,
     /// Modified time in Unix seconds, 0 if unknown.
     mtimes: Column<u32>,
-    /// Char mask of each name ([`char_mask`]).
-    masks: Column<u32>,
     names: Names,
+    /// Where every [`NAME_CHUNK`]-th entry of `names` starts: a query's first pass splits the
+    /// pool there ([`Index::match_names`]).
+    name_marks: Column<u32>,
+    /// Entries in `names`.
+    name_count: usize,
     /// Build start time (Unix seconds).
     built_at: u64,
     /// Journal position per root before walking (only with the background service); the next
@@ -852,7 +930,7 @@ impl Index {
             + self.big_ids.heap_capacity() * 4
             + self.big_sizes.heap_capacity() * 8
             + self.mtimes.heap_capacity() * 4
-            + self.masks.heap_capacity() * 4
+            + self.name_marks.heap_capacity() * 4
     }
 
     fn name(&self, node: &Node) -> &str {
@@ -904,19 +982,28 @@ impl Index {
                 hashbrown::hash_table::Entry::Vacant(slot) => {
                     let start = u32::try_from(names.len()).ok()?;
                     slot.insert(id);
-                    push_entry(&mut self.names, name);
+                    push_name(
+                        &mut self.names,
+                        &mut self.name_marks,
+                        &mut self.name_count,
+                        name,
+                    );
                     start
                 }
             }
         } else {
             let start = u32::try_from(self.names.len()).ok()?;
-            push_entry(&mut self.names, name);
+            push_name(
+                &mut self.names,
+                &mut self.name_marks,
+                &mut self.name_count,
+                name,
+            );
             start
         };
         self.nodes.push(Node::new(parent, name_start, flags));
         self.push_size(id, size);
         self.mtimes.push(mtime);
-        self.masks.push(char_mask(name));
         Some(id)
     }
 
@@ -1237,7 +1324,8 @@ impl Index {
             big_ids: Column::Owned(self.big_ids.to_vec()),
             big_sizes: Column::Owned(self.big_sizes.to_vec()),
             mtimes: Column::Owned(self.mtimes.to_vec()),
-            masks: Column::Owned(self.masks.to_vec()),
+            name_marks: Column::Owned(self.name_marks.to_vec()),
+            name_count: self.name_count,
             names: Names::Owned(self.names.to_string()),
             built_at: self.built_at,
             cursors: Vec::new(),
@@ -1411,7 +1499,6 @@ impl Index {
         self.nodes.owned().reserve_exact(items);
         self.sizes.owned().reserve_exact(items);
         self.mtimes.owned().reserve_exact(items);
-        self.masks.owned().reserve_exact(items);
         self.names.reserve_exact(name_bytes);
         // About a third of the names on a disk are distinct.
         self.dedup = Some(hashbrown::HashTable::with_capacity(items / 3));
@@ -1426,7 +1513,7 @@ impl Index {
         self.big_ids.shrink_to_fit();
         self.big_sizes.shrink_to_fit();
         self.mtimes.shrink_to_fit();
-        self.masks.shrink_to_fit();
+        self.name_marks.shrink_to_fit();
     }
 
     /// Adds one folder's contents. Subfolders go through `descend` (true means it will be entered).
@@ -1554,12 +1641,34 @@ impl Index {
         self.big_ids.owned().truncate(keep);
         self.big_sizes.owned().truncate(keep);
         self.mtimes.owned().truncate(nodes);
-        self.masks.owned().truncate(nodes);
         self.names.truncate(names);
+        self.recount_names();
         // Dedup entries for the removed nodes are no longer valid.
         if let Some(dedup) = self.dedup.as_mut() {
             dedup.retain(|id| (*id as usize) < nodes);
         }
+    }
+
+    /// After the pool was cut back: drops the marks past its end and counts its entries again
+    /// (from the last mark left, at most [`NAME_CHUNK`] entries).
+    fn recount_names(&mut self) {
+        let len = self.names.len();
+        let keep = self.name_marks.partition_point(|&at| (at as usize) < len);
+        self.name_marks.owned().truncate(keep);
+        let Some(&from) = self.name_marks.last() else {
+            self.name_count = 0;
+            return;
+        };
+        let mut count = (keep - 1) * NAME_CHUNK;
+        let mut at = from as usize;
+        while at < len {
+            let Some((_, next)) = entry_name(&self.names, at) else {
+                break;
+            };
+            count += 1;
+            at = next;
+        }
+        self.name_count = count;
     }
 
     /// Node of `dir` (any letter case), if the index has its contents.
@@ -1856,10 +1965,11 @@ impl Index {
             ..Self::default()
         };
         out.names.push_str(&self.names);
+        out.name_marks = Column::Owned(self.name_marks.to_vec());
+        out.name_count = self.name_count;
         out.nodes.owned().reserve(self.nodes.len() + added);
         out.sizes.owned().reserve(self.nodes.len() + added);
         out.mtimes.owned().reserve(self.nodes.len() + added);
-        out.masks.owned().reserve(self.nodes.len() + added);
         // Old id -> new id (NO_PARENT: dropped).
         let mut new_id = vec![NO_PARENT; self.nodes.len()];
         // Old ids on an overlay path -> (root, trie node).
@@ -1895,7 +2005,6 @@ impl Index {
             };
             let (mut flags, mut size, mut mtime) = (node.flags(), self.size(i), self.mtimes[i]);
             let mut name_start = node.name;
-            let mut mask = self.masks[i];
             let mut drop_children = false;
             if let Some((r, c)) = here.filter(|&(_, c)| c != 0) {
                 let t = &tries[r].nodes[c];
@@ -1914,8 +2023,12 @@ impl Index {
                                 return None;
                             }
                             name_start = u32::try_from(out.names.len()).ok()?;
-                            push_entry(&mut out.names, &t.name);
-                            mask = char_mask(&t.name);
+                            push_name(
+                                &mut out.names,
+                                &mut out.name_marks,
+                                &mut out.name_count,
+                                &t.name,
+                            );
                         }
                     }
                 }
@@ -1924,7 +2037,6 @@ impl Index {
             out.nodes.push(Node::new(parent, name_start, flags));
             out.push_size(new, size);
             out.mtimes.push(mtime);
-            out.masks.push(mask);
             new_id[i] = new;
             if drop_children {
                 barren.insert(id);
@@ -2034,41 +2146,27 @@ impl Index {
             exclude: exact.as_ref().filter(|e| e.dir.is_none()).map(|e| &e.name),
             needle: (!name_part.is_empty()).then(|| Needle::new(name_part)),
             keep,
+            names: None,
         };
-        // Small chunks: faster (performance) cores naturally do more, nobody waits on the slowest
-        // thread.
-        let next = AtomicUsize::new(0);
         let cancelled = || s.cancel.is_some_and(|c| c.load(Ordering::Relaxed));
-        let worker = || {
-            WORK.with_borrow_mut(|slot| {
-                let work = slot.get_or_insert_with(Work::new);
-                work.top.clear();
-                let mut out = Chunk::default();
-                loop {
-                    let start = next.fetch_add(CHUNK, Ordering::Relaxed);
-                    if start >= total || cancelled() {
-                        break;
-                    }
-                    let range = start..(start + CHUNK).min(total);
-                    self.scan(s, range, &matching, work, &mut out);
+        // First pass over the distinct names; not when narrowing (`within` holds far fewer).
+        let first = match (matching.pattern, s.within) {
+            (Some(_), None) => match self.match_names(&matching, s.threads.max(1), &cancelled) {
+                Some(first) => Some(first),
+                None => {
+                    return SearchResult {
+                        cancelled: true,
+                        ..empty
+                    };
                 }
-                out.top = work.top.drain().map(|Reverse(x)| x).collect();
-                out
-            })
+            },
+            _ => None,
         };
-        let results: parking_lot::Mutex<Vec<Chunk>> = parking_lot::Mutex::new(Vec::new());
-        match scan_pool() {
-            Some(pool) => pool.scope(|scope| {
-                for _ in 0..threads {
-                    scope.spawn(|_| {
-                        let chunk = worker();
-                        results.lock().push(chunk);
-                    });
-                }
-            }),
-            None => results.lock().push(worker()),
-        }
-        let results = results.into_inner();
+        let matching = Matching {
+            names: first.as_ref(),
+            ..matching
+        };
+        let results = self.scan_nodes(s, &matching, total, threads, &cancelled);
         if cancelled() {
             return SearchResult {
                 cancelled: true,
@@ -2102,7 +2200,53 @@ impl Index {
         }
     }
 
-    /// Scans one chunk: `range` is a span of ids (positions in `within` when set).
+    /// The pass over the nodes (`total` ids, or positions in `within`), split over `threads`:
+    /// each thread's best ranks, and its matched ids when collected.
+    fn scan_nodes(
+        &self,
+        s: &Search,
+        m: &Matching,
+        total: usize,
+        threads: usize,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Chunk> {
+        // Small chunks: faster (performance) cores naturally do more, nobody waits on the slowest
+        // thread.
+        let next = AtomicUsize::new(0);
+        let worker = || {
+            WORK.with_borrow_mut(|slot| {
+                let work = slot.get_or_insert_with(Work::new);
+                work.top.clear();
+                let mut out = Chunk::default();
+                loop {
+                    let start = next.fetch_add(CHUNK, Ordering::Relaxed);
+                    if start >= total || cancelled() {
+                        break;
+                    }
+                    let range = start..(start + CHUNK).min(total);
+                    self.scan(s, range, m, work, &mut out);
+                }
+                out.top = work.top.drain().map(|Reverse(x)| x).collect();
+                out
+            })
+        };
+        let results: parking_lot::Mutex<Vec<Chunk>> = parking_lot::Mutex::new(Vec::new());
+        match scan_pool() {
+            Some(pool) => pool.scope(|scope| {
+                for _ in 0..threads {
+                    scope.spawn(|_| {
+                        let chunk = worker();
+                        results.lock().push(chunk);
+                    });
+                }
+            }),
+            None => results.lock().push(worker()),
+        }
+        results.into_inner()
+    }
+
+    /// Scans one chunk: `range` is a span of ids (positions in `within` when set). With the first
+    /// pass done ([`Matching::names`]) a node's name is only looked up there.
     fn scan(
         &self,
         s: &Search,
@@ -2113,8 +2257,7 @@ impl Index {
     ) {
         let query = s.query;
         // Each column (owned or mapped) resolved to a plain slice once per chunk, not per item.
-        let (nodes, masks, mtimes, sizes) =
-            (&*self.nodes, &*self.masks, &*self.mtimes, self.sizes());
+        let (nodes, mtimes, sizes) = (&*self.nodes, &*self.mtimes, self.sizes());
         let names: &str = &self.names;
         for k in range {
             let id = match s.within {
@@ -2130,45 +2273,58 @@ impl Index {
             if !s.show_hidden && node.flags() & FLAG_HIDDEN != 0 {
                 continue;
             }
-            // Char mask: a name missing a letter the query needs can't match, no need to read it.
-            if let Some(needle) = m.needle
-                && !needle.may_match(masks[id as usize])
-            {
-                continue;
-            }
-            let name = name_entry(names, node.name).unwrap_or("");
             let mtime = mtimes[id as usize];
             let is_dir = node.flags() & FLAG_DIR != 0;
-            if query.has_filters()
-                && !query.accepts(name, is_dir, sizes.get(id as usize), i64::from(mtime))
-            {
-                continue;
-            }
-            let score = match m.pattern {
-                Some(pattern) => {
-                    let Some(score) =
-                        pattern.score(Utf32Str::new(name, &mut work.buf), &mut work.matcher)
-                    else {
-                        continue;
-                    };
-                    score
+            let accepts = |name: &str| {
+                !query.has_filters()
+                    || query.accepts(name, is_dir, sizes.get(id as usize), i64::from(mtime))
+            };
+            let (score, len, excluded) = if let Some(first) = m.names {
+                let Some(hit) = first.get(node.name) else {
+                    continue;
+                };
+                if query.has_filters() && !accepts(name_entry(names, node.name).unwrap_or("")) {
+                    continue;
                 }
-                // Filters only: newest first.
-                None => mtime,
+                (hit.score, hit.len, hit.excluded)
+            } else {
+                let Some(entry) = node_entry(names, node.name) else {
+                    continue;
+                };
+                // Char mask: a name missing a letter the query needs can't match.
+                if m.needle.is_some_and(|needle| !needle.may_match(entry.mask))
+                    || !accepts(entry.name)
+                {
+                    continue;
+                }
+                let score = match m.pattern {
+                    Some(pattern) => {
+                        let Some(score) = pattern
+                            .score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
+                        else {
+                            continue;
+                        };
+                        score
+                    }
+                    // Filters only: newest first.
+                    None => mtime,
+                };
+                let excluded = m.exclude.is_some_and(|exact| {
+                    exact
+                        .score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
+                        .is_some()
+                });
+                // Names are at most NAME_MAX bytes, so this fits.
+                (score, entry.name.len() as u16, excluded)
             };
             // Before leaving exact names out: narrowing needs every fuzzy match.
             if s.collect_matched {
                 out.ids.push(id);
             }
-            if let Some(exact) = m.exclude
-                && exact
-                    .score(Utf32Str::new(name, &mut work.buf), &mut work.matcher)
-                    .is_some()
-            {
+            if excluded {
                 continue;
             }
-            // Names are at most NAME_MAX bytes, so this fits.
-            let rank = Rank::new(score, name.len() as u16, id);
+            let rank = Rank::new(score, len, id);
             // Heap full and worse than the last: leave the heap alone (most matches stop here).
             if work.top.len() >= m.keep {
                 match work.top.peek() {
@@ -2180,6 +2336,63 @@ impl Index {
             }
             work.top.push(Reverse(rank));
         }
+    }
+
+    /// A query's first pass: matches every distinct name once, in pool order, split at the
+    /// name marks over `threads` (identical names on many items are matched once, not once
+    /// per item). `None` if cancelled. Only for a name pattern over the whole index.
+    fn match_names(
+        &self,
+        m: &Matching,
+        threads: usize,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Option<NameMatches> {
+        let pattern = m.pattern?;
+        let pool: &str = &self.names;
+        let pool_len = pool.len();
+        let marks: &[u32] = &self.name_marks;
+        // A bit per 4-byte slot of the pool, set by the threads as they go (a word at a time).
+        let bits: Vec<AtomicU64> = (0..(pool_len / 4 + 1).div_ceil(64))
+            .map(|_| AtomicU64::new(0))
+            .collect();
+        let next = AtomicUsize::new(0);
+        let found: parking_lot::Mutex<Vec<(usize, Vec<NameHit>)>> =
+            parking_lot::Mutex::new(Vec::new());
+        let worker = || {
+            WORK.with_borrow_mut(|slot| {
+                let work = slot.get_or_insert_with(Work::new);
+                let mut mine = Vec::new();
+                loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    if k >= marks.len() || cancelled() {
+                        break;
+                    }
+                    let end = marks.get(k + 1).map_or(pool_len, |&at| at as usize);
+                    let piece = Piece {
+                        pool,
+                        from: marks[k] as usize,
+                        end,
+                    };
+                    mine.push((k, piece.matches(m, pattern, work, &bits)));
+                }
+                found.lock().extend(mine);
+            });
+        };
+        match scan_pool() {
+            Some(scan) => scan.scope(|scope| {
+                for _ in 0..threads.clamp(1, marks.len().max(1)) {
+                    scope.spawn(|_| worker());
+                }
+            }),
+            None => worker(),
+        }
+        if cancelled() {
+            return None;
+        }
+        let mut found = found.into_inner();
+        found.sort_unstable_by_key(|(k, _)| *k);
+        let bits = bits.into_iter().map(AtomicU64::into_inner).collect();
+        Some(NameMatches::new(bits, found))
     }
 
     /// Builds paths for the selected candidates, applies the folder condition (`dir`: the folder
@@ -2253,10 +2466,11 @@ impl Index {
     // ───────────────────────── Persistence ─────────────────────────
 
     /// Writes to `w`. Format (little-endian): header (version, build time, roots, journal
-    /// positions, name length, item count, big size count), then each column contiguous and
-    /// 8-aligned: names (each distinct one once, length-prefixed), nodes (8 bytes, same as
-    /// in-memory `Node`), sizes (4 bytes), mtimes, char masks, then the ids and 8-byte sizes of
-    /// the items of 4 GiB - 1 and more. That lets [`Index::open`] map the file without copying.
+    /// positions, name pool length, item count, big size count, name count, name mark count),
+    /// then each column contiguous and 8-aligned: the name pool (each distinct name once, with its
+    /// char mask and length, see [`pool_entry`]), nodes (8 bytes, same as in-memory `Node`), sizes
+    /// (4 bytes), mtimes, the ids and 8-byte sizes of the items of 4 GiB - 1 and more, and the
+    /// name marks. That lets [`Index::open`] map the file without copying.
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let mut w = Counting { w, pos: 0 };
         w.put(MAGIC)?;
@@ -2290,6 +2504,8 @@ impl Index {
         w.put(&(self.names.len() as u64).to_le_bytes())?;
         w.put(&(self.nodes.len() as u64).to_le_bytes())?;
         w.put(&(self.big_ids.len() as u64).to_le_bytes())?;
+        w.put(&(self.name_count as u64).to_le_bytes())?;
+        w.put(&(self.name_marks.len() as u64).to_le_bytes())?;
         w.align()?;
         w.put(self.names.as_bytes())?;
         w.align()?;
@@ -2321,12 +2537,6 @@ impl Index {
         }
         flush(&mut buf, &mut w, true)?;
         w.align()?;
-        for v in self.masks.iter() {
-            buf.extend_from_slice(&v.to_le_bytes());
-            flush(&mut buf, &mut w, false)?;
-        }
-        flush(&mut buf, &mut w, true)?;
-        w.align()?;
         for v in self.big_ids.iter() {
             buf.extend_from_slice(&v.to_le_bytes());
             flush(&mut buf, &mut w, false)?;
@@ -2334,6 +2544,12 @@ impl Index {
         flush(&mut buf, &mut w, true)?;
         w.align()?;
         for v in self.big_sizes.iter() {
+            buf.extend_from_slice(&v.to_le_bytes());
+            flush(&mut buf, &mut w, false)?;
+        }
+        flush(&mut buf, &mut w, true)?;
+        w.align()?;
+        for v in self.name_marks.iter() {
             buf.extend_from_slice(&v.to_le_bytes());
             flush(&mut buf, &mut w, false)?;
         }
@@ -2360,7 +2576,6 @@ impl Index {
         let mut nodes = Vec::with_capacity(count);
         let mut sizes = Vec::with_capacity(count);
         let mut mtimes = Vec::with_capacity(count);
-        let mut masks = Vec::with_capacity(count);
         for i in 0..count {
             let at = layout.nodes + i * 8;
             nodes.push(Node {
@@ -2369,7 +2584,6 @@ impl Index {
             });
             sizes.push(le32(layout.sizes + i * 4));
             mtimes.push(le32(layout.mtimes + i * 4));
-            masks.push(le32(layout.masks + i * 4));
         }
         let big_ids: Vec<u32> = (0..layout.big_count)
             .map(|k| le32(layout.big_ids + k * 4))
@@ -2377,7 +2591,10 @@ impl Index {
         let big_sizes: Vec<u64> = (0..layout.big_count)
             .map(|k| le64(layout.big_sizes + k * 8))
             .collect();
-        validate(&nodes, &names)?;
+        let name_marks: Vec<u32> = (0..layout.mark_count)
+            .map(|k| le32(layout.name_marks + k * 4))
+            .collect();
+        validate(&nodes, names.as_bytes(), &name_marks, layout.name_count)?;
         validate_big(&big_ids, count)?;
         Ok(Self {
             roots: layout.roots,
@@ -2386,8 +2603,9 @@ impl Index {
             big_ids: Column::Owned(big_ids),
             big_sizes: Column::Owned(big_sizes),
             mtimes: Column::Owned(mtimes),
-            masks: Column::Owned(masks),
             names: Names::Owned(names),
+            name_marks: Column::Owned(name_marks),
+            name_count: layout.name_count,
             built_at: layout.built_at,
             cursors: layout.cursors,
             skipped_build_dirs: layout.skipped_build_dirs,
@@ -2420,8 +2638,6 @@ impl Index {
             offset: layout.names,
             len: layout.names_len,
         };
-        std::str::from_utf8(&map[layout.names..layout.names + layout.names_len])
-            .map_err(|_not_utf8| bad_format())?;
         let column = |offset: usize| (Arc::clone(&map), offset, layout.count);
         let (m, o, n) = column(layout.nodes);
         let nodes: Column<Node> = Column::Mapped {
@@ -2451,13 +2667,14 @@ impl Index {
             offset: o,
             len: n,
         };
-        let (m, o, n) = column(layout.masks);
-        let masks: Column<u32> = Column::Mapped {
-            map: m,
-            offset: o,
-            len: n,
+        let name_marks: Column<u32> = Column::Mapped {
+            map: Arc::clone(&map),
+            offset: layout.name_marks,
+            len: layout.mark_count,
         };
-        validate(&nodes, &names)?;
+        // The pool's bytes: `names` can't be read as text before this checked them.
+        let pool = &map[layout.names..layout.names + layout.names_len];
+        validate(&nodes, pool, &name_marks, layout.name_count)?;
         validate_big(&big_ids, layout.count)?;
         Ok(Self {
             roots: layout.roots,
@@ -2466,8 +2683,9 @@ impl Index {
             big_ids,
             big_sizes,
             mtimes,
-            masks,
             names,
+            name_marks,
+            name_count: layout.name_count,
             built_at: layout.built_at,
             cursors: layout.cursors,
             skipped_build_dirs: layout.skipped_build_dirs,
@@ -2566,21 +2784,155 @@ fn bad_format() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "index format")
 }
 
-/// Checks every node's parent and name entry are in bounds (a corrupt file can't make queries go
-/// out of range).
-fn validate(nodes: &[Node], names: &str) -> io::Result<()> {
+/// Checks the name pool is a run of well-formed UTF-8 entries (`name_count` of them, `marks` at
+/// every [`NAME_CHUNK`]-th) and every node's parent and name are in bounds, so a corrupt file
+/// can't make queries go out of range or misread names. A big index is checked by a few threads
+/// at once (the work splits at the marks and into runs of nodes).
+fn validate(nodes: &[Node], pool: &[u8], marks: &[u32], name_count: usize) -> io::Result<()> {
+    // Below a few MB, starting threads costs more than they save.
+    let threads = if pool.len() + size_of_val(nodes) < 4 * 1024 * 1024 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(VALIDATE_THREADS)
+    };
+    validate_on(threads, nodes, pool, marks, name_count)
+}
+
+/// Most threads that validate an index on load.
+const VALIDATE_THREADS: usize = 4;
+/// Nodes a validating thread takes at a time.
+const VALIDATE_NODES: usize = 64 * 1024;
+
+/// [`validate`] on `threads` threads (this one included).
+fn validate_on(
+    threads: usize,
+    nodes: &[Node],
+    pool: &[u8],
+    marks: &[u32],
+    name_count: usize,
+) -> io::Result<()> {
     let count = nodes.len();
-    if count > MAX_ITEMS {
+    let marks_ok = marks.len() == name_count.div_ceil(NAME_CHUNK)
+        && pool.is_empty() == marks.is_empty()
+        && marks.first().is_none_or(|&at| at == 0)
+        && marks.windows(2).all(|w| w[0] < w[1])
+        && marks
+            .iter()
+            .all(|&at| at.is_multiple_of(4) && (at as usize) < pool.len());
+    if count > MAX_ITEMS || !marks_ok {
         return Err(bad_format());
     }
-    for node in nodes {
-        let parent = node.parent();
-        let parent_ok = parent == NO_PARENT || (parent as usize) < count;
-        if !parent_ok || name_entry(names, node.name).is_none() {
-            return Err(bad_format());
+    let bad = AtomicBool::new(false);
+    // Where entries start: a bit per 4-byte slot of the pool.
+    let starts: Vec<AtomicU64> = (0..=(pool.len() / 4).div_ceil(64))
+        .map(|_| AtomicU64::new(0))
+        .collect();
+    let next = AtomicUsize::new(0);
+    run_on(threads, || {
+        while !bad.load(Ordering::Relaxed) {
+            let k = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&from) = marks.get(k) else {
+                break;
+            };
+            let end = marks.get(k + 1).map_or(pool.len(), |&at| at as usize);
+            let want = if k + 1 < marks.len() {
+                NAME_CHUNK
+            } else {
+                name_count - k * NAME_CHUNK
+            };
+            if !pool_piece_ok(pool, from as usize, end, want, &starts) {
+                bad.store(true, Ordering::Relaxed);
+            }
         }
+    });
+    if bad.load(Ordering::Relaxed) {
+        return Err(bad_format());
+    }
+    let starts: Vec<u64> = starts.into_iter().map(AtomicU64::into_inner).collect();
+    let node_ok = |node: &Node| {
+        let parent = node.parent();
+        let at = node.name as usize;
+        (parent == NO_PARENT || (parent as usize) < count)
+            && at.is_multiple_of(4)
+            && starts
+                .get(at / 256)
+                .is_some_and(|w| w & (1 << ((at / 4) % 64)) != 0)
+    };
+    let next = AtomicUsize::new(0);
+    run_on(threads, || {
+        while !bad.load(Ordering::Relaxed) {
+            let first = next.fetch_add(VALIDATE_NODES, Ordering::Relaxed);
+            let Some(run) = nodes.get(first..(first + VALIDATE_NODES).min(count)) else {
+                break;
+            };
+            if run.is_empty() {
+                break;
+            }
+            if !run.iter().all(&node_ok) {
+                bad.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+    if bad.load(Ordering::Relaxed) {
+        return Err(bad_format());
     }
     Ok(())
+}
+
+/// One piece of the name pool (`from..end`, from a mark to the next): valid UTF-8, checked here
+/// while it's in cache rather than the whole pool in a pass of its own, and exactly `want`
+/// well-formed entries filling it. Notes where each entry starts in `starts`.
+fn pool_piece_ok(pool: &[u8], from: usize, end: usize, want: usize, starts: &[AtomicU64]) -> bool {
+    let Some(piece) = pool
+        .get(from..end)
+        .and_then(|b| std::str::from_utf8(b).ok())
+    else {
+        return false;
+    };
+    let flush = |(index, set): (usize, u64)| {
+        if set != 0
+            && let Some(cell) = starts.get(index)
+        {
+            cell.fetch_or(set, Ordering::Relaxed);
+        }
+    };
+    // The word of `starts` being filled and its bits so far.
+    let mut pending = (usize::MAX, 0u64);
+    let (mut at, mut entries) = (0usize, 0usize);
+    while at < piece.len() {
+        // `from` is a multiple of 4, so alignment within the piece is alignment in the pool.
+        let Some((_, next)) = entry_name(piece, at) else {
+            return false;
+        };
+        let slot = (from + at) / 4;
+        if slot / 64 != pending.0 {
+            flush(pending);
+            pending = (slot / 64, 0);
+        }
+        pending.1 |= 1 << (slot % 64);
+        at = next;
+        entries += 1;
+    }
+    flush(pending);
+    at == piece.len() && entries == want
+}
+
+/// Runs `work` on `threads` threads, this one included, and waits for them. Threads that can't
+/// be started leave their share to the others (`work` takes its pieces from a shared counter).
+fn run_on(threads: usize, work: impl Fn() + Sync) {
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            let started = std::thread::Builder::new()
+                .name("index-validate".into())
+                .spawn_scoped(scope, &work);
+            if started.is_err() {
+                break;
+            }
+        }
+        work();
+    });
 }
 
 /// Checks the ids of big sizes are ascending and in range (so the lookup's binary search holds).
@@ -2622,14 +2974,18 @@ struct Layout {
     count: usize,
     /// Items of 4 GiB - 1 and more.
     big_count: usize,
+    /// Entries in the name pool.
+    name_count: usize,
+    /// Name marks.
+    mark_count: usize,
     names: usize,
     names_len: usize,
     nodes: usize,
     sizes: usize,
     mtimes: usize,
-    masks: usize,
     big_ids: usize,
     big_sizes: usize,
+    name_marks: usize,
 }
 
 impl Layout {
@@ -2673,6 +3029,8 @@ impl Layout {
         let names_len = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
         let count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
         let big_count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
+        let name_count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
+        let mark_count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
         let align = |pos: &mut usize| *pos = pos.div_ceil(8) * 8;
         let mut sections = [0usize; 7];
         let sizes_of = [
@@ -2680,9 +3038,9 @@ impl Layout {
             count.checked_mul(8),
             count.checked_mul(4),
             count.checked_mul(4),
-            count.checked_mul(4),
             big_count.checked_mul(4),
             big_count.checked_mul(8),
+            mark_count.checked_mul(4),
         ];
         let mut cur = pos;
         for (slot, len) in sections.iter_mut().zip(sizes_of) {
@@ -2705,14 +3063,16 @@ impl Layout {
             excluded_hash: u32::try_from(options >> 1).unwrap_or(0),
             count,
             big_count,
+            name_count,
+            mark_count,
             names: sections[0],
             names_len,
             nodes: sections[1],
             sizes: sections[2],
             mtimes: sections[3],
-            masks: sections[4],
-            big_ids: sections[5],
-            big_sizes: sections[6],
+            big_ids: sections[4],
+            big_sizes: sections[5],
+            name_marks: sections[6],
         })
     }
 }
@@ -2875,6 +3235,7 @@ impl Names {
 }
 
 /// Matching state shared by a query.
+#[derive(Clone, Copy)]
 struct Matching<'a> {
     pattern: Option<&'a Pattern>,
     /// Names that match this are left out ([`NameMatch::Similar`] without a folder part).
@@ -2882,6 +3243,123 @@ struct Matching<'a> {
     needle: Option<Needle>,
     /// Results kept per thread.
     keep: usize,
+    /// The first pass's result, when there was one ([`Index::match_names`]).
+    names: Option<&'a NameMatches>,
+}
+
+/// How a distinct name matched in a query's first pass.
+#[derive(Clone, Copy)]
+struct NameHit {
+    score: u32,
+    /// Bytes in the name.
+    len: u16,
+    /// Left out as an exact match ([`Matching::exclude`]).
+    excluded: bool,
+}
+
+/// One piece of the name pool for a query's first pass: entries from `from` up to `end`.
+struct Piece<'a> {
+    pool: &'a str,
+    from: usize,
+    end: usize,
+}
+
+impl Piece<'_> {
+    /// The piece's matching names, in pool order, each with its bit set in `seen` (OR-ed in
+    /// once per 64 slots: pieces next to each other can share a word).
+    fn matches(
+        &self,
+        m: &Matching,
+        pattern: &Pattern,
+        work: &mut Work,
+        seen: &[AtomicU64],
+    ) -> Vec<NameHit> {
+        let flush = |(index, set): (usize, u64)| {
+            if set != 0
+                && let Some(cell) = seen.get(index)
+            {
+                cell.fetch_or(set, Ordering::Relaxed);
+            }
+        };
+        let mut out = Vec::new();
+        // The word of `seen` being filled and its bits so far.
+        let mut pending = (usize::MAX, 0u64);
+        let mut at = self.from;
+        while at < self.end {
+            let Some(entry) = pool_entry(self.pool, at) else {
+                break;
+            };
+            if m.needle.is_none_or(|needle| needle.may_match(entry.mask))
+                && let Some(score) =
+                    pattern.score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
+            {
+                let excluded = m.exclude.is_some_and(|exact| {
+                    exact
+                        .score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
+                        .is_some()
+                });
+                let slot = at / 4;
+                if slot / 64 != pending.0 {
+                    flush(pending);
+                    pending = (slot / 64, 0);
+                }
+                pending.1 |= 1 << (slot % 64);
+                // Names are at most NAME_MAX bytes, so this fits.
+                let len = entry.name.len() as u16;
+                out.push(NameHit {
+                    score,
+                    len,
+                    excluded,
+                });
+            }
+            at = entry.next;
+        }
+        flush(pending);
+        out
+    }
+}
+
+/// The names that matched in a query's first pass, found by where their pool entry starts.
+struct NameMatches {
+    /// A bit per 4-byte slot of the pool, set where a matching name's entry starts.
+    bits: Vec<u64>,
+    /// Set bits before each word of `bits`.
+    before: Vec<u32>,
+    /// One per set bit, in pool order.
+    hits: Vec<NameHit>,
+}
+
+impl NameMatches {
+    /// From the first pass's bits and its pieces' hits (by piece number, so in pool order).
+    fn new(bits: Vec<u64>, pieces: Vec<(usize, Vec<NameHit>)>) -> Self {
+        let mut all = Vec::with_capacity(pieces.iter().map(|(_, h)| h.len()).sum());
+        for (_, piece) in &pieces {
+            all.extend_from_slice(piece);
+        }
+        let mut before = Vec::with_capacity(bits.len());
+        let mut set = 0u32;
+        for word in &bits {
+            before.push(set);
+            set += word.count_ones();
+        }
+        Self {
+            bits,
+            before,
+            hits: all,
+        }
+    }
+
+    /// How the name whose entry starts at byte `at` matched, if it did.
+    fn get(&self, at: u32) -> Option<NameHit> {
+        let slot = (at / 4) as usize;
+        let word = *self.bits.get(slot / 64)?;
+        let bit = 1u64 << (slot % 64);
+        if word & bit == 0 {
+            return None;
+        }
+        let k = self.before[slot / 64] as usize + (word & (bit - 1)).count_ones() as usize;
+        self.hits.get(k).copied()
+    }
 }
 
 /// Ranking: higher score first; ties prefer shorter names (more likely the one wanted), then
@@ -3738,6 +4216,12 @@ mod tests {
         Query::parse(text, Clock::default())
     }
 
+    /// Bytes `name` takes in the pool: char mask, length prefix, name, padding to 4.
+    fn entry_bytes(name: &str) -> usize {
+        let prefix = if name.len() < 127 { 1 } else { 3 };
+        (MASK_BYTES + prefix + name.len()).div_ceil(4) * 4
+    }
+
     /// Test helper: parse the query, then search.
     fn find(index: &Index, text: &str, limit: usize, show_hidden: bool) -> Vec<IndexHit> {
         index.find(&q(text), limit, show_hidden, 3)
@@ -3898,9 +4382,12 @@ mod tests {
             })
         });
         assert_eq!(all_paths(&index), [r"C:\", r"D:\", r"D:\walked.txt"]);
-        // The name pool shrank too, so dedup never points into the removed span. Each name is
-        // after its length.
-        assert_eq!(&*index.names, "\u{3}C:\\\u{3}D:\\\u{a}walked.txt");
+        // The name pool shrank too, so dedup never points into the removed span.
+        let mut pool = Names::default();
+        for name in [r"C:\", r"D:\", "walked.txt"] {
+            push_entry(&mut pool, name);
+        }
+        assert_eq!(&*index.names, &*pool);
     }
 
     /// A NAS share's snapshots are each a full copy of the share: walking them never ends on a
@@ -4559,7 +5046,7 @@ mod tests {
         // Each one once, after its one-byte length.
         assert_eq!(
             index.names.len(),
-            unique.iter().map(|s| s.len() + 1).sum::<usize>()
+            unique.iter().map(|s| entry_bytes(s)).sum::<usize>()
         );
         let mut hits = paths(&find(&index, "index.js", 10, false));
         hits.sort();
@@ -4667,7 +5154,8 @@ mod tests {
         );
     }
 
-    /// Names go into the pool after their length: one byte up to 126 bytes, three above.
+    /// Names go into the pool with their char mask and length (one byte up to 126 bytes, three
+    /// above), each entry starting on a multiple of 4.
     #[test]
     fn names_round_trip_through_the_pool() {
         let one_byte = "a".repeat(126);
@@ -4683,6 +5171,8 @@ mod tests {
             longest_windows_name.as_str(),
             longest.as_str(),
             "\u{1F600} emoji.txt",
+            // Every bit of the mask, the top four (`.` `_` `-` space) included.
+            "abcdefghijklmnopqrstuvwxyz 0._-é",
         ];
         let mut pool = Names::default();
         let mut starts = Vec::new();
@@ -4693,13 +5183,19 @@ mod tests {
         for (name, &at) in names.iter().zip(&starts) {
             assert_eq!(name_entry(&pool, at), Some(*name), "{}", name.len());
         }
-        let prefixes: usize = names
-            .iter()
-            .map(|n| if n.len() < 127 { 1 } else { 3 })
-            .sum();
         assert_eq!(
             pool.len(),
-            names.iter().map(|n| n.len()).sum::<usize>() + prefixes
+            names.iter().map(|n| entry_bytes(n)).sum::<usize>()
+        );
+        for (name, &at) in names.iter().zip(&starts) {
+            let entry = pool_entry(&pool, at as usize).unwrap();
+            assert_eq!(entry.mask, char_mask(name), "{name}");
+            assert_eq!(entry.next % 4, 0);
+        }
+        assert_eq!(
+            char_mask(names[8]),
+            u32::MAX,
+            "the last name sets every bit"
         );
         // Malformed entries are refused rather than misread.
         assert_eq!(name_entry(&pool, u32::try_from(pool.len()).unwrap()), None);
@@ -4804,10 +5300,7 @@ mod tests {
         assert_eq!(all_paths(&built), want_paths);
         // index.js, package.json and sub are stored once each.
         let distinct: HashSet<&str> = truth.iter().map(|t| t.1.as_str()).collect();
-        let pool: usize = distinct
-            .iter()
-            .map(|n| n.len() + if n.len() < 127 { 1 } else { 3 })
-            .sum();
+        let pool: usize = distinct.iter().map(|n| entry_bytes(n)).sum();
         assert_eq!(built.name_bytes(), pool);
 
         let dir = std::env::temp_dir().join(format!("arke-index-generated-{}", std::process::id()));
@@ -5024,6 +5517,172 @@ mod tests {
         assert!(validate_big(&[0, 4], 5).is_ok());
         drop(mapped);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Searches `index` twice: with the first pass over the distinct names, and item by item (the
+    /// narrowing path, given every id), and checks both give the same hits and matched ids.
+    fn same_both_ways(index: &Index, query: &Query, show_hidden: bool) -> Vec<IndexHit> {
+        let all: Vec<u32> = (0..u32::try_from(index.len()).unwrap()).collect();
+        let search = |within: Option<&[u32]>| {
+            index.search(&Search {
+                query,
+                limit: 10_000,
+                show_hidden,
+                threads: 3,
+                within,
+                collect_matched: true,
+                cancel: None,
+            })
+        };
+        let (two_pass, per_item) = (search(None), search(Some(&all)));
+        assert_eq!(two_pass.hits, per_item.hits, "{:?}", query.text);
+        assert_eq!(two_pass.matched, per_item.matched, "{:?}", query.text);
+        // A small limit keeps the best ones, in the same order (with a folder part a small limit
+        // keeps fewer candidates, so it may differ: that's not about the passes).
+        if !query.text.contains('\\') {
+            let top = index.find(query, 5, show_hidden, 3);
+            assert_eq!(top[..], two_pass.hits[..two_pass.hits.len().min(5)]);
+        }
+        two_pass.hits
+    }
+
+    /// The first pass over the distinct names finds exactly what matching item by item does,
+    /// for every kind of query, after live changes, and saved and loaded again.
+    #[test]
+    fn the_first_pass_over_names_finds_the_same() {
+        let (index, _) = generated();
+        let queries = [
+            "report",
+            "REPORT",
+            "Report",
+            "季報告",
+            "longlong",
+            "index.js",
+            r"proj3\report",
+            r"sub\docx",
+            "report ext:txt",
+            "ext:vhdx",
+            "report size:>1010",
+            "rep !docx",
+            "zzzz",
+        ];
+        let check = |index: &Index| {
+            for text in queries {
+                for names in [NameMatch::Any, NameMatch::Exact, NameMatch::Similar] {
+                    let mut query = q(text);
+                    query.names = names;
+                    for show_hidden in [false, true] {
+                        same_both_ways(index, &query, show_hidden);
+                    }
+                }
+            }
+        };
+        check(&index);
+
+        // Live changes folded in: added, renamed in case, removed.
+        let mut overlay = Overlay::default();
+        let seen = |size| Seen {
+            is_dir: false,
+            hidden: false,
+            size,
+            modified: 0,
+        };
+        overlay.record(PathBuf::from(r"C:\proj1\new-report.md"), Some(seen(5)));
+        overlay.record(PathBuf::from(r"C:\proj2\Index.js"), Some(seen(6)));
+        overlay.record(PathBuf::from(r"C:\proj4\report-4-7.txt"), None);
+        let merged = index
+            .merged(&overlay, &BuildRules::default(), &AtomicBool::new(false))
+            .unwrap()
+            .index;
+        check(&merged);
+        let found = |index: &Index, text: &str| paths(&same_both_ways(index, &q(text), false));
+        assert!(found(&merged, "new-report").contains(&r"C:\proj1\new-report.md".to_owned()));
+        assert!(found(&merged, "Index.js").contains(&r"C:\proj2\Index.js".to_owned()));
+        assert!(!found(&merged, "report-4-7").contains(&r"C:\proj4\report-4-7.txt".to_owned()));
+
+        // Saved, then read back and mapped.
+        let dir = std::env::temp_dir().join(format!("arke-index-passes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        let mut bytes = Vec::new();
+        merged.write_to(&mut bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let copied = Index::read_from(&mut bytes.as_slice()).unwrap();
+        let mapped = Index::open(&path).unwrap();
+        check(&copied);
+        check(&mapped);
+        for text in queries {
+            assert_eq!(
+                find(&mapped, text, 10_000, true),
+                find(&merged, text, 10_000, true),
+                "{text}"
+            );
+        }
+        drop(mapped);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pool is split into pieces of NAME_CHUNK names; a failed listing that cuts the pool
+    /// back counts its names again, so later names still land in the right piece.
+    #[test]
+    fn name_marks_follow_the_pool() {
+        let mut index = flat(3 * NAME_CHUNK as u32 + 5);
+        assert_eq!(index.name_count, 3 * NAME_CHUNK + 6, "root and files");
+        assert_eq!(index.name_marks.len(), 4);
+        assert_eq!(index.name_marks[0], 0);
+        let check = |index: &Index, marks: &[u32], count: usize| {
+            validate_on(3, &index.nodes, index.names.as_bytes(), marks, count)
+        };
+        check(&index, &index.name_marks, index.name_count).unwrap();
+        same_both_ways(&index, &q("report_0004"), false);
+
+        // Cut back into the second piece.
+        let cut = NAME_CHUNK + 10;
+        let names_at_cut = index.nodes[cut].name as usize;
+        index.truncate(cut, names_at_cut);
+        assert_eq!((index.name_count, index.name_marks.len()), (cut, 2));
+        for i in 0..NAME_CHUNK as u32 {
+            index.push(0, &format!("again_{i:07}.txt"), 0, 1, 0);
+        }
+        assert_eq!(index.name_count, cut + NAME_CHUNK);
+        assert_eq!(index.name_marks.len(), 3);
+        check(&index, &index.name_marks, index.name_count).unwrap();
+        for text in ["again_0001", "report_00041", "report", "zz"] {
+            same_both_ways(&index, &q(text), false);
+        }
+        let hits = find(&index, "again_0004095", 5, false);
+        assert_eq!(
+            paths(&hits).first().map(String::as_str),
+            Some(r"C:\again_0004095.txt")
+        );
+
+        // A mark off its entry, one missing or extra, or a wrong name count: refused.
+        let marks = index.name_marks.to_vec();
+        let mut moved = marks.clone();
+        moved[1] += 4;
+        assert!(check(&index, &moved, index.name_count).is_err(), "moved");
+        assert!(
+            check(&index, &marks[..2], index.name_count).is_err(),
+            "missing"
+        );
+        let mut extra = marks.clone();
+        extra.push(u32::try_from(index.names.len()).unwrap());
+        assert!(check(&index, &extra, index.name_count).is_err(), "extra");
+        assert!(
+            check(&index, &marks, index.name_count + 1).is_err(),
+            "count"
+        );
+        // A node pointing inside an entry: refused.
+        let mut nodes = index.nodes.to_vec();
+        nodes[1].name += 4;
+        assert!(validate_on(3, &nodes, index.names.as_bytes(), &marks, index.name_count).is_err());
+        assert!(validate(&[], b"", &[], 0).is_ok());
+        // Not UTF-8 in a name: refused, whatever the threads.
+        let mut pool = index.names.as_bytes().to_vec();
+        pool[MASK_BYTES + 1] = 0xFF;
+        for threads in [1, 3] {
+            assert!(validate_on(threads, &index.nodes, &pool, &marks, index.name_count).is_err());
+        }
     }
 
     #[test]
@@ -6142,8 +6801,9 @@ mod tests {
             // index_speed's sizes are all small.
             sizes: Column::Owned(index.sizes[..40_000].to_vec()),
             mtimes: Column::Owned(index.mtimes[..40_000].to_vec()),
-            masks: Column::Owned(index.masks[..40_000].to_vec()),
             names: Names::Owned(index.names.to_string()),
+            name_marks: Column::Owned(index.name_marks.to_vec()),
+            name_count: index.name_count,
             roots: index.roots.clone(),
             ..Index::default()
         };

@@ -3534,12 +3534,9 @@ impl Render for Explorer {
                             .child(
                                 div()
                                     .flex()
-                                    .flex_col_reverse()
+                                    .flex_col()
                                     .flex_1()
                                     .min_w_0()
-                                    // Reversed: the list comes first in the tree, so it has laid out
-                                    // (and clamped its sideways scroll) before the header reads it.
-                                    .child(self.render_list_appearing(window, cx))
                                     // Grid view has no columns, so no header. Also none while "this
                                     // PC" has no results (off, no text, still building).
                                     .when(
@@ -3550,6 +3547,7 @@ impl Render for Explorer {
                                                 && self.search_results.is_none()),
                                         |d| d.child(self.render_header(cx)),
                                     )
+                                    .child(self.render_list_appearing(window, cx)),
                             )
                             .children(self.render_preview_appearing(window, cx)),
                     )

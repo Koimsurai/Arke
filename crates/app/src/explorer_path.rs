@@ -137,6 +137,9 @@ pub(crate) struct PathPopup {
     /// Opened with the mouse, the row under the pointer is the only one lit.
     keyboard: bool,
     menu: Menu,
+    /// Opened by a drag held over the "…": drawn in the pane, and its rows take the drop. Closes
+    /// when the drag ends.
+    drag: bool,
     request: u64,
     focus: FocusHandle,
     /// The window it is drawn in (`popup.rs`).
@@ -305,12 +308,32 @@ impl Explorer {
             highlighted,
             keyboard: keys,
             menu,
+            drag: false,
             request,
             focus,
             popup: crate::popup::Single::new(),
         });
         cx.notify();
         request
+    }
+
+    /// A drag held over the "…" long enough: list the hidden `levels` as drop targets under the
+    /// pointer. Nothing is focused or navigated.
+    pub(crate) fn open_levels_for_drag(
+        &mut self,
+        levels: Vec<(String, PathBuf)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let items = levels
+            .into_iter()
+            .map(|(name, path)| PopupItem::folder(name, path))
+            .collect();
+        let at = window.mouse_position().x;
+        self.open_path_popup(Some(items), None, Menu::Levels, at, false, window, cx);
+        if let Some(popup) = self.path_popup.as_mut() {
+            popup.drag = true;
+        }
     }
 
     /// › clicked (with the keys: `keys`): list folders in `dir` with `current` in bold.
@@ -978,7 +1001,15 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if self.path_popup.is_some() {
+        if let Some(popup) = &self.path_popup {
+            if popup.drag {
+                if !cx.has_active_drag() {
+                    // Dropped or cancelled.
+                    self.close_path_popup(window, cx);
+                    return None;
+                }
+                return self.render_drag_levels(cx);
+            }
             return self.render_path_popup(window, cx);
         }
         if self.editing_path && !self.suggest.items.is_empty() {
@@ -1026,6 +1057,48 @@ impl Explorer {
                     this.close_path_popup(window, cx);
                 }))
                 .into_any_element(),
+        )
+    }
+
+    /// The "…" menu opened by a drag, drawn in the pane and not in a popup window: during a drag
+    /// the main window holds the mouse capture, so a popup window would never hear the pointer
+    /// over its rows or the drop. Each level is a drop target like a breadcrumb.
+    fn render_drag_levels(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let popup = self.path_popup.as_ref()?;
+        let bar = self.path_bounds.get();
+        let target = cx.entity();
+        let rows = popup
+            .items
+            .as_deref()?
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, item)| {
+                let dest = item.path()?.to_path_buf();
+                let row = menu_row(
+                    ("path-drop-row", ix),
+                    item.name.clone(),
+                    kind_icon(FileKind::Folder, theme::icon()),
+                    None,
+                    false,
+                    false,
+                )
+                .debug_selector(move || format!("path-drop-row-{ix}"));
+                Some(super::columns::accept_drops(
+                    row,
+                    dest,
+                    true,
+                    target.clone(),
+                ))
+            });
+        Some(
+            deferred(
+                anchored()
+                    .position(point(popup.control.left(), bar.bottom() + theme::s_4()))
+                    .snap_to_window_with_margin(theme::s_8())
+                    .child(menu_panel("path-drop-panel").w(popup_w()).children(rows)),
+            )
+            .with_priority(1)
+            .into_any_element(),
         )
     }
 
@@ -1142,9 +1215,13 @@ impl Explorer {
 
 /// The collapsed "…": click to list the hidden levels and jump to one.
 fn more_piece(i: usize, hidden: Vec<(String, PathBuf)>, cx: &mut Context<Explorer>) -> AnyElement {
+    let spring_key = "crumb-more".to_string();
+    let spring_bar = crate::spring::bar(&spring_key, cx);
+    let me = cx.entity().downgrade();
     div()
         .id(("crumb-more", i))
         .a11y_button(t!("a11y.more_folders"))
+        .relative()
         .flex_none()
         .px(theme::s_6())
         .rounded(theme::r_4())
@@ -1152,6 +1229,21 @@ fn more_piece(i: usize, hidden: Vec<(String, PathBuf)>, cx: &mut Context<Explore
         .text_color(theme::text_subtle())
         .hover(|s| s.bg(theme::wash_strong()).text_color(theme::text()))
         .child("…")
+        // A drag held here lists the levels as drop targets (see `spring.rs`).
+        .on_drag_move({
+            let levels = hidden.clone();
+            move |e: &gpui::DragMoveEvent<super::DraggedFiles>, window, cx| {
+                crate::spring::hover(
+                    spring_key.clone(),
+                    crate::spring::Action::Levels(levels.clone()),
+                    crate::spring::Target::Explorer(me.clone()),
+                    e,
+                    window,
+                    cx,
+                );
+            }
+        })
+        .children(spring_bar)
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
             cx.stop_propagation();
             if this.reopens_dismissed(Menu::Levels, None, e) {

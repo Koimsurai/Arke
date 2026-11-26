@@ -1102,8 +1102,9 @@ impl Platform for WindowsPlatform {
     }
 
     fn drag_threshold(&self) -> Size<Pixels> {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetricsForDpi, SM_CXDRAG, SM_CYDRAG,
+        use windows::Win32::UI::{
+            HiDpi::GetSystemMetricsForDpi,
+            WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG},
         };
         // Logical pixels: the metric at 96 DPI follows the user's setting, and GPUI's scale
         // factor turns it into the physical distance Windows itself uses.

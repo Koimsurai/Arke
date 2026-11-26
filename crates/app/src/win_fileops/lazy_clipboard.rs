@@ -62,8 +62,14 @@ pub(super) struct Payload {
     /// Render the ID list with the rest instead of when asked for.
     eager_ids: bool,
     build_ids: IdListBuilder,
-    /// The ID list once it was made (`Some(None)`: it could not be).
-    ids: Option<Option<Vec<u8>>>,
+    ids: Ids,
+}
+
+/// Whether the ID list was made yet.
+enum Ids {
+    NotMade,
+    /// Made, or `None` if it could not be.
+    Made(Option<Vec<u8>>),
 }
 
 impl Payload {
@@ -78,7 +84,7 @@ impl Payload {
             cut,
             eager_ids,
             build_ids,
-            ids: None,
+            ids: Ids::NotMade,
         }
     }
 
@@ -101,7 +107,7 @@ impl Payload {
     }
 
     /// The formats promised and not made yet: asked for later through `WM_RENDERFORMAT`.
-    pub(super) fn lazy_formats(&self) -> &'static [Format] {
+    pub(super) const fn lazy_formats(&self) -> &'static [Format] {
         if self.eager_ids {
             &[]
         } else {
@@ -114,7 +120,7 @@ impl Payload {
         self.lazy_formats()
             .iter()
             .copied()
-            .filter(|f| *f != Format::IdList || self.ids.is_none())
+            .filter(|f| *f != Format::IdList || matches!(self.ids, Ids::NotMade))
             .collect()
     }
 
@@ -124,10 +130,15 @@ impl Payload {
             Format::Hdrop => Some(hdrop_bytes(&self.paths)),
             Format::DropEffect => Some(drop_effect_bytes(self.cut)),
             Format::FileNameW => self.paths.first().map(|p| file_name_bytes(p)),
-            Format::IdList => self
-                .ids
-                .get_or_insert_with(|| (self.build_ids)(&self.paths))
-                .clone(),
+            Format::IdList => {
+                if matches!(self.ids, Ids::NotMade) {
+                    self.ids = Ids::Made((self.build_ids)(&self.paths));
+                }
+                match &self.ids {
+                    Ids::Made(ids) => ids.clone(),
+                    Ids::NotMade => None,
+                }
+            }
         }
     }
 }
@@ -230,20 +241,17 @@ fn ids_for_paths(paths: &[PathBuf]) -> Option<Vec<u8>> {
         pidls.0.push(pidl);
         Some(pidl)
     });
-    Some(match folder {
-        Some(folder) => {
-            let items: Vec<Vec<u8>> = pidls.0[..paths.len()]
+    Some(if let Some(folder) = folder {
+        let items: Vec<Vec<u8>> = pidls.0[..paths.len()]
                 .iter()
                 // SAFETY: the item's PIDL is valid; its last ID points into it.
                 .map(|p| bytes_of(unsafe { ILFindLastID(p.cast_const()) }))
                 .collect();
-            cida_bytes(&bytes_of(folder.cast_const()), &items)
-        }
+        cida_bytes(&bytes_of(folder.cast_const()), &items)
+    } else {
         // The desktop (just a terminator) as the folder, so full IDs are its children.
-        None => {
-            let items: Vec<Vec<u8>> = pidls.0.iter().map(|p| bytes_of(p.cast_const())).collect();
-            cida_bytes(&[0, 0], &items)
-        }
+        let items: Vec<Vec<u8>> = pidls.0.iter().map(|p| bytes_of(p.cast_const())).collect();
+        cida_bytes(&[0, 0], &items)
     })
 }
 
@@ -269,17 +277,20 @@ struct Owner {
 }
 
 impl Owner {
-    fn window(&self) -> HWND {
+    const fn window(&self) -> HWND {
         HWND(std::ptr::with_exposed_provenance_mut(self.hwnd))
     }
 
     fn send(&self, request: Request) -> Result<(), ShellError> {
-        self.requests
-            .send(request)
-            .map_err(|_| ShellError::ClipboardBusy)?;
+        if let Err(err) = self.requests.send(request) {
+            log::info!("clipboard owner thread is gone: {err}");
+            return Err(ShellError::ClipboardBusy);
+        }
         // SAFETY: posts a message to a window of the owner thread; failure means it is gone.
-        unsafe { PostMessageW(Some(self.window()), WM_APP, WPARAM(0), LPARAM(0)) }
-            .map_err(|_| ShellError::ClipboardBusy)
+        unsafe { PostMessageW(Some(self.window()), WM_APP, WPARAM(0), LPARAM(0)) }.map_err(|err| {
+            log::info!("clipboard owner window is gone: {err}");
+            ShellError::ClipboardBusy
+        })
     }
 }
 
@@ -507,7 +518,10 @@ pub(super) fn set(files: &ClipboardFiles) -> Result<u32, ShellError> {
         cut: files.cut,
         reply,
     })?;
-    answer.recv().map_err(|_| ShellError::ClipboardBusy)?
+    answer.recv().map_err(|err| {
+        log::info!("clipboard owner did not answer: {err}");
+        ShellError::ClipboardBusy
+    })?
 }
 
 /// Before Arke exits: renders what no program asked for yet, so every format outlives the process.

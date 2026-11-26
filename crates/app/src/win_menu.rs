@@ -801,7 +801,7 @@ fn fill_single(
 /// The `uFlags` of `QueryContextMenu`: what File Explorer passes always includes `CMF_EXPLORE`.
 /// A bare `CMF_NORMAL` (0) is what shell code passes for a double-click or a probe, and some
 /// extensions return at once on it, adding nothing (#439). `extended`: Shift was held.
-fn query_flags(extended: bool) -> u32 {
+const fn query_flags(extended: bool) -> u32 {
     let flags = CMF_NORMAL | CMF_EXPLORE;
     if extended {
         flags | CMF_EXTENDEDVERBS

@@ -2966,6 +2966,16 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Already in the box while searching subfolders or this PC (Ctrl+K, Ctrl+Shift+F): Ctrl+F
+        // goes back to this folder, the typed text kept (#388).
+        let in_box = self
+            .filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        if in_box && self.scope() != scope::Scope::Here {
+            self.set_scope(scope::Scope::Here, cx);
+        }
         self.focus_filter_input(window, cx);
     }
 

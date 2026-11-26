@@ -6545,7 +6545,51 @@ fn ctrl_k_searches_the_whole_computer(cx: &mut TestAppContext) {
     });
     cx.simulate_keystrokes("ctrl-k");
     view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
-    // Ctrl+F only puts the cursor back in the box; the scope stays.
+    // Ctrl+F with the cursor already in the box goes back to this folder (#388).
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| {
+        assert_eq!(v.scope(), Scope::Here);
+        assert_eq!(v.query, "report", "the text stays");
+    });
+    assert!(in_box(cx));
+}
+
+/// #388: Ctrl+F from this PC or subfolders with the cursor in the box (and the scope strip open)
+/// returns to this folder; from the list it only focuses the box and the scope stays.
+#[gpui::test]
+fn ctrl_f_in_the_box_returns_to_this_folder(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    let in_box = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx))
+    };
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    cx.simulate_keystrokes("ctrl-k");
+    cx.run_until_parked();
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
+    assert!(in_box(cx));
+    cx.simulate_keystrokes("ctrl-f");
+    cx.run_until_parked();
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    assert!(in_box(cx));
+    // Pressed again in this folder: only selects the box's text, the scope stays.
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    // Subfolders too.
+    cx.simulate_keystrokes("ctrl-shift-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Subfolders));
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    // From the list: focus the box, scope unchanged.
+    cx.simulate_keystrokes("ctrl-k down");
+    cx.run_until_parked();
+    assert!(!in_box(cx), "Down moved the cursor to the list");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
     cx.simulate_keystrokes("ctrl-f");
     view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
     assert!(in_box(cx));

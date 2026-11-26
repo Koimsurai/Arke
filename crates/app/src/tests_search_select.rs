@@ -267,9 +267,8 @@ fn the_menu_and_drag_take_a_selection_from_two_folders(cx: &mut TestAppContext) 
         selected(&view, cx),
         [r"docs\report.txt", r"notes\report.txt"]
     );
-    let shell_state = |v: &Explorer| v.context_menu.as_ref().map(|m| m.shell_state());
     wait_until(cx, &view, "more options loaded", |v| {
-        shell_state(v).is_some_and(|(loaded, _)| loaded)
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
     });
     assert!(
         shell
@@ -296,8 +295,9 @@ fn the_menu_and_drag_take_a_selection_from_two_folders(cx: &mut TestAppContext) 
     let other = view.update(cx, |v, _| v.drag_paths(top));
     assert_eq!(other, [PathBuf::from(r"C:\s\report_top.txt")]);
 
-    // Right-click outside the selection selects only that hit.
-    cx.simulate_keystrokes("escape");
+    // The command closed the menu (an Esc now would leave the search). Right-click outside the
+    // selection selects only that hit.
+    assert!(view.update(cx, |v, _| v.context_menu.is_none()));
     right_click(&view, cx, Some(top));
     assert_eq!(selected(&view, cx), ["report_top.txt"]);
 }

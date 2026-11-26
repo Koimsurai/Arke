@@ -2122,6 +2122,9 @@ impl Explorer {
             && cx.has_active_drag();
         let edge = DraggedPreviewEdge(cx.entity_id());
         let gap = super::layout::shared_gap();
+        // Centered on the gap, and no narrower than the pane's own edge when the gap is thin
+        // (compact density): the rest reaches over the preview's edge.
+        let hit = gap.max(theme::s_8());
         div()
             .id("preview-resize")
             .absolute()
@@ -2132,15 +2135,15 @@ impl Explorer {
             .when(!in_gap, |d| d.left_0().w(theme::s_8()))
             // The gap lies over the right pane's box: keep the press from reaching that pane,
             // which would make it the active side and hand the preview (and this drag) over.
-            .when(in_gap, |d| d.left(-gap).w(gap).occlude())
+            .when(in_gap, |d| d.left(-(gap + hit) / 2.).w(hit).occlude())
             .cursor_col_resize()
             .group("preview-resize")
             .child(
                 div()
                     .absolute()
-                    .top(if in_gap { theme::r_12() } else { px(0.) })
-                    .bottom(if in_gap { theme::r_12() } else { px(0.) })
-                    .left(if in_gap { gap / 2. - px(1.) } else { px(0.) })
+                    .top(if in_gap { theme::r_paper() } else { px(0.) })
+                    .bottom(if in_gap { theme::r_paper() } else { px(0.) })
+                    .left(if in_gap { hit / 2. - px(1.) } else { px(0.) })
                     .w(px(2.))
                     .when(in_gap, |d| d.rounded(theme::R_FULL))
                     .when(dragging, |d| d.bg(theme::signal()))

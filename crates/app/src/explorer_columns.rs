@@ -33,6 +33,7 @@ use super::{
 use crate::media::MediaKey;
 use crate::prefs::ViewColumn;
 use crate::press_guard::is_double_click;
+use crate::settings::Density;
 use crate::theme;
 
 /// Default width of the left (parent) column
@@ -158,6 +159,11 @@ impl Explorer {
         };
         let show_ext = self.show_extensions;
         let width = self.parent_column_drawn();
+        let parent_row_h = if self.density == Density::Compact {
+            theme::h_row_compact()
+        } else {
+            theme::h_row_tight()
+        };
         let me = cx.entity();
         let start = range.start;
         range
@@ -178,7 +184,7 @@ impl Explorer {
                         d.tooltip(super::view::tooltip(SharedString::from(&*entry.name)))
                     })
                     .relative()
-                    .h(theme::h_row_compact())
+                    .h(parent_row_h)
                     .px(theme::s_8())
                     .flex()
                     .items_center()

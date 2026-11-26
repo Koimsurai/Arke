@@ -212,10 +212,20 @@ scaled!(s_32, 32.);
 
 // List row height (standard density).
 scaled!(h_row, 32.);
-// List row height (compact, used in dual pane).
-scaled!(h_row_compact, 28.);
+// List row height in compact density: File Explorer's compact view (21 px at 100%, #438). The
+// row is the pointer target, as in Explorer; the rename box shrinks to fit it (`LH_TIGHT`).
+scaled!(h_row_compact, 21.);
+// Rows a little tighter than standard: split panes (half width), pinned tabs and the column
+// view's parent column, outside compact density.
+scaled!(h_row_tight, 28.);
 // List row height (comfortable).
 scaled!(h_row_comfortable, 40.);
+
+/// Sidebar rows (folders, places, tabs, the Shelf, Home and Settings): compact rows in compact
+/// density (#438), the standard height otherwise. Section headings keep [`h_row`].
+pub(crate) fn h_row_side() -> Pixels {
+    by_room(24., 32., 32.)
+}
 // Controls: buttons, inputs.
 scaled!(h_ctl, 32.);
 // Small controls: context bar actions.
@@ -266,6 +276,50 @@ pub(crate) fn sidebar_full_width() -> Pixels {
 }
 // Width of the collapsed sidebar: a column of icons (#91).
 scaled!(rail_w, 52.);
+
+// --- Gaps around the paper (#429) ---
+
+/// How much room the frame leaves around the paper: 0 compact, 1 standard, 2 comfortable. Follows
+/// the density setting.
+static ROOM: AtomicU32 = AtomicU32::new(1);
+
+/// Sets the room around the paper from the density setting. Returns whether it changed; windows
+/// must repaint if so.
+pub(crate) fn set_density(density: crate::settings::Density) -> bool {
+    use crate::settings::Density;
+    let room = match density {
+        Density::Compact => 0,
+        Density::Standard => 1,
+        Density::Comfortable => 2,
+    };
+    if ROOM.swap(room, Ordering::Relaxed) == room {
+        return false;
+    }
+    LOOK.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+/// The value (at 100%) for the current density.
+fn by_room(compact: f32, standard: f32, comfortable: f32) -> Pixels {
+    scaled_px(match ROOM.load(Ordering::Relaxed) {
+        0 => compact,
+        2 => comfortable,
+        _ => standard,
+    })
+}
+
+/// Space between the paper and the window's right and bottom edges, between the two papers of a
+/// split tab and before its shared preview. About what Edge leaves around its page; the same
+/// when maximized or snapped, as in Edge.
+pub(crate) fn paper_gap() -> Pixels {
+    by_room(2., 4., 8.)
+}
+
+/// The paper's corner radius. It shrinks with [`paper_gap`] so the paper's corner keeps close to
+/// the window's own (8 px) corner; a large radius in a thin gap looks loose.
+pub(crate) fn r_paper() -> Pixels {
+    by_room(6., 8., 12.)
+}
 
 static SIDEBAR_COLLAPSED: AtomicBool = AtomicBool::new(false);
 
@@ -383,6 +437,10 @@ scaled!(r_8, 8.);
 scaled!(r_12, 12.);
 /// Pills, progress bars.
 pub(crate) const R_FULL: Pixels = px(999.);
+/// Line height (relative to the font size) for text in a box shorter than the default line
+/// (1.618): the rename box in a compact row. Still above the UI fonts' ascent plus descent
+/// (about 1.33 for Segoe UI and the CJK fallbacks), so nothing is cut off.
+pub(crate) const LH_TIGHT: f32 = 1.35;
 
 // --- Raw layer ---
 

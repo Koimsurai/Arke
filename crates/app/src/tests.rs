@@ -8243,7 +8243,9 @@ fn narrow_window_scrolls_columns_and_squeezes_the_preview(cx: &mut TestAppContex
         view.update(cx, |v, _| v.header_offset_for_test()),
         Some(scrolled)
     );
-    assert_eq!(at(cx, 880.), (true, 224.), "then the preview pane narrows");
+    // 228 depends on the standard-density paper gap (theme::paper_gap, 4 px).
+    assert_eq!(at(cx, 880.), (true, 228.), "then the preview pane narrows");
+    // It hides below 872 (bare list 404 + preview minimum 220 + sidebar 248): 800 is well past.
     assert!(!at(cx, 800.).0, "and finally hides");
     assert_eq!(at(cx, 1800.), (true, 380.), "it comes back");
     view.update(cx, |_, cx| {

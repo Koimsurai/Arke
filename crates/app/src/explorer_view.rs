@@ -906,6 +906,7 @@ impl Explorer {
                 self.shown_name_of(entry),
                 true,
                 Some(press),
+                rename_box_h(self.row_height()),
             ))
             .children(super::compare::compare_badge(
                 self.compare_mark(&entry.name),
@@ -1085,7 +1086,14 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match rename_input {
-            Some(rename) => name_cell(entry, Some(rename), SharedString::default(), false, None),
+            Some(rename) => name_cell(
+                entry,
+                Some(rename),
+                SharedString::default(),
+                false,
+                None,
+                theme::s_24(),
+            ),
             None => div()
                 .debug_selector({
                     let name = Arc::clone(&entry.name);
@@ -1213,7 +1221,7 @@ impl Explorer {
         // Pane width (preview pane already excluded) minus paper margin, list padding and
         // scrollbar.
         let avail = self.pane_width
-            - theme::s_8()
+            - layout::paper_margin()
             - theme::s_32()
             - scrollbar_gutter()
             - layout::list_gutter();
@@ -2420,7 +2428,7 @@ fn active_outline() -> impl IntoElement {
         .debug_selector(|| "active-pane-outline".to_owned())
         .absolute()
         .inset_0()
-        .rounded(theme::r_12())
+        .rounded(theme::r_paper())
         .border_1()
         .border_color(theme::signal_line())
 }
@@ -2430,7 +2438,7 @@ fn search_outline() -> impl IntoElement {
         .debug_selector(|| "search-target".to_owned())
         .absolute()
         .inset_0()
-        .rounded(theme::r_12())
+        .rounded(theme::r_paper())
         .border_2()
         .border_color(theme::signal_line())
 }
@@ -2901,6 +2909,12 @@ pub(crate) fn shown_name(entry: &Entry, show_ext: bool) -> SharedString {
     }
 }
 
+/// The rename box's height in a Details row `row` high: 24, or the row's height in a shorter
+/// (compact) row, like Explorer's box filling its compact row.
+fn rename_box_h(row: Pixels) -> Pixels {
+    row.min(theme::s_24())
+}
+
 /// Space between the rename box's edge and its text: its padding plus the 1 px border.
 fn rename_inset() -> gpui::Pixels {
     crate::theme::scaled_px(4. + 1.)
@@ -2930,6 +2944,7 @@ fn name_cell(
     shown: SharedString,
     in_row: bool,
     on_press: Option<NamePress>,
+    box_h: Pixels,
 ) -> AnyElement {
     match rename {
         Some((input, problem)) => div()
@@ -2950,7 +2965,9 @@ fn name_cell(
                 }
             })
             .min_w_0()
-            .h(theme::s_24())
+            .h(box_h)
+            // Shorter than its usual 24 (a compact row): a tighter line keeps the text whole.
+            .when(box_h < theme::s_24(), |d| d.line_height(gpui::relative(theme::LH_TIGHT)))
             .px(rename_inset() - px(1.))
             .flex()
             .items_center()
@@ -3287,14 +3304,15 @@ impl Render for Explorer {
             .child(
                 // The paper: the single sheet holding the list
                 div()
+                    .debug_selector(|| "paper".to_owned())
                     .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
                     .mr(self.paper_margin_right())
-                    .mb(theme::s_8())
-                    .rounded(theme::r_12())
+                    .mb(theme::paper_gap())
+                    .rounded(theme::r_paper())
                     .bg(theme::paper())
                     .shadow(theme::elev_2())
                     .children(backdrop_layer())
@@ -3385,9 +3403,9 @@ impl Explorer {
     /// shared preview too (the pane's box runs on under it).
     fn paper_margin_right(&self) -> Pixels {
         if self.pane.trailing {
-            theme::s_8() + self.pane.reserve
+            layout::paper_margin() + self.pane.reserve
         } else {
-            theme::s_8()
+            layout::paper_margin()
         }
     }
 
@@ -3556,7 +3574,7 @@ impl Explorer {
                 .relative()
                 .size_full()
                 .flex()
-                .rounded(theme::r_12())
+                .rounded(theme::r_paper())
                 .bg(theme::paper())
                 .shadow(theme::elev_2())
                 .children(contents)
@@ -3607,7 +3625,7 @@ fn backdrop_layer() -> Option<impl IntoElement> {
             .top_0()
             .left_0()
             .size_full()
-            .rounded(theme::r_12())
+            .rounded(theme::r_paper())
             .overflow_hidden()
             .opacity(opacity)
             .child(

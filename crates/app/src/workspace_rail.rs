@@ -296,7 +296,8 @@ impl Workspace {
             .flex_col()
             .items_center()
             .gap(theme::s_2())
-            .pb(theme::s_8())
+            // The last button's bottom lines up with the paper's.
+            .pb(theme::paper_gap())
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.rail_hovered(*hovered, cx)))
             // The rest starts over with every move; a press is a pick, not a rest.
             .on_mouse_move(cx.listener(|this, _: &gpui::MouseMoveEvent, _, cx| {

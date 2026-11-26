@@ -506,3 +506,38 @@ fn tab_in_the_path_bar_completes_typed_text_then_moves_on(cx: &mut TestAppContex
     key(cx, "tab");
     assert!(stop(&ws, cx).starts_with("toolbar:"), "{}", stop(&ws, cx));
 }
+
+/// The sidebar's rows follow the density like the file list (#438): compact rows in compact
+/// density, the standard height otherwise (comfortable keeps it, as before).
+#[gpui::test]
+fn sidebar_rows_follow_the_density(cx: &mut TestAppContext) {
+    use crate::settings::Density;
+    let (ws, cx) = window(cx);
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    let mut tiles = Vec::new();
+    for (density, side, list) in [
+        (Density::Compact, 24., 21.),
+        (Density::Standard, 32., 32.),
+        (Density::Comfortable, 32., 40.),
+    ] {
+        cx.update(|_, cx| {
+            crate::settings::SettingsStore::global(cx)
+                .update(cx, |s, cx| s.update(|st| st.density = density, cx));
+        });
+        refresh(cx);
+        let tree = cx.debug_bounds("sidebar work").expect("work in the tree");
+        let tab = cx.debug_bounds("tab-0").expect("the tab in the sidebar");
+        assert_eq!(tree.size.height, gpui::px(side), "{density:?}: tree row");
+        assert_eq!(tab.size.height, gpui::px(side), "{density:?}: tab row");
+        assert_eq!(crate::theme::h_row_side(), gpui::px(side), "{density:?}");
+        assert_eq!(
+            view.update(cx, |v, _| v.row_height()),
+            gpui::px(list),
+            "{density:?}: list row"
+        );
+        tiles.push(view.update(cx, |v, _| v.tile().h));
+    }
+    // Icons: compact rows of tiles sit 4 px closer; the others keep the tile's height.
+    assert_eq!(tiles[0], tiles[1] - gpui::px(4.));
+    assert_eq!(tiles[1], tiles[2]);
+}

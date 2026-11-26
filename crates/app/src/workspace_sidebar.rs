@@ -445,11 +445,11 @@ impl Render for PinPreview {
                 .width
         };
         let row_w = (theme::s_8() * 2. + theme::icon() + theme::s_8() + label_w).min(px(280.));
-        let row_h = theme::h_row();
+        let row_h = theme::h_row_side();
         let (row_x, row_y) = if pin.from_tile {
             (
                 self.grab.x - theme::s_16(),
-                self.grab.y - theme::h_row() / 2.,
+                self.grab.y - theme::h_row_side() / 2.,
             )
         } else {
             (px(0.), px(0.))
@@ -1140,7 +1140,7 @@ fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
 fn loading_row(indent: Pixels) -> AnyElement {
     div()
         .flex_none()
-        .h(theme::h_row())
+        .h(theme::h_row_side())
         .flex()
         .items_center()
         .pl(indent)
@@ -1342,7 +1342,7 @@ impl Workspace {
                 // Where it lands, drawn like the block that showed the list takes it.
                 // A row's height with its border, so the rows under it don't move when it opens.
                 d.debug_selector(|| "pin-row-gap".to_owned())
-                    .h(theme::h_row())
+                    .h(theme::h_row_side())
                     .overflow_hidden()
                     .mx(theme::s_4())
                     .border_1()
@@ -2026,7 +2026,7 @@ impl Workspace {
             .debug_selector(|| "pin-list-drop".to_owned())
             // A row's height, as the gap it turns into: not squeezed by the list.
             .flex_none()
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .mx(theme::s_4())
             .flex()
             .items_center()
@@ -2357,7 +2357,7 @@ impl Workspace {
                     d.flex_basis(height).flex_grow(0.).flex_shrink(1.)
                 })
                 // At least two rows stay visible, so it's clear this part scrolls too.
-                .min_h(theme::h_row() * 2.),
+                .min_h(theme::h_row_side() * 2.),
         )
         .relative()
         .when(scrolled, |d| d.child(scroll_shadow()))
@@ -2594,7 +2594,7 @@ impl Workspace {
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
     fn tab_list_min_height(tabs: usize) -> Pixels {
         let shown = tabs.min(3) as f32;
-        (theme::h_row() + theme::s_2()) * shown
+        (theme::h_row_side() + theme::s_2()) * shown
     }
 
     /// Drops a tab onto empty space in the tab strip or list: moves it to the end.
@@ -2709,7 +2709,7 @@ impl Workspace {
             .a11y_button(t!("sidebar.new_tab"))
             .aria_keyshortcuts("Ctrl+T")
             .group("new-tab")
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .flex_none()
             .flex()
             .items_center()
@@ -2997,7 +2997,7 @@ impl Workspace {
                 .when(here, |d| d.aria_selected(true))
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
-                .h(theme::h_row())
+                .h(theme::h_row_side())
                 .flex()
                 .flex_none()
                 .items_center()
@@ -4542,17 +4542,24 @@ impl Workspace {
             })
             .collect();
         let close_button = Self::tab_close_button(ix, cx);
+        // Sidebar tabs follow the density like the other sidebar rows (#438); the top strip's
+        // tabs fill its bar and keep their height.
+        let row_h = if Self::horizontal_tabs(cx) {
+            theme::h_row()
+        } else {
+            theme::h_row_side()
+        };
         let row = div()
             .id(("tab", ix))
             .debug_selector(|| format!("tab-{ix}"))
             .group(group.clone())
             .h(if split {
-                theme::h_row() + theme::s_8()
+                row_h + theme::s_8()
             } else if tab.pinned {
-                // Pinned tabs are a tighter group at the top.
-                theme::h_row_compact()
+                // Pinned tabs are a tighter group at the top (compact rows are already as tight).
+                theme::h_row_tight().min(row_h)
             } else {
-                theme::h_row()
+                row_h
             })
             .when(tab.pinned, |d| d.text_size(theme::fs_13()))
             .flex()

@@ -230,9 +230,19 @@ pub(crate) fn zoom(view: ViewMode, size: IconSize, steps: i32) -> Option<ZoomTar
 }
 
 impl Explorer {
-    /// The grid's tile metrics at the current icon size.
+    /// The grid's tile metrics at the current icon size. Compact density draws the rows of tiles
+    /// closer together, like File Explorer's compact view (#438): the tile loses the room left
+    /// under its two name lines (they still fit).
     pub(crate) fn tile(&self) -> theme::Tile {
-        self.icon_size.tile()
+        let tile = self.icon_size.tile();
+        if self.density == crate::settings::Density::Compact {
+            theme::Tile {
+                h: tile.h - theme::s_4(),
+                ..tile
+            }
+        } else {
+            tile
+        }
     }
 
     /// The user picked an icon size: show Icons at that size and remember it for this folder.

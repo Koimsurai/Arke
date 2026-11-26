@@ -273,6 +273,8 @@ struct FakeShell {
     /// Programs started (program, command line after it), for the external copy and preview
     /// programs.
     program_runs: Mutex<Vec<(PathBuf, String)>>,
+    /// Starting a program fails, as when its exe is gone (it is still recorded).
+    program_fails: std::sync::atomic::AtomicBool,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
     /// Attribute changes asked for (paths, bits set, bits cleared); they fail while
@@ -953,6 +955,9 @@ impl Shell for FakeShell {
         self.program_runs
             .lock()
             .push((program.to_path_buf(), args.to_string_lossy().into_owned()));
+        if self.program_fails.load(Ordering::Relaxed) {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+        }
         Ok(())
     }
 

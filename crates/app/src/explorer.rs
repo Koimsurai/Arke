@@ -780,6 +780,8 @@ pub(crate) struct Explorer {
     list_focus: FocusHandle,
     path_input: Entity<TextInput>,
     pub(crate) editing_path: bool,
+    /// What the path bar's box held when editing began: Tab completes only once it differs.
+    path_entry: String,
     /// Marquee selection in progress.
     marquee: Option<marquee::Marquee>,
     /// The left press landed on an item, so the list's own handler doesn't start a marquee.
@@ -1193,6 +1195,7 @@ impl Explorer {
             list_focus,
             path_input,
             editing_path: false,
+            path_entry: String::new(),
             marquee: None,
             row_pressed: false,
             list_bounds: marquee::ListBounds::default(),
@@ -3970,6 +3973,7 @@ impl Explorer {
             .display_path()
             .map_or_default(|p| p.display().to_string());
         self.editing_path = true;
+        self.path_entry.clone_from(&text);
         self.path_input.update(cx, |input, cx| {
             input.set_text(text, cx);
             input.select_all_text(cx);
@@ -4003,7 +4007,7 @@ impl Explorer {
     }
 
     /// Something over the list owns Tab: Quick Look, or an open menu or rename.
-    pub(crate) fn list_keeps_tab(&self) -> bool {
+    pub(crate) const fn list_keeps_tab(&self) -> bool {
         self.quick_look || self.context_menu.is_some() || self.renaming.is_some()
     }
 

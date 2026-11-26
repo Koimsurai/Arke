@@ -563,6 +563,11 @@ impl Explorer {
         if !text.ends_with('\\') {
             text.push('\\');
         }
+        // Already completed: Tab moves on instead of repeating it.
+        if self.path_input.read(cx).text() == text {
+            cx.emit(ExplorerEvent::StepStop(true));
+            return;
+        }
         // Completes what was typed: Ctrl+Z takes it back to that.
         self.path_input
             .update(cx, |input, cx| input.replace_text(text, cx));
@@ -603,13 +608,10 @@ impl Explorer {
         self.move_path_highlight(true, cx);
     }
 
-    /// The text is still the folder's own path (the keyboard just came here), or no folder
+    /// Nothing was typed since the keyboard came to the box (whatever it showed), or no folder
     /// matches what was typed.
     fn nothing_to_complete(&self, cx: &Context<Self>) -> bool {
-        let shown = self
-            .display_path()
-            .map_or_default(|p| p.display().to_string());
-        self.suggest.items.is_empty() || self.path_input.read(cx).text() == shown
+        self.suggest.items.is_empty() || self.path_input.read(cx).text() == self.path_entry
     }
 
     pub(super) fn path_accept(

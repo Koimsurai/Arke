@@ -269,7 +269,7 @@ impl Explorer {
 
     /// Tests: the button the keyboard is on.
     #[cfg(test)]
-    pub(crate) fn toolbar_at_for_test(&self) -> Option<&'static str> {
+    pub(crate) const fn toolbar_at_for_test(&self) -> Option<&'static str> {
         self.toolbar.at
     }
 

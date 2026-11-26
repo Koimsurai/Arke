@@ -155,9 +155,11 @@ thread_local! {
     /// The lit row scrolls into view when it is next drawn.
     static REVEAL: Cell<bool> = const { Cell::new(false) };
     /// English text of each string of the UI language, lowercased, for that language.
-    static ENGLISH: RefCell<Option<(String, HashMap<String, Vec<String>>)>> =
-        const { RefCell::new(None) };
+    static ENGLISH: RefCell<Option<(String, EnglishOf)>> = const { RefCell::new(None) };
 }
+
+/// Each string of one UI language and its English text (lowercased), see [`english`].
+type EnglishOf = HashMap<String, Vec<String>>;
 
 /// What the pages note while they are built (see [`note`]).
 struct Build {
@@ -319,7 +321,7 @@ fn english(text: &str) -> Vec<String> {
         if cache.as_ref().is_none_or(|(l, _)| *l != *locale) {
             // Once per language: a few thousand strings, well under a millisecond.
             let backend = crate::_rust_i18n_backend();
-            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            let mut map = EnglishOf::new();
             for (key, shown) in backend.messages_for_locale(&locale).unwrap_or_default() {
                 let Some(en) = backend.translate("en", &key) else {
                     continue;
@@ -347,7 +349,7 @@ fn results_list(
     cursor: Option<usize>,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let page_name = |page: usize| pages.get(page).map(|(t, _)| t.clone()).unwrap_or_default();
+    let page_name = |page: usize| pages.get(page).map_or_default(|(t, _)| t.clone());
     let announce = cursor
         .and_then(|ix| hits.get(ix))
         .map(|hit| crate::a11y::item_label(&hit.title, &[page_name(hit.page)]));
@@ -574,7 +576,7 @@ impl Workspace {
         }
         let input = page.search.input.clone();
         window.focus(&input.focus_handle(cx), cx);
-        input.update(cx, |i, cx| i.select_all_text(cx));
+        input.update(cx, TextInput::select_all_text);
         cx.notify();
     }
 

@@ -119,6 +119,8 @@ mod tests_columns;
 mod tests_commands;
 #[path = "tests_home_favorites.rs"]
 mod tests_home_favorites;
+#[path = "tests_home_keys.rs"]
+mod tests_home_keys;
 #[path = "tests_quick_access.rs"]
 mod tests_quick_access;
 #[path = "tests_text_input_menu.rs"]

@@ -575,3 +575,59 @@ fn the_places_list_has_a_scrollbar_once_it_overflows(cx: &mut TestAppContext) {
         offset(&ws, cx)
     );
 }
+
+/// Every heading has its icon, centered on a row as tall as the sidebar's rows in each density,
+/// and a hairline sets each group of places apart from what is above it (the line between the
+/// places and the tabs does that for Tabs). With nothing above, no rule.
+#[gpui::test]
+fn section_headings_have_an_icon_and_follow_the_density(cx: &mut TestAppContext) {
+    use crate::settings::Density;
+    let (_ws, cx) = window(cx);
+    change(cx, |st| st.pinned = vec![p("c")]);
+    refresh(cx);
+    let headings = [
+        "pin-list-label",
+        "this-pc-header",
+        "network-header",
+        "tabs-header",
+    ];
+    for density in [Density::Compact, Density::Standard, Density::Comfortable] {
+        change(cx, move |st| st.density = density);
+        refresh(cx);
+        let row = crate::theme::h_row_side();
+        for id in headings {
+            let heading = bounds(cx, id);
+            assert_eq!(heading.size.height, row, "{density:?}: {id} is a row tall");
+            let icon = bounds(cx, &format!("{id}-icon"));
+            assert_eq!(icon.size.height, crate::theme::icon(), "{density:?}: {id}");
+            assert!(
+                (icon.center().y - heading.center().y).abs() < px(1.),
+                "{density:?}: {id}'s icon is centered: {icon:?} in {heading:?}"
+            );
+            assert!(
+                icon.left() >= heading.left() && icon.right() < heading.center().x,
+                "{density:?}: {id}'s icon comes first"
+            );
+        }
+        for id in &headings[..3] {
+            let rule = bounds(cx, &format!("{id}-rule"));
+            let heading = bounds(cx, id);
+            assert_eq!(rule.size.height, crate::theme::side_rule_h(), "{density:?}");
+            assert!(
+                rule.bottom() <= heading.top() && heading.top() - rule.bottom() < px(4.),
+                "{density:?}: the rule is right above {id}: {rule:?} / {heading:?}"
+            );
+        }
+        assert!(
+            !drawn(cx, "tabs-header-rule"),
+            "the split line sets the tabs apart"
+        );
+    }
+
+    // Home and the tiles hidden: Favorites is first, with nothing above it to set apart from.
+    change(cx, |st| st.hidden_sections = vec![SidebarSection::Home]);
+    refresh(cx);
+    assert!(drawn(cx, "pin-list-label"));
+    assert!(!drawn(cx, "pin-list-label-rule"), "no rule at the top");
+    assert!(drawn(cx, "this-pc-header-rule"));
+}

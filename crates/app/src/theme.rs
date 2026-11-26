@@ -170,6 +170,12 @@ scaled!(h_row_comfortable, 40.);
 pub(crate) fn h_row_side() -> Pixels {
     by_room(24., 32., 32.)
 }
+
+/// The strip between two sidebar sections, a hairline across its middle: a little more room
+/// between the groups as the density opens up.
+pub(crate) fn side_rule_h() -> Pixels {
+    by_room(5., 9., 13.)
+}
 // Controls: buttons, inputs.
 scaled!(h_ctl, 32.);
 // Small controls: context bar actions.

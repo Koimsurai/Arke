@@ -946,21 +946,47 @@ pub(super) fn scrolling(
 /// visible fraction.
 const CUT_ROW_OPACITY: (f32, f32) = (0.2, 0.5);
 
-fn section_label(text: impl Into<SharedString>) -> impl IntoElement {
+/// Section heading: its icon, then its title, a row as tall as the sidebar's rows in every
+/// density. `id` names the icon's debug selector (`{id}-icon`).
+fn section_label(id: &'static str, icon: Icon, text: impl Into<SharedString>) -> impl IntoElement {
     let text: SharedString = text.into();
     div()
         .flex_none()
-        .h(theme::h_row())
+        .h(theme::h_row_side())
         .flex()
-        .items_end()
+        .items_center()
+        .gap(theme::s_8())
         .px(theme::s_8())
-        .pb(theme::s_6())
         // Section heading (like Files): item size, semibold and full ink, so the groups read as
-        // headings rather than captions; the weight alone sets them apart from the items.
+        // headings rather than captions; the weight alone sets them apart from the items. The
+        // icon is plain and muted, so it marks the group without competing with the colored
+        // place icons of the rows.
         .text_size(theme::fs_14())
         .font_weight(theme::FW_STRONG)
         .text_color(theme::text())
+        .child(
+            svg()
+                .debug_selector(move || format!("{id}-icon"))
+                .path(icon.path())
+                .flex_none()
+                .size(theme::icon())
+                .text_color(theme::text_muted()),
+        )
         .child(text)
+}
+
+/// The hairline that sets a section apart from what is above it. Not part of the heading, so
+/// it takes no clicks and the keyboard cursor's outline stays on the heading's row.
+fn section_rule(id: &'static str) -> AnyElement {
+    div()
+        .debug_selector(move || format!("{id}-rule"))
+        .flex_none()
+        .h(theme::side_rule_h())
+        .px(theme::s_8())
+        .flex()
+        .items_center()
+        .child(div().w_full().h(px(1.)).bg(theme::line()))
+        .into_any_element()
 }
 
 /// A section heading's element id (also its debug selector and hover group) and title.
@@ -974,6 +1000,17 @@ fn section_id(section: SidebarSection) -> (&'static str, SharedString) {
         SidebarSection::Network => ("network-header", t!("sidebar.network")),
     };
     (id, title.into_owned().into())
+}
+
+/// The icon before a section's title: a pin for what was pinned, a drive for This PC, a globe
+/// for the network.
+const fn section_icon(section: SidebarSection) -> Icon {
+    match section {
+        SidebarSection::Home => Icon::KfHome,
+        SidebarSection::Favorites => Icon::Pin,
+        SidebarSection::ThisPc => Icon::Drive,
+        SidebarSection::Network => Icon::Globe,
+    }
 }
 
 /// The sections that can be hidden (#323, #387), in the order the menu of the sidebar's empty
@@ -1543,6 +1580,10 @@ impl Workspace {
         // No pins, no section. "Pin to sidebar" makes it appear; no placeholder text.
         let heading = !pinned_rows.is_empty() || wants_list_drop;
         if heading {
+            // Under the tiles (with Home hidden, nothing is above it): a rule sets it apart.
+            if !out.is_empty() {
+                out.push(section_rule(section_id(SidebarSection::Favorites).0));
+            }
             out.push(
                 self.section_header(SidebarSection::Favorites, collapsed, Vec::new(), cx)
                     // A folder or tab goes first in the list; with the list collapsed, or no
@@ -2304,6 +2345,9 @@ impl Workspace {
             // Hidden (#323): no row of the current folder to scroll to.
             self.sidebar_ui.here_row.set(None);
         } else {
+            if !items.is_empty() {
+                items.push(section_rule(section_id(SidebarSection::ThisPc).0));
+            }
             items.push(
                 self.section_header(SidebarSection::ThisPc, this_pc_collapsed, Vec::new(), cx)
                     .into_any_element(),
@@ -2416,25 +2460,30 @@ impl Workspace {
             .relative()
             .flex()
             .flex_none()
-            .items_end()
-            // Fixed, so the pin zone taking its place doesn't move the tabs.
-            .h(theme::h_row())
+            .items_center()
+            // Fixed, so the pin zone taking its place doesn't move the tabs; a row tall in every
+            // density, like the other headings.
+            .h(theme::h_row_side())
             .child(self.tab_area_recorder(super::tabmove::AreaPart::ListHead))
             .map(|d| match self.pin_drop_zone(cx) {
                 // Dragging an unpinned tab: the heading turns into the pin zone.
                 Some(zone) => d.child(zone.flex_1().min_w_0()),
                 None => d
-                    // The saved workspace this window shows, muted after the heading (#269).
+                    // The saved workspace this window shows, muted after the heading (#269). The
+                    // line above is the split between the places and the tabs, so no rule here.
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
-                            .items_end()
-                            .child(section_label(t!("sidebar.tabs")))
+                            .items_center()
+                            .child(section_label(
+                                "tabs-header",
+                                Icon::TabsSide,
+                                t!("sidebar.tabs"),
+                            ))
                             .children(
-                                self.workspace_label(cx)
-                                    .map(|label| label.pb(theme::s_6()).pr(theme::s_8())),
+                                self.workspace_label(cx).map(|label| label.pr(theme::s_8())),
                             ),
                     )
                     .child(Self::new_tab_button(cx))
@@ -2622,6 +2671,9 @@ impl Workspace {
         out: &mut Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) {
+        if !out.is_empty() {
+            out.push(section_rule(section_id(SidebarSection::Network).0));
+        }
         out.push(
             self.section_header(
                 SidebarSection::Network,
@@ -3382,7 +3434,7 @@ impl Workspace {
             .relative()
             .flex()
             .flex_none()
-            .items_end()
+            .items_center()
             .rounded(theme::r_8())
             .cursor_pointer()
             // The chevron follows the title, so the heading's buttons keep the right edge and
@@ -3392,16 +3444,15 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .flex()
-                    .items_end()
-                    .child(section_label(title))
+                    .items_center()
+                    .child(section_label(id, section_icon(section), title))
                     .child(
                         div()
-                            .h(theme::h_row())
+                            .h(theme::h_row_side())
                             .ml(-theme::s_4())
-                            .pb(px(9.))
                             .flex()
                             .flex_none()
-                            .items_end()
+                            .items_center()
                             .when(!collapsed, |d| {
                                 d.invisible().group_hover(id, gpui::Styled::visible)
                             })

@@ -1069,3 +1069,34 @@ fn the_settings_search_is_named(cx: &mut TestAppContext) {
         "the clear button is named"
     );
 }
+
+/// Home's cards are links named like the places they open (#322), and the card under the
+/// keyboard's ring is what a screen reader reads as focused as the arrow keys move it.
+#[gpui::test]
+fn home_cards_are_named_and_read_as_the_keyboard_moves(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.favorites = Some(vec![PathBuf::from(r"C:\w")]), cx);
+        });
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx)
+    });
+    let home = tree(cx);
+    assert_eq!(unnamed(&home), Vec::<String>::new(), "Home");
+    let link = |t: &Value, name: &str| nodes(t).any(|n| role(n) == "Link" && label(n) == name);
+    assert!(link(&home, "w"), "the favorite's card");
+    assert!(link(&home, "Local Disk (C:)"), "the drive's card");
+
+    // Tab to the sidebar and back: the page has the keyboard, on its first card.
+    cx.simulate_keystrokes("tab shift-tab");
+    let t = tree(cx);
+    assert_eq!(focused(&t), ("Link".to_owned(), "w".to_owned()));
+    cx.simulate_keystrokes("down");
+    let t = tree(cx);
+    assert_eq!(
+        focused(&t),
+        ("Link".to_owned(), "Local Disk (C:)".to_owned())
+    );
+}

@@ -139,6 +139,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
     crate::net_dialog::bind_keys(cx);
     crate::archive_password::bind_keys(cx);
     crate::recycle_bin::bind_keys(cx);
+    crate::home::bind_keys(cx);
     let ctx = Some("Workspace");
     cx.bind_keys([
         KeyBinding::new("ctrl-t", OpenPalette, ctx),

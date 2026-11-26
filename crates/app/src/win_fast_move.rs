@@ -474,7 +474,7 @@ mod tests {
         let free = sb.file("b.txt", b"b");
         fs::write(sb.dst("A.TXT"), b"old").unwrap();
         let (moved, _) = run(&[taken.clone(), free], &sb.dst(""));
-        assert_eq!(moved.rest, [taken.clone()]);
+        assert_eq!(moved.rest, std::slice::from_ref(&taken));
         assert_eq!(moved.put_back.len(), 1);
         assert_eq!(fs::read(sb.dst("A.TXT")).unwrap(), b"old", "untouched");
         assert_eq!(fs::read(&taken).unwrap(), b"new", "still where it was");
@@ -498,7 +498,7 @@ mod tests {
         let sb = Scratch::new("samefolder");
         let file = sb.file("a.txt", b"a");
         let (moved, _) = run(std::slice::from_ref(&file), &sb.src(""));
-        assert_eq!(moved.rest, [file.clone()]);
+        assert_eq!(moved.rest, std::slice::from_ref(&file));
         assert!(moved.put_back.is_empty());
         assert!(file.exists());
     }
@@ -547,7 +547,7 @@ mod tests {
         let first = sb.file(r"one\x.txt", b"1");
         let second = sb.file(r"two\X.txt", b"2");
         let (moved, _) = run(&[first, second.clone()], &sb.dst(""));
-        assert_eq!(moved.rest, [second.clone()]);
+        assert_eq!(moved.rest, std::slice::from_ref(&second));
         assert_eq!(moved.put_back.len(), 1);
         assert!(second.exists());
     }
@@ -576,7 +576,7 @@ mod tests {
         let sb = Scratch::new("nodest");
         let file = sb.file("a.txt", b"a");
         let (moved, _) = run(std::slice::from_ref(&file), &sb.dst("nowhere"));
-        assert_eq!(moved.rest, [file.clone()]);
+        assert_eq!(moved.rest, std::slice::from_ref(&file));
         assert!(file.exists());
     }
 
@@ -613,7 +613,7 @@ mod tests {
             return;
         }
         let (moved, _) = run(std::slice::from_ref(&link), &sb.dst(""));
-        assert_eq!(moved.rest, [link.clone()]);
+        assert_eq!(moved.rest, std::slice::from_ref(&link));
         assert!(!sb.dst("link").exists());
         assert!(link.exists());
         // Removing the junction itself, never what it points to.

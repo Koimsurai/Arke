@@ -172,7 +172,13 @@ impl Explorer {
                 let _ = this.update(cx, Self::save_column_widths);
             });
         }
-        let scroll_x = self.header_list().offset().x.min(px(0.));
+        // Clamped like the list clamps its own offset (a wheel can overshoot before the list's
+        // next layout), so the header always lines up with the rows.
+        let handle = self.header_list();
+        let scroll_x = handle
+            .offset()
+            .x
+            .clamp(-handle.max_offset().x.max(px(0.)), px(0.));
         self.header_x.set(Some(scroll_x));
         // The columns, laid out like the rows below (same padding and gaps) and moved with the
         // list when it scrolls sideways. What's right of them is blank, like the list.

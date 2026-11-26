@@ -73,7 +73,9 @@ const HERO: gpui::Pixels = px(96.);
 /// The picture is decoded this big (device pixels).
 const HERO_DECODE: u32 = 320;
 /// How much of a file a checksum reads at a time.
-const HASH_CHUNK: usize = 256 * 1024;
+const HASH_BUFFER: usize = 1024 * 1024;
+/// Buffers passed between the thread that reads a file and the one that hashes it.
+const HASH_BUFFERS: usize = 3;
 /// Estimated heights, to size the window to its content.
 const EST_TITLE: f32 = 44.;
 const EST_FOOTER: f32 = 56.;
@@ -1363,35 +1365,88 @@ fn hash_file(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u8),
 ) -> std::io::Result<Option<String>> {
-    use std::io::Read as _;
-    let mut file = fs.open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; HASH_CHUNK];
-    let (mut read, mut shown) = (0u64, 0u8);
-    loop {
+    hash_reader(fs.open_sequential(path)?, total, cancel, progress)
+}
+
+/// Fills `buf` from `reader`; shorter only at the end of the data.
+fn read_full(reader: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(filled)
+}
+
+/// SHA-256 of everything `reader` yields. One thread reads into a few big buffers while this one
+/// hashes the previous, so disk and CPU work overlap. `total` only scales `progress`.
+fn hash_reader<R: std::io::Read + Send>(
+    mut reader: R,
+    total: u64,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u8),
+) -> std::io::Result<Option<String>> {
+    use std::sync::mpsc;
+    type Filled = std::io::Result<(Vec<u8>, usize)>;
+    std::thread::scope(|scope| {
+        let (full_tx, full_rx) = mpsc::sync_channel::<Filled>(HASH_BUFFERS);
+        let (free_tx, free_rx) = mpsc::channel::<Vec<u8>>();
+        for _ in 0..HASH_BUFFERS {
+            let _ = free_tx.send(vec![0u8; HASH_BUFFER]);
+        }
+        scope.spawn(move || {
+            // Ends when the other side drops its channel ends (done, failed or cancelled).
+            while let Ok(mut buf) = free_rx.recv() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                match read_full(&mut reader, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if full_tx.send(Ok((buf, n))).is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = full_tx.send(Err(err));
+                        break;
+                    }
+                }
+            }
+        });
+        let mut hasher = Sha256::new();
+        let (mut read, mut shown) = (0u64, 0u8);
+        // The reader hanging up (end of the file) ends the loop.
+        while let Ok(filled) = full_rx.recv() {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            let (buf, n) = filled?;
+            hasher.update(&buf[..n]);
+            let _ = free_tx.send(buf);
+            read += n as u64;
+            let percent =
+                u8::try_from((read * 100).checked_div(total).unwrap_or(0).min(99)).unwrap_or(99);
+            if percent != shown {
+                shown = percent;
+                progress(percent);
+            }
+        }
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-        read += n as u64;
-        let percent =
-            u8::try_from((read * 100).checked_div(total).unwrap_or(0).min(99)).unwrap_or(99);
-        if percent != shown {
-            shown = percent;
-            progress(percent);
-        }
-    }
-    Ok(Some(hasher.finalize().iter().fold(
-        String::new(),
-        |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        },
-    )))
+        Ok(Some(hasher.finalize().iter().fold(
+            String::new(),
+            |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            },
+        )))
+    })
 }
 
 /// Reads what the window shows about `targets`. Background thread.
@@ -3323,5 +3378,146 @@ mod count_folder_tests {
         assert_eq!(times[r"C:\"], took(7000));
         TableTime::learn(&mut times, c(), took(5000));
         assert_eq!(times[r"C:\"], took(5000));
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    fn expected(data: &[u8]) -> String {
+        Sha256::digest(data)
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            })
+    }
+
+    fn hash(data: &[u8]) -> String {
+        let cancel = AtomicBool::new(false);
+        hash_reader(
+            Cursor::new(data.to_vec()),
+            data.len() as u64,
+            &cancel,
+            &mut |_| {},
+        )
+        .expect("hashes")
+        .expect("not cancelled")
+    }
+
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 31 % 251) as u8).collect()
+    }
+
+    #[test]
+    fn known_vectors() {
+        assert_eq!(
+            hash(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hash(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn sizes_around_the_buffer_match_a_plain_hash() {
+        for len in [
+            0,
+            1,
+            HASH_BUFFER - 1,
+            HASH_BUFFER,
+            HASH_BUFFER + 1,
+            2 * HASH_BUFFER,
+            // More buffers than the pipeline holds, so they are recycled several times.
+            (HASH_BUFFERS * 3) * HASH_BUFFER + 17,
+        ] {
+            let data = pattern(len);
+            assert_eq!(hash(&data), expected(&data), "{len} bytes");
+        }
+    }
+
+    /// A reader that returns a few bytes per call.
+    struct Trickle(Cursor<Vec<u8>>);
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(4099);
+            self.0.read(&mut buf[..n])
+        }
+    }
+
+    #[test]
+    fn short_reads_still_fill_the_buffers() {
+        let data = pattern(HASH_BUFFER + 12345);
+        let cancel = AtomicBool::new(false);
+        let got = hash_reader(Trickle(Cursor::new(data.clone())), 0, &cancel, &mut |_| {})
+            .expect("hashes")
+            .expect("not cancelled");
+        assert_eq!(got, expected(&data));
+    }
+
+    #[test]
+    fn progress_climbs_and_stays_below_100() {
+        let data = pattern(5 * HASH_BUFFER);
+        let cancel = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        hash_reader(
+            Cursor::new(data.clone()),
+            data.len() as u64,
+            &cancel,
+            &mut |p| seen.push(p),
+        )
+        .expect("hashes");
+        assert!(!seen.is_empty());
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
+        assert!(seen.iter().all(|&p| p <= 99), "{seen:?}");
+    }
+
+    #[test]
+    fn cancelled_before_start_gives_none() {
+        let cancel = AtomicBool::new(true);
+        let data = pattern(3 * HASH_BUFFER);
+        let got = hash_reader(Cursor::new(data), 0, &cancel, &mut |_| {}).expect("no error");
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn cancelled_midway_gives_none() {
+        let data = pattern(20 * HASH_BUFFER);
+        let cancel = AtomicBool::new(false);
+        let got = hash_reader(
+            Cursor::new(data.clone()),
+            data.len() as u64,
+            &cancel,
+            &mut |_| cancel.store(true, Ordering::Relaxed),
+        )
+        .expect("no error");
+        assert_eq!(got, None);
+    }
+
+    /// Serves some bytes, then fails.
+    struct Breaks(usize);
+
+    impl Read for Breaks {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 == 0 {
+                return Err(std::io::Error::other("disk gone"));
+            }
+            let n = buf.len().min(self.0);
+            buf[..n].fill(7);
+            self.0 -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_read_error_is_returned() {
+        let cancel = AtomicBool::new(false);
+        let err = hash_reader(Breaks(HASH_BUFFER + 5), 0, &cancel, &mut |_| {}).expect_err("fails");
+        assert_eq!(err.to_string(), "disk gone");
     }
 }

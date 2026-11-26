@@ -94,4 +94,11 @@ impl Fs for RoutingFs {
             None => self.local.open(path),
         }
     }
+
+    fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn arke_core::fs::ReadSeek>> {
+        match RemoteUrl::from_path(path) {
+            Some(_) => self.open(path),
+            None => self.local.open_sequential(path),
+        }
+    }
 }

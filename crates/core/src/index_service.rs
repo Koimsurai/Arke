@@ -35,7 +35,8 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::frecency::FrecencySnapshot;
 use crate::fs::{Fs, WatchEvent};
 use crate::index::{
-    BuildProgress, BuildRules, Index, IndexHit, Overlay, Search, Seen, descends_into, is_indexable,
+    BuildProgress, BuildRules, Index, IndexHeader, IndexHit, Overlay, Search, Seen, descends_into,
+    is_indexable,
 };
 use crate::index_query::{Clock, NameMatch, Query};
 use crate::journal::{Change, Cursor, Journal, JournalEvent};
@@ -983,30 +984,33 @@ impl Shared {
     }
 
     /// Loads the saved index: picks the newer of `cache` and its alternate (see [`alt_path`]),
-    /// mapped directly rather than copied into memory. The other one is deleted.
+    /// mapped directly rather than copied into memory. The other one is deleted. Only the headers
+    /// are read to choose; only the file used is validated (the older one only if the newer turns
+    /// out damaged), and it is read ahead in the background ([`crate::index::Readahead::run`]).
     fn load_cache(&self) {
         let Some(path) = &self.opts.cache else {
             return;
         };
+        let fingerprint = self.rules.fingerprint();
+        // Roots or the skip-build-dirs setting changed: the old index is unusable.
+        let (candidates, mut missing) = usable_caches(path, |header| {
+            header.roots == self.opts.roots
+                && header.skipped_build_dirs == self.opts.skip_build_dirs
+                && header.excluded_hash == fingerprint
+        });
         let mut best: Option<(Index, PathBuf)> = None;
-        let mut missing = Rebuild::NoIndex;
-        for candidate in [path.clone(), alt_path(path)] {
-            match Index::open(&candidate) {
-                // Roots or the skip-build-dirs setting changed: the old index is unusable.
-                Ok(index)
-                    if index.roots() == self.opts.roots.as_slice()
-                        && index.skipped_build_dirs() == self.opts.skip_build_dirs
-                        && index.excluded_hash() == self.rules.fingerprint() =>
-                {
-                    if best
-                        .as_ref()
-                        .is_none_or(|(b, _)| index.built_at() > b.built_at())
-                    {
-                        best = Some((index, candidate));
-                    }
+        for candidate in candidates {
+            let init = &self.opts.thread_init;
+            let opened = Index::open_with(&candidate, |ahead| {
+                spawn("index-readahead", init, move || {
+                    ahead.run();
+                });
+            });
+            match opened {
+                Ok(index) => {
+                    best = Some((index, candidate));
+                    break;
                 }
-                Ok(_) => missing = Rebuild::SettingsChanged,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => {
                     if missing == Rebuild::NoIndex {
                         missing = Rebuild::Unreadable;
@@ -2151,6 +2155,33 @@ fn alt_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// The saved files (`cache` and its alternate) whose header `fits` the current settings, newest
+/// first (on a tie `cache` first), and why there's no usable one if none fits. Reads only each
+/// file's header ([`Index::read_header`]), however big the files are.
+fn usable_caches(cache: &Path, fits: impl Fn(&IndexHeader) -> bool) -> (Vec<PathBuf>, Rebuild) {
+    let mut usable: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let mut missing = Rebuild::NoIndex;
+    for candidate in [cache.to_path_buf(), alt_path(cache)] {
+        match Index::read_header(&candidate) {
+            Ok(header) if fits(&header) => usable.push((header.built_at, candidate)),
+            Ok(_) => missing = Rebuild::SettingsChanged,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                if missing == Rebuild::NoIndex {
+                    missing = Rebuild::Unreadable;
+                }
+                log::info!(
+                    "global search index unusable, rebuilding {}: {err}",
+                    candidate.display()
+                );
+            }
+        }
+    }
+    // Stable: equal times keep `cache` first.
+    usable.sort_by_key(|(built_at, _)| std::cmp::Reverse(*built_at));
+    (usable.into_iter().map(|(_, path)| path).collect(), missing)
+}
+
 /// Not flushed to disk like settings (`fs::replace_file`): the index is large and rebuilt when a
 /// power loss leaves it unreadable (its magic check fails on load).
 fn save(path: &Path, index: &Index) -> io::Result<()> {
@@ -2805,6 +2836,144 @@ mod tests {
         let svc = IndexService::start(FakeFs::new(), options, || {});
         wait("new cache loaded", || ready(&svc));
         assert_eq!(found(&svc, "report"), [r"C:\new\new-report.txt"]);
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An index of `C:\old\old-report.txt`, and a newer one that also has `new-report.txt`.
+    fn older_and_newer() -> (Index, Index) {
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\old",
+            vec![Entry::new("old-report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let older = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        let mut overlay = Overlay::default();
+        let seen = Seen {
+            is_dir: false,
+            hidden: false,
+            size: 1,
+            modified: 0,
+        };
+        overlay.record(PathBuf::from(r"C:\old\new-report.txt"), Some(seen));
+        let newer = older
+            .merged(&overlay, &BuildRules::default(), &AtomicBool::new(false))
+            .unwrap()
+            .index;
+        assert!(newer.built_at() > older.built_at());
+        (older, newer)
+    }
+
+    fn start_fresh(cache: &Path) -> IndexService {
+        let mut options = opts(Some(cache.to_path_buf()));
+        options.refresh_after = Duration::from_hours(24);
+        IndexService::start(FakeFs::new(), options, || {})
+    }
+
+    /// Black-tech #6: which saved file to load is decided from the headers alone, newest first
+    /// whatever its name; only that one is opened.
+    #[test]
+    fn loads_the_newer_saved_file_by_its_header() {
+        let dir = std::env::temp_dir().join(format!("arke-index-newer-{}", std::process::id()));
+        let cache = dir.join("index.bin");
+        let (older, newer) = older_and_newer();
+        // The newer one under the alternate name, so the order can't come from the names.
+        save(&cache, &older).unwrap();
+        save(&alt_path(&cache), &newer).unwrap();
+        let (order, missing) = usable_caches(&cache, |_| true);
+        assert_eq!(order, [alt_path(&cache), cache.clone()]);
+        assert_eq!(missing, Rebuild::NoIndex);
+        let (order, missing) = usable_caches(&cache, |_| false);
+        assert!(order.is_empty());
+        assert_eq!(missing, Rebuild::SettingsChanged);
+        let (order, missing) = usable_caches(&dir.join("none.bin"), |_| true);
+        assert!(order.is_empty());
+        assert_eq!(missing, Rebuild::NoIndex);
+
+        let svc = start_fresh(&cache);
+        wait("newer loaded", || ready(&svc));
+        let mut hits = found(&svc, "report");
+        hits.sort();
+        assert_eq!(hits, [r"C:\old\new-report.txt", r"C:\old\old-report.txt"]);
+        assert!(!cache.exists(), "the older one is deleted");
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A newer file that is damaged past its header: the older one is opened instead.
+    #[test]
+    fn falls_back_to_the_older_file_when_the_newer_is_damaged() {
+        let dir = std::env::temp_dir().join(format!("arke-index-damaged-{}", std::process::id()));
+        let cache = dir.join("index.bin");
+        let (older, newer) = older_and_newer();
+        save(&cache, &older).unwrap();
+        let alt = alt_path(&cache);
+        save(&alt, &newer).unwrap();
+        // Break a name in the pool: the header still reads, validation fails.
+        let mut bytes = std::fs::read(&alt).unwrap();
+        let needle = b"new-report.txt";
+        let at = bytes
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap();
+        bytes[at] = 0xFF;
+        std::fs::write(&alt, &bytes).unwrap();
+        assert!(Index::read_header(&alt).is_ok());
+        assert_eq!(
+            usable_caches(&cache, |_| true).0,
+            [alt.clone(), cache.clone()]
+        );
+
+        let svc = start_fresh(&cache);
+        wait("older loaded", || ready(&svc));
+        assert_eq!(found(&svc, "report"), [r"C:\old\old-report.txt"]);
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file saved by a version with the previous format is rebuilt and replaced.
+    #[test]
+    fn an_index_saved_in_the_previous_format_is_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("arke-index-oldformat-{}", std::process::id()));
+        let cache = dir.join("index.bin");
+        let fs = FakeFs::new();
+        fs.insert_dir(
+            r"C:\docs",
+            vec![Entry::new("report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        save(&cache, &index).unwrap();
+        let mut bytes = std::fs::read(&cache).unwrap();
+        bytes[..8].copy_from_slice(b"ARKEIDX6");
+        std::fs::write(&cache, &bytes).unwrap();
+        let walked = fs.read_dir_calls();
+
+        let mut options = opts(Some(cache.clone()));
+        options.refresh_after = Duration::from_hours(24);
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, options, || {});
+        wait("rebuilt", || ready(&svc));
+        assert_eq!(svc.last_rebuild(), Some(Rebuild::Unreadable));
+        assert!(fs.read_dir_calls() > walked, "walked again");
+        assert_eq!(found(&svc, "report"), [r"C:\docs\report.txt"]);
+        wait("saved in the current format", || {
+            Index::read_header(&cache).is_ok()
+        });
         drop(svc);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -34,6 +34,7 @@ serde_json.workspace = true
 
 # Loads Windows' own libarchive (archiveint.dll) for RAR and compressed tars; see archive/libarchive.rs.
 # Folder watching and the folder size walk call the file system directly; see winfs.rs
+# The saved search index is read ahead with PrefetchVirtualMemory; see index.rs
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
@@ -42,6 +43,7 @@ features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ]

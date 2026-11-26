@@ -117,7 +117,7 @@ fn dragging_the_parent_divider_sizes_and_saves_it(cx: &mut TestAppContext) {
     // A row starts just right of the divider and still takes the click.
     let (list, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     let first_row = point(
-        list.left() + px(340.) + px(16.),
+        list.left() + px(340.) + crate::theme::list_inset() + px(8.),
         list.top() + crate::theme::s_4() + row / 2.,
     );
     cx.simulate_click(first_row, Modifiers::none());

@@ -215,9 +215,9 @@ impl Explorer {
             (area.top() / height).floor().max(0.),
             (area.bottom() / height).floor(),
         );
-        // Rows start after the list's side padding and end with the last column (in the
-        // column view they span the list); the box has to reach into them.
-        let left = theme::s_8();
+        // Rows start after the list's left inset and end with the last column (in the column
+        // view they span the list); the box has to reach into them.
+        let left = theme::list_inset();
         let overlaps =
             area.right() >= left && self.cols.is_none_or(|c| area.left() <= left + c.row);
         if !overlaps || r1 < r0 {

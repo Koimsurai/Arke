@@ -8,6 +8,7 @@
 //! Only `theme` tokens are allowed (enforced by `tests::ui_code_uses_theme_tokens`).
 
 use rust_i18n::t;
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -755,7 +756,25 @@ impl Explorer {
         // Details rows end with their last column, like the header above (the list is blank past
         // it); the column view's rows span the list.
         let width = self.cols.map(|c| c.row);
-        Self::item_shell(ix, is_selected, is_cursor, focused, drop_dir, cx)
+        let group = Self::check_group(ix);
+        // The row's answer to the drag over it, for its highlight (drawn as a drop target only
+        // when the row takes the drop). The row paints before its highlight, so it asks first and
+        // the highlight doesn't ask again.
+        let drop_ok = drop_dir
+            .as_ref()
+            .is_some_and(|(_, own)| *own)
+            .then(|| Rc::new(Cell::new(false)));
+        let wash = row_wash(
+            ix,
+            &group,
+            is_selected,
+            is_cursor,
+            focused,
+            drop_ok.as_ref().map(Rc::clone),
+        );
+        Self::item_events(ix, drop_dir, drop_ok, cx)
+            .debug_selector(move || format!("row-{ix}"))
+            .group(group)
             .relative()
             .map(|d| match width {
                 Some(w) => d.w(w).flex_none(),
@@ -767,15 +786,48 @@ impl Explorer {
             .pl(layout::row_pad_l())
             .pr(layout::row_pad_r())
             .gap(layout::col_gap())
+            .child(wash)
     }
 
-    /// Shared by rows and tiles: selection background, cursor ring, mouse events.
+    /// A tile: [`Self::item_events`], with the selection background, cursor ring and drop
+    /// target drawn on the tile itself.
     fn item_shell(
         ix: usize,
         is_selected: bool,
         is_cursor: bool,
         focused: bool,
         drop_dir: Option<(PathBuf, bool)>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let own = drop_dir.as_ref().is_some_and(|(_, own)| *own);
+        Self::item_events(ix, drop_dir, None, cx)
+            .when(own, |d| {
+                d.drag_over::<DraggedFiles>(|s, _, _, _| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+                .drag_over::<ExternalPaths>(|s, _, _, _| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+            })
+            .rounded(theme::r_8())
+            .border_1()
+            .border_color(if is_cursor && focused {
+                theme::signal_line()
+            } else {
+                theme::clear()
+            })
+            .when(is_selected, |d| d.bg(theme::list_selection(focused)))
+            .when(!is_selected, |d| d.hover(|s| s.bg(theme::wash())))
+    }
+
+    /// Shared by rows and tiles: mouse events, dragging and drops. `drop_ok` (rows) is told
+    /// whether the item takes what is dragged over it.
+    fn item_events(
+        ix: usize,
+        drop_dir: Option<(PathBuf, bool)>,
+        drop_ok: Option<Rc<Cell<bool>>>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let source = cx.entity().downgrade();
@@ -803,19 +855,17 @@ impl Explorer {
                 }
             }))
             // Drop: folders, and files inside an expanded folder (into that folder).
-            .when_some(drop_dir, move |d, (dir, own)| {
+            .when_some(drop_dir, move |d, (dir, _)| {
                 let external = dir.clone();
                 let check = dir.clone();
-                d.can_drop(move |value, _, cx| super::accepts_drop(value, &check, cx))
-                    .when(own, |d| {
-                        d.drag_over::<DraggedFiles>(|s, _, _, _| {
-                            s.bg(theme::signal_wash()).border_color(theme::signal_line())
-                        })
-                        .drag_over::<ExternalPaths>(|s, _, _, _| {
-                            s.bg(theme::signal_wash()).border_color(theme::signal_line())
-                        })
-                    })
-                    .on_drag_move({
+                d.can_drop(move |value, _, cx| {
+                    let ok = super::accepts_drop(value, &check, cx);
+                    if let Some(drop_ok) = &drop_ok {
+                        drop_ok.set(ok);
+                    }
+                    ok
+                })
+                .on_drag_move({
                     let dir = dir.clone();
                     move |e: &gpui::DragMoveEvent<DraggedFiles>, _, cx| {
                         super::report_drop_target(&dir, e, cx);
@@ -828,15 +878,6 @@ impl Explorer {
                     drop_external_into(paths, external.clone(), &target, window, cx);
                 })
             })
-            .rounded(theme::r_8())
-            .border_1()
-            .border_color(if is_cursor && focused {
-                theme::signal_line()
-            } else {
-                theme::clear()
-            })
-            .when(is_selected, |d| d.bg(theme::list_selection(focused)))
-            .when(!is_selected, |d| d.hover(|s| s.bg(theme::wash())))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -978,7 +1019,6 @@ impl Explorer {
                         self.item_a11y_label(entry)
                     })
                     .map(|row| self.tree_a11y(ix, entry, row, cx))
-                    .group(Self::check_group(ix))
                     .text_color(if entry.is_hidden() {
                         theme::text_subtle()
                     } else {
@@ -1275,7 +1315,9 @@ impl Explorer {
         .track_scroll(&self.scroll)
         // A sideways swipe is back or forward (#70), not a scroll down the list.
         .map(sideways_is_not_down)
-        .pl(theme::s_8())
+        // Rows start a little in from the sidebar, so a marquee started beside it starts in
+        // empty space (#448).
+        .pl(theme::list_inset())
         .pr(theme::s_8() + layout::list_gutter())
         .flex_1();
         self.with_scrollbars(list, &self.scroll)
@@ -1675,7 +1717,7 @@ impl Explorer {
                     .track_scroll(&self.search_scroll)
                     // A sideways swipe is back or forward (#70), not a scroll down the list.
                     .map(sideways_is_not_down)
-                    .pl(theme::s_8())
+                    .pl(theme::list_inset())
                     .pr(theme::s_8() + layout::list_gutter())
                     .flex_1();
                     self.with_scrollbars(list, &self.search_scroll)
@@ -2907,6 +2949,52 @@ pub(crate) fn shown_name(entry: &Entry, show_ext: bool) -> SharedString {
         Some(dot) if dot > 0 => SharedString::from(name[..dot].to_owned()),
         _ => SharedString::from(name.to_owned()),
     }
+}
+
+/// A list row's highlight: its selection background, cursor ring, hover wash and drop target.
+/// It stays [`theme::row_wash_inset`] inside the row at the top and bottom, so neighbouring
+/// highlighted rows keep a gap, as in File Explorer (#448), while the whole row stays the pointer
+/// target. It lies under the row's content and follows the row's hover and the drag over it
+/// through the row's `group`; `drop_ok` is the row's own answer to that drag (`None`: the row
+/// isn't a drop target).
+pub(super) fn row_wash(
+    ix: usize,
+    group: &SharedString,
+    is_selected: bool,
+    is_cursor: bool,
+    focused: bool,
+    drop_ok: Option<Rc<Cell<bool>>>,
+) -> gpui::Div {
+    let inset = theme::row_wash_inset();
+    div()
+        .debug_selector(move || format!("row-wash-{ix}"))
+        .absolute()
+        .left_0()
+        .right_0()
+        .top(inset)
+        .bottom(inset)
+        .rounded(theme::r_row())
+        .border_1()
+        .border_color(if is_cursor && focused {
+            theme::signal_line()
+        } else {
+            theme::clear()
+        })
+        .when(is_selected, |d| d.bg(theme::list_selection(focused)))
+        .when(!is_selected, |d| {
+            d.group_hover(group.clone(), |s| s.bg(theme::wash()))
+        })
+        .when_some(drop_ok, |d, drop_ok| {
+            d.can_drop(move |_, _, _| drop_ok.get())
+                .group_drag_over::<DraggedFiles>(group.clone(), |s| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+                .group_drag_over::<ExternalPaths>(group.clone(), |s| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+        })
 }
 
 /// The rename box's height in a Details row `row` high: 24, or the row's height in a shorter

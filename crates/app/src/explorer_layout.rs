@@ -59,17 +59,18 @@ pub(super) fn col_gap() -> Pixels {
 pub(super) fn list_gutter() -> Pixels {
     theme::s_24()
 }
-/// Horizontal space a Details row can't use for columns: [`paper_margin()`] and 8 more (once
-/// counted as a left margin the paper doesn't have, kept so the columns fit as they did), the
-/// list's side padding (2 × 8), [`list_gutter()`], the row's padding ([`row_pad_l()`] +
-/// [`row_pad_r()`]), and the icon with its gap.
+/// Horizontal space a Details row can't use for columns: [`paper_margin()`], the list's left
+/// inset ([`theme::list_inset()`]) and right padding (8), [`list_gutter()`], the row's padding
+/// ([`row_pad_l()`] + [`row_pad_r()`]), and the icon with its gap. At standard spacing this is
+/// what it was before the inset (#448): the inset took the place of 8 px once counted as a left
+/// margin the paper doesn't have.
 pub(super) fn row_chrome() -> Pixels {
-    paper_margin() + crate::theme::scaled_px(8. + 16. + 24. + 12. + 16. + 16. + 12.)
+    paper_margin() + theme::list_inset() + theme::scaled_px(8. + 24. + 12. + 16. + 16. + 12.)
 }
-/// What a pane's box loses before its rows: [`paper_margin()`] and 8 more (see [`row_chrome()`]),
-/// the list's side padding and [`list_gutter()`].
+/// What a pane's box loses before its rows: [`paper_margin()`], the list's left inset and right
+/// padding, and [`list_gutter()`].
 pub(super) fn list_chrome() -> Pixels {
-    paper_margin() + crate::theme::scaled_px(8. + 16. + 24.)
+    paper_margin() + theme::list_inset() + theme::scaled_px(8. + 24.)
 }
 /// The paper's right margin (its left edge touches the sidebar or the split divider): a pane's
 /// box less this is the list and the preview pane.

@@ -1054,7 +1054,7 @@ fn the_group_chevron_collapses_without_selecting(cx: &mut TestAppContext) {
     // Rows: Folders header, docs, "A" header. The chevron sits after the list's and the header's
     // padding.
     let chevron = point(
-        bounds.left() + crate::theme::s_8() + crate::theme::s_12() + px(8.),
+        bounds.left() + crate::theme::list_inset() + crate::theme::s_12() + px(8.),
         bounds.top() + row * 2.5,
     );
     cx.simulate_click(chevron, Modifiers::none());

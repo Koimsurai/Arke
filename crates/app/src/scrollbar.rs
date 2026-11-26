@@ -42,8 +42,9 @@ static ALWAYS_SHOWN: AtomicBool = AtomicBool::new(false);
 /// Re-read the Windows scrollbar setting. Called at startup and whenever a window is activated,
 /// like the animation setting (see `motion::sync_app`). Tests keep the default.
 pub(crate) fn refresh_system_setting() {
-    #[cfg(not(test))]
-    ALWAYS_SHOWN.store(crate::win::always_show_scrollbars(), Ordering::Relaxed);
+    if !cfg!(test) {
+        ALWAYS_SHOWN.store(crate::win::always_show_scrollbars(), Ordering::Relaxed);
+    }
 }
 
 /// Whether the setting makes scrollbars permanent: Windows 10 (build under 22000) has no dynamic
@@ -54,7 +55,7 @@ pub(crate) const fn always_shown(build: Option<u32>, dynamic_scrollbars: Option<
 }
 
 /// How wide the thumb rests at the next step: 1 is fully widened, 0 the thin line.
-fn target_grow(active: bool, always_shown: bool) -> f32 {
+const fn target_grow(active: bool, always_shown: bool) -> f32 {
     if active || always_shown { 1. } else { 0. }
 }
 

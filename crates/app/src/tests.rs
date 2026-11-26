@@ -3379,7 +3379,10 @@ fn copy_cut_paste_through_clipboard(cx: &mut TestAppContext) {
         if view.update(cx, |v, cx| v.cut_flags(&names, cx)) == [false, true] {
             break;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for the cut marks");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the cut marks"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     cx.simulate_keystrokes("alt-right");

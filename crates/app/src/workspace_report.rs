@@ -205,17 +205,16 @@ fn compose(s: &Settings, with_log: bool, with_registry: bool) -> String {
     out
 }
 
+/// Everything but letters, digits and `-_.~` is escaped in a URL query value.
+const QUERY_VALUE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 /// Percent-encodes a URL query value.
 fn encode(text: &str) -> String {
-    text.bytes().fold(String::new(), |mut out, b| {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(b));
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(out, "%{b:02X}");
-        }
-        out
-    })
+    percent_encoding::utf8_percent_encode(text, QUERY_VALUE).to_string()
 }
 
 /// GitHub turns away longer new-issue URLs.

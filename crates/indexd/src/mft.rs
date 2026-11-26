@@ -111,9 +111,8 @@ fn le64(b: &[u8], at: usize) -> Option<u64> {
 
 /// FILETIME (100 ns since 1601) to Unix seconds; before 1970 or too far ahead counts as unknown.
 fn unix_secs(filetime: u64) -> u32 {
-    const EPOCH_DIFF: u64 = 11_644_473_600;
     (filetime / 10_000_000)
-        .checked_sub(EPOCH_DIFF)
+        .checked_sub(arke_core::time::UNIX_EPOCH_SECS)
         .and_then(|s| u32::try_from(s).ok())
         .unwrap_or(0)
 }

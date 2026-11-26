@@ -24,7 +24,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arke_core::sort::days_from_civil;
+use arke_core::time::days_from_civil;
 use arke_core::{Entry, SortColumn};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;

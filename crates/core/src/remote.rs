@@ -102,33 +102,12 @@ fn split_scheme(s: &str) -> Option<(Scheme, &str)> {
     Some((scheme, rest))
 }
 
-/// Decodes `%XX` escapes; invalid escapes are kept as typed.
+/// Decodes `%XX` escapes; invalid escapes are kept as typed, and text that doesn't decode to
+/// UTF-8 is returned as it came.
 fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
-        {
-            out.push(h << 4 | l);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
-}
-
-const fn hex(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8()
+        .map_or_else(|_| s.to_owned(), std::borrow::Cow::into_owned)
 }
 
 /// Resolves `.`, `..`, repeated and trailing separators into `/a/b`.

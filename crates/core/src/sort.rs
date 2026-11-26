@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::entry::{Entry, EntryKind};
 use crate::search::SearchHit;
+use crate::time::civil_from_days;
 
 /// Column a listing is sorted by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -117,8 +118,8 @@ impl DayBuckets {
         let day = (unix_secs(t) + self.offset).div_euclid(86_400);
         let now = self.day;
         let week_start = now - (now + 3).rem_euclid(7);
-        let (y, m) = year_month(day);
-        let (ny, nm) = year_month(now);
+        let (y, m, _) = civil_from_days(day);
+        let (ny, nm, _) = civil_from_days(now);
         if day > now {
             DateSection::Future
         } else if day == now {
@@ -147,32 +148,6 @@ fn unix_secs(t: std::time::SystemTime) -> i64 {
         Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
         Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
     }
-}
-
-/// Civil date to days since 1970-01-01 (Howard Hinnant's algorithm).
-#[must_use]
-pub const fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Day number to (year, month).
-#[must_use]
-pub const fn year_month(days: i64) -> (i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    (y, m)
 }
 
 impl Default for SortSpec {
@@ -726,6 +701,7 @@ fn trim_zeros(s: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
     use crate::entry::EntryKind;
+    use crate::time::days_from_civil;
 
     #[test]
     fn natural_order() {
@@ -917,7 +893,7 @@ mod tests {
     #[test]
     fn civil_dates_round_trip() {
         for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2026, 11, 10), (2026, 12, 31)] {
-            assert_eq!(year_month(days_from_civil(y, m, d)), (y, m));
+            assert_eq!(civil_from_days(days_from_civil(y, m, d)), (y, m, d));
         }
         assert_eq!(days_from_civil(1970, 1, 1), 0);
     }

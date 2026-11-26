@@ -1739,8 +1739,13 @@ impl Shell for WinShell {
     }
 }
 
-/// 100 ns intervals from 1601-01-01 to 1970-01-01.
-const EPOCH_DIFF_100NS: u64 = 116_444_736_000_000_000;
+/// FILETIME ticks of a time at or after 1970 (`None` before it, as these lookups always did).
+fn unix_filetime(time: SystemTime) -> Option<u64> {
+    if time < UNIX_EPOCH {
+        return None;
+    }
+    arke_core::time::filetime_from_system_time(time)
+}
 
 /// Current time and UTC offset, for date filters like `dm:today` in global search.
 pub(crate) fn clock() -> arke_core::index_query::Clock {
@@ -1756,8 +1761,7 @@ pub(crate) fn clock() -> arke_core::index_query::Clock {
 
 /// Local offset from UTC in seconds, including DST.
 fn utc_offset(now: SystemTime) -> Option<i64> {
-    let since_unix = now.duration_since(UNIX_EPOCH).ok()?;
-    let ticks = EPOCH_DIFF_100NS + (since_unix.as_nanos() / 100) as u64;
+    let ticks = unix_filetime(now)?;
     let ft = FILETIME {
         dwLowDateTime: ticks as u32,
         dwHighDateTime: (ticks >> 32) as u32,
@@ -1787,22 +1791,17 @@ fn format_local_time(time: SystemTime) -> Option<String> {
     ))
 }
 
-/// Day number of a local date (proleptic Gregorian, arbitrary epoch; only for differences).
+/// Day number of a local date (proleptic Gregorian, since 1970-01-01; only used for differences).
 fn day_number(t: &SYSTEMTIME) -> i64 {
-    // Howard Hinnant's days_from_civil.
-    let (y, m, d) = (i64::from(t.wYear), i64::from(t.wMonth), i64::from(t.wDay));
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe
+    arke_core::time::days_from_civil(
+        i64::from(t.wYear),
+        i64::from(t.wMonth),
+        i64::from(t.wDay),
+    )
 }
 
 fn local_time(time: SystemTime) -> Option<SYSTEMTIME> {
-    let since_unix = time.duration_since(UNIX_EPOCH).ok()?;
-    let ticks = EPOCH_DIFF_100NS + (since_unix.as_nanos() / 100) as u64;
+    let ticks = unix_filetime(time)?;
     let ft = FILETIME {
         dwLowDateTime: ticks as u32,
         dwHighDateTime: (ticks >> 32) as u32,

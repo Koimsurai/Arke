@@ -133,6 +133,7 @@ pub mod takeover;
 pub mod text;
 pub mod thumb_cache;
 pub mod thumbs;
+pub mod time;
 pub mod timeline;
 pub mod tree;
 pub mod typeahead;

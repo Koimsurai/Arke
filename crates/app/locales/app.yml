@@ -3756,14 +3756,6 @@ error.terminal_failed:
   es: "No se pudo abrir un terminal: %{error}"
   pt-BR: "Não foi possível abrir um terminal: %{error}"
   ja: "ターミナルを開けませんでした: %{error}"
-error.external_preview_failed:
-  en: "Couldn't start the preview program: %{error}"
-  zh-TW: "無法啟動預覽程式：%{error}"
-  zh-CN: "无法启动预览程序：%{error}"
-  de: "Das Vorschauprogramm konnte nicht gestartet werden: %{error}"
-  es: "No se pudo iniciar el programa de vista previa: %{error}"
-  pt-BR: "Não foi possível iniciar o programa de visualização: %{error}"
-  ja: "プレビュー プログラムを起動できませんでした: %{error}"
 settings.folder_sizes:
   en: "Calculate folder sizes"
   zh-TW: "計算資料夾大小"

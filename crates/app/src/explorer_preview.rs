@@ -1209,7 +1209,8 @@ impl Explorer {
     }
 
     /// Space: the external preview program when that setting is set (it toggles its own preview,
-    /// so Space again closes it, as QuickLook does), otherwise Arke's Quick Look.
+    /// so Space again closes it, as QuickLook does), otherwise Arke's Quick Look. When the program
+    /// can't be started (exe gone, a setting it can't read), Arke's Quick Look opens instead.
     pub(super) fn space_preview(&mut self, cx: &mut Context<Self>) {
         let program = crate::external::Command::parse(
             &crate::settings::SettingsStore::global(cx)
@@ -1227,24 +1228,35 @@ impl Explorer {
             self.toggle_quick_look(cx);
             return;
         };
+        let program = match program {
+            Ok(program) => program,
+            Err(err) => {
+                log::info!("the external preview program setting can't be used, Quick Look: {err}");
+                self.toggle_quick_look(cx);
+                return;
+            }
+        };
         let shell = Arc::clone(&self.services.shell);
-        let tx = self.events_tx.clone();
+        let (tx, rx) = flume::bounded(1);
         spawn_thread("external-preview", move || {
             let started = program
+                .preview_args(&item)
                 .map_err(crate::shell::ShellError::from)
-                .and_then(|program| {
-                    let args = program.preview_args(&item)?;
-                    shell.run_program(&program.program, &args)
-                });
-            if let Err(e) = started {
-                log::warn!("the external preview program did not start: {e}");
-                let _ = tx.send(AppEvent::Notice(Err(t!(
-                    "error.external_preview_failed",
-                    error = e
-                )
-                .into_owned())));
-            }
+                .and_then(|args| shell.run_program(&program.program, &args));
+            let _ = tx.send(started);
         });
+        cx.spawn(async move |this, cx| {
+            let Ok(Err(err)) = rx.recv_async().await else {
+                return;
+            };
+            log::info!("the external preview program did not start, Quick Look: {err}");
+            let _ = this.update(cx, |this, cx| {
+                if !this.quick_look {
+                    this.toggle_quick_look(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Space: toggle Quick Look. Closing fades the card out; the item (and zoom) stay until the

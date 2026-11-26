@@ -145,3 +145,34 @@ fn space_goes_to_the_external_preview_program_when_set(cx: &mut TestAppContext) 
     assert_eq!(runs(&shell), [run.clone(), run]);
     assert!(!view.update(cx, |v, _| v.quick_look));
 }
+
+/// A preview program that can't be started (its exe is gone) or a setting that can't be read:
+/// Space opens Arke's Quick Look instead, with no error shown.
+#[gpui::test]
+fn space_falls_back_to_quick_look_when_the_preview_program_fails(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\q", vec![file("a.txt", 10)]);
+    let shell = Arc::new(FakeShell::default());
+    shell.program_fails.store(true, Ordering::Relaxed);
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\q");
+    wait_until(cx, &view, "load", loaded(r"C:\q"));
+
+    set_programs(cx, "", r"C:\Gone\viewer.exe {file}");
+    cx.simulate_keystrokes("down space");
+    wait_runs(cx, &shell, 1);
+    wait_until(cx, &view, "Quick Look opened", |v| v.quick_look);
+    view.update(cx, |v, _| {
+        assert_eq!(v.error, None);
+        assert_eq!(v.notice, None);
+    });
+    // Space again closes it, as always.
+    cx.simulate_keystrokes("space");
+    assert!(!view.update(cx, |v, _| v.quick_look));
+
+    // A placeholder the setting doesn't have: Quick Look right away, nothing started.
+    set_programs(cx, "", r"C:\Tools\viewer.exe {bogus}");
+    cx.simulate_keystrokes("space");
+    assert!(view.update(cx, |v, _| v.quick_look));
+    cx.run_until_parked();
+    assert_eq!(runs(&shell).len(), 1);
+}

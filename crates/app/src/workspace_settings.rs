@@ -398,8 +398,7 @@ impl Workspace {
             this.on_command_input(input, event, |s| &mut s.external_copy, window, cx);
         });
         let preview_input = cx.new(|cx| {
-            let mut input =
-                TextInput::new(t!("settings.external_preview").to_string(), cx).key_stop();
+            let mut input = TextInput::new(PREVIEW_PLACEHOLDER.to_owned(), cx).key_stop();
             input.set_text(preview_line, cx);
             input
         });
@@ -1580,16 +1579,11 @@ impl Workspace {
                     st.double_click_up = !st.double_click_up;
                 }),
             ),
-            card(
-                Icon::Preview,
-                t!("settings.preview"),
-                Some(t!("settings.preview_desc")),
-                preview_controls(
-                    s,
-                    (
-                        &page.preview_input,
-                        page.preview_input.focus_handle(cx).is_focused(window),
-                    ),
+            preview_card(
+                s,
+                (
+                    &page.preview_input,
+                    page.preview_input.focus_handle(cx).is_focused(window),
                 ),
             ),
             card(
@@ -2163,22 +2157,27 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
 
 /// What the external copy program's empty field shows: its syntax by example (`external.rs`).
 const COPY_PLACEHOLDER: &str = "program.exe {op} {sources} {dest}";
+/// The same for the external preview program.
+const PREVIEW_PLACEHOLDER: &str = "program.exe {file}";
 
-/// The preview pane switch, with the external preview program for Space beside it (kept in this
-/// row rather than a row of its own).
-fn preview_controls(
-    s: &crate::settings::Settings,
-    input: (&Entity<TextInput>, bool),
-) -> AnyElement {
-    let toggle = switch("preview", s.preview_pane, |st| {
-        st.preview_pane = !st.preview_pane;
-    });
+/// The preview pane switch, and under it the external preview program for Space: a line of the
+/// same card, so the field doesn't squeeze the description beside the switch.
+fn preview_card(s: &crate::settings::Settings, input: (&Entity<TextInput>, bool)) -> AnyElement {
     div()
         .flex()
-        .items_center()
-        .gap(theme::s_12())
-        .child(command_field(input))
-        .child(toggle)
+        .flex_col()
+        .child(card(
+            Icon::Preview,
+            t!("settings.preview"),
+            Some(t!("settings.preview_desc")),
+            switch("preview", s.preview_pane, |st| {
+                st.preview_pane = !st.preview_pane;
+            }),
+        ))
+        .child(sub_row(
+            t!("settings.external_preview"),
+            command_field(input),
+        ))
         .into_any_element()
 }
 

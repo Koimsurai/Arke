@@ -1246,6 +1246,16 @@ fn drop_shadow(color: Rgba, y: f32, blur: f32) -> BoxShadow {
     }
 }
 
+/// Light theme: the edge of a floating surface, a contact shadow all round (no offset, a small
+/// sigma) in place of a drawn hairline (#403). The hairline was darker than the shadow right
+/// beside it, so the edge read as a pen stroke; the contact shadow is darkest at the edge and
+/// fades into the ambient shadow over two or three pixels, which still separates white from
+/// white paper (Fluent's light shadows work the same way). Like every drop shadow it also fills
+/// the area under the element, which only shows through translucent surfaces.
+fn light_edge(opacity: f32, sigma: f32) -> BoxShadow {
+    drop_shadow(alpha(p().veil, opacity), 0., sigma)
+}
+
 /// Cards: a single hairline border.
 pub(crate) fn elev_1() -> Vec<BoxShadow> {
     vec![hairline(line())]
@@ -1270,12 +1280,13 @@ pub(crate) fn elev_2() -> Vec<BoxShadow> {
 }
 /// Tooltips: lighter than menus. No dark outline (on a small label it reads as a black ring), a
 /// faint edge and a short, soft shadow, so the tip floats without weighing on what it explains.
+/// The light theme's edge is the lightest of the floating ones (12%, sigma 1.5).
 pub(crate) fn elev_tooltip() -> Vec<BoxShadow> {
     let drop = drop_shadow(alpha(p().veil, if is_dark() { 0.22 } else { 0.08 }), 2., 8.);
     if is_dark() {
         vec![inner_hairline(alpha(p().ink, 0.08)), drop]
     } else {
-        vec![hairline(line()), drop]
+        vec![light_edge(0.12, 1.5), drop]
     }
 }
 
@@ -1285,10 +1296,11 @@ pub(crate) fn elev_tooltip() -> Vec<BoxShadow> {
 /// smoothly all round, a little heavier below, with no dark outline (#403). `blur_radius` is the
 /// Gaussian's sigma. The dark theme has a contact shadow (1 px down, sigma 2) under an ambient one
 /// (3 px down, sigma 6: half of `elev_3`'s, and lighter); the lit inner edge separates gray from
-/// gray. The light theme keeps its hairline with one close drop (2 px down, sigma 5). The old
-/// drop (8 px down, sigma 24) left a long tail below the outline. Drop shadows also fill the area
-/// under the element, which shows through the translucent slide card, so the layers there add up
-/// to about the old drop's darkness (36% dark, 10% light).
+/// gray. The light theme has a [`light_edge`] (14%, sigma 1.5) under one close drop (8%, 2 px
+/// down, sigma 5). The old drop (8 px down, sigma 24) left a long tail below the outline. Drop
+/// shadows also fill the area under the element, which shows through the translucent slide card,
+/// so the layers there add up to about the old drop's darkness in the dark theme (36%); the light
+/// drop is a little lighter than before (was 10%) so the card darkens by only about 2% more.
 pub(crate) fn elev_float() -> Vec<BoxShadow> {
     if is_dark() {
         vec![
@@ -1297,11 +1309,15 @@ pub(crate) fn elev_float() -> Vec<BoxShadow> {
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop_shadow(alpha(p().veil, 0.10), 2., 5.)]
+        vec![
+            light_edge(0.14, 1.5),
+            drop_shadow(alpha(p().veil, 0.08), 2., 5.),
+        ]
     }
 }
 /// Menus (context menus, dropdowns): a tighter shadow than other floating surfaces, close to the
-/// system's own menus (#275).
+/// system's own menus (#275). The light theme's edge is a [`light_edge`] (16%, sigma 1.5), between
+/// a tooltip's and a dialog's.
 pub(crate) fn elev_menu() -> Vec<BoxShadow> {
     let drop = drop_shadow(
         alpha(p().veil, if is_dark() { 0.35 } else { 0.12 }),
@@ -1315,7 +1331,7 @@ pub(crate) fn elev_menu() -> Vec<BoxShadow> {
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop]
+        vec![light_edge(0.16, 1.5), drop]
     }
 }
 /// Dialogs, Ctrl+T, Quick Look and the flyouts (view, sort and search options, the operation
@@ -1326,9 +1342,11 @@ pub(crate) fn elev_menu() -> Vec<BoxShadow> {
 /// twice that). The dark theme has a short contact shadow (1 px down, sigma 3) under an ambient
 /// one (6 px down, sigma 12), and no dark outline: a black line darker than the shadow beside it
 /// read as a pen stroke, and the old drop (24 px down, sigma 56) hung a gray smudge far below the
-/// surface. The lit inner edge still separates gray from gray. The light theme keeps its
-/// hairline as the edge, with one close drop (3 px down, sigma 8) in between the two sizes, so it
-/// stays at two layers.
+/// surface. The lit inner edge still separates gray from gray. The light theme has no hairline
+/// either: a [`light_edge`] (16%, sigma 2, the widest of the floating ones) under one close drop
+/// (16%, 3 px down, sigma 8), so it stays at two layers. Its edge pixel is now about 13% darker
+/// than the paper at the sides and 11% at the top, fading by 3 to 4% a pixel, where the hairline
+/// was 17% next to a 7% shadow.
 pub(crate) fn elev_3() -> Vec<BoxShadow> {
     if is_dark() {
         vec![
@@ -1337,7 +1355,10 @@ pub(crate) fn elev_3() -> Vec<BoxShadow> {
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop_shadow(alpha(p().veil, 0.16), 3., 8.)]
+        vec![
+            light_edge(0.16, 2.),
+            drop_shadow(alpha(p().veil, 0.16), 3., 8.),
+        ]
     }
 }
 
@@ -1805,6 +1826,66 @@ mod tests {
         // A dark enough color stays unchanged in the light theme.
         let (same, _) = accent_for(hex(0x8e4ec6), &LIGHT);
         assert_eq!(pack(same), 0x8e4ec6);
+    }
+
+    /// How much the shadows darken the paper `d` px outside an element's edge, `lift` px of the
+    /// shadows' offset turned away from it (0 at the sides, the offset at the top), the way the
+    /// shader does it: each layer is a Gaussian blurred rectangle (sigma `blur_radius`).
+    fn shadow_darkness(shadows: &[BoxShadow], d: f32, top: bool) -> f32 {
+        // The shader's erf approximation.
+        let erf = |x: f32| {
+            let a = x.abs();
+            let t = (1. + (0.278_393 + (0.230_389 + 0.078_108 * a * a) * a) * a).powi(4);
+            x.signum() * (1. - 1. / t)
+        };
+        let clear = shadows.iter().fold(1., |clear, s| {
+            let lift = if top { f32::from(s.offset.y) } else { 0. };
+            let sigma = f32::from(s.blur_radius);
+            let cover = 0.5 * (1. + erf(-(d + lift) / sigma * std::f32::consts::FRAC_1_SQRT_2));
+            clear * (1. - s.color.a * cover)
+        });
+        1. - clear
+    }
+
+    /// Light floating surfaces have no drawn line at the edge (#403): at most two layers, all of
+    /// them blurred, so the edge pixel is less than twice as dark as the one beside it (the old
+    /// hairline was more than twice). The edge still darkens the paper enough on every side to
+    /// set white apart from white, and more for higher surfaces.
+    #[test]
+    fn light_floating_edges_are_shadows_not_lines() {
+        set_dark(false);
+        let levels = [
+            ("dialog", elev_3()),
+            ("menu", elev_menu()),
+            ("float", elev_float()),
+            ("tooltip", elev_tooltip()),
+        ];
+        let mut above = f32::MAX;
+        for (name, shadows) in &levels {
+            assert!(shadows.len() <= 2, "{name}: no more layers than before");
+            for s in shadows {
+                assert!(!s.inset && s.spread_radius == px(0.), "{name}: no ring");
+                assert!(s.blur_radius >= px(1.), "{name}: every layer is soft");
+            }
+            for top in [false, true] {
+                let edge = shadow_darkness(shadows, 0.5, top);
+                let next = shadow_darkness(shadows, 1.5, top);
+                assert!(
+                    edge >= 0.065,
+                    "{name} (top {top}): edge {edge:.3} separates"
+                );
+                assert!(
+                    next * 2. > edge,
+                    "{name} (top {top}): {edge:.3} then {next:.3}"
+                );
+            }
+            let side = shadow_darkness(shadows, 0.5, false);
+            assert!(
+                side < above,
+                "{name}: lighter than the level above ({side:.3})"
+            );
+            above = side;
+        }
     }
 
     #[test]

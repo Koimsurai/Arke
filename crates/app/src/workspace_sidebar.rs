@@ -2454,30 +2454,42 @@ impl Workspace {
         }
         let sidebar = sidebar.child(self.render_places_split(cx));
         // The tabs don't collapse: they are what's open (hiding the whole sidebar makes room).
+        // New tab is a button in the heading, so the row it took goes to the tabs (#301).
         let header = div()
             .debug_selector(|| "tabs-header".to_owned())
             .relative()
             .flex()
             .flex_none()
             .items_center()
+            // Fixed, so the pin zone taking its place doesn't move the tabs; a row tall in every
+            // density, like the other headings.
+            .h(theme::h_row_side())
             .child(self.tab_area_recorder(super::tabmove::AreaPart::ListHead))
-            // The saved workspace this window shows, muted after the heading (#269). The line
-            // above is the split between the places and the tabs, so no rule of its own.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .child(section_label(
-                        "tabs-header",
-                        Icon::TabsSide,
-                        t!("sidebar.tabs"),
-                    ))
-                    .children(self.workspace_label(cx).map(|label| label.pr(theme::s_8()))),
-            )
-            .child(Self::workspaces_button(cx))
-            .child(tab_layout_button(false, cx));
+            .map(|d| match self.pin_drop_zone(cx) {
+                // Dragging an unpinned tab: the heading turns into the pin zone.
+                Some(zone) => d.child(zone.flex_1().min_w_0()),
+                None => d
+                    // The saved workspace this window shows, muted after the heading (#269). The
+                    // line above is the split between the places and the tabs, so no rule here.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .child(section_label(
+                                "tabs-header",
+                                Icon::TabsSide,
+                                t!("sidebar.tabs"),
+                            ))
+                            .children(
+                                self.workspace_label(cx).map(|label| label.pr(theme::s_8())),
+                            ),
+                    )
+                    .child(Self::new_tab_button(cx))
+                    .child(Self::workspaces_button(cx))
+                    .child(tab_layout_button(false, cx)),
+            });
         let sidebar = sidebar.child(header);
         let sidebar = {
             let tabs: Vec<AnyElement> = (0..self.tabs.len())
@@ -2485,16 +2497,8 @@ impl Workspace {
                 .collect();
             let tab_count = tabs.len();
             self.reveal_active_tab();
-            sidebar
-                // Dragging an unpinned tab turns the New tab row into the pin zone (same
-                // height, so the tabs under the cursor don't move).
-                .child(
-                    div().flex_none().child(match self.pin_drop_zone(cx) {
-                        Some(zone) => zone.into_any_element(),
-                        None => Self::render_new_tab_row(cx).into_any_element(),
-                    }),
-                )
-                .child(scrolling(
+            sidebar.child(
+                scrolling(
                     div()
                         .id("tab-list")
                         .a11y(gpui::Role::TabList, self.tabs_label(cx))
@@ -2522,7 +2526,8 @@ impl Workspace {
                         std::rc::Rc::clone(&self.sidebar_ui.tabs_bar),
                     )
                     .right(px(2.) - theme::s_8()),
-                ))
+                ),
+            )
         };
         // Dropping in the empty space below the last tab moves it to the end.
         sidebar.child(
@@ -2752,44 +2757,33 @@ impl Workspace {
         self.folder_menu(path, MenuFor::Tree { depth }, cx)
     }
 
-    fn render_new_tab_row(cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// "+" in the Tabs heading, beside the workspaces and layout buttons: Ctrl+T's "go to" (#301).
+    /// It used to be a row of its own above the tabs.
+    fn new_tab_button(cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tip = format!("{} (Ctrl+T)", t!("sidebar.new_tab"));
         div()
             .id("new-tab")
+            .debug_selector(|| "new-tab".to_owned())
             .a11y_button(t!("sidebar.new_tab"))
             .aria_keyshortcuts("Ctrl+T")
-            .group("new-tab")
-            .h(theme::h_row_side())
-            .flex_none()
+            .size(theme::s_24())
             .flex()
+            .flex_none()
             .items_center()
-            .gap(theme::s_8())
-            .px(theme::s_8())
-            .rounded(theme::r_8())
+            .justify_center()
+            .rounded(theme::r_4())
             .cursor_pointer()
-            .text_color(theme::text_subtle())
-            .hover(|s| s.bg(theme::wash()).text_color(theme::text_muted()))
+            .hover(|s| s.bg(theme::wash_strong()))
             .child(
                 svg()
-                    .path(Icon::TabNew.path())
+                    .path(Icon::Plus.path())
                     .size(theme::icon())
                     .text_color(theme::text_subtle()),
-            )
-            .child(div().flex_1().child(t!("sidebar.new_tab").to_string()))
-            // The shortcut only appears on hover so it takes no space otherwise.
-            .child(
-                div()
-                    .invisible()
-                    .group_hover("new-tab", gpui::Styled::visible)
-                    .px(theme::s_4())
-                    .rounded(theme::r_4())
-                    .border_1()
-                    .border_color(theme::line_strong())
-                    .text_size(theme::fs_11())
-                    .child("Ctrl T"),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.open_palette(&super::OpenPalette, window, cx);
             }))
+            .tooltip_below(tip)
     }
 
     #[allow(

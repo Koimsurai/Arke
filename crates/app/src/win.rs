@@ -1110,9 +1110,9 @@ impl Shell for WinShell {
         crate::win_icons::file_icon(path, size)
     }
 
-    fn type_icon(&self, ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+    fn type_icon(&self, ext: &str, px: u32) -> Option<arke_core::thumbs::Thumbnail> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        crate::win_dragimage::registered_type_icon(ext)
+        crate::win_dragimage::registered_type_icon(ext, px)
     }
 
     fn video_thumbnail(

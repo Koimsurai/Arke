@@ -703,8 +703,8 @@ impl Shell for RemoteShell {
         }
         self.inner.file_icon(path, size)
     }
-    fn type_icon(&self, ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
-        self.inner.type_icon(ext)
+    fn type_icon(&self, ext: &str, px: u32) -> Option<arke_core::thumbs::Thumbnail> {
+        self.inner.type_icon(ext, px)
     }
     fn video_thumbnail(
         &self,

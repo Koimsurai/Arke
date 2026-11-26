@@ -473,7 +473,7 @@ impl MediaStore {
                 // frame), and brought down to exactly that: drawn from a bigger bitmap the GPU
                 // samples every few source pixels and drops one-pixel lines.
                 let icon = match key.type_icon_extension() {
-                    Some(ext) => shell.type_icon(ext),
+                    Some(ext) => shell.type_icon(ext, key.px),
                     None => shell.file_icon(&key.path, icon_request_px(key.px)),
                 }
                 .and_then(|icon| fit_icon(icon, key.px));

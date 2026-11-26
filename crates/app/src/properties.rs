@@ -1559,7 +1559,7 @@ fn hero_of(services: &Services, row: &Row) -> (Option<Arc<RenderImage>>, bool, O
             .shell
             .file_icon(&row.path, crate::media::SYSTEM_ICON_SIZE)
     } else if wants_type_icon(entry) {
-        services.shell.type_icon(entry.extension())
+        services.shell.type_icon(entry.extension(), 0)
     } else {
         None
     };

@@ -42,6 +42,8 @@ pub(crate) struct DirectWriteTextSystem {
 }
 
 struct DirectWriteComponents {
+    /// The user's locale: font names are read in it, and text is laid out in it unless
+    /// [`PlatformTextSystem::set_locale`] chose another.
     locale: HSTRING,
     factory: IDWriteFactory5,
     in_memory_loader: IDWriteInMemoryFontFileLoader,
@@ -80,6 +82,9 @@ struct DirectWriteState {
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
     layout_line_scratch: Vec<u16>,
+    /// Locale text is laid out in. DirectWrite's font fallback picks fonts by it, so Han
+    /// characters take the shapes of that locale (Arke: see `set_locale`).
+    layout_locale: HSTRING,
 }
 
 impl GPUState {
@@ -176,8 +181,10 @@ impl DirectWriteTextSystem {
         unsafe { factory.RegisterFontFileLoader(&in_memory_loader)? };
         let builder = unsafe { factory.CreateFontSetBuilder()? };
         let mut locale = [0u16; LOCALE_NAME_MAX_LENGTH as usize];
-        unsafe { GetUserDefaultLocaleName(&mut locale) };
-        let locale = HSTRING::from_wide(&locale);
+        let len = unsafe { GetUserDefaultLocaleName(&mut locale) };
+        // Arke: without the trailing NULs, so the same name given to `set_locale` compares equal.
+        let len = usize::try_from(len).unwrap_or(0).saturating_sub(1);
+        let locale = HSTRING::from_wide(&locale[..len]);
         let text_renderer = TextRendererWrapper::new(locale.clone());
 
         let gpu_state = directx_devices.map(GPUState::new).transpose()?;
@@ -208,6 +215,7 @@ impl DirectWriteTextSystem {
                 .CreateFontCollectionFromFontSet(&custom_font_set)?
         };
 
+        let layout_locale = components.locale.clone();
         Ok(Self {
             components,
             state: RwLock::new(DirectWriteState {
@@ -218,6 +226,7 @@ impl DirectWriteTextSystem {
                 font_to_font_id: HashMap::default(),
                 font_info_cache: HashMap::default(),
                 layout_line_scratch: Vec::new(),
+                layout_locale,
             }),
         })
     }
@@ -308,6 +317,19 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         } else {
             TextRenderingMode::Grayscale
         }
+    }
+
+    // Arke: the layout locale follows the app's UI language instead of the user's locale. Fonts
+    // and their fallbacks don't depend on it (the text format carries it), so no font cache is
+    // touched; the caller drops cached layouts.
+    fn set_locale(&self, locale: Option<&str>) -> Result<bool> {
+        let wanted = locale.map_or_else(|| self.components.locale.clone(), HSTRING::from);
+        let mut state = self.state.write();
+        if state.layout_locale == wanted {
+            return Ok(false);
+        }
+        state.layout_locale = wanted;
+        Ok(true)
     }
 }
 
@@ -622,7 +644,7 @@ impl DirectWriteState {
                         font_info.font_face.GetStyle(),
                         DWRITE_FONT_STRETCH_NORMAL,
                         font_size.as_f32(),
-                        &components.locale,
+                        &self.layout_locale,
                     )?
                     .cast()?;
                 if let Some(ref fallbacks) = font_info.fallbacks {

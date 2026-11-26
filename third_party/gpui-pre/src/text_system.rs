@@ -306,6 +306,30 @@ impl TextSystem {
         Ok(())
     }
 
+    /// Sets the locale (a BCP 47 name such as `zh-TW`) text is laid out in. It picks
+    /// locale-specific glyphs and the fonts characters missing from a font fall back to: Han
+    /// characters, shared by Chinese, Japanese and Korean, take the shapes of that locale. `None`
+    /// restores the platform's default (the user's locale on Windows).
+    ///
+    /// Returns whether it changed. Cached line layouts are invalidated then; refresh the windows
+    /// to redraw them. Platforms that don't support it ignore it.
+    pub fn set_locale(&self, locale: Option<&str>) -> bool {
+        match self.platform_text_system.set_locale(locale) {
+            Ok(false) => false,
+            Ok(true) => {
+                // Widths of fallback glyphs may differ now. Handles out of the pool put their
+                // cache back under the same key, so the entries stay and only their contents go.
+                self.wrapper_pool.lock().values_mut().for_each(Vec::clear);
+                self.font_generation.fetch_add(1, Ordering::Release);
+                true
+            }
+            Err(error) => {
+                log::error!("failed to set the text locale {locale:?}: {error:#}");
+                false
+            }
+        }
+    }
+
     /// Takes the receiver for missing-glyph reports.
     ///
     /// Only one receiver is available for each text system. Returns `None` when

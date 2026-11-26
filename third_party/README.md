@@ -169,6 +169,16 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   creation time.
 
   Both worth offering upstream.
+- Text locale (`src/direct_write.rs` `DirectWriteState::layout_locale`, `set_locale`,
+  `layout_line_without_separators`, and the user locale read in `DirectWriteTextSystem::new`):
+  text formats take the locale given to `PlatformTextSystem::set_locale` (see gpui-pre below)
+  instead of always the user's (`GetUserDefaultLocaleName`, which `None` restores). DirectWrite's
+  system font fallback picks fonts for characters missing from the UI font by that locale, so Han
+  characters shared by Chinese, Japanese and Korean get the shapes of the app's UI language
+  rather than the system's. This replaced Arke's hard-coded fallback list (YaHei, JhengHei, Yu
+  Gothic in an order per UI language), which covered no other language. Font names are still read in the user's locale, and no font cache depends on the layout
+  locale. The user locale is kept without the buffer's trailing NULs, so it compares equal to the
+  same name passed in. Worth offering upstream with the gpui-pre half.
 
 ## gpui-pre 0.3.11
 
@@ -202,6 +212,15 @@ Zed's GPUI (Apache-2.0), unchanged except for:
   items above it rather than reading its level, read every folder as "level 1". Each row now goes
   under its parent folder's row (`crates/app/src/a11y.rs` `a11y_tree_row`), with no change to
   layout. (#322)
+- `src/platform.rs` `PlatformTextSystem::set_locale` (default: unsupported, returns `false`) and
+  `src/text_system.rs` `TextSystem::set_locale`: the app sets the locale text is laid out in, which
+  picks locale-specific glyphs and fallback fonts (Han characters in Traditional or Simplified
+  Chinese, Japanese or Korean shapes). Upstream always uses the user's locale, so an app whose UI
+  language differs from it can't get its language's glyphs without naming fallback fonts. On a
+  change, cached line layouts are dropped (the font generation `add_fonts` also bumps) and the
+  line wrappers' char width caches are emptied (the pool's entries stay, since handles out of it
+  put their cache back under the same key). Arke calls it with `win::text_locale` when the UI
+  language is applied (`crates/app/src/main.rs` `apply_language`).
 
 The test platform, which only builds with the `test-support` feature:
 

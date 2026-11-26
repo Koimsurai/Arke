@@ -147,7 +147,7 @@ fn browses_and_changes_a_real_sftp_server() {
 fn a_changed_host_key_is_refused() {
     let (root, _root) = temp_dir("changed");
     let (cache, _cache) = temp_dir("changed-cache");
-    let port = serve(root.clone(), 9);
+    let port = serve(root, 9);
     let hub = remotes(&cache);
     let url = RemoteUrl::from_path(Path::new(&format!("sftp://{USER}@127.0.0.1:{port}/"))).unwrap();
     // Pretend another key was trusted for this server earlier.
@@ -198,7 +198,7 @@ fn browses_and_changes_a_webdav_server_over_winhttp() {
     let port = crate::testing_dav::serve_dav(root.clone());
     let hub = Remotes::new(RemotesConfig {
         known_hosts: None,
-        cache_dir: cache.clone(),
+        cache_dir: cache,
         secrets: Arc::new(crate::creds::NoSecrets),
         transport: Arc::new(crate::http::WinHttp::new().unwrap()),
         portable: Arc::new(crate::mtp::NoDevices),

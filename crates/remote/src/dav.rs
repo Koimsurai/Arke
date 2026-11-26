@@ -95,47 +95,16 @@ pub fn href_path(href: &str) -> String {
     }
 }
 
-/// `Sun, 06 Nov 1994 08:49:37 GMT` (RFC 7231 IMF-fixdate).
+/// `Sun, 06 Nov 1994 08:49:37 GMT` (RFC 7231 IMF-fixdate). The weekday is not checked, and
+/// dates before 1970 count as unknown.
 pub fn parse_http_date(text: &str) -> Option<SystemTime> {
     let text = text.trim();
     let rest = text.split_once(',').map_or(text, |(_, r)| r);
-    let mut it = rest.split_whitespace();
-    let day: u32 = it.next()?.parse().ok()?;
-    let month = match it.next()?.to_ascii_lowercase().as_str() {
-        "jan" => 1,
-        "feb" => 2,
-        "mar" => 3,
-        "apr" => 4,
-        "may" => 5,
-        "jun" => 6,
-        "jul" => 7,
-        "aug" => 8,
-        "sep" => 9,
-        "oct" => 10,
-        "nov" => 11,
-        "dec" => 12,
-        _ => return None,
-    };
-    let year: i64 = it.next()?.parse().ok()?;
-    let mut hms = it.next()?.split(':').map(str::parse::<u64>);
-    let (h, m, s) = (hms.next()?.ok()?, hms.next()?.ok()?, hms.next()?.ok()?);
-    if day == 0 || day > 31 || h > 23 || m > 59 || s > 60 {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    let secs = u64::try_from(days).ok()? * 86_400 + h * 3600 + m * 60 + s;
+    let at = jiff::fmt::rfc2822::DateTimeParser::new()
+        .parse_timestamp(rest.trim())
+        .ok()?;
+    let secs = u64::try_from(at.as_second()).ok()?;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
-}
-
-/// Days since 1970-01-01 (Howard Hinnant's algorithm).
-const fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let m = month as i64;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 /// One `<response>` of a multistatus.
@@ -534,10 +503,21 @@ mod tests {
             parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"),
             Some(SystemTime::UNIX_EPOCH)
         );
-        assert!(
-            parse_http_date("Sat, 29 Feb 2025 12:00:00 GMT").is_some(),
-            "lenient about impossible dates, never panics"
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(784_111_777))
         );
+        // The weekday is not checked; a single-digit day is fine.
+        assert_eq!(
+            parse_http_date("Mon, 6 Nov 1994 08:49:37 GMT"),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(784_111_777))
+        );
+        assert_eq!(
+            parse_http_date("Sat, 29 Feb 2025 12:00:00 GMT"),
+            None,
+            "an impossible date is unknown, never a wrong one"
+        );
+        assert_eq!(parse_http_date("Wed, 31 Dec 1969 23:59:59 GMT"), None);
         assert_eq!(parse_http_date("yesterday"), None);
         assert_eq!(parse_http_date("Sun, 06 Foo 1994 08:49:37 GMT"), None);
     }

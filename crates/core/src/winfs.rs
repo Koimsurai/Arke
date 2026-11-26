@@ -292,14 +292,7 @@ fn changed_paths(raw: &[u8], root: &Path) -> Vec<PathBuf> {
 /// Converts a FILETIME (100 ns intervals since 1601) the way std does, so the result compares
 /// equal to `Metadata::modified()` of the same entry.
 fn filetime(low: u32, high: u32) -> Option<SystemTime> {
-    const UNIX_EPOCH_INTERVALS: u64 = 116_444_736_000_000_000;
-    let intervals = (u64::from(high) << 32) | u64::from(low);
-    let to_duration = |n: u64| Duration::new(n / 10_000_000, ((n % 10_000_000) * 100) as u32);
-    if intervals >= UNIX_EPOCH_INTERVALS {
-        SystemTime::UNIX_EPOCH.checked_add(to_duration(intervals - UNIX_EPOCH_INTERVALS))
-    } else {
-        SystemTime::UNIX_EPOCH.checked_sub(to_duration(UNIX_EPOCH_INTERVALS - intervals))
-    }
+    crate::time::system_time_from_filetime((u64::from(high) << 32) | u64::from(low))
 }
 
 /// Owned `FindFirstFileExW` handle.

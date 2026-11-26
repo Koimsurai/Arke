@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 log.workspace = true
+jiff.workspace = true
+percent-encoding.workspace = true
 notify.workspace = true
 nucleo.workspace = true
 pulldown-cmark.workspace = true

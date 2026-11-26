@@ -22,7 +22,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use rust_i18n::t;
 use windows::Win32::Foundation::{E_ABORT, E_FAIL, FILETIME, HGLOBAL, S_FALSE, S_OK};
@@ -442,18 +442,11 @@ fn ansi(bytes: &[u8]) -> String {
 }
 
 fn system_time(t: &FILETIME) -> Option<SystemTime> {
-    /// 100 ns intervals from 1601 to 1970.
-    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
     let ticks = (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
     if ticks == 0 {
         return None;
     }
-    let since = |ticks: u64| Duration::from_nanos(ticks.saturating_mul(100));
-    if ticks >= UNIX_EPOCH_TICKS {
-        SystemTime::UNIX_EPOCH.checked_add(since(ticks - UNIX_EPOCH_TICKS))
-    } else {
-        SystemTime::UNIX_EPOCH.checked_sub(since(UNIX_EPOCH_TICKS - ticks))
-    }
+    arke_core::time::system_time_from_filetime(ticks)
 }
 
 /// A source's relative name as names that stay inside the target folder: split at `\` and `/`,

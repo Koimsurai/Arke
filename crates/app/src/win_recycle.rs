@@ -5,7 +5,7 @@
 //! `win_fileops.rs`.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{FILETIME, PROPERTYKEY};
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -181,15 +181,15 @@ fn full_name(display: String, now: &Path, is_dir: bool) -> String {
 
 /// FILETIME (100 ns ticks since 1601, UTC) to `SystemTime`.
 fn system_time(ft: FILETIME) -> Option<SystemTime> {
-    const UNIX_START: u64 = 116_444_736_000_000_000;
     let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
-    let since_unix = ticks.checked_sub(UNIX_START)?;
-    Some(UNIX_EPOCH + Duration::from_nanos(since_unix.checked_mul(100)?))
+    // Before 1970 counts as unknown.
+    arke_core::time::system_time_from_filetime(ticks).filter(|t| *t >= UNIX_EPOCH)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn a_subst_drive_is_told_from_a_volume() {

@@ -135,7 +135,7 @@ fn reveal(bounds: Bounds<Pixels>, window: &mut Window, _: &mut App) {
 
 /// How far to move the content (positive: down) so `item` is inside `view`, `margin` from its
 /// edges where there is room; 0 when it already is.
-fn shift_to_show(item: Bounds<Pixels>, view: Bounds<Pixels>, margin: Pixels) -> Pixels {
+pub(crate) fn shift_to_show(item: Bounds<Pixels>, view: Bounds<Pixels>, margin: Pixels) -> Pixels {
     let margin = margin.min((view.size.height - item.size.height).max(px(0.)) / 2.);
     if item.top() < view.top() + margin {
         view.top() + margin - item.top()

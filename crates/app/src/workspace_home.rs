@@ -352,6 +352,13 @@ impl Workspace {
         Some(self.home_page.as_ref()?.view.read(cx).favorites_for_test())
     }
 
+    /// The card under Home's keyboard cursor (`None` while closed or with no ring and nothing
+    /// picked).
+    #[cfg(test)]
+    pub(crate) fn home_cursor_for_test(&self, cx: &App) -> Option<String> {
+        self.home_page.as_ref()?.view.read(cx).cursor_for_test()
+    }
+
     /// Whether Home draws its recent files section (tests).
     #[cfg(test)]
     pub(crate) fn home_recent_shown_for_test(&self, cx: &App) -> Option<bool> {

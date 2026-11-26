@@ -109,6 +109,7 @@ mod win_bin_evict;
 mod win_bin_usage;
 mod win_cloud;
 mod win_devnotify;
+mod win_dll;
 mod win_dragimage;
 mod win_e_hook;
 mod win_eject;

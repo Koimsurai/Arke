@@ -243,13 +243,16 @@ pub(crate) fn start(
 ) -> Arc<Remotes> {
     let known_hosts =
         std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Arke").join("known_hosts"));
-    let transport: Arc<dyn arke_remote::dav::Transport> = match arke_remote::http::WinHttp::new() {
-        Ok(http) => Arc::new(http),
-        Err(err) => {
-            log::error!("WinHTTP unavailable, WebDAV disabled: {err}");
-            Arc::new(NoHttp)
-        }
-    };
+    // Without winhttp.dll (a stripped Windows) the call below would be a failed delayed load.
+    let transport: Arc<dyn arke_remote::dav::Transport> =
+        match crate::win_dll::system_dll("winhttp.dll").then(arke_remote::http::WinHttp::new) {
+            Some(Ok(http)) => Arc::new(http),
+            Some(Err(err)) => {
+                log::error!("WinHTTP unavailable, WebDAV disabled: {err}");
+                Arc::new(NoHttp)
+            }
+            None => Arc::new(NoHttp),
+        };
     let remotes = Remotes::new(arke_remote::RemotesConfig {
         known_hosts,
         cache_dir: std::env::temp_dir().join("Arke").join("remote"),

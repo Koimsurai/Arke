@@ -122,6 +122,12 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   window isn't always the foreground one yet at that point; when it becomes so, no second
   `WM_ACTIVATE` follows. The adapter then thought the window never had focus, so screen readers
   were given no focused element: NVDA read nothing in the main window or Settings. (#322)
+- `src/window.rs` `a11y_init` (second change) and `src/destination_list.rs`: some stripped
+  Windows installs lack DLLs that Arke delay-loads, and a failed delayed load ends the process.
+  `a11y_init` returns without making the adapter when `uiautomationcore.dll` can't be mapped from
+  the system folder, so there is no screen reader support but also no crash (every other a11y
+  path does nothing without an adapter). `create_destination_list` counts the description's
+  UTF-16 units itself instead of calling ICU's `u_strlen`, so `icuuc.dll` isn't needed. (#462)
 - Windows 10 top border, ported from Zed PR #63821 (not merged upstream yet; every hunk is marked
   `zed#63821`): `src/util.rs` `is_windows_10`, `top_border_color` and `configure_dwm_dark_mode`;
   `src/events.rs` `top_border_height`, `needs_win10_top_border`, `update_top_border`,

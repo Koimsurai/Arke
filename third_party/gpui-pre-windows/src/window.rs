@@ -1209,6 +1209,27 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
+        // Arke: without uiautomationcore.dll (missing on some stripped Windows installs) the
+        // adapter could never answer a screen reader, and its first call into the DLL, which is
+        // delay-loaded, would end the process. With no adapter every a11y path here is a no-op.
+        // See third_party/README.md.
+        // SAFETY: maps the DLL as data from the system folder only (nothing runs, so it is
+        // cheap) and unmaps it again; nothing is called in it.
+        match unsafe {
+            LoadLibraryExW(
+                windows::core::w!("uiautomationcore.dll"),
+                None,
+                LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_AS_DATAFILE,
+            )
+        } {
+            Ok(module) => {
+                let _ = unsafe { FreeLibrary(module) };
+            }
+            Err(_) => {
+                log::info!("uiautomationcore.dll is missing; screen reader support is off");
+                return;
+            }
+        }
         let action_handler = A11yActionHandler(callbacks.action);
         // Whether the window is active, as `WM_ACTIVATE` will report it from now on. The first
         // `WM_ACTIVATE` usually comes before this, while there is no adapter to tell, and the

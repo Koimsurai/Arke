@@ -1373,9 +1373,13 @@ impl Explorer {
     }
 
     /// For targets in cloud folders like OneDrive: whether all are "Always keep on this device".
-    /// `None` if any isn't in a cloud folder, or for search results.
+    /// `None` if any isn't in a cloud folder, for search results, or on a Windows without the
+    /// Cloud Files API (`cldapi.dll`).
     fn cloud_state(&self, targets: &[(PathBuf, bool)]) -> Option<bool> {
-        if self.search_mode || targets.is_empty() || !targets.iter().all(|(p, _)| self.in_cloud(p))
+        if self.search_mode
+            || targets.is_empty()
+            || !crate::win_cloud::available()
+            || !targets.iter().all(|(p, _)| self.in_cloud(p))
         {
             return None;
         }

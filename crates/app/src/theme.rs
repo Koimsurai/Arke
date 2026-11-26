@@ -1841,7 +1841,10 @@ mod tests {
         let clear = shadows.iter().fold(1., |clear, s| {
             let lift = if top { f32::from(s.offset.y) } else { 0. };
             let sigma = f32::from(s.blur_radius);
-            let cover = 0.5 * (1. + erf(-(d + lift) / sigma * std::f32::consts::FRAC_1_SQRT_2));
+            let cover = f32::midpoint(
+                1.,
+                erf(-(d + lift) / sigma * std::f32::consts::FRAC_1_SQRT_2),
+            );
             clear * (1. - s.color.a * cover)
         });
         1. - clear

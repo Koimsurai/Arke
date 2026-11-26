@@ -1502,11 +1502,12 @@ fn follow_language_setting(store: &gpui::Entity<settings::SettingsStore>, cx: &m
     apply_language(&store.read(cx).settings.language.locale(), cx);
 }
 
-/// Starts looking up Windows' names for file types the built-in table doesn't have; windows
+/// Starts looking up Windows' names for file types (all of them, when Arke speaks Windows' language); windows
 /// repaint (and re-sort by type) when names arrive.
 fn start_type_names(cx: &mut App) {
     let (tx, rx) = flume::bounded::<()>(1);
     let notify = tx.clone();
+    arke_core::format::set_windows_language(win::system_display_locale());
     arke_core::format::start_type_names(win_dragimage::registered_type_name, move || {
         let _ = tx.try_send(());
     });

@@ -154,7 +154,7 @@ fn patterned() -> &'static [u8] {
 #[derive(Clone)]
 pub(crate) struct Gate {
     /// Never sent on: disconnects when the test drops its opener.
-    opened: flume::Receiver<()>,
+    shut: flume::Receiver<()>,
     /// Told each time a read starts waiting.
     entered: flume::Sender<()>,
     /// Told when a stream holding the gate is released.
@@ -171,12 +171,12 @@ struct Keeper {
 
 impl Gate {
     fn new() -> (Self, Keeper) {
-        let (opener, opened) = flume::unbounded();
+        let (opener, shut) = flume::unbounded();
         let (entered_tx, entered) = flume::unbounded();
         let (released_tx, released) = flume::unbounded();
         (
             Self {
-                opened,
+                shut,
                 entered: entered_tx,
                 released: released_tx,
             },
@@ -190,7 +190,7 @@ impl Gate {
 
     fn wait(&self) {
         let _ = self.entered.send(());
-        let _ = self.opened.recv();
+        let _ = self.shut.recv();
     }
 }
 
@@ -558,7 +558,6 @@ impl ISequentialStream_Impl for FakeStream_Impl {
         }
         let mut give = u64::from(cb);
         match &self.pace {
-            Pace::Instant => {}
             Pace::Remote { delay, limit, gate } => {
                 // The source's own pace, not a wait of the test's.
                 std::thread::sleep(*delay);
@@ -582,7 +581,7 @@ impl ISequentialStream_Impl for FakeStream_Impl {
                 self.pos.fetch_add(u64::from(cb) / 2, Ordering::Relaxed);
                 return RPC_E_CALL_CANCELED;
             }
-            Pace::Choke { .. } => {}
+            Pace::Instant | Pace::Choke { .. } => {}
         }
         let pos = self.pos.load(Ordering::Relaxed);
         let n = give.min(self.len.saturating_sub(pos));

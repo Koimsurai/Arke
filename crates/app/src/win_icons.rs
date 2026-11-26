@@ -14,8 +14,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::UI::Shell::{
-    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY, SIIGBF_RESIZETOFIT,
-    SIIGBF_THUMBNAILONLY,
+    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF, SIIGBF_ICONONLY,
+    SIIGBF_INCACHEONLY, SIIGBF_RESIZETOFIT, SIIGBF_THUMBNAILONLY,
 };
 use windows::core::PCWSTR;
 
@@ -92,18 +92,23 @@ pub(crate) fn video_thumbnail(path: &Path, size: u32) -> Option<Thumbnail> {
     let factory: IShellItemImageFactory =
         unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }.ok()?;
     let edge = i32::try_from(size).ok()?;
-    // SAFETY: factory is a valid interface; THUMBNAILONLY returns no icon in place of a picture.
-    let bitmap = unsafe {
-        factory.GetImage(
-            SIZE { cx: edge, cy: edge },
-            SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT,
-        )
-    }
-    .ok()?;
-    let pixels = bitmap_pixels(bitmap);
-    // SAFETY: GetImage hands us ownership of the HBITMAP.
-    let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-    pixels
+    cache_first(|flags| {
+        // SAFETY: factory is a valid interface; THUMBNAILONLY returns no icon in place of a
+        // picture, and INCACHEONLY never runs a thumbnail provider.
+        let bitmap = unsafe { factory.GetImage(SIZE { cx: edge, cy: edge }, flags) }.ok()?;
+        let pixels = bitmap_pixels(bitmap);
+        // SAFETY: GetImage hands us ownership of the HBITMAP.
+        let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+        pixels
+    })
+}
+
+/// Asks `request` for a thumbnail already in Windows' thumbnail cache first (instant), and only
+/// on a miss for one Windows has to generate (seconds for a cold 8K video). The cached picture
+/// may be another size than the one asked for; callers fit it.
+fn cache_first(mut request: impl FnMut(SIIGBF) -> Option<Thumbnail>) -> Option<Thumbnail> {
+    let generate = SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT;
+    request(generate | SIIGBF_INCACHEONLY).or_else(|| request(generate))
 }
 
 /// Reads an HBITMAP as straight-alpha RGBA.
@@ -262,6 +267,53 @@ mod tests {
             icon.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "icon is not fully transparent"
         );
+    }
+
+    fn picture() -> Thumbnail {
+        Thumbnail {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 255],
+        }
+    }
+
+    #[test]
+    fn a_cached_thumbnail_is_used_without_generating() {
+        let mut asked = Vec::new();
+        let got = cache_first(|flags| {
+            asked.push(flags);
+            Some(picture())
+        });
+        assert!(got.is_some());
+        assert_eq!(asked.len(), 1, "one call, from the cache only");
+        assert_eq!(asked[0] & SIIGBF_INCACHEONLY, SIIGBF_INCACHEONLY);
+    }
+
+    #[test]
+    fn a_cache_miss_falls_back_to_generating() {
+        let mut asked = Vec::new();
+        let got = cache_first(|flags| {
+            asked.push(flags);
+            (flags.0 & SIIGBF_INCACHEONLY.0 == 0).then(picture)
+        });
+        assert!(got.is_some());
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0] & SIIGBF_INCACHEONLY, SIIGBF_INCACHEONLY);
+        // The second request is today's, unchanged.
+        assert_eq!(asked[1], SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT);
+    }
+
+    #[test]
+    fn no_thumbnail_anywhere_gives_none() {
+        let mut calls = 0;
+        assert!(
+            cache_first(|_| {
+                calls += 1;
+                None
+            })
+            .is_none()
+        );
+        assert_eq!(calls, 2);
     }
 
     #[test]

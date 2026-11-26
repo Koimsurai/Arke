@@ -33,7 +33,10 @@ use gpui::{
     point, px, size,
 };
 
-/// Room around a panel for its shadow (`theme::elev_float`: 24 px of blur, 8 px down).
+/// Room around a panel for its shadow. Menus use `theme::elev_menu` (3 px down, sigma 10) and the
+/// tab ghost `theme::elev_float` (at most 3 px down, sigma 6, so it ends about 18 px out at the
+/// sides, 15 above and 21 below). The margins hold all of the tab ghost's shadow and the visible
+/// part of a menu's: what they cut off of its tail darkens by about 1% or less.
 const SHADOW_X: f32 = 24.;
 const SHADOW_TOP: f32 = 16.;
 const SHADOW_BOTTOM: f32 = 32.;

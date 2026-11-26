@@ -418,6 +418,40 @@ fn drain(hwnd: HWND) {
     }
 }
 
+/// Whether a `SetClipboardData` promise (a null handle) worked: it returns NULL by design, so
+/// only a NULL together with a nonzero last error is a failure.
+const fn promise_failed(returned_null: bool, last_error: u32) -> Option<u32> {
+    if returned_null && last_error != 0 {
+        Some(last_error)
+    } else {
+        None
+    }
+}
+
+unsafe extern "system" {
+    /// The raw call: the `windows` wrapper turns the NULL a promise returns into an error.
+    #[link_name = "SetClipboardData"]
+    fn set_clipboard_data_raw(format: u32, mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+
+/// Promises `format` (delayed rendering): the data is asked for with `WM_RENDERFORMAT`.
+fn promise(format: u32) -> Result<(), ShellError> {
+    use windows::Win32::Foundation::{GetLastError, SetLastError, WIN32_ERROR};
+    // SAFETY: the clipboard is open for this window; a null handle is the promise. The last
+    // error is cleared first so a NULL return can be told from a failure.
+    let failed = unsafe {
+        SetLastError(WIN32_ERROR(0));
+        let returned = set_clipboard_data_raw(format, std::ptr::null_mut());
+        promise_failed(returned.is_null(), GetLastError().0)
+    };
+    match failed {
+        None => Ok(()),
+        Some(code) => {
+            Err(windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code)).into())
+        }
+    }
+}
+
 /// Hands `bytes` to the clipboard (open, or inside `WM_RENDERFORMAT`) as `format`.
 fn put(format: Format, bytes: &[u8]) -> Result<(), ShellError> {
     let mut mem = Global::new(bytes)?;
@@ -450,8 +484,7 @@ fn set_on_owner(hwnd: HWND, paths: Vec<PathBuf>, cut: bool) -> Result<u32, Shell
             put(*format, bytes)?;
         }
         for format in lazy {
-            // SAFETY: a null handle promises the data: it is asked for with WM_RENDERFORMAT.
-            unsafe { SetClipboardData(format_id(*format), None) }?;
+            promise(format_id(*format))?;
         }
         Ok(())
     })();
@@ -624,6 +657,14 @@ mod tests {
         );
         assert_eq!(immediate[2].1, file_name_bytes(&one));
         assert_eq!(&immediate[2].1[immediate[2].1.len() - 2..], [0, 0]);
+    }
+
+    #[test]
+    fn a_null_from_a_promise_is_success_unless_an_error_is_set() {
+        assert_eq!(promise_failed(true, 0), None);
+        assert_eq!(promise_failed(false, 0), None);
+        assert_eq!(promise_failed(false, 5), None, "a handle came back");
+        assert_eq!(promise_failed(true, 5), Some(5));
     }
 
     #[test]

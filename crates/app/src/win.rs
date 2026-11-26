@@ -228,7 +228,7 @@ fn volume_label(root: &[u16]) -> Option<String> {
 /// Common editors found at their default install paths. Only checks for the exe: no registry,
 /// nothing launched.
 fn editor_apps() -> Vec<(String, PathBuf)> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let local = crate::paths::local_root();
     let programs = std::env::var_os("ProgramFiles").map(PathBuf::from);
     let candidates: [(&str, Option<PathBuf>); 5] = [
         (
@@ -295,9 +295,7 @@ pub(crate) fn start_menu_shortcut(appdata: &std::path::Path) -> PathBuf {
 }
 
 fn appdata() -> Result<PathBuf, ShellError> {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .ok_or(ShellError::MissingEnv("APPDATA"))
+    crate::paths::roaming_root().ok_or(ShellError::MissingEnv("APPDATA"))
 }
 
 /// Creates or removes the Startup folder shortcut. It points at this exe with `--background`

@@ -375,7 +375,7 @@ fn save(path: &Path, file: &StoredFile) -> Result<(), FolderViewsError> {
 
 /// `%APPDATA%\Arke\folder_views.json`, next to the settings (string work only).
 pub(crate) fn default_path() -> Option<PathBuf> {
-    crate::settings::default_path().map(|p| p.with_file_name("folder_views.json"))
+    crate::paths::roaming_file("folder_views.json")
 }
 
 /// The app-wide memory. Tabs look up and record through it; it saves itself.

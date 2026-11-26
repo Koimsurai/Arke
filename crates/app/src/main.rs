@@ -72,6 +72,7 @@ mod net_dialog;
 mod op_center;
 mod op_queue;
 mod palette;
+mod paths;
 mod place_names;
 mod popup;
 mod prefs;

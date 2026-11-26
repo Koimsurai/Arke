@@ -38,7 +38,7 @@ fn cache_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Arke").join("bin-usage"))
+    crate::paths::bin_usage_dir()
 }
 
 /// What tells a record apart from another one under the same name, from a listing alone.

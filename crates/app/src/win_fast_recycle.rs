@@ -1021,14 +1021,7 @@ fn counted() -> &'static Counted {
         let file = if cfg!(test) {
             None
         } else {
-            version.and_then(|_| {
-                std::env::var_os("LOCALAPPDATA").map(|d| {
-                    PathBuf::from(d)
-                        .join("Arke")
-                        .join("bin-usage")
-                        .join("counted.txt")
-                })
-            })
+            version.and_then(|_| crate::paths::bin_usage_dir().map(|d| d.join("counted.txt")))
         };
         let version = version.map_or_else(
             || "unknown".to_owned(),

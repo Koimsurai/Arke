@@ -53,9 +53,7 @@ pub(crate) static THUMBNAIL_LOADS: std::sync::atomic::AtomicUsize =
 pub(crate) fn thumb_cache() -> &'static ThumbCache {
     static CACHE: OnceLock<ThumbCache> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let dir = std::env::var_os("LOCALAPPDATA")
-            .filter(|_| !cfg!(test))
-            .map(|d| PathBuf::from(d).join("Arke").join("thumbs"));
+        let dir = crate::paths::thumbs_dir().filter(|_| !cfg!(test));
         ThumbCache::new(COMPRESSED_BUDGET, dir.map(|d| (d, DISK_CAP)))
     })
 }

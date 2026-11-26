@@ -447,7 +447,7 @@ fn notes_from_feed(content: &str) -> String {
 }
 
 pub(crate) fn updates_dir() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Arke").join("updates"))
+    crate::paths::updates_dir()
 }
 
 /// Download the new version (background thread) and verify SHA-256. `progress(downloaded, total)`.

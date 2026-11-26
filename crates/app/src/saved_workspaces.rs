@@ -216,7 +216,7 @@ fn save(path: &Path, list: &[SavedWorkspace]) -> Result<(), WorkspacesError> {
 
 /// `%APPDATA%\Arke\workspaces.json`, next to the settings (string work only).
 pub(crate) fn default_path() -> Option<PathBuf> {
-    crate::settings::default_path().map(|p| p.with_file_name("workspaces.json"))
+    crate::paths::roaming_file("workspaces.json")
 }
 
 /// The app-wide list. Windows read it to draw the Workspaces panel; it saves itself.

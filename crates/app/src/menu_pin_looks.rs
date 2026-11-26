@@ -79,7 +79,7 @@ fn same(a: &Arc<RenderImage>, b: &Arc<RenderImage>) -> bool {
 }
 
 fn file() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Arke").join("menu-icons.bin"))
+    crate::paths::menu_icons_file()
 }
 
 /// Reads what was saved, for the commands still in `pinned`, keeping anything noted meanwhile.

@@ -229,7 +229,7 @@ fn save(path: &Path, items: Vec<ShelfItem>) -> Result<(), ShelfError> {
 
 /// `%APPDATA%\Arke\shelf.json`, next to the settings.
 pub(crate) fn default_path() -> Option<PathBuf> {
-    crate::settings::default_path().map(|p| p.with_file_name("shelf.json"))
+    crate::paths::roaming_file("shelf.json")
 }
 
 /// The app-wide shelf, shared by every window and tab.

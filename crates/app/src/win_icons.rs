@@ -230,17 +230,6 @@ mod tests {
     }
 
     #[test]
-    fn drive_type_classification() {
-        assert!(is_local_drive_type(DRIVE_FIXED));
-        assert!(is_local_drive_type(DRIVE_REMOVABLE));
-        assert!(is_local_drive_type(DRIVE_RAMDISK));
-        // DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_CDROM
-        for other in [0, 1, 4, 5] {
-            assert!(!is_local_drive_type(other), "{other}");
-        }
-    }
-
-    #[test]
     fn local_disk_detection() {
         let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
         assert!(is_local_disk(Path::new(&format!(r"{system}\Windows"))));

@@ -131,6 +131,7 @@ pub mod service;
 pub mod sort;
 pub mod takeover;
 pub mod text;
+pub mod text_lines;
 pub mod thumb_cache;
 pub mod thumbs;
 pub mod timeline;

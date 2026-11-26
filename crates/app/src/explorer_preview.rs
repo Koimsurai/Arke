@@ -3,9 +3,11 @@
 //! Both show the item under the cursor.
 //! - Images: decoded in the background to 1600 px on the long side (own decoder, no third-party
 //!   thumbnail handlers).
-//! - Text and code: first 64 KB with encoding detection (UTF-8, UTF-16, legacy system code pages
-//!   like Big5); binary-looking files are skipped. Code gets line numbers and basic highlighting
-//!   (`arke_core::highlight`); Markdown is parsed (`arke_core::markdown`) and laid out like GitHub.
+//! - Text and code: the first 64 KB with encoding detection (UTF-8, UTF-16, legacy system code
+//!   pages like Big5); binary-looking files are skipped. Code gets line numbers and basic
+//!   highlighting (`arke_core::highlight`). Scrolled past that, the rest of a local file is read
+//!   as it comes into view, and only the lines on screen are laid out (`explorer_text.rs`).
+//!   Markdown is parsed (`arke_core::markdown`) and laid out like GitHub.
 //! - PDFs: rendered by Windows (`win_pdf.rs`), sized for the space in device pixels. The pane
 //!   scrolls through every page (`explorer_pdf_pane.rs`), Quick Look turns them (Left/Right, Page
 //!   Up/Down, Home/End). Recent Quick Look pages are cached per tab.
@@ -59,11 +61,17 @@ use office::{SlidesView, WorkbookView, load_office};
 mod office;
 #[path = "explorer_pdf_pane.rs"]
 mod pdf_pane;
+#[path = "explorer_text.rs"]
+mod text;
 use crate::a11y::A11yExt as _;
 use crate::press_guard::is_double_click;
 use crate::shell::Shell;
 use crate::theme::{self, UiFont as _};
 pub(crate) use pdf_pane::RenderedPage;
+#[cfg(test)]
+pub(crate) use text::take_built_rows_for_test;
+use text::{Reader, TextHead, TextSource};
+pub(crate) use text::{TextDoc, TextUpdate};
 
 /// Delay after the cursor stops before reading, so holding an arrow key doesn't read every row. The
 /// test clock doesn't advance on its own, so tests skip the delay.
@@ -77,9 +85,9 @@ const LOADING_GRACE: Duration = Duration::from_millis(250);
 const SKELETON_PULSE: Duration = Duration::from_millis(1200);
 /// Long side of image previews
 const IMAGE_SIDE: u32 = 1600;
-/// Bytes read for text previews
+/// Bytes read for text previews (scrolled past, the rest of the file is read as needed)
 const TEXT_HEAD: u64 = 64 * 1024;
-/// Max lines in text previews
+/// Max lines in Markdown previews
 const TEXT_LINES: usize = 400;
 /// Max folder preview entries (beyond that only the total is shown)
 const FOLDER_ITEMS: usize = 500;
@@ -95,9 +103,18 @@ pub(crate) struct CodeLine {
 /// Split text into lines and distribute highlight ranges per line (multi-line comments and strings
 /// are marked on each line).
 fn split_lines(text: &str, marks: &[(std::ops::Range<usize>, Token)]) -> Vec<CodeLine> {
+    lines_with_marks(text, line_spans(text), marks)
+}
+
+/// The lines of `text` at `spans` (byte ranges, in order), each with the parts of `marks` in it.
+fn lines_with_marks(
+    text: &str,
+    spans: impl Iterator<Item = (usize, usize)>,
+    marks: &[(std::ops::Range<usize>, Token)],
+) -> Vec<CodeLine> {
     let mut lines = Vec::new();
     let mut next = 0;
-    for (start, end) in line_spans(text).take(TEXT_LINES) {
+    for (start, end) in spans {
         // Skip ranges that ended before this line.
         while marks.get(next).is_some_and(|(r, _)| r.end <= start) {
             next += 1;
@@ -167,9 +184,9 @@ pub(crate) enum PreviewBody {
         /// Capture info (photos only)
         info: Option<PhotoInfo>,
     },
-    /// Text and code: lines with highlight ranges
+    /// Text and code: lines with highlight ranges, read as they come into view
     Text {
-        lines: Arc<Vec<CodeLine>>,
+        doc: Rc<TextDoc>,
         encoding: TextEncoding,
         /// Set for the text inside a `.gz` file (its details are listed with the file's)
         inner: Option<GzipInner>,
@@ -227,10 +244,7 @@ pub(crate) enum PreviewData {
         /// Capture info (photos only)
         info: Option<PhotoInfo>,
     },
-    Text {
-        lines: Vec<CodeLine>,
-        encoding: TextEncoding,
-    },
+    Text(TextHead),
     /// A PDF page rendered for `target`
     Pdf {
         page: u32,
@@ -743,15 +757,24 @@ fn load(
             if is_markdown(path) {
                 return PreviewData::Markdown(arke_core::markdown::parse(&markdown_lines(&text)));
             }
-            let marks = path
+            let lang = path
                 .extension()
                 .and_then(|e| e.to_str())
-                .and_then(arke_core::highlight::lang_for)
-                .map_or_default(|lang| arke_core::highlight::highlight(&text, lang));
-            PreviewData::Text {
+                .and_then(arke_core::highlight::lang_for);
+            let marks = lang.map_or_default(|lang| arke_core::highlight::highlight(&text, lang));
+            // A local file may go on past its head: the rest is read as it is scrolled to. A
+            // server's file is read only this far, as before.
+            let more = bytes.len() as u64 >= TEXT_HEAD && !arke_core::remote::is_remote(path);
+            PreviewData::Text(TextHead {
                 lines: split_lines(&text, &marks),
                 encoding,
-            }
+                source: more.then(|| TextSource {
+                    path: path.to_path_buf(),
+                    first: arke_core::text::bom_len(&bytes) as u64,
+                    encoding,
+                    lang,
+                }),
+            })
         }
         _ => PreviewData::Nothing,
     }
@@ -1049,14 +1072,30 @@ impl Explorer {
                     height,
                     info,
                 },
-                PreviewData::Text { lines, encoding } => PreviewBody::Text {
-                    lines: Arc::new(lines),
-                    encoding,
+                PreviewData::Text(head) => PreviewBody::Text {
+                    encoding: head.encoding,
+                    doc: Rc::new(TextDoc::new(
+                        generation,
+                        head,
+                        Some(Reader {
+                            fs: Arc::clone(&self.services.fs),
+                            shell: Arc::clone(&self.services.shell),
+                            tx: self.events_tx.clone(),
+                        }),
+                    )),
                     inner: None,
                 },
                 PreviewData::Gzip { inner, text } => match text {
                     Some((lines, encoding)) => PreviewBody::Text {
-                        lines: Arc::new(lines),
+                        doc: Rc::new(TextDoc::new(
+                            generation,
+                            TextHead {
+                                lines,
+                                encoding,
+                                source: None,
+                            },
+                            None,
+                        )),
                         encoding,
                         inner: Some(inner),
                     },
@@ -1093,6 +1132,24 @@ impl Explorer {
                 PreviewData::Unreadable(reason) => PreviewBody::Unreadable(reason.into()),
                 PreviewData::Nothing => PreviewBody::Nothing,
             };
+            cx.notify();
+        }
+    }
+
+    /// More of the text on screen, read by its document's reader thread.
+    pub(super) fn handle_preview_text(
+        &mut self,
+        generation: u64,
+        update: TextUpdate,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Preview {
+            body: PreviewBody::Text { doc, .. },
+            ..
+        }) = &self.preview
+            && doc.generation == generation
+        {
+            doc.apply(update);
             cx.notify();
         }
     }
@@ -1782,8 +1839,8 @@ impl Explorer {
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
-            PreviewBody::Text { lines, .. } => {
-                code_view(lines, false, !Self::is_table_text(preview), scroll)
+            PreviewBody::Text { doc, .. } => {
+                text::code_view(doc, None, !Self::is_table_text(preview), scroll)
             }
             PreviewBody::Archive(listing) => Self::archive_list(listing, scroll),
             PreviewBody::Gzip(inner) => div()
@@ -4036,10 +4093,10 @@ impl Explorer {
                 ..
             } => (*width, *height, image),
             PreviewBody::Pdf(view) => return self.pdf_look(view, cx),
-            PreviewBody::Text { lines, .. } => {
+            PreviewBody::Text { doc, .. } => {
                 let wrap = !Self::is_table_text(preview);
                 return Self::with_preview_scrollbars(
-                    code_view_at(lines, Some(zoom), wrap, &self.look_scroll),
+                    text::code_view(doc, Some(zoom), wrap, &self.look_scroll),
                     &self.look_scroll,
                     &self.look_scrollbar,
                     (!wrap).then_some(&self.look_hscrollbar),
@@ -4569,114 +4626,6 @@ mod zoom_tests {
     }
 }
 
-/// Text and code: line numbers on the left; long lines wrap and the number stays aligned to the
-/// first row. `large` (Quick Look) fills the stage like an editor: a ruled gutter, roomier lines.
-/// Without `wrap` (tables) lines stay whole and the view scrolls sideways.
-fn code_view(
-    lines: &Arc<Vec<CodeLine>>,
-    large: bool,
-    wrap: bool,
-    scroll: &gpui::ScrollHandle,
-) -> AnyElement {
-    code_view_at(lines, large.then_some(1.), wrap, scroll)
-}
-
-/// [`code_view`]; `zoom` is Quick Look's text scale (`None` in the pane).
-fn code_view_at(
-    lines: &Arc<Vec<CodeLine>>,
-    zoom: Option<f32>,
-    wrap: bool,
-    scroll: &gpui::ScrollHandle,
-) -> AnyElement {
-    let large = zoom.is_some();
-    let zoom = zoom.unwrap_or(1.);
-    let digits = lines.len().max(1).to_string().len();
-    // Line numbers take about 8 px a digit at normal size.
-    let numbers = px((8. * digits as f32 + 8.) * zoom);
-    let rows: Vec<AnyElement> = lines
-        .iter()
-        .enumerate()
-        .map(|(ix, line)| {
-            let marks = line.marks.iter().map(|(range, token)| {
-                (
-                    range.clone(),
-                    gpui::HighlightStyle {
-                        color: Some(theme::code_color(*token).into()),
-                        ..gpui::HighlightStyle::default()
-                    },
-                )
-            });
-            let number = div()
-                .flex_none()
-                .flex()
-                .justify_end()
-                .text_color(theme::text_disabled())
-                .child((ix + 1).to_string());
-            let text = div()
-                .when(wrap, |d| d.flex_1().min_w_0())
-                .when(!wrap, |d| d.flex_none().whitespace_nowrap())
-                .child(gpui::StyledText::new(line.text.clone()).with_highlights(marks));
-            if large {
-                div()
-                    .flex()
-                    .child(
-                        number
-                            .w(numbers + theme::s_16() + theme::s_12())
-                            .pl(theme::s_16())
-                            .pr(theme::s_12())
-                            .border_r_1()
-                            .border_color(theme::line()),
-                    )
-                    .child(
-                        text.pl(theme::s_16())
-                            .pr(theme::s_24())
-                            .text_color(theme::text()),
-                    )
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .gap(theme::s_8())
-                    .child(number.w(numbers))
-                    .child(text.text_color(theme::text_muted()))
-                    .into_any_element()
-            }
-        })
-        .collect();
-    // Both axes scroll for a table, and the plain wheel still goes up and down: GPUI only turns
-    // the wheel sideways when x alone scrolls.
-    let area = div()
-        .id("preview-text")
-        .debug_selector(|| "preview-text".into())
-        .size_full();
-    let area = if wrap {
-        area.overflow_y_scroll()
-    } else {
-        area.overflow_scroll().flex().items_start()
-    };
-    area.track_scroll(scroll)
-        .font_family("Cascadia Mono")
-        .when(large, |d| {
-            d.py(theme::s_12())
-                .text_size(theme::fs_13() * zoom)
-                .line_height(gpui::relative(1.6))
-        })
-        .when(!large, |d| {
-            d.p(theme::s_8())
-                .map(theme::preview_sheet)
-                .text_size(theme::fs_12())
-        })
-        .child(
-            // Without wrapping the lines set the width, which may pass the frame's.
-            div()
-                .flex()
-                .flex_col()
-                .when(!wrap, |d| d.flex_none().min_w_full())
-                .children(rows),
-        )
-        .into_any_element()
-}
-
 /// "12 files, 3 folders · 4.2 MB unpacked"
 fn archive_summary(listing: &ArchiveListing) -> String {
     let mut text = t!(
@@ -4694,16 +4643,11 @@ fn archive_summary(listing: &ArchiveListing) -> String {
 
 #[cfg(test)]
 impl PreviewBody {
-    /// Tests: text preview content (lines joined by newlines).
+    /// Tests: text preview content, as far as it was read with the head (lines joined by
+    /// newlines).
     pub(crate) fn text(&self) -> Option<String> {
         match self {
-            Self::Text { lines, .. } => Some(
-                lines
-                    .iter()
-                    .map(|l| l.text.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
+            Self::Text { doc, .. } => Some(doc.head_text()),
             _ => None,
         }
     }

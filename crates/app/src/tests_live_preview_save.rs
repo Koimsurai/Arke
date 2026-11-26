@@ -9,7 +9,6 @@ use arke_core::fs::RealFs;
 use gpui::px;
 
 use super::*;
-use crate::explorer::PreviewBody;
 
 /// A folder under %TEMP% named for this process; removed when dropped.
 struct Folder(PathBuf);
@@ -31,16 +30,7 @@ impl Drop for Folder {
 }
 
 fn shown_text(v: &Explorer) -> Option<String> {
-    match &v.preview.as_ref()?.body {
-        PreviewBody::Text { lines, .. } => Some(
-            lines
-                .iter()
-                .map(|l| l.text.to_string())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        _ => None,
-    }
+    v.preview.as_ref()?.body.text()
 }
 
 fn size_row(v: &Explorer) -> Option<String> {

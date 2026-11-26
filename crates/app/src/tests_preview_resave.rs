@@ -15,16 +15,7 @@ fn note(size: u64, secs: u64) -> Entry {
 
 /// The text the preview shows, once it has loaded.
 fn shown_text(v: &Explorer) -> Option<String> {
-    match &v.preview.as_ref()?.body {
-        PreviewBody::Text { lines, .. } => Some(
-            lines
-                .iter()
-                .map(|l| l.text.to_string())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        _ => None,
-    }
+    v.preview.as_ref()?.body.text()
 }
 
 fn size_row(v: &Explorer) -> Option<String> {

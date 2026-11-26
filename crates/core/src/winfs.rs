@@ -565,17 +565,15 @@ impl Slot {
         match self.records {
             Records::Plain => Read::Paths(changed_paths(raw, &self.root)),
             Records::Extended { .. } => {
+                // The file system took the request, so a later failure is about the folder.
+                self.records = Records::Extended { confirmed: true };
                 if let Some(records) = extended_records(raw) {
-                    self.records = Records::Extended { confirmed: true };
                     Read::Changes(changes_of(records, &self.root))
                 } else {
-                    // Not what was asked for: read plain records from now on, and relist, since
-                    // what changed is unknown.
-                    log::info!(
-                        "unreadable extended change records for {}, reading plain ones",
-                        self.root.display()
-                    );
-                    self.records = Records::Plain;
+                    // Not what was asked for: what changed is unknown, so relist. Plain records
+                    // aren't asked for instead: the kernel may keep queuing this handle's changes
+                    // in the extended layout, and plain ones are read without such checks.
+                    log::debug!("unreadable change records for {}", self.root.display());
                     Read::Rescan
                 }
             }
@@ -1236,7 +1234,7 @@ mod tests {
         assert!(filetime(0, 0).is_some(), "1601 is before 1970 but valid");
     }
 
-    /// 2026-11-26 10:00:00 UTC and an hour later, as FILETIMEs.
+    /// 2025-11-29 02:00:00 UTC and an hour later, as FILETIMEs.
     const CREATED: u64 = 134_088_552_000_000_000;
     const MODIFIED: u64 = CREATED + 36_000_000_000;
 

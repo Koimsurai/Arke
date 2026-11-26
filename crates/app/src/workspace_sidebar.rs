@@ -3297,16 +3297,9 @@ impl Workspace {
                 to_list.push(dir.clone());
             }
         }
-        // On a favorite or a pinned folder, or in one (#307): the tree opens under it but the
-        // sidebar doesn't scroll away from it, the favorite being where the user works.
-        let shown = self
-            .favorites(cx)
-            .iter()
-            .map(|(p, ..)| p)
-            .chain(SettingsStore::global(cx).read(cx).settings.pinned.iter())
-            .any(|p| arke_core::takeover::within(&here, p));
-        self.sidebar_ui.reveal_wanted.set(!shown);
-        self.sidebar_ui.reveal.set(to_list.is_empty() && !shown);
+        // The sidebar scrolls to the folder's row under This PC, in a favorite or not (#424):
+        // following never opens a favorite's own row, so this is where the folder is.
+        self.sidebar_ui.reveal.set(to_list.is_empty());
         cx.notify();
         if to_list.is_empty() {
             return;
@@ -3344,9 +3337,7 @@ impl Workspace {
             }
             // Every folder on the way is listed: the current folder's row is drawn now.
             let _ = this.update(cx, |this, cx| {
-                this.sidebar_ui
-                    .reveal
-                    .set(this.sidebar_ui.reveal_wanted.get());
+                this.sidebar_ui.reveal.set(true);
                 cx.notify();
             });
         })

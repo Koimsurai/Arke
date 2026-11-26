@@ -5,6 +5,7 @@ use crate::shell::ShellMenuEntry;
 
 fn item(id: u32, label: &str) -> ShellMenuEntry {
     ShellMenuEntry::Item {
+        access: None,
         id,
         verb: None,
         label: label.into(),
@@ -182,6 +183,7 @@ fn a_submenu_filled_after_the_menu_closed_is_dropped(cx: &mut TestAppContext) {
 
 fn lazy(label: &str, index: u32) -> ShellMenuEntry {
     ShellMenuEntry::Submenu {
+        access: None,
         label: label.into(),
         enabled: true,
         icon: None,

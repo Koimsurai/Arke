@@ -30,9 +30,10 @@ use arke_core::archive::{
 };
 use gpui::{
     AnimationExt, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Context, ElementId,
-    FocusHandle, InteractiveElement, IntoElement, KeyBinding, MouseDownEvent, ParentElement,
-    Pixels, Point, RenderImage, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity,
-    Window, actions, canvas, div, img, point, prelude::FluentBuilder, px, svg,
+    FocusHandle, HighlightStyle, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
+    MouseDownEvent, ParentElement, Pixels, Point, RenderImage, SharedString,
+    StatefulInteractiveElement, Styled, StyledText, Task, UnderlineStyle, WeakEntity, Window,
+    actions, canvas, div, img, point, prelude::FluentBuilder, px, svg,
 };
 
 use super::ops::{CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RenameFile};
@@ -42,6 +43,7 @@ use crate::assets::Icon;
 use crate::media::MenuIcon;
 use crate::settings::SettingsStore;
 use crate::shell::{ShellMenu, ShellMenuEntry};
+use crate::win_menu::{Access, parse_label};
 
 #[path = "explorer_menu_lazy.rs"]
 mod lazy;
@@ -333,6 +335,8 @@ fn decorate(entries: &mut [MenuEntry]) {
 #[derive(Clone)]
 pub(crate) struct MenuItem {
     pub(crate) label: SharedString,
+    /// The key that picks it while the menu is open (`&O` in its text).
+    access: Option<Access>,
     shortcut: Option<&'static str>,
     pub(crate) command: MenuCommand,
     pub(crate) enabled: bool,
@@ -356,6 +360,7 @@ pub(crate) enum MenuEntry {
     Item(MenuItem),
     Submenu {
         label: SharedString,
+        access: Option<Access>,
         enabled: bool,
         icon: Option<MenuIcon>,
         /// Arke's own icon for its own submenus (`icon` is the one Windows gives its submenus).
@@ -409,6 +414,7 @@ impl MenuEntry {
                 id,
                 verb,
                 label,
+                access,
                 enabled,
                 checked,
                 default,
@@ -419,6 +425,7 @@ impl MenuEntry {
                 let pin = Some(pin_key(&path));
                 Self::Item(MenuItem {
                     label: label.into(),
+                    access,
                     shortcut: None,
                     command: match session {
                         Some(session) => MenuCommand::ShellPart { session, id },
@@ -436,6 +443,7 @@ impl MenuEntry {
             }
             ShellMenuEntry::Submenu {
                 label,
+                access,
                 enabled,
                 icon: i,
                 children,
@@ -455,6 +463,7 @@ impl MenuEntry {
                 };
                 Self::Submenu {
                     label: label.into(),
+                    access,
                     enabled,
                     icon: icon(i),
                     glyph: None,
@@ -470,32 +479,112 @@ impl MenuEntry {
     }
 }
 
-const fn plain(
-    label: SharedString,
+/// The text of one of Arke's own menu rows, and which `access.*` letter it takes (none for text that
+/// isn't ours to key, like "Loading…" or an app's name).
+pub(crate) struct Label {
+    text: SharedString,
+    name: Option<&'static str>,
+    /// Text put into the label from outside (a file name): not searched for the key.
+    skip: Option<String>,
+}
+
+impl<T: Into<SharedString>> From<T> for Label {
+    fn from(text: T) -> Self {
+        Self {
+            text: text.into(),
+            name: None,
+            skip: None,
+        }
+    }
+}
+
+impl Label {
+    /// Its access key, if it takes one.
+    fn access(&self) -> Option<Access> {
+        let name = self.name?;
+        own_access(name, &self.text, self.skip.as_deref())
+    }
+}
+
+/// `text` as the row `name` of the `access.*` letters.
+fn lab(name: &'static str, text: impl Into<SharedString>) -> Label {
+    Label {
+        text: text.into(),
+        name: Some(name),
+        skip: None,
+    }
+}
+
+/// [`lab`] for a label with `put_in` (a name) inside it, which is not searched for the key.
+fn lab_with(name: &'static str, text: impl Into<SharedString>, put_in: &str) -> Label {
+    Label {
+        skip: Some(put_in.to_owned()),
+        ..lab(name, text)
+    }
+}
+
+/// Whether `locale` writes the key after the text, as `(C)`, not under a letter of it.
+fn writes_key_after(locale: &str) -> bool {
+    locale.starts_with("zh") || locale.starts_with("ja")
+}
+
+/// The access key for `letter` in `label`: its first occurrence there, compared without case and
+/// outside `skip`, which is where it is underlined. When the letter isn't in the label (or the
+/// language writes the key after the text), it goes after it as `(C)`, which is still right.
+fn derive_access(letter: char, label: &str, skip: Option<&str>, after: bool) -> Access {
+    if !after {
+        let hole = skip.and_then(|s| label.find(s).map(|at| at..at + s.len()));
+        let found = label.char_indices().find(|(at, c)| {
+            c.to_lowercase().eq(letter.to_lowercase())
+                && !hole.as_ref().is_some_and(|h| h.contains(at))
+        });
+        if let Some((at, key)) = found {
+            return Access { key, at: Some(at) };
+        }
+    }
+    Access {
+        key: letter.to_uppercase().next().unwrap_or(letter),
+        at: None,
+    }
+}
+
+/// The access key of row `name` with `label`, under `locale`'s `access.*` letter; `None` where it
+/// has none.
+fn access_in(locale: &str, name: &str, label: &str, skip: Option<&str>) -> Option<Access> {
+    let key = format!("access.{name}");
+    let letter = t!(key.as_str(), locale = locale).chars().next()?;
+    letter
+        .is_alphanumeric()
+        .then(|| derive_access(letter, label, skip, writes_key_after(locale)))
+}
+
+fn own_access(name: &str, label: &str, skip: Option<&str>) -> Option<Access> {
+    access_in(&rust_i18n::locale(), name, label, skip)
+}
+
+fn plain(
+    label: Label,
     shortcut: Option<&'static str>,
     command: MenuCommand,
     enabled: bool,
 ) -> MenuEntry {
     MenuEntry::Item(MenuItem {
-        label,
-        shortcut,
-        command,
-        enabled,
-        icon: None,
-        glyph: None,
-        checked: false,
-        bold: false,
-        danger: false,
-        pin: None,
-        verb: None,
+        access: label.access(),
+        ..text_row(label.text, shortcut, command, enabled)
     })
 }
 
-/// One button in the icon row.
-fn action(label: impl Into<SharedString>, command: MenuCommand, enabled: bool) -> MenuItem {
+/// A row that is only text, with no access key (a placeholder, an error).
+const fn text_row(
+    label: SharedString,
+    shortcut: Option<&'static str>,
+    command: MenuCommand,
+    enabled: bool,
+) -> MenuItem {
     MenuItem {
-        label: label.into(),
-        shortcut: None,
+        label,
+        access: None,
+        shortcut,
         command,
         enabled,
         icon: None,
@@ -508,8 +597,17 @@ fn action(label: impl Into<SharedString>, command: MenuCommand, enabled: bool) -
     }
 }
 
+/// One button in the icon row.
+fn action(label: impl Into<Label>, command: MenuCommand, enabled: bool) -> MenuItem {
+    let label = label.into();
+    MenuItem {
+        access: label.access(),
+        ..text_row(label.text, None, command, enabled)
+    }
+}
+
 fn item(
-    label: impl Into<SharedString>,
+    label: impl Into<Label>,
     shortcut: Option<&'static str>,
     command: MenuCommand,
 ) -> MenuEntry {
@@ -518,7 +616,7 @@ fn item(
 
 /// Row with a check mark when `checked` (the current view, an option that is on).
 fn checked_item(
-    label: impl Into<SharedString>,
+    label: impl Into<Label>,
     shortcut: Option<&'static str>,
     command: MenuCommand,
     checked: bool,
@@ -531,24 +629,26 @@ fn checked_item(
 
 /// Disabled text-only row ("Loading...", "No other options").
 fn placeholder(label: impl Into<SharedString>) -> MenuEntry {
-    plain(label.into(), None, MenuCommand::MoreOptions, false)
+    MenuEntry::Item(text_row(
+        label.into(),
+        None,
+        MenuCommand::MoreOptions,
+        false,
+    ))
 }
 
 /// Error row, e.g. failed to load. Not clickable, but drawn in the danger color since disabled gray
 /// is too faint.
 fn error_line(label: impl Into<SharedString>) -> MenuEntry {
-    match plain(label.into(), None, MenuCommand::MoreOptions, false) {
-        MenuEntry::Item(item) => MenuEntry::Item(MenuItem {
-            danger: true,
-            ..item
-        }),
-        other => other,
-    }
+    MenuEntry::Item(MenuItem {
+        danger: true,
+        ..text_row(label.into(), None, MenuCommand::MoreOptions, false)
+    })
 }
 
 fn item_if(
     enabled: bool,
-    label: impl Into<SharedString>,
+    label: impl Into<Label>,
     shortcut: Option<&'static str>,
     command: MenuCommand,
 ) -> MenuEntry {
@@ -561,6 +661,115 @@ fn item_if(
 struct MenuGeometry {
     rows: HashMap<usize, Bounds<Pixels>>,
     panels: HashMap<usize, Bounds<Pixels>>,
+}
+
+/// Whether access keys are drawn underlined, by the Windows rule: not in a menu opened with the
+/// mouse, until a key is pressed in it; from the start in one opened from the keyboard, or when
+/// Windows is set to always underline them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Cues(bool);
+
+impl Cues {
+    /// A menu just opened, from the keyboard or not, with Windows' "always underline" as it is.
+    pub(crate) const fn opened(from_keyboard: bool, always: bool) -> Self {
+        Self(from_keyboard || always)
+    }
+
+    pub(crate) const fn shown(self) -> bool {
+        self.0
+    }
+
+    /// The keyboard is in use in the menu.
+    pub(crate) const fn pressed(&mut self) {
+        self.0 = true;
+    }
+}
+
+/// What a letter typed in a menu level comes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AccessHit {
+    /// No enabled item has that key.
+    Nothing,
+    /// One item or icon button has it: run it.
+    Run(MenuCommand),
+    /// One submenu has it: open it (its row).
+    Open(usize),
+    /// Several rows have it: the highlight goes to this one, the next after the highlighted row.
+    Move(usize),
+}
+
+/// Looks `typed` up among the access keys of `entries` (a menu level), whose row `highlighted` is
+/// highlighted. Disabled rows are skipped. Icon buttons count too, but only a lone match runs
+/// them: the highlight can't rest on a button.
+pub(crate) fn access_hit(
+    entries: &[MenuEntry],
+    highlighted: Option<usize>,
+    typed: char,
+) -> AccessHit {
+    let has = |access: Option<Access>| access.is_some_and(|a| a.matches(typed));
+    let mut rows: Vec<usize> = Vec::new();
+    let mut buttons: Vec<MenuCommand> = Vec::new();
+    for (ix, entry) in entries.iter().enumerate() {
+        match entry {
+            MenuEntry::Item(i) if i.enabled && has(i.access) => rows.push(ix),
+            MenuEntry::Submenu {
+                enabled: true,
+                access,
+                ..
+            } if has(*access) => rows.push(ix),
+            MenuEntry::Actions(items) => buttons.extend(
+                items
+                    .iter()
+                    .filter(|i| i.enabled && has(i.access))
+                    .map(|i| i.command),
+            ),
+            _ => {}
+        }
+    }
+    match (rows.as_slice(), buttons.as_slice()) {
+        ([], [command]) => AccessHit::Run(*command),
+        ([ix], []) => match &entries[*ix] {
+            MenuEntry::Item(i) => AccessHit::Run(i.command),
+            _ => AccessHit::Open(*ix),
+        },
+        ([first, ..], _) => {
+            let next = highlighted
+                .and_then(|h| rows.iter().copied().find(|&ix| ix > h))
+                .unwrap_or(*first);
+            AccessHit::Move(next)
+        }
+        _ => AccessHit::Nothing,
+    }
+}
+
+/// A row's text with its access key underlined, when the underlines are shown. The CJK form
+/// writes the key after the text, as `(O)`, which is there whether underlined or not.
+fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyElement {
+    let Some(access) = access else {
+        return label.into_any_element();
+    };
+    let (text, at): (SharedString, usize) = match access.at {
+        Some(at) => (label, at),
+        None => {
+            let at = label.len() + 1;
+            (format!("{label}({})", access.key).into(), at)
+        }
+    };
+    let end = at + access.key.len_utf8();
+    if !cues.shown() || text.get(at..end).is_none() {
+        return text.into_any_element();
+    }
+    let underline = HighlightStyle {
+        underline: Some(UnderlineStyle {
+            thickness: px(1.),
+            color: None,
+            wavy: false,
+        }),
+        ..HighlightStyle::default()
+    };
+    StyledText::new(text)
+        .with_highlights([(at..end, underline)])
+        .into_any_element()
 }
 
 /// The window a menu level is drawn in (`popup.rs`), and the open submenus that lead to it.
@@ -635,6 +844,8 @@ pub(crate) struct ContextMenu {
     /// Last input was keyboard: when submenu items arrive late, keyboard users get the first item
     /// selected.
     keyboard: bool,
+    /// Whether the access keys are drawn underlined.
+    cues: Cues,
     geometry: Rc<RefCell<MenuGeometry>>,
     /// Scroll position of each level: a level taller than the window scrolls (#114).
     scrolls: RefCell<Vec<gpui::ScrollHandle>>,
@@ -705,6 +916,7 @@ impl ContextMenu {
             pending: None,
             serial: NEXT_MENU.fetch_add(1, Ordering::Relaxed),
             keyboard: false,
+            cues: Cues::default(),
             geometry: Rc::default(),
             scrolls: RefCell::default(),
             hover_task: None,
@@ -988,6 +1200,12 @@ impl ContextMenu {
         self.open.len()
     }
 
+    /// Test helper: whether the access keys are drawn underlined.
+    #[cfg(test)]
+    pub(crate) const fn cues_shown_for_test(&self) -> bool {
+        self.cues.shown()
+    }
+
     /// Test helper: where `level` was drawn, and how far it is scrolled.
     #[cfg(test)]
     pub(crate) fn panel_for_test(&self, level: usize) -> (Option<Bounds<Pixels>>, Pixels) {
@@ -1140,6 +1358,20 @@ impl Explorer {
     ) {
         let size = window.viewport_size();
         self.open_context_menu(point(size.width / 2., size.height / 3.), window, cx);
+        // Opened from the keyboard: the access keys are underlined from the start.
+        if let Some(menu) = self.context_menu.as_mut() {
+            menu.cues = Cues::opened(true, menu.cues.shown());
+        }
+    }
+
+    /// Test helper: Shift+F10.
+    #[cfg(test)]
+    pub(crate) fn open_context_menu_by_keyboard_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_context_menu_action(&OpenContextMenu, window, cx);
     }
 
     /// For targets in cloud folders like OneDrive: whether all are "Always keep on this device".
@@ -1349,6 +1581,10 @@ impl Explorer {
     /// window (a click in another program, on the taskbar, Alt+Tab) or moves.
     fn show_menu(&mut self, mut menu: ContextMenu, window: &mut Window, cx: &mut Context<Self>) {
         menu.owner = Some(window.window_handle());
+        // Asked once, as the menu opens.
+        if crate::win_menu::keyboard_cues_always() {
+            menu.cues.pressed();
+        }
         menu.at = crate::popup::to_screen(window, menu.position);
         menu.watch = crate::popup::close_with_window(window, cx, Self::close_menu);
         self.context_menu = Some(menu);
@@ -1360,26 +1596,29 @@ impl Explorer {
     fn view_submenu(&self) -> MenuEntry {
         use MenuCommand as C;
         let mode = self.view_mode;
+        let label = t!("menu.view");
+        let access = own_access("view", &label, None);
         MenuEntry::Submenu {
-            label: t!("menu.view").into(),
+            label: label.into(),
+            access,
             enabled: true,
             icon: None,
             glyph: None,
             children: vec![
                 checked_item(
-                    t!("menu.view_details"),
+                    lab("view_details", t!("menu.view_details")),
                     Some("Ctrl+Shift+6"),
                     C::ViewDetails,
                     mode == ViewMode::Details,
                 ),
                 checked_item(
-                    t!("view.icons"),
+                    lab("view_icons", t!("view.icons")),
                     None,
                     C::ViewIcons,
                     mode == ViewMode::Icons,
                 ),
                 checked_item(
-                    t!("settings.view_columns"),
+                    lab("view_columns", t!("settings.view_columns")),
                     None,
                     C::ViewColumns,
                     mode == ViewMode::Columns,
@@ -1396,8 +1635,11 @@ impl Explorer {
     /// own (#190). Its rows keep their shortcuts and the keyboard goes in with Right.
     fn new_submenu(mut children: Vec<MenuEntry>) -> MenuEntry {
         decorate(&mut children);
+        let label = t!("menu.new");
+        let access = own_access("new", &label, None);
         MenuEntry::Submenu {
-            label: t!("menu.new").into(),
+            label: label.into(),
+            access,
             enabled: true,
             icon: None,
             glyph: Some(Icon::Plus),
@@ -1428,20 +1670,23 @@ impl Explorer {
         children.extend([
             MenuEntry::Separator,
             checked_item(
-                t!("settings.ascending"),
+                lab("asc", t!("settings.ascending")),
                 None,
                 C::SortDirection(true),
                 sort.ascending,
             ),
             checked_item(
-                t!("settings.descending"),
+                lab("desc", t!("settings.descending")),
                 None,
                 C::SortDirection(false),
                 !sort.ascending,
             ),
         ]);
+        let label = t!("settings.sort_by");
+        let access = own_access("sort_by", &label, None);
         MenuEntry::Submenu {
-            label: t!("settings.sort_by").into(),
+            label: label.into(),
+            access,
             enabled: true,
             icon: None,
             glyph: Some(Icon::Sort),
@@ -1470,18 +1715,29 @@ impl Explorer {
         if targets.is_empty() {
             let mut entries = vec![
                 Self::new_submenu(vec![
-                    item(t!("menu.new_folder"), Some("Ctrl+Shift+N"), C::NewFolder),
-                    item(t!("menu.new_text_file"), None, C::NewTextFile),
+                    item(
+                        lab("new_folder", t!("menu.new_folder")),
+                        Some("Ctrl+Shift+N"),
+                        C::NewFolder,
+                    ),
+                    item(
+                        lab("new_text", t!("menu.new_text_file")),
+                        None,
+                        C::NewTextFile,
+                    ),
                 ]),
                 item_if(
                     self.services.shell.clipboard_has_files(),
-                    t!("menu.paste"),
+                    lab("paste", t!("menu.paste")),
                     Some("Ctrl+V"),
                     C::Paste,
                 ),
                 item_if(
                     undo.is_some(),
-                    undo.unwrap_or_else(|| t!("menu.undo").into_owned()),
+                    lab(
+                        if undo.is_some() { "undo_op" } else { "undo" },
+                        undo.unwrap_or_else(|| t!("menu.undo").into_owned()),
+                    ),
                     Some("Ctrl+Z"),
                     C::Undo,
                 ),
@@ -1494,16 +1750,28 @@ impl Explorer {
                 entries.push(self.sort_submenu());
             }
             entries.extend([
-                item(t!("menu.refresh"), Some("F5"), C::Refresh),
+                item(lab("refresh", t!("menu.refresh")), Some("F5"), C::Refresh),
                 MenuEntry::Separator,
-                item(t!("menu.copy_path"), None, C::CopyPath),
-                item(t!("menu.open_in_explorer"), None, C::RevealInExplorer),
-                item(t!("menu.open_terminal"), None, C::OpenTerminal),
+                item(lab("copy_path", t!("menu.copy_path")), None, C::CopyPath),
+                item(
+                    lab("open_explorer", t!("menu.open_in_explorer")),
+                    None,
+                    C::RevealInExplorer,
+                ),
+                item(
+                    lab("terminal", t!("menu.open_terminal")),
+                    None,
+                    C::OpenTerminal,
+                ),
                 MenuEntry::Separator,
                 item(pin_label(pinned), None, C::TogglePin),
                 // The folder's own, as Alt+Enter with nothing selected; Windows' would open
                 // Explorer's dialog from "Show more options" otherwise.
-                item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
+                item(
+                    lab("props", t!("menu.properties")),
+                    Some("Alt+Enter"),
+                    C::Properties,
+                ),
                 MenuEntry::Separator,
                 // Windows background menu: New (file types), Open in Terminal, third-party items.
                 more_options(),
@@ -1514,7 +1782,7 @@ impl Explorer {
                     .iter()
                     .position(|e| matches!(e, MenuEntry::Separator))
                     .unwrap_or(entries.len());
-                entries.insert(at, item(label, Some("Ctrl+Y"), C::Redo));
+                entries.insert(at, item(lab("redo_op", label), Some("Ctrl+Y"), C::Redo));
             }
             return entries;
         }
@@ -1523,21 +1791,33 @@ impl Explorer {
         // Inside this folder, as at the top of VS Code's explorer menu. A server's shares are
         // only listed, so nothing can be made in `\\server` itself.
         let new_in = single && *is_dir && arke_core::net::bare_server(path).is_none();
-        let mut entries = vec![item(t!("menu.open"), Some("Enter"), C::Open)];
+        let mut entries = vec![item(lab("open", t!("menu.open")), Some("Enter"), C::Open)];
         if single && *is_dir {
             entries.push(item(
-                t!("menu.open_in_new_tab"),
+                lab("open_tab", t!("menu.open_in_new_tab")),
                 Some("Ctrl+Enter"),
                 C::OpenInNewTab,
             ));
             entries.push(MenuEntry::Separator);
             if new_in {
                 entries.push(Self::new_submenu(vec![
-                    item(t!("menu.new_file_in"), None, C::NewFileIn),
-                    item(t!("menu.new_folder_in"), None, C::NewFolderIn),
+                    item(
+                        lab("new_file_in", t!("menu.new_file_in")),
+                        None,
+                        C::NewFileIn,
+                    ),
+                    item(
+                        lab("new_folder_in", t!("menu.new_folder_in")),
+                        None,
+                        C::NewFolderIn,
+                    ),
                 ]));
             }
-            entries.push(item(t!("menu.search_in_folder"), None, C::SearchInFolder));
+            entries.push(item(
+                lab("search_folder", t!("menu.search_in_folder")),
+                None,
+                C::SearchInFolder,
+            ));
             entries.push(MenuEntry::Separator);
             entries.push(item(pin_label(pinned), None, C::TogglePin));
             // Network folders can be added to whole-PC search on their own, so large shares needn't
@@ -1553,46 +1833,61 @@ impl Explorer {
                     C::ToggleSearchNetwork,
                 ));
             }
-            entries.push(item(t!("menu.open_terminal"), None, C::OpenTerminal));
+            entries.push(item(
+                lab("terminal", t!("menu.open_terminal")),
+                None,
+                C::OpenTerminal,
+            ));
         }
         let name = path
             .file_name()
             .map_or_default(|n| n.to_string_lossy().into_owned());
         if single && !*is_dir && archive_kind(&name).is_some() {
             entries.push(MenuEntry::Separator);
+            let folder = menu_name(&folder_name_for(&name));
             entries.push(item(
-                t!("menu.extract_to", name = menu_name(&folder_name_for(&name))),
+                lab_with("extract_to", t!("menu.extract_to", name = folder), &folder),
                 None,
                 C::ExtractToFolder,
             ));
-            entries.push(item(t!("menu.extract_here"), None, C::ExtractHere));
+            entries.push(item(
+                lab("extract_here", t!("menu.extract_here")),
+                None,
+                C::ExtractHere,
+            ));
         }
         if single && !*is_dir && is_backdrop_image(&name) {
             entries.push(MenuEntry::Separator);
-            entries.push(item(t!("menu.set_background"), None, C::SetBackground));
+            entries.push(item(
+                lab("set_bg", t!("menu.set_background")),
+                None,
+                C::SetBackground,
+            ));
         }
         // Settings backup. Whether it's really an Arke backup is checked in the background on
         // import.
         if single && !*is_dir && name.to_lowercase().ends_with(".json") {
             entries.push(MenuEntry::Separator);
-            entries.push(item(t!("menu.import_settings"), None, C::ImportSettings));
+            entries.push(item(
+                lab("import", t!("menu.import_settings")),
+                None,
+                C::ImportSettings,
+            ));
         }
         // Search results may span folders, so compress is only offered in the normal list.
         if !self.search_mode {
             entries.push(MenuEntry::Separator);
+            let zip = menu_name(&format!(
+                "{}.zip",
+                zip_stem_for_targets(self.current_path(), targets)
+            ));
             entries.push(item(
-                t!(
-                    "menu.compress",
-                    name = menu_name(&format!(
-                        "{}.zip",
-                        zip_stem_for_targets(self.current_path(), targets)
-                    ))
-                ),
+                lab_with("compress", t!("menu.compress", name = zip), &zip),
                 None,
                 C::Compress,
             ));
             entries.push(item(
-                t!("menu.move_to_new_folder"),
+                lab("move_new", t!("menu.move_to_new_folder")),
                 None,
                 C::MoveToNewFolder,
             ));
@@ -1613,7 +1908,11 @@ impl Explorer {
         }
         entries.push(MenuEntry::Separator);
         if single && *is_dir {
-            entries.push(item(t!("menu.open_new_window"), None, C::OpenInNewWindow));
+            entries.push(item(
+                lab("new_window", t!("menu.open_new_window")),
+                None,
+                C::OpenInNewWindow,
+            ));
         }
         // Apps found on this PC (VS Code, Zed, ...), single selection only.
         if single {
@@ -1632,39 +1931,65 @@ impl Explorer {
         }
         // Symlinks and junctions (files or folders): where they point.
         if single && self.target_is_link(path) {
-            entries.push(item(t!("menu.go_to_link_target"), None, C::GoToLinkTarget));
+            entries.push(item(
+                lab("link", t!("menu.go_to_link_target")),
+                None,
+                C::GoToLinkTarget,
+            ));
         }
         // Single file: Windows "Open with"; shortcuts also get "Open file location".
         if single && !*is_dir {
             if name.to_lowercase().ends_with(".lnk") {
                 entries.push(item(
-                    t!("menu.open_file_location"),
+                    lab("file_location", t!("menu.open_file_location")),
                     None,
                     C::OpenFileLocation,
                 ));
             }
-            entries.push(item(t!("menu.choose_app"), None, C::ChooseApp));
+            entries.push(item(
+                lab("choose_app", t!("menu.choose_app")),
+                None,
+                C::ChooseApp,
+            ));
         }
         entries.push(item(
-            t!("menu.add_to_shelf"),
+            lab("shelf", t!("menu.add_to_shelf")),
             Some("Ctrl+Shift+A"),
             C::AddToShelf,
         ));
-        entries.push(item(t!("menu.copy_path"), None, C::CopyPath));
+        entries.push(item(
+            lab("copy_path", t!("menu.copy_path")),
+            None,
+            C::CopyPath,
+        ));
         // The tree names nested rows by their path below the folder shown.
         if self.tree_active() {
             entries.push(item(
-                t!("menu.copy_relative_path"),
+                lab("copy_rel", t!("menu.copy_relative_path")),
                 None,
                 C::CopyRelativePath,
             ));
         }
         // A folder's "New folder…" is a button here too, a click away (#190); the keyboard has it
         // in "New".
-        let new_folder = new_in.then(|| action(t!("menu.new_folder"), C::NewFolderIn, true));
+        let new_folder = new_in.then(|| {
+            action(
+                lab("new_folder", t!("menu.new_folder")),
+                C::NewFolderIn,
+                true,
+            )
+        });
         entries.extend([
-            item(t!("menu.reveal_in_explorer"), None, C::RevealInExplorer),
-            item(t!("menu.properties"), Some("Alt+Enter"), C::Properties),
+            item(
+                lab("reveal", t!("menu.reveal_in_explorer")),
+                None,
+                C::RevealInExplorer,
+            ),
+            item(
+                lab("props", t!("menu.properties")),
+                Some("Alt+Enter"),
+                C::Properties,
+            ),
             MenuEntry::Separator,
             more_options(),
             MenuEntry::Separator,
@@ -1672,12 +1997,16 @@ impl Explorer {
                 new_folder
                     .into_iter()
                     .chain([
-                        action(t!("menu.cut"), C::Cut, true),
-                        action(t!("menu.copy"), C::Copy, true),
+                        action(lab("cut", t!("menu.cut")), C::Cut, true),
+                        action(lab("copy", t!("menu.copy")), C::Copy, true),
                         // Works on multiple items too: renames all selected to "name (1)",
                         // "name (2)", ...
-                        action(t!("menu.rename"), C::Rename, !self.search_mode),
-                        action(t!("menu.delete"), C::Delete, true),
+                        action(
+                            lab("rename", t!("menu.rename")),
+                            C::Rename,
+                            !self.search_mode,
+                        ),
+                        action(lab("delete", t!("menu.delete")), C::Delete, true),
                     ])
                     .collect(),
             ),
@@ -1712,6 +2041,7 @@ impl Explorer {
         };
         menu.highlighted = Some(selectable[next]);
         menu.keyboard = true;
+        menu.cues.pressed();
         // Keep it in view when the level scrolls (its first child is the measuring canvas).
         menu.scroll(menu.open.len())
             .scroll_to_item(selectable[next] + 1);
@@ -1724,6 +2054,49 @@ impl Explorer {
 
     pub(super) fn menu_down(&mut self, _: &MenuDown, _: &mut Window, cx: &mut Context<Self>) {
         self.move_highlight(true, cx);
+    }
+
+    /// A letter or digit: picks the row with that access key (`access_hit`), as Windows does.
+    /// Shift counts as the letter; Ctrl and Alt make it a shortcut of something else.
+    pub(super) fn menu_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let mods = keystroke.modifiers;
+        if mods.control || mods.alt || mods.platform || mods.function {
+            return;
+        }
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
+        // Any key shows the underlines.
+        menu.cues.pressed();
+        cx.notify();
+        let mut chars = keystroke.key_char.as_deref().unwrap_or_default().chars();
+        let (Some(typed), None) = (chars.next(), chars.next()) else {
+            return;
+        };
+        if !typed.is_alphanumeric() {
+            return;
+        }
+        cx.stop_propagation();
+        let hit = access_hit(menu.level(menu.open.len()), menu.highlighted, typed);
+        match hit {
+            AccessHit::Nothing => {}
+            AccessHit::Run(command) => self.run_menu_command(command, window, cx),
+            AccessHit::Open(ix) => {
+                menu.highlighted = Some(ix);
+                self.enter_submenu(cx);
+            }
+            AccessHit::Move(ix) => {
+                menu.highlighted = Some(ix);
+                menu.keyboard = true;
+                menu.scroll(menu.open.len()).scroll_to_item(ix + 1);
+            }
+        }
     }
 
     /// Right: opens the highlighted submenu and selects its first item.
@@ -1779,6 +2152,7 @@ impl Explorer {
         menu.highlighted = first;
         menu.hover_task = None;
         menu.keyboard = true;
+        menu.cues.pressed();
         self.ensure_shell_menu();
         self.fill_lazy_submenu(level, ix);
         cx.notify();
@@ -2284,11 +2658,27 @@ impl Explorer {
             return;
         };
         let entries = vec![
-            item(t!("menu.copy_address"), None, C::CopyAddress),
-            item(t!("menu.copy_as_path"), Some("Ctrl+Shift+C"), C::CopyPath),
-            item(t!("menu.edit_address"), Some("Ctrl+L"), C::EditAddress),
+            item(
+                lab("copy_address", t!("menu.copy_address")),
+                None,
+                C::CopyAddress,
+            ),
+            item(
+                lab("copy_as_path", t!("menu.copy_as_path")),
+                Some("Ctrl+Shift+C"),
+                C::CopyPath,
+            ),
+            item(
+                lab("edit_address", t!("menu.edit_address")),
+                Some("Ctrl+L"),
+                C::EditAddress,
+            ),
             MenuEntry::Separator,
-            item(t!("menu.clear_history"), None, C::ClearHistory),
+            item(
+                lab("clear_history", t!("menu.clear_history")),
+                None,
+                C::ClearHistory,
+            ),
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -2335,7 +2725,7 @@ impl Explorer {
         entries.push(MenuEntry::Separator);
         entries.push(item_if(
             crate::prefs::order() != Col::MOVABLE,
-            t!("menu.reset_column_order"),
+            lab("reset_cols", t!("menu.reset_column_order")),
             None,
             MenuCommand::ResetColumnOrder,
         ));
@@ -2365,8 +2755,16 @@ impl Explorer {
             || dest.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        let move_item = item(t!("dnd.menu_move", dest = name), None, C::DropMove);
-        let copy_item = item(t!("dnd.menu_copy", dest = name), None, C::DropCopy);
+        let move_item = item(
+            lab_with("drop_move", t!("dnd.menu_move", dest = name), &name),
+            None,
+            C::DropMove,
+        );
+        let copy_item = item(
+            lab_with("drop_copy", t!("dnd.menu_copy", dest = name), &name),
+            None,
+            C::DropCopy,
+        );
         let default_move =
             crate::explorer::dnd::drop_is_move(gpui::Modifiers::default(), &sources, &dest);
         let mut entries = if default_move {
@@ -2374,9 +2772,17 @@ impl Explorer {
         } else {
             vec![copy_item, move_item]
         };
-        entries.push(item(t!("dnd.menu_shortcut"), None, C::DropShortcut));
+        entries.push(item(
+            lab("drop_shortcut", t!("dnd.menu_shortcut")),
+            None,
+            C::DropShortcut,
+        ));
         entries.push(MenuEntry::Separator);
-        entries.push(item(t!("dnd.menu_cancel"), Some("Esc"), C::DropCancel));
+        entries.push(item(
+            lab("drop_cancel", t!("dnd.menu_cancel")),
+            Some("Esc"),
+            C::DropCancel,
+        ));
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.release_shell_menu();
@@ -3035,6 +3441,7 @@ impl Explorer {
                 .on_action(cx.listener(Self::menu_right))
                 .on_action(cx.listener(Self::menu_confirm))
                 .on_action(cx.listener(Self::menu_dismiss))
+                .on_key_down(cx.listener(Self::menu_key))
                 .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.close_menu(window, cx);
                 }))
@@ -3318,7 +3725,7 @@ impl Explorer {
                                 theme::text_disabled()
                             })
                     }))
-                    .child(item.label.clone())
+                    .child(access_text(item.label.clone(), item.access, menu.cues))
             }))
             .into_any_element()
     }
@@ -3390,6 +3797,7 @@ impl Explorer {
         }
         let Some(RowParts {
             label,
+            access,
             danger,
             enabled,
             icon,
@@ -3488,7 +3896,7 @@ impl Explorer {
                     .min_w_0()
                     .truncate()
                     .when(bold, |d| d.font_weight(theme::FW_STRONG))
-                    .child(label),
+                    .child(access_text(label, access, menu.cues)),
             )
             .children(shortcut.map(|s| {
                 div()
@@ -3512,6 +3920,7 @@ impl Explorer {
 )]
 struct RowParts {
     label: SharedString,
+    access: Option<Access>,
     enabled: bool,
     icon: Option<MenuIcon>,
     checked: bool,
@@ -3579,6 +3988,7 @@ impl RowParts {
             MenuEntry::Separator | MenuEntry::Actions(_) => None,
             MenuEntry::Item(it) => Some(Self {
                 label: it.label.clone(),
+                access: it.access,
                 enabled: it.enabled,
                 icon: it.icon.clone(),
                 checked: it.checked,
@@ -3592,6 +4002,7 @@ impl RowParts {
             }),
             MenuEntry::Submenu {
                 label,
+                access,
                 enabled,
                 icon,
                 glyph,
@@ -3599,6 +4010,7 @@ impl RowParts {
                 ..
             } => Some(Self {
                 label: label.clone(),
+                access: *access,
                 enabled: *enabled,
                 icon: icon.clone(),
                 checked: false,
@@ -3877,6 +4289,7 @@ fn coming_row(key: &str, ix: usize) -> Option<MenuEntry> {
     if pin_is_submenu(key) {
         return Some(MenuEntry::Submenu {
             label: label.to_string().into(),
+            access: None,
             enabled: true,
             icon,
             glyph: None,
@@ -3889,6 +4302,7 @@ fn coming_row(key: &str, ix: usize) -> Option<MenuEntry> {
     }
     Some(MenuEntry::Item(MenuItem {
         label: label.to_string().into(),
+        access: None,
         shortcut: None,
         command: MenuCommand::PinPending(ix),
         enabled: true,
@@ -3933,12 +4347,20 @@ fn add_cloud_items(entries: &mut Vec<MenuEntry>, kept: bool) {
         .iter()
         .position(|e| matches!(e, MenuEntry::Item(i) if i.command == MenuCommand::CopyPath))
         .unwrap_or(entries.len());
-    let mut keep = item(t!("menu.keep_on_device"), None, MenuCommand::KeepOnDevice);
+    let mut keep = item(
+        lab("keep", t!("menu.keep_on_device")),
+        None,
+        MenuCommand::KeepOnDevice,
+    );
     if let MenuEntry::Item(row) = &mut keep {
         row.checked = kept;
         row.glyph = glyph_for(MenuCommand::KeepOnDevice);
     }
-    let mut free = item(t!("menu.free_up_space"), None, MenuCommand::FreeUpSpace);
+    let mut free = item(
+        lab("free", t!("menu.free_up_space")),
+        None,
+        MenuCommand::FreeUpSpace,
+    );
     if let MenuEntry::Item(row) = &mut free {
         row.glyph = glyph_for(MenuCommand::FreeUpSpace);
     }
@@ -3946,8 +4368,11 @@ fn add_cloud_items(entries: &mut Vec<MenuEntry>, kept: bool) {
 }
 
 fn more_options() -> MenuEntry {
+    let label = t!("menu.more_options");
+    let access = own_access("more", &label, None);
     MenuEntry::Submenu {
-        label: t!("menu.more_options").into(),
+        label: label.into(),
+        access,
         enabled: true,
         icon: None,
         glyph: None,
@@ -4006,11 +4431,11 @@ fn zip_stem_for_targets(dir: Option<&std::path::Path>, targets: &[(PathBuf, bool
         .unwrap_or_else(|| zip_stem_for(&targets[0].0, targets[0].1))
 }
 
-fn pin_label(pinned: bool) -> std::borrow::Cow<'static, str> {
+fn pin_label(pinned: bool) -> Label {
     if pinned {
-        t!("sidebar.remove_favorite")
+        lab("fav_remove", t!("sidebar.remove_favorite"))
     } else {
-        t!("sidebar.add_favorite")
+        lab("fav_add", t!("sidebar.add_favorite"))
     }
 }
 
@@ -4119,5 +4544,338 @@ mod compress_name_tests {
             zip_stem_for_selection(Path::new(r"C:\Work\Report"), &targets),
             None
         );
+    }
+}
+
+/// Access keys in Arke's own menus (#422).
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    const LOCALES: [&str; 7] = ["en", "zh-TW", "zh-CN", "de", "es", "pt-BR", "ja"];
+
+    /// Spanish has no key for these: every letter of their words was taken by something they
+    /// share a menu with.
+    const NO_SPANISH_KEY: [&str; 4] = ["copy_rel", "link", "keep", "free"];
+
+    /// The own items each menu can show at once, by their `access.*` key. An item that never shows
+    /// with another (a folder's "Add to favorites" and "Remove from favorites") is in its own
+    /// copy of the menu. "Open with <app>", the pane items and the PC search ones have no key.
+    const MENUS: &[(&str, &str)] = &[
+        (
+            "folder",
+            "open open_tab new search_folder fav_add terminal compress move_new new_window shelf \
+         copy_path reveal props more new_folder cut copy rename delete copy_rel link keep \
+         free",
+        ),
+        (
+            "folder_rm",
+            "open open_tab new search_folder fav_remove terminal compress move_new new_window \
+         shelf copy_path reveal props more new_folder cut copy rename delete copy_rel link \
+         keep free",
+        ),
+        (
+            "file_archive",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+         delete extract_to extract_here copy_rel link keep free",
+        ),
+        (
+            "file_image",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+         delete set_bg copy_rel link keep free",
+        ),
+        (
+            "file_json",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+         delete import copy_rel link keep free",
+        ),
+        (
+            "file_lnk",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+         delete file_location copy_rel link keep free",
+        ),
+        (
+            "background",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_add \
+         props more undo",
+        ),
+        (
+            "background_rm",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_remove \
+         props more undo",
+        ),
+        ("view_sub", "view_details view_icons view_columns"),
+        ("new_bg", "new_folder new_text"),
+        ("new_in", "new_file_in new_folder_in"),
+        ("sort_sub", "asc desc"),
+        (
+            "path",
+            "copy_address copy_as_path edit_address clear_history",
+        ),
+        ("drop", "drop_move drop_copy drop_shortcut drop_cancel"),
+        ("header", "reset_cols"),
+        (
+            "background_op",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_add \
+         props more undo_op",
+        ),
+        (
+            "background_rm_op",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_remove \
+         props more undo_op",
+        ),
+    ];
+
+    /// The `access.*` key of each row and the `menu.*`-style key of the label it comes with.
+    const LABELS: &str = "open=menu.open open_tab=menu.open_in_new_tab new=menu.new new_folder=menu.new_folder \
+         new_text=menu.new_text_file new_file_in=menu.new_file_in \
+         new_folder_in=menu.new_folder_in search_folder=menu.search_in_folder \
+         fav_add=sidebar.add_favorite fav_remove=sidebar.remove_favorite \
+         terminal=menu.open_terminal extract_to=menu.extract_to \
+         extract_here=menu.extract_here set_bg=menu.set_background \
+         import=menu.import_settings compress=menu.compress move_new=menu.move_to_new_folder \
+         new_window=menu.open_new_window link=menu.go_to_link_target \
+         file_location=menu.open_file_location choose_app=menu.choose_app \
+         shelf=menu.add_to_shelf copy_path=menu.copy_path copy_rel=menu.copy_relative_path \
+         reveal=menu.reveal_in_explorer props=menu.properties more=menu.more_options \
+         keep=menu.keep_on_device free=menu.free_up_space cut=menu.cut copy=menu.copy \
+         rename=menu.rename delete=menu.delete paste=menu.paste undo=menu.undo \
+         undo_op=menu.undo_op redo_op=menu.redo_op refresh=menu.refresh \
+         open_explorer=menu.open_in_explorer view=menu.view view_details=menu.view_details \
+         view_icons=view.icons view_columns=settings.view_columns sort_by=settings.sort_by \
+         asc=settings.ascending desc=settings.descending copy_address=menu.copy_address \
+         copy_as_path=menu.copy_as_path edit_address=menu.edit_address \
+         clear_history=menu.clear_history reset_cols=menu.reset_column_order \
+         drop_move=dnd.menu_move drop_copy=dnd.menu_copy drop_shortcut=dnd.menu_shortcut \
+         drop_cancel=dnd.menu_cancel";
+
+    fn letter(locale: &str, name: &str) -> Option<char> {
+        let key = format!("access.{name}");
+        let text = t!(key.as_str(), locale = locale);
+        assert!(text != key.as_str(), "{locale}: {key} is not translated");
+        text.chars().next().filter(|c| c.is_alphanumeric())
+    }
+
+    #[test]
+    fn no_two_items_of_a_menu_share_an_access_key() {
+        for locale in LOCALES {
+            for (menu, names) in MENUS {
+                let mut seen: Vec<(char, &str)> = Vec::new();
+                for name in names.split_whitespace() {
+                    let Some(letter) = letter(locale, name) else {
+                        assert!(
+                            locale == "es" && NO_SPANISH_KEY.contains(&name),
+                            "{locale}: access.{name} has no letter"
+                        );
+                        continue;
+                    };
+                    let letter = letter.to_ascii_lowercase();
+                    if let Some((_, other)) = seen.iter().find(|(l, _)| *l == letter) {
+                        panic!("{locale}, {menu}: {other} and {name} share the key {letter}");
+                    }
+                    seen.push((letter, name));
+                }
+            }
+        }
+    }
+
+    /// A letter that is not in its label would fall back to `(K)` after the text, which is right
+    /// but not what our own languages are meant to do: every Western letter is in its word.
+    #[test]
+    fn every_letter_of_a_western_language_is_in_its_label() {
+        for locale in ["en", "de", "es", "pt-BR"] {
+            for pair in LABELS.split_whitespace() {
+                let (name, label_key) = pair.split_once('=').expect("name=key");
+                let Some(letter) = letter(locale, name) else {
+                    continue;
+                };
+                let label = t!(label_key, locale = locale, name = "", dest = "", op = "");
+                let access = access_in(locale, name, &label, None).expect("a letter");
+                assert!(
+                    access
+                        .at
+                        .is_some_and(|at| label[at..].starts_with(access.key)),
+                    "{locale}: {letter} is not in {label:?} ({name})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chinese_and_japanese_write_the_key_after_the_text() {
+        for locale in ["zh-TW", "zh-CN", "ja"] {
+            for pair in LABELS.split_whitespace() {
+                let (name, label_key) = pair.split_once('=').expect("name=key");
+                let label = t!(label_key, locale = locale, name = "", dest = "", op = "");
+                let access = access_in(locale, name, &label, None).expect("a letter");
+                assert_eq!(access.at, None, "{locale}: {name}");
+                assert!(access.key.is_ascii_uppercase(), "{locale}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_key_is_the_first_occurrence_of_the_letter_outside_what_was_put_in() {
+        let at = |letter, label, skip| derive_access(letter, label, skip, false);
+        assert_eq!(
+            at('c', "Copy", None),
+            Access {
+                key: 'C',
+                at: Some(0)
+            }
+        );
+        assert_eq!(
+            at('P', "Copy path", None),
+            Access {
+                key: 'p',
+                at: Some(2)
+            }
+        );
+        // The name put in is passed over: "Move to a" has its own `o` first.
+        assert_eq!(at('o', "Move to Zoo", Some("Zoo")).at, Some(1));
+        assert_eq!(at('z', "Move to Zoo", Some("Zoo")).at, None);
+        // A letter the label doesn't have, and a language that writes it after the text.
+        assert_eq!(at('q', "Copy", None), Access { key: 'Q', at: None });
+        assert_eq!(
+            derive_access('c', "複製", None, true),
+            Access { key: 'C', at: None }
+        );
+    }
+
+    fn keyed(label: &str, letter: char, command: MenuCommand) -> MenuEntry {
+        match item(label.to_owned(), None, command) {
+            MenuEntry::Item(row) => MenuEntry::Item(MenuItem {
+                access: Some(derive_access(letter, label, None, false)),
+                ..row
+            }),
+            other => other,
+        }
+    }
+
+    fn off(label: &str, letter: char, command: MenuCommand) -> MenuEntry {
+        match keyed(label, letter, command) {
+            MenuEntry::Item(row) => MenuEntry::Item(MenuItem {
+                enabled: false,
+                ..row
+            }),
+            other => other,
+        }
+    }
+
+    fn button(label: &str, letter: char, command: MenuCommand, enabled: bool) -> MenuItem {
+        MenuItem {
+            access: Some(derive_access(letter, label, None, false)),
+            ..action(label.to_owned(), command, enabled)
+        }
+    }
+
+    fn submenu(label: &str, letter: char, enabled: bool) -> MenuEntry {
+        MenuEntry::Submenu {
+            label: label.to_owned().into(),
+            access: Some(derive_access(letter, label, None, false)),
+            enabled,
+            icon: None,
+            glyph: None,
+            children: Vec::new(),
+            shell: false,
+            lazy: None,
+            key: None,
+            pin: None,
+        }
+    }
+
+    #[test]
+    fn a_letter_with_one_match_runs_it_shift_or_not() {
+        use MenuCommand as C;
+        let entries = [
+            keyed("Open", 'o', C::Open),
+            keyed("Cut", 't', C::Cut),
+            keyed("Copy", 'c', C::Copy),
+        ];
+        assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Run(C::Copy));
+        assert_eq!(access_hit(&entries, Some(0), 'C'), AccessHit::Run(C::Copy));
+        assert_eq!(access_hit(&entries, None, 'T'), AccessHit::Run(C::Cut));
+    }
+
+    #[test]
+    fn a_submenu_with_the_key_is_opened() {
+        use MenuCommand as C;
+        let entries = [keyed("Open", 'o', C::Open), submenu("New", 'w', true)];
+        assert_eq!(access_hit(&entries, None, 'w'), AccessHit::Open(1));
+    }
+
+    #[test]
+    fn rows_sharing_a_key_take_turns_and_wrap() {
+        use MenuCommand as C;
+        let entries = [
+            keyed("Copy", 'c', C::Copy),
+            keyed("Open", 'o', C::Open),
+            keyed("Copy path", 'c', C::CopyPath),
+            keyed("Cut", 't', C::Cut),
+        ];
+        assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Move(0));
+        assert_eq!(access_hit(&entries, Some(0), 'c'), AccessHit::Move(2));
+        assert_eq!(access_hit(&entries, Some(2), 'c'), AccessHit::Move(0));
+        // From a row that doesn't have the key: the next one after it.
+        assert_eq!(access_hit(&entries, Some(1), 'c'), AccessHit::Move(2));
+    }
+
+    #[test]
+    fn a_key_nothing_has_does_nothing() {
+        use MenuCommand as C;
+        let entries = [
+            keyed("Open", 'o', C::Open),
+            keyed("Cut", 't', C::Cut),
+            MenuEntry::Separator,
+        ];
+        assert_eq!(access_hit(&entries, Some(1), 'z'), AccessHit::Nothing);
+        assert_eq!(access_hit(&[], None, 'o'), AccessHit::Nothing);
+    }
+
+    #[test]
+    fn disabled_rows_are_skipped() {
+        use MenuCommand as C;
+        let entries = [
+            off("Copy", 'c', C::Copy),
+            keyed("Copy path", 'c', C::CopyPath),
+        ];
+        assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Run(C::CopyPath));
+        let entries = [off("Copy", 'c', C::Copy), off("Cut", 't', C::Cut)];
+        assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Nothing);
+        assert_eq!(
+            access_hit(&[submenu("View", 'v', false)], None, 'v'),
+            AccessHit::Nothing
+        );
+    }
+
+    #[test]
+    fn the_icon_row_takes_part_with_its_own_letters() {
+        use MenuCommand as C;
+        let buttons = MenuEntry::Actions(vec![
+            button("Cut", 't', C::Cut, true),
+            button("Delete", 'd', C::Delete, false),
+            button("Rename", 'n', C::Rename, true),
+        ]);
+        let entries = [keyed("Open", 'o', C::Open), buttons.clone()];
+        assert_eq!(access_hit(&entries, None, 't'), AccessHit::Run(C::Cut));
+        assert_eq!(access_hit(&entries, None, 'n'), AccessHit::Run(C::Rename));
+        // Disabled, like the rows.
+        assert_eq!(access_hit(&entries, None, 'd'), AccessHit::Nothing);
+        // A row and a button with the same key: the row takes the highlight, nothing runs.
+        let entries = [keyed("Cut all", 't', C::Open), buttons];
+        assert_eq!(access_hit(&entries, None, 't'), AccessHit::Move(0));
+    }
+
+    #[test]
+    fn the_underlines_follow_how_the_menu_opened() {
+        // Opened with the mouse: hidden, until a key is pressed in it.
+        let mut cues = Cues::opened(false, false);
+        assert!(!cues.shown());
+        cues.pressed();
+        assert!(cues.shown());
+        // Opened from the keyboard, or with Windows set to always underline them: shown.
+        assert!(Cues::opened(true, false).shown());
+        assert!(Cues::opened(false, true).shown());
+        assert!(!Cues::default().shown());
     }
 }

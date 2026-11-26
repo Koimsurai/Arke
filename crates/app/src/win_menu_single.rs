@@ -46,7 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HRESULT, Interface, PCWSTR, PSTR, PWSTR};
 
-use super::{Pidls, clean_label, fill_single, menu_directory, parse_pidls};
+use super::{Pidls, clean_label, fill_single, menu_directory, parse_pidls, read_label};
 use crate::shell::{ShellError, ShellMenu, ShellMenuEntry};
 use crate::win_fileops::wide;
 use crate::win_menu_parts::{HandlerKind, MenuHandler};
@@ -134,16 +134,20 @@ fn verb(
     // In a cascading menu: under that menu's label, as in the whole Windows menu, so the pinned
     // command's key (`Tools › Command`) is found (#278).
     let entry = match handler.parent.as_deref() {
-        Some(parent) => ShellMenuEntry::Submenu {
-            label: clean_label(
+        Some(parent) => {
+            let (label, access) = read_label(
                 &verb_label(parent)
                     .unwrap_or_else(|| parent.rsplit('\\').next().unwrap_or(parent).to_string()),
-            ),
-            enabled: true,
-            icon: None,
-            children: vec![entry],
-            lazy: None,
-        },
+            );
+            ShellMenuEntry::Submenu {
+                label,
+                access,
+                enabled: true,
+                icon: None,
+                children: vec![entry],
+                lazy: None,
+            }
+        }
         None => entry,
     };
     (menu, vec![entry])
@@ -246,8 +250,10 @@ fn shown(
             return None;
         }
         let children = sub_commands(command, items, actions);
+        let (label, access) = read_label(&title);
         return (!children.is_empty()).then(|| ShellMenuEntry::Submenu {
-            label: clean_label(&title),
+            label,
+            access,
             enabled,
             icon,
             children,
@@ -327,11 +333,13 @@ fn item(
     checked: bool,
     icon: Option<arke_core::thumbs::Thumbnail>,
 ) -> ShellMenuEntry {
+    let (label, access) = read_label(label);
     ShellMenuEntry::Item {
         id,
         // A packaged command's own commands may have no canonical name.
         verb: (!verb.is_empty()).then(|| verb.to_string()),
-        label: clean_label(label),
+        label,
+        access,
         enabled,
         checked,
         default: false,
@@ -598,6 +606,7 @@ pub(super) fn send_to(
     } else {
         vec![ShellMenuEntry::Submenu {
             label,
+            access: None,
             enabled: true,
             icon: None,
             children,

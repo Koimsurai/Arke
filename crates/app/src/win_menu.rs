@@ -44,10 +44,10 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
-    GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3, ILClone, ILFindLastID, ILFree,
-    ILRemoveLastID, IShellExtInit, IShellFolder, SHBindToParent, SHGetDesktopFolder,
-    SHParseDisplayName,
+    CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
+    CMINVOKECOMMANDINFOEX, GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3, ILClone,
+    ILFindLastID, ILFree, ILRemoveLastID, IShellExtInit, IShellFolder, SHBindToParent,
+    SHGetDesktopFolder, SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -798,6 +798,18 @@ fn fill_single(
     Ok(result)
 }
 
+/// The `uFlags` of `QueryContextMenu`: what File Explorer passes always includes `CMF_EXPLORE`.
+/// A bare `CMF_NORMAL` (0) is what shell code passes for a double-click or a probe, and some
+/// extensions return at once on it, adding nothing (#439). `extended`: Shift was held.
+fn query_flags(extended: bool) -> u32 {
+    let flags = CMF_NORMAL | CMF_EXPLORE;
+    if extended {
+        flags | CMF_EXTENDEDVERBS
+    } else {
+        flags
+    }
+}
+
 /// Reads `menu` into a [`Session`] that becomes this thread's current menu. `extended`: Shift
 /// was held, so commands registered to show only then are included, as in File Explorer (#272).
 fn fill(
@@ -818,11 +830,7 @@ fn fill(
         directory,
         lazy: Vec::new(),
     };
-    let flags = if extended {
-        CMF_NORMAL | CMF_EXTENDEDVERBS
-    } else {
-        CMF_NORMAL
-    };
+    let flags = query_flags(extended);
     // SAFETY: hmenu is valid; command IDs range over 1..=0x7FFF.
     let hr = unsafe { session.menu.QueryContextMenu(hmenu, 0, 1, 0x7FFF, flags) };
     if hr.is_err() {
@@ -1395,6 +1403,17 @@ fn invoke_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Extensions that return on a bare `CMF_NORMAL` (FastCopy's does) must still be asked for
+    /// their items: the flags always carry what File Explorer's do (#439).
+    #[test]
+    fn query_flags_are_never_bare_normal() {
+        assert_ne!(query_flags(false), CMF_NORMAL);
+        assert_ne!(query_flags(true), CMF_NORMAL);
+        assert_ne!(query_flags(false) & CMF_EXPLORE, 0);
+        assert_eq!(query_flags(false) & CMF_EXTENDEDVERBS, 0);
+        assert_ne!(query_flags(true) & CMF_EXTENDEDVERBS, 0);
+    }
 
     /// #278: once the menu host knows "Send to" (it lists it itself), reading the whole Windows
     /// menu doesn't wait for Windows' own to fill: it is left to fill when opened. Prints how

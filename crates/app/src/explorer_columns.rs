@@ -155,12 +155,14 @@ impl Explorer {
         // System icons for .exe/.lnk/.ico like the middle column, loaded after it so they don't
         // compete.
         let images: Vec<Option<Arc<gpui::RenderImage>>> = if self.media_ok(&dir, cx) {
+            let icon_px = crate::media::icon_source_px(f32::from(theme::icon()), self.ui_scale);
             let keys: Vec<Option<MediaKey>> = range
                 .clone()
                 .map(|ix| {
                     entries
                         .get(ix)
                         .and_then(|e| MediaKey::for_entry(&dir, e, false))
+                        .map(|k| k.with_icon_px(icon_px))
                 })
                 .collect();
             self.side_images(&keys, cx)

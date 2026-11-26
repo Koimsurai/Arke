@@ -90,7 +90,8 @@ pub(crate) struct MediaKey {
     modified: Option<SystemTime>,
     size: u64,
     pub(crate) kind: MediaKind,
-    /// Longest side to decode a thumbnail at; 0 for system icons.
+    /// Longest side to decode a thumbnail at. For system icons the physical size they are drawn at
+    /// (see [`icon_source_px`]), or 0 for the fixed [`SYSTEM_ICON_SIZE`].
     px: u32,
 }
 
@@ -213,6 +214,15 @@ impl MediaKey {
         })
     }
 
+    /// A system icon key that wants its icon at `px` physical pixels (see [`icon_source_px`]), so
+    /// it is drawn 1:1 instead of being shrunk by the GPU. Other kinds are returned as they are.
+    pub(crate) fn with_icon_px(mut self, px: u32) -> Self {
+        if self.kind == MediaKind::SystemIcon {
+            self.px = px;
+        }
+        self
+    }
+
     /// The extension of a [`Self::type_icon`] key.
     fn type_icon_extension(&self) -> Option<&str> {
         self.path.to_str()?.strip_prefix(TYPE_ICON_PREFIX)
@@ -270,6 +280,76 @@ fn drive_root(path: &Path) -> Option<PathBuf> {
         ),
         _ => None,
     }
+}
+
+/// Physical side a system icon drawn `logical` pixels wide on a display scaled by `scale` is
+/// extracted at: the size it covers on screen, never above [`SYSTEM_ICON_SIZE`] (bigger tiles
+/// stretch the largest one) and never below 16.
+pub(crate) fn icon_source_px(logical: f32, scale: f32) -> u32 {
+    let physical = (logical * scale.max(1.)).round().clamp(16., 64.);
+    // In 16..=64 after the clamp.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped"
+    )]
+    let px = physical as u32;
+    px.min(SYSTEM_ICON_SIZE)
+}
+
+/// Side to ask Windows for a system icon of a key with `px` (0: the fixed size).
+const fn icon_request_px(px: u32) -> u32 {
+    if px == 0 || px > SYSTEM_ICON_SIZE {
+        SYSTEM_ICON_SIZE
+    } else {
+        px
+    }
+}
+
+/// Brings an icon bigger than `px` down to `px` on its longest side with a proper filter, working
+/// on premultiplied colour so transparent pixels don't darken the edge. `px` 0 or an icon not
+/// bigger than `px` is returned as it is (never enlarged). `None` for a malformed bitmap.
+pub(crate) fn fit_icon(icon: Thumbnail, px: u32) -> Option<Thumbnail> {
+    let longest = icon.width.max(icon.height);
+    if px == 0 || longest <= px {
+        return Some(icon);
+    }
+    if icon.width == 0
+        || icon.height == 0
+        || icon.rgba.len() != icon.width as usize * icon.height as usize * 4
+    {
+        return None;
+    }
+    let width = (icon.width * px / longest).max(1);
+    let height = (icon.height * px / longest).max(1);
+    let mut rgba = icon.rgba;
+    for p in rgba.as_chunks_mut::<4>().0 {
+        let a = u16::from(p[3]);
+        for c in &mut p[..3] {
+            *c = ((u16::from(*c) * a + 127) / 255) as u8;
+        }
+    }
+    let source = image::RgbaImage::from_raw(icon.width, icon.height, rgba)?;
+    let small = image::imageops::resize(
+        &source,
+        width,
+        height,
+        image::imageops::FilterType::CatmullRom,
+    );
+    let mut rgba = small.into_raw();
+    for p in rgba.as_chunks_mut::<4>().0 {
+        let a = u32::from(p[3]);
+        if a != 0 && a != 255 {
+            for c in &mut p[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+    Some(Thumbnail {
+        width,
+        height,
+        rgba,
+    })
 }
 
 pub(crate) fn to_render_image(t: Thumbnail) -> Option<Arc<RenderImage>> {
@@ -389,10 +469,14 @@ impl MediaStore {
             let shell = Arc::clone(&services.shell);
             let tx = tx.clone();
             Loader::new("system-icon", 1, move |key: &MediaKey| {
+                // Asked at the size it is drawn at (Windows then returns its hand-made small
+                // frame), and brought down to exactly that: drawn from a bigger bitmap the GPU
+                // samples every few source pixels and drops one-pixel lines.
                 let icon = match key.type_icon_extension() {
                     Some(ext) => shell.type_icon(ext),
-                    None => shell.file_icon(&key.path, SYSTEM_ICON_SIZE),
-                };
+                    None => shell.file_icon(&key.path, icon_request_px(key.px)),
+                }
+                .and_then(|icon| fit_icon(icon, key.px));
                 let _ = tx.send(MediaEvent::Loaded(key.clone(), icon));
             })
         };
@@ -837,5 +921,111 @@ mod dark_mono_tests {
         assert!(bytes[0] > 100);
         // The original is untouched.
         assert_eq!(icon.original().as_bytes(0).unwrap()[0], 10);
+    }
+}
+
+#[cfg(test)]
+mod icon_fit_tests {
+    use super::{MediaKey, MediaKind, fit_icon, icon_request_px, icon_source_px};
+    use arke_core::thumbs::Thumbnail;
+    use std::path::PathBuf;
+
+    /// `side` x `side`, opaque `ink` in the first `stripe` columns, transparent elsewhere.
+    fn left_stripe(side: u32, stripe: u32, ink: [u8; 4]) -> Thumbnail {
+        let mut rgba = Vec::new();
+        for _ in 0..side {
+            for x in 0..side {
+                rgba.extend_from_slice(if x < stripe { &ink } else { &[0, 0, 0, 0] });
+            }
+        }
+        Thumbnail {
+            width: side,
+            height: side,
+            rgba,
+        }
+    }
+
+    #[test]
+    fn an_icon_at_its_size_is_untouched() {
+        let icon = left_stripe(16, 1, [10, 120, 10, 255]);
+        assert_eq!(fit_icon(icon.clone(), 16), Some(icon.clone()));
+        assert_eq!(fit_icon(icon.clone(), 0), Some(icon.clone()));
+        // Never enlarged.
+        assert_eq!(fit_icon(icon.clone(), 64), Some(icon));
+    }
+
+    #[test]
+    fn an_opaque_left_column_survives_the_shrink() {
+        // Content touching the left edge: a stripe 4 px wide in 64 is one column in 16.
+        let small = fit_icon(left_stripe(64, 4, [10, 120, 10, 255]), 16).unwrap();
+        assert_eq!((small.width, small.height), (16, 16));
+        for y in 0..16usize {
+            let p = &small.rgba[y * 16 * 4..y * 16 * 4 + 4];
+            assert!(p[3] >= 250, "row {y} left column faded: {p:?}");
+            assert!(p[0].abs_diff(10) <= 12 && p[1].abs_diff(120) <= 12, "{p:?}");
+        }
+        // The right half stays empty.
+        assert_eq!(small.rgba[15 * 4 + 3], 0);
+    }
+
+    #[test]
+    fn transparent_pixels_do_not_darken_the_edge() {
+        // White on the left half, transparent black on the right.
+        let icon = left_stripe(64, 32, [255, 255, 255, 255]);
+        let small = fit_icon(icon, 16).unwrap();
+        for p in small.rgba.as_chunks::<4>().0 {
+            if p[3] >= 128 {
+                assert!(p[..3].iter().all(|&c| c >= 240), "dark fringe: {p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_longest_side_is_fitted_and_the_ratio_kept() {
+        let wide = Thumbnail {
+            width: 64,
+            height: 32,
+            rgba: vec![255; 64 * 32 * 4],
+        };
+        let small = fit_icon(wide, 16).unwrap();
+        assert_eq!((small.width, small.height), (16, 8));
+        let broken = Thumbnail {
+            width: 64,
+            height: 64,
+            rgba: vec![0; 10],
+        };
+        assert!(fit_icon(broken, 16).is_none());
+    }
+
+    #[test]
+    fn icons_are_asked_at_the_physical_size_they_are_drawn() {
+        assert_eq!(icon_source_px(16., 1.), 16);
+        assert_eq!(icon_source_px(16., 1.25), 20);
+        assert_eq!(icon_source_px(16., 1.5), 24);
+        assert_eq!(icon_source_px(16., 2.), 32);
+        // Bigger tiles stretch the largest icon; a scale below 1 doesn't shrink it.
+        assert_eq!(icon_source_px(48., 2.), 64);
+        assert_eq!(icon_source_px(16., 0.5), 16);
+        assert_eq!(icon_request_px(0), 64);
+        assert_eq!(icon_request_px(20), 20);
+        assert_eq!(icon_request_px(200), 64);
+    }
+
+    #[test]
+    fn only_system_icon_keys_take_a_size() {
+        let key = |kind| MediaKey {
+            path: PathBuf::from(r"C:\a.exe"),
+            modified: None,
+            size: 1,
+            kind,
+            px: 0,
+        };
+        assert_eq!(key(MediaKind::SystemIcon).with_icon_px(20).px, 20);
+        assert_eq!(key(MediaKind::Thumbnail).with_icon_px(20).px, 0);
+        assert_ne!(
+            key(MediaKind::SystemIcon).with_icon_px(16),
+            key(MediaKind::SystemIcon).with_icon_px(20),
+            "each size is its own picture"
+        );
     }
 }

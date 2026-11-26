@@ -3165,7 +3165,7 @@ impl Workspace {
 
     /// The folders open in the tree under the favorites list (`favorite`) or under This PC and
     /// Network (#424).
-    fn tree_open(&self, favorite: bool) -> &HashSet<PathBuf> {
+    const fn tree_open(&self, favorite: bool) -> &HashSet<PathBuf> {
         if favorite {
             &self.fav_expanded
         } else {
@@ -3256,13 +3256,14 @@ impl Workspace {
         {
             return;
         }
+        // A favorite that is the current folder is selected as it is: nothing opens for it
+        // (#424). The folder isn't marked as followed, so unpinning it follows it.
+        if self.sidebar_ui.fav_here.get() {
+            return;
+        }
         self.sidebar_ui.followed = Some(key);
         if let Some(cancel) = self.sidebar_ui.follow_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
-        }
-        // A favorite that is the current folder is selected as it is: nothing opens for it (#424).
-        if self.sidebar_ui.fav_here.get() {
-            return;
         }
         let chain = follow_chain(&places, &here, mapped);
         let stale: Vec<PathBuf> = self

@@ -536,21 +536,45 @@ fn following_a_folder_in_a_favorite_leaves_the_favorite_closed(cx: &mut TestAppC
 /// for it, neither under the favorite nor under This PC.
 #[gpui::test]
 fn a_favorite_that_is_the_current_folder_is_selected_as_it_is(cx: &mut TestAppContext) {
+    // Following is off while the window goes to the favorite, so the tree is still closed.
     let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
-    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work")]);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work\reports")]);
+    open(&ws, cx, r"C:\work\reports");
+    refresh(cx);
     change(cx, |st| st.sidebar_follow = true);
-    open(&ws, cx, r"C:\work");
     for _ in 0..5 {
         refresh(cx);
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(!expanded(&ws, cx, r"C:\"), "nothing opened under This PC");
     assert!(!expanded(&ws, cx, r"C:\work"));
-    assert!(!favorite_expanded(&ws, cx, r"C:\work"));
+    assert!(!favorite_expanded(&ws, cx, r"C:\work\reports"));
     assert!(
         ws.update(cx, |ws, _| ws.favorite_selected_for_test()),
         "the favorite's row is the selected one"
     );
+}
+
+/// #424: the favorite that was the current folder is unpinned: the tree opens to the folder, as
+/// it does for any folder.
+#[gpui::test]
+fn unpinning_the_current_folder_follows_it(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work\reports")]);
+    open(&ws, cx, r"C:\work\reports");
+    refresh(cx);
+    change(cx, |st| st.sidebar_follow = true);
+    for _ in 0..5 {
+        refresh(cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!expanded(&ws, cx, r"C:\work"), "a favorite: nothing opens");
+
+    change(cx, |st| st.pinned = Vec::new());
+    settle(cx, "the tree opens to reports", |cx| {
+        expanded(&ws, cx, r"C:\work")
+    });
+    assert!(expanded(&ws, cx, r"C:\"));
 }
 
 /// #424: a favorite's row and the row of the same folder under This PC open and close on their

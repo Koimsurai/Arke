@@ -1836,14 +1836,6 @@ openwith.title:
   es: Abrir con
   pt-BR: Abrir com
   ja: プログラムから開く
-openwith.desc:
-  en: "Turn off editors you don't use, or add another program"
-  zh-TW: "關掉用不到的編輯器，或加入其他程式"
-  zh-CN: "关闭用不到的编辑器，或添加其他程序"
-  de: Nicht benötigte Editoren ausschalten oder ein weiteres Programm hinzufügen
-  es: Desactive los editores que no use o agregue otro programa
-  pt-BR: Desative editores que você não usa ou adicione outro programa
-  ja: 使わないエディターをオフにするか、別のプログラムを追加します
 openwith.placeholder:
   en: Path to a program (.exe) to add
   zh-TW: "要加入的程式路徑（.exe）"
@@ -1949,21 +1941,13 @@ menupref.archive:
   pt-BR: Compactar e extrair
   ja: 圧縮と展開
 menupref.open_with:
-  en: Open with VS Code, Zed…
-  zh-TW: 以 VS Code、Zed… 開啟
-  zh-CN: 用 VS Code、Zed… 打开
-  de: Mit VS Code, Zed… öffnen
-  es: Abrir con VS Code, Zed…
-  pt-BR: Abrir com VS Code, Zed…
-  ja: VS Code、Zed などで開く…
-menupref.open_with_note:
-  en: "Only editors installed on this computer"
-  zh-TW: "只列出已安裝的編輯器"
-  zh-CN: "只列出已安装的编辑器"
-  de: Nur auf diesem Computer installierte Editoren
-  es: Solo editores instalados en este equipo
-  pt-BR: Somente editores instalados neste computador
-  ja: このコンピューターにインストールされているエディターのみ
+  en: Open with programs you add
+  zh-TW: 以你加入的程式開啟
+  zh-CN: 用你添加的程序打开
+  de: Mit hinzugefügten Programmen öffnen
+  es: Abrir con los programas que agregue
+  pt-BR: Abrir com os programas que você adicione
+  ja: 追加したプログラムで開く
 menupref.view:
   en: "View, sort and refresh"
   zh-TW: 檢視方式、排序與重新整理
@@ -3052,30 +3036,14 @@ settings.preview_desc:
   es: Muestra el elemento seleccionado a la derecha; Espacio para vista rápida
   pt-BR: Mostra o item selecionado à direita; Espaço para visualização rápida
   ja: 選択した項目を右側に表示します。スペース キーでクイック表示
-settings.space_quicklook:
-  en: Space opens QuickLook
-  zh-TW: 空白鍵開啟 QuickLook
-  zh-CN: 空格键打开 QuickLook
-  de: Leertaste öffnet QuickLook
-  es: Espacio abre QuickLook
-  pt-BR: Espaço abre o QuickLook
-  ja: スペース キーで QuickLook を開く
-settings.space_quicklook_tip:
-  en: "Space opens QuickLook (found at %{path}) instead of Arke's quick look"
-  zh-TW: "空白鍵改用 QuickLook（位於 %{path}）預覽，而不是 Arke 的快速預覽"
-  zh-CN: "空格键改用 QuickLook（位于 %{path}）预览，而不是 Arke 的快速预览"
-  de: Die Leertaste öffnet QuickLook (gefunden unter %{path}) statt der Schnellansicht von Arke
-  es: Espacio abre QuickLook (encontrado en %{path}) en lugar de la vista rápida de Arke
-  pt-BR: Espaço abre o QuickLook (encontrado em %{path}) em vez da visualização rápida do Arke
-  ja: スペース キーで Arke のクイック表示ではなく QuickLook (%{path}) を開きます
-settings.space_quicklook_tip_running:
-  en: "Space opens the running QuickLook instead of Arke's quick look"
-  zh-TW: "空白鍵改用執行中的 QuickLook 預覽，而不是 Arke 的快速預覽"
-  zh-CN: "空格键改用正在运行的 QuickLook 预览，而不是 Arke 的快速预览"
-  de: Die Leertaste öffnet das laufende QuickLook statt der Schnellansicht von Arke
-  es: Espacio abre el QuickLook en ejecución en lugar de la vista rápida de Arke
-  pt-BR: Espaço abre o QuickLook em execução em vez da visualização rápida do Arke
-  ja: スペース キーで Arke のクイック表示ではなく、実行中の QuickLook を開きます
+settings.external_preview:
+  en: Preview program for Space
+  zh-TW: 空白鍵用的預覽程式
+  zh-CN: 空格键用的预览程序
+  de: Vorschauprogramm für die Leertaste
+  es: Programa de vista previa (Espacio)
+  pt-BR: Programa de visualização (Espaço)
+  ja: スペース キー用のプレビュー プログラム
 settings.startup:
   en: Startup
   zh-TW: 啟動
@@ -3788,22 +3756,14 @@ error.terminal_failed:
   es: "No se pudo abrir un terminal: %{error}"
   pt-BR: "Não foi possível abrir um terminal: %{error}"
   ja: "ターミナルを開けませんでした: %{error}"
-error.quicklook_failed:
-  en: "Couldn't start QuickLook: %{error}"
-  zh-TW: "無法啟動 QuickLook：%{error}"
-  zh-CN: "无法启动 QuickLook：%{error}"
-  de: "QuickLook konnte nicht gestartet werden: %{error}"
-  es: "No se pudo iniciar QuickLook: %{error}"
-  pt-BR: "Não foi possível iniciar o QuickLook: %{error}"
-  ja: "QuickLook を起動できませんでした: %{error}"
-error.quicklook_not_running:
-  en: "QuickLook isn't running"
-  zh-TW: "QuickLook 未在執行"
-  zh-CN: "QuickLook 未在运行"
-  de: QuickLook läuft nicht
-  es: QuickLook no se está ejecutando
-  pt-BR: O QuickLook não está em execução
-  ja: QuickLook は実行されていません
+error.external_preview_failed:
+  en: "Couldn't start the preview program: %{error}"
+  zh-TW: "無法啟動預覽程式：%{error}"
+  zh-CN: "无法启动预览程序：%{error}"
+  de: "Das Vorschauprogramm konnte nicht gestartet werden: %{error}"
+  es: "No se pudo iniciar el programa de vista previa: %{error}"
+  pt-BR: "Não foi possível iniciar o programa de visualização: %{error}"
+  ja: "プレビュー プログラムを起動できませんでした: %{error}"
 settings.folder_sizes:
   en: "Calculate folder sizes"
   zh-TW: "計算資料夾大小"
@@ -8426,7 +8386,7 @@ compare.differs:
   pt-BR: Diferente
   ja: 相違あり
 
-# ─── Redo, operation queue, verify after copy, TeraCopy
+# ─── Redo, operation queue, verify after copy, external copy program
 toast.redo:
   en: "Redo"
   zh-TW: "重做"
@@ -8603,22 +8563,14 @@ settings.verify_copies_desc:
   es: Vuelve a leer cada copia y la compara con el original. Tarda más.
   pt-BR: Lê cada cópia de volta e compara com o original. Demora mais.
   ja: 各コピーを読み戻して元のファイルと比較します。時間がかかります。
-settings.use_teracopy:
-  en: "Use TeraCopy for copy and move"
-  zh-TW: "用 TeraCopy 複製和移動"
-  zh-CN: "用 TeraCopy 复制和移动"
-  de: TeraCopy zum Kopieren und Verschieben verwenden
-  es: Usar TeraCopy para copiar y mover
-  pt-BR: Usar o TeraCopy para copiar e mover
-  ja: コピーと移動に TeraCopy を使う
-settings.use_teracopy_desc:
-  en: "Found at %{path}. Arke can't undo jobs TeraCopy runs."
-  zh-TW: "位於 %{path}。交給 TeraCopy 的工作無法在 Arke 復原"
-  zh-CN: "位于 %{path}。交给 TeraCopy 的任务无法在 Arke 撤销"
-  de: Gefunden unter %{path}. Arke kann von TeraCopy ausgeführte Aufträge nicht rückgängig machen.
-  es: Encontrado en %{path}. Arke no puede deshacer los trabajos que ejecuta TeraCopy.
-  pt-BR: Encontrado em %{path}. O Arke não pode desfazer tarefas executadas pelo TeraCopy.
-  ja: "%{path} で検出。TeraCopy が実行したジョブは Arke では元に戻せません。"
+settings.external_copy:
+  en: External copy program
+  zh-TW: 外部複製程式
+  zh-CN: 外部复制程序
+  de: Externes Kopierprogramm
+  es: Programa de copia externo
+  pt-BR: Programa de cópia externo
+  ja: 外部コピー プログラム
 
 # ─── Cloud file states (badge tooltips)
 cloud.online_only:

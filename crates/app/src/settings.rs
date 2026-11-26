@@ -550,9 +550,10 @@ pub(crate) struct Settings {
     pub(crate) density: Density,
     /// Preview pane on the right.
     pub(crate) preview_pane: bool,
-    /// Space hands the item to QuickLook (QL-Win) instead of Arke's Quick Look (offered only
-    /// when it is installed).
-    pub(crate) space_quicklook: bool,
+    /// External preview program: Space hands the item to this command line instead of opening
+    /// Arke's Quick Look (`external.rs`). Empty: off. Before 0.10 `space_quicklook` (see
+    /// [`Settings::migrate_external_tools`]).
+    pub(crate) external_preview: String,
     /// Ctrl+T searches the whole PC. Needs an index, off by default.
     pub(crate) global_search: bool,
     /// Global search skips build and package cache folders (`node_modules`, Rust `target`, ...).
@@ -667,8 +668,10 @@ pub(crate) struct Settings {
     pub(crate) queue_same_drive: bool,
     /// Read copies back and compare them with their sources.
     pub(crate) verify_copies: bool,
-    /// Hand copies and moves to TeraCopy (offered only when it is installed).
-    pub(crate) use_teracopy: bool,
+    /// External copy program: copies and moves go to this command line instead of Arke's engine
+    /// (`external.rs`). Empty: off. Before 0.10 `use_teracopy` (see
+    /// [`Settings::migrate_external_tools`]).
+    pub(crate) external_copy: String,
     /// Double click on empty list space goes up one level.
     pub(crate) double_click_up: bool,
     /// Compute folder sizes in the background (local disks only).
@@ -769,9 +772,8 @@ pub(crate) struct Settings {
     /// before Arke 0.4 recorded it).
     pub(crate) whats_new_auto: bool,
     pub(crate) whats_new_seen: Option<String>,
-    /// "Open with": custom apps (exe paths) and detected editors to hide.
+    /// "Open with": the apps (exe paths) the user added.
     pub(crate) open_with_extra: Vec<PathBuf>,
-    pub(crate) open_with_hidden: Vec<PathBuf>,
     /// Start in the background at Windows sign-in, via a shortcut in the Startup folder (no registry).
     pub(crate) autostart: bool,
     /// A shortcut in the Start menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Arke.lnk`),
@@ -806,7 +808,7 @@ impl Default for Settings {
             last_tab: LastTabAction::default(),
             density: Density::default(),
             preview_pane: false,
-            space_quicklook: false,
+            external_preview: String::new(),
             global_search: false,
             search_network: Vec::new(),
             search_network_auto: true,
@@ -859,7 +861,7 @@ impl Default for Settings {
             warn_extension_change: true,
             queue_same_drive: true,
             verify_copies: false,
-            use_teracopy: false,
+            external_copy: String::new(),
             double_click_up: false,
             folder_sizes: true,
             hide_dotfiles: false,
@@ -900,7 +902,6 @@ impl Default for Settings {
             whats_new_auto: true,
             whats_new_seen: None,
             open_with_extra: Vec::new(),
-            open_with_hidden: Vec::new(),
             show_checkboxes: false,
             group_rows: false,
             details_tree: false,
@@ -1414,6 +1415,22 @@ fn load(path: &Path) -> Option<Settings> {
 /// Parses the settings file. Strips a leading BOM first: Notepad and PowerShell add one for UTF-8 and
 /// serde_json rejects it, which would fall back to defaults and overwrite the user's settings on next save.
 fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
+    // Tests never look for programs on this machine.
+    let find: fn(crate::legacy_tools::Tool) -> Option<PathBuf> = if cfg!(test) {
+        |_| None
+    } else {
+        crate::legacy_tools::find
+    };
+    parse_settings_with(bytes, path, find)
+}
+
+/// [`parse_settings`] with the search for the programs of the old TeraCopy and QuickLook switches
+/// given.
+fn parse_settings_with(
+    bytes: &[u8],
+    path: &Path,
+    find: impl Fn(crate::legacy_tools::Tool) -> Option<PathBuf>,
+) -> Option<Settings> {
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     match serde_json::from_slice::<Settings>(bytes) {
         Ok(mut settings) => {
@@ -1425,6 +1442,7 @@ fn parse_settings(bytes: &[u8], path: &Path) -> Option<Settings> {
             settings.migrate_single_window(bytes);
             settings.migrate_this_pc_collapsed(bytes);
             settings.migrate_pin_owners(bytes);
+            settings.migrate_external_tools(bytes, find);
             Some(settings)
         }
         Err(err) => {
@@ -1509,6 +1527,59 @@ impl Settings {
         for owner in self.menu_pin_owners.values_mut() {
             if owner == "-" {
                 owner.clear();
+            }
+        }
+    }
+
+    /// Before 0.10 two switches handed work to one program each: `use_teracopy` (copies and moves
+    /// to TeraCopy) and `space_quicklook` (Space to QuickLook). A file with a switch on and no
+    /// generic setting yet gets the generic one set to that program with the same arguments, so
+    /// it works as before; `find` looks for the program (`legacy_tools.rs`), and only runs then.
+    /// The old keys are dropped on the next save, so this happens once. A program not found stays
+    /// off: TeraCopy wasn't used then either; a QuickLook run from a folder Arke doesn't look in
+    /// was reached over its pipe before, and has to be set by hand now.
+    fn migrate_external_tools(
+        &mut self,
+        bytes: &[u8],
+        find: impl Fn(crate::legacy_tools::Tool) -> Option<PathBuf>,
+    ) {
+        use crate::legacy_tools::{QUICKLOOK_ARGS, TERACOPY_ARGS, Tool};
+        const OLD: [(&str, &str, Tool, &str); 2] = [
+            (
+                "use_teracopy",
+                "external_copy",
+                Tool::TeraCopy,
+                TERACOPY_ARGS,
+            ),
+            (
+                "space_quicklook",
+                "external_preview",
+                Tool::QuickLook,
+                QUICKLOOK_ARGS,
+            ),
+        ];
+        let has = |key: &str| bytes.windows(key.len()).any(|w| w == key.as_bytes());
+        if !OLD.iter().any(|(old, ..)| has(old)) {
+            return;
+        }
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(bytes) else {
+            return;
+        };
+        for (old, new, tool, args) in OLD {
+            if map.get(old).and_then(serde_json::Value::as_bool) != Some(true)
+                || map.contains_key(new)
+            {
+                continue;
+            }
+            let Some(exe) = find(tool) else {
+                log::info!("{old} was on, but {tool:?} isn't installed where it was looked for");
+                continue;
+            };
+            let line = crate::external::command_line(&exe, args);
+            log::info!("{old} became {new}: {line}");
+            match tool {
+                Tool::TeraCopy => self.external_copy = line,
+                Tool::QuickLook => self.external_preview = line,
             }
         }
     }
@@ -1724,6 +1795,78 @@ mod tests {
         bytes.extend_from_slice(br#"{"global_search": true, "show_hidden": true}"#);
         let s = parse_settings(&bytes, Path::new("settings.json")).unwrap();
         assert!(s.global_search && s.show_hidden);
+    }
+
+    /// The TeraCopy and QuickLook switches of 0.9 become the generic programs with the same
+    /// arguments, once, and only when the program is found; a file that already has the generic
+    /// setting keeps it.
+    #[test]
+    fn old_teracopy_and_quicklook_switches_become_the_external_programs() {
+        use crate::external::{Command, Use};
+        use crate::legacy_tools::Tool;
+        let path = Path::new("settings.json");
+        let teracopy = PathBuf::from(r"C:\Program Files\TeraCopy\TeraCopy.exe");
+        let quicklook = PathBuf::from(r"C:\Users\u\AppData\Local\Programs\QuickLook\QuickLook.exe");
+        let looked = parking_lot::Mutex::new(Vec::new());
+        let found = |tool: Tool| {
+            looked.lock().push(tool);
+            Some(match tool {
+                Tool::TeraCopy => teracopy.clone(),
+                Tool::QuickLook => quicklook.clone(),
+            })
+        };
+        let old = br#"{"use_teracopy": true, "space_quicklook": true, "show_hidden": true}"#;
+        let s = parse_settings_with(old, path, found).unwrap();
+        assert_eq!(
+            s.external_copy,
+            r#""C:\Program Files\TeraCopy\TeraCopy.exe" {op} *{list} {dest}"#
+        );
+        assert_eq!(
+            s.external_preview,
+            r#""C:\Users\u\AppData\Local\Programs\QuickLook\QuickLook.exe" {file}"#
+        );
+        assert!(s.show_hidden);
+        // What the old hand-offs did: TeraCopy got moves too; QuickLook the item, quoted.
+        let copy = Command::parse(&s.external_copy, Use::Copy)
+            .unwrap()
+            .unwrap();
+        assert_eq!(copy.program, teracopy);
+        let move_op = crate::shell::FileOp::Move {
+            sources: vec![PathBuf::from(r"C:\a")],
+            dest: PathBuf::from(r"D:\b"),
+        };
+        assert!(copy.takes(&move_op), "moves went to TeraCopy too");
+        let look = Command::parse(&s.external_preview, Use::Preview)
+            .unwrap()
+            .unwrap();
+        assert_eq!(look.program, quicklook);
+        assert_eq!(
+            look.preview_args(Path::new(r"C:\q\a b.txt")).unwrap(),
+            std::ffi::OsString::from(r#""C:\q\a b.txt""#)
+        );
+
+        // Saved without the old keys: read again, nothing is looked for or changed.
+        looked.lock().clear();
+        let saved = serde_json::to_vec(&s).unwrap();
+        assert!(!saved.windows(12).any(|w| w == b"use_teracopy"));
+        let again = parse_settings_with(&saved, path, found).unwrap();
+        assert_eq!(again, s);
+        assert!(looked.lock().is_empty(), "converted once");
+
+        // Switches off, or the program not found: off.
+        let off = br#"{"use_teracopy": false, "space_quicklook": false}"#;
+        let s = parse_settings_with(off, path, found).unwrap();
+        assert!(s.external_copy.is_empty() && s.external_preview.is_empty());
+        assert!(looked.lock().is_empty(), "nothing to look for");
+        let s = parse_settings_with(old, path, |_| None).unwrap();
+        assert!(s.external_copy.is_empty() && s.external_preview.is_empty());
+
+        // A file that already has the generic setting (written by 0.10) keeps it.
+        let both = br#"{"use_teracopy": true, "external_copy": "", "space_quicklook": true,
+            "external_preview": "v.exe {file}"}"#;
+        let s = parse_settings_with(both, path, found).unwrap();
+        assert_eq!(s.external_copy, "");
+        assert_eq!(s.external_preview, "v.exe {file}");
     }
 
     /// Changed shortcuts are written to the file and read back; files from before have none.

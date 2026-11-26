@@ -31,9 +31,9 @@ use arke_core::archive::{
 use gpui::{
     AnimationExt, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Context, ElementId,
     FocusHandle, HighlightStyle, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
-    MouseDownEvent, ParentElement, Pixels, Point, RenderImage, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, Task, UnderlineStyle, WeakEntity, Window,
-    actions, canvas, div, img, point, prelude::FluentBuilder, px, svg,
+    MouseDownEvent, ParentElement, Pixels, Point, SharedString, StatefulInteractiveElement, Styled,
+    StyledText, Task, UnderlineStyle, WeakEntity, Window, actions, canvas, div, img, point,
+    prelude::FluentBuilder, px, svg,
 };
 
 use super::ops::{CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RenameFile};
@@ -157,7 +157,7 @@ pub(crate) enum MenuCommand {
     /// Windows Properties dialog, opened in the menu process so third-party property sheets stay
     /// out of Arke.
     Properties,
-    /// Open with the nth app found on this PC (VS Code, Zed, ...; see [`set_open_with`]).
+    /// Open with the nth app the user added (see [`open_with_list`]).
     OpenWith(usize),
     /// Windows menu item read for "Show more options".
     Shell(u32),
@@ -190,80 +190,21 @@ pub(crate) enum MenuCommand {
     AddToShelf,
 }
 
-/// Apps offered under "Open with" (name, exe). Discovered once in the background at startup.
-static OPEN_WITH: std::sync::OnceLock<Vec<(String, std::path::PathBuf)>> =
-    std::sync::OnceLock::new();
-
-/// Icons extracted from those exes, not yet converted to renderable images. Converted on the UI
-/// thread on first use.
-static OPEN_WITH_ICON_DATA: Mutex<Vec<Option<arke_core::thumbs::Thumbnail>>> =
-    Mutex::new(Vec::new());
-
-thread_local! {
-    static OPEN_WITH_ICONS: std::cell::RefCell<Option<Vec<Option<Arc<RenderImage>>>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// `icons` matches `apps` by index (read from the exes on a background thread).
-pub(crate) fn set_open_with(
-    apps: Vec<(String, std::path::PathBuf)>,
-    icons: Vec<Option<arke_core::thumbs::Thumbnail>>,
-) {
-    *OPEN_WITH_ICON_DATA.lock() = icons;
-    let _ = OPEN_WITH.set(apps);
-}
-
-/// Icon of app `ix`.
-pub(crate) fn open_with_icon(ix: usize) -> Option<Arc<RenderImage>> {
-    // Don't convert until discovery is done; the conversion result is final.
-    OPEN_WITH.get()?;
-    OPEN_WITH_ICONS.with_borrow_mut(|cache| {
-        let icons = cache.get_or_insert_with(|| {
-            let data = std::mem::take(&mut *OPEN_WITH_ICON_DATA.lock());
-            data.into_iter()
-                .map(|t| t.and_then(crate::media::to_render_image))
-                .collect()
-        });
-        icons.get(ix).cloned().flatten()
-    })
-}
-
-pub(crate) fn open_with_apps() -> &'static [(String, std::path::PathBuf)] {
-    OPEN_WITH.get().map_or(&[], Vec::as_slice)
-}
-
-/// Apps actually listed under "Open with": discovered editors not disabled in settings (with their
-/// own icons), plus user-added ones.
+/// An app listed under "Open with": one the user added in Settings › Context menu.
 pub(crate) struct OpenWithApp {
     pub(crate) name: String,
     pub(crate) exe: PathBuf,
-    pub(crate) icon: Option<Arc<RenderImage>>,
 }
 
+/// The apps listed under "Open with", in the order they were added.
 pub(crate) fn open_with_list(settings: &crate::settings::Settings) -> Vec<OpenWithApp> {
-    let found = open_with_apps()
+    settings
+        .open_with_extra
         .iter()
-        .enumerate()
-        .filter(|(_, (_, exe))| !settings.open_with_hidden.contains(exe))
-        .map(|(ix, (name, exe))| OpenWithApp {
-            name: name.clone(),
+        .map(|exe| OpenWithApp {
+            name: app_name(exe),
             exe: exe.clone(),
-            icon: open_with_icon(ix),
-        });
-    let extra = settings.open_with_extra.iter().map(|exe| OpenWithApp {
-        name: app_name(exe),
-        exe: exe.clone(),
-        icon: None,
-    });
-    found.chain(extra).collect()
-}
-
-/// Editors found on this PC (name, exe, icon), listed in settings so each can be turned off.
-pub(crate) fn menu_open_with_found() -> Vec<(String, PathBuf, Option<Arc<RenderImage>>)> {
-    open_with_apps()
-        .iter()
-        .enumerate()
-        .map(|(ix, (name, exe))| (name.clone(), exe.clone(), open_with_icon(ix)))
+        })
         .collect()
 }
 
@@ -1950,19 +1891,14 @@ impl Explorer {
                 C::OpenInNewWindow,
             ));
         }
-        // Apps found on this PC (VS Code, Zed, ...), single selection only.
+        // Apps the user added, single selection only.
         if single {
             for (ix, app) in apps.iter().enumerate() {
-                let mut entry = item(
+                entries.push(item(
                     t!("menu.open_with", name = app.name.as_str()),
                     None,
                     C::OpenWith(ix),
-                );
-                // Use the app's own icon, or a generic one if unreadable or user-added.
-                if let MenuEntry::Item(row) = &mut entry {
-                    row.icon = app.icon.clone().map(MenuIcon::new);
-                }
-                entries.push(entry);
+                ));
             }
         }
         // Symlinks and junctions (files or folders): where they point.

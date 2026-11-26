@@ -1,4 +1,4 @@
-//! GPUI tests for Quick Look's wheel and zoom, and for handing Space to QuickLook (QL-Win).
+//! GPUI tests for Quick Look's wheel and zoom.
 
 use super::*;
 use crate::explorer::PreviewBody;
@@ -193,90 +193,5 @@ fn wheel_turns_pdf_pages_after_scrolling_them(cx: &mut TestAppContext) {
         view.update(cx, |v, _| v.look_scroll.offset().y),
         px(0.),
         "the next page starts at its top"
-    );
-}
-
-fn quicklook_on(cx: &mut VisualTestContext, on: bool) {
-    cx.update(|_, cx| {
-        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
-            s.update(|st| st.space_quicklook = on, cx);
-        });
-    });
-}
-
-/// With the setting off Space opens Arke's Quick Look; on (and QuickLook installed), Space runs
-/// QuickLook with the item every time, which toggles its own preview, and Arke's stays closed.
-#[gpui::test]
-fn space_hands_the_item_to_quicklook_when_asked(cx: &mut TestAppContext) {
-    let exe = PathBuf::from(r"C:\Users\u\AppData\Local\Programs\QuickLook\QuickLook.exe");
-    crate::quicklook::pretend_installed(exe.clone());
-    let exe = Some(exe);
-    let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, long_text_folder(), Arc::clone(&shell), r"C:\q");
-    wait_until(cx, &view, "load", loaded(r"C:\q"));
-
-    cx.simulate_keystrokes("down space");
-    assert!(
-        view.update(cx, |v, _| v.quick_look),
-        "off: Arke's Quick Look"
-    );
-    cx.simulate_keystrokes("space");
-    assert!(!view.update(cx, |v, _| v.quick_look));
-    cx.run_until_parked();
-    assert!(shell.quicklook_runs.lock().is_empty());
-
-    quicklook_on(cx, true);
-    cx.simulate_keystrokes("space");
-    assert!(!view.update(cx, |v, _| v.quick_look), "on: not Arke's");
-    let item = PathBuf::from(r"C:\q\a.txt");
-    let wait_runs = |cx: &mut VisualTestContext, n: usize| {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while shell.quicklook_runs.lock().len() < n && Instant::now() < deadline {
-            cx.run_until_parked();
-            std::thread::yield_now();
-        }
-    };
-    wait_runs(cx, 1);
-    assert_eq!(*shell.quicklook_runs.lock(), [(exe.clone(), item.clone())]);
-    // Space again: the same command, which closes QuickLook's preview.
-    cx.simulate_keystrokes("space");
-    wait_runs(cx, 2);
-    assert_eq!(
-        *shell.quicklook_runs.lock(),
-        [(exe.clone(), item.clone()), (exe, item)]
-    );
-    assert!(!view.update(cx, |v, _| v.quick_look));
-}
-
-/// A QuickLook that isn't where Arke looks for the exe (portable, Microsoft Store) still gets
-/// Space while it's running; with no QuickLook at all, Space stays Arke's even with the setting on.
-#[gpui::test]
-fn space_goes_to_a_running_quicklook_without_its_exe(cx: &mut TestAppContext) {
-    let shell = Arc::new(FakeShell::default());
-    let (view, cx) = setup(cx, long_text_folder(), Arc::clone(&shell), r"C:\q");
-    wait_until(cx, &view, "load", loaded(r"C:\q"));
-    quicklook_on(cx, true);
-
-    cx.simulate_keystrokes("down space");
-    assert!(
-        view.update(cx, |v, _| v.quick_look),
-        "no QuickLook: Arke's Quick Look"
-    );
-    cx.simulate_keystrokes("space");
-    assert!(!view.update(cx, |v, _| v.quick_look));
-    cx.run_until_parked();
-    assert!(shell.quicklook_runs.lock().is_empty());
-
-    crate::quicklook::pretend_running();
-    cx.simulate_keystrokes("space");
-    assert!(!view.update(cx, |v, _| v.quick_look), "running: not Arke's");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while shell.quicklook_runs.lock().is_empty() && Instant::now() < deadline {
-        cx.run_until_parked();
-        std::thread::yield_now();
-    }
-    assert_eq!(
-        *shell.quicklook_runs.lock(),
-        [(None, PathBuf::from(r"C:\q\a.txt"))]
     );
 }

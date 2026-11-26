@@ -115,7 +115,7 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
 - Un panel de vista previa redimensionable y la vista rápida (Space) para imágenes (también SVG), PDF, Word, Excel y
   PowerPoint, texto y código con resaltado de sintaxis, Markdown, archivos comprimidos, archivos `.gz` y carpetas.
 - Los vídeos muestran un fotograma y los PDF su primera página como miniatura. La vista rápida amplía texto, documentos y páginas PDF
-  (Ctrl+rueda), y con QuickLook instalado, Space puede abrir ese en su lugar.
+  (Ctrl+rueda), y Espacio puede pasar el elemento a otro programa de vista previa, como QuickLook.
 
 **Búsqueda**
 - Mientras escribe, en esta carpeta, sus subcarpetas o todo el equipo, con coincidencia aproximada y
@@ -125,8 +125,8 @@ Arke apareció en el [boletín tecnológico n.º 420 de Ruan Yifeng](https://www
 
 **Archivos**
 - Copie y mueva con el motor del shell de Windows, con progreso, deshacer y rehacer. Las tareas en la misma
-  unidad se ponen en cola y se pueden pausar, con verificación opcional tras copiar o traspaso a TeraCopy
-  (experimental). Muchos archivos pequeños entre SSD locales se copian varios a la vez, mucho más rápido
+  unidad se ponen en cola y se pueden pausar, con verificación opcional tras copiar o traspaso a otro programa de copia
+  como TeraCopy (experimental). Muchos archivos pequeños entre SSD locales se copian varios a la vez, mucho más rápido
   que uno por uno.
 - Cambio de nombre por lotes, «Mover a una carpeta nueva» y un menú de mover/copiar/acceso directo al arrastrar con el botón derecho
   del mouse o al soltar con Alt pulsada.

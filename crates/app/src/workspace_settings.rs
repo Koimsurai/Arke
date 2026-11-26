@@ -117,6 +117,11 @@ pub(super) struct SettingsPage {
     /// About › Updates: the download route (`update_route.rs`).
     pub(super) route_input: Entity<TextInput>,
     _route_input: Subscription,
+    /// The external copy and preview programs' command lines (`external.rs`).
+    copy_input: Entity<TextInput>,
+    _copy_input: Subscription,
+    preview_input: Entity<TextInput>,
+    _preview_input: Subscription,
     /// Keyboard shortcuts: search and the key being recorded.
     pub(super) shortcuts: super::shortcuts::Page,
     pub(super) backup: Option<super::backup::BackupNote>,
@@ -329,8 +334,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // QuickLook may have been started (or quit) since the last check.
-        Self::recheck_quicklook(cx);
         // Already open: switch to that tab.
         let existing = self.settings_panel.as_ref().map(|p| p.owner.clone());
         if self.go_to_page(existing.as_ref(), window, cx) {
@@ -379,6 +382,31 @@ impl Workspace {
             input
         });
         let route_sub = cx.subscribe_in(&route_input, window, Self::on_route_input);
+        let (copy_line, preview_line) = {
+            let settings = &SettingsStore::global(cx).read(cx).settings;
+            (
+                settings.external_copy.clone(),
+                settings.external_preview.clone(),
+            )
+        };
+        let copy_input = cx.new(|cx| {
+            let mut input = TextInput::new(COPY_PLACEHOLDER.to_owned(), cx).key_stop();
+            input.set_text(copy_line, cx);
+            input
+        });
+        let copy_sub = cx.subscribe_in(&copy_input, window, |this, input, event, window, cx| {
+            this.on_command_input(input, event, |s| &mut s.external_copy, window, cx);
+        });
+        let preview_input = cx.new(|cx| {
+            let mut input =
+                TextInput::new(t!("settings.external_preview").to_string(), cx).key_stop();
+            input.set_text(preview_line, cx);
+            input
+        });
+        let preview_sub =
+            cx.subscribe_in(&preview_input, window, |this, input, event, window, cx| {
+                this.on_command_input(input, event, |s| &mut s.external_preview, window, cx);
+            });
         let shortcuts = super::shortcuts::Page::new(window, cx);
         let search = search::Search::new(window, cx);
         // List fonts in the background; there can be hundreds.
@@ -426,6 +454,10 @@ impl Workspace {
             _app_input: app_sub,
             route_input,
             _route_input: route_sub,
+            copy_input,
+            _copy_input: copy_sub,
+            preview_input,
+            _preview_input: preview_sub,
             shortcuts,
             backup: None,
             dropdown: None,
@@ -690,6 +722,30 @@ impl Workspace {
         set(cx, |s| {
             if s.update_route != text {
                 s.update_route = text;
+            }
+        });
+        if matches!(event, InputEvent::Confirm | InputEvent::Cancel)
+            && let Some(page) = &self.settings_panel
+        {
+            window.focus(&page.focus, cx);
+        }
+    }
+
+    /// An external program's command line: saved as typed (it is only read when a copy starts or
+    /// Space is pressed); Enter and Esc return to the page.
+    fn on_command_input(
+        &mut self,
+        input: &Entity<TextInput>,
+        event: &InputEvent,
+        field: fn(&mut Settings) -> &mut String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = input.read(cx).committed_text().trim().to_owned();
+        set(cx, move |s| {
+            let line = field(s);
+            if *line != text {
+                *line = text;
             }
         });
         if matches!(event, InputEvent::Confirm | InputEvent::Cancel)
@@ -1528,7 +1584,13 @@ impl Workspace {
                 Icon::Preview,
                 t!("settings.preview"),
                 Some(t!("settings.preview_desc")),
-                preview_controls(s),
+                preview_controls(
+                    s,
+                    (
+                        &page.preview_input,
+                        page.preview_input.focus_handle(cx).is_focused(window),
+                    ),
+                ),
             ),
             card(
                 Icon::ArrowLeft,
@@ -1880,7 +1942,11 @@ impl Workspace {
                 (Some(t!("settings.group_confirm")), &[9, 10]),
             ],
         );
-        files.push(group(Some(t!("settings.group_file_ops")), file_ops_rows(s)));
+        let copy_focused = page.copy_input.focus_handle(cx).is_focused(window);
+        files.push(group(
+            Some(t!("settings.group_file_ops")),
+            file_ops_rows(s, (&page.copy_input, copy_focused)),
+        ));
         search::page(SORTING);
         let sorting = regroup(
             sorting,
@@ -1908,23 +1974,6 @@ impl Workspace {
             (t!("settings.shortcuts"), Icon::Bolt, shortcuts),
             (t!("settings.about"), Icon::Info, about),
         ]
-    }
-
-    /// Checks again whether QuickLook is running or installed, in the background, and redraws if
-    /// that changes what Settings offers. Cheap (see `quicklook.rs`), so it runs on every window
-    /// activation.
-    pub(super) fn recheck_quicklook(cx: &mut Context<Self>) {
-        // A thread of its own: the search may set up COM to read shortcuts.
-        let (tx, rx) = flume::bounded(1);
-        crate::explorer::spawn_thread("quicklook-recheck", move || {
-            let _ = tx.send(crate::quicklook::recheck());
-        });
-        cx.spawn(async move |this, cx| {
-            if rx.recv_async().await.unwrap_or(false) {
-                let _ = this.update(cx, |_, cx| cx.notify());
-            }
-        })
-        .detach();
     }
 
     /// "Open folder": selects the settings file in Windows Explorer, on a background thread.
@@ -2100,51 +2149,45 @@ fn tabs_card(s: &Settings, ui: &Ui) -> AnyElement {
         .into_any_element()
 }
 
-/// The preview pane switch, and when QuickLook (QL-Win) is running or installed, a chip beside it
-/// that hands Space to QuickLook (kept in this row rather than a row of its own).
-fn preview_controls(s: &crate::settings::Settings) -> AnyElement {
+/// What the external copy program's empty field shows: its syntax by example (`external.rs`).
+const COPY_PLACEHOLDER: &str = "program.exe {op} {sources} {dest}";
+
+/// The preview pane switch, with the external preview program for Space beside it (kept in this
+/// row rather than a row of its own).
+fn preview_controls(
+    s: &crate::settings::Settings,
+    input: (&Entity<TextInput>, bool),
+) -> AnyElement {
     let toggle = switch("preview", s.preview_pane, |st| {
         st.preview_pane = !st.preview_pane;
     });
-    if !crate::quicklook::available() {
-        return toggle;
-    }
-    let on = s.space_quicklook;
-    let tip = SharedString::from(match crate::quicklook::exe() {
-        Some(exe) => t!("settings.space_quicklook_tip", path = exe.display()).into_owned(),
-        None => t!("settings.space_quicklook_tip_running").into_owned(),
-    });
-    let chip = div()
-        .id("space-quicklook")
-        .a11y_toggle(tip.clone(), on)
-        .key_stop()
-        .h(theme::s_24())
-        .px(theme::s_12())
-        .flex()
-        .items_center()
-        .rounded(theme::R_FULL)
-        .border_1()
-        .cursor_pointer()
-        .text_size(theme::fs_12())
-        .tooltip(super::tooltip(tip))
-        .when(on, |d| {
-            d.bg(theme::signal_wash())
-                .border_color(theme::signal_line())
-                .text_color(theme::text())
-        })
-        .when(!on, |d| {
-            d.border_color(theme::line_strong())
-                .text_color(theme::text_subtle())
-                .hover(|s| s.bg(theme::wash()))
-        })
-        .child(t!("settings.space_quicklook").into_owned())
-        .on_click(|_, _, cx| set(cx, |st| st.space_quicklook = !st.space_quicklook));
     div()
         .flex()
         .items_center()
         .gap(theme::s_12())
-        .child(chip)
+        .child(command_field(input))
         .child(toggle)
+        .into_any_element()
+}
+
+/// A text box for an external program's command line (`external.rs`), as wide as the update
+/// route's.
+fn command_field((input, focused): (&Entity<TextInput>, bool)) -> AnyElement {
+    div()
+        .w(theme::scaled_px(240.))
+        .h(theme::h_ctl())
+        .px(theme::s_8())
+        .flex()
+        .items_center()
+        .rounded(theme::r_8())
+        .border_1()
+        .when(focused, |d| {
+            d.bg(theme::surface()).border_color(theme::signal_line())
+        })
+        .when(!focused, |d| {
+            d.bg(theme::wash()).border_color(theme::line())
+        })
+        .child(input.clone())
         .into_any_element()
 }
 
@@ -2296,10 +2339,12 @@ fn regroup(
     out
 }
 
-/// Copy and move engine: the same-drive queue, verify after copy, and TeraCopy (only offered when
-/// it is installed; found in the background at startup).
-fn file_ops_rows(s: &crate::settings::Settings) -> Vec<AnyElement> {
-    let mut rows = vec![
+/// Copy and move engine: the same-drive queue, verify after copy, and the external copy program.
+fn file_ops_rows(
+    s: &crate::settings::Settings,
+    copy: (&Entity<TextInput>, bool),
+) -> Vec<AnyElement> {
+    vec![
         card(
             Icon::Drive,
             t!("settings.queue_same_drive"),
@@ -2316,18 +2361,13 @@ fn file_ops_rows(s: &crate::settings::Settings) -> Vec<AnyElement> {
                 st.verify_copies = !st.verify_copies;
             }),
         ),
-    ];
-    if let Some(exe) = crate::teracopy::found() {
-        rows.push(card(
+        card(
             Icon::Copy,
-            t!("settings.use_teracopy"),
-            Some(t!("settings.use_teracopy_desc", path = exe.display())),
-            switch("use-teracopy", s.use_teracopy, |st| {
-                st.use_teracopy = !st.use_teracopy;
-            }),
-        ));
-    }
-    rows
+            t!("settings.external_copy"),
+            None,
+            command_field(copy),
+        ),
+    ]
 }
 
 /// A settings group: small heading, one box, hairlines between rows, as in Windows 11 Settings.

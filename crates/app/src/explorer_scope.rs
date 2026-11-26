@@ -255,6 +255,7 @@ impl Explorer {
             self.search_root = None;
             self.search_results = None;
             self.search_cursor = None;
+            self.reset_search_pick();
             self.global_task = None;
         }
         self.search_global = global;
@@ -584,6 +585,7 @@ impl Explorer {
             self.global_task = None;
             self.search_results = None;
             self.search_cursor = None;
+            self.reset_search_pick();
             cx.notify();
             return;
         };
@@ -595,15 +597,7 @@ impl Explorer {
                 }
                 let results = this.without_gone(to_results(found, this.search.current_gen()));
                 let results = this.arrange_results(results);
-                let len = results.hits.len();
-                this.search_cursor = match this.search_cursor {
-                    _ if len == 0 => None,
-                    Some(ix) => Some(ix.min(len - 1)),
-                    // On "Similar results" (just opened): it stays there.
-                    None if this.similar_focused() => None,
-                    None => Some(0),
-                };
-                this.search_results = Some(results);
+                this.show_search_results(results);
                 cx.notify();
             });
         }));

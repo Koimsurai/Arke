@@ -712,16 +712,15 @@ impl Explorer {
         }
     }
 
-    /// Full paths of the selection (only visible items while filtering). In search mode, the result
-    /// under the cursor.
+    /// Full paths of the selection (only visible items while filtering), with their names. In
+    /// search mode, the selected results, which may be in different folders.
     pub(super) fn selected_targets(&self) -> Vec<(PathBuf, Arc<str>)> {
         if self.search_mode {
             return self
-                .search_hit(self.search_cursor)
-                .zip(self.search_results.as_ref())
-                .map_or_default(|(hit, r)| {
-                    vec![(r.root.join(&*hit.rel), Arc::clone(&hit.entry.name))]
-                });
+                .selected_hits()
+                .into_iter()
+                .map(|(path, hit)| (path, Arc::clone(&hit.entry.name)))
+                .collect();
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
@@ -748,14 +747,19 @@ impl Explorer {
             return;
         }
         // Marked against the folder shown (where the names come from), so items inside expanded
-        // tree folders dim too.
+        // tree folders dim too. Search results may come from several folders: the marks are for
+        // the first one's, and only its items are marked.
         let parent = if self.search_mode {
             targets[0].0.parent().map(PathBuf::from)
         } else {
             self.current_path().map(PathBuf::from)
         }
         .unwrap_or_default();
-        let names: HashSet<Arc<str>> = targets.iter().map(|(_, n)| Arc::clone(n)).collect();
+        let names: HashSet<Arc<str>> = targets
+            .iter()
+            .filter(|(path, _)| !self.search_mode || path.parent() == Some(parent.as_path()))
+            .map(|(_, n)| Arc::clone(n))
+            .collect();
         let files = ClipboardFiles {
             paths: targets.into_iter().map(|(p, _)| p).collect(),
             cut,

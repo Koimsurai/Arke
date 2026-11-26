@@ -1310,8 +1310,7 @@ impl Explorer {
         }
         window.focus(&self.list_focus, cx);
         if self.search_mode {
-            self.search_cursor = Some(ix);
-            self.similar_focus = false;
+            self.search_right_press(ix);
         } else if let Some(view) = self.view()
             && let Some(entry) = view.get(ix)
         {
@@ -1390,12 +1389,7 @@ impl Explorer {
 
     pub(super) fn menu_targets(&self) -> Vec<(PathBuf, bool)> {
         if self.search_mode {
-            return self
-                .search_hit(self.search_cursor)
-                .zip(self.search_results.as_ref())
-                .map_or_default(|(hit, r)| {
-                    vec![(r.root.join(&*hit.rel), hit.entry.is_dir_like())]
-                });
+            return self.selected_hit_items();
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
@@ -2690,8 +2684,9 @@ impl Explorer {
     fn target_is_link(&self, path: &std::path::Path) -> bool {
         if self.search_mode {
             return self
-                .search_hit(self.search_cursor)
-                .is_some_and(|hit| hit.entry.is_link());
+                .selected_hits()
+                .iter()
+                .any(|(at, hit)| at == path && hit.entry.is_link());
         }
         let (Some(model), Some(name)) = (self.model.as_ref(), path.file_name()) else {
             return false;

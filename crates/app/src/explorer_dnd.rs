@@ -763,7 +763,11 @@ impl Explorer {
     /// that item.
     pub(crate) fn drag_paths(&self, ix: usize) -> Vec<PathBuf> {
         if self.search_mode {
-            return self.path_at(ix).map(|(p, _)| p).into_iter().collect();
+            return self
+                .search_drag_items(ix)
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
         }
         let selected = self
             .view()
@@ -782,10 +786,9 @@ impl Explorer {
     /// [`Self::drag_paths`] if every one is a folder.
     pub(crate) fn drag_folders(&self, ix: usize) -> Option<Vec<PathBuf>> {
         if self.search_mode {
-            return self
-                .path_at(ix)
-                .filter(|(_, is_dir)| *is_dir)
-                .map(|(p, _)| vec![p]);
+            let dragged = self.search_drag_items(ix);
+            return (!dragged.is_empty() && dragged.iter().all(|(_, is_dir)| *is_dir))
+                .then(|| dragged.into_iter().map(|(p, _)| p).collect());
         }
         let (model, view) = (self.model.as_ref()?, self.view()?);
         let at = view.get(ix)?;
@@ -843,6 +846,11 @@ impl Explorer {
     }
 
     fn drag_kind(&self, ix: usize) -> FileKind {
+        if self.search_mode {
+            return self.search_hit(Some(ix)).map_or(FileKind::Other, |hit| {
+                arke_core::filetype::file_kind(&hit.entry)
+            });
+        }
         self.view()
             .and_then(|v| v.get(ix).map(arke_core::filetype::file_kind))
             .unwrap_or(FileKind::Other)

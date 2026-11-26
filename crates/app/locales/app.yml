@@ -9191,46 +9191,6 @@ settings.start_menu_desc:
   es: Un acceso directo en la carpeta del menú Inicio; sigue a Arke si lo mueve
   pt-BR: Um atalho na pasta do menu Iniciar; acompanha o Arke se você o mover
   ja: スタート メニュー フォルダーにショートカットを作成します。Arke を移動しても追従します
-welcome.title:
-  en: "Add Arke to the Start menu?"
-  zh-TW: "要把 Arke 加到開始功能表嗎？"
-  zh-CN: "要把 Arke 添加到开始菜单吗？"
-  de: Arke zum Startmenü hinzufügen?
-  es: "¿Agregar Arke al menú Inicio?"
-  pt-BR: Adicionar o Arke ao menu Iniciar?
-  ja: Arke をスタート メニューに追加しますか?
-welcome.body:
-  en: "Arke is a single program file. A Start menu shortcut makes it easy to find and pin."
-  zh-TW: "Arke 只是一個程式檔。加到開始功能表就容易找到，也能釘選。"
-  zh-CN: "Arke 只是一个程序文件。添加到开始菜单后更容易找到，也能固定。"
-  de: Arke ist eine einzelne Programmdatei. Eine Startmenü-Verknüpfung macht es leicht zu finden und anzuheften.
-  es: Arke es un único archivo de programa. Un acceso directo en el menú Inicio facilita encontrarlo y anclarlo.
-  pt-BR: O Arke é um único arquivo de programa. Um atalho no menu Iniciar facilita encontrá-lo e fixá-lo.
-  ja: Arke は単一のプログラム ファイルです。スタート メニューにショートカットがあると、見つけやすく、ピン留めもできます。
-welcome.autostart:
-  en: "Also start when I sign in to Windows"
-  zh-TW: "也在登入 Windows 時啟動"
-  zh-CN: "也在登录 Windows 时启动"
-  de: Auch beim Anmelden an Windows starten
-  es: Iniciar también al iniciar sesión en Windows
-  pt-BR: Iniciar também quando eu entrar no Windows
-  ja: Windows へのサインイン時にも起動する
-welcome.add:
-  en: "Add to Start"
-  zh-TW: "加到開始"
-  zh-CN: "添加到开始"
-  de: Zu Start hinzufügen
-  es: Agregar a Inicio
-  pt-BR: Adicionar ao Iniciar
-  ja: スタートに追加
-welcome.not_now:
-  en: "Not now"
-  zh-TW: "暫時不要"
-  zh-CN: "暂时不用"
-  de: Jetzt nicht
-  es: Ahora no
-  pt-BR: Agora não
-  ja: 後で
 welcome.later_hint:
   en: "You can change this later in Settings › Startup"
   zh-TW: "之後可以在 設定 › 啟動 更改"
@@ -9239,6 +9199,312 @@ welcome.later_hint:
   es: Puede cambiarlo más tarde en Configuración › Al iniciar
   pt-BR: Você pode mudar isso depois em Configurações › Inicialização
   ja: 後から [設定] › [起動] で変更できます
+
+# ─── Setup guide (first run, Settings > About, command palette)
+onboarding.welcome:
+  en: "Welcome to Arke"
+  zh-TW: "歡迎使用 Arke"
+  zh-CN: "欢迎使用 Arke"
+  de: "Willkommen bei Arke"
+  es: "Le damos la bienvenida a Arke"
+  pt-BR: "Boas-vindas ao Arke"
+  ja: "Arke へようこそ"
+onboarding.step:
+  en: "Step %{n} of %{total}"
+  zh-TW: "第 %{n} 步，共 %{total} 步"
+  zh-CN: "第 %{n} 步，共 %{total} 步"
+  de: "Schritt %{n} von %{total}"
+  es: "Paso %{n} de %{total}"
+  pt-BR: "Etapa %{n} de %{total}"
+  ja: "ステップ %{n}/%{total}"
+onboarding.source_title:
+  en: "Where are you coming from?"
+  zh-TW: "你之前用哪個檔案管理工具？"
+  zh-CN: "你之前用哪个文件管理器？"
+  de: "Welchen Dateimanager haben Sie bisher benutzt?"
+  es: "¿Qué administrador de archivos usaba?"
+  pt-BR: "Qual gerenciador de arquivos você usava?"
+  ja: "これまで使っていたファイル マネージャーは?"
+onboarding.source_desc:
+  en: "Arke can work the way you're used to. Everything can be changed later in Settings."
+  zh-TW: "Arke 可以照你習慣的方式運作。之後都能在設定裡更改。"
+  zh-CN: "Arke 可以按你习惯的方式工作。之后都能在设置中更改。"
+  de: "Arke kann so arbeiten, wie Sie es gewohnt sind. Alles lässt sich später in den Einstellungen ändern."
+  es: "Arke puede funcionar como está acostumbrado. Puede cambiarlo todo más tarde en Configuración."
+  pt-BR: "O Arke pode funcionar do jeito que você está acostumado. Tudo pode ser mudado depois em Configurações."
+  ja: "使い慣れた動作に合わせられます。あとから [設定] ですべて変更できます。"
+onboarding.from_explorer:
+  en: "Windows File Explorer"
+  zh-TW: "Windows 檔案總管"
+  zh-CN: "Windows 文件资源管理器"
+  de: "Windows-Datei-Explorer"
+  es: "Explorador de archivos"
+  pt-BR: "Explorador de Arquivos"
+  ja: "Windows エクスプローラー"
+onboarding.pick_hint:
+  en: "Or go on with Arke's own defaults."
+  zh-TW: "也可以直接用 Arke 的預設值繼續。"
+  zh-CN: "也可以直接使用 Arke 的默认设置继续。"
+  de: "Oder fahren Sie mit den Standardeinstellungen von Arke fort."
+  es: "O continúe con los valores predeterminados de Arke."
+  pt-BR: "Ou continue com os padrões do próprio Arke."
+  ja: "Arke の既定の設定のまま進むこともできます。"
+onboarding.changes:
+  en: "Next changes:"
+  zh-TW: "按「下一步」後會變更："
+  zh-CN: "点击“下一步”后会更改："
+  de: "Mit „Weiter“ ändert sich:"
+  es: "Al pulsar Siguiente cambia:"
+  pt-BR: "Ao clicar em Avançar, muda:"
+  ja: "[次へ] で変わる設定:"
+onboarding.no_changes:
+  en: "Arke already works this way."
+  zh-TW: "Arke 已經是這樣設定了。"
+  zh-CN: "Arke 已经是这样设置的。"
+  de: "Arke ist bereits so eingestellt."
+  es: "Arke ya funciona así."
+  pt-BR: "O Arke já funciona assim."
+  ja: "Arke はすでにこの設定です。"
+onboarding.column:
+  en: "%{name} column"
+  zh-TW: "「%{name}」欄"
+  zh-CN: "“%{name}”列"
+  de: "Spalte „%{name}“"
+  es: "Columna %{name}"
+  pt-BR: "Coluna %{name}"
+  ja: "[%{name}] 列"
+onboarding.on:
+  en: "On"
+  zh-TW: "開啟"
+  zh-CN: "开启"
+  de: "Ein"
+  es: "Activado"
+  pt-BR: "Ativado"
+  ja: "オン"
+onboarding.off:
+  en: "Off"
+  zh-TW: "關閉"
+  zh-CN: "关闭"
+  de: "Aus"
+  es: "Desactivado"
+  pt-BR: "Desativado"
+  ja: "オフ"
+onboarding.look_title:
+  en: "Pick a look"
+  zh-TW: "選擇外觀"
+  zh-CN: "选择外观"
+  de: "Aussehen wählen"
+  es: "Elija una apariencia"
+  pt-BR: "Escolha a aparência"
+  ja: "外観を選ぶ"
+onboarding.look_desc:
+  en: "Changes show right away."
+  zh-TW: "選了馬上套用。"
+  zh-CN: "选择后立即生效。"
+  de: "Änderungen sind sofort zu sehen."
+  es: "Los cambios se ven al instante."
+  pt-BR: "As mudanças aparecem na hora."
+  ja: "選ぶとすぐに反映されます。"
+onboarding.connect_title:
+  en: "Open folders in Arke?"
+  zh-TW: "要用 Arke 開啟資料夾嗎？"
+  zh-CN: "要用 Arke 打开文件夹吗？"
+  de: "Ordner in Arke öffnen?"
+  es: "¿Abrir carpetas en Arke?"
+  pt-BR: "Abrir pastas no Arke?"
+  ja: "フォルダーを Arke で開きますか?"
+onboarding.connect_desc:
+  en: "Choose how much of File Explorer's work Arke takes on."
+  zh-TW: "選擇要讓 Arke 接手多少檔案總管的工作。"
+  zh-CN: "选择让 Arke 接手多少文件资源管理器的工作。"
+  de: "Wählen Sie, wie viel Arke vom Datei-Explorer übernimmt."
+  es: "Elija cuánto del trabajo del Explorador de archivos asume Arke."
+  pt-BR: "Escolha quanto do trabalho do Explorador de Arquivos o Arke assume."
+  ja: "エクスプローラーの役割をどこまで Arke に任せるかを選びます。"
+onboarding.takeover_off:
+  en: "Keep File Explorer"
+  zh-TW: "繼續用檔案總管"
+  zh-CN: "继续使用文件资源管理器"
+  de: "Datei-Explorer behalten"
+  es: "Seguir con el Explorador de archivos"
+  pt-BR: "Manter o Explorador de Arquivos"
+  ja: "エクスプローラーのまま"
+onboarding.takeover_off_desc:
+  en: "Arke opens only when you start it"
+  zh-TW: "只有你自己啟動時才開 Arke"
+  zh-CN: "只有你自己启动时才打开 Arke"
+  de: "Arke öffnet sich nur, wenn Sie es starten"
+  es: "Arke solo se abre cuando usted lo inicia"
+  pt-BR: "O Arke só abre quando você o inicia"
+  ja: "Arke は自分で起動したときだけ開きます"
+onboarding.takeover_folders_desc:
+  en: "Folders other apps open, such as \"Show in folder\", open in Arke"
+  zh-TW: "其他程式開的資料夾（例如「在資料夾中顯示」）改用 Arke 開啟"
+  zh-CN: "其他程序打开的文件夹（例如“在文件夹中显示”）改用 Arke 打开"
+  de: "Ordner, die andere Apps öffnen (z. B. „Im Ordner anzeigen“), öffnen sich in Arke"
+  es: "Las carpetas que abren otras aplicaciones, como \"Mostrar en carpeta\", se abren en Arke"
+  pt-BR: "Pastas que outros apps abrem, como \"Mostrar na pasta\", abrem no Arke"
+  ja: "ほかのアプリが開くフォルダー ([フォルダーに表示] など) を Arke で開きます"
+onboarding.takeover_all:
+  en: "Also Win+E"
+  zh-TW: "連 Win+E 也是"
+  zh-CN: "包括 Win+E"
+  de: "Auch Win+E"
+  es: "También Win+E"
+  pt-BR: "Também Win+E"
+  ja: "Win+E も"
+onboarding.takeover_all_desc:
+  en: "Folders from other apps, Win+E and the File Explorer icon open Arke"
+  zh-TW: "其他程式開的資料夾、Win+E 和檔案總管圖示都開 Arke"
+  zh-CN: "其他程序打开的文件夹、Win+E 和文件资源管理器图标都打开 Arke"
+  de: "Ordner aus anderen Apps, Win+E und das Datei-Explorer-Symbol öffnen Arke"
+  es: "Las carpetas de otras aplicaciones, Win+E y el icono del Explorador de archivos abren Arke"
+  pt-BR: "Pastas de outros apps, Win+E e o ícone do Explorador de Arquivos abrem o Arke"
+  ja: "ほかのアプリのフォルダー、Win+E、エクスプローラーのアイコンで Arke を開きます"
+onboarding.registry_note:
+  en: "Arke registers itself for your account only, under HKEY_CURRENT_USER\\Software\\Classes. Turning it off puts back exactly what was there."
+  zh-TW: "Arke 只為你的帳戶登錄，位置在 HKEY_CURRENT_USER\\Software\\Classes。關閉時會原樣還原。"
+  zh-CN: "Arke 只为你的账户注册，位置在 HKEY_CURRENT_USER\\Software\\Classes。关闭时会原样还原。"
+  de: "Arke registriert sich nur für Ihr Konto unter HKEY_CURRENT_USER\\Software\\Classes. Beim Ausschalten wird genau der vorherige Zustand wiederhergestellt."
+  es: "Arke se registra solo para su cuenta, en HKEY_CURRENT_USER\\Software\\Classes. Al desactivarlo se restaura exactamente lo que había."
+  pt-BR: "O Arke se registra só para a sua conta, em HKEY_CURRENT_USER\\Software\\Classes. Ao desativar, tudo volta exatamente como estava."
+  ja: "Arke は HKEY_CURRENT_USER\\Software\\Classes に、このアカウントだけを対象に登録します。オフにすると元の状態にそのまま戻ります。"
+onboarding.registry_none:
+  en: "Nothing changes in Windows."
+  zh-TW: "不會變更 Windows 的任何設定。"
+  zh-CN: "不会更改 Windows 的任何设置。"
+  de: "An Windows wird nichts geändert."
+  es: "No se cambia nada en Windows."
+  pt-BR: "Nada muda no Windows."
+  ja: "Windows の設定は何も変わりません。"
+onboarding.background_needed:
+  en: "Needed to open folders in Arke"
+  zh-TW: "用 Arke 開啟資料夾時必須開著"
+  zh-CN: "用 Arke 打开文件夹时必须开启"
+  de: "Nötig, um Ordner in Arke zu öffnen"
+  es: "Necesario para abrir carpetas en Arke"
+  pt-BR: "Necessário para abrir pastas no Arke"
+  ja: "フォルダーを Arke で開くには必要です"
+onboarding.pins_title:
+  en: "Bring your Quick access folders"
+  zh-TW: "帶入快速存取的資料夾"
+  zh-CN: "导入快速访问中的文件夹"
+  de: "Ordner aus dem Schnellzugriff übernehmen"
+  es: "Traiga sus carpetas de Acceso rápido"
+  pt-BR: "Traga suas pastas do Acesso rápido"
+  ja: "クイック アクセスのフォルダーを取り込む"
+onboarding.pins_desc:
+  en: "Folders pinned in File Explorer, added to your favorites. File Explorer stays as it is."
+  zh-TW: "把檔案總管裡釘選的資料夾加到最愛。檔案總管不會被更動。"
+  zh-CN: "把文件资源管理器中固定的文件夹添加到收藏夹。文件资源管理器不会被改动。"
+  de: "In Datei-Explorer angeheftete Ordner werden zu Ihren Favoriten. Datei-Explorer bleibt, wie er ist."
+  es: "Las carpetas ancladas en el Explorador de archivos se agregan a sus favoritos. El Explorador no cambia."
+  pt-BR: "Pastas fixadas no Explorador de Arquivos entram nos seus favoritos. O Explorador fica como está."
+  ja: "エクスプローラーでピン留めしたフォルダーをお気に入りに追加します。エクスプローラーは変更しません。"
+onboarding.pins_reading:
+  en: "Reading Quick access…"
+  zh-TW: "正在讀取快速存取…"
+  zh-CN: "正在读取快速访问…"
+  de: "Schnellzugriff wird gelesen…"
+  es: "Leyendo Acceso rápido…"
+  pt-BR: "Lendo o Acesso rápido…"
+  ja: "クイック アクセスを読み込んでいます…"
+onboarding.pins_failed:
+  en: "File Explorer's Quick access couldn't be read."
+  zh-TW: "無法讀取檔案總管的快速存取。"
+  zh-CN: "无法读取文件资源管理器的快速访问。"
+  de: "Der Schnellzugriff von Datei-Explorer konnte nicht gelesen werden."
+  es: "No se pudo leer el Acceso rápido del Explorador de archivos."
+  pt-BR: "Não foi possível ler o Acesso rápido do Explorador de Arquivos."
+  ja: "エクスプローラーのクイック アクセスを読み込めませんでした。"
+onboarding.pins_none:
+  en: "Everything pinned there is already in your favorites."
+  zh-TW: "那裡釘選的資料夾都已經在最愛裡了。"
+  zh-CN: "那里固定的文件夹都已经在收藏夹中了。"
+  de: "Alles, was dort angeheftet ist, ist bereits in Ihren Favoriten."
+  es: "Todo lo anclado allí ya está en sus favoritos."
+  pt-BR: "Tudo o que está fixado lá já está nos seus favoritos."
+  ja: "そこにピン留めされたフォルダーはすべてお気に入りにあります。"
+onboarding.skip:
+  en: "Skip setup"
+  zh-TW: "略過設定"
+  zh-CN: "跳过设置"
+  de: "Einrichtung überspringen"
+  es: "Omitir configuración"
+  pt-BR: "Pular configuração"
+  ja: "セットアップをスキップ"
+onboarding.back:
+  en: "Back"
+  zh-TW: "上一步"
+  zh-CN: "上一步"
+  de: "Zurück"
+  es: "Atrás"
+  pt-BR: "Voltar"
+  ja: "戻る"
+onboarding.next:
+  en: "Next"
+  zh-TW: "下一步"
+  zh-CN: "下一步"
+  de: "Weiter"
+  es: "Siguiente"
+  pt-BR: "Avançar"
+  ja: "次へ"
+onboarding.done:
+  en: "Done"
+  zh-TW: "完成"
+  zh-CN: "完成"
+  de: "Fertig"
+  es: "Listo"
+  pt-BR: "Concluir"
+  ja: "完了"
+onboarding.whats_new_title:
+  en: "New: a setup guide"
+  zh-TW: "新功能：設定導覽"
+  zh-CN: "新功能：设置向导"
+  de: "Neu: ein Einrichtungsassistent"
+  es: "Novedad: una guía de configuración"
+  pt-BR: "Novo: um guia de configuração"
+  ja: "新機能: セットアップ ガイド"
+onboarding.whats_new_body:
+  en: "Tell Arke which file manager you used before, pick a look, and choose whether Arke opens your folders."
+  zh-TW: "告訴 Arke 你之前用的檔案管理工具、選擇外觀，並決定是否用 Arke 開啟資料夾。"
+  zh-CN: "告诉 Arke 你之前用的文件管理器、选择外观，并决定是否用 Arke 打开文件夹。"
+  de: "Sagen Sie Arke, welchen Dateimanager Sie bisher benutzt haben, wählen Sie das Aussehen und ob Arke Ihre Ordner öffnet."
+  es: "Indique a Arke qué administrador de archivos usaba, elija una apariencia y decida si Arke abre sus carpetas."
+  pt-BR: "Diga ao Arke qual gerenciador de arquivos você usava, escolha a aparência e decida se o Arke abre suas pastas."
+  ja: "これまでのファイル マネージャーを選び、外観を決めて、フォルダーを Arke で開くかどうかを選べます。"
+onboarding.whats_new_open:
+  en: "Open the guide"
+  zh-TW: "開啟導覽"
+  zh-CN: "打开向导"
+  de: "Assistent öffnen"
+  es: "Abrir la guía"
+  pt-BR: "Abrir o guia"
+  ja: "ガイドを開く"
+onboarding.settings_title:
+  en: "Setup guide"
+  zh-TW: "設定導覽"
+  zh-CN: "设置向导"
+  de: "Einrichtungsassistent"
+  es: "Guía de configuración"
+  pt-BR: "Guia de configuração"
+  ja: "セットアップ ガイド"
+onboarding.settings_desc:
+  en: "Where you're coming from, the look, and how Arke opens folders"
+  zh-TW: "之前用的工具、外觀，以及 Arke 如何開啟資料夾"
+  zh-CN: "之前用的工具、外观，以及 Arke 如何打开文件夹"
+  de: "Bisheriger Dateimanager, Aussehen und wie Arke Ordner öffnet"
+  es: "De dónde viene, la apariencia y cómo abre Arke las carpetas"
+  pt-BR: "De onde você vem, a aparência e como o Arke abre pastas"
+  ja: "以前のツール、外観、Arke でフォルダーを開く方法"
+onboarding.settings_open:
+  en: "Open"
+  zh-TW: "開啟"
+  zh-CN: "打开"
+  de: "Öffnen"
+  es: "Abrir"
+  pt-BR: "Abrir"
+  ja: "開く"
 
 # ─── Uninstall (Settings > About, arke --uninstall)
 uninstall.title:
@@ -9797,6 +10063,14 @@ cmd.open_settings:
   es: Configuración
   pt-BR: Configurações
   ja: 設定
+cmd.open_setup_guide:
+  en: Setup guide
+  zh-TW: 設定導覽
+  zh-CN: 设置向导
+  de: Einrichtungsassistent
+  es: Guía de configuración
+  pt-BR: Guia de configuração
+  ja: セットアップ ガイド
 cmd.go_up:
   en: Up one level
   zh-TW: 上一層

@@ -24,7 +24,7 @@ fn key(path: &std::path::Path) -> String {
 }
 
 /// Whether the folder is already a favorite (on the tiles or in the list), ignoring case.
-fn is_favorite(settings: &Settings, path: &std::path::Path, places: &[Place]) -> bool {
+pub(crate) fn is_favorite(settings: &Settings, path: &std::path::Path, places: &[Place]) -> bool {
     let wanted = key(path);
     settings
         .tiles(places)

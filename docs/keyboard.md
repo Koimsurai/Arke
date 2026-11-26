@@ -130,7 +130,7 @@ keyboard starts on its first button, which a screen reader announces.
 | Ctrl+1 … Ctrl+8 | Tab 1 to 8 |
 | Ctrl+9 | Last tab |
 
-"New tab" and "Workspaces" have no key by default; use the command palette.
+"New tab", "Workspaces" and "Setup guide" have no key by default; use the command palette.
 
 ## Path bar
 

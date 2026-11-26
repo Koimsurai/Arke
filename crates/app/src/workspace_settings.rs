@@ -1902,6 +1902,18 @@ impl Workspace {
                 ),
             ),
             card(
+                Icon::Explorer,
+                t!("onboarding.settings_title"),
+                Some(t!("onboarding.settings_desc")),
+                text_button(
+                    "setup-guide-open",
+                    t!("onboarding.settings_open"),
+                    cx.listener(|_, _: &ClickEvent, window, cx| {
+                        super::welcome::open_guide(window, cx);
+                    }),
+                ),
+            ),
+            card(
                 Icon::Bolt,
                 t!("whats_new.auto"),
                 Some(t!("whats_new.auto_desc")),
@@ -2966,19 +2978,19 @@ fn look_summary(color: gpui::Rgba, label: String) -> AnyElement {
 
 /// Colors of a preview tile's mini window.
 #[derive(Clone, Copy)]
-struct TileLook {
-    frame: gpui::Rgba,
-    paper: gpui::Rgba,
+pub(super) struct TileLook {
+    pub(super) frame: gpui::Rgba,
+    pub(super) paper: gpui::Rgba,
     /// Selected row label.
-    ink: gpui::Rgba,
+    pub(super) ink: gpui::Rgba,
     /// Sidebar and secondary lines.
-    faint: gpui::Rgba,
-    accent: gpui::Rgba,
+    pub(super) faint: gpui::Rgba,
+    pub(super) accent: gpui::Rgba,
 }
 
 impl TileLook {
     /// Current theme with these surfaces (`frame`, `paper`) and accent.
-    fn current((frame, paper): (gpui::Rgba, gpui::Rgba), accent: gpui::Rgba) -> Self {
+    pub(super) fn current((frame, paper): (gpui::Rgba, gpui::Rgba), accent: gpui::Rgba) -> Self {
         Self {
             frame,
             paper,
@@ -3104,7 +3116,11 @@ type Pick = (Apply, bool, bool);
 type Apply = Rc<dyn Fn(&mut Settings)>;
 
 /// Whether a tile group has the focus, and whether by keyboard.
-type Held = (bool, bool);
+pub(super) type Held = (bool, bool);
+
+/// What picking a tile does, when it is not a setting of its own (the setup guide's choices,
+/// held until a step is confirmed).
+pub(super) type OnPick = Rc<dyn Fn(&mut App)>;
 
 /// [`Pick`] for a tile setting `apply`, picked or not, in a group `held` as given.
 fn pick(apply: impl Fn(&mut Settings) + 'static, (focused, keys): Held, selected: bool) -> Pick {
@@ -3119,6 +3135,22 @@ fn radio_group(
     label: Cow<'static, str>,
     focus: &FocusHandle,
     picks: Vec<Apply>,
+    selected: Option<usize>,
+    tiles: Vec<AnyElement>,
+) -> gpui::Stateful<gpui::Div> {
+    let picks = picks
+        .into_iter()
+        .map(|apply| -> OnPick { Rc::new(move |cx: &mut App| set(cx, |s| apply(s))) })
+        .collect();
+    radio_group_with(id, label, focus, picks, selected, tiles)
+}
+
+/// [`radio_group`] whose tiles do `picks` instead of setting a setting each.
+pub(super) fn radio_group_with(
+    id: &'static str,
+    label: Cow<'static, str>,
+    focus: &FocusHandle,
+    picks: Vec<OnPick>,
     selected: Option<usize>,
     tiles: Vec<AnyElement>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -3143,8 +3175,7 @@ fn radio_group(
                 _ => return,
             };
             cx.stop_propagation();
-            let apply = Rc::clone(&picks[to]);
-            set(cx, move |s| apply(s));
+            picks[to](cx);
         })
         .flex()
         .flex_wrap()
@@ -3158,17 +3189,36 @@ fn tile(
     id: (&'static str, usize),
     label: String,
     selected: bool,
-    (width, height): (f32, f32),
+    size: (f32, f32),
     preview: AnyElement,
     (apply, claim, ring): &Pick,
 ) -> AnyElement {
     let apply = Rc::clone(apply);
+    let on_pick: OnPick = Rc::new(move |cx: &mut App| {
+        let apply = Rc::clone(&apply);
+        set(cx, move |s| apply(s));
+    });
+    tile_with(id, label, selected, size, preview, (*claim, *ring), on_pick)
+}
+
+/// [`tile`] that does `on_pick` when picked; `(claim, ring)`: read as focused, and showing the
+/// keyboard ring (see [`Pick`]).
+pub(super) fn tile_with(
+    id: (&'static str, usize),
+    label: String,
+    selected: bool,
+    (width, height): (f32, f32),
+    preview: AnyElement,
+    (claim, ring): (bool, bool),
+    on_pick: OnPick,
+) -> AnyElement {
     let tile = div()
         .id(id)
+        .debug_selector(move || format!("{}-{}", id.0, id.1))
         .a11y_lazy(gpui::Role::RadioButton, || label.clone())
         .aria_toggled(crate::a11y::toggled(selected))
         .when(
-            *claim,
+            claim,
             gpui::StatefulInteractiveElement::aria_active_descendant,
         )
         .w(px(width))
@@ -3202,10 +3252,7 @@ fn tile(
                         .child(label),
                 ),
         )
-        .on_click(move |_, _, cx| {
-            let apply = Rc::clone(&apply);
-            set(cx, move |s| apply(s));
-        });
+        .on_click(move |_, _, cx| on_pick(cx));
     // The keyboard ring: outside the tile, whose preview covers its inside, and in the text color,
     // as the accent already marks the picked tile. The frame is always there (clear when not
     // shown) and its room is taken back with a negative margin, so nothing moves.
@@ -3215,14 +3262,23 @@ fn tile(
         .p(px(2.))
         .rounded(theme::r_8() + room)
         .border_2()
-        .border_color(if *ring { theme::text() } else { theme::clear() })
+        .border_color(if ring { theme::text() } else { theme::clear() })
         .child(tile)
         .into_any_element()
 }
 
 /// Theme options: light, dark, and follow Windows (half light, half dark).
 fn theme_body(s: &Settings, focus: &FocusHandle, held: Held) -> AnyElement {
-    let (width, height) = THEME_TILE;
+    theme_tiles(s, focus, held, THEME_TILE)
+}
+
+/// The theme tiles at `size` (preview width and height), which the setup guide draws smaller.
+pub(super) fn theme_tiles(
+    s: &Settings,
+    focus: &FocusHandle,
+    held: Held,
+    (width, height): (f32, f32),
+) -> AnyElement {
     let window = |dark: bool, gray: bool| mini_window(TileLook::mode(dark, gray), width);
     // The dark half shows the right side of the same window, so the two halves line up.
     let half = width / 2.;

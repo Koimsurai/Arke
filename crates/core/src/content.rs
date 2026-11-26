@@ -857,7 +857,9 @@ mod tests {
             assert_same("k發", "\u{212A}發 here\n".as_bytes()).as_deref(),
             Some("\u{212A}發 here")
         );
-        assert!(assert_same("istanbul", "İSTANBUL\n".as_bytes()).is_some());
+        // Lowercase "İ" is "i" plus a combining dot: plain "istanbul" never matched it.
+        assert!(assert_same("istanbul", "İSTANBUL\n".as_bytes()).is_none());
+        assert!(assert_same("i\u{307}stanbul", "İSTANBUL\n".as_bytes()).is_some());
         assert!(assert_same("ägypten", "ÄGYPTEN\n".as_bytes()).is_some());
         // These can use the plain byte search.
         assert!(matches!(

@@ -198,6 +198,12 @@ pub(crate) static COMMANDS: &[Command] = &[
         crate::workspace::OpenSettings
     ),
     command!(
+        "open_setup_guide",
+        WORKSPACE,
+        [],
+        crate::workspace::OpenSetupGuide
+    ),
+    command!(
         "go_up",
         EXPLORER_PAGES,
         ["alt-up"],

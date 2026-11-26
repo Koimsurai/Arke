@@ -381,7 +381,9 @@ fn corner_cards_stay_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
                 .debug_bounds(id)
                 .unwrap_or_else(|| panic!("{id} should be drawn"));
             assert!(
-                b.origin.x > gpui::px(1000.) && b.size.height < gpui::px(400.),
+                b.origin.x > gpui::px(1000.)
+                    && b.origin.y > gpui::px(100.)
+                    && b.size.height < gpui::px(900.),
                 "{id} after {wait} ms: {b:?}"
             );
         }

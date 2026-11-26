@@ -297,6 +297,25 @@ impl WhatsNewPage {
     }
 }
 
+impl WhatsNewPage {
+    /// The versions, after an update led by the setup guide for someone who hasn't been
+    /// through it.
+    fn sections_shown(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let guide = matches!(self.mode, Mode::Updated { .. })
+            .then(|| super::welcome::whats_new_entry(cx))
+            .flatten();
+        guide
+            .into_iter()
+            .chain(
+                self.sections
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, s)| self.section(ix, s, cx)),
+            )
+            .collect()
+    }
+}
+
 fn render_block(block: &Block) -> AnyElement {
     match block {
         Block::Heading(text) => div()
@@ -323,12 +342,7 @@ fn render_block(block: &Block) -> AnyElement {
 impl Render for WhatsNewPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, subtitle) = self.heading();
-        let sections: Vec<AnyElement> = self
-            .sections
-            .iter()
-            .enumerate()
-            .map(|(ix, s)| self.section(ix, s, cx))
-            .collect();
+        let sections = self.sections_shown(cx);
         let changelog = format!(
             "{}/blob/main/{}",
             build_info::SOURCE_URL,

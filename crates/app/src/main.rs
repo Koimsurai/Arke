@@ -69,6 +69,7 @@ mod menu_order;
 mod menu_pin_looks;
 mod motion;
 mod net_dialog;
+mod onboarding;
 mod op_center;
 mod op_queue;
 mod palette;

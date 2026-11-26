@@ -113,6 +113,8 @@ mod tests_columns;
 mod tests_commands;
 #[path = "tests_home_favorites.rs"]
 mod tests_home_favorites;
+#[path = "tests_onboarding.rs"]
+mod tests_onboarding;
 #[path = "tests_quick_access.rs"]
 mod tests_quick_access;
 #[path = "tests_text_input_menu.rs"]
@@ -8711,37 +8713,6 @@ fn uninstall_asks_before_removing(cx: &mut TestAppContext) {
     );
 }
 
-/// First run: the corner card offers the Start menu shortcut; adding it (with "start when I sign
-/// in" ticked) turns both settings on and the card goes away for good.
-#[gpui::test]
-fn first_run_card_adds_the_start_menu_shortcut(cx: &mut TestAppContext) {
-    use crate::settings::SettingsStore;
-    let fs = FakeFs::new();
-    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
-    let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("welcome").is_none(), "not a first run");
-    cx.update(|_, cx| {
-        SettingsStore::global(cx).update(cx, |s, cx| {
-            s.set_first_run_for_test(true);
-            cx.notify();
-        });
-    });
-    cx.run_until_parked();
-    let click = |cx: &mut VisualTestContext, id: &'static str| {
-        let bounds = cx
-            .debug_bounds(id)
-            .unwrap_or_else(|| panic!("{id} is drawn"));
-        cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-        cx.run_until_parked();
-    };
-    click(cx, "welcome-autostart");
-    click(cx, "welcome-add");
-    let s = settings(cx);
-    assert!(s.start_menu && s.autostart && s.start_menu_offered);
-    assert!(cx.debug_bounds("welcome").is_none(), "answered");
-}
-
 /// The first-run card stays in the bottom right while it slides in: the slide sets `left` and
 /// `top`, which on the placed box itself pinned it to the top left, as tall as the window (tests run
 /// with motion off, which hid it).
@@ -8764,14 +8735,16 @@ fn first_run_card_stays_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
         cx.run_until_parked();
         let b = cx.debug_bounds("welcome").expect("the card is drawn");
         assert!(
-            b.origin.x > gpui::px(1000.) && b.size.height < gpui::px(400.),
+            b.origin.x > gpui::px(1000.)
+                && b.origin.y > gpui::px(100.)
+                && b.size.height < gpui::px(900.),
             "after {wait} ms: {b:?}"
         );
     }
     crate::motion::force_for_test(false);
 }
 
-/// "Not now" dismisses the card without adding anything.
+/// "Skip setup" closes the guide for good without adding anything.
 #[gpui::test]
 fn first_run_card_can_be_dismissed(cx: &mut TestAppContext) {
     use crate::settings::SettingsStore;
@@ -8785,13 +8758,12 @@ fn first_run_card_can_be_dismissed(cx: &mut TestAppContext) {
         });
     });
     cx.run_until_parked();
-    let bounds = cx
-        .debug_bounds("welcome-not-now")
-        .expect("the card is shown");
+    let bounds = cx.debug_bounds("welcome-skip").expect("the card is shown");
     cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     cx.run_until_parked();
     let s = settings(cx);
     assert!(!s.start_menu && !s.autostart && s.start_menu_offered);
+    assert!(s.onboarding_done, "not shown again on this first run");
     assert!(cx.debug_bounds("welcome").is_none());
 }
 

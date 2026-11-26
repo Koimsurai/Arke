@@ -111,7 +111,9 @@ actions!(
         /// The saved workspaces panel.
         OpenWorkspaces,
         /// Collapses the sidebar to a column of icons, or expands it (Ctrl+B, #91).
-        ToggleSidebar
+        ToggleSidebar,
+        /// The setup guide (`workspace_welcome.rs`), again from its first step.
+        OpenSetupGuide
     ]
 );
 
@@ -3240,6 +3242,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenWorkspaces, window, cx| {
                 this.open_workspaces(window, cx);
             }))
+            .on_action(|_: &OpenSetupGuide, window, cx| welcome::open_guide(window, cx))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(|this, a: &crate::explorer::FocusComputerSearch, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.focus_computer_search(a, window, cx));
@@ -3358,7 +3361,7 @@ impl Render for Workspace {
             .children(self.render_drag_out_watch(cx))
             .children(self.render_tab_drop_watch(cx))
             .children(sidebar_menu)
-            .children(welcome::welcome_card(cx))
+            .children(welcome::welcome_card(window, cx))
             .children(update_page::update_notice(cx))
             .children(self.net_dialog.as_ref().map(|slot| slot.dialog.clone()))
             .children(

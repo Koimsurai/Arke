@@ -779,6 +779,9 @@ pub(crate) struct Settings {
     pub(crate) start_menu: bool,
     /// The first-run card offering the Start menu shortcut was answered or dismissed.
     pub(crate) start_menu_offered: bool,
+    /// The setup guide (`workspace_welcome.rs`) was finished or skipped, so a first run doesn't
+    /// show it again; it still opens from Settings › About and the command palette.
+    pub(crate) onboarding_done: bool,
     /// The tabs of the window used last (the first of `session_windows`), which versions before
     /// 0.7 read as the whole last session.
     pub(crate) session: Session,
@@ -907,6 +910,7 @@ impl Default for Settings {
             autostart: false,
             start_menu: false,
             start_menu_offered: false,
+            onboarding_done: false,
             session: Session::default(),
             session_windows: Vec::new(),
             window: None,

@@ -1011,17 +1011,22 @@ async fn open_unchecked(
     let ms = started.elapsed().as_millis();
     if let Some(why) = why {
         log::info!(
-            "takeover: network folder {folder:?} given back to File Explorer after {ms} ms: {why}"
+            "takeover: network folder {} given back to File Explorer after {ms} ms: {why}",
+            folder.display()
         );
         return false;
     }
     if request.reply.is_disconnected() {
         log::info!(
-            "takeover: network folder {folder:?} found after {ms} ms, too late: File Explorer has it"
+            "takeover: network folder {} found after {ms} ms, too late: File Explorer has it",
+            folder.display()
         );
         return false;
     }
-    log::debug!("takeover: network folder {folder:?} found after {ms} ms");
+    log::debug!(
+        "takeover: network folder {} found after {ms} ms",
+        folder.display()
+    );
     cx.update(|cx| open_taken_over(cx, services, request))
 }
 

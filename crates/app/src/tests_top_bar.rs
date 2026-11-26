@@ -444,7 +444,7 @@ fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
         cx.debug_bounds("sel-more").is_some(),
         "folded at this width"
     );
-    view.update_in(cx, |v, window, cx| v.focus_toolbar(window, cx));
+    view.update_in(cx, Explorer::focus_toolbar);
     settle(cx);
     for _ in 0..20 {
         if view.update(cx, |v, _| v.toolbar_at_for_test()) == Some("sel-more") {
@@ -468,7 +468,11 @@ fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
     });
     settle(cx);
     let labels = view
-        .update(cx, |v, _| v.context_menu.as_ref().map(|m| m.labels()))
+        .update(cx, |v, _| {
+            v.context_menu
+                .as_ref()
+                .map(crate::explorer::ContextMenuForTest::labels)
+        })
         .expect("Enter on ⋯ opens the selection's menu");
     let row = format!(
         "[{} {} {} {}]",

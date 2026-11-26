@@ -757,6 +757,28 @@ fn load(
     }
 }
 
+/// How an item's list entry differs from the one a preview was made from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Saved {
+    Same,
+    /// Only the details (attributes) differ
+    Details,
+    /// Size, last write or kind differ: the file was written or replaced
+    Content,
+}
+
+/// Compares what an editor's save changes: size and last write time (a replaced file has its own
+/// times too, whatever way it got its name), then the other details.
+pub(crate) fn saved_since(shown: &Entry, now: &Entry) -> Saved {
+    if shown.size != now.size || shown.modified != now.modified || shown.kind != now.kind {
+        Saved::Content
+    } else if shown.attributes != now.attributes {
+        Saved::Details
+    } else {
+        Saved::Same
+    }
+}
+
 impl Explorer {
     /// The item to preview: the cursor item when it's selected, otherwise the only selected item.
     /// With nothing selected (Esc, a click on empty space, back from another folder) there's
@@ -792,10 +814,6 @@ impl Explorer {
 
     /// Called on every render: when the preview is open and the cursor moved to another item,
     /// schedule a read.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "One pass over what can happen on a frame (same PDF resized, cache hit, cloud, load); split up, the order of the checks would be harder to follow"
-    )]
     pub(super) fn sync_preview(&mut self, cx: &mut Context<Self>) {
         if !(self.quick_look || self.preview_shown() || self.hosts_shared_preview()) {
             return;
@@ -808,20 +826,57 @@ impl Explorer {
             return;
         };
         let pdf_target = self.pdf_target();
-        if let Some(preview) = self.preview.as_ref().filter(|p| p.path == path) {
-            // Same PDF, but Quick Look opened or closed or the window was resized: render the page
-            // again for the new space (the current one stays up meanwhile).
-            if let PreviewBody::Pdf(view) = &preview.body
-                && view.pending.is_none()
-                && !close_enough(view.target, pdf_target)
-            {
-                let page = view.page;
-                self.request_pdf_page(page, cx);
+        let mut same_item = false;
+        if let Some(preview) = self.preview.as_mut().filter(|p| p.path == path) {
+            // The same name, saved again (in place, or replaced by a temp file or a rename, which
+            // leaves a new file under the name): the list's entry has moved on, and the preview
+            // reads the file again. Only the two values compared here, so nothing is polled and
+            // nothing is read per frame (#434).
+            let change = saved_since(&preview.entry, &entry);
+            if change != Saved::Same {
+                let created = preview.entry.created;
+                preview.entry = entry.clone();
+                preview.entry.created = preview.entry.created.or(created);
             }
-            return;
+            if change != Saved::Content {
+                self.sync_same_item(pdf_target, change == Saved::Details, cx);
+                return;
+            }
+            same_item = true;
         }
-        // New item: reset "actual size" to fit.
-        self.reset_zoom(cx);
+        if !same_item {
+            // New item: reset "actual size" to fit.
+            self.reset_zoom(cx);
+        }
+        self.start_preview(path, entry, pdf_target, cx);
+    }
+
+    /// The preview already shows this item and its content stands: a PDF may need its page
+    /// rendered again for a new space; a change of the details alone redraws.
+    fn sync_same_item(&mut self, pdf_target: (u32, u32), details: bool, cx: &mut Context<Self>) {
+        if details {
+            cx.notify();
+        }
+        // Same PDF, but Quick Look opened or closed or the window was resized: render the page
+        // again for the new space (the current one stays up meanwhile).
+        if let Some(PreviewBody::Pdf(view)) = self.preview.as_ref().map(|p| &p.body)
+            && view.pending.is_none()
+            && !close_enough(view.target, pdf_target)
+        {
+            let page = view.page;
+            self.request_pdf_page(page, cx);
+        }
+    }
+
+    /// Shows `entry` as loading and reads it in the background. A result of an earlier read (an
+    /// older generation) is dropped when it arrives.
+    fn start_preview(
+        &mut self,
+        path: PathBuf,
+        entry: Entry,
+        pdf_target: (u32, u32),
+        cx: &mut Context<Self>,
+    ) {
         self.preview_gen += 1;
         let generation = self.preview_gen;
         let show_hidden = self.show_hidden;

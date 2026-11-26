@@ -50,6 +50,9 @@ mod lazy_submenus;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
+#[cfg(windows)]
+#[path = "tests_live_preview_save.rs"]
+mod live_preview_save;
 #[path = "tests_menu_customize.rs"]
 mod menu_customize;
 #[path = "tests_menu_parts.rs"]
@@ -66,6 +69,8 @@ mod popup_menus;
 mod preview_info;
 #[path = "tests_preview_media.rs"]
 mod preview_media;
+#[path = "tests_preview_resave.rs"]
+mod preview_resave;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
 #[path = "tests_properties_card.rs"]

@@ -103,6 +103,8 @@ pub(crate) use menu::{
 };
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
+#[cfg(test)]
+pub(crate) use preview::{Saved, saved_since};
 pub(crate) use top_bar::TitleLayout;
 
 pub(crate) use ops::commit_problem;
@@ -873,6 +875,9 @@ pub(crate) struct Explorer {
     pending_create: Option<ops::PendingCreate>,
     /// After delete, wait for the items to disappear, then select the item at the old position.
     pending_reselect: Option<(Vec<Arc<str>>, usize)>,
+    /// The only selected item, taken out of the list by a change (an editor's save that deletes the
+    /// file first) and when: if it comes back under the name soon, it is selected again (#434).
+    vanished_selection: Option<(Arc<str>, Instant)>,
     pub(crate) ops_running: usize,
     /// Progress of the running file operation (drawn by Arke) and which operation it is.
     pub(crate) op_progress: Option<(Arc<crate::shell::OpProgress>, &'static str)>,
@@ -936,7 +941,7 @@ pub(crate) struct Explorer {
     pub(crate) preview: Option<preview::Preview>,
     /// Left column of the column view (parent folder).
     parent_column: Option<columns::ParentColumn>,
-    preview_gen: u64,
+    pub(crate) preview_gen: u64,
     preview_task: Option<Task<()>>,
     /// Quick Look actual-size mode.
     pub(crate) zoom: preview::Zoom,
@@ -1224,6 +1229,7 @@ impl Explorer {
             rename_after_compress: None,
             pending_create: None,
             pending_reselect: None,
+            vanished_selection: None,
             ops_running: 0,
             op_progress: None,
             ops_open: false,
@@ -2151,6 +2157,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         self.keep_localized_names(&mut delta);
+        let back = self.selection_coming_back(&delta);
         // A merge is running: this one follows it, in order.
         if let Some(merge) = self
             .delta_merge
@@ -2174,9 +2181,51 @@ impl Explorer {
             self.reload(cx);
             return;
         }
+        self.note_vanished_selection(&removed);
         self.selection.remove_names(&removed);
         self.after_content_change(cx);
+        self.reselect_returned(back);
         self.restore_scroll_anchor(anchor);
+    }
+
+    /// The selected item named in `delta`'s upserts after it was deleted a moment ago (Word saves
+    /// that way, and a slow disk can split it across two batches).
+    fn selection_coming_back(&mut self, delta: &arke_core::Delta) -> Option<Arc<str>> {
+        let (name, at) = self.vanished_selection.as_ref()?;
+        if at.elapsed() > Duration::from_secs(2) {
+            self.vanished_selection = None;
+            return None;
+        }
+        if !delta.upserts.iter().any(|e| e.name == *name) {
+            return None;
+        }
+        self.vanished_selection.take().map(|(name, _)| name)
+    }
+
+    /// Remembers the sole selected item when `removed` takes it out of the list.
+    fn note_vanished_selection(&mut self, removed: &[Arc<str>]) {
+        if self.search_mode || self.selection.len() != 1 {
+            return;
+        }
+        if let Some(name) = self.selection.names().next()
+            && removed.contains(name)
+        {
+            self.vanished_selection = Some((Arc::clone(name), Instant::now()));
+        }
+    }
+
+    /// Selects `back` again (see [`Self::selection_coming_back`]), unless the user picked
+    /// something else meanwhile.
+    fn reselect_returned(&mut self, back: Option<Arc<str>>) {
+        let Some(name) = back else { return };
+        if !self.selection.is_empty() {
+            return;
+        }
+        let Some(view) = self.view() else { return };
+        if let Some(ix) = view.iter().position(|e| e.name == name) {
+            self.selection.select_only(&view, ix);
+            self.cursor = Some(ix);
+        }
     }
 
     /// A large folder got more changes than the UI thread applies in a frame: merge them into a

@@ -836,7 +836,7 @@ fn split_tab_shares_one_preview_that_follows_the_active_side(cx: &mut TestAppCon
     assert!(left.update(cx, |v, _| v.pane.preview_host.is_none()));
 
     // Over to the left side: the preview follows it, the right side lets go of its item.
-    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("shift-tab");
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
     left.update(cx, |e, cx| e.select_index(0, cx));
@@ -886,7 +886,7 @@ fn ctrl_w_closes_the_active_side_then_the_tab(cx: &mut TestAppContext) {
     open_tabs(&ws, cx, &[r"C:\a"]);
     let (_, right) = split_to(&ws, cx, r"C:\b");
     // Make the left side the active one.
-    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("shift-tab");
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
 

@@ -1472,6 +1472,9 @@ impl Workspace {
             ExplorerEvent::FocusOtherPane => {
                 self.activate_pane(tab_ix, 1 - pane_ix.min(1), window, cx);
             }
+            ExplorerEvent::StepStop(forward) => {
+                self.step_stop(*forward, window, cx);
+            }
             ExplorerEvent::Arrived { dir, names } => {
                 self.select_arrived_beside(tab_ix, pane_ix, dir, names, cx);
             }
@@ -3210,6 +3213,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::focus_next_region))
             .on_action(cx.listener(Self::focus_prev_region))
+            .on_action(cx.listener(Self::focus_next_stop))
+            .on_action(cx.listener(Self::focus_prev_stop))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
                 this.peek_pointer_moved(e, cx);
             }))

@@ -10077,6 +10077,22 @@ cmd.open_location:
   es: Abrir ubicación del archivo
   pt-BR: Abrir local do arquivo
   ja: ファイルの場所を開く
+cmd.focus_next_stop:
+  en: Move to the next control
+  zh-TW: 移到下一個控制項
+  zh-CN: 移到下一个控件
+  de: Zum nächsten Element wechseln
+  es: Ir al siguiente control
+  pt-BR: Ir para o próximo controle
+  ja: 次のコントロールへ移動
+cmd.focus_prev_stop:
+  en: Move to the previous control
+  zh-TW: 移到上一個控制項
+  zh-CN: 移到上一个控件
+  de: Zum vorherigen Element wechseln
+  es: Ir al control anterior
+  pt-BR: Ir para o controle anterior
+  ja: 前のコントロールへ移動
 cmd.focus_other_pane:
   en: Switch to the other pane
   zh-TW: 切換到另一側窗格

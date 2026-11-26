@@ -26,6 +26,7 @@ Arke's default shortcuts do not use Insert or Caps Lock, the modifier keys of NV
 | --- | --- |
 | F6 | Go to the next area: file list, sidebar, path bar, toolbar, search box, then back to the list |
 | Shift+F6 | Go to the previous area |
+| Tab · Shift+Tab | Go to the next · previous stop: each pane's file list (the other pane of a split view is the next stop), the sidebar, the path bar, each button of the toolbar, the search box and its panel, then back to the list. Menus, dialogs, rename and the Settings pages keep their own Tab |
 | Ctrl+B | Show or hide the sidebar (F6 skips the sidebar while it is hidden) |
 | Ctrl+L or Alt+D | Go straight to the path bar |
 | Ctrl+F | Go straight to the search box |
@@ -188,7 +189,7 @@ Text boxes have a context menu too; open it with Shift+F10 or the Menu key and u
 
 | Keys | Action |
 | --- | --- |
-| Tab or Shift+Tab | Switch to the other pane (while the file list has the keyboard) |
+| Tab · Shift+Tab | The other pane's file list is the next stop after this one's: Tab goes to it from the left pane, Shift+Tab from the right |
 | Alt+C | Copy the selection to the other pane |
 | Alt+M | Move the selection to the other pane |
 | Ctrl+Shift+S | Synchronized browsing |

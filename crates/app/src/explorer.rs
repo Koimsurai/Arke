@@ -71,6 +71,8 @@ mod path_bar;
 mod preview;
 #[path = "explorer_scope.rs"]
 pub(crate) mod scope;
+#[path = "explorer_search_select.rs"]
+pub(crate) mod search_select;
 #[path = "explorer_shelf.rs"]
 mod shelf_ops;
 #[path = "explorer_similar.rs"]
@@ -654,6 +656,34 @@ fn sort_entries(
     }
 }
 
+/// What a left press on item `ix` of `list` does to `selection`, the same in a folder's list
+/// and in search results: Shift selects a range (keeping the rest with Ctrl), Ctrl toggles,
+/// a plain press selects only the item. Returns `true` for a plain press inside a
+/// multi-selection, which keeps it (it may be dragged) and narrows to the item on release.
+fn press_selection(
+    selection: &mut Selection,
+    list: &[Entry],
+    ix: usize,
+    m: gpui::Modifiers,
+    click_count: usize,
+) -> bool {
+    let in_selection = list.get(ix).is_some_and(|e| selection.contains(&e.name));
+    if m.shift {
+        selection.extend_to(list, ix, m.control);
+    } else if m.control {
+        // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
+        // selected, whether the first one selected it or (already selected) unselected it.
+        if !is_double_click(click_count) || !in_selection {
+            selection.toggle(list, ix);
+        }
+    } else if in_selection && selection.len() > 1 {
+        return true;
+    } else {
+        selection.select_only(list, ix);
+    }
+    false
+}
+
 /// A sort running in the background: (folder, content version, sort, folder size version, system
 /// type name version) it was started with.
 type SortJob = (Gen, u64, SortSpec, Option<u64>, Option<u32>);
@@ -807,6 +837,8 @@ pub(crate) struct Explorer {
     /// hits at or below these are left out of every result until the next fresh walk.
     search_gone: Vec<PathBuf>,
     pub(crate) search_cursor: Option<usize>,
+    /// What is selected in the search results (#413), with the list's own [`Selection`].
+    pub(crate) search_pick: search_select::SearchPick,
     /// "Similar results" (#396) were opened for this query text; another text closes them.
     similar_open: Option<String>,
     /// Nothing in the subfolders matched this query text as typed, so the walk lists similar
@@ -1185,6 +1217,7 @@ impl Explorer {
             search_relevance: None,
             search_gone: Vec::new(),
             search_cursor: None,
+            search_pick: search_select::SearchPick::default(),
             similar_open: None,
             similar_fallback: None,
             similar_focus: false,
@@ -2770,6 +2803,7 @@ impl Explorer {
             self.search_relevance = None;
             self.search_gone.clear();
             self.search_cursor = None;
+            self.reset_search_pick();
             // Back to "this folder": the next search starts with subfolders.
             self.search_global = false;
             self.global_task = None;
@@ -2782,6 +2816,8 @@ impl Explorer {
     /// Updates the subfolder search for the current query and folder. Rewalks only when the root or
     /// hidden setting changes.
     fn update_search(&mut self, cx: &mut Context<Self>) {
+        // A new query starts a new selection.
+        self.reset_search_pick();
         if self.search_global {
             self.run_global(cx);
             return;
@@ -2828,20 +2864,13 @@ impl Explorer {
         if self.fall_back_to_similar(&results) {
             self.search_results = None;
             self.search_cursor = None;
+            self.reset_search_pick();
             cx.notify();
             return;
         }
         let results = self.without_gone(results);
         let results = self.arrange_results(results);
-        let len = results.hits.len();
-        self.search_cursor = match self.search_cursor {
-            _ if len == 0 => None,
-            Some(ix) => Some(ix.min(len - 1)),
-            // On "Similar results" (just opened): it stays there.
-            None if self.similar_focused() => None,
-            None => Some(0),
-        };
-        self.search_results = Some(results);
+        self.show_search_results(results);
         cx.notify();
     }
 
@@ -2956,6 +2985,7 @@ impl Explorer {
                 .filter(|_| len > 0)
                 .map(|ix| ix.min(len.saturating_sub(1)));
             self.search_results = Some(results);
+            self.sync_search_pick();
         }
         cx.notify();
     }
@@ -3070,8 +3100,7 @@ impl Explorer {
         }
         let ix = ix.min(len - 1);
         if self.search_mode {
-            self.search_cursor = Some(ix);
-            self.similar_focus = false;
+            self.search_select_only(ix);
             let row = self.search_row_of(ix);
             self.search_scroll
                 .scroll_to_item(row, ScrollStrategy::Nearest);
@@ -3086,13 +3115,13 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Shift+arrow: select from the anchor to `ix`. Search results only support single selection.
+    /// Shift+arrow: select from the anchor to `ix`.
     fn extend_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.renaming.is_some() {
             return;
         }
         if self.search_mode {
-            self.select_index(ix, cx);
+            self.search_extend(ix, cx);
             return;
         }
         let Some(view) = self.view() else { return };
@@ -3396,14 +3425,14 @@ impl Explorer {
         self.select_index(self.target(Step::Last, w), cx);
     }
     fn extend_prev(&mut self, _: &ExtendPrev, w: &mut Window, cx: &mut Context<Self>) {
-        // Search results take one item at a time: Shift moves like the plain key.
-        if self.search_move(Step::Prev, w, cx) {
+        // Search results with "Similar results" move by list rows, extending from hit to hit.
+        if self.search_extend_move(Step::Prev, w, cx) {
             return;
         }
         self.extend_index(self.target(Step::Prev, w), cx);
     }
     fn extend_next(&mut self, _: &ExtendNext, w: &mut Window, cx: &mut Context<Self>) {
-        if self.search_move(Step::Next, w, cx) {
+        if self.search_extend_move(Step::Next, w, cx) {
             return;
         }
         self.extend_index(self.target(Step::Next, w), cx);
@@ -3423,6 +3452,8 @@ impl Explorer {
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         if self.search_mode {
+            self.search_select_all();
+            cx.notify();
             return;
         }
         if let Some(view) = self.view() {
@@ -3433,7 +3464,10 @@ impl Explorer {
     }
 
     fn toggle_cursor(&mut self, _: &ToggleCursor, _: &mut Window, cx: &mut Context<Self>) {
-        if let (false, Some(ix), Some(view)) = (self.search_mode, self.cursor, self.view()) {
+        if self.search_mode {
+            self.search_toggle_cursor();
+            cx.notify();
+        } else if let (Some(ix), Some(view)) = (self.cursor, self.view()) {
             self.selection.toggle(&view, ix);
             cx.notify();
         }
@@ -3494,20 +3528,8 @@ impl Explorer {
 
     /// Shift+Enter (search results): goes to the item's folder and selects it.
     fn open_location(&mut self, _: &OpenLocation, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(hit) = self.search_hit(self.search_cursor) else {
-            return;
-        };
-        let Some(root) = self.search_results.as_ref().map(|r| r.root.clone()) else {
-            return;
-        };
-        let path = root.join(&*hit.rel);
-        if let Some(parent) = path.parent() {
-            self.navigate_selecting(
-                parent.to_path_buf(),
-                NavKind::New,
-                Some(Arc::clone(&hit.entry.name)),
-                cx,
-            );
+        if let Some(ix) = self.search_cursor {
+            self.open_hit_location(ix, cx);
         }
     }
 
@@ -3573,6 +3595,7 @@ impl Explorer {
     ) {
         let list_was_focused = self.list_focus.is_focused(window);
         let on_name = self.name_pressed.take() == Some(ix);
+        let on_location = self.take_location_press(ix);
         window.focus(&self.list_focus, cx);
         self.row_pressed = true;
         // A press decides the selection; a pending point-to-select must not undo it.
@@ -3598,29 +3621,14 @@ impl Explorer {
             self.rename_press = Some(entry.name);
         }
         if self.search_mode {
-            self.search_cursor = Some(ix);
-            self.similar_focus = false;
+            self.search_press(ix, m, event.click_count);
         } else if let Some(view) = self.view() {
-            let in_selection = view
-                .get(ix)
-                .is_some_and(|e| self.selection.contains(&e.name));
             self.click_select = None;
-            if m.shift {
-                self.selection.extend_to(&view, ix, m.control);
-                self.drop_hidden_selection();
-            } else if m.control {
-                // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
-                // selected, whether the first one selected it or (already selected) unselected it.
-                let selected = view
-                    .get(ix)
-                    .is_some_and(|e| self.selection.contains(&e.name));
-                if !is_double_click(event.click_count) || !selected {
-                    self.selection.toggle(&view, ix);
-                }
-            } else if in_selection && self.selection.len() > 1 {
+            if press_selection(&mut self.selection, &view, ix, m, event.click_count) {
                 self.click_select = Some(ix);
-            } else {
-                self.selection.select_only(&view, ix);
+            }
+            if m.shift {
+                self.drop_hidden_selection();
             }
             self.cursor = Some(ix);
             self.scroll_to_cursor = None;
@@ -3637,6 +3645,9 @@ impl Explorer {
                 // Alt+double-click: Properties of the selection it is in, as in File Explorer
                 // (#337).
                 self.open_properties(self.menu_targets(), cx);
+            } else if on_location {
+                // A search hit's Location: its folder, with it selected (#398).
+                self.open_hit_location(ix, cx);
             } else {
                 self.open_index(ix, cx);
             }
@@ -3808,8 +3819,21 @@ impl Explorer {
             return false;
         }
         self.click_select = None;
-        self.open_index(ix, cx);
+        if self.take_location_click(ix) {
+            self.open_hit_location(ix, cx);
+        } else {
+            self.open_index(ix, cx);
+        }
         true
+    }
+
+    /// A click without a drag inside a multi-selection: only item `ix` stays selected.
+    pub(super) fn narrow_selection_to(&mut self, ix: usize) {
+        if self.search_mode {
+            self.search_select_only(ix);
+        } else if let Some(view) = self.view() {
+            self.selection.select_only(&view, ix);
+        }
     }
 
     fn on_row_middle_down(&mut self, ix: usize, cx: &mut Context<Self>) {

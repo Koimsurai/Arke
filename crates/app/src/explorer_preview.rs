@@ -771,8 +771,12 @@ impl Explorer {
     /// it isn't selected (Quick Look).
     fn item_target(&self, follow_cursor: bool) -> Option<(PathBuf, Entry)> {
         if self.search_mode {
-            // Search results are single-select: the cursor is the selection.
-            let hit = self.search_hit(Some(self.current_cursor()?))?;
+            // The hit under the cursor, while it is selected (or asked for).
+            let ix = self.current_cursor()?;
+            let hit = self.search_hit(Some(ix))?;
+            if !follow_cursor && !self.hit_selected(ix, &hit) {
+                return None;
+            }
             let root = &self.search_results.as_ref()?.root;
             return Some((root.join(&*hit.rel), hit.entry.clone()));
         }

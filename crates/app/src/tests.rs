@@ -82,6 +82,8 @@ mod quiet_update;
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_search_select.rs"]
+mod search_select;
 #[path = "tests_sidebar_keys.rs"]
 mod sidebar_keys;
 #[path = "tests_sidebar_sections.rs"]

@@ -130,6 +130,17 @@ pub(crate) fn site(file: &Path, spec: &SortSpec) -> Option<IServiceProvider> {
     )
 }
 
+/// Whether a file whose default handler has ProgID `progid` is opened with a site
+/// ([`site`]). Packaged apps (ProgIDs starting "AppX", as Windows registers them for a package's
+/// file types: Photos, Media Player) read it for their neighboring files query (#200). Classic
+/// handlers get none: handed a folder view, Windows Photo Viewer stays on "Loading..." for good
+/// (#412). No handler, no site.
+pub(crate) fn handler_wants_site(progid: Option<&str>) -> bool {
+    progid
+        .and_then(|p| p.get(..4))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("AppX"))
+}
+
 /// The site for `folder`'s empty-space context menu: answers `SID_SFolderView` with a view that
 /// stands for the folder (File Explorer's view is that menu's site).
 pub(crate) fn background_site(folder: &Path) -> Option<IServiceProvider> {
@@ -649,6 +660,26 @@ mod tests {
                 (PKEY_ItemNameDisplay.pid, 1)
             ]
         );
+    }
+
+    #[test]
+    fn only_packaged_handlers_get_a_site() {
+        assert!(handler_wants_site(Some(
+            "AppX43hnxtbyyps62jhe9sqpdzxn1790zetc"
+        )));
+        assert!(handler_wants_site(Some(
+            "appx6eg8h5sxqq90pv53845wmnbewywdqq5h"
+        )));
+        for classic in [
+            "PhotoViewer.FileAssoc.Tiff",
+            "WPS.Docx.6",
+            "pngfile",
+            "App",
+            "",
+        ] {
+            assert!(!handler_wants_site(Some(classic)), "{classic}");
+        }
+        assert!(!handler_wants_site(None));
     }
 
     #[test]

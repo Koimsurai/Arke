@@ -5732,9 +5732,8 @@ fn context_menu_items_selection_and_keyboard(cx: &mut TestAppContext) {
 #[gpui::test]
 fn extract_zip_from_context_menu(cx: &mut TestAppContext) {
     use std::io::Write as _;
-    let sandbox = std::env::temp_dir().join(format!("arke-menu-extract-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&sandbox);
-    std::fs::create_dir_all(&sandbox).unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let sandbox = tmp_dir.path().to_path_buf();
     let zip_path = sandbox.join("album.zip");
     {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
@@ -5794,7 +5793,6 @@ fn extract_zip_from_context_menu(cx: &mut TestAppContext) {
         std::fs::read_to_string(sandbox.join("readme.txt")).unwrap(),
         "user"
     );
-    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 /// Design system check: outside `theme.rs`, no literal colors or ad hoc radii, shadows, font
@@ -7026,9 +7024,8 @@ fn no_filter_match_offers_wider_scopes(cx: &mut TestAppContext) {
 #[gpui::test]
 fn settings_export_import_and_undo(cx: &mut TestAppContext) {
     use crate::settings::{Density, SettingsStore};
-    let sandbox = std::env::temp_dir().join(format!("arke-backup-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&sandbox);
-    std::fs::create_dir_all(&sandbox).unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let sandbox = tmp_dir.path().to_path_buf();
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\b", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
@@ -7122,7 +7119,6 @@ fn settings_export_import_and_undo(cx: &mut TestAppContext) {
         n.contains(&*t!("backup.not_arke"))
     });
     assert_eq!(density(cx), Density::Comfortable);
-    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 /// Items disabled under "Context menu" settings are hidden along with adjacent separators; basic

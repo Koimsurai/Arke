@@ -578,15 +578,19 @@ mod tests {
     }
 
     /// A sandbox folder under %TEMP%, removed on drop.
-    struct Sandbox(PathBuf);
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("arke-test-quicklook-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("sandbox");
-            Self(dir)
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-test-quicklook-{tag}-"))
+                .tempdir()
+                .expect("sandbox");
+            Self(guard.path().to_path_buf(), guard)
         }
 
         /// An empty file at `rel`, with its folders.
@@ -610,12 +614,6 @@ mod tests {
                 };
                 Some(self.0.join(sub).into_os_string())
             }
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 

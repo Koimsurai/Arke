@@ -230,10 +230,10 @@ mod tests {
         let entry = remotes.stat(&photo).unwrap();
         assert_eq!((entry.size, entry.is_dir_like()), (10, false));
         assert_eq!(remotes.read_head(&photo, 4).unwrap(), b"jpeg");
-        let dest = std::env::temp_dir().join(format!("arke-mtp-copy-{}.jpg", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dest = tmp_dir.path().join("copy.jpg");
         remotes.download_file(&photo, &dest, &NoProgress).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"jpeg bytes");
-        let _ = std::fs::remove_file(dest);
     }
 
     /// Nothing on the phone changes in this version.

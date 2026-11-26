@@ -367,8 +367,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_folder_s_name_is_read_from_its_desktop_ini() {
-        let root = std::env::temp_dir().join(format!("arke-test-localized-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let root = tmp_dir.path().to_path_buf();
         let write = |name: &str, value: &str| {
             let dir = root.join(name);
             std::fs::create_dir_all(&dir).unwrap();
@@ -406,6 +406,5 @@ mod tests {
         assert_eq!(read(&fs, &plain).as_deref(), Some("新名字"));
         assert!(plain.exists(), "the folder keeps its own name");
         hide(false);
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

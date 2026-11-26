@@ -1218,16 +1218,22 @@ mod tests {
 
     /// A folder under %TEMP% named for this test and process, with `src` and `dst` in it; only it
     /// is ever touched.
-    struct Scratch(PathBuf);
+    struct Scratch(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("arke-test-fastcopy-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-test-fastcopy-{tag}-"))
+                .tempdir()
+                .unwrap();
+            let dir = guard.path().to_path_buf();
             fs::create_dir_all(dir.join("src")).unwrap();
             fs::create_dir_all(dir.join("dst")).unwrap();
-            Self(dir)
+            Self(dir, guard)
         }
 
         fn src(&self, rel: &str) -> PathBuf {
@@ -1243,12 +1249,6 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, body).unwrap();
             path
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
 

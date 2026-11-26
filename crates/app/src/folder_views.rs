@@ -627,7 +627,8 @@ mod tests {
     /// the same order (so eviction after a restart still drops the right folder).
     #[test]
     fn file_round_trip_keeps_order_and_paths() {
-        let dir = std::env::temp_dir().join(format!("arke-folder-views-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("folder_views.json");
         let mut views = FolderViews::default();
         views.insert(Path::new(r"C:\Old"), icons());
@@ -655,7 +656,6 @@ mod tests {
         assert!(tight.peek(Path::new(r"C:\Old")).is_none());
         assert!(tight.peek(Path::new(r"D:\Music")).is_some());
 
-        std::fs::remove_dir_all(&dir).unwrap();
         // No file yet: empty, not an error
         assert!(load(&path).unwrap().is_empty());
     }

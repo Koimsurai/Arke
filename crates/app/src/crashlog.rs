@@ -301,9 +301,8 @@ mod tests {
 
     #[test]
     fn a_panic_that_ends_the_process_leaves_its_lines_in_the_file() {
-        let dir = std::env::temp_dir().join(format!("arke-crashlog-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -320,7 +319,6 @@ mod tests {
             .status()
             .unwrap();
         let text = std::fs::read_to_string(dir.join("Arke").join("arke.log")).unwrap_or_default();
-        let _ = std::fs::remove_dir_all(&dir);
         assert!(!status.success(), "the child should end with the panic");
         assert!(
             text.contains("before the panic 1999"),

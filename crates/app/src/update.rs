@@ -1401,7 +1401,8 @@ mod tests {
         let proxy = std::env::var("ARKE_TEST_PROXY").expect("ARKE_TEST_PROXY=host:port");
         crate::update_route::set(&proxy);
         let url = "https://github.com/Koimsurai/Arke/releases/download/v0.8.1/arke-0.8.1-setup.exe";
-        let path = std::env::temp_dir().join(format!("arke-live-route-{}.exe", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let path = tmp_dir.path().join("arke-live-route.exe");
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -1424,7 +1425,6 @@ mod tests {
         })
         .unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
         crate::update_route::set("");
         let actual = Sha256::digest(&bytes)
             .iter()
@@ -1509,9 +1509,8 @@ mod tests {
 
     #[test]
     fn a_new_exe_that_cant_start_is_rolled_back() {
-        let dir = std::env::temp_dir().join(format!("arke-test-rollback-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let exe = dir.join("arke.exe");
         // What `install` leaves: the new exe in place, the running one beside it as .old.
         std::fs::write(&exe, b"new").unwrap();
@@ -1523,7 +1522,6 @@ mod tests {
         std::fs::write(&exe, b"new").unwrap();
         assert!(roll_back(&exe).is_err());
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1550,9 +1548,8 @@ mod tests {
     /// newer partial one for the next try); what went in already or was overtaken goes.
     #[test]
     fn startup_keeps_only_a_newer_download() {
-        let dir = std::env::temp_dir().join(format!("arke-test-pending-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         for name in [
             "arke-0.3.0.exe",
             "arke-0.4.0.exe",
@@ -1574,15 +1571,13 @@ mod tests {
         assert_eq!(left, ["arke-0.6.0.exe", "arke-0.7.0.part"]);
         assert_eq!(keep_pending(&dir, &v("0.7.0"), ""), None, "all went in");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The new exe goes in by two renames after the copy, the old one stays as `.old`.
     #[test]
     fn swaps_the_exe_keeping_the_old_one() {
-        let dir = std::env::temp_dir().join(format!("arke-test-swap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let exe = dir.join("arke.exe");
         let new = dir.join("arke-0.5.0.exe");
         std::fs::write(&exe, b"old").unwrap();
@@ -1591,19 +1586,16 @@ mod tests {
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
         assert_eq!(std::fs::read(old_path(&exe)).unwrap(), b"old");
         assert!(!new.exists() && !dir.join("arke.exe.new").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn tells_installed_copies_by_the_uninstaller_next_to_them() {
-        let dir = std::env::temp_dir().join(format!("arke-test-setup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let exe = dir.join("arke.exe");
         std::fs::write(&exe, b"").unwrap();
         assert!(!setup_install_at(&exe));
         std::fs::write(dir.join(SETUP_UNINSTALLER), b"").unwrap();
         assert!(setup_install_at(&exe));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

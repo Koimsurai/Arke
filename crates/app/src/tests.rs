@@ -3323,11 +3323,17 @@ fn copy_cut_paste_through_clipboard(cx: &mut TestAppContext) {
     wait_until(cx, &view, "back to a", loaded(r"C:\a"));
     cx.simulate_keystrokes("end ctrl-x");
     wait_shell("cut", || shell.clipboard().is_some_and(|c| c.cut));
-    cx.run_until_parked();
-    view.update(cx, |v, cx| {
-        let names: Vec<Arc<str>> = ["b.txt", "c.txt"].map(Arc::from).to_vec();
-        assert_eq!(v.cut_flags(&names, cx), [false, true]);
-    });
+    // The clipboard is written on its own thread; the faded marks follow once it reports back.
+    let names: Vec<Arc<str>> = ["b.txt", "c.txt"].map(Arc::from).to_vec();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if view.update(cx, |v, cx| v.cut_flags(&names, cx)) == [false, true] {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for the cut marks");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     cx.simulate_keystrokes("alt-right");
     wait_until(cx, &view, "to b", loaded(r"C:\b"));
     cx.simulate_keystrokes("ctrl-v");

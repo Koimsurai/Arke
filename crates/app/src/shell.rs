@@ -990,8 +990,11 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// Whether the clipboard has files, virtual ones included (format check only, clipboard not opened). UI thread safe.
     fn clipboard_has_files(&self) -> bool;
 
-    /// Whether the path is on a fixed local disk (thumbnails and system icons are local only). Background thread.
+    /// Whether the path is on a local disk: internal, USB stick, SD card or RAM disk, but not a
+    /// network or optical drive (thumbnails, folder sizes and cloud status are local only). Background thread.
     fn is_local_disk(&self, path: &Path) -> bool;
+    /// Whether the path is on an internal fixed disk (not removable). Background thread.
+    fn is_fixed_disk(&self, path: &Path) -> bool;
     /// Whether deleting `path` can go to the Recycle Bin. Windows has none on network shares, USB
     /// sticks and optical discs, and deletes there permanently. Reads local drive info only, so
     /// it is fine on the UI thread.

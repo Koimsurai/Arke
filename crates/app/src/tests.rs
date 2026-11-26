@@ -661,6 +661,10 @@ impl Shell for FakeShell {
         path.starts_with(r"C:\")
     }
 
+    fn is_fixed_disk(&self, path: &Path) -> bool {
+        self.is_local_disk(path)
+    }
+
     fn shell_menu(
         &self,
         paths: &[PathBuf],

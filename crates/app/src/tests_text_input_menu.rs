@@ -731,3 +731,40 @@ fn word_boundaries() {
     assert_eq!(previous_word(cjk, 9), 0);
     assert_eq!(next_word(cjk, 0), 10);
 }
+
+/// Ctrl+Shift+V pastes in the rename box, the address bar and the search box like Ctrl+V (#428).
+#[gpui::test]
+fn ctrl_shift_v_pastes_in_text_boxes(cx: &mut TestAppContext) {
+    let (view, cx) = rename_setup(cx);
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string("XY".into()));
+
+    cx.simulate_keystrokes("ctrl-l");
+    let path = path_input(&view, cx);
+    cx.simulate_keystrokes("ctrl-a ctrl-shift-v");
+    assert_eq!(text(&path, cx), "XY");
+    cx.simulate_keystrokes("escape");
+
+    let filter = view.update(cx, |v, _| v.filter_input_for_test());
+    cx.dispatch_action(FocusFilter);
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-shift-v");
+    assert_eq!(text(&filter, cx), "XY");
+    cx.simulate_keystrokes("escape escape");
+
+    cx.simulate_keystrokes("end f2");
+    let rename = rename_input(&view, cx);
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-shift-v");
+    assert_eq!(text(&rename, cx), "XY.docx");
+}
+
+/// In the file list Ctrl+Shift+V is still unbound: it does not paste files.
+#[gpui::test]
+fn ctrl_shift_v_in_the_file_list_does_not_paste_files(cx: &mut TestAppContext) {
+    let (view, cx) = rename_setup(cx);
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string("XY".into()));
+    cx.simulate_keystrokes("ctrl-shift-v");
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| !v.editing_path && v.renaming.is_none()));
+    assert_eq!(view.update(cx, |v, _| v.ops_running), 0);
+}

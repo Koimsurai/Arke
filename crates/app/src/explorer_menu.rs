@@ -43,7 +43,7 @@ use crate::assets::Icon;
 use crate::media::MenuIcon;
 use crate::settings::SettingsStore;
 use crate::shell::{ShellMenu, ShellMenuEntry};
-use crate::win_menu::{Access, parse_label};
+use crate::win_menu::Access;
 
 #[path = "explorer_menu_lazy.rs"]
 mod lazy;
@@ -748,12 +748,11 @@ fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyEl
     let Some(access) = access else {
         return label.into_any_element();
     };
-    let (text, at): (SharedString, usize) = match access.at {
-        Some(at) => (label, at),
-        None => {
-            let at = label.len() + 1;
-            (format!("{label}({})", access.key).into(), at)
-        }
+    let (text, at): (SharedString, usize) = if let Some(at) = access.at {
+        (label, at)
+    } else {
+        let at = label.len() + 1;
+        (format!("{label}({})", access.key).into(), at)
     };
     let end = at + access.key.len_utf8();
     if !cues.shown() || text.get(at..end).is_none() {

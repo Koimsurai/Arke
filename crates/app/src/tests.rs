@@ -676,6 +676,7 @@ impl Shell for FakeShell {
             self.system_menus.lock().push(paths.to_vec());
         }
         let verb_item = |id, label: &str, verb: Option<&str>| E::Item {
+            access: None,
             id,
             verb: verb.map(Into::into),
             label: label.into(),
@@ -693,6 +694,7 @@ impl Shell for FakeShell {
             item(1, "Compress with 7-Zip"),
             E::Separator,
             E::Submenu {
+                access: None,
                 label: "Send to".into(),
                 enabled: true,
                 icon: None,
@@ -709,6 +711,7 @@ impl Shell for FakeShell {
                 .iter()
                 .enumerate()
                 .map(|(ix, (label, _))| E::Submenu {
+                    access: None,
                     label: label.clone(),
                     enabled: true,
                     icon: None,

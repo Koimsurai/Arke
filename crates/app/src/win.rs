@@ -1586,7 +1586,9 @@ impl Shell for WinShell {
                         );
                         (
                             name,
-                            windows::Win32::Foundation::ERROR_MOD_NOT_FOUND.to_hresult().into(),
+                            windows::Win32::Foundation::ERROR_MOD_NOT_FOUND
+                                .to_hresult()
+                                .into(),
                         )
                     })
                     .collect(),

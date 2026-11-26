@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{FILETIME, HINSTANCE, SYSTEMTIME};
-use windows::Win32::Globalization::GetUserDefaultLocaleName;
+use windows::Win32::Globalization::{
+    GetUserDefaultLocaleName, GetUserDefaultUILanguage, LCIDToLocaleName,
+};
 use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, QueryDosDeviceW,
 };
@@ -494,6 +496,26 @@ pub(crate) fn system_locale() -> &'static str {
         .filter(|&n| n > 0)
         .map_or_default(|n| String::from_utf16_lossy(&buf[..n - 1]));
     locale_for(&name)
+}
+
+/// The language Windows shows its own texts in (File Explorer's type names), as one of Arke's
+/// locales; `None` when Arke has no translation for it. Not the regional format of
+/// [`system_locale`].
+pub(crate) fn system_display_locale() -> Option<&'static str> {
+    let mut buf = [0u16; 85];
+    // SAFETY: no arguments; buf is a valid out buffer (LOCALE_NAME_MAX_LENGTH = 85).
+    let len = unsafe {
+        let lcid = u32::from(GetUserDefaultUILanguage());
+        LCIDToLocaleName(lcid, Some(&mut buf), 0)
+    };
+    let len = usize::try_from(len).ok().filter(|&n| n > 0)?;
+    display_locale_for(&String::from_utf16_lossy(&buf[..len - 1]))
+}
+
+/// [`locale_for`], but `None` for a language Arke has no locale for (it would read as English).
+fn display_locale_for(name: &str) -> Option<&'static str> {
+    let locale = locale_for(name);
+    (locale != "en" || is_language(&name.to_ascii_lowercase(), "en")).then_some(locale)
 }
 
 /// The temp folder under its long name. Some machines (CI runners) report it as 8.3 short names
@@ -2160,7 +2182,14 @@ fn split_command(line: &str) -> (&str, &str) {
 
 #[cfg(test)]
 mod locale_tests {
-    use super::locale_for;
+    use super::{display_locale_for, locale_for};
+
+    #[test]
+    fn display_language_without_a_translation_is_none() {
+        assert_eq!(display_locale_for("en-US"), Some("en"));
+        assert_eq!(display_locale_for("zh-TW"), Some("zh-TW"));
+        assert_eq!(display_locale_for("fr-FR"), None);
+    }
 
     #[test]
     fn maps_system_locales_to_ui_languages() {

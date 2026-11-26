@@ -1237,8 +1237,6 @@ pub(crate) fn elev_2() -> Vec<BoxShadow> {
         vec![hairline(line()), drop]
     }
 }
-/// Floating surfaces: menus, popovers, tooltips, toasts, drag previews. They are always opaque
-/// (`overlay()`), so the dark theme can use the outline plus a lit inner edge.
 /// Tooltips: lighter than menus. No dark outline (on a small label it reads as a black ring), a
 /// faint edge and a short, soft shadow, so the tip floats without weighing on what it explains.
 pub(crate) fn elev_tooltip() -> Vec<BoxShadow> {
@@ -1250,20 +1248,25 @@ pub(crate) fn elev_tooltip() -> Vec<BoxShadow> {
     }
 }
 
+/// Floating surfaces: toasts, popovers, drag previews, the tab ghost.
+///
+/// The same natural shape as [`elev_3`], one step lower: darkest at the edge and fading out
+/// smoothly all round, a little heavier below, with no dark outline (#403). `blur_radius` is the
+/// Gaussian's sigma. The dark theme has a contact shadow (1 px down, sigma 2) under an ambient one
+/// (3 px down, sigma 6: half of `elev_3`'s, and lighter); the lit inner edge separates gray from
+/// gray. The light theme keeps its hairline with one close drop (2 px down, sigma 5). The old
+/// drop (8 px down, sigma 24) left a long tail below the outline. Drop shadows also fill the area
+/// under the element, which shows through the translucent slide card, so the layers there add up
+/// to about the old drop's darkness (36% dark, 10% light).
 pub(crate) fn elev_float() -> Vec<BoxShadow> {
-    let drop = drop_shadow(
-        alpha(p().veil, if is_dark() { 0.35 } else { 0.10 }),
-        8.,
-        24.,
-    );
     if is_dark() {
         vec![
-            dark_outline(),
-            drop,
+            drop_shadow(alpha(p().veil, 0.22), 1., 2.),
+            drop_shadow(alpha(p().veil, 0.18), 3., 6.),
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop]
+        vec![hairline(line()), drop_shadow(alpha(p().veil, 0.10), 2., 5.)]
     }
 }
 /// Menus (context menus, dropdowns): a tighter shadow than other floating surfaces, close to the

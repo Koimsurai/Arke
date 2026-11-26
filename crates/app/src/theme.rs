@@ -267,6 +267,50 @@ pub(crate) fn sidebar_full_width() -> Pixels {
 // Width of the collapsed sidebar: a column of icons (#91).
 scaled!(rail_w, 52.);
 
+// --- Gaps around the paper (#429) ---
+
+/// How much room the frame leaves around the paper: 0 compact, 1 standard, 2 comfortable. Follows
+/// the density setting.
+static ROOM: AtomicU32 = AtomicU32::new(1);
+
+/// Sets the room around the paper from the density setting. Returns whether it changed; windows
+/// must repaint if so.
+pub(crate) fn set_density(density: crate::settings::Density) -> bool {
+    use crate::settings::Density;
+    let room = match density {
+        Density::Compact => 0,
+        Density::Standard => 1,
+        Density::Comfortable => 2,
+    };
+    if ROOM.swap(room, Ordering::Relaxed) == room {
+        return false;
+    }
+    LOOK.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+/// The value (at 100%) for the current density.
+fn by_room(compact: f32, standard: f32, comfortable: f32) -> Pixels {
+    scaled_px(match ROOM.load(Ordering::Relaxed) {
+        0 => compact,
+        2 => comfortable,
+        _ => standard,
+    })
+}
+
+/// Space between the paper and the window's right and bottom edges, between the two papers of a
+/// split tab and before its shared preview. About what Edge leaves around its page; the same
+/// when maximized or snapped, as in Edge.
+pub(crate) fn paper_gap() -> Pixels {
+    by_room(2., 4., 8.)
+}
+
+/// The paper's corner radius. It shrinks with [`paper_gap`] so the paper's corner keeps close to
+/// the window's own (8 px) corner; a large radius in a thin gap looks loose.
+pub(crate) fn r_paper() -> Pixels {
+    by_room(6., 8., 12.)
+}
+
 static SIDEBAR_COLLAPSED: AtomicBool = AtomicBool::new(false);
 
 /// Collapses or expands the sidebar. Returns whether it changed; windows must repaint if so.

@@ -3193,7 +3193,7 @@ impl Explorer {
     /// Height taken outside the list: top bar, context bar, column header, bottom margin and list
     /// padding.
     fn list_chrome() -> Pixels {
-        theme::h_bar() + theme::h_ctx() + theme::h_header() + theme::s_8() + theme::s_8()
+        theme::h_bar() + theme::h_ctx() + theme::h_header() + theme::paper_gap() + theme::s_8()
     }
 
     fn on_path_event(

@@ -1215,7 +1215,7 @@ impl Explorer {
         // Pane width (preview pane already excluded) minus paper margin, list padding and
         // scrollbar.
         let avail = self.pane_width
-            - theme::s_8()
+            - layout::paper_margin()
             - theme::s_32()
             - scrollbar_gutter()
             - layout::list_gutter();
@@ -2402,7 +2402,7 @@ fn active_outline() -> impl IntoElement {
         .debug_selector(|| "active-pane-outline".to_owned())
         .absolute()
         .inset_0()
-        .rounded(theme::r_12())
+        .rounded(theme::r_paper())
         .border_1()
         .border_color(theme::signal_line())
 }
@@ -2412,7 +2412,7 @@ fn search_outline() -> impl IntoElement {
         .debug_selector(|| "search-target".to_owned())
         .absolute()
         .inset_0()
-        .rounded(theme::r_12())
+        .rounded(theme::r_paper())
         .border_2()
         .border_color(theme::signal_line())
 }
@@ -3269,14 +3269,15 @@ impl Render for Explorer {
             .child(
                 // The paper: the single sheet holding the list
                 div()
+                    .debug_selector(|| "paper".to_owned())
                     .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
                     .mr(self.paper_margin_right())
-                    .mb(theme::s_8())
-                    .rounded(theme::r_12())
+                    .mb(theme::paper_gap())
+                    .rounded(theme::r_paper())
                     .bg(theme::paper())
                     .shadow(theme::elev_2())
                     .children(backdrop_layer())
@@ -3367,9 +3368,9 @@ impl Explorer {
     /// shared preview too (the pane's box runs on under it).
     fn paper_margin_right(&self) -> Pixels {
         if self.pane.trailing {
-            theme::s_8() + self.pane.reserve
+            layout::paper_margin() + self.pane.reserve
         } else {
-            theme::s_8()
+            layout::paper_margin()
         }
     }
 
@@ -3538,7 +3539,7 @@ impl Explorer {
                 .relative()
                 .size_full()
                 .flex()
-                .rounded(theme::r_12())
+                .rounded(theme::r_paper())
                 .bg(theme::paper())
                 .shadow(theme::elev_2())
                 .children(contents)
@@ -3589,7 +3590,7 @@ fn backdrop_layer() -> Option<impl IntoElement> {
             .top_0()
             .left_0()
             .size_full()
-            .rounded(theme::r_12())
+            .rounded(theme::r_paper())
             .overflow_hidden()
             .opacity(opacity)
             .child(

@@ -686,6 +686,7 @@ pub(crate) fn apply_theme(window: &mut Window, cx: &mut App) {
     theme::set_font(&look.font);
     theme::set_scale(look.ui_scale);
     theme::set_sidebar_base(look.sidebar_width);
+    theme::set_density(look.density);
     theme::set_backdrop(look.background_image.clone().map(|path| {
         (
             path,
@@ -2804,16 +2805,18 @@ impl Workspace {
                 .child(tab.panes[0].view.clone())
                 .into_any_element();
         }
-        // Zero-width divider; the hit area extends left into the gap between the two papers.
+        // Zero-width divider; the hit area extends left into the gap between the two papers,
+        // centered on it.
         let resizing = self.resizing;
+        let gap = theme::paper_gap();
         let gutter = div().relative().w(px(0.)).h_full().child(
             div()
                 .id("pane-gutter")
                 .group("pane-gutter")
                 .absolute()
                 .top_0()
-                .bottom(theme::s_8())
-                .left(-theme::s_12() + px(2.))
+                .bottom(gap)
+                .left(-gap / 2. - theme::s_6())
                 .w(theme::s_12())
                 .flex()
                 .items_center()
@@ -2858,8 +2861,8 @@ impl Workspace {
                 div()
                     .absolute()
                     .top_0()
-                    .bottom(theme::s_8())
-                    .right(theme::s_8())
+                    .bottom(gap)
+                    .right(gap)
                     .w(shared.width)
                     .child(preview),
             )
@@ -2922,13 +2925,13 @@ impl Workspace {
                 } else {
                     theme::h_bar()
                 })
-                .bottom(theme::s_8())
-                .right(theme::s_8())
-                .w((self.panes_width_hint() - theme::s_8()) / 2.)
+                .bottom(theme::paper_gap())
+                .right(theme::paper_gap())
+                .w((self.panes_width_hint() - theme::paper_gap()) / 2.)
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::r_12())
+                .rounded(theme::r_paper())
                 .border_2()
                 .border_color(theme::signal_line())
                 .bg(theme::signal_wash())

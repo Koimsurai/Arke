@@ -163,7 +163,7 @@ fn dragging_the_preview_edge_sizes_the_current_column(cx: &mut TestAppContext) {
     let (shown, preview) = view.update(cx, |v, _| v.fit_for_test());
     assert!(shown);
     let paper = view.update(cx, |v, _| v.widths_for_test()).0;
-    assert_eq!(px(preview), paper - px(8.) - px(240.) - want);
+    assert_eq!(px(preview), paper - px(4.) - px(240.) - want);
 
     // Too narrow: the minimum.
     let grab = preview_edge(&view, cx);

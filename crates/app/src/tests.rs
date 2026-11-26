@@ -5369,8 +5369,14 @@ fn grid_view_loads_thumbnails_and_icons_without_blocking(cx: &mut TestAppContext
         (PathBuf::from(r"C:\pics\app.exe"), MediaKind::SystemIcon),
         (PathBuf::from(r"C:\pics\b.png"), MediaKind::Thumbnail),
     ];
+    // A system icon is loaded per drawn size: the Details view's and the grid's both stay.
+    let loaded_once = |view: &Entity<Explorer>, cx: &mut VisualTestContext| {
+        let mut media = loaded_media(view, cx);
+        media.dedup();
+        media
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
-    while loaded_media(&view, cx) != expected {
+    while loaded_once(&view, cx) != expected {
         assert!(
             Instant::now() < deadline,
             "thumbnails not loaded: {:?}",
@@ -5380,8 +5386,10 @@ fn grid_view_loads_thumbnails_and_icons_without_blocking(cx: &mut TestAppContext
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
+    let mut icons = shell.icons.lock().clone();
+    icons.dedup();
     assert_eq!(
-        shell.icons.lock().as_slice(),
+        icons,
         [PathBuf::from(r"C:\pics\app.exe")],
         "only .exe/.lnk/.ico should get system icons"
     );

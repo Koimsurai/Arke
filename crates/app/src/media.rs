@@ -306,7 +306,8 @@ const fn icon_request_px(px: u32) -> u32 {
     }
 }
 
-/// Brings an icon bigger than `px` down to `px` on its longest side with a proper filter, working
+/// Brings an icon bigger than `px` down to `px` on its longest side by averaging the pixels each
+/// new pixel covers (so a line one new pixel wide stays fully opaque), working
 /// on premultiplied colour so transparent pixels don't darken the edge. `px` 0 or an icon not
 /// bigger than `px` is returned as it is (never enlarged). `None` for a malformed bitmap.
 pub(crate) fn fit_icon(icon: Thumbnail, px: u32) -> Option<Thumbnail> {
@@ -329,14 +330,7 @@ pub(crate) fn fit_icon(icon: Thumbnail, px: u32) -> Option<Thumbnail> {
             *c = ((u16::from(*c) * a + 127) / 255) as u8;
         }
     }
-    let source = image::RgbaImage::from_raw(icon.width, icon.height, rgba)?;
-    let small = image::imageops::resize(
-        &source,
-        width,
-        height,
-        image::imageops::FilterType::CatmullRom,
-    );
-    let mut rgba = small.into_raw();
+    let mut rgba = box_shrink(&rgba, (icon.width, icon.height), (width, height));
     for p in rgba.as_chunks_mut::<4>().0 {
         let a = u32::from(p[3]);
         if a != 0 && a != 255 {
@@ -350,6 +344,49 @@ pub(crate) fn fit_icon(icon: Thumbnail, px: u32) -> Option<Thumbnail> {
         height,
         rgba,
     })
+}
+
+/// Area average of premultiplied RGBA `src` (`from` pixels) down to `to` pixels: each output pixel
+/// is the mean of the source area it covers, partial source pixels weighted by their overlap.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names,
+    reason = "pixel arithmetic on bounded sizes"
+)]
+fn box_shrink(src: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
+    let (sw, sh) = (from.0 as usize, from.1 as usize);
+    let (dw, dh) = (to.0 as usize, to.1 as usize);
+    let (xs, ys) = (sw as f32 / dw as f32, sh as f32 / dh as f32);
+    // Source pixels a span covers, with their overlap.
+    let span = |start: f32, len: f32, max: usize| {
+        let end = start + len;
+        (start.floor() as usize..(end.ceil() as usize).min(max)).map(move |i| {
+            let w = (end.min(i as f32 + 1.) - start.max(i as f32)).max(0.);
+            (i, w)
+        })
+    };
+    let mut out = vec![0u8; dw * dh * 4];
+    for dy in 0..dh {
+        for dx in 0..dw {
+            let (mut sum, mut total) = ([0f32; 4], 0f32);
+            for (y, wy) in span(dy as f32 * ys, ys, sh) {
+                for (x, wx) in span(dx as f32 * xs, xs, sw) {
+                    let w = wx * wy;
+                    let p = &src[(y * sw + x) * 4..(y * sw + x) * 4 + 4];
+                    for (s, &c) in sum.iter_mut().zip(p) {
+                        *s += f32::from(c) * w;
+                    }
+                    total += w;
+                }
+            }
+            let o = &mut out[(dy * dw + dx) * 4..(dy * dw + dx) * 4 + 4];
+            for (o, s) in o.iter_mut().zip(sum) {
+                *o = (s / total.max(f32::EPSILON) + 0.5).min(255.) as u8;
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn to_render_image(t: Thumbnail) -> Option<Arc<RenderImage>> {

@@ -226,6 +226,22 @@ nav.forward:
   es: Adelante (Alt+→)
   pt-BR: Avançar (Alt+→)
   ja: 進む (Alt+→)
+nav.back_to:
+  en: "Back to %{folder} (Alt+←)"
+  zh-TW: "返回「%{folder}」（Alt+←）"
+  zh-CN: "后退到“%{folder}”（Alt+←）"
+  de: "Zurück zu %{folder} (Alt+←)"
+  es: "Atrás a %{folder} (Alt+←)"
+  pt-BR: "Voltar para %{folder} (Alt+←)"
+  ja: "%{folder} に戻る (Alt+←)"
+nav.forward_to:
+  en: "Forward to %{folder} (Alt+→)"
+  zh-TW: "前進到「%{folder}」（Alt+→）"
+  zh-CN: "前进到“%{folder}”（Alt+→）"
+  de: "Vorwärts zu %{folder} (Alt+→)"
+  es: "Adelante a %{folder} (Alt+→)"
+  pt-BR: "Avançar para %{folder} (Alt+→)"
+  ja: "%{folder} に進む (Alt+→)"
 nav.up:
   en: Up (Alt+↑)
   zh-TW: 上一層（Alt+↑）
@@ -251,22 +267,6 @@ path.placeholder:
   pt-BR: "Digite um caminho, por exemplo C:\\Windows ou %USERPROFILE%"
   ja: "パスを入力（例: C:\\Windows、%USERPROFILE%）"
 filter.placeholder:
-  en: Filter (Ctrl+F)
-  zh-TW: 篩選（Ctrl+F）
-  zh-CN: 筛选（Ctrl+F）
-  de: Filtern (Strg+F)
-  es: Filtrar (Ctrl+F)
-  pt-BR: Filtrar (Ctrl+F)
-  ja: フィルター (Ctrl+F)
-filter.placeholder_in:
-  en: Search %{folder} or this PC (Ctrl+F)
-  zh-TW: 搜尋「%{folder}」或此電腦（Ctrl+F）
-  zh-CN: 搜索“%{folder}”或此电脑（Ctrl+F）
-  de: "%{folder} oder diesen PC durchsuchen (Strg+F)"
-  es: Buscar en %{folder} o en este equipo (Ctrl+F)
-  pt-BR: Pesquisar em %{folder} ou neste computador (Ctrl+F)
-  ja: "%{folder} または PC を検索 (Ctrl+F)"
-filter.placeholder_short:
   en: Search (Ctrl+F)
   zh-TW: 搜尋（Ctrl+F）
   zh-CN: 搜索（Ctrl+F）
@@ -274,6 +274,14 @@ filter.placeholder_short:
   es: Buscar (Ctrl+F)
   pt-BR: Pesquisar (Ctrl+F)
   ja: 検索 (Ctrl+F)
+filter.placeholder_in:
+  en: "Search %{folder} (Ctrl+F)"
+  zh-TW: "搜尋「%{folder}」（Ctrl+F）"
+  zh-CN: "搜索“%{folder}”（Ctrl+F）"
+  de: "In %{folder} suchen (Strg+F)"
+  es: "Buscar en %{folder} (Ctrl+F)"
+  pt-BR: "Pesquisar em %{folder} (Ctrl+F)"
+  ja: "%{folder} を検索 (Ctrl+F)"
 filter.chip_tip:
   en: Show this filter in the search box
   zh-TW: 在搜尋框中顯示這個篩選
@@ -286,23 +294,23 @@ filter.search_placeholder:
   en: Search subfolders
   zh-TW: 搜尋子資料夾
   zh-CN: 搜索子文件夹
-  de: Unterordner durchsuchen
+  de: In Unterordnern suchen
   es: Buscar en subcarpetas
   pt-BR: Pesquisar nas subpastas
   ja: サブフォルダーを検索
 filter.search_in_placeholder:
-  en: "Search in %{name}"
-  zh-TW: "在 %{name} 中搜尋"
-  zh-CN: "在 %{name} 中搜索"
-  de: In %{name} suchen
-  es: Buscar en %{name}
-  pt-BR: Pesquisar em %{name}
-  ja: "%{name} 内を検索"
+  en: "Search subfolders of %{name}"
+  zh-TW: "搜尋「%{name}」的子資料夾"
+  zh-CN: "搜索“%{name}”的子文件夹"
+  de: "In Unterordnern von %{name} suchen"
+  es: "Buscar en subcarpetas de %{name}"
+  pt-BR: "Pesquisar nas subpastas de %{name}"
+  ja: "%{name} のサブフォルダーを検索"
 filter.computer_placeholder:
   en: Search this PC
   zh-TW: 搜尋整台電腦
   zh-CN: 搜索整台电脑
-  de: Diesen PC durchsuchen
+  de: Auf diesem PC suchen
   es: Buscar en este equipo
   pt-BR: Pesquisar neste computador
   ja: PC を検索

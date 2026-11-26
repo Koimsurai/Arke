@@ -3501,7 +3501,7 @@ impl Workspace {
                             "back",
                             Icon::ArrowLeft,
                             can_back,
-                            t!("nav.back"),
+                            self.nav_tip(true, cx),
                             nav(|e, w, cx| e.go_back(&GoBack, w, cx)),
                         ),
                         cx,
@@ -3515,7 +3515,7 @@ impl Workspace {
                         "forward",
                         Icon::ArrowRight,
                         can_forward,
-                        t!("nav.forward"),
+                        self.nav_tip(false, cx),
                         nav(|e, w, cx| e.go_forward(&GoForward, w, cx)),
                     )),
             )

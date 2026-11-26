@@ -826,6 +826,31 @@ impl Explorer {
         })
     }
 
+    /// The search box's placeholder for the scope in use, always starting with the same verb:
+    /// "Search <folder> (Ctrl+F)", "Search subfolders of <folder>", "Search this PC". `short`
+    /// drops the folder's name, for a box too narrow for it.
+    pub(crate) fn filter_placeholder(&self, locale: &str, short: bool) -> String {
+        let name = if short {
+            None
+        } else if self.scope() == Scope::Subfolders {
+            self.search_in_name().or_else(|| self.folder_label())
+        } else {
+            self.folder_label()
+        };
+        match (self.scope(), name) {
+            (Scope::Here, None) => t!("filter.placeholder", locale = locale),
+            (Scope::Here, Some(folder)) => {
+                t!("filter.placeholder_in", folder = folder, locale = locale)
+            }
+            (Scope::Subfolders, None) => t!("filter.search_placeholder", locale = locale),
+            (Scope::Subfolders, Some(name)) => {
+                t!("filter.search_in_placeholder", name = name, locale = locale)
+            }
+            (Scope::Computer, _) => t!("filter.computer_placeholder", locale = locale),
+        }
+        .into_owned()
+    }
+
     pub(super) fn render_scope_chip(
         &self,
         focused: bool,

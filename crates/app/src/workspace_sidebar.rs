@@ -4522,6 +4522,31 @@ impl Workspace {
             }))
     }
 
+    /// What a tab shows on hover: the full path of its folder (one line per side of a split
+    /// tab); a page's own name for Home, Settings and the like.
+    pub(crate) fn tab_tip(&self, ix: usize, cx: &App) -> Option<String> {
+        let lines: Vec<String> = self
+            .tabs
+            .get(ix)?
+            .panes
+            .iter()
+            .filter_map(|p| match self.page_title(p.view.entity_id()) {
+                Some((title, _)) => Some(title),
+                None => p
+                    .view
+                    .read(cx)
+                    .display_path()
+                    .map(|path| path.display().to_string()),
+            })
+            .collect();
+        (!lines.is_empty()).then(|| {
+            lines.join(
+                "
+",
+            )
+        })
+    }
+
     /// One tab. `horizontal` uses the top tab strip style (wider, joined to the paper at the bottom).
     #[allow(
         clippy::too_many_lines,
@@ -4631,7 +4656,14 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         let row = row
             .a11y(gpui::Role::Tab, drag_title.clone())
-            .aria_selected(active);
+            .aria_selected(active)
+            // The sidebar's tab titles are only the folder's name: the full path is on hover.
+            .when_some(
+                (!Self::horizontal_tabs(cx))
+                    .then(|| self.tab_tip(ix, cx))
+                    .flatten(),
+                |d, tip| d.aria_description(tip.clone()).tooltip(tooltip_text(tip)),
+            );
         let row = row.on_drag(
             DraggedTab {
                 ix,

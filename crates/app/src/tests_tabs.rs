@@ -2974,3 +2974,67 @@ fn restored_pinned_tabs_are_locked(cx: &mut TestAppContext) {
     assert_eq!(ws.update(cx, |ws, _| ws.pinned_for_test()), [true, false]);
     assert_eq!(locks(cx), [true, false]);
 }
+
+/// The back and forward buttons name the folder they go to, and follow the history; a button
+/// that is off keeps the plain tooltip.
+#[gpui::test]
+fn back_and_forward_tooltips_name_the_destination(cx: &mut TestAppContext) {
+    rust_i18n::set_locale("en");
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    let tips = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, cx| {
+            (
+                ws.nav_tip_for_test(true, cx),
+                ws.nav_tip_for_test(false, cx),
+            )
+        })
+    };
+    assert_eq!(
+        tips(cx),
+        ("Back (Alt+←)".to_owned(), "Forward (Alt+→)".to_owned()),
+        "nothing to go to: the plain tooltips"
+    );
+    for dir in [r"C:\b", r"C:\c"] {
+        view.update(cx, |e, cx| e.navigate(p(dir), NavKind::New, cx));
+        wait_until(cx, &view, dir, loaded(dir));
+    }
+    assert_eq!(
+        tips(cx),
+        ("Back to b (Alt+←)".to_owned(), "Forward (Alt+→)".to_owned())
+    );
+    view.update_in(cx, |e, window, cx| {
+        e.go_back(&crate::explorer::GoBack, window, cx);
+    });
+    wait_until(cx, &view, "back", loaded(r"C:\b"));
+    assert_eq!(
+        tips(cx),
+        (
+            "Back to a (Alt+←)".to_owned(),
+            "Forward to c (Alt+→)".to_owned()
+        )
+    );
+}
+
+/// A tab in the sidebar shows its folder's full path on hover; a split tab lists both sides.
+#[gpui::test]
+fn a_tab_tooltip_is_the_full_path(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a\x", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a\x");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a\x"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_tip(0, cx).as_deref(), Some(r"C:\a\x"));
+        assert_eq!(ws.tab_tip(1, cx).as_deref(), Some(r"C:\b"));
+        assert_eq!(ws.tab_tip(2, cx), None);
+    });
+    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(true, window, cx));
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        let tip = ws.tab_tip(ws.active, cx);
+        assert_eq!(tip, Some(rust_i18n::t!("home.title").into_owned()));
+    });
+}

@@ -251,7 +251,7 @@ fn shown(
         }
         let children = sub_commands(command, items, actions);
         let (label, access) = read_label(&title);
-        return (!children.is_empty()).then(|| ShellMenuEntry::Submenu {
+        return (!children.is_empty()).then_some(ShellMenuEntry::Submenu {
             label,
             access,
             enabled,

@@ -311,7 +311,6 @@ fn matches(rows: &[Row], query: &str, english: &dyn Fn(&str) -> Vec<String>) -> 
 /// The English text of `text` when it is one of Arke's strings in the UI language, lowercased
 /// (one string can stand for several keys). Nothing while the UI is in English.
 fn english(text: &str) -> Vec<String> {
-    use rust_i18n::Backend as _;
     let locale = rust_i18n::locale();
     if locale.starts_with("en") {
         return Vec::new();
@@ -446,7 +445,7 @@ pub(super) fn search_box(
     let typed = !search.input.read(cx).text().is_empty();
     div()
         .debug_selector(|| "settings-search".to_owned())
-        .flex_shrink()
+        .flex_shrink(1.)
         .w(theme::scaled_px(320.))
         .min_w(theme::scaled_px(140.))
         .h(theme::h_ctl())

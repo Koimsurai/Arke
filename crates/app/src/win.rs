@@ -627,6 +627,52 @@ fn disk_space(root: &[u16]) -> Option<(u64, u64)> {
     (total > 0).then_some((free, total))
 }
 
+/// Opens `path` with `ShellExecuteEx` on this thread, which is in an STA. Returns the result and
+/// the site handed out, which must stay answerable after the call (`win_viewsite::open_thread`).
+fn shell_execute(
+    path: &Path,
+    sort: Option<arke_core::SortSpec>,
+) -> (windows::core::Result<()>, Option<windows::Win32::System::Com::IServiceProvider>) {
+    let file = wide(path.as_os_str());
+    let dir = path.parent().map(|p| wide(p.as_os_str()));
+    // The folder view it is opened from, so Photos and the like can step through the folder in
+    // this order (`win_viewsite.rs`).
+    let site = sort.and_then(|sort| crate::win_viewsite::site(path, &sort));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        // NOASYNC: return only when done, so the caller learns the result.
+        fMask: SEE_MASK_NOASYNC
+            | if site.is_some() {
+                SEE_MASK_FLAG_HINST_IS_SITE
+            } else {
+                0
+            },
+        lpFile: PCWSTR(file.as_ptr()),
+        lpDirectory: dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
+        nShow: SW_SHOWNORMAL.0,
+        hInstApp: site
+            .as_ref()
+            .map_or_else(HINSTANCE::default, |s| HINSTANCE(s.as_raw())),
+        ..Default::default()
+    };
+    // SAFETY: the string pointers in info live until the end of the function, and so does the
+    // site; the shell takes its own references to whatever it keeps.
+    let result = unsafe { ShellExecuteExW(&raw mut info) };
+    (result, site)
+}
+
+/// Runs an open on this thread, in an apartment ended right after, as before #412. Only when no
+/// open thread can take it: a handler that calls the site later gets no answer.
+fn open_here(job: crate::win_viewsite::open_thread::OpenJob) {
+    // SAFETY: initializes STA on this background thread; ShellExecuteEx needs COM.
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    drop(job());
+    if com.is_ok() {
+        // SAFETY: pairs with the successful CoInitializeEx above.
+        unsafe { CoUninitialize() };
+    }
+}
+
 impl Shell for WinShell {
     fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
         crate::quick_access::read_windows_pins()
@@ -747,43 +793,27 @@ impl Shell for WinShell {
     }
 
     fn open(&self, path: &Path, sort: Option<arke_core::SortSpec>) -> Result<(), ShellError> {
+        use crate::win_viewsite::open_thread::{OPEN_THREADS, OpenJob};
         debug_assert!(
             !arke_core::fs::is_ui_thread(),
             "open must not run on the UI thread"
         );
-        let file = wide(path.as_os_str());
-        let dir = path.parent().map(|p| wide(p.as_os_str()));
-        // SAFETY: initializes STA on this dedicated background thread; ShellExecuteEx needs COM.
-        let com =
-            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
-        // The folder view it is opened from, so Photos and the like can step through the folder
-        // in this order (`win_viewsite.rs`).
-        let site = sort.and_then(|sort| crate::win_viewsite::site(path, &sort));
-        let mut info = SHELLEXECUTEINFOW {
-            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
-            // NOASYNC: return only when done, since this thread exits right after.
-            fMask: SEE_MASK_NOASYNC
-                | if site.is_some() {
-                    SEE_MASK_FLAG_HINST_IS_SITE
-                } else {
-                    0
-                },
-            lpFile: PCWSTR(file.as_ptr()),
-            lpDirectory: dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
-            nShow: SW_SHOWNORMAL.0,
-            hInstApp: site
-                .as_ref()
-                .map_or_else(HINSTANCE::default, |s| HINSTANCE(s.as_raw())),
-            ..Default::default()
-        };
-        // SAFETY: the string pointers in info live until the end of the function, and so does
-        // the site, which the shell only borrows for the call.
-        let result = unsafe { ShellExecuteExW(&raw mut info) };
-        drop(site);
-        if com.is_ok() {
-            // SAFETY: pairs with the successful CoInitializeEx above.
-            unsafe { CoUninitialize() };
+        // On an open thread, whose apartment outlives the call: Windows Photo Viewer goes on
+        // calling the site afterwards and stayed on "Loading..." when nobody answered (#412).
+        let (done, opened) = flume::bounded(1);
+        let file = path.to_path_buf();
+        let job: OpenJob = Box::new(move || {
+            let (result, site) = shell_execute(&file, sort);
+            let _ = done.send(result);
+            site
+        });
+        if let Err(job) = OPEN_THREADS.run(job) {
+            log::warn!("no open thread free, opening {} here", path.display());
+            open_here(job);
         }
+        let result = opened
+            .recv()
+            .unwrap_or_else(|_hung_up| Err(windows::Win32::Foundation::E_UNEXPECTED.into()));
         result.map_err(|e| {
             log::warn!("could not open {}: {e:?}", path.display());
             // Access denied usually means antivirus or policy blocks launching other programs.

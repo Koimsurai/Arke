@@ -840,7 +840,7 @@ mod tests {
             later.set_content(bin().join(format!("$I{tag}")), Vec::new());
         }
         add_record(&later, "NEW", VERSION, 1_000);
-        let tracker = Tracker::new(later, Some(dir.clone()));
+        let tracker = Tracker::new(later, Some(dir));
         assert_eq!(
             tracker.bytes(&bin()),
             Some(10 * (tags.len() as u64 - 1) + 1_000),

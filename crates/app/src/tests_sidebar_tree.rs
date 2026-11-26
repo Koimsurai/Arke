@@ -603,5 +603,8 @@ fn a_favorite_and_its_twin_under_this_pc_open_on_their_own(cx: &mut TestAppConte
 
     ws.update(cx, |ws, cx| ws.toggle_favorite_expand_for_test(work(), cx));
     assert!(!favorite_expanded(&ws, cx, r"C:\work"));
-    assert!(expanded(&ws, cx, r"C:\work"), "closing one leaves the other");
+    assert!(
+        expanded(&ws, cx, r"C:\work"),
+        "closing one leaves the other"
+    );
 }

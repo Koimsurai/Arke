@@ -223,7 +223,7 @@ Sections that expand and dropdowns open with Enter, or with the screen reader's 
 
 The path bar, search box, rename box and other text boxes use the usual Windows keys: Left and
 Right, Ctrl+Left and Ctrl+Right by word, Home and End, Shift to select, Ctrl+A, Ctrl+C, Ctrl+X,
-Ctrl+V, Ctrl+Z, Backspace, Delete, and Ctrl+Backspace or Ctrl+Delete by word. Enter confirms and
+Ctrl+V (or Ctrl+Shift+V, which pastes plain text the same way), Ctrl+Z, Backspace, Delete, and Ctrl+Backspace or Ctrl+Delete by word. Enter confirms and
 Esc cancels.
 
 ## Reporting a problem

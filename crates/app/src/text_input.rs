@@ -82,6 +82,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-end", SelectEnd, ctx),
         KeyBinding::new("ctrl-a", SelectAll, ctx),
         KeyBinding::new("ctrl-v", Paste, ctx),
+        // The same plain-text paste, for a mouse button mapped to it (Xshell style, #428).
+        KeyBinding::new("ctrl-shift-v", Paste, ctx),
         KeyBinding::new("ctrl-c", Copy, ctx),
         KeyBinding::new("ctrl-x", Cut, ctx),
         KeyBinding::new("ctrl-z", Undo, ctx),

@@ -96,12 +96,12 @@ fn many_small_files_extract_to_the_same_tree_on_several_threads() {
         assert_eq!(&fs::read(several.join(name)).unwrap(), body, "{name}");
     }
     // Progress never goes back and ends at the total.
-    let seen = progress.lock();
+    let seen = std::mem::take(&mut *progress.lock());
     assert!(
         seen.windows(2)
             .all(|w| w[0].done <= w[1].done && w[0].files <= w[1].files)
     );
-    let last = seen.last().unwrap();
+    let last = *seen.last().unwrap();
     assert_eq!(last.done, last.total);
     let total: u64 = files.iter().map(|(_, b)| b.len() as u64).sum();
     assert_eq!(last.total, total);

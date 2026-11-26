@@ -269,11 +269,14 @@ impl Explorer {
         let this = cx.entity();
         let capture = canvas(
             move |b, _, _| bounds.set(b),
-            move |_, (), window, _| {
-                // The list clamped its sideways scroll after the header was laid out: once more.
+            move |_, (), window, cx| {
+                // The list clamped its sideways scroll after the header was laid out: draw once
+                // more. The view must be notified too, or its cached render (which sets the
+                // header's offset) is reused as it was.
                 if let Some((x, list)) = follow
                     && list.offset().x.min(px(0.)) != x
                 {
+                    cx.notify(this.entity_id());
                     window.refresh();
                 }
                 if !active {

@@ -1140,6 +1140,14 @@ settings.title:
   es: Configuración
   pt-BR: Configurações
   ja: 設定
+settings.find_setting:
+  en: Find a setting
+  zh-TW: 尋找設定
+  zh-CN: 查找设置
+  de: Einstellung suchen
+  es: Buscar una configuración
+  pt-BR: Localizar uma configuração
+  ja: 設定の検索
 settings.menu:
   en: Settings…
   zh-TW: 設定…

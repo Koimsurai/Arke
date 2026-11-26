@@ -202,8 +202,9 @@ Open a folder in a split from Go to folder with Shift+Enter.
 | Keys | Action |
 | --- | --- |
 | Ctrl+, | Open Settings |
-| Up, Down, Enter | In an open dropdown: move and choose |
-| Esc | Close Settings |
+| Ctrl+F | Find a setting (the search box at the top) |
+| Up, Down, Enter | In an open dropdown or the settings found: move and choose |
+| Esc | Clear the search box, or close Settings |
 
 Sections that expand and dropdowns open with Enter, or with the screen reader's default action.
 

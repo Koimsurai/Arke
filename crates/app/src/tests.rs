@@ -89,6 +89,8 @@ mod remote;
 mod scale;
 #[path = "tests_search_select.rs"]
 mod search_select;
+#[path = "tests_settings_search.rs"]
+mod settings_search;
 #[path = "tests_sidebar_keys.rs"]
 mod sidebar_keys;
 #[path = "tests_sidebar_sections.rs"]

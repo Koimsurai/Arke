@@ -52,9 +52,9 @@ impl<K: Clone + Eq + Hash, V> Decoded<K, V> {
         self.tick
     }
 
-    /// `Some(None)` when loading failed, `None` when not loaded.
-    pub(crate) fn get(&self, key: &K) -> Option<Option<&V>> {
-        self.slots.get(key).map(|slot| slot.value.as_ref())
+    /// The image, if loaded (not when loading failed: see [`Self::contains`]).
+    pub(crate) fn image(&self, key: &K) -> Option<&V> {
+        self.slots.get(key).and_then(|slot| slot.value.as_ref())
     }
 
     /// Loaded, or known to fail.
@@ -404,8 +404,11 @@ mod tests {
         c.insert(2, None, 0);
         assert_eq!(c.bytes(), 100 * KB + 2 * ENTRY_BYTES);
         assert_eq!(c.image_count(), 1);
-        assert_eq!(c.get(&2), Some(None), "a failure is remembered");
-        assert_eq!(c.get(&3), None);
+        assert!(
+            c.contains(&2) && c.image(&2).is_none(),
+            "a failure is remembered"
+        );
+        assert!(!c.contains(&3));
     }
 
     #[test]
@@ -462,12 +465,12 @@ mod tests {
             "the new copy is handed back"
         );
         assert_eq!(c.insert(1, None, 0), None);
-        assert_eq!(c.get(&1), Some(Some(&10)));
+        assert_eq!(c.image(&1), Some(&10));
         assert_eq!(c.bytes(), KB + ENTRY_BYTES);
         // A failure is replaced by an image, with its size.
         c.insert(2, None, 0);
         assert_eq!(c.insert(2, Some(20), 4 * KB), None);
-        assert_eq!(c.get(&2), Some(Some(&20)));
+        assert_eq!(c.image(&2), Some(&20));
         assert_eq!(c.bytes(), 5 * KB + 2 * ENTRY_BYTES);
     }
 

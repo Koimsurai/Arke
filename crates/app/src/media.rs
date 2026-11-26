@@ -598,15 +598,15 @@ impl MediaStore {
 
     /// Loaded image (`None` if failed or not loaded yet).
     pub(crate) fn get(&self, key: &MediaKey) -> Option<Arc<RenderImage>> {
-        self.decoded.get(key).flatten().cloned()
+        self.decoded.image(key).cloned()
     }
 
     /// Like [`Self::get`], but while a thumbnail isn't loaded at this size yet, the same file's
     /// thumbnail at the closest other size (after an icon size change the grid keeps its pictures
     /// instead of blinking to type icons).
     pub(crate) fn get_or_nearby(&self, key: &MediaKey) -> Option<Arc<RenderImage>> {
-        if let Some(found) = self.decoded.get(key) {
-            return found.cloned();
+        if self.decoded.contains(key) {
+            return self.get(key);
         }
         self.stand_in(key).and_then(|other| self.get(&other))
     }
@@ -622,7 +622,7 @@ impl MediaStore {
         let mut probe = key.clone();
         others.into_iter().find_map(|px| {
             probe.px = px;
-            matches!(self.decoded.get(&probe), Some(Some(_))).then(|| probe.clone())
+            self.decoded.image(&probe).is_some().then(|| probe.clone())
         })
     }
 
@@ -720,7 +720,7 @@ impl MediaStore {
             return;
         }
         let this = cx.entity();
-        cx.defer(move |cx| this.update(cx, |this, cx| this.end_frame(cx)));
+        cx.defer(move |cx| this.update(cx, Self::end_frame));
     }
 
     /// What the views asked for this frame takes effect: the loaders hear of it (only if it

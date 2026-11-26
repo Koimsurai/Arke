@@ -1049,7 +1049,7 @@ fn home_cards_are_named_and_read_as_the_keyboard_moves(cx: &mut TestAppContext) 
         });
     });
     ws.update_in(cx, |ws, window, cx| {
-        ws.open_home_for_test(false, window, cx)
+        ws.open_home_for_test(false, window, cx);
     });
     let home = tree(cx);
     assert_eq!(unnamed(&home), Vec::<String>::new(), "Home");

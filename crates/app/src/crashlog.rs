@@ -123,8 +123,7 @@ pub(crate) fn init() {
     if to_file && let Some(path) = path {
         let dir = path
             .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
+            .map_or_else(PathBuf::new, std::path::Path::to_path_buf);
         let (tx, rx) = flume::unbounded::<Message>();
         let target = path.clone();
         let spawned = std::thread::Builder::new()

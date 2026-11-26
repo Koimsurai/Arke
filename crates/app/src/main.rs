@@ -55,6 +55,7 @@ mod caption;
 mod cloud_places;
 mod commands;
 mod crashlog;
+mod elevation;
 mod explorer;
 mod folder_handler;
 mod folder_views;
@@ -462,11 +463,23 @@ fn app_main(mut args: Args) {
         crashlog::flush(Duration::from_millis(200));
         return;
     }
+    // Started as administrator (a program running elevated opened a folder, #451): hand over to the
+    // resident Arke as usual, but never become it. With none running, start again as the user
+    // through the desktop shell before anything else (`elevation.rs`). Not when COM started this
+    // copy, for the same reason as above (and COM doesn't start it elevated: its class is per user).
+    let elevated = !args.embedding && elevation::is_elevated();
+    let relaunch_tried = elevated && !instance::resident_exists();
+    if relaunch_tried && elevation::start_unelevated() {
+        crashlog::flush(Duration::from_millis(200));
+        return;
+    }
     let linger = shell_window(&args);
     let listener = if args.background || args.embedding {
         // Background launch: if a resident process exists we're not needed; otherwise become
         // resident without a window. Started by COM, the folders come through the class.
+        // Elevated, there is nothing to do (see above).
         match instance::listen() {
+            Some(_) if elevated => return,
             Some(listener) => Some(listener),
             None if args.embedding => {
                 win_folder_com::forward_until_idle();
@@ -497,6 +510,17 @@ fn app_main(mut args: Args) {
                     linger.wait();
                 }
                 return;
+            }
+            // The resident Arke went away or doesn't answer: the copy started as the user deals
+            // with it; failing that, a window here without residency.
+            outcome if elevated => {
+                // Closes the pipe first, so the new copy can become the resident Arke.
+                drop(outcome);
+                if !relaunch_tried && elevation::start_unelevated() {
+                    crashlog::flush(Duration::from_millis(200));
+                    return;
+                }
+                None
             }
             HandOff::BecomeResident(listener) => Some(listener),
             HandOff::Standalone => None,

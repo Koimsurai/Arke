@@ -1176,10 +1176,10 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (command_line, dir);
         Err(ShellError::Unsupported)
     }
-    /// Toggles QuickLook's preview of `item` (see `quicklook.rs`): over its pipe when it's running,
-    /// otherwise by starting `exe` (if found) with it. Returns once handed off. Background thread.
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
-        let _ = (exe, item);
+    /// Starts `program` with `args` as its command line, as is (`external.rs` quotes the paths in
+    /// it): directly, never through a shell. Returns once it has started. Background thread.
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
+        let _ = (program, args);
         Err(ShellError::Unsupported)
     }
     /// Local (year, month, day, hour, minute, second), for archive modification times. Pure.
@@ -1204,10 +1204,6 @@ pub(crate) trait Shell: Send + Sync + 'static {
     fn net_disconnect(&self, drive: &Path) -> Result<(), ShellError> {
         let _ = drive;
         Err(ShellError::Unsupported)
-    }
-    /// Installed programs suitable for "Open with" (name, exe). Background thread (checks that files exist).
-    fn editor_apps(&self) -> Vec<(String, PathBuf)> {
-        Vec::new()
     }
     /// Start at Windows sign-in by adding or removing a shortcut in the user's Startup folder, no registry.
     /// Background thread.

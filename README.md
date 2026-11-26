@@ -113,7 +113,7 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
 - A resizable preview pane and Quick Look (Space) for images (SVG too), PDF, Word, Excel and
   PowerPoint, text and code with syntax highlighting, Markdown, archives, `.gz` files and folders.
 - Videos show a frame and PDFs their first page as their thumbnail. Quick Look zooms text, documents and PDF pages
-  (Ctrl+wheel), and with QuickLook installed, Space can open that instead.
+  (Ctrl+wheel), and Space can go to another preview program, such as QuickLook, instead.
 
 **Search**
 - As you type, in this folder, its subfolders or the whole computer, with fuzzy matching and
@@ -123,8 +123,8 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
 
 **Files**
 - Copy and move through the Windows shell engine with progress, undo and redo. Jobs on the same
-  drive queue up and can be paused, with optional verify after copy or hand-off to TeraCopy
-  (experimental). Many small files between local SSDs are copied several at a time, much faster
+  drive queue up and can be paused, with optional verify after copy or hand-off to another copy
+  program such as TeraCopy (experimental). Many small files between local SSDs are copied several at a time, much faster
   than one by one.
 - Batch rename, "Move to new folder", and a move/copy/shortcut menu when you drag with the right
   mouse button or drop with Alt held.

@@ -7,11 +7,10 @@
 //! `explorer_menu.rs` applies them.
 
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, DragMoveEvent, Entity, Focusable, Pixels, RenderImage,
-    SharedString, Window, canvas, div, img, prelude::*, px, svg,
+    AnyElement, App, ClickEvent, Context, DragMoveEvent, Entity, Focusable, Pixels, SharedString,
+    Window, canvas, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -23,17 +22,7 @@ use crate::settings::{Settings, SettingsStore};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
 
-/// Element ids for the switches and remove buttons (caps the detected editors and custom apps).
-const FOUND_IDS: [&str; 8] = [
-    "ow-found-0",
-    "ow-found-1",
-    "ow-found-2",
-    "ow-found-3",
-    "ow-found-4",
-    "ow-found-5",
-    "ow-found-6",
-    "ow-found-7",
-];
+/// Element ids for the remove buttons (caps the custom apps).
 const EXTRA_IDS: [&str; 12] = [
     "ow-extra-0",
     "ow-extra-1",
@@ -153,7 +142,7 @@ pub(crate) const MENU_PREFS: &[MenuPref] = &[
         switch_id: Some("menu-pref-open_with"),
         icon: Icon::OpenWith,
         label: "menupref.open_with",
-        note: Some("menupref.open_with_note"),
+        note: None,
     },
     MenuPref {
         key: "shelf",
@@ -619,31 +608,14 @@ fn pinned_card(s: &Settings, cx: &App) -> AnyElement {
     )
 }
 
-/// "Open with" apps: detected editors can be turned off, and custom apps added by exe path.
+/// "Open with" apps: added by exe path, and removed again.
 fn open_with_card(
     s: &Settings,
     input: &Entity<TextInput>,
     window: &Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let found = crate::explorer::menu_open_with_found();
     let mut rows: Vec<AnyElement> = Vec::new();
-    for (ix, (name, exe, icon)) in found.into_iter().enumerate().take(FOUND_IDS.len()) {
-        let on = !s.open_with_hidden.contains(&exe);
-        let toggle = move |st: &mut Settings| {
-            if let Some(at) = st.open_with_hidden.iter().position(|p| *p == exe) {
-                st.open_with_hidden.remove(at);
-            } else {
-                st.open_with_hidden.push(exe.clone());
-            }
-        };
-        rows.push(app_row(
-            icon,
-            name,
-            None,
-            super::settings_panel::switch(FOUND_IDS[ix], on, toggle),
-        ));
-    }
     for (ix, exe) in s.open_with_extra.iter().enumerate().take(EXTRA_IDS.len()) {
         let remove = exe.clone();
         let button = div()
@@ -667,7 +639,6 @@ fn open_with_card(
             })
             .into_any_element();
         rows.push(app_row(
-            None,
             crate::explorer::app_name(exe),
             Some(exe.display().to_string()),
             button,
@@ -720,26 +691,12 @@ fn open_with_card(
             )
             .into_any_element(),
     );
-    super::settings_panel::group_with(Some(t!("openwith.title")), Some(t!("openwith.desc")), rows)
+    super::settings_panel::group(Some(t!("openwith.title")), rows)
 }
 
-/// One app row in the settings row format: the app's own icon (or a generic one), name plus path
-/// for custom apps, control on the right.
-fn app_row(
-    icon: Option<std::sync::Arc<gpui::RenderImage>>,
-    name: String,
-    path: Option<String>,
-    control: AnyElement,
-) -> AnyElement {
-    let icon = match icon {
-        Some(image) => div()
-            .w(super::settings_panel::icon_col())
-            .flex_none()
-            .flex()
-            .justify_center()
-            .child(img(image).size(theme::icon()).flex_none()),
-        None => super::settings_panel::row_icon(Icon::OpenWith, theme::text_muted()),
-    };
+/// One app row in the settings row format: icon, name plus path, control on the right.
+fn app_row(name: String, path: Option<String>, control: AnyElement) -> AnyElement {
+    let icon = super::settings_panel::row_icon(Icon::OpenWith, theme::text_muted());
     div()
         .min_h(super::settings_panel::card_min_h())
         .px(theme::s_16())
@@ -814,8 +771,6 @@ struct PreviewRow {
     /// Its key in settings (`None`: a pinned Windows command).
     key: Option<&'static str>,
     icon: Option<Icon>,
-    /// An app's own image, drawn instead of `icon`.
-    image: Option<Arc<RenderImage>>,
     text: String,
     submenu: bool,
 }
@@ -824,7 +779,6 @@ const fn preview_row(key: Option<&'static str>, icon: Icon, text: String) -> Pre
     PreviewRow {
         key,
         icon: Some(icon),
-        image: None,
         text,
         submenu: false,
     }
@@ -833,11 +787,15 @@ const fn preview_row(key: Option<&'static str>, icon: Icon, text: String) -> Pre
 /// The folder context menu's rows in their built-in order, as `build_menu` makes them for one
 /// folder.
 fn preview_rows(s: &Settings) -> Vec<Option<PreviewRow>> {
-    // The "Open with" row shows the first editor the real menu would list, with its own icon, so
-    // the preview matches the menu; "VS Code" with the generic icon when none is found.
-    let editor = crate::explorer::open_with_list(s).into_iter().next();
-    let editor_name = editor.as_ref().map_or("VS Code", |app| app.name.as_str());
-    let editor_icon = editor.as_ref().and_then(|app| app.icon.clone());
+    // The "Open with" row shows the first app the real menu would list, so the preview matches
+    // the menu; the entry's own name until one is added.
+    let open_with = crate::explorer::open_with_list(s)
+        .into_iter()
+        .next()
+        .map_or_else(
+            || t!("menupref.open_with").into_owned(),
+            |app| t!("menu.open_with", name = app.name.as_str()).into_owned(),
+        );
     let row = |key: &'static str, icon: Icon, label: &str| {
         Some(preview_row(Some(key), icon, t!(label).into_owned()))
     };
@@ -866,14 +824,7 @@ fn preview_rows(s: &Settings) -> Vec<Option<PreviewRow>> {
         ),
         None,
         row("new_window", Icon::External, "menu.open_new_window"),
-        Some(PreviewRow {
-            image: editor_icon,
-            ..preview_row(
-                Some("open_with"),
-                Icon::OpenWith,
-                t!("menu.open_with", name = editor_name).into_owned(),
-            )
-        }),
+        Some(preview_row(Some("open_with"), Icon::OpenWith, open_with)),
         row("shelf", Icon::Shelf, "menu.add_to_shelf"),
         row("copy_path", Icon::CopyPath, "menu.copy_path"),
         row("relative_path", Icon::CopyPath, "menu.copy_relative_path"),
@@ -883,7 +834,6 @@ fn preview_rows(s: &Settings) -> Vec<Option<PreviewRow>> {
         Some(PreviewRow {
             key: Some("more_options"),
             icon: None,
-            image: None,
             text: t!("menu.more_options").into_owned(),
             submenu: true,
         }),
@@ -954,16 +904,15 @@ fn preview_item(row: Option<PreviewRow>) -> AnyElement {
             .into_any_element();
     };
     let key = row.key;
-    let mark = div().size(theme::icon_sm()).flex_none();
-    let mark = match row.image {
-        Some(image) => mark.child(img(image).size(theme::icon_sm())),
-        None => mark.children(row.icon.map(|i| {
+    let mark = div()
+        .size(theme::icon_sm())
+        .flex_none()
+        .children(row.icon.map(|i| {
             svg()
                 .path(i.path())
                 .size(theme::icon_sm())
                 .text_color(theme::text_muted())
-        })),
-    };
+        }));
     div()
         .when_some(key, |d, key| {
             d.debug_selector(move || format!("menu-preview {key}"))

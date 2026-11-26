@@ -56,6 +56,7 @@ mod cloud_places;
 mod commands;
 mod crashlog;
 mod explorer;
+mod external;
 mod folder_handler;
 mod folder_views;
 mod frame_probe;
@@ -63,6 +64,7 @@ mod global_search;
 mod home;
 mod instance;
 mod keynav;
+mod legacy_tools;
 mod localized;
 mod media;
 mod menu_order;
@@ -78,7 +80,6 @@ mod prefs;
 mod press_guard;
 mod properties;
 mod quick_access;
-mod quicklook;
 mod recycle_bin;
 mod redirection_guard;
 mod remote_shell;
@@ -93,7 +94,6 @@ mod shell;
 mod shell_host;
 mod slider;
 mod spring;
-mod teracopy;
 mod text_input;
 mod theme;
 mod thumb_host;
@@ -603,25 +603,10 @@ fn app_main(mut args: Args) {
             )),
             remotes,
         };
-        // "Open in VS Code/Zed": check in the background whether they're installed.
-        if bench.is_none() {
-            let shell = Arc::clone(&services.shell);
-            explorer::spawn_thread("editor-apps", move || {
-                let apps = shell.editor_apps();
-                // Icons come from each exe (icon only, no thumbnail provider).
-                let icons = apps
-                    .iter()
-                    .map(|(_, exe)| shell.file_icon(exe, 32))
-                    .collect();
-                explorer::set_open_with(apps, icons);
-            });
-        }
         // The integration API (`api.rs`): `WM_COPYDATA` to any window, and the resident pipe.
         let api_queue = start_api(cx, &services);
         if bench.is_none() {
             follow_drive_removals(cx, Arc::clone(&services.remotes));
-            teracopy::detect_in_background();
-            quicklook::detect_in_background();
         }
         if resident && bench.is_none() {
             install_tray(cx, &services, &store);

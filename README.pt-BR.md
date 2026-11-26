@@ -124,8 +124,8 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
   também), PDF, Word, Excel e PowerPoint, texto e código com realce de sintaxe, Markdown, arquivos
   compactados, arquivos `.gz` e pastas.
 - Vídeos mostram um quadro e PDFs mostram a primeira página como miniatura. A visualização rápida
-  amplia texto, documentos e páginas de PDF (Ctrl+roda), e, com o QuickLook instalado, o Espaço
-  pode abri-lo no lugar.
+  amplia texto, documentos e páginas de PDF (Ctrl+roda), e o Espaço pode passar o item a outro
+  programa de visualização, como o QuickLook.
 
 **Pesquisa**
 - Enquanto você digita, nesta pasta, nas subpastas ou em todo o computador, com correspondência
@@ -136,7 +136,7 @@ O Arke foi destaque no [boletim semanal de tecnologia de Ruan Yifeng, edição 4
 **Arquivos**
 - Copiar e mover pelo mecanismo do shell do Windows, com progresso, desfazer e refazer. Tarefas no
   mesmo disco entram em fila e podem ser pausadas, com verificação opcional após a cópia ou
-  delegação ao TeraCopy (experimental). Muitos arquivos pequenos entre SSDs locais são copiados
+  delegação a outro programa de cópia, como o TeraCopy (experimental). Muitos arquivos pequenos entre SSDs locais são copiados
   vários de uma vez, bem mais rápido que um por um.
 - Renomear em lote, "Mover para nova pasta" e um menu de mover/copiar/atalho quando você arrasta com
   o botão direito do mouse ou solta com Alt pressionado.

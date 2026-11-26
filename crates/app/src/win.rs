@@ -225,53 +225,6 @@ fn volume_label(root: &[u16]) -> Option<String> {
     (!label.is_empty()).then_some(label)
 }
 
-/// Common editors found at their default install paths. Only checks for the exe: no registry,
-/// nothing launched.
-fn editor_apps() -> Vec<(String, PathBuf)> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let programs = std::env::var_os("ProgramFiles").map(PathBuf::from);
-    let candidates: [(&str, Option<PathBuf>); 5] = [
-        (
-            "VS Code",
-            local.as_ref().map(|d| {
-                d.join("Programs")
-                    .join("Microsoft VS Code")
-                    .join("Code.exe")
-            }),
-        ),
-        (
-            "VS Code",
-            programs
-                .as_ref()
-                .map(|d| d.join("Microsoft VS Code").join("Code.exe")),
-        ),
-        (
-            "Zed",
-            local
-                .as_ref()
-                .map(|d| d.join("Programs").join("Zed").join("Zed.exe")),
-        ),
-        (
-            "Zed",
-            programs.as_ref().map(|d| d.join("Zed").join("Zed.exe")),
-        ),
-        (
-            "Cursor",
-            local
-                .as_ref()
-                .map(|d| d.join("Programs").join("cursor").join("Cursor.exe")),
-        ),
-    ];
-    let mut found: Vec<(String, PathBuf)> = Vec::new();
-    for (name, path) in candidates {
-        let Some(path) = path else { continue };
-        if found.iter().all(|(seen, _)| seen != name) && path.is_file() {
-            found.push((name.to_owned(), path));
-        }
-    }
-    found
-}
-
 /// The user's Start menu programs folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`).
 /// Follows `%APPDATA%`, so tests with a temp profile stay in temp.
 fn start_menu_programs(appdata: &std::path::Path) -> PathBuf {
@@ -1382,8 +1335,16 @@ impl Shell for WinShell {
         shell_execute(program, &args, dir)
     }
 
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
-        crate::quicklook::toggle(item, exe).map_err(ShellError::from)
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
+        use std::os::windows::process::CommandExt as _;
+        debug_assert!(
+            !arke_core::fs::is_ui_thread(),
+            "run_program must not run on the UI thread"
+        );
+        // Raw: the arguments are already quoted (`external.rs`), and a template may need text
+        // such as `*"list"` exactly as written, which normal argument quoting would rewrite.
+        std::process::Command::new(program).raw_arg(args).spawn()?;
+        Ok(())
     }
 
     fn disk_spaces(&self, roots: &[PathBuf]) -> Vec<(PathBuf, (u64, u64))> {
@@ -1658,11 +1619,6 @@ impl Shell for WinShell {
     fn set_start_menu(&self, on: bool) -> Result<(), ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         set_start_menu(on)
-    }
-
-    fn editor_apps(&self) -> Vec<(String, PathBuf)> {
-        debug_assert!(!arke_core::fs::is_ui_thread());
-        editor_apps()
     }
 
     fn net_connect(&self, request: &crate::shell::NetConnect) -> Result<(), ShellError> {

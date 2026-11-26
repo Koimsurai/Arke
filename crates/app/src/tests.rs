@@ -37,6 +37,8 @@ mod click_parity;
 mod column_view;
 #[path = "tests_compress.rs"]
 mod compress;
+#[path = "tests_external.rs"]
+mod external_programs;
 #[path = "tests_favorites.rs"]
 mod favorites;
 #[path = "tests_folder_views.rs"]
@@ -266,8 +268,9 @@ struct FakeShell {
     fail_delete: Mutex<Vec<(PathBuf, FailReason, Vec<crate::shell::Holder>)>>,
     /// Paths whose drive has no Recycle Bin.
     no_bin: Mutex<Vec<PathBuf>>,
-    /// QuickLook hand-offs (exe if found, item).
-    quicklook_runs: Mutex<Vec<(Option<PathBuf>, PathBuf)>>,
+    /// Programs started (program, command line after it), for the external copy and preview
+    /// programs.
+    program_runs: Mutex<Vec<(PathBuf, String)>>,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
     /// Attribute changes asked for (paths, bits set, bits cleared); they fail while
@@ -940,14 +943,14 @@ impl Shell for FakeShell {
         String::from_utf8_lossy(bytes).into_owned()
     }
 
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
         assert!(
             !arke_core::fs::is_ui_thread(),
-            "run_quicklook called on the UI thread"
+            "run_program called on the UI thread"
         );
-        self.quicklook_runs
+        self.program_runs
             .lock()
-            .push((exe.map(Path::to_path_buf), item.to_path_buf()));
+            .push((program.to_path_buf(), args.to_string_lossy().into_owned()));
         Ok(())
     }
 

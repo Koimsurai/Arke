@@ -1148,31 +1148,38 @@ impl Explorer {
         }
     }
 
-    /// Space: the user's own QuickLook app when that setting is on and it's running or installed
-    /// (it toggles its preview itself, so Space again closes it), otherwise Arke's Quick Look.
+    /// Space: the external preview program when that setting is set (it toggles its own preview,
+    /// so Space again closes it, as QuickLook does), otherwise Arke's Quick Look.
     pub(super) fn space_preview(&mut self, cx: &mut Context<Self>) {
-        let on = crate::settings::SettingsStore::global(cx)
-            .read(cx)
-            .settings
-            .space_quicklook
-            && crate::quicklook::available();
-        // Servers (SFTP, WebDAV) are Arke's own; QuickLook can't read them.
-        let item = (on && !self.quick_look)
+        let program = crate::external::Command::parse(
+            &crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .settings
+                .external_preview,
+            crate::external::Use::Preview,
+        );
+        // Servers (SFTP, WebDAV) are Arke's own; another program can't read them.
+        let item = (program.is_some() && !self.quick_look)
             .then(|| self.item_target(true))
             .flatten()
             .filter(|(path, _)| !arke_core::remote::is_remote(path));
-        let Some((item, _)) = item else {
+        let (Some(program), Some((item, _))) = (program, item) else {
             self.toggle_quick_look(cx);
             return;
         };
-        let exe = crate::quicklook::exe();
         let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
-        spawn_thread("quicklook", move || {
-            if let Err(e) = shell.run_quicklook(exe.as_deref(), &item) {
-                log::warn!("QuickLook did not start: {e}");
+        spawn_thread("external-preview", move || {
+            let started = program
+                .map_err(crate::shell::ShellError::from)
+                .and_then(|program| {
+                    let args = program.preview_args(&item)?;
+                    shell.run_program(&program.program, &args)
+                });
+            if let Err(e) = started {
+                log::warn!("the external preview program did not start: {e}");
                 let _ = tx.send(AppEvent::Notice(Err(t!(
-                    "error.quicklook_failed",
+                    "error.external_preview_failed",
                     error = e
                 )
                 .into_owned())));

@@ -893,11 +893,8 @@ impl Shell for RemoteShell {
         }
         self.inner.run_in(command_line, dir)
     }
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
-        if remote(item).is_some() {
-            return Err(ShellError::NotOnRemote);
-        }
-        self.inner.run_quicklook(exe, item)
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
+        self.inner.run_program(program, args)
     }
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         self.inner.local_parts(time)
@@ -913,9 +910,6 @@ impl Shell for RemoteShell {
     }
     fn net_disconnect(&self, drive: &Path) -> Result<(), ShellError> {
         self.inner.net_disconnect(drive)
-    }
-    fn editor_apps(&self) -> Vec<(String, PathBuf)> {
-        self.inner.editor_apps()
     }
     fn set_autostart(&self, on: bool) -> Result<(), ShellError> {
         self.inner.set_autostart(on)

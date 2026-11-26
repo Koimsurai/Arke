@@ -710,7 +710,9 @@ fn a_menu_opened_from_the_keyboard_shows_its_access_keys(cx: &mut TestAppContext
     let (view, cx) = setup(cx, fs, Arc::default(), r"C:\m");
     wait_until(cx, &view, "load", loaded(r"C:\m"));
     cx.update(|window, cx| {
-        view.update(cx, |v, cx| v.open_context_menu_by_keyboard_for_test(window, cx));
+        view.update(cx, |v, cx| {
+            v.open_context_menu_by_keyboard_for_test(window, cx)
+        });
     });
     cx.run_until_parked();
     assert_eq!(cues_and_depth(&view, cx), Some((true, 0)));

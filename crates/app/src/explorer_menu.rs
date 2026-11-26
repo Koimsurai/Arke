@@ -479,31 +479,98 @@ impl MenuEntry {
     }
 }
 
-/// The text and access key of an own label: `&` marks the key, `&&` is a literal `&` (what is
-/// put in from outside, a file or app name, goes through [`amp`]).
-fn own_label(text: &str) -> (SharedString, Option<Access>) {
-    if !text.contains('&') {
-        return (text.to_owned().into(), None);
-    }
-    let (label, access) = parse_label(text);
-    (label.into(), access)
+/// The text of one of Arke's own menu rows, and which `access.*` letter it takes (none for text that
+/// isn't ours to key, like "Loading…" or an app's name).
+pub(crate) struct Label {
+    text: SharedString,
+    name: Option<&'static str>,
+    /// Text put into the label from outside (a file name): not searched for the key.
+    skip: Option<String>,
 }
 
-/// `name` as part of an own label, its `&` kept.
-fn amp(name: &str) -> String {
-    name.replace('&', "&&")
+impl<T: Into<SharedString>> From<T> for Label {
+    fn from(text: T) -> Self {
+        Self {
+            text: text.into(),
+            name: None,
+            skip: None,
+        }
+    }
+}
+
+impl Label {
+    /// Its access key, if it takes one.
+    fn access(&self) -> Option<Access> {
+        let name = self.name?;
+        own_access(name, &self.text, self.skip.as_deref())
+    }
+}
+
+/// `text` as the row `name` of the `access.*` letters.
+fn lab(name: &'static str, text: impl Into<SharedString>) -> Label {
+    Label {
+        text: text.into(),
+        name: Some(name),
+        skip: None,
+    }
+}
+
+/// [`lab`] for a label with `put_in` (a name) inside it, which is not searched for the key.
+fn lab_with(name: &'static str, text: impl Into<SharedString>, put_in: &str) -> Label {
+    Label {
+        skip: Some(put_in.to_owned()),
+        ..lab(name, text)
+    }
+}
+
+/// Whether `locale` writes the key after the text, as `(C)`, not under a letter of it.
+fn writes_key_after(locale: &str) -> bool {
+    locale.starts_with("zh") || locale.starts_with("ja")
+}
+
+/// The access key for `letter` in `label`: its first occurrence there, compared without case and
+/// outside `skip`, which is where it is underlined. When the letter isn't in the label (or the
+/// language writes the key after the text), it goes after it as `(C)`, which is still right.
+fn derive_access(letter: char, label: &str, skip: Option<&str>, after: bool) -> Access {
+    if !after {
+        let hole = skip.and_then(|s| label.find(s).map(|at| at..at + s.len()));
+        let found = label.char_indices().find(|(at, c)| {
+            c.to_lowercase().eq(letter.to_lowercase())
+                && !hole.as_ref().is_some_and(|h| h.contains(at))
+        });
+        if let Some((at, key)) = found {
+            return Access { key, at: Some(at) };
+        }
+    }
+    Access {
+        key: letter.to_uppercase().next().unwrap_or(letter),
+        at: None,
+    }
+}
+
+/// The access key of row `name` with `label`, under `locale`'s `access.*` letter; `None` where it
+/// has none.
+fn access_in(locale: &str, name: &str, label: &str, skip: Option<&str>) -> Option<Access> {
+    let key = format!("access.{name}");
+    let letter = t!(key.as_str(), locale = locale).chars().next()?;
+    letter
+        .is_alphanumeric()
+        .then(|| derive_access(letter, label, skip, writes_key_after(locale)))
+}
+
+fn own_access(name: &str, label: &str, skip: Option<&str>) -> Option<Access> {
+    access_in(&rust_i18n::locale(), name, label, skip)
 }
 
 fn plain(
-    label: SharedString,
+    label: Label,
     shortcut: Option<&'static str>,
     command: MenuCommand,
     enabled: bool,
 ) -> MenuEntry {
-    let (label, access) = own_label(&label);
     MenuEntry::Item(MenuItem {
-        access,
-        ..text_row(label, shortcut, command, enabled)
+        access: label.access(),
+        ..text_row(label.text, shortcut, command, enabled)
     })
 }
 
@@ -531,17 +598,16 @@ const fn text_row(
 }
 
 /// One button in the icon row.
-fn action(label: impl Into<SharedString>, command: MenuCommand, enabled: bool) -> MenuItem {
-    let label: SharedString = label.into();
-    let (label, access) = own_label(&label);
+fn action(label: impl Into<Label>, command: MenuCommand, enabled: bool) -> MenuItem {
+    let label = label.into();
     MenuItem {
-        access,
-        ..text_row(label, None, command, enabled)
+        access: label.access(),
+        ..text_row(label.text, None, command, enabled)
     }
 }
 
 fn item(
-    label: impl Into<SharedString>,
+    label: impl Into<Label>,
     shortcut: Option<&'static str>,
     command: MenuCommand,
 ) -> MenuEntry {
@@ -550,7 +616,7 @@ fn item(
 
 /// Row with a check mark when `checked` (the current view, an option that is on).
 fn checked_item(
-    label: impl Into<SharedString>,
+    label: impl Into<Label>,
     shortcut: Option<&'static str>,
     command: MenuCommand,
     checked: bool,
@@ -563,7 +629,12 @@ fn checked_item(
 
 /// Disabled text-only row ("Loading...", "No other options").
 fn placeholder(label: impl Into<SharedString>) -> MenuEntry {
-    MenuEntry::Item(text_row(label.into(), None, MenuCommand::MoreOptions, false))
+    MenuEntry::Item(text_row(
+        label.into(),
+        None,
+        MenuCommand::MoreOptions,
+        false,
+    ))
 }
 
 /// Error row, e.g. failed to load. Not clickable, but drawn in the danger color since disabled gray
@@ -577,7 +648,7 @@ fn error_line(label: impl Into<SharedString>) -> MenuEntry {
 
 fn item_if(
     enabled: bool,
-    label: impl Into<SharedString>,
+    label: impl Into<Label>,
     shortcut: Option<&'static str>,
     command: MenuCommand,
 ) -> MenuEntry {
@@ -1444,9 +1515,9 @@ impl Explorer {
         };
         // Background menu: "Undo <operation>" names the operation it would undo.
         let undo = crate::explorer::UndoHistory::last(cx)
-            .map(|e| t!("access.undo_op", op = t!(e.verb)).into_owned());
+            .map(|e| t!("menu.undo_op", op = t!(e.verb)).into_owned());
         let redo = crate::explorer::RedoStack::last(cx)
-            .map(|e| t!("access.redo_op", op = t!(e.verb)).into_owned());
+            .map(|e| t!("menu.redo_op", op = t!(e.verb)).into_owned());
         let (hidden, order) = {
             let settings = &SettingsStore::global(cx).read(cx).settings;
             (
@@ -1525,28 +1596,29 @@ impl Explorer {
     fn view_submenu(&self) -> MenuEntry {
         use MenuCommand as C;
         let mode = self.view_mode;
-        let (label, access) = own_label(&t!("access.view"));
+        let label = t!("menu.view");
+        let access = own_access("view", &label, None);
         MenuEntry::Submenu {
-            label,
+            label: label.into(),
             access,
             enabled: true,
             icon: None,
             glyph: None,
             children: vec![
                 checked_item(
-                    t!("access.view_details"),
+                    lab("view_details", t!("menu.view_details")),
                     Some("Ctrl+Shift+6"),
                     C::ViewDetails,
                     mode == ViewMode::Details,
                 ),
                 checked_item(
-                    t!("access.view_icons"),
+                    lab("view_icons", t!("view.icons")),
                     None,
                     C::ViewIcons,
                     mode == ViewMode::Icons,
                 ),
                 checked_item(
-                    t!("access.view_columns"),
+                    lab("view_columns", t!("settings.view_columns")),
                     None,
                     C::ViewColumns,
                     mode == ViewMode::Columns,
@@ -1563,9 +1635,10 @@ impl Explorer {
     /// own (#190). Its rows keep their shortcuts and the keyboard goes in with Right.
     fn new_submenu(mut children: Vec<MenuEntry>) -> MenuEntry {
         decorate(&mut children);
-        let (label, access) = own_label(&t!("access.new"));
+        let label = t!("menu.new");
+        let access = own_access("new", &label, None);
         MenuEntry::Submenu {
-            label,
+            label: label.into(),
             access,
             enabled: true,
             icon: None,
@@ -1597,21 +1670,22 @@ impl Explorer {
         children.extend([
             MenuEntry::Separator,
             checked_item(
-                t!("access.asc"),
+                lab("asc", t!("settings.ascending")),
                 None,
                 C::SortDirection(true),
                 sort.ascending,
             ),
             checked_item(
-                t!("access.desc"),
+                lab("desc", t!("settings.descending")),
                 None,
                 C::SortDirection(false),
                 !sort.ascending,
             ),
         ]);
-        let (label, access) = own_label(&t!("access.sort_by"));
+        let label = t!("settings.sort_by");
+        let access = own_access("sort_by", &label, None);
         MenuEntry::Submenu {
-            label,
+            label: label.into(),
             access,
             enabled: true,
             icon: None,
@@ -1641,18 +1715,29 @@ impl Explorer {
         if targets.is_empty() {
             let mut entries = vec![
                 Self::new_submenu(vec![
-                    item(t!("access.new_folder"), Some("Ctrl+Shift+N"), C::NewFolder),
-                    item(t!("access.new_text"), None, C::NewTextFile),
+                    item(
+                        lab("new_folder", t!("menu.new_folder")),
+                        Some("Ctrl+Shift+N"),
+                        C::NewFolder,
+                    ),
+                    item(
+                        lab("new_text", t!("menu.new_text_file")),
+                        None,
+                        C::NewTextFile,
+                    ),
                 ]),
                 item_if(
                     self.services.shell.clipboard_has_files(),
-                    t!("access.paste"),
+                    lab("paste", t!("menu.paste")),
                     Some("Ctrl+V"),
                     C::Paste,
                 ),
                 item_if(
                     undo.is_some(),
-                    undo.unwrap_or_else(|| t!("access.undo").into_owned()),
+                    lab(
+                        if undo.is_some() { "undo_op" } else { "undo" },
+                        undo.unwrap_or_else(|| t!("menu.undo").into_owned()),
+                    ),
                     Some("Ctrl+Z"),
                     C::Undo,
                 ),
@@ -1665,16 +1750,28 @@ impl Explorer {
                 entries.push(self.sort_submenu());
             }
             entries.extend([
-                item(t!("access.refresh"), Some("F5"), C::Refresh),
+                item(lab("refresh", t!("menu.refresh")), Some("F5"), C::Refresh),
                 MenuEntry::Separator,
-                item(t!("access.copy_path"), None, C::CopyPath),
-                item(t!("access.open_explorer"), None, C::RevealInExplorer),
-                item(t!("access.terminal"), None, C::OpenTerminal),
+                item(lab("copy_path", t!("menu.copy_path")), None, C::CopyPath),
+                item(
+                    lab("open_explorer", t!("menu.open_in_explorer")),
+                    None,
+                    C::RevealInExplorer,
+                ),
+                item(
+                    lab("terminal", t!("menu.open_terminal")),
+                    None,
+                    C::OpenTerminal,
+                ),
                 MenuEntry::Separator,
                 item(pin_label(pinned), None, C::TogglePin),
                 // The folder's own, as Alt+Enter with nothing selected; Windows' would open
                 // Explorer's dialog from "Show more options" otherwise.
-                item(t!("access.props"), Some("Alt+Enter"), C::Properties),
+                item(
+                    lab("props", t!("menu.properties")),
+                    Some("Alt+Enter"),
+                    C::Properties,
+                ),
                 MenuEntry::Separator,
                 // Windows background menu: New (file types), Open in Terminal, third-party items.
                 more_options(),
@@ -1685,7 +1782,7 @@ impl Explorer {
                     .iter()
                     .position(|e| matches!(e, MenuEntry::Separator))
                     .unwrap_or(entries.len());
-                entries.insert(at, item(label, Some("Ctrl+Y"), C::Redo));
+                entries.insert(at, item(lab("redo_op", label), Some("Ctrl+Y"), C::Redo));
             }
             return entries;
         }
@@ -1694,17 +1791,33 @@ impl Explorer {
         // Inside this folder, as at the top of VS Code's explorer menu. A server's shares are
         // only listed, so nothing can be made in `\\server` itself.
         let new_in = single && *is_dir && arke_core::net::bare_server(path).is_none();
-        let mut entries = vec![item(t!("access.open"), Some("Enter"), C::Open)];
+        let mut entries = vec![item(lab("open", t!("menu.open")), Some("Enter"), C::Open)];
         if single && *is_dir {
-            entries.push(item(t!("access.open_tab"), Some("Ctrl+Enter"), C::OpenInNewTab));
+            entries.push(item(
+                lab("open_tab", t!("menu.open_in_new_tab")),
+                Some("Ctrl+Enter"),
+                C::OpenInNewTab,
+            ));
             entries.push(MenuEntry::Separator);
             if new_in {
                 entries.push(Self::new_submenu(vec![
-                    item(t!("access.new_file_in"), None, C::NewFileIn),
-                    item(t!("access.new_folder_in"), None, C::NewFolderIn),
+                    item(
+                        lab("new_file_in", t!("menu.new_file_in")),
+                        None,
+                        C::NewFileIn,
+                    ),
+                    item(
+                        lab("new_folder_in", t!("menu.new_folder_in")),
+                        None,
+                        C::NewFolderIn,
+                    ),
                 ]));
             }
-            entries.push(item(t!("access.search_folder"), None, C::SearchInFolder));
+            entries.push(item(
+                lab("search_folder", t!("menu.search_in_folder")),
+                None,
+                C::SearchInFolder,
+            ));
             entries.push(MenuEntry::Separator);
             entries.push(item(pin_label(pinned), None, C::TogglePin));
             // Network folders can be added to whole-PC search on their own, so large shares needn't
@@ -1720,48 +1833,64 @@ impl Explorer {
                     C::ToggleSearchNetwork,
                 ));
             }
-            entries.push(item(t!("access.terminal"), None, C::OpenTerminal));
+            entries.push(item(
+                lab("terminal", t!("menu.open_terminal")),
+                None,
+                C::OpenTerminal,
+            ));
         }
         let name = path
             .file_name()
             .map_or_default(|n| n.to_string_lossy().into_owned());
         if single && !*is_dir && archive_kind(&name).is_some() {
             entries.push(MenuEntry::Separator);
+            let folder = menu_name(&folder_name_for(&name));
             entries.push(item(
-                t!(
-                    "access.extract_to",
-                    name = amp(&menu_name(&folder_name_for(&name)))
-                ),
+                lab_with("extract_to", t!("menu.extract_to", name = folder), &folder),
                 None,
                 C::ExtractToFolder,
             ));
-            entries.push(item(t!("access.extract_here"), None, C::ExtractHere));
+            entries.push(item(
+                lab("extract_here", t!("menu.extract_here")),
+                None,
+                C::ExtractHere,
+            ));
         }
         if single && !*is_dir && is_backdrop_image(&name) {
             entries.push(MenuEntry::Separator);
-            entries.push(item(t!("access.set_bg"), None, C::SetBackground));
+            entries.push(item(
+                lab("set_bg", t!("menu.set_background")),
+                None,
+                C::SetBackground,
+            ));
         }
         // Settings backup. Whether it's really an Arke backup is checked in the background on
         // import.
         if single && !*is_dir && name.to_lowercase().ends_with(".json") {
             entries.push(MenuEntry::Separator);
-            entries.push(item(t!("access.import"), None, C::ImportSettings));
+            entries.push(item(
+                lab("import", t!("menu.import_settings")),
+                None,
+                C::ImportSettings,
+            ));
         }
         // Search results may span folders, so compress is only offered in the normal list.
         if !self.search_mode {
             entries.push(MenuEntry::Separator);
+            let zip = menu_name(&format!(
+                "{}.zip",
+                zip_stem_for_targets(self.current_path(), targets)
+            ));
             entries.push(item(
-                t!(
-                    "access.compress",
-                    name = amp(&menu_name(&format!(
-                        "{}.zip",
-                        zip_stem_for_targets(self.current_path(), targets)
-                    )))
-                ),
+                lab_with("compress", t!("menu.compress", name = zip), &zip),
                 None,
                 C::Compress,
             ));
-            entries.push(item(t!("access.move_new"), None, C::MoveToNewFolder));
+            entries.push(item(
+                lab("move_new", t!("menu.move_to_new_folder")),
+                None,
+                C::MoveToNewFolder,
+            ));
         }
         // Split view: Alt+C / Alt+M are hard to find from the keyboard alone.
         if self.pane.peer.is_some() {
@@ -1779,13 +1908,17 @@ impl Explorer {
         }
         entries.push(MenuEntry::Separator);
         if single && *is_dir {
-            entries.push(item(t!("access.new_window"), None, C::OpenInNewWindow));
+            entries.push(item(
+                lab("new_window", t!("menu.open_new_window")),
+                None,
+                C::OpenInNewWindow,
+            ));
         }
         // Apps found on this PC (VS Code, Zed, ...), single selection only.
         if single {
             for (ix, app) in apps.iter().enumerate() {
                 let mut entry = item(
-                    t!("menu.open_with", name = amp(&app.name)),
+                    t!("menu.open_with", name = app.name.as_str()),
                     None,
                     C::OpenWith(ix),
                 );
@@ -1798,27 +1931,65 @@ impl Explorer {
         }
         // Symlinks and junctions (files or folders): where they point.
         if single && self.target_is_link(path) {
-            entries.push(item(t!("access.link"), None, C::GoToLinkTarget));
+            entries.push(item(
+                lab("link", t!("menu.go_to_link_target")),
+                None,
+                C::GoToLinkTarget,
+            ));
         }
         // Single file: Windows "Open with"; shortcuts also get "Open file location".
         if single && !*is_dir {
             if name.to_lowercase().ends_with(".lnk") {
-                entries.push(item(t!("access.file_location"), None, C::OpenFileLocation));
+                entries.push(item(
+                    lab("file_location", t!("menu.open_file_location")),
+                    None,
+                    C::OpenFileLocation,
+                ));
             }
-            entries.push(item(t!("access.choose_app"), None, C::ChooseApp));
+            entries.push(item(
+                lab("choose_app", t!("menu.choose_app")),
+                None,
+                C::ChooseApp,
+            ));
         }
-        entries.push(item(t!("access.shelf"), Some("Ctrl+Shift+A"), C::AddToShelf));
-        entries.push(item(t!("access.copy_path"), None, C::CopyPath));
+        entries.push(item(
+            lab("shelf", t!("menu.add_to_shelf")),
+            Some("Ctrl+Shift+A"),
+            C::AddToShelf,
+        ));
+        entries.push(item(
+            lab("copy_path", t!("menu.copy_path")),
+            None,
+            C::CopyPath,
+        ));
         // The tree names nested rows by their path below the folder shown.
         if self.tree_active() {
-            entries.push(item(t!("access.copy_rel"), None, C::CopyRelativePath));
+            entries.push(item(
+                lab("copy_rel", t!("menu.copy_relative_path")),
+                None,
+                C::CopyRelativePath,
+            ));
         }
         // A folder's "New folder…" is a button here too, a click away (#190); the keyboard has it
         // in "New".
-        let new_folder = new_in.then(|| action(t!("access.new_folder"), C::NewFolderIn, true));
+        let new_folder = new_in.then(|| {
+            action(
+                lab("new_folder", t!("menu.new_folder")),
+                C::NewFolderIn,
+                true,
+            )
+        });
         entries.extend([
-            item(t!("access.reveal"), None, C::RevealInExplorer),
-            item(t!("access.props"), Some("Alt+Enter"), C::Properties),
+            item(
+                lab("reveal", t!("menu.reveal_in_explorer")),
+                None,
+                C::RevealInExplorer,
+            ),
+            item(
+                lab("props", t!("menu.properties")),
+                Some("Alt+Enter"),
+                C::Properties,
+            ),
             MenuEntry::Separator,
             more_options(),
             MenuEntry::Separator,
@@ -1826,12 +1997,16 @@ impl Explorer {
                 new_folder
                     .into_iter()
                     .chain([
-                        action(t!("access.cut"), C::Cut, true),
-                        action(t!("access.copy"), C::Copy, true),
+                        action(lab("cut", t!("menu.cut")), C::Cut, true),
+                        action(lab("copy", t!("menu.copy")), C::Copy, true),
                         // Works on multiple items too: renames all selected to "name (1)",
                         // "name (2)", ...
-                        action(t!("access.rename"), C::Rename, !self.search_mode),
-                        action(t!("access.delete"), C::Delete, true),
+                        action(
+                            lab("rename", t!("menu.rename")),
+                            C::Rename,
+                            !self.search_mode,
+                        ),
+                        action(lab("delete", t!("menu.delete")), C::Delete, true),
                     ])
                     .collect(),
             ),
@@ -2483,11 +2658,27 @@ impl Explorer {
             return;
         };
         let entries = vec![
-            item(t!("access.copy_address"), None, C::CopyAddress),
-            item(t!("access.copy_as_path"), Some("Ctrl+Shift+C"), C::CopyPath),
-            item(t!("access.edit_address"), Some("Ctrl+L"), C::EditAddress),
+            item(
+                lab("copy_address", t!("menu.copy_address")),
+                None,
+                C::CopyAddress,
+            ),
+            item(
+                lab("copy_as_path", t!("menu.copy_as_path")),
+                Some("Ctrl+Shift+C"),
+                C::CopyPath,
+            ),
+            item(
+                lab("edit_address", t!("menu.edit_address")),
+                Some("Ctrl+L"),
+                C::EditAddress,
+            ),
             MenuEntry::Separator,
-            item(t!("access.clear_history"), None, C::ClearHistory),
+            item(
+                lab("clear_history", t!("menu.clear_history")),
+                None,
+                C::ClearHistory,
+            ),
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -2534,7 +2725,7 @@ impl Explorer {
         entries.push(MenuEntry::Separator);
         entries.push(item_if(
             crate::prefs::order() != Col::MOVABLE,
-            t!("access.reset_cols"),
+            lab("reset_cols", t!("menu.reset_column_order")),
             None,
             MenuCommand::ResetColumnOrder,
         ));
@@ -2564,9 +2755,16 @@ impl Explorer {
             || dest.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        let dest_name = amp(&name);
-        let move_item = item(t!("access.drop_move", dest = dest_name), None, C::DropMove);
-        let copy_item = item(t!("access.drop_copy", dest = dest_name), None, C::DropCopy);
+        let move_item = item(
+            lab_with("drop_move", t!("dnd.menu_move", dest = name), &name),
+            None,
+            C::DropMove,
+        );
+        let copy_item = item(
+            lab_with("drop_copy", t!("dnd.menu_copy", dest = name), &name),
+            None,
+            C::DropCopy,
+        );
         let default_move =
             crate::explorer::dnd::drop_is_move(gpui::Modifiers::default(), &sources, &dest);
         let mut entries = if default_move {
@@ -2574,9 +2772,17 @@ impl Explorer {
         } else {
             vec![copy_item, move_item]
         };
-        entries.push(item(t!("access.drop_shortcut"), None, C::DropShortcut));
+        entries.push(item(
+            lab("drop_shortcut", t!("dnd.menu_shortcut")),
+            None,
+            C::DropShortcut,
+        ));
         entries.push(MenuEntry::Separator);
-        entries.push(item(t!("access.drop_cancel"), Some("Esc"), C::DropCancel));
+        entries.push(item(
+            lab("drop_cancel", t!("dnd.menu_cancel")),
+            Some("Esc"),
+            C::DropCancel,
+        ));
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.release_shell_menu();
@@ -4141,12 +4347,20 @@ fn add_cloud_items(entries: &mut Vec<MenuEntry>, kept: bool) {
         .iter()
         .position(|e| matches!(e, MenuEntry::Item(i) if i.command == MenuCommand::CopyPath))
         .unwrap_or(entries.len());
-    let mut keep = item(t!("access.keep"), None, MenuCommand::KeepOnDevice);
+    let mut keep = item(
+        lab("keep", t!("menu.keep_on_device")),
+        None,
+        MenuCommand::KeepOnDevice,
+    );
     if let MenuEntry::Item(row) = &mut keep {
         row.checked = kept;
         row.glyph = glyph_for(MenuCommand::KeepOnDevice);
     }
-    let mut free = item(t!("access.free"), None, MenuCommand::FreeUpSpace);
+    let mut free = item(
+        lab("free", t!("menu.free_up_space")),
+        None,
+        MenuCommand::FreeUpSpace,
+    );
     if let MenuEntry::Item(row) = &mut free {
         row.glyph = glyph_for(MenuCommand::FreeUpSpace);
     }
@@ -4154,9 +4368,10 @@ fn add_cloud_items(entries: &mut Vec<MenuEntry>, kept: bool) {
 }
 
 fn more_options() -> MenuEntry {
-    let (label, access) = own_label(&t!("access.more"));
+    let label = t!("menu.more_options");
+    let access = own_access("more", &label, None);
     MenuEntry::Submenu {
-        label,
+        label: label.into(),
         access,
         enabled: true,
         icon: None,
@@ -4216,11 +4431,11 @@ fn zip_stem_for_targets(dir: Option<&std::path::Path>, targets: &[(PathBuf, bool
         .unwrap_or_else(|| zip_stem_for(&targets[0].0, targets[0].1))
 }
 
-fn pin_label(pinned: bool) -> std::borrow::Cow<'static, str> {
+fn pin_label(pinned: bool) -> Label {
     if pinned {
-        t!("access.fav_remove")
+        lab("fav_remove", t!("sidebar.remove_favorite"))
     } else {
-        t!("access.fav_add")
+        lab("fav_add", t!("sidebar.add_favorite"))
     }
 }
 
@@ -4347,69 +4562,99 @@ mod access_tests {
     /// with another (a folder's "Add to favorites" and "Remove from favorites") is in its own
     /// copy of the menu. "Open with <app>", the pane items and the PC search ones have no key.
     const MENUS: &[(&str, &str)] = &[
-    (
-        "folder",
-        "open open_tab new search_folder fav_add terminal compress move_new new_window shelf \
+        (
+            "folder",
+            "open open_tab new search_folder fav_add terminal compress move_new new_window shelf \
          copy_path reveal props more new_folder cut copy rename delete copy_rel link keep \
          free",
-    ),
-    (
-        "folder_rm",
-        "open open_tab new search_folder fav_remove terminal compress move_new new_window \
+        ),
+        (
+            "folder_rm",
+            "open open_tab new search_folder fav_remove terminal compress move_new new_window \
          shelf copy_path reveal props more new_folder cut copy rename delete copy_rel link \
          keep free",
-    ),
-    (
-        "file_archive",
-        "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+        ),
+        (
+            "file_archive",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
          delete extract_to extract_here copy_rel link keep free",
-    ),
-    (
-        "file_image",
-        "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+        ),
+        (
+            "file_image",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
          delete set_bg copy_rel link keep free",
-    ),
-    (
-        "file_json",
-        "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+        ),
+        (
+            "file_json",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
          delete import copy_rel link keep free",
-    ),
-    (
-        "file_lnk",
-        "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
+        ),
+        (
+            "file_lnk",
+            "open compress move_new choose_app shelf copy_path reveal props more cut copy rename \
          delete file_location copy_rel link keep free",
-    ),
-    (
-        "background",
-        "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_add \
+        ),
+        (
+            "background",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_add \
          props more undo",
-    ),
-    (
-        "background_rm",
-        "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_remove \
+        ),
+        (
+            "background_rm",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_remove \
          props more undo",
-    ),
-    ("view_sub", "view_details view_icons view_columns"),
-    ("new_bg", "new_folder new_text"),
-    ("new_in", "new_file_in new_folder_in"),
-    ("sort_sub", "asc desc"),
-    (
-        "path",
-        "copy_address copy_as_path edit_address clear_history",
-    ),
-    ("drop", "drop_move drop_copy drop_shortcut drop_cancel"),
-    ("header", "reset_cols"),
-    (
-        "background_op",
-        "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_add \
+        ),
+        ("view_sub", "view_details view_icons view_columns"),
+        ("new_bg", "new_folder new_text"),
+        ("new_in", "new_file_in new_folder_in"),
+        ("sort_sub", "asc desc"),
+        (
+            "path",
+            "copy_address copy_as_path edit_address clear_history",
+        ),
+        ("drop", "drop_move drop_copy drop_shortcut drop_cancel"),
+        ("header", "reset_cols"),
+        (
+            "background_op",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_add \
          props more undo_op",
-    ),
-    (
-        "background_rm_op",
-        "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_remove \
+        ),
+        (
+            "background_rm_op",
+            "new paste redo_op view sort_by refresh copy_path open_explorer terminal fav_remove \
          props more undo_op",
-    ),
+        ),
     ];
+
+    /// The `access.*` key of each row and the `menu.*`-style key of the label it comes with.
+    const LABELS: &str = "open=menu.open open_tab=menu.open_in_new_tab new=menu.new new_folder=menu.new_folder \
+         new_text=menu.new_text_file new_file_in=menu.new_file_in \
+         new_folder_in=menu.new_folder_in search_folder=menu.search_in_folder \
+         fav_add=sidebar.add_favorite fav_remove=sidebar.remove_favorite \
+         terminal=menu.open_terminal extract_to=menu.extract_to \
+         extract_here=menu.extract_here set_bg=menu.set_background \
+         import=menu.import_settings compress=menu.compress move_new=menu.move_to_new_folder \
+         new_window=menu.open_new_window link=menu.go_to_link_target \
+         file_location=menu.open_file_location choose_app=menu.choose_app \
+         shelf=menu.add_to_shelf copy_path=menu.copy_path copy_rel=menu.copy_relative_path \
+         reveal=menu.reveal_in_explorer props=menu.properties more=menu.more_options \
+         keep=menu.keep_on_device free=menu.free_up_space cut=menu.cut copy=menu.copy \
+         rename=menu.rename delete=menu.delete paste=menu.paste undo=menu.undo \
+         undo_op=menu.undo_op redo_op=menu.redo_op refresh=menu.refresh \
+         open_explorer=menu.open_in_explorer view=menu.view view_details=menu.view_details \
+         view_icons=view.icons view_columns=settings.view_columns sort_by=settings.sort_by \
+         asc=settings.ascending desc=settings.descending copy_address=menu.copy_address \
+         copy_as_path=menu.copy_as_path edit_address=menu.edit_address \
+         clear_history=menu.clear_history reset_cols=menu.reset_column_order \
+         drop_move=dnd.menu_move drop_copy=dnd.menu_copy drop_shortcut=dnd.menu_shortcut \
+         drop_cancel=dnd.menu_cancel";
+
+    fn letter(locale: &str, name: &str) -> Option<char> {
+        let key = format!("access.{name}");
+        let text = t!(key.as_str(), locale = locale);
+        assert!(text != key.as_str(), "{locale}: {key} is not translated");
+        text.chars().next().filter(|c| c.is_alphanumeric())
+    }
 
     #[test]
     fn no_two_items_of_a_menu_share_an_access_key() {
@@ -4417,17 +4662,14 @@ mod access_tests {
             for (menu, names) in MENUS {
                 let mut seen: Vec<(char, &str)> = Vec::new();
                 for name in names.split_whitespace() {
-                    let key = format!("access.{name}");
-                    let text = t!(key.as_str(), locale = locale);
-                    assert!(text != key.as_str(), "{locale}: {key} is not translated");
-                    let Some(access) = parse_label(&text).1 else {
+                    let Some(letter) = letter(locale, name) else {
                         assert!(
                             locale == "es" && NO_SPANISH_KEY.contains(&name),
-                            "{locale}: {key} has no access key: {text}"
+                            "{locale}: access.{name} has no letter"
                         );
                         continue;
                     };
-                    let letter = access.key.to_ascii_lowercase();
+                    let letter = letter.to_ascii_lowercase();
                     if let Some((_, other)) = seen.iter().find(|(l, _)| *l == letter) {
                         panic!("{locale}, {menu}: {other} and {name} share the key {letter}");
                     }
@@ -4437,42 +4679,100 @@ mod access_tests {
         }
     }
 
-    /// The key is a letter of the word in the Western languages, and after the text, as File
-    /// Explorer writes it, in Chinese and Japanese.
+    /// A letter that is not in its label would fall back to `(K)` after the text, which is right
+    /// but not what our own languages are meant to do: every Western letter is in its word.
     #[test]
-    fn the_key_sits_where_the_language_puts_it() {
-        for locale in LOCALES {
-            for name in MENUS.iter().flat_map(|(_, names)| names.split_whitespace()) {
-                let key = format!("access.{name}");
-                let text = t!(key.as_str(), locale = locale);
-                let (label, Some(access)) = parse_label(&text) else {
+    fn every_letter_of_a_western_language_is_in_its_label() {
+        for locale in ["en", "de", "es", "pt-BR"] {
+            for pair in LABELS.split_whitespace() {
+                let (name, label_key) = pair.split_once('=').expect("name=key");
+                let Some(letter) = letter(locale, name) else {
                     continue;
                 };
-                if matches!(locale, "zh-TW" | "zh-CN" | "ja") {
-                    assert!(access.at.is_none(), "{locale}: {text}");
-                    assert!(access.key.is_ascii_uppercase(), "{locale}: {text}");
-                } else {
-                    let at = access.at.expect("a key inside the word");
-                    assert!(label[at..].starts_with(access.key), "{locale}: {text}");
-                    assert!(access.key.is_ascii_alphabetic(), "{locale}: {text}");
-                }
+                let label = t!(label_key, locale = locale, name = "", dest = "", op = "");
+                let access = access_in(locale, name, &label, None).expect("a letter");
+                assert!(
+                    access
+                        .at
+                        .is_some_and(|at| label[at..].starts_with(access.key)),
+                    "{locale}: {letter} is not in {label:?} ({name})"
+                );
             }
         }
     }
 
-    fn row(label: &str, command: MenuCommand) -> MenuEntry {
-        item(label.to_owned(), None, command)
+    #[test]
+    fn chinese_and_japanese_write_the_key_after_the_text() {
+        for locale in ["zh-TW", "zh-CN", "ja"] {
+            for pair in LABELS.split_whitespace() {
+                let (name, label_key) = pair.split_once('=').expect("name=key");
+                let label = t!(label_key, locale = locale, name = "", dest = "", op = "");
+                let access = access_in(locale, name, &label, None).expect("a letter");
+                assert_eq!(access.at, None, "{locale}: {name}");
+                assert!(access.key.is_ascii_uppercase(), "{locale}: {name}");
+            }
+        }
     }
 
-    fn off(label: &str, command: MenuCommand) -> MenuEntry {
-        plain(label.to_owned().into(), None, command, false)
+    #[test]
+    fn the_key_is_the_first_occurrence_of_the_letter_outside_what_was_put_in() {
+        let at = |letter, label, skip| derive_access(letter, label, skip, false);
+        assert_eq!(
+            at('c', "Copy", None),
+            Access {
+                key: 'C',
+                at: Some(0)
+            }
+        );
+        assert_eq!(
+            at('P', "Copy path", None),
+            Access {
+                key: 'p',
+                at: Some(2)
+            }
+        );
+        // The name put in is passed over: "Move to a" has its own `o` first.
+        assert_eq!(at('o', "Move to Zoo", Some("Zoo")).at, Some(1));
+        assert_eq!(at('z', "Move to Zoo", Some("Zoo")).at, None);
+        // A letter the label doesn't have, and a language that writes it after the text.
+        assert_eq!(at('q', "Copy", None), Access { key: 'Q', at: None });
+        assert_eq!(
+            derive_access('c', "複製", None, true),
+            Access { key: 'C', at: None }
+        );
     }
 
-    fn submenu(label: &str, enabled: bool) -> MenuEntry {
-        let (label, access) = own_label(label);
+    fn keyed(label: &str, letter: char, command: MenuCommand) -> MenuEntry {
+        match item(label.to_owned(), None, command) {
+            MenuEntry::Item(row) => MenuEntry::Item(MenuItem {
+                access: Some(derive_access(letter, label, None, false)),
+                ..row
+            }),
+            other => other,
+        }
+    }
+
+    fn off(label: &str, letter: char, command: MenuCommand) -> MenuEntry {
+        match keyed(label, letter, command) {
+            MenuEntry::Item(row) => MenuEntry::Item(MenuItem {
+                enabled: false,
+                ..row
+            }),
+            other => other,
+        }
+    }
+
+    fn button(label: &str, letter: char, command: MenuCommand, enabled: bool) -> MenuItem {
+        MenuItem {
+            access: Some(derive_access(letter, label, None, false)),
+            ..action(label.to_owned(), command, enabled)
+        }
+    }
+
+    fn submenu(label: &str, letter: char, enabled: bool) -> MenuEntry {
         MenuEntry::Submenu {
-            label,
-            access,
+            label: label.to_owned().into(),
+            access: Some(derive_access(letter, label, None, false)),
             enabled,
             icon: None,
             glyph: None,
@@ -4488,9 +4788,9 @@ mod access_tests {
     fn a_letter_with_one_match_runs_it_shift_or_not() {
         use MenuCommand as C;
         let entries = [
-            row("&Open", C::Open),
-            row("Cu&t", C::Cut),
-            row("&Copy", C::Copy),
+            keyed("Open", 'o', C::Open),
+            keyed("Cut", 't', C::Cut),
+            keyed("Copy", 'c', C::Copy),
         ];
         assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Run(C::Copy));
         assert_eq!(access_hit(&entries, Some(0), 'C'), AccessHit::Run(C::Copy));
@@ -4500,7 +4800,7 @@ mod access_tests {
     #[test]
     fn a_submenu_with_the_key_is_opened() {
         use MenuCommand as C;
-        let entries = [row("&Open", C::Open), submenu("Ne&w", true)];
+        let entries = [keyed("Open", 'o', C::Open), submenu("New", 'w', true)];
         assert_eq!(access_hit(&entries, None, 'w'), AccessHit::Open(1));
     }
 
@@ -4508,10 +4808,10 @@ mod access_tests {
     fn rows_sharing_a_key_take_turns_and_wrap() {
         use MenuCommand as C;
         let entries = [
-            row("&Copy", C::Copy),
-            row("Open", C::Open),
-            row("&Copy path", C::CopyPath),
-            row("Cu&t", C::Cut),
+            keyed("Copy", 'c', C::Copy),
+            keyed("Open", 'o', C::Open),
+            keyed("Copy path", 'c', C::CopyPath),
+            keyed("Cut", 't', C::Cut),
         ];
         assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Move(0));
         assert_eq!(access_hit(&entries, Some(0), 'c'), AccessHit::Move(2));
@@ -4524,8 +4824,8 @@ mod access_tests {
     fn a_key_nothing_has_does_nothing() {
         use MenuCommand as C;
         let entries = [
-            row("&Open", C::Open),
-            row("Cu&t", C::Cut),
+            keyed("Open", 'o', C::Open),
+            keyed("Cut", 't', C::Cut),
             MenuEntry::Separator,
         ];
         assert_eq!(access_hit(&entries, Some(1), 'z'), AccessHit::Nothing);
@@ -4535,12 +4835,15 @@ mod access_tests {
     #[test]
     fn disabled_rows_are_skipped() {
         use MenuCommand as C;
-        let entries = [off("&Copy", C::Copy), row("&Copy path", C::CopyPath)];
+        let entries = [
+            off("Copy", 'c', C::Copy),
+            keyed("Copy path", 'c', C::CopyPath),
+        ];
         assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Run(C::CopyPath));
-        let entries = [off("&Copy", C::Copy), off("Cu&t", C::Cut)];
+        let entries = [off("Copy", 'c', C::Copy), off("Cut", 't', C::Cut)];
         assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Nothing);
         assert_eq!(
-            access_hit(&[submenu("&View", false)], None, 'v'),
+            access_hit(&[submenu("View", 'v', false)], None, 'v'),
             AccessHit::Nothing
         );
     }
@@ -4549,36 +4852,18 @@ mod access_tests {
     fn the_icon_row_takes_part_with_its_own_letters() {
         use MenuCommand as C;
         let buttons = MenuEntry::Actions(vec![
-            action("Cu&t", C::Cut, true),
-            action("&Delete", C::Delete, false),
-            action("Re&name", C::Rename, true),
+            button("Cut", 't', C::Cut, true),
+            button("Delete", 'd', C::Delete, false),
+            button("Rename", 'n', C::Rename, true),
         ]);
-        let entries = [row("&Open", C::Open), buttons.clone()];
+        let entries = [keyed("Open", 'o', C::Open), buttons.clone()];
         assert_eq!(access_hit(&entries, None, 't'), AccessHit::Run(C::Cut));
         assert_eq!(access_hit(&entries, None, 'n'), AccessHit::Run(C::Rename));
         // Disabled, like the rows.
         assert_eq!(access_hit(&entries, None, 'd'), AccessHit::Nothing);
         // A row and a button with the same key: the row takes the highlight, nothing runs.
-        let entries = [row("Cu&t all", C::Open), buttons];
+        let entries = [keyed("Cut all", 't', C::Open), buttons];
         assert_eq!(access_hit(&entries, None, 't'), AccessHit::Move(0));
-    }
-
-    #[test]
-    fn own_labels_are_parsed_once_when_built() {
-        let (label, access) = own_label("Extr&act to");
-        assert_eq!(label.to_string(), "Extract to");
-        assert_eq!(access.map(|a| (a.key, a.at)), Some(('a', Some(4))));
-        // The CJK form is written after the text.
-        let (label, access) = own_label("複製(&C)");
-        assert_eq!(label.to_string(), "複製");
-        assert_eq!(access.map(|a| (a.key, a.at)), Some(('C', None)));
-        // Names put in from outside keep their `&`.
-        let (label, access) = own_label(&format!("Open with {}", amp("Q&A Tool")));
-        assert_eq!(label.to_string(), "Open with Q&A Tool");
-        assert!(access.is_none());
-        let (label, access) = own_label("Plain");
-        assert_eq!(label.to_string(), "Plain");
-        assert!(access.is_none());
     }
 
     #[test]

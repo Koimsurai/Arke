@@ -878,6 +878,8 @@ fn option_row(
                     div()
                         .text_size(theme::fs_12())
                         .text_color(theme::text_muted())
+                        // At most two lines, whatever the language.
+                        .line_clamp(2)
                         .child(desc.into_owned()),
                 ),
         )
@@ -1004,6 +1006,16 @@ fn pin_row(ix: usize, path: &std::path::Path, on: bool) -> AnyElement {
             cx.refresh_windows();
         })
         .into_any_element()
+}
+
+/// Whether What's new after an update offers the guide: only the first time (it is recorded
+/// here), and not to someone who has been through it.
+pub(super) fn offer_once(cx: &mut App) -> bool {
+    let offer = current(cx).is_some_and(|s| !s.onboarding_done && !s.onboarding_offered);
+    if offer {
+        set(cx, |s| s.onboarding_offered = true);
+    }
+    offer
 }
 
 /// The What's new entry for someone who updated and hasn't been through the guide, or `None`.

@@ -40,8 +40,8 @@ impl Source {
         match self {
             Self::Explorer => t!("onboarding.from_explorer"),
             // Product names: the same in every language.
-            Self::Commander => Cow::Borrowed("Total Commander · Double Commander"),
-            Self::Opus => Cow::Borrowed("Directory Opus · XYplorer"),
+            Self::Commander => Cow::Borrowed("Total / Double Commander"),
+            Self::Opus => Cow::Borrowed("Directory Opus / XYplorer"),
             Self::Finder => Cow::Borrowed("macOS Finder"),
         }
     }
@@ -73,14 +73,15 @@ impl Source {
     }
 }
 
-/// Windows 11 File Explorer.
+/// Windows 11 File Explorer. Extensions stay shown: Explorer hides them out of the box, but
+/// that is left out on purpose (`docs/onboarding-presets.md`).
 const EXPLORER: &[Item] = &[
     Item::SingleClick(false),
     Item::Folders(FolderOrder::First),
     Item::Sort(SortBy::Name, false),
     Item::View(ViewMode::Details),
     Item::ShowHidden(false),
-    Item::ShowExtensions(false),
+    Item::ShowExtensions(true),
     Item::FullDates(true),
     Item::DecimalSizes(false),
     Item::Tabs(TabLayout::Horizontal),
@@ -505,7 +506,8 @@ mod tests {
             s
         };
         let explorer = applied(Source::Explorer);
-        assert!(!explorer.show_extensions && !explorer.show_hidden);
+        assert!(explorer.show_extensions, "kept shown on purpose");
+        assert!(!explorer.show_hidden);
         assert_eq!(explorer.tab_layout, TabLayout::Horizontal);
         assert_eq!(explorer.nav_scope, NavScope::WithinTab);
         let commander = applied(Source::Commander);

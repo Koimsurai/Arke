@@ -137,10 +137,11 @@ fn nested_fs() -> Arc<FakeFs> {
 /// go down three levels, as in File Explorer (#425).
 #[gpui::test]
 fn single_click_mode_opens_on_every_click_of_a_run(cx: &mut TestAppContext) {
-    single_click(true);
     let (ws, cx) = setup_workspace(cx, nested_fs(), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
+    // After the workspace is built: it applies the stored settings, single click off.
+    single_click(true);
     cx.run_until_parked();
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     let at = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
@@ -182,13 +183,14 @@ fn double_click_mode_opens_on_even_counts_in_nested_folders(cx: &mut TestAppCont
 /// under the cursor. It must not launch it again.
 #[gpui::test]
 fn single_click_mode_launches_a_file_once_per_run(cx: &mut TestAppContext) {
-    single_click(true);
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\t", vec![file("f.txt", 1), file("g.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\t");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\t"));
+    // After the workspace is built: it applies the stored settings, single click off.
+    single_click(true);
     cx.run_until_parked();
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
     let at = |n: f32| point(bounds.left() + px(60.), bounds.top() + row * (n + 0.5));

@@ -205,6 +205,7 @@ impl DirectXRendererDevices {
             dxgi_factory,
             device,
             device_context,
+            ..
         } = directx_devices;
         let dxgi_device = if disable_direct_composition {
             None
@@ -233,6 +234,8 @@ impl DirectXRenderer {
         if disable_direct_composition {
             log::info!("Direct Composition is disabled.");
         }
+        // Arke: what a window's renderer costs, for measuring menus (`RUST_LOG=gpui_windows=debug`).
+        let started = std::time::Instant::now();
 
         let devices = DirectXRendererDevices::new(directx_devices, disable_direct_composition)
             .context("Creating DirectX devices")?;
@@ -242,7 +245,12 @@ impl DirectXRenderer {
             .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
             .context("Creating DirectX global elements")?;
-        let pipelines = DirectXRenderPipelines::new(&devices.device)
+        // Arke: the shaders are the device's, shared with every other window.
+        let shaders = directx_devices
+            .shaders
+            .get(&devices.device)
+            .context("Creating DirectX shaders")?;
+        let pipelines = DirectXRenderPipelines::new(&devices.device, &shaders)
             .context("Creating DirectX render pipelines")?;
 
         let direct_composition = if disable_direct_composition {
@@ -257,6 +265,10 @@ impl DirectXRenderer {
                 .context("Setting swap chain for DirectComposition")?;
             Some(composition)
         };
+        log::debug!(
+            "window renderer made in {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
 
         Ok(DirectXRenderer {
             hwnd,
@@ -374,7 +386,12 @@ impl DirectXRenderer {
         .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
             .context("Creating DirectXGlobalElements")?;
-        let pipelines = DirectXRenderPipelines::new(&devices.device)
+        // Arke: the new device's shaders, made by the first window that recovers onto it.
+        let shaders = directx_devices
+            .shaders
+            .get(&devices.device)
+            .context("Creating DirectX shaders")?;
+        let pipelines = DirectXRenderPipelines::new(&devices.device, &shaders)
             .context("Creating DirectXRenderPipelines")?;
 
         let direct_composition = if disable_direct_composition {
@@ -1076,63 +1093,156 @@ impl DirectXResources {
     }
 }
 
+/// Arke: a pipeline's shaders and blend state. They depend only on the device, so they are made
+/// once per device and shared by every window's renderer (see [`PipelineShaders`]).
+#[derive(Clone)]
+struct PipelineShader {
+    vertex: ID3D11VertexShader,
+    fragment: ID3D11PixelShader,
+    blend_state: ID3D11BlendState,
+}
+
+impl PipelineShader {
+    fn new(
+        device: &ID3D11Device,
+        shader_module: ShaderModule,
+        blend_state: ID3D11BlendState,
+    ) -> Result<Self> {
+        let vertex = {
+            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
+            create_vertex_shader(device, raw_shader.as_bytes())?
+        };
+        let fragment = {
+            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
+            create_fragment_shader(device, raw_shader.as_bytes())?
+        };
+        Ok(Self {
+            vertex,
+            fragment,
+            blend_state,
+        })
+    }
+}
+
+/// Arke: the shaders and blend states of the eight pipelines, for one device. Upstream made them
+/// again for every window, so every menu level made sixteen shaders (compiled from source in
+/// debug builds). They are made once per device now, kept in [`ShaderCache`], and each window's
+/// renderer only makes its own instance buffers.
+#[derive(Clone)]
+pub(crate) struct PipelineShaders {
+    shadow: PipelineShader,
+    quad: PipelineShader,
+    path_rasterization: PipelineShader,
+    path_sprite: PipelineShader,
+    underline: PipelineShader,
+    mono_sprites: PipelineShader,
+    subpixel_sprites: PipelineShader,
+    poly_sprites: PipelineShader,
+}
+
+impl PipelineShaders {
+    fn new(device: &ID3D11Device) -> Result<Self> {
+        Ok(Self {
+            shadow: PipelineShader::new(device, ShaderModule::Shadow, create_blend_state(device)?)?,
+            quad: PipelineShader::new(device, ShaderModule::Quad, create_blend_state(device)?)?,
+            path_rasterization: PipelineShader::new(
+                device,
+                ShaderModule::PathRasterization,
+                create_blend_state_for_path_rasterization(device)?,
+            )?,
+            path_sprite: PipelineShader::new(
+                device,
+                ShaderModule::PathSprite,
+                create_blend_state_for_path_sprite(device)?,
+            )?,
+            underline: PipelineShader::new(
+                device,
+                ShaderModule::Underline,
+                create_blend_state(device)?,
+            )?,
+            mono_sprites: PipelineShader::new(
+                device,
+                ShaderModule::MonochromeSprite,
+                create_blend_state(device)?,
+            )?,
+            subpixel_sprites: PipelineShader::new(
+                device,
+                ShaderModule::SubpixelSprite,
+                create_blend_state_for_subpixel_rendering(device)?,
+            )?,
+            poly_sprites: PipelineShader::new(
+                device,
+                ShaderModule::PolychromeSprite,
+                create_blend_state(device)?,
+            )?,
+        })
+    }
+}
+
+/// Arke: the [`PipelineShaders`] of one device, made by whoever needs them first and shared after
+/// that. A [`DirectXDevices`] carries one, so new devices (after a device lost) start empty and
+/// every window recovering onto them shares the shaders made for them.
+#[derive(Default)]
+pub(crate) struct ShaderCache(parking_lot::Mutex<Option<PipelineShaders>>);
+
+impl ShaderCache {
+    /// The shaders for `device`, made now if no one has made them yet. While another thread is
+    /// making them (see [`PendingDevices`]), this waits for that instead of making them again.
+    pub(crate) fn get(&self, device: &ID3D11Device) -> Result<PipelineShaders> {
+        let mut cached = self.0.lock();
+        let shaders = Self::fill(&mut cached, device)?.clone();
+        Ok(shaders)
+    }
+
+    /// Makes the shaders into `cached` unless they are there already. A failure leaves it empty,
+    /// so the next caller tries again.
+    pub(crate) fn fill<'a>(
+        cached: &'a mut Option<PipelineShaders>,
+        device: &ID3D11Device,
+    ) -> Result<&'a PipelineShaders> {
+        if cached.is_none() {
+            *cached = Some(PipelineShaders::new(device)?);
+        }
+        cached.as_ref().context("the shader cache is empty")
+    }
+
+    /// Holds the cache, so that callers of [`Self::get`] wait until the holder has filled it.
+    pub(crate) fn lock(&self) -> parking_lot::MutexGuard<'_, Option<PipelineShaders>> {
+        self.0.lock()
+    }
+}
+
 impl DirectXRenderPipelines {
-    pub fn new(device: &ID3D11Device) -> Result<Self> {
-        let shadow_pipeline = PipelineState::new(
-            device,
-            "shadow_pipeline",
-            ShaderModule::Shadow,
-            4,
-            create_blend_state(device)?,
-        )?;
-        let quad_pipeline = PipelineState::new(
-            device,
-            "quad_pipeline",
-            ShaderModule::Quad,
-            64,
-            create_blend_state(device)?,
-        )?;
+    pub fn new(device: &ID3D11Device, shaders: &PipelineShaders) -> Result<Self> {
+        let shadow_pipeline = PipelineState::new(device, "shadow_pipeline", &shaders.shadow, 4)?;
+        let quad_pipeline = PipelineState::new(device, "quad_pipeline", &shaders.quad, 64)?;
         let path_rasterization_pipeline = PipelineState::new(
             device,
             "path_rasterization_pipeline",
-            ShaderModule::PathRasterization,
+            &shaders.path_rasterization,
             32,
-            create_blend_state_for_path_rasterization(device)?,
         )?;
-        let path_sprite_pipeline = PipelineState::new(
-            device,
-            "path_sprite_pipeline",
-            ShaderModule::PathSprite,
-            4,
-            create_blend_state_for_path_sprite(device)?,
-        )?;
-        let underline_pipeline = PipelineState::new(
-            device,
-            "underline_pipeline",
-            ShaderModule::Underline,
-            4,
-            create_blend_state(device)?,
-        )?;
+        let path_sprite_pipeline =
+            PipelineState::new(device, "path_sprite_pipeline", &shaders.path_sprite, 4)?;
+        let underline_pipeline =
+            PipelineState::new(device, "underline_pipeline", &shaders.underline, 4)?;
         let mono_sprites = PipelineState::new(
             device,
             "monochrome_sprite_pipeline",
-            ShaderModule::MonochromeSprite,
+            &shaders.mono_sprites,
             512,
-            create_blend_state(device)?,
         )?;
         let subpixel_sprites = PipelineState::new(
             device,
             "subpixel_sprite_pipeline",
-            ShaderModule::SubpixelSprite,
+            &shaders.subpixel_sprites,
             512,
-            create_blend_state_for_subpixel_rendering(device)?,
         )?;
         let poly_sprites = PipelineState::new(
             device,
             "polychrome_sprite_pipeline",
-            ShaderModule::PolychromeSprite,
+            &shaders.poly_sprites,
             16,
-            create_blend_state(device)?,
         )?;
 
         Ok(Self {
@@ -1282,32 +1392,25 @@ struct PipelineState<T> {
 }
 
 impl<T> PipelineState<T> {
+    // Arke: the shaders and blend state come from the device's `ShaderCache`; only the instance
+    // buffer is this window's.
     fn new(
         device: &ID3D11Device,
         label: &'static str,
-        shader_module: ShaderModule,
+        shader: &PipelineShader,
         buffer_size: usize,
-        blend_state: ID3D11BlendState,
     ) -> Result<Self> {
-        let vertex = {
-            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
-            create_vertex_shader(device, raw_shader.as_bytes())?
-        };
-        let fragment = {
-            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
-            create_fragment_shader(device, raw_shader.as_bytes())?
-        };
         let buffer = create_buffer(device, std::mem::size_of::<T>(), buffer_size)?;
         let view = create_buffer_view(device, &buffer)?;
 
         Ok(PipelineState {
             label,
-            vertex,
-            fragment,
+            vertex: shader.vertex.clone(),
+            fragment: shader.fragment.clone(),
             buffer,
             buffer_size,
             view,
-            blend_state,
+            blend_state: shader.blend_state.clone(),
             _marker: std::marker::PhantomData,
         })
     }
@@ -2235,5 +2338,93 @@ mod dxgi {
             (number >> 16) & 0xFFFF,
             number & 0xFFFF
         ))
+    }
+}
+
+// Arke: the renderer's shaders are made once per device and shared by every window.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::HMODULE;
+
+    /// A software device, so the tests don't depend on this machine's GPU.
+    fn warp_device() -> Option<ID3D11Device> {
+        let mut device: Option<ID3D11Device> = None;
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+        }
+        .ok()?;
+        device
+    }
+
+    #[test]
+    fn windows_of_one_device_share_its_shaders() -> Result<()> {
+        let Some(device) = warp_device() else {
+            return Ok(());
+        };
+        let cache = ShaderCache::default();
+        let first = cache.get(&device)?;
+        let second = cache.get(&device)?;
+        assert_eq!(first.quad.vertex, second.quad.vertex);
+        assert_eq!(first.poly_sprites.fragment, second.poly_sprites.fragment);
+
+        // Two windows: the same shaders and blend states, but instance buffers of their own.
+        let one = DirectXRenderPipelines::new(&device, &first)?;
+        let other = DirectXRenderPipelines::new(&device, &second)?;
+        assert_eq!(one.quad_pipeline.vertex, other.quad_pipeline.vertex);
+        assert_eq!(
+            one.subpixel_sprites.blend_state,
+            other.subpixel_sprites.blend_state
+        );
+        assert_ne!(one.quad_pipeline.buffer, other.quad_pipeline.buffer);
+        Ok(())
+    }
+
+    #[test]
+    fn new_devices_start_with_an_empty_cache() -> Result<()> {
+        let Some(device) = warp_device() else {
+            return Ok(());
+        };
+        let lost = ShaderCache::default();
+        let recovered = ShaderCache::default();
+        let before = lost.get(&device)?;
+        assert!(recovered.lock().is_none());
+        let after = recovered.get(&device)?;
+        assert_ne!(before.quad.vertex, after.quad.vertex);
+        Ok(())
+    }
+
+    #[test]
+    fn a_window_waits_for_shaders_being_made_elsewhere() -> Result<()> {
+        let Some(device) = warp_device() else {
+            return Ok(());
+        };
+        let cache = std::sync::Arc::new(ShaderCache::default());
+        let (held, holding) = std::sync::mpsc::channel();
+        let maker = {
+            let cache = std::sync::Arc::clone(&cache);
+            let device = device.clone();
+            std::thread::spawn(move || -> Result<ID3D11VertexShader> {
+                let mut cached = cache.lock();
+                held.send(()).ok();
+                Ok(ShaderCache::fill(&mut cached, &device)?.quad.vertex.clone())
+            })
+        };
+        holding.recv()?;
+        // Blocks until the other thread has filled the cache, then takes its shaders.
+        let shaders = cache.get(&device)?;
+        let made_elsewhere = maker.join().expect("the shader thread panicked")?;
+        assert_eq!(shaders.quad.vertex, made_elsewhere);
+        Ok(())
     }
 }

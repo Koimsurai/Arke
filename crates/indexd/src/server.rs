@@ -306,14 +306,22 @@ impl Server {
                 Request::Follow { root, from } => {
                     return self.follow(&mut io, &root, from, &privacy);
                 }
-                Request::List { root } => return self.list(&mut io, &root, &privacy),
+                Request::List { root, background } => {
+                    return self.list(&mut io, &root, background, &privacy);
+                }
                 Request::Hello { .. } => return Ok(()),
             }
         }
     }
 
     /// Reads the MFT and sends the whole root listing in batches, minus other users' profiles.
-    fn list(&self, io: &mut PipeIo, root: &Path, privacy: &Privacy) -> io::Result<()> {
+    fn list(
+        &self,
+        io: &mut PipeIo,
+        root: &Path,
+        background: bool,
+        privacy: &Privacy,
+    ) -> io::Result<()> {
         let _one = self.listing.lock();
         // A client that has given up (Arke counted the folder another way, the window closed)
         // closes the pipe: stop reading instead of reading the whole MFT for nobody.
@@ -325,14 +333,15 @@ impl Server {
             checked.set(Instant::now());
             io.client_gone()
         };
-        let mut table = match crate::mft::read_volume(root, &|| self.stopped() || gone()) {
-            Ok(table) => table,
-            Err(why) => {
-                log::info!("{}: cannot list the MFT: {why}", root.display());
-                // The protocol carries the reason as text.
-                return write_reply(io, &Reply::ListFailed(why.to_string()));
-            }
-        };
+        let mut table =
+            match crate::mft::read_volume(root, background, &|| self.stopped() || gone()) {
+                Ok(table) => table,
+                Err(why) => {
+                    log::info!("{}: cannot list the MFT: {why}", root.display());
+                    // The protocol carries the reason as text.
+                    return write_reply(io, &Reply::ListFailed(why.to_string()));
+                }
+            };
         let mut batch = Vec::with_capacity(LIST_BATCH);
         let mut bytes = 0usize;
         let mut failed = None;

@@ -456,6 +456,9 @@ pub(crate) struct HomePage {
     /// The recent file picked with one click (a double click opens it, or one click with
     /// "Single click to open").
     selected_recent: Option<PathBuf>,
+    /// The recent file the last click launched: a later click of the same quick run on it must
+    /// not launch it again (single-click mode, where every click opens).
+    launched_recent: Option<PathBuf>,
     /// The card (favorite, drive, network location) picked with one click, by its id.
     selected_card: Option<String>,
     focus: FocusHandle,
@@ -588,6 +591,7 @@ impl HomePage {
             names: crate::place_names::Names::new(),
             rename: None,
             selected_recent: None,
+            launched_recent: None,
             selected_card: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -833,7 +837,15 @@ impl HomePage {
                         })),
                 )
                 .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                    let launched = this.launched_recent.take();
                     if recent_click_opens(crate::prefs::single_click(), e.click_count()) {
+                        // The file is still under the cursor after it launched: the next click
+                        // of the run (counts 2, 3...) would launch it again.
+                        if e.click_count() > 1 && launched.as_ref() == Some(&open) {
+                            this.launched_recent = launched;
+                            return;
+                        }
+                        this.launched_recent = Some(open.clone());
                         this.open_file(open.clone(), cx);
                     } else {
                         this.selected_recent = Some(open.clone());

@@ -37,7 +37,8 @@
 //!   event. Hints that arrive together make one relist ([`Relist`]). The shell notifications are
 //!   subscribed to before the window is registered, so a client that fills the folder and says
 //!   so as soon as it hears of the visit can't be missed, and the folder is listed once more after
-//!   the navigation was announced, for a client that fills it inside the navigation events;
+//!   the navigation was announced and after each later listener was told of it, for a client
+//!   that fills it inside the navigation events;
 //! - a "Show in folder" caller (`SHOpenFolderAndSelectItems`) that found this registration selects
 //!   items: they are selected in the pane, as they would be in File Explorer.
 //!
@@ -142,13 +143,18 @@ enum Trigger {
     /// were told): a client may have filled the folder inside the navigation events, after Arke
     /// listed it. Once per visit.
     Navigated,
+    /// A listener that subscribed later was told of the navigation and its calls returned: it may
+    /// have filled the folder inside them (a client subscribes only once it hears the window was
+    /// registered, after `OnNavigate`). Once per round of telling.
+    Told,
 }
 
 /// The hints the explorer acts on. Drop one here to stop acting on it.
-const RELIST_ON: [Trigger; 3] = [
+const RELIST_ON: [Trigger; 4] = [
     Trigger::ShellNotify,
     Trigger::ListenerRefresh,
     Trigger::Navigated,
+    Trigger::Told,
 ];
 
 /// Shell notifications that mean items came, went or were renamed. `SHCNE_UPDATEITEM` (an
@@ -1500,6 +1506,8 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
     }
     if !due.is_empty() {
         state.running.set_calling(false);
+        // Their event calls are back: what they filled inside them is there now.
+        state.hint(Trigger::Told);
     }
 }
 
@@ -2059,6 +2067,58 @@ mod tests {
         assert!(summary.contains("Navigated x1"), "{summary}");
         assert!(summary.contains("ShellNotify x1"), "{summary}");
         assert!(summary.ends_with("-> relists 2"), "{summary}");
+    }
+
+    /// A listener told after the navigation's relist (it subscribed later) makes one more; told
+    /// together with a shell notification, one for both. Telling nobody hints nothing.
+    #[test]
+    fn a_listener_told_later_relists_again() {
+        let count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&count);
+        let state = State {
+            hwnd: HWND::default(),
+            messages: HWND::default(),
+            dir: PathBuf::from(r"C:\cloud"),
+            folder: Pidl(std::ptr::null_mut()),
+            url: String::new(),
+            name: String::new(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(move || counted.set(counted.get() + 1)),
+            select: Box::new(|_| {}),
+            running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
+        };
+        state.navigated();
+        state.flush_relist();
+        assert_eq!(count.get(), 1);
+        state.hint(Trigger::Told);
+        state.flush_relist();
+        assert_eq!(count.get(), 2, "Navigated, then a later Told: two relists");
+
+        state.hint(Trigger::Told);
+        state.hint(Trigger::ShellNotify);
+        state.flush_relist();
+        state.flush_relist();
+        assert_eq!(count.get(), 3, "Told and ShellNotify together: one relist");
+
+        // SAFETY: this test thread's apartment, for the browser object below.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let state = Rc::new(state);
+        let view: IShellView = com::View {
+            state: Rc::clone(&state),
+        }
+        .into();
+        let browser: IDispatch = view.cast().unwrap();
+        tell_listeners(&state, &browser);
+        state.flush_relist();
+        assert_eq!(count.get(), 3, "no listener to tell");
+        let summary = state.journal.borrow().summary();
+        assert!(summary.contains("Told x2"), "{summary}");
+        assert!(summary.ends_with("-> relists 3"), "{summary}");
     }
 
     /// The log block: notifications by kind with the first one's paths, calls by method.

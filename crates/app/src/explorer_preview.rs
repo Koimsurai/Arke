@@ -60,6 +60,7 @@ mod office;
 #[path = "explorer_pdf_pane.rs"]
 mod pdf_pane;
 use crate::a11y::A11yExt as _;
+use crate::press_guard::is_double_click;
 use crate::shell::Shell;
 use crate::theme::{self, UiFont as _};
 pub(crate) use pdf_pane::RenderedPage;
@@ -2103,7 +2104,7 @@ impl Explorer {
             )
             .on_drag(edge, |_, _, _, cx| cx.new(|_| super::details::ColumnDragView))
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                if e.click_count() < 2 {
+                if !is_double_click(e.click_count()) {
                     return;
                 }
                 if this.columns_active() && !in_gap {
@@ -2222,7 +2223,7 @@ impl Explorer {
             })
             .on_drag_move(cx.listener(Self::drag_preview_split))
             .on_click(cx.listener(|this, e: &ClickEvent, _, cx| {
-                if e.click_count() < 2 {
+                if !is_double_click(e.click_count()) {
                     return;
                 }
                 crate::prefs::set_preview_split(None);

@@ -24,6 +24,14 @@ use gpui::{
     MouseUpEvent, NavigationDirection, PlatformInput, Point, Styled, Window, canvas, point, px,
 };
 
+/// Whether a press with this click count is a double-click. GPUI keeps counting while clicks
+/// stay inside the double-click time and distance (3, 4, 5...), but Windows sends
+/// `WM_LBUTTONDBLCLK` only for the 2nd, 4th, 6th... click of such a run; the 3rd, 5th... are
+/// plain clicks, as in File Explorer.
+pub(crate) const fn is_double_click(count: usize) -> bool {
+    count >= 2 && count.is_multiple_of(2)
+}
+
 /// Buttons a window saw pressed and not yet released.
 #[derive(Clone, Default)]
 pub(crate) struct HeldButtons(Rc<Cell<u8>>);

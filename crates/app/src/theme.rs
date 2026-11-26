@@ -48,81 +48,25 @@ pub(crate) fn set_font(name: &str) -> bool {
     true
 }
 
-/// Simplified Chinese UI fonts, UI variant first.
-const SIMPLIFIED_FONTS: [&str; 2] = ["Microsoft YaHei UI", "Microsoft YaHei"];
-/// Traditional Chinese UI fonts, UI variant first.
-const TRADITIONAL_FONTS: [&str; 2] = ["Microsoft JhengHei UI", "Microsoft JhengHei"];
-
-/// Japanese UI fonts, UI variant first.
-const JAPANESE_FONTS: [&str; 2] = ["Yu Gothic UI", "Meiryo UI"];
-
-/// CJK fallback fonts, in order, for a UI language (`zh-CN`, `zh-TW`, `ja`, `en`) on a system whose
-/// display locale maps to `system` (same names).
-///
-/// The default UI font has no CJK glyphs, so DirectWrite picks one by the *system* locale. Han
-/// characters shared by both scripts (U+7F29 in 「压缩」) would then come out in Traditional
-/// shapes on a zh-TW system even with a Simplified UI, or the reverse. Naming the fonts in the UI
-/// language's order fixes that. Japanese has its own fonts, since the same characters take
-/// Chinese shapes on a Chinese system. English follows the system, which is what the file names on it
-/// are most likely written in; other systems get no list and keep DirectWrite's own choice.
-pub(crate) fn cjk_fallbacks(ui: &str, system: &str) -> Vec<&'static str> {
-    if ui == "ja" {
-        return JAPANESE_FONTS.to_vec();
-    }
-    let simplified_first = match (ui, system) {
-        ("zh-CN", _) | ("en", "zh-CN") => true,
-        ("zh-TW", _) | ("en", "zh-TW") => false,
-        _ => return Vec::new(),
-    };
-    let (first, second) = if simplified_first {
-        (SIMPLIFIED_FONTS, TRADITIONAL_FONTS)
-    } else {
-        (TRADITIONAL_FONTS, SIMPLIFIED_FONTS)
-    };
-    first.into_iter().chain(second).collect()
-}
-
-/// Fallback fonts for the UI font under the current UI language (see [`set_ui_language`]).
-static FALLBACKS: parking_lot::RwLock<Option<gpui::FontFallbacks>> = parking_lot::RwLock::new(None);
-
-/// Orders the CJK fallbacks for UI language `ui` (system locale `system`). Returns whether they
-/// changed; windows must repaint then. A custom font from settings stays the primary family, only
-/// the fallbacks behind it change.
-pub(crate) fn set_ui_language(ui: &str, system: &str) -> bool {
-    let fonts = cjk_fallbacks(ui, system);
-    let wanted = (!fonts.is_empty())
-        .then(|| gpui::FontFallbacks::from_fonts(fonts.into_iter().map(str::to_owned).collect()));
-    let mut fallbacks = FALLBACKS.write();
-    if *fallbacks == wanted {
-        return false;
-    }
-    *fallbacks = wanted;
-    drop(fallbacks);
-    LOOK.fetch_add(1, Ordering::Relaxed);
-    true
-}
-
-/// Sets the UI font and its language-ordered fallbacks on an element; children inherit both.
-/// Use this instead of `font_family(ui_font())`, which would lose the fallbacks.
+/// Sets the UI font on an element; children inherit it. Characters it lacks fall back to
+/// DirectWrite's choice for the UI language (see `win::text_locale`).
 pub(crate) trait UiFont: gpui::Styled + Sized {
     #[must_use]
     fn ui_font(mut self) -> Self {
-        let style = self.text_style();
-        style.font_family = Some(ui_font());
-        style.font_fallbacks.clone_from(&FALLBACKS.read());
+        self.text_style().font_family = Some(ui_font());
         self
     }
 }
 
 impl<T: gpui::Styled> UiFont for T {}
 
-/// The UI font with its language fallbacks at `weight`, for measuring text before layout (the
-/// breadcrumbs decide what to collapse from it).
+/// The UI font at `weight`, for measuring text before layout (the breadcrumbs decide what to
+/// collapse from it).
 pub(crate) fn ui_font_at(weight: FontWeight) -> gpui::Font {
     gpui::Font {
         family: ui_font(),
         features: gpui::FontFeatures::default(),
-        fallbacks: FALLBACKS.read().clone(),
+        fallbacks: None,
         weight,
         style: gpui::FontStyle::Normal,
     }
@@ -1764,58 +1708,15 @@ mod tests {
         }
     }
 
-    /// CJK fallbacks follow the UI language, whatever the system is set to; English follows the
-    /// system.
+    /// The UI font sets only the family; fallbacks are left to DirectWrite.
     #[test]
-    fn cjk_fallbacks_follow_the_ui_language() {
-        let simplified = [
-            "Microsoft YaHei UI",
-            "Microsoft YaHei",
-            "Microsoft JhengHei UI",
-            "Microsoft JhengHei",
-        ];
-        let traditional = [
-            "Microsoft JhengHei UI",
-            "Microsoft JhengHei",
-            "Microsoft YaHei UI",
-            "Microsoft YaHei",
-        ];
-        for system in ["zh-TW", "zh-CN", "en"] {
-            assert_eq!(cjk_fallbacks("zh-CN", system), simplified, "{system}");
-            assert_eq!(cjk_fallbacks("zh-TW", system), traditional, "{system}");
-        }
-        assert_eq!(cjk_fallbacks("en", "zh-CN"), simplified);
-        assert_eq!(cjk_fallbacks("en", "zh-TW"), traditional);
-        assert_eq!(cjk_fallbacks("ja", "zh-TW"), ["Yu Gothic UI", "Meiryo UI"]);
-        // Elsewhere DirectWrite keeps choosing by the system locale (Korean, ...).
-        assert!(cjk_fallbacks("en", "en").is_empty());
-        assert!(cjk_fallbacks("de", "zh-CN").is_empty());
-    }
-
-    /// The UI font keeps a custom family and only takes the fallbacks.
-    #[test]
-    fn ui_font_carries_language_fallbacks() {
+    fn ui_font_sets_the_family_only() {
         use gpui::Styled as _;
-        set_ui_language("zh-CN", "zh-TW");
         let mut el = gpui::div().ui_font();
         let style = el.text_style();
-        assert_eq!(style.font_family.as_deref(), Some(DEFAULT_UI_FONT));
-        let fallbacks = style.font_fallbacks.clone();
-        assert_eq!(
-            fallbacks.as_ref().map(|f| f.fallback_list()[0].as_str()),
-            Some("Microsoft YaHei UI")
-        );
-        set_ui_language("zh-TW", "zh-TW");
-        let mut el = gpui::div().ui_font();
-        assert_eq!(
-            el.text_style()
-                .font_fallbacks
-                .as_ref()
-                .map(|f| f.fallback_list()[0].as_str()),
-            Some("Microsoft JhengHei UI")
-        );
-        set_ui_language("en", "en");
-        assert!(gpui::div().ui_font().text_style().font_fallbacks.is_none());
+        assert_eq!(style.font_family, Some(ui_font()));
+        assert!(style.font_fallbacks.is_none());
+        assert!(ui_font_at(FontWeight::NORMAL).fallbacks.is_none());
     }
 
     /// File type glyphs stay visible on their paper, small (tinted) and large, in either theme.

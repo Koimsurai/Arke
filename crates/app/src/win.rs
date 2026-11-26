@@ -484,16 +484,42 @@ pub(crate) fn ui_locale() -> String {
 }
 
 /// UI language Windows itself is set to (`zh-TW`, `zh-CN`, `ja`, `de`, `es`, `pt-BR` or `en`), ignoring `ARKE_LANG` and the
-/// Language setting. Decides which Chinese font English UI text falls back to.
+/// Language setting.
 pub(crate) fn system_locale() -> &'static str {
+    locale_for(&user_locale_name())
+}
+
+/// The user's locale name as Windows reports it (`zh-HK`, `en-US`), empty if it can't be read.
+pub(crate) fn user_locale_name() -> String {
     let mut buf = [0u16; 85];
     // SAFETY: buf is a valid out buffer (LOCALE_NAME_MAX_LENGTH = 85).
     let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
-    let name = usize::try_from(len)
+    usize::try_from(len)
         .ok()
         .filter(|&n| n > 0)
-        .map_or_default(|n| String::from_utf16_lossy(&buf[..n - 1]));
-    locale_for(&name)
+        .map_or_default(|n| String::from_utf16_lossy(&buf[..n - 1]))
+}
+
+/// Locale text is laid out in for UI language `ui` on a system whose user locale is `system`
+/// (as [`user_locale_name`] reports it), or `None` to keep the system's.
+///
+/// DirectWrite picks the font for characters the UI font lacks by this locale, and Han characters
+/// shared by Chinese, Japanese and Korean take its shapes (U+7F29 in 「压缩」 is drawn
+/// Traditional under `zh-TW`). A CJK UI language sets its own locale unless the system's is
+/// already of that language and script, which keeps its region (`zh-HK` for a Traditional UI on
+/// a Hong Kong system). Other UI languages keep the system's: the file names on it are most
+/// likely written in its language.
+pub(crate) fn text_locale(ui: &str, system: &str) -> Option<&'static str> {
+    let lower = system.to_ascii_lowercase();
+    let (own, same) = match ui {
+        "zh-TW" => ("zh-TW", locale_for(system) == "zh-TW"),
+        // A bare `zh` names no script, so it doesn't count as Simplified here.
+        "zh-CN" => ("zh-CN", locale_for(system) == "zh-CN" && lower != "zh"),
+        "ja" => ("ja-JP", is_language(&lower, "ja")),
+        "ko" => ("ko-KR", is_language(&lower, "ko")),
+        _ => return None,
+    };
+    (!same).then_some(own)
 }
 
 /// The temp folder under its long name. Some machines (CI runners) report it as 8.3 short names
@@ -2160,7 +2186,45 @@ fn split_command(line: &str) -> (&str, &str) {
 
 #[cfg(test)]
 mod locale_tests {
-    use super::locale_for;
+    use super::{locale_for, text_locale};
+
+    /// A CJK UI language lays text out in its own locale, unless the system's is already of that
+    /// language and script; other UI languages keep the system's.
+    #[test]
+    fn maps_ui_languages_to_text_locales() {
+        for system in ["en-US", "zh-CN", "ja-JP", "ko-KR", "de-DE", ""] {
+            assert_eq!(text_locale("zh-TW", system), Some("zh-TW"), "{system}");
+        }
+        for system in ["en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR", "zh", ""] {
+            assert_eq!(text_locale("zh-CN", system), Some("zh-CN"), "{system}");
+        }
+        for system in ["en-US", "zh-TW", "zh-CN", "ko-KR", "jav"] {
+            assert_eq!(text_locale("ja", system), Some("ja-JP"), "{system}");
+        }
+        for system in ["en-US", "zh-TW", "zh-CN", "ja-JP", "kok-IN"] {
+            assert_eq!(text_locale("ko", system), Some("ko-KR"), "{system}");
+        }
+        // The system's own region stays (Hong Kong, Macao, Singapore glyph conventions).
+        for (ui, system) in [
+            ("zh-TW", "zh-TW"),
+            ("zh-TW", "zh-HK"),
+            ("zh-TW", "zh-MO"),
+            ("zh-TW", "zh-Hant-TW"),
+            ("zh-CN", "zh-CN"),
+            ("zh-CN", "zh-SG"),
+            ("zh-CN", "zh-Hans-HK"),
+            ("ja", "ja-JP"),
+            ("ja", "JA"),
+            ("ko", "ko-KR"),
+        ] {
+            assert_eq!(text_locale(ui, system), None, "{ui} on {system}");
+        }
+        for ui in ["en", "de", "es", "pt-BR", ""] {
+            for system in ["en-US", "zh-TW", "zh-CN", "ja-JP", "ko-KR"] {
+                assert_eq!(text_locale(ui, system), None, "{ui} on {system}");
+            }
+        }
+    }
 
     #[test]
     fn maps_system_locales_to_ui_languages() {

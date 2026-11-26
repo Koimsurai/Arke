@@ -1521,11 +1521,16 @@ fn start_type_names(cx: &mut App) {
     .detach();
 }
 
-/// Switches strings and the CJK font fallback order to `locale`, repainting if either changed.
+/// Switches strings and the text locale to `locale`, repainting if either changed.
 fn apply_language(locale: &str, cx: &mut App) {
-    // Fonts follow the UI language so Simplified text gets Simplified glyphs on a Traditional
-    // system and vice versa (see `theme::cjk_fallbacks`).
-    let mut changed = theme::set_ui_language(locale, win::system_locale());
+    // Text is laid out in the UI language's locale, so DirectWrite falls back to fonts of that
+    // language: Simplified text gets Simplified glyphs on a Traditional system and vice versa
+    // (see `win::text_locale`).
+    let text_locale = win::text_locale(locale, &win::user_locale_name());
+    let mut changed = cx.text_system().set_locale(text_locale);
+    if changed {
+        theme::touch();
+    }
     if *rust_i18n::locale() != *locale {
         rust_i18n::set_locale(locale);
         arke_core::format::language_changed();

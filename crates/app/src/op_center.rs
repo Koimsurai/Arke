@@ -226,9 +226,9 @@ impl Job {
                     },
                 )
             }
-            JobState::Running if self.done_items() == 0 => match self.fraction() {
+            JobState::Running if self.done_items() == 0 => {
                 // One large file: no item finished yet, but there is progress.
-                Some(f) => {
+                if let Some(f) = self.fraction() {
                     let percent = (f * 100.).floor() as u32;
                     let mut parts = vec![t!("ops.state_percent", percent = percent).into_owned()];
                     parts.extend(self.speed_text());
@@ -238,11 +238,11 @@ impl Job {
                         );
                     }
                     parts.join(&t!("ops.separator"))
-                }
-                // The copy engine counted the items but reports nothing until one finishes (a
-                // big folder going to the Recycle Bin is a single item): say how many. A total
-                // of bytes isn't a count (a file dragged out of a zip, before any arrived).
-                None => {
+                } else {
+                    // The copy engine counted the items but reports nothing until one finishes
+                    // (a big folder going to the Recycle Bin is a single item): say how many. A
+                    // total of bytes isn't a count (a file dragged out of a zip, before any
+                    // arrived).
                     let total = self.progress.work_total.load(Ordering::Relaxed);
                     if total == 0 || self.progress.work_in_bytes.load(Ordering::Relaxed) {
                         t!("ops.state_preparing").into_owned()
@@ -254,7 +254,7 @@ impl Job {
                         .into_owned()
                     }
                 }
-            },
+            }
             JobState::Running => {
                 let mut parts = vec![tn!("ops.state_running", items).into_owned()];
                 if let Some(speed) = self.speed_text() {

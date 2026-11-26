@@ -2,8 +2,8 @@
 //! each with a header row.
 //!
 //! - Date modified uses relative buckets (today, yesterday, earlier this week, ...), then years.
-//!   Size uses the same buckets as Windows. Name groups by first letter. Folders kept apart (first
-//!   when ascending, last when descending) get their own section; sorted by a date, or mixed with
+//!   Size uses the same buckets as Windows. Name groups by first letter. Folders kept apart (always
+//!   first) get their own section; sorted by a date, or mixed with
 //!   files, folders go into the section of their date like any file.
 //! - Grouping by the sort column means sections are already contiguous, so one linear pass is
 //!   enough (a few ms for tens of thousands of items). Cached by (list, sort, today).

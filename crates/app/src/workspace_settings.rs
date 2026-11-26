@@ -36,6 +36,9 @@ use crate::settings::{
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
 
+#[path = "workspace_settings_search.rs"]
+mod search;
+
 actions!(
     workspace,
     [
@@ -134,6 +137,8 @@ pub(super) struct SettingsPage {
     slider_drag: std::rc::Rc<std::cell::Cell<bool>>,
     /// "Remove Arke from this PC" confirmation, when open.
     pub(super) uninstall: Option<super::uninstall_page::UninstallAsk>,
+    /// The search box in the title bar and what it found (#400).
+    search: search::Search,
 }
 
 /// The background image card's thumbnail.
@@ -296,6 +301,15 @@ fn stop_handle(cx: &mut App) -> FocusHandle {
     cx.focus_handle().tab_index(0).tab_stop(true)
 }
 
+/// Index of each category, in the order `settings_sections` lists them; the search notes each
+/// page's rows under its index (#400).
+const APPEARANCE: usize = 0;
+const FILES: usize = 1;
+const SORTING: usize = 2;
+const STARTUP: usize = 3;
+const SEARCH: usize = 4;
+const CONTEXT_MENU: usize = 5;
+const SHORTCUTS: usize = 6;
 /// Index of the About category; the "Import Arke settings" context menu opens it directly.
 pub(super) const ABOUT: usize = 7;
 
@@ -366,6 +380,7 @@ impl Workspace {
         });
         let route_sub = cx.subscribe_in(&route_input, window, Self::on_route_input);
         let shortcuts = super::shortcuts::Page::new(window, cx);
+        let search = search::Search::new(window, cx);
         // List fonts in the background; there can be hundreds.
         let text_system = Arc::clone(cx.text_system());
         cx.spawn(async move |this, cx| {
@@ -421,6 +436,7 @@ impl Workspace {
             backdrop: None,
             slider_drag: std::rc::Rc::default(),
             uninstall: None,
+            search,
         });
         self.sync_backdrop_thumb(cx);
         cx.notify();
@@ -820,14 +836,17 @@ impl Workspace {
     }
 
     /// Arrow keys move and Enter selects while a dropdown is open.
-    fn dropdown_move(&mut self, down: bool, cx: &mut Context<Self>) {
+    fn dropdown_move(&mut self, down: bool, window: &Window, cx: &mut Context<Self>) {
         let Some(dropdown) = self
             .settings_panel
             .as_mut()
             .and_then(|p| p.dropdown.as_mut())
         else {
-            // No list open: the arrow is for the control with the focus (#322).
-            cx.propagate();
+            // No list open: the arrow moves through the search's hits, or is for the control with
+            // the focus (#322).
+            if !self.settings_search_move(down, window, cx) {
+                cx.propagate();
+            }
             return;
         };
         let last = dropdown.options.len().saturating_sub(1);
@@ -845,12 +864,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn dropdown_up(&mut self, _: &DropdownUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.dropdown_move(false, cx);
+    fn dropdown_up(&mut self, _: &DropdownUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.dropdown_move(false, window, cx);
     }
 
-    fn dropdown_down(&mut self, _: &DropdownDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.dropdown_move(true, cx);
+    fn dropdown_down(&mut self, _: &DropdownDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.dropdown_move(true, window, cx);
     }
 
     fn dropdown_accept(&mut self, _: &DropdownAccept, _: &mut Window, cx: &mut Context<Self>) {
@@ -914,6 +933,7 @@ impl Workspace {
             "end" => last,
             _ => return false,
         };
+        page.search.left(cx);
         if to != page.category {
             page.category = to;
             page.dropdown = None;
@@ -1010,9 +1030,15 @@ impl Workspace {
             .as_ref()
             .filter(|p| self.shows(&p.owner))?;
         let s = SettingsStore::global(cx).read(cx).settings.clone();
-        let top_bar = Self::render_settings_top_bar(window, cx);
+        let search_box = search::search_box(&page.search, window, cx);
+        let top_bar = Self::render_settings_top_bar(search_box, window, cx);
         let compact = self.last_viewport_width < nav_compact_below();
+        // While a query is typed every row notes itself as it is built, and the hits show in
+        // place of the page.
+        let query = page.search.query(cx);
+        page.search.begin(&query, page.category);
         let mut categories = Self::settings_sections(&s, page, window, cx);
+        let found = search::finish();
         let selected = page.category.min(categories.len().saturating_sub(1));
         let count = categories.len();
         // The ring goes on the selected category rather than round the whole column.
@@ -1101,21 +1127,52 @@ impl Workspace {
                                 )
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(page) = &mut this.settings_panel
-                                    && page.category != ix
-                                {
-                                    page.category = ix;
-                                    page.dropdown = None;
-                                    LAST_TOGGLE.set(None);
-                                    // Start at the top when switching category.
-                                    page.scroll.set_offset(point(px(0.), px(0.)));
+                                if let Some(page) = &mut this.settings_panel {
+                                    page.search.left(cx);
+                                    if page.category != ix {
+                                        page.category = ix;
+                                        page.dropdown = None;
+                                        LAST_TOGGLE.set(None);
+                                        // Start at the top when switching category.
+                                        page.scroll.set_offset(point(px(0.), px(0.)));
+                                    }
                                 }
                                 cx.notify();
                             }))
                     })
                     .collect::<Vec<_>>(),
             );
-        let (title, _, cards) = categories.swap_remove(selected);
+        let content: Vec<AnyElement> = if query.is_empty() {
+            let (title, _, cards) = categories.swap_remove(selected);
+            let title = SharedString::from(title.into_owned());
+            vec![
+                div()
+                    .id("settings-page-title")
+                    .a11y(gpui::Role::Heading, title.clone())
+                    .aria_level(1)
+                    .pb(theme::s_4())
+                    .text_size(theme::fs_24())
+                    .font_weight(theme::FW_STRONG)
+                    .child(title)
+                    .into_any_element(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::s_8())
+                    .children(cards)
+                    .with_animation(("settings-category-body", selected), anim(), |el, t| {
+                        crate::motion::slide_in(el, t, 0., ANIM_SLIDE)
+                    })
+                    .into_any_element(),
+            ]
+        } else {
+            let pages: Vec<(SharedString, Icon)> = categories
+                .iter()
+                .map(|(title, icon, _)| (SharedString::from(title.to_string()), *icon))
+                .collect();
+            let focused = page.search.input.focus_handle(cx).is_focused(window);
+            vec![page.search.results(&query, found, &pages, focused, cx)]
+        };
         let body = div()
             .id("settings-scroll")
             .size_full()
@@ -1139,29 +1196,7 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(theme::s_4())
-                            .child({
-                                let title = SharedString::from(title.into_owned());
-                                div()
-                                    .id("settings-page-title")
-                                    .a11y(gpui::Role::Heading, title.clone())
-                                    .aria_level(1)
-                                    .pb(theme::s_4())
-                                    .text_size(theme::fs_24())
-                                    .font_weight(theme::FW_STRONG)
-                                    .child(title)
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(theme::s_8())
-                                    .children(cards)
-                                    .with_animation(
-                                        ("settings-category-body", selected),
-                                        anim(),
-                                        |el, t| crate::motion::slide_in(el, t, 0., ANIM_SLIDE),
-                                    ),
-                            ),
+                            .children(content),
                     ),
             );
         Some(
@@ -1177,6 +1212,7 @@ impl Workspace {
                 .on_action(cx.listener(Self::next_control))
                 .on_action(cx.listener(Self::prev_control))
                 .on_action(cx.listener(Self::other_area))
+                .on_action(cx.listener(Self::focus_settings_search))
                 .flex_1()
                 .min_w_0()
                 .h_full()
@@ -1215,8 +1251,9 @@ impl Workspace {
         )
     }
 
-    /// Settings top bar: title, drag area, caption buttons.
+    /// Settings top bar: title, the search box between drag areas, caption buttons.
     fn render_settings_top_bar(
+        search_box: AnyElement,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1247,6 +1284,8 @@ impl Workspace {
                     ),
             )
             .child(super::drag_area("settings-drag", cx).flex_1().h_full())
+            .child(search_box)
+            .child(super::drag_area("settings-drag-end", cx).flex_1().h_full())
             .child(crate::explorer::caption_buttons(window))
     }
 
@@ -1278,6 +1317,8 @@ impl Workspace {
             let focused = focus.is_focused(window);
             (focused, focused && window.last_input_was_keyboard())
         };
+        // Each page notes its rows under its own index, for the search (#400).
+        search::page(APPEARANCE);
         let material = theme::mica_available().then(|| {
             card(
                 Icon::Window,
@@ -1394,6 +1435,7 @@ impl Workspace {
                 ),
             ),
         ]);
+        search::page(FILES);
         let files = vec![
             card(
                 Icon::EyeOff,
@@ -1531,6 +1573,7 @@ impl Workspace {
                 ))
                 .into_any_element(),
         ];
+        search::page(SORTING);
         let sorting = vec![
             wrapping_card(
                 "columns-card",
@@ -1656,6 +1699,7 @@ impl Workspace {
             ),
             folder_views_card(s, cx),
         ];
+        search::page(STARTUP);
         let mut startup = vec![
             card(
                 Icon::WindowStart,
@@ -1747,8 +1791,11 @@ impl Workspace {
         // The installer made its own Start menu shortcut; Arke's would only duplicate it.
         if crate::update::installed_by_setup() {
             startup.remove(0);
+            search::forget(&t!("settings.start_menu"));
         }
+        search::page(SEARCH);
         let search = search_page(s, cx);
+        search::page(ABOUT);
         let route_focused = page.route_input.focus_handle(cx).is_focused(window);
         let update = super::update_page::update_card(
             s,
@@ -1814,11 +1861,14 @@ impl Workspace {
             super::uninstall_page::uninstall_card(cx),
         ];
         // Theme and colors first (material is Windows 11 only); the last five are layout.
+        // The groups' headings are noted too.
+        search::page(APPEARANCE);
         let layout = appearance.split_off(appearance.len() - 5);
         let appearance = vec![
             group(Some(t!("settings.group_colors")), appearance),
             group(Some(t!("settings.group_layout")), layout),
         ];
+        search::page(FILES);
         let mut files = regroup(
             files,
             &[
@@ -1831,6 +1881,7 @@ impl Workspace {
             ],
         );
         files.push(group(Some(t!("settings.group_file_ops")), file_ops_rows(s)));
+        search::page(SORTING);
         let sorting = regroup(
             sorting,
             &[
@@ -1839,24 +1890,22 @@ impl Workspace {
                 (Some(t!("settings.group_details")), &[0, 1, 2, 6, 7]),
             ],
         );
+        search::page(STARTUP);
         let startup = regroup(startup, &[(None, &[3, 4, 5, 6, 7, 0, 1, 2])]);
+        search::page(ABOUT);
         let about = vec![about_header(), group(None, about)];
+        search::page(CONTEXT_MENU);
+        let menu = super::menuprefs::menu_section(s, &page.app_input, window, cx);
+        search::page(SHORTCUTS);
+        let shortcuts = super::shortcuts::section(&s.shortcuts, &page.shortcuts, window, cx);
         vec![
             (t!("settings.appearance"), Icon::Theme, appearance),
             (t!("settings.files"), Icon::FileExt, files),
             (t!("settings.sorting"), Icon::Sort, sorting),
             (t!("settings.startup"), Icon::Power, startup),
             (t!("settings.search"), Icon::Search, search),
-            (
-                t!("settings.context_menu"),
-                Icon::Menu,
-                super::menuprefs::menu_section(s, &page.app_input, window, cx),
-            ),
-            (
-                t!("settings.shortcuts"),
-                Icon::Bolt,
-                super::shortcuts::section(&s.shortcuts, &page.shortcuts, window, cx),
-            ),
+            (t!("settings.context_menu"), Icon::Menu, menu),
+            (t!("settings.shortcuts"), Icon::Bolt, shortcuts),
             (t!("settings.about"), Icon::Info, about),
         ]
     }
@@ -1963,10 +2012,11 @@ fn single_click_card(s: &Settings) -> AnyElement {
 
 /// A line under a card's title row for one more of its choices: lined up with the title, without
 /// an icon of its own.
-fn sub_row(title: Cow<'static, str>, control: AnyElement) -> gpui::Div {
+fn sub_row(title: Cow<'static, str>, control: AnyElement) -> AnyElement {
     let a11y = crate::a11y::active();
     let title = SharedString::from(title.into_owned());
-    div()
+    let lit = search::note(&title, None);
+    let row = div()
         .pl(theme::s_16() + icon_col() + theme::s_16())
         .pr(theme::s_16())
         .pb(theme::s_12())
@@ -1976,7 +2026,8 @@ fn sub_row(title: Cow<'static, str>, control: AnyElement) -> gpui::Div {
         .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
         .child(row_text(title, None))
         .child(div().flex_none().child(control))
-        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()));
+    search::light(row, lit)
 }
 
 /// Tabs: where they go, then lines under it for one tab per folder, what Ctrl+T and closing the
@@ -2296,8 +2347,12 @@ pub(super) fn group_with(
             .when(ix > 0, |d| d.border_t_1().border_color(theme::line()))
             .child(row)
     });
+    let title = title.map(|t| SharedString::from(t.into_owned()));
+    let lit = title
+        .as_ref()
+        .and_then(|t| search::note(t, note.as_deref()));
     let heading = (title.is_some() || note.is_some()).then(|| {
-        div()
+        let heading = div()
             .pt(theme::s_16())
             .pb(theme::s_8())
             .px(theme::s_4())
@@ -2305,7 +2360,6 @@ pub(super) fn group_with(
             .flex_col()
             .gap(theme::s_2())
             .children(title.map(|t| {
-                let t = SharedString::from(t.into_owned());
                 // A heading screen readers can jump between (#322).
                 div()
                     .id(SharedString::from(format!("group-title-{t}")))
@@ -2321,7 +2375,8 @@ pub(super) fn group_with(
                     .text_size(theme::fs_12())
                     .text_color(theme::text_subtle())
                     .child(SharedString::from(n.into_owned()))
-            }))
+            }));
+        search::light(heading, lit)
     });
     div()
         .flex()
@@ -2373,7 +2428,8 @@ fn row_with(
 ) -> AnyElement {
     // The switch or dropdown on the right is named after the row for screen readers.
     let a11y = crate::a11y::active();
-    div()
+    let lit = search::note(&title, spoken.as_deref());
+    let row = div()
         .min_h(card_min_h())
         .px(theme::s_16())
         .py(theme::s_12())
@@ -2386,8 +2442,8 @@ fn row_with(
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc))
         .child(div().flex_none().child(control))
-        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
-        .into_any_element()
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()));
+    search::light(row, lit)
 }
 
 /// A row whose control is a set of chips: they wrap to more lines as the row narrows, and the
@@ -2403,7 +2459,8 @@ fn wrapping_card(
     let title = title.into();
     let a11y = crate::a11y::active();
     let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
-    div()
+    let lit = search::note(&title, spoken.as_deref());
+    let row = div()
         .debug_selector(move || id.to_owned())
         .min_h(card_min_h())
         .px(theme::s_16())
@@ -2417,8 +2474,8 @@ fn wrapping_card(
         .child(row_icon(icon, theme::text_muted()))
         .child(row_text(title, desc.map(row_desc)).min_w(gpui::relative(1. / 3.)))
         .child(div().min_w_0().child(control))
-        .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
-        .into_any_element()
+        .when(a11y, |d| d.child(crate::a11y::end_label_scope()));
+    search::light(row, lit)
 }
 
 /// Icon centered in the fixed icon column.
@@ -2767,7 +2824,8 @@ pub(super) fn expander(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let title: SharedString = title.into();
-    div()
+    let lit = search::note(&title, Some(&*desc));
+    let card = div()
         .flex()
         .flex_col()
         .child(
@@ -2833,8 +2891,8 @@ pub(super) fn expander(
                         crate::motion::slide_in(el, t, 0., -ANIM_SLIDE)
                     }),
             )
-        })
-        .into_any_element()
+        });
+    search::light(card, lit)
 }
 
 /// Right side of an expander header: the current value as text.

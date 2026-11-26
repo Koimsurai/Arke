@@ -116,6 +116,12 @@ fn reveal(bounds: Bounds<Pixels>, window: &mut Window, _: &mut App) {
     if !REVEAL.replace(false) {
         return;
     }
+    show(bounds, window);
+}
+
+/// Scrolls the page being drawn just enough to show `bounds` (also a row a Settings search went
+/// to, #400). Call while the page is drawn (prepaint).
+pub(crate) fn show(bounds: Bounds<Pixels>, window: &mut Window) {
     let Some(scroll) = VIEW.with_borrow(Clone::clone) else {
         return;
     };

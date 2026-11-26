@@ -2790,7 +2790,7 @@ fn bad_format() -> io::Error {
 /// at once (the work splits at the marks and into runs of nodes).
 fn validate(nodes: &[Node], pool: &[u8], marks: &[u32], name_count: usize) -> io::Result<()> {
     // Below a few MB, starting threads costs more than they save.
-    let threads = if pool.len() + nodes.len() * size_of::<Node>() < 4 * 1024 * 1024 {
+    let threads = if pool.len() + size_of_val(nodes) < 4 * 1024 * 1024 {
         1
     } else {
         std::thread::available_parallelism()
@@ -2826,7 +2826,7 @@ fn validate_on(
     }
     let bad = AtomicBool::new(false);
     // Where entries start: a bit per 4-byte slot of the pool.
-    let starts: Vec<AtomicU64> = (0..(pool.len() / 4).div_ceil(64) + 1)
+    let starts: Vec<AtomicU64> = (0..=(pool.len() / 4).div_ceil(64))
         .map(|_| AtomicU64::new(0))
         .collect();
     let next = AtomicUsize::new(0);

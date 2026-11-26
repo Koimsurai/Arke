@@ -82,7 +82,8 @@ pub trait Fs: Send + Sync + 'static {
         let bytes = self.read(path, OPEN_IN_MEMORY_MAX)?;
         Ok(Box::new(io::Cursor::new(bytes)))
     }
-    /// Opens for one read from start to end (checksums). The real file system on Windows hints
+    /// Opens for one read from start to end (checksums, content search). The real file system on
+    /// Windows returns the file unbuffered (callers read in large blocks) and hints
     /// the cache manager to read ahead; everything else is [`Fs::open`].
     fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
         self.open(path)

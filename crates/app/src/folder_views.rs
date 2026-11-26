@@ -657,6 +657,7 @@ mod tests {
         assert!(tight.peek(Path::new(r"D:\Music")).is_some());
 
         // No file yet: empty, not an error
+        std::fs::remove_file(&path).unwrap();
         assert!(load(&path).unwrap().is_empty());
     }
 

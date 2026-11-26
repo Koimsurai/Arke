@@ -837,13 +837,10 @@ pub(crate) mod tests {
         // A file created a little later wakes the wait long before its timeout.
         let tmp_dir = tempfile::tempdir().unwrap();
         let file = tmp_dir.path().join("wait.txt");
-        let writer = {
-            let file = file.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(100));
-                std::fs::write(&file, b"x").unwrap();
-            })
-        };
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::write(&file, b"x").unwrap();
+        });
         let started = Instant::now();
         let woke = waiter.wait(journal, next, Duration::from_secs(10), stop.0);
         writer.join().unwrap();

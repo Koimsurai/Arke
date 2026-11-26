@@ -110,7 +110,7 @@ enum Prefilter {
     /// ASCII case-insensitive (SIMD prefilters inside the automaton).
     Ascii(Box<AhoCorasick>),
     /// Exact bytes: the needle has no letter whose case could differ.
-    Literal(memmem::Finder<'static>),
+    Literal(Box<memmem::Finder<'static>>),
 }
 
 impl Prefilter {
@@ -125,7 +125,9 @@ impl Prefilter {
                 .build([needle])
                 .map_or(Self::Unfiltered, |ac| Self::Ascii(Box::new(ac)));
         }
-        Self::Literal(memmem::Finder::new(needle.as_bytes()).into_owned())
+        Self::Literal(Box::new(
+            memmem::Finder::new(needle.as_bytes()).into_owned(),
+        ))
     }
 
     /// Offset of the first candidate in `hay`; for [`Self::Unfiltered`] the start.
@@ -246,14 +248,14 @@ impl ContentMatcher {
                 return Ok(None);
             };
             let last = n == 0;
-            let decoded = if let Some(valid) = decoder.valid_utf8(chunk, last) {
+            let block_text = if let Some(valid) = decoder.valid_utf8(chunk, last) {
                 valid
             } else {
                 scratch.clear();
                 decoder.decode(chunk, last, &mut scratch);
                 scratch.as_str()
             };
-            if let Some(hit) = lines.feed(decoded) {
+            if let Some(hit) = lines.feed(block_text) {
                 return Ok(Some(hit));
             }
             if n == 0 {

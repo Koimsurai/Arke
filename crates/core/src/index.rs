@@ -7,8 +7,9 @@
 //!   mtime and attributes without opening files). Symlinks and junctions are not followed
 //!   (cycles), and a few system folders are skipped.
 //! - **Storage**: each node holds its parent with the flags in its top bits and a name offset in
-//!   a string pool (8 bytes); size, mtime and a char mask live in separate columns (16 bytes).
-//!   The pool is one big string holding each distinct name once, after its length.
+//!   a string pool (8 bytes); size, mtime and a char mask live in separate columns (12 bytes;
+//!   sizes of 4 GiB - 1 and more in a small table of their own). The pool is one big string
+//!   holding each distinct name once, after its length.
 //! - **Query** (syntax in [`crate::index_query`]): threads take small chunks (faster cores do
 //!   more), apply filters, then reject impossible names with the char mask (a single AND, no
 //!   name read), and hand the rest to nucleo; per-thread top results are merged. Full paths

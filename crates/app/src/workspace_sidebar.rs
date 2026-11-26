@@ -2386,7 +2386,7 @@ impl Workspace {
             .flex_col()
             .gap(theme::s_2());
         // The line between the places and the tabs dragged (now, or before): the places take
-        // that height, as far as the tabs' three rows leave room.
+        // at most that height, as far as the tabs' three rows leave room.
         let split = (!horizontal).then(|| self.places_split(cx)).flatten();
         let places_area = scrolling(
             places,
@@ -2396,10 +2396,10 @@ impl Workspace {
                 .debug_selector(|| "sidebar-places-frame".to_owned())
                 // With tabs on top there is nothing below, so the places fill the sidebar.
                 .when(horizontal, gpui::Styled::flex_1)
-                .when(!horizontal && split.is_none(), gpui::Styled::flex_initial)
-                .when_some(split, |d, height| {
-                    d.flex_basis(height).flex_grow(0.).flex_shrink(1.)
-                })
+                .when(!horizontal, gpui::Styled::flex_initial)
+                // The dragged height is an upper limit: shorter places leave the line right under
+                // them (#453), and it goes back down as they grow. Style only, one layout pass.
+                .when_some(split, |d, height| d.max_h(height))
                 // At least two rows stay visible, so it's clear this part scrolls too.
                 .min_h(theme::h_row_side() * 2.),
         )

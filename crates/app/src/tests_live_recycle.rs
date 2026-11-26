@@ -67,7 +67,7 @@ fn delete_and_undo_through_arke_with_the_switch_on_and_off(cx: &mut TestAppConte
     let sb = Sandbox::new("arke");
     fill(&sb, "big", FILES);
     fill(&sb, "small", 50);
-    let start = sb.0;
+    let start = sb.0.clone();
     let services = Services {
         fs: Arc::new(RealFs),
         shell: Arc::new(WinShell),

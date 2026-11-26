@@ -392,10 +392,11 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Room a current column row takes besides its name: the list's padding and gutter, the row's
-    /// padding, the checkbox and icon, and the folder arrow (`chevron`).
+    /// Room a current column row takes besides its name: the list's left inset, right padding and
+    /// gutter, the row's padding, the checkbox and icon, and the folder arrow (`chevron`).
     fn current_row_chrome(&self, chevron: bool) -> Pixels {
-        let mut w = theme::s_8() * 2.
+        let mut w = theme::list_inset()
+            + theme::s_8()
             + layout::list_gutter()
             + layout::row_pad_l()
             + layout::row_pad_r()

@@ -237,7 +237,9 @@ impl Explorer {
             .flex()
             .flex_none()
             .h(theme::h_header())
-            .mx(theme::s_8())
+            // Over the rows: from the list's left inset to its right padding.
+            .ml(theme::list_inset())
+            .mr(theme::s_8())
             .overflow_hidden()
             // Thin line between header and list to give the columns structure.
             .border_b_1()
@@ -730,7 +732,7 @@ impl Explorer {
     #[cfg(test)]
     pub(crate) fn header_columns_for_test(&self) -> Vec<(Col, Pixels, Pixels)> {
         let mut left = self.list_bounds.get().left()
-            + theme::s_8()
+            + theme::list_inset()
             + layout::row_pad_l()
             + self.header_x.get().unwrap_or_default();
         std::iter::once(Col::Name)
@@ -777,6 +779,7 @@ fn drop_side(moved: Col, target: Col) -> Option<bool> {
 /// Small muted text in a fixed-width column.
 fn text_cell(col: Col, text: impl Into<SharedString>) -> AnyElement {
     div()
+        .debug_selector(move || format!("cell-{}", col.key()))
         .w(crate::prefs::width(col))
         .flex_none()
         .truncate()

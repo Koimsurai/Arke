@@ -20,8 +20,8 @@ use std::sync::Arc;
 use arke_core::index_query::{self as iq, NameMatch};
 use arke_core::{SearchHit, SearchSort};
 use gpui::{
-    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollStrategy, Window, div,
-    prelude::*, px, svg,
+    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollStrategy, SharedString,
+    Window, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -325,19 +325,19 @@ impl Explorer {
         }
         let open = kind == SimilarRow::Open;
         // Under the cursor it looks and reads like a hit under the cursor (search rows show the
-        // cursor as the selection).
+        // cursor as the selection), with the same inset highlight.
         let on = self.similar_focused();
+        let group = SharedString::from(format!("similar-row-{row}"));
+        let wash = super::view::row_wash(row, &group, on, false, focused, None);
         shell
             .a11y_item(row, on, on, || t!("list.similar").into_owned())
             .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
                 this.toggle_similar(cx);
             })
+            .group(group)
+            .relative()
             .cursor_pointer()
-            .rounded(theme::r_8())
-            .border_1()
-            .border_color(theme::clear())
-            .when(on, |d| d.bg(theme::list_selection(focused)))
-            .when(!on, |d| d.hover(|s| s.bg(theme::wash())))
+            .child(wash)
             .child(
                 div()
                     .size(theme::tree_chevron())

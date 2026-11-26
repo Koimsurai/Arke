@@ -53,6 +53,8 @@ mod idle;
 mod integration_api;
 #[path = "tests_lazy_submenus.rs"]
 mod lazy_submenus;
+#[path = "tests_list_inset.rs"]
+mod list_inset;
 #[cfg(windows)]
 #[path = "tests_live_preview_save.rs"]
 mod live_preview_save;
@@ -5162,8 +5164,8 @@ fn details_rows_end_with_their_columns(cx: &mut TestAppContext) {
             v.row_width_for_test().expect("Details rows have a width"),
         )
     });
-    // Rows start after the list's side padding.
-    let end = bounds.left() + px(8.) + width;
+    // Rows start after the list's left inset.
+    let end = bounds.left() + crate::theme::list_inset() + width;
     assert!(
         end < bounds.right() - px(100.),
         "a wide window leaves blank space after the columns: {end:?} in {bounds:?}"
@@ -7223,8 +7225,8 @@ fn item_checkboxes_add_to_the_selection(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
-    // The box is at the far left: list padding 8 + row padding 12 + half the box 8.
-    let box_x = bounds.left() + px(28.);
+    // The box is at the far left: the list's left inset, row padding 12 + half the box 8.
+    let box_x = bounds.left() + crate::theme::list_inset() + px(20.);
     let at_row = |r: f32| point(box_x, bounds.top() + row * (r + 0.5));
     cx.simulate_click(at_row(1.), Modifiers::none());
     cx.simulate_click(at_row(3.), Modifiers::none());

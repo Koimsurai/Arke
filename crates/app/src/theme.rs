@@ -271,6 +271,29 @@ pub(crate) fn r_paper() -> Pixels {
     by_room(6., 8., 12.)
 }
 
+// --- The file list's insets (#448) ---
+
+/// Space between the paper's left edge (the sidebar or the split divider) and the list's rows,
+/// their highlight and the column header: about File Explorer's (15 px at standard spacing), so a
+/// marquee started beside the sidebar starts in empty space rather than on a file.
+pub(crate) fn list_inset() -> Pixels {
+    by_room(12., 16., 20.)
+}
+
+/// How far a list row's highlight (selection, hover, cursor ring, drop target) stays inside the
+/// row at its top and bottom, so neighbouring highlighted rows show a gap, as in File Explorer
+/// (2 px there). The whole row is still the pointer target. A compact row (21 px) keeps 1 px: 2 px
+/// would leave a 17 px highlight, shorter than the name's line.
+pub(crate) fn row_wash_inset() -> Pixels {
+    by_room(1., 2., 2.)
+}
+
+/// Corner radius of a list row's highlight. A compact row's highlight (19 px) takes a smaller one
+/// so its sides keep some straight edge, as a standard row's do.
+pub(crate) fn r_row() -> Pixels {
+    by_room(6., 8., 8.)
+}
+
 static SIDEBAR_COLLAPSED: AtomicBool = AtomicBool::new(false);
 
 /// Collapses or expands the sidebar. Returns whether it changed; windows must repaint if so.

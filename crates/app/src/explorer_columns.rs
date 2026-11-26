@@ -121,6 +121,22 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Asks for the side column's icons (queued after the middle column's) and returns the ones
+    /// already loaded.
+    fn side_images(
+        &mut self,
+        keys: &[Option<MediaKey>],
+        cx: &mut Context<Self>,
+    ) -> Vec<Option<Arc<gpui::RenderImage>>> {
+        let view = cx.entity_id();
+        let wanted: Vec<MediaKey> = keys.iter().flatten().cloned().collect();
+        self.media.update(cx, |m, cx| m.want_side(view, wanted, cx));
+        let media = self.media.read(cx);
+        keys.iter()
+            .map(|k| k.as_ref().and_then(|k| media.get(k)))
+            .collect()
+    }
+
     fn render_parent_rows(
         &mut self,
         range: Range<usize>,
@@ -147,14 +163,7 @@ impl Explorer {
                         .and_then(|e| MediaKey::for_entry(&dir, e, false))
                 })
                 .collect();
-            let view = cx.entity_id();
-            self.media.update(cx, |m, cx| {
-                m.want_side(view, keys.iter().flatten().cloned().collect(), cx);
-            });
-            let media = self.media.read(cx);
-            keys.iter()
-                .map(|k| k.as_ref().and_then(|k| media.get(k)))
-                .collect()
+            self.side_images(&keys, cx)
         } else {
             Vec::new()
         };

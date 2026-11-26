@@ -225,11 +225,20 @@ fn dragging_a_tab_onto_the_pin_zone_pins_it(cx: &mut TestAppContext) {
         "no pin zone without a drag"
     );
 
-    // Dragging c: the New tab row becomes the pin zone; dropping there pins c at the top.
+    // Dragging c: the Tabs heading becomes the pin zone, and the tabs stay where they were;
+    // dropping there pins c at the top.
+    let header = cx.debug_bounds("tabs-header").expect("the Tabs heading");
+    let tab_a = cx.debug_bounds("tab-0").expect("tab a");
     start_tab_drag(cx, 2);
     let zone = cx
         .debug_bounds("tab-pin-drop")
         .expect("dragging an unpinned tab should show the pin zone");
+    assert!(
+        zone.top() >= header.top() - gpui::px(0.5)
+            && zone.bottom() <= header.bottom() + gpui::px(0.5),
+        "the zone takes the heading's place: {zone:?} in {header:?}"
+    );
+    assert_eq!(cx.debug_bounds("tab-0"), Some(tab_a), "the tabs don't move");
     drop_tab_at(cx, zone.center());
     ws.update(cx, |ws, cx| {
         assert_eq!(ws.pinned_for_test(), [true, false, false]);
@@ -257,6 +266,40 @@ fn dragging_a_tab_onto_the_pin_zone_pins_it(cx: &mut TestAppContext) {
             [Some(p(r"C:\a")), Some(p(r"C:\c")), Some(p(r"C:\b"))]
         );
     });
+}
+
+/// #301: New tab is a "+" in the Tabs heading, so the tabs start right under the heading, in the
+/// row New tab took; the "+" opens Ctrl+T's "go to" as the row did.
+#[gpui::test]
+fn new_tab_sits_in_the_tabs_heading(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton};
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    cx.run_until_parked();
+    let header = cx.debug_bounds("tabs-header").expect("the Tabs heading");
+    let plus = cx.debug_bounds("new-tab").expect("the New tab button");
+    assert!(
+        plus.top() >= header.top() - gpui::px(0.5)
+            && plus.bottom() <= header.bottom() + gpui::px(0.5),
+        "{plus:?} in {header:?}"
+    );
+    let tab = cx.debug_bounds("tab-0").expect("the tab");
+    assert!(
+        tab.top() - header.bottom() < crate::theme::h_row_side(),
+        "no row between the heading and the tabs: {tab:?} under {header:?}"
+    );
+
+    assert!(ws.update(cx, |ws, _| ws.palette.is_none()));
+    cx.simulate_mouse_down(plus.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(plus.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        ws.update(cx, |ws, _| ws.palette.is_some()),
+        "the + opens the go-to box"
+    );
 }
 
 #[gpui::test]

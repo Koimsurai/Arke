@@ -6,8 +6,9 @@
 //! - **Build**: several background threads walk directories (`Fs::read_dir` returns name, size,
 //!   mtime and attributes without opening files). Symlinks and junctions are not followed
 //!   (cycles), and a few system folders are skipped.
-//! - **Storage**: each node holds its parent, name offset in a string pool and flags (12 bytes);
-//!   size, mtime and a char mask live in separate columns (16 bytes). Names are one big string.
+//! - **Storage**: each node holds its parent with the flags in its top bits and a name offset in
+//!   a string pool (8 bytes); size, mtime and a char mask live in separate columns (16 bytes).
+//!   The pool is one big string holding each distinct name once, after its length.
 //! - **Query** (syntax in [`crate::index_query`]): threads take small chunks (faster cores do
 //!   more), apply filters, then reject impossible names with the char mask (a single AND, no
 //!   name read), and hand the rest to nucleo; per-thread top results are merged. Full paths
@@ -143,7 +144,7 @@ pub fn is_named_build_dir(name_lower: &str) -> bool {
 // are).
 #[cfg(target_endian = "big")]
 compile_error!("index files are little-endian");
-const _: () = assert!(size_of::<Node>() == 12 && align_of::<Node>() == 4);
+const _: () = assert!(size_of::<Node>() == 8 && align_of::<Node>() == 4);
 
 /// Name hash (FNV-1a; only finds candidate duplicates, contents are compared afterwards).
 fn name_hash(name: &str) -> u64 {
@@ -152,20 +153,103 @@ fn name_hash(name: &str) -> u64 {
     })
 }
 
-/// File format magic (a version mismatch fails to load and we just rebuild).
-const MAGIC: &[u8; 8] = b"ARKEIDX6";
+/// File format magic (a version mismatch fails to load and we just rebuild). 7: 8-byte nodes
+/// with the flags in the parent's top bits, length-prefixed names.
+const MAGIC: &[u8; 8] = b"ARKEIDX7";
 /// Items taken per chunk when querying.
 const CHUNK: usize = 16 * 1024;
+/// Bits of a node's parent id; the flags take the 4 above.
+const PARENT_BITS: u32 = 28;
+/// A stored parent of all ones is a root ([`NO_PARENT`]).
+const PARENT_MASK: u32 = (1 << PARENT_BITS) - 1;
+/// Most items an index holds (ids below [`PARENT_MASK`]; about 268 million).
+const MAX_ITEMS: usize = PARENT_MASK as usize;
+/// Longest name the pool stores, in bytes (a file name is at most 765). A longer one is skipped.
+const NAME_MAX: usize = 0x3FFF;
+/// First prefix byte of a name of 127 bytes or more: two bytes of 7 bits each follow with its
+/// length. Shorter names take one byte, their length. Every prefix byte is ASCII, so the pool
+/// stays valid UTF-8.
+const LONG_NAME: u8 = 0x7F;
 
-/// Nodes on disk match the in-memory layout (12 bytes, little-endian), so the file can be mapped
+/// Nodes on disk match the in-memory layout (8 bytes, little-endian), so the file can be mapped
 /// directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 struct Node {
-    parent: u32,
-    name_start: u32,
-    name_len: u16,
-    flags: u8,
+    /// Parent id in the low [`PARENT_BITS`] ([`PARENT_MASK`] for a root), flags above.
+    up: u32,
+    /// Where the name's entry starts in the pool ([`name_entry`]); identical names share one.
+    name: u32,
+}
+
+impl Node {
+    /// `parent` is below [`PARENT_MASK`] or [`NO_PARENT`]; `flags` fit in 4 bits.
+    fn new(parent: u32, name: u32, flags: u8) -> Self {
+        let parent = if parent == NO_PARENT {
+            PARENT_MASK
+        } else {
+            parent & PARENT_MASK
+        };
+        Self {
+            up: parent | (u32::from(flags) << PARENT_BITS),
+            name,
+        }
+    }
+
+    /// Parent id, [`NO_PARENT`] for a root.
+    const fn parent(self) -> u32 {
+        match self.up & PARENT_MASK {
+            PARENT_MASK => NO_PARENT,
+            parent => parent,
+        }
+    }
+
+    const fn flags(self) -> u8 {
+        (self.up >> PARENT_BITS) as u8
+    }
+
+    fn add_flags(&mut self, flags: u8) {
+        self.up |= u32::from(flags) << PARENT_BITS;
+    }
+}
+
+/// The name whose pool entry starts at `at`: a length prefix (see [`LONG_NAME`]), then the name.
+/// `None` when the entry isn't well formed (only in a corrupt file, which [`validate`] rejects).
+/// The prefix sits right before the name, so this reads no other memory than the name itself.
+fn name_entry(pool: &str, at: u32) -> Option<&str> {
+    let at = at as usize;
+    let bytes = pool.as_bytes();
+    let (len, skip) = match *bytes.get(at)? {
+        n if n < LONG_NAME => (usize::from(n), 1),
+        LONG_NAME => {
+            let (low, high) = (*bytes.get(at + 1)?, *bytes.get(at + 2)?);
+            if low >= 0x80 || high >= 0x80 {
+                return None;
+            }
+            (usize::from(low) | (usize::from(high) << 7), 3)
+        }
+        _ => return None,
+    };
+    pool.get(at + skip..at + skip + len)
+}
+
+/// Appends `name`'s pool entry (length prefix, then the name). The caller checked it is at most
+/// [`NAME_MAX`] bytes.
+fn push_entry(names: &mut Names, name: &str) {
+    let len = name.len();
+    let mut prefix = [0u8; 3];
+    let used = if len < usize::from(LONG_NAME) {
+        prefix[0] = len as u8;
+        1
+    } else {
+        prefix = [LONG_NAME, (len & 0x7F) as u8, ((len >> 7) & 0x7F) as u8];
+        3
+    };
+    // All three are below 0x80 (ASCII), so this never fails.
+    if let Ok(prefix) = std::str::from_utf8(&prefix[..used]) {
+        names.push_str(prefix);
+    }
+    names.push_str(name);
 }
 
 /// One search hit.
@@ -482,7 +566,7 @@ impl<'a> Reuse<'a> {
         let n = old.nodes.len();
         let mut offsets = vec![0u32; n + 1];
         for node in old.nodes.iter() {
-            if let Some(slot) = offsets.get_mut(node.parent as usize + 1) {
+            if let Some(slot) = offsets.get_mut(node.parent() as usize + 1) {
                 *slot += 1;
             }
         }
@@ -492,7 +576,7 @@ impl<'a> Reuse<'a> {
         let mut fill = offsets.clone();
         let mut kids = vec![0u32; offsets[n] as usize];
         for (i, node) in old.nodes.iter().enumerate() {
-            if let Some(at) = fill.get_mut(node.parent as usize) {
+            if let Some(at) = fill.get_mut(node.parent() as usize) {
                 kids[*at as usize] = u32::try_from(i).unwrap_or(NO_PARENT);
                 *at += 1;
             }
@@ -519,7 +603,7 @@ impl<'a> Reuse<'a> {
         if let Some(was) = old
             .nodes
             .iter()
-            .position(|n| n.parent == NO_PARENT && old.name(n) == name)
+            .position(|n| n.parent() == NO_PARENT && old.name(n) == name)
         {
             self.old_of
                 .insert(id, u32::try_from(was).unwrap_or(NO_PARENT));
@@ -552,7 +636,7 @@ impl<'a> Reuse<'a> {
         let mtime = entry
             .modified
             .map_or(0, |t| u32::try_from(unix_secs(t)).unwrap_or(u32::MAX));
-        let walked = |n: &Node| n.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR;
+        let walked = |n: &Node| n.flags() & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR;
         let kids = self.children(was);
         entry.kind == EntryKind::Dir
             && entry.attributes & ATTR_REPARSE_POINT == 0
@@ -580,13 +664,17 @@ impl<'a> Reuse<'a> {
             for &c in self.children(was) {
                 let node = old.nodes[c as usize];
                 let i = c as usize;
-                let Some(new) =
-                    index.push(id, old.name(&node), node.flags, old.sizes[i], old.mtimes[i])
-                else {
+                let Some(new) = index.push(
+                    id,
+                    old.name(&node),
+                    node.flags(),
+                    old.sizes[i],
+                    old.mtimes[i],
+                ) else {
                     continue;
                 };
                 copied += 1;
-                if node.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
+                if node.flags() & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
                     queue.push_back((c, new));
                 }
             }
@@ -601,7 +689,13 @@ impl<'a> Reuse<'a> {
         for &c in kids {
             let c = c as usize;
             let node = old.nodes[c];
-            index.push(id, old.name(&node), node.flags, old.sizes[c], old.mtimes[c]);
+            index.push(
+                id,
+                old.name(&node),
+                node.flags(),
+                old.sizes[c],
+                old.mtimes[c],
+            );
         }
         kids.len()
     }
@@ -722,50 +816,38 @@ impl Index {
     }
 
     fn name(&self, node: &Node) -> &str {
-        let start = node.name_start as usize;
-        &self.names[start..start + node.name_len as usize]
+        name_entry(&self.names, node.name).unwrap_or("")
     }
 
     fn push(&mut self, parent: u32, name: &str, flags: u8, size: u64, mtime: u32) -> Option<u32> {
-        let id = u32::try_from(self.nodes.len())
-            .ok()
-            .filter(|&id| id != NO_PARENT)?;
-        let name_len = u16::try_from(name.len()).ok()?;
+        if self.nodes.len() >= MAX_ITEMS || name.len() > NAME_MAX {
+            return None;
+        }
+        let id = u32::try_from(self.nodes.len()).ok()?;
         // Repeated names (`index.js`, `package.json`, `mod.rs`...) are stored once in the pool,
         // which saves more than half on a developer's disk.
         let name_start = if let Some(dedup) = self.dedup.as_mut() {
             let (nodes, names) = (&*self.nodes, &*self.names);
-            let name_of = |id: u32| {
-                let node = nodes[id as usize];
-                let start = node.name_start as usize;
-                &names[start..start + node.name_len as usize]
-            };
+            let name_of = |id: u32| name_entry(names, nodes[id as usize].name).unwrap_or("");
             match dedup.entry(
                 name_hash(name),
                 |&id| name_of(id) == name,
                 |&id| name_hash(name_of(id)),
             ) {
-                hashbrown::hash_table::Entry::Occupied(known) => {
-                    nodes[*known.get() as usize].name_start
-                }
+                hashbrown::hash_table::Entry::Occupied(known) => nodes[*known.get() as usize].name,
                 hashbrown::hash_table::Entry::Vacant(slot) => {
                     let start = u32::try_from(names.len()).ok()?;
                     slot.insert(id);
-                    self.names.push_str(name);
+                    push_entry(&mut self.names, name);
                     start
                 }
             }
         } else {
             let start = u32::try_from(self.names.len()).ok()?;
-            self.names.push_str(name);
+            push_entry(&mut self.names, name);
             start
         };
-        self.nodes.push(Node {
-            parent,
-            name_start,
-            name_len,
-            flags,
-        });
+        self.nodes.push(Node::new(parent, name_start, flags));
         self.sizes.push(size);
         self.mtimes.push(mtime);
         self.masks.push(char_mask(name));
@@ -778,10 +860,10 @@ impl Index {
         let mut cur = id;
         while let Some(node) = self.nodes.get(cur as usize) {
             parts.push(self.name(node));
-            if node.parent == NO_PARENT {
+            if node.parent() == NO_PARENT {
                 break;
             }
-            cur = node.parent;
+            cur = node.parent();
         }
         parts.iter().rev().collect()
     }
@@ -981,7 +1063,7 @@ impl Index {
                         entries
                     }
                     Listing::Failed => {
-                        if index.nodes[parent as usize].parent == NO_PARENT {
+                        if index.nodes[parent as usize].parent() == NO_PARENT {
                             progress.failed_roots.fetch_add(1, Ordering::Relaxed);
                         } else if let Some(reuse) = reuse.as_ref()
                             && let Some(was) = reuse.old_of(parent)
@@ -1145,7 +1227,7 @@ impl Index {
             if i % (64 * 1024) == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
             }
-            let Some(parent_rel) = folders.get(&node.parent) else {
+            let Some(parent_rel) = folders.get(&node.parent()) else {
                 continue;
             };
             let name = self.name(node);
@@ -1163,8 +1245,8 @@ impl Index {
             if removed.contains(&lower) {
                 continue;
             }
-            let indexed_dir = node.flags & FLAG_DIR != 0;
-            let mut kind = if node.flags & FLAG_LINK != 0 {
+            let indexed_dir = node.flags() & FLAG_DIR != 0;
+            let mut kind = if node.flags() & FLAG_LINK != 0 {
                 EntryKind::Link {
                     is_dir: indexed_dir,
                 }
@@ -1194,7 +1276,11 @@ impl Index {
                         seen.hidden,
                     )
                 }
-                None => (self.sizes[i], self.mtimes[i], node.flags & FLAG_HIDDEN != 0),
+                None => (
+                    self.sizes[i],
+                    self.mtimes[i],
+                    node.flags() & FLAG_HIDDEN != 0,
+                ),
             };
             if hidden && !show_hidden {
                 if track_hidden && kind != EntryKind::File {
@@ -1204,9 +1290,9 @@ impl Index {
             }
             let id = u32::try_from(i).ok()?;
             if kind == EntryKind::Dir {
-                if node.flags & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
+                if node.flags() & (FLAG_DIR | FLAG_LINK | FLAG_PRUNED) == FLAG_DIR {
                     folders.insert(id, rel.clone());
-                } else if node.flags & FLAG_PRUNED != 0 && !is_skipped_dir(&name.to_lowercase()) {
+                } else if node.flags() & FLAG_PRUNED != 0 && !is_skipped_dir(&name.to_lowercase()) {
                     // Not entered by the index (build folders, exclusions, hidden system
                     // folders), but a walk would find what's inside.
                     tree.unindexed.push(rel.clone());
@@ -1314,7 +1400,7 @@ impl Index {
                 Some(id) if descends_into(entry) && !build_dir && descend(id, entry) => id,
                 Some(id) => {
                     if entry.kind == EntryKind::Dir {
-                        self.nodes.owned()[id as usize].flags |= FLAG_PRUNED;
+                        self.nodes.owned()[id as usize].add_flags(FLAG_PRUNED);
                     }
                     NO_PARENT
                 }
@@ -1417,9 +1503,9 @@ impl Index {
                 return None;
             }
             let hit = if cur == NO_PARENT {
-                node.parent == NO_PARENT && self.name(node) == root_name
+                node.parent() == NO_PARENT && self.name(node) == root_name
             } else {
-                node.parent == cur
+                node.parent() == cur
                     && depth < rel.len()
                     && eq_ignore_case(self.name(node), &rel[depth])
             };
@@ -1434,7 +1520,7 @@ impl Index {
             }
         }
         let node = self.nodes.get(cur as usize)?;
-        (depth == rel.len() && node.flags & (FLAG_PRUNED | FLAG_LINK) == 0).then_some(cur)
+        (depth == rel.len() && node.flags() & (FLAG_PRUNED | FLAG_LINK) == 0).then_some(cur)
     }
 
     /// What the index holds directly inside each folder of `dirs`: (name, is a folder) per entry,
@@ -1499,21 +1585,21 @@ impl Index {
                 return Vec::new();
             }
             let name = self.name(node);
-            let step = if node.parent == NO_PARENT {
+            let step = if node.parent() == NO_PARENT {
                 root_steps.iter().find(|(n, _)| n == name).map(|&(_, s)| s)
             } else {
-                let p = node.parent as usize;
+                let p = node.parent() as usize;
                 if on_bits.get(p / 64).is_none_or(|w| w & (1 << (p % 64)) == 0) {
                     continue;
                 }
-                let Ok(at) = on.binary_search_by_key(&node.parent, |&(id, _)| id) else {
+                let Ok(at) = on.binary_search_by_key(&node.parent(), |&(id, _)| id) else {
                     continue;
                 };
                 let parent_step = on[at].1;
                 if let Some(target) = steps[parent_step].target
                     && let Some(list) = found[target].as_mut()
                 {
-                    list.push((name.to_owned(), node.flags & FLAG_DIR != 0));
+                    list.push((name.to_owned(), node.flags() & FLAG_DIR != 0));
                 }
                 steps[parent_step].next.get(&name.to_lowercase()).copied()
             };
@@ -1521,8 +1607,8 @@ impl Index {
                 continue;
             };
             if let Some(target) = steps[step].target
-                && node.flags & FLAG_DIR != 0
-                && node.flags & (FLAG_PRUNED | FLAG_LINK) == 0
+                && node.flags() & FLAG_DIR != 0
+                && node.flags() & (FLAG_PRUNED | FLAG_LINK) == 0
             {
                 found[target] = Some(Vec::new());
             }
@@ -1595,7 +1681,7 @@ impl Index {
             if i % (64 * 1024) == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
             }
-            let p = node.parent;
+            let p = node.parent();
             let (mut slot, trie_parent) = if p == target {
                 (NONE, Some(0))
             } else if p != NO_PARENT && p > target {
@@ -1619,7 +1705,7 @@ impl Index {
                 replaced = trie.nodes[c].added;
                 matched.insert(id, c);
             }
-            let flags = node.flags;
+            let flags = node.flags();
             let is_dir = flags & FLAG_DIR != 0;
             if flags & FLAG_LINK != 0 {
                 continue;
@@ -1718,25 +1804,24 @@ impl Index {
             }
             let id = u32::try_from(i).ok()?;
             let name = self.name(node);
-            let (parent, here) = if node.parent == NO_PARENT {
+            let (parent, here) = if node.parent() == NO_PARENT {
                 let root = self
                     .roots
                     .iter()
                     .position(|r| *r.to_string_lossy() == *name);
                 (NO_PARENT, root.map(|r| (r, 0)))
             } else {
-                let parent = new_id[node.parent as usize];
-                if parent == NO_PARENT || (!barren.is_empty() && barren.contains(&node.parent)) {
+                let parent = new_id[node.parent() as usize];
+                if parent == NO_PARENT || (!barren.is_empty() && barren.contains(&node.parent())) {
                     continue;
                 }
                 let here = on_trie
-                    .get(&node.parent)
+                    .get(&node.parent())
                     .and_then(|&(r, t)| tries[r].child(t, name).map(|c| (r, c)));
                 (parent, here)
             };
-            let (mut flags, mut size, mut mtime) = (node.flags, self.sizes[i], self.mtimes[i]);
-            let mut name_start = node.name_start;
-            let mut name_len = node.name_len;
+            let (mut flags, mut size, mut mtime) = (node.flags(), self.sizes[i], self.mtimes[i]);
+            let mut name_start = node.name;
             let mut mask = self.masks[i];
             let mut drop_children = false;
             if let Some((r, c)) = here.filter(|&(_, c)| c != 0) {
@@ -1752,21 +1837,18 @@ impl Index {
                         drop_children = was_dir && !seen.is_dir;
                         if t.name != name {
                             // Renamed in letter case only.
+                            if t.name.len() > NAME_MAX {
+                                return None;
+                            }
                             name_start = u32::try_from(out.names.len()).ok()?;
-                            name_len = u16::try_from(t.name.len()).ok()?;
-                            out.names.push_str(&t.name);
+                            push_entry(&mut out.names, &t.name);
                             mask = char_mask(&t.name);
                         }
                     }
                 }
             }
             let new = u32::try_from(out.nodes.len()).ok()?;
-            out.nodes.push(Node {
-                parent,
-                name_start,
-                name_len,
-                flags,
-            });
+            out.nodes.push(Node::new(parent, name_start, flags));
             out.sizes.push(size);
             out.mtimes.push(mtime);
             out.masks.push(mask);
@@ -1792,7 +1874,7 @@ impl Index {
                 }
                 let parent = placed[r][t.parent];
                 let parent_ok = parent != NO_PARENT
-                    && out.nodes[parent as usize].flags & (FLAG_DIR | FLAG_PRUNED | FLAG_LINK)
+                    && out.nodes[parent as usize].flags() & (FLAG_DIR | FLAG_PRUNED | FLAG_LINK)
                         == FLAG_DIR;
                 if !parent_ok {
                     // Under a folder that's gone: gone too. Otherwise its folder isn't indexed
@@ -1968,7 +2050,7 @@ impl Index {
             let Some(node) = self.nodes.get(id as usize) else {
                 continue;
             };
-            if !s.show_hidden && node.flags & FLAG_HIDDEN != 0 {
+            if !s.show_hidden && node.flags() & FLAG_HIDDEN != 0 {
                 continue;
             }
             // Char mask: a name missing a letter the query needs can't match, no need to read it.
@@ -1979,7 +2061,7 @@ impl Index {
             }
             let name = self.name(node);
             let mtime = self.mtimes[id as usize];
-            let is_dir = node.flags & FLAG_DIR != 0;
+            let is_dir = node.flags() & FLAG_DIR != 0;
             if query.has_filters()
                 && !query.accepts(name, is_dir, self.sizes[id as usize], i64::from(mtime))
             {
@@ -2008,7 +2090,8 @@ impl Index {
             {
                 continue;
             }
-            let rank = Rank::new(score, node.name_len, id);
+            // Names are at most NAME_MAX bytes, so this fits.
+            let rank = Rank::new(score, name.len() as u16, id);
             // Heap full and worse than the last: leave the heap alone (most matches stop here).
             if work.top.len() >= m.keep {
                 match work.top.peek() {
@@ -2047,7 +2130,7 @@ impl Index {
             }
             let node = &self.nodes[id as usize];
             if let Some(dp) = &dir_pattern {
-                let parent = node.parent;
+                let parent = node.parent();
                 let ok = *dir_ok.entry(parent).or_insert_with(|| {
                     parent != NO_PARENT && {
                         let dir = self.path_of(parent).to_string_lossy().into_owned();
@@ -2060,7 +2143,7 @@ impl Index {
                 }
             }
             if let Some(exact) = exact {
-                let parent = node.parent;
+                let parent = node.parent();
                 let is_exact = exact.name_matches(self.name(node), &mut matcher, &mut buf)
                     && *dir_exact.entry(parent).or_insert_with(|| {
                         parent != NO_PARENT && {
@@ -2080,7 +2163,7 @@ impl Index {
             }
             hits.push(IndexHit {
                 highlights: crate::filter::char_ranges_to_bytes(name, &mut indices),
-                is_dir: node.flags & FLAG_DIR != 0,
+                is_dir: node.flags() & FLAG_DIR != 0,
                 size: self.sizes[id as usize],
                 modified: to_system_time(self.mtimes[id as usize]),
                 path,
@@ -2093,9 +2176,9 @@ impl Index {
     // ───────────────────────── Persistence ─────────────────────────
 
     /// Writes to `w`. Format (little-endian): header (version, build time, roots, journal
-    /// positions, name length, item count), then each column contiguous and 8-aligned: names, nodes
-    /// (12 bytes, same as in-memory `Node`), sizes, mtimes, char masks. That lets [`Index::open`]
-    /// map the file without copying.
+    /// positions, name length, item count), then each column contiguous and 8-aligned: names
+    /// (each distinct one once, length-prefixed), nodes (8 bytes, same as in-memory `Node`), sizes,
+    /// mtimes, char masks. That lets [`Index::open`] map the file without copying.
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let mut w = Counting { w, pos: 0 };
         w.put(MAGIC)?;
@@ -2132,20 +2215,17 @@ impl Index {
         w.put(self.names.as_bytes())?;
         w.align()?;
         // Write in pieces instead of allocating hundreds of MB at once.
-        let mut buf = Vec::with_capacity(64 * 1024 * 12);
+        let mut buf = Vec::with_capacity(64 * 1024 * 8);
         let flush = |buf: &mut Vec<u8>, w: &mut Counting<_>, force: bool| -> io::Result<()> {
-            if force || buf.len() >= 64 * 1024 * 12 {
+            if force || buf.len() >= 64 * 1024 * 8 {
                 w.put(buf)?;
                 buf.clear();
             }
             Ok(())
         };
         for n in self.nodes.iter() {
-            buf.extend_from_slice(&n.parent.to_le_bytes());
-            buf.extend_from_slice(&n.name_start.to_le_bytes());
-            buf.extend_from_slice(&n.name_len.to_le_bytes());
-            buf.push(n.flags);
-            buf.push(0);
+            buf.extend_from_slice(&n.up.to_le_bytes());
+            buf.extend_from_slice(&n.name.to_le_bytes());
             flush(&mut buf, &mut w, false)?;
         }
         flush(&mut buf, &mut w, true)?;
@@ -2186,12 +2266,10 @@ impl Index {
         let mut mtimes = Vec::with_capacity(count);
         let mut masks = Vec::with_capacity(count);
         for i in 0..count {
-            let at = layout.nodes + i * 12;
+            let at = layout.nodes + i * 8;
             nodes.push(Node {
-                parent: le32(at),
-                name_start: le32(at + 4),
-                name_len: u16::from_le_bytes([bytes[at + 8], bytes[at + 9]]),
-                flags: bytes[at + 10],
+                up: le32(at),
+                name: le32(at + 4),
             });
             let at = layout.sizes + i * 8;
             let mut b = [0u8; 8];
@@ -2220,11 +2298,19 @@ impl Index {
     /// these pages and reread them from the file, with nothing going to the page file. The whole
     /// file is validated on open (ranges, encoding), so later reads stay in checked bounds.
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with(path, |_| {})
+    }
+
+    /// [`Index::open`] that first hands `ahead` the mapping, before validating it, so a thread
+    /// started there can read the file in with a few large reads ([`Readahead::run`]) while
+    /// validation and the first search would otherwise wait on it page by page.
+    pub fn open_with(path: &Path, ahead: impl FnOnce(Readahead)) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         // SAFETY: Read-only mapping. Only Arke writes this file, and a new index is always written
         // to the other file (see index_service), so the mapped one never changes underneath us.
         let map = Arc::new(unsafe { memmap2::Mmap::map(&file)? });
         let layout = Layout::parse(&map)?;
+        ahead(Readahead(Arc::clone(&map)));
         // The mapping starts on a page boundary and columns are 8-aligned, so typed slices are
         // aligned.
         let names = Names::Mapped {
@@ -2274,23 +2360,108 @@ impl Index {
             dedup: None,
         })
     }
+
+    /// Reads just the header of the saved file at `path` (its first page or so, whatever the
+    /// file's size): enough to tell whether it fits the current settings and which of two files is
+    /// newer. Checks the columns it announces fit in the file, but not their contents: that is
+    /// [`Index::open`]'s job, for the one file actually used.
+    pub fn read_header(path: &Path) -> io::Result<IndexHeader> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: Read-only mapping, as in `open`; only the header is read, and the mapping is gone
+        // before this returns.
+        let map = unsafe { memmap2::Mmap::map(&file)? };
+        let layout = Layout::parse(&map)?;
+        Ok(IndexHeader {
+            roots: layout.roots,
+            built_at: UNIX_EPOCH + Duration::from_secs(layout.built_at),
+            skipped_build_dirs: layout.skipped_build_dirs,
+            excluded_hash: layout.excluded_hash,
+        })
+    }
+}
+
+/// What a saved index file's header says ([`Index::read_header`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexHeader {
+    /// Root paths the index covers, in build order.
+    pub roots: Vec<PathBuf>,
+    /// When building it started.
+    pub built_at: SystemTime,
+    /// Whether build folders were skipped.
+    pub skipped_build_dirs: bool,
+    /// Exclusion list fingerprint ([`BuildRules::fingerprint`]).
+    pub excluded_hash: u32,
+}
+
+/// A mapped index file that can be read into memory ahead of use ([`Index::open_with`]). Keeps
+/// the mapping alive while it exists.
+pub struct Readahead(Arc<memmap2::Mmap>);
+
+impl Readahead {
+    /// Asks Windows to read the whole file into memory with a few large reads
+    /// (`PrefetchVirtualMemory`; the pages go to the file cache, not the working set), so the first
+    /// search doesn't wait on the disk one page at a time. Skipped when the file would take more
+    /// than a quarter of the free physical memory, where it would push out other programs' pages.
+    /// Returns whether it was done. Can take as long as reading the file: call it on a background
+    /// thread.
+    pub fn run(&self) -> bool {
+        read_ahead(&self.0)
+    }
+}
+
+/// Whether reading `len` bytes ahead is worth it with `available` bytes of physical memory free:
+/// only when that takes at most a quarter of it.
+const fn worth_reading_ahead(len: u64, available: u64) -> bool {
+    len <= available / 4
+}
+
+#[cfg(windows)]
+fn read_ahead(bytes: &[u8]) -> bool {
+    use windows::Win32::System::Memory::{PrefetchVirtualMemory, WIN32_MEMORY_RANGE_ENTRY};
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..MEMORYSTATUSEX::default()
+    };
+    // SAFETY: `status` is a MEMORYSTATUSEX with its size set, as the call requires.
+    if unsafe { GlobalMemoryStatusEx(&raw mut status) }.is_err()
+        || !worth_reading_ahead(bytes.len() as u64, status.ullAvailPhys)
+    {
+        return false;
+    }
+    let range = WIN32_MEMORY_RANGE_ENTRY {
+        VirtualAddress: bytes.as_ptr().cast_mut().cast(),
+        NumberOfBytes: bytes.len(),
+    };
+    // SAFETY: The range is exactly the live, read-only mapping `bytes` borrows; prefetching only
+    // reads its pages in and never writes them.
+    unsafe { PrefetchVirtualMemory(GetCurrentProcess(), &[range], 0) }.is_ok()
+}
+
+#[cfg(not(windows))]
+const fn read_ahead(_bytes: &[u8]) -> bool {
+    false
 }
 
 fn bad_format() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "index format")
 }
 
-/// Checks every node's parent and name range are in bounds (a corrupt file can't make queries go
+/// Checks every node's parent and name entry are in bounds (a corrupt file can't make queries go
 /// out of range).
 fn validate(nodes: &[Node], names: &str) -> io::Result<()> {
     let count = nodes.len();
+    if count > MAX_ITEMS {
+        return Err(bad_format());
+    }
     for node in nodes {
-        let start = node.name_start as usize;
-        let end = start + node.name_len as usize;
-        let parent_ok = node.parent == NO_PARENT || (node.parent as usize) < count;
-        let name_ok =
-            end <= names.len() && names.is_char_boundary(start) && names.is_char_boundary(end);
-        if !name_ok || !parent_ok {
+        let parent = node.parent();
+        let parent_ok = parent == NO_PARENT || (parent as usize) < count;
+        if !parent_ok || name_entry(names, node.name).is_none() {
             return Err(bad_format());
         }
     }
@@ -2377,7 +2548,7 @@ impl Layout {
         let mut sections = [0usize; 5];
         let sizes_of = [
             Some(names_len),
-            count.checked_mul(12),
+            count.checked_mul(8),
             count.checked_mul(8),
             count.checked_mul(4),
             count.checked_mul(4),
@@ -2488,7 +2659,8 @@ impl<T: Copy> Column<T> {
     }
 }
 
-/// All names concatenated; owned or mapped, like [`Column`].
+/// The name pool: each distinct name once, after its length ([`push_entry`]); owned or mapped,
+/// like [`Column`].
 enum Names {
     Owned(String),
     Mapped {
@@ -4245,9 +4417,10 @@ mod tests {
             false,
         );
         let unique = [r"C:\", "a", "b", "index.js", "package.json", "other.txt"];
+        // Each one once, after its one-byte length.
         assert_eq!(
             index.names.len(),
-            unique.iter().map(|s| s.len()).sum::<usize>()
+            unique.iter().map(|s| s.len() + 1).sum::<usize>()
         );
         let mut hits = paths(&find(&index, "index.js", 10, false));
         hits.sort();
@@ -4330,6 +4503,311 @@ mod tests {
             paths(&find(&again, "f39-499", 10, false)),
             [r"C:\folder 39\f39-499.txt"]
         );
+    }
+
+    #[test]
+    fn nodes_pack_the_parent_and_flags_into_eight_bytes() {
+        let all = FLAG_DIR | FLAG_HIDDEN | FLAG_LINK | FLAG_PRUNED;
+        let root = Node::new(NO_PARENT, 3, FLAG_DIR | FLAG_PRUNED);
+        assert_eq!(
+            (root.parent(), root.flags(), root.name),
+            (NO_PARENT, FLAG_DIR | FLAG_PRUNED, 3)
+        );
+        let mut last = Node::new(PARENT_MASK - 1, u32::MAX, 0);
+        assert_eq!((last.parent(), last.flags()), (PARENT_MASK - 1, 0));
+        last.add_flags(FLAG_HIDDEN | FLAG_LINK);
+        assert_eq!(
+            (last.parent(), last.flags(), last.name),
+            (PARENT_MASK - 1, FLAG_HIDDEN | FLAG_LINK, u32::MAX)
+        );
+        let first = Node::new(0, 0, all);
+        assert_eq!((first.parent(), first.flags()), (0, all));
+        assert_eq!(
+            MAX_ITEMS, PARENT_MASK as usize,
+            "ids stay below the root mark"
+        );
+    }
+
+    /// Names go into the pool after their length: one byte up to 126 bytes, three above.
+    #[test]
+    fn names_round_trip_through_the_pool() {
+        let one_byte = "a".repeat(126);
+        let three_bytes = "b".repeat(127);
+        let longest_windows_name = "報".repeat(255);
+        let longest = "c".repeat(NAME_MAX);
+        let names = [
+            "",
+            "x",
+            "季報告.pdf",
+            one_byte.as_str(),
+            three_bytes.as_str(),
+            longest_windows_name.as_str(),
+            longest.as_str(),
+            "\u{1F600} emoji.txt",
+        ];
+        let mut pool = Names::default();
+        let mut starts = Vec::new();
+        for name in names {
+            starts.push(u32::try_from(pool.len()).unwrap());
+            push_entry(&mut pool, name);
+        }
+        for (name, &at) in names.iter().zip(&starts) {
+            assert_eq!(name_entry(&pool, at), Some(*name), "{}", name.len());
+        }
+        let prefixes: usize = names
+            .iter()
+            .map(|n| if n.len() < 127 { 1 } else { 3 })
+            .sum();
+        assert_eq!(
+            pool.len(),
+            names.iter().map(|n| n.len()).sum::<usize>() + prefixes
+        );
+        // Malformed entries are refused rather than misread.
+        assert_eq!(name_entry(&pool, u32::try_from(pool.len()).unwrap()), None);
+        assert_eq!(name_entry(&pool, starts[2] + 2), None, "inside a character");
+        let mut cut = Names::default();
+        push_entry(&mut cut, "abc");
+        cut.truncate(3);
+        assert_eq!(name_entry(&cut, 0), None, "cut short");
+
+        // Too long for the pool: skipped, nothing stored.
+        let mut index = flat(1);
+        let before = (index.len(), index.name_bytes());
+        assert_eq!(index.push(0, &"x".repeat(NAME_MAX + 1), 0, 0, 0), None);
+        assert_eq!((index.len(), index.name_bytes()), before);
+        assert!(index.push(0, &longest, 0, 0, 0).is_some());
+    }
+
+    /// One item of [`generated`]: path, name, hidden, folder, size.
+    type Truth = (String, String, bool, bool, u64);
+
+    /// An index with repeated names, names of both prefix lengths, non-ASCII and hidden ones,
+    /// and what it should hold.
+    fn generated() -> (Index, Vec<Truth>) {
+        let fs = FakeFs::new();
+        let mut truth: Vec<Truth> = vec![(r"C:\".into(), r"C:\".into(), false, true, 0)];
+        let long = "long".repeat(40);
+        let mut top = Vec::new();
+        for i in 0..20u64 {
+            let folder = format!("proj{i}");
+            top.push(dir(&folder));
+            truth.push((format!(r"C:\{folder}"), folder.clone(), false, true, 0));
+            let mut entries = vec![dir("sub")];
+            truth.push((format!(r"C:\{folder}\sub"), "sub".into(), false, true, 0));
+            let mut add = |name: String, size: u64, hidden: bool| {
+                let attributes = if hidden { 0x2 } else { 0 };
+                entries.push(Entry::new(
+                    name.as_str(),
+                    EntryKind::File,
+                    size,
+                    None,
+                    attributes,
+                ));
+                truth.push((format!(r"C:\{folder}\{name}"), name, hidden, false, size));
+            };
+            add("index.js".into(), 10 + i, false);
+            add("package.json".into(), 20 + i, false);
+            add(format!("季報告-{i}.pdf"), 30 + i, false);
+            add(format!("secret-{i}.txt"), 40 + i, true);
+            add(format!("{long}-{i}.log"), 50 + i, false);
+            for j in 0..30 {
+                add(format!("report-{i}-{j}.txt"), 1000 * i + j, false);
+            }
+            fs.insert_dir(format!(r"C:\{folder}"), entries);
+            let name = format!("report {i}.docx");
+            fs.insert_dir(
+                format!(r"C:\{folder}\sub"),
+                vec![Entry::new(name.as_str(), EntryKind::File, 7, None, 0)],
+            );
+            truth.push((format!(r"C:\{folder}\sub\{name}"), name, false, false, 7));
+        }
+        fs.insert_dir(r"C:\", top);
+        let index = Index::build(
+            fs.as_ref(),
+            &[PathBuf::from(r"C:\")],
+            2,
+            &AtomicBool::new(false),
+            &BuildProgress::default(),
+            &|| {},
+            false,
+        );
+        (index, truth)
+    }
+
+    /// What a search must find: every name the pattern matches, with its score (computed here
+    /// straight from the names, without the index).
+    fn expected(truth: &[Truth], text: &str, show_hidden: bool) -> Vec<(u32, String, u64)> {
+        let pattern = name_pattern(text, NameMatch::Any);
+        let mut matcher = Matcher::new(nucleo::Config::DEFAULT.match_paths());
+        let mut buf = Vec::new();
+        let mut out: Vec<(u32, String, u64)> = truth
+            .iter()
+            .filter(|t| show_hidden || !t.2)
+            .filter_map(|(path, name, _, _, size)| {
+                pattern
+                    .score(Utf32Str::new(name, &mut buf), &mut matcher)
+                    .map(|score| (score, path.clone(), *size))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Searches find exactly what the names say, whether the index was just built, read back or
+    /// mapped from its file, and every path, size and flag comes back as stored.
+    #[test]
+    fn queries_find_the_same_on_a_generated_index() {
+        let (built, truth) = generated();
+        assert_eq!(built.len(), truth.len());
+        let mut want_paths: Vec<String> = truth.iter().map(|t| t.0.clone()).collect();
+        want_paths.sort();
+        assert_eq!(all_paths(&built), want_paths);
+        // index.js, package.json and sub are stored once each.
+        let distinct: HashSet<&str> = truth.iter().map(|t| t.1.as_str()).collect();
+        let pool: usize = distinct
+            .iter()
+            .map(|n| n.len() + if n.len() < 127 { 1 } else { 3 })
+            .sum();
+        assert_eq!(built.name_bytes(), pool);
+
+        let dir = std::env::temp_dir().join(format!("arke-index-generated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        let mut bytes = Vec::new();
+        built.write_to(&mut bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let copied = Index::read_from(&mut bytes.as_slice()).unwrap();
+        let mapped = Index::open(&path).unwrap();
+        assert_eq!(all_paths(&mapped), want_paths);
+        let queries = [
+            "report",
+            "index.js",
+            "季報告",
+            "longlong",
+            "secret",
+            "sub",
+            "docx",
+            "pkg",
+            "zzzz",
+        ];
+        for text in queries {
+            for show_hidden in [false, true] {
+                let hits = find(&built, text, 10_000, show_hidden);
+                let mut got: Vec<(u32, String, u64)> = hits
+                    .iter()
+                    .map(|h| (h.score, h.path.display().to_string(), h.size))
+                    .collect();
+                assert!(hits.windows(2).all(|w| w[0].score >= w[1].score), "{text}");
+                got.sort();
+                assert_eq!(
+                    got,
+                    expected(&truth, text, show_hidden),
+                    "{text} {show_hidden}"
+                );
+                for hit in &hits {
+                    let path = hit.path.display().to_string();
+                    let is_dir = truth.iter().any(|t| t.0 == path && t.3);
+                    assert_eq!(hit.is_dir, is_dir, "{path}");
+                }
+                assert_eq!(find(&copied, text, 10_000, show_hidden), hits, "{text}");
+                assert_eq!(find(&mapped, text, 10_000, show_hidden), hits, "{text}");
+                // A smaller limit keeps the best ones, in the same order.
+                let top = find(&mapped, text, 5, show_hidden);
+                assert_eq!(top[..], hits[..hits.len().min(5)], "{text}");
+            }
+        }
+        drop(mapped);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The file format version changed (7: smaller nodes, length-prefixed names): a file of the
+    /// previous one is refused, so the service rebuilds it.
+    #[test]
+    fn files_of_the_previous_format_are_refused() {
+        let mut bytes = Vec::new();
+        sample().write_to(&mut bytes).unwrap();
+        assert_eq!(&bytes[..8], MAGIC);
+        bytes[..8].copy_from_slice(b"ARKEIDX6");
+        let err = Index::read_from(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let dir = std::env::temp_dir().join(format!("arke-index-v6-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            Index::read_header(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            Index::open(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Black-tech #6: choosing between the two saved files reads only their headers; the columns
+    /// are validated when the chosen one is opened.
+    #[test]
+    fn the_header_is_read_without_the_columns() {
+        let dir = std::env::temp_dir().join(format!("arke-index-header-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        let index = sample();
+        let mut bytes = Vec::new();
+        index.write_to(&mut bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let header = Index::read_header(&path).unwrap();
+        assert_eq!(
+            header,
+            IndexHeader {
+                roots: index.roots().to_vec(),
+                built_at: index.built_at(),
+                skipped_build_dirs: false,
+                excluded_hash: 0,
+            }
+        );
+        // A damaged name pool: the header still reads, opening refuses the file.
+        let names = Layout::parse(&bytes).unwrap().names;
+        bytes[names] = 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(Index::read_header(&path).unwrap(), header);
+        assert!(Index::open(&path).is_err());
+        // Cut short: the columns it announces don't fit, refused from the header alone.
+        bytes.truncate(bytes.len() - 5);
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Index::read_header(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reading ahead only with memory to spare, and the mapping stays usable after it.
+    #[test]
+    fn reads_ahead_only_with_memory_to_spare() {
+        assert!(worth_reading_ahead(100, 400));
+        assert!(!worth_reading_ahead(101, 400));
+        assert!(!worth_reading_ahead(1, 0));
+
+        let dir = std::env::temp_dir().join(format!("arke-index-ahead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        let index = sample();
+        let mut file = std::fs::File::create(&path).unwrap();
+        index.write_to(&mut file).unwrap();
+        drop(file);
+        let mut ahead = None;
+        let mapped = Index::open_with(&path, |r| ahead = Some(r)).unwrap();
+        let ahead = ahead.unwrap();
+        // Done or skipped depending on this machine's free memory; either way harmless.
+        let _ = ahead.run();
+        drop(ahead);
+        for query in ["report", "季報告", "ext:pdf"] {
+            assert_eq!(
+                find(&mapped, query, 10, false),
+                find(&index, query, 10, false),
+                "{query}"
+            );
+        }
+        drop(mapped);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -4802,7 +5280,7 @@ mod tests {
             [r"C:\moved\sub\deep-report.txt"]
         );
         for (i, node) in merged.index.nodes.iter().enumerate() {
-            assert!(node.parent == NO_PARENT || (node.parent as usize) < i);
+            assert!(node.parent() == NO_PARENT || (node.parent() as usize) < i);
         }
         // Round trip through the saved format.
         let mut bytes = Vec::new();

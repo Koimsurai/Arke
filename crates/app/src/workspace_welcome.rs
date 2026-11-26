@@ -855,12 +855,12 @@ fn option_row(
         })
         .child(
             div()
-                .w(px(72.))
+                .w(px(84.))
                 .h(px(44.))
                 .flex_none()
                 .rounded(theme::r_4())
                 .overflow_hidden()
-                .child(takeover_preview(takeover, (72., 44.))),
+                .child(takeover_preview(takeover, (84., 44.))),
         )
         .child(
             div()
@@ -1389,7 +1389,7 @@ fn takeover_preview(takeover: Takeover, (width, height): (f32, f32)) -> gpui::Di
                     .rounded(px(3.))
                     .border_1()
                     .border_color(c.ink)
-                    .text_size(px(8.))
+                    .text_size(theme::fs_11())
                     .text_color(c.ink)
                     // A key name, the same in every language.
                     .child("Win+E"),

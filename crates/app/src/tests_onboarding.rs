@@ -260,9 +260,9 @@ fn favorites_already_pinned_are_not_offered(cx: &mut TestAppContext) {
     assert_eq!(settings(cx).favorites, Some(vec![a]), "unchanged");
 }
 
-/// Ctrl+Shift+P › Setup guide opens it again at the first step, and Settings › About too.
+/// Ctrl+Shift+P › Setup guide opens it again at the first step.
 #[gpui::test]
-fn opens_again_from_the_palette_and_settings(cx: &mut TestAppContext) {
+fn opens_again_from_the_palette(cx: &mut TestAppContext) {
     let (ws, cx) = start(cx);
     change(cx, |s| s.onboarding_done = true);
     assert!(!shown(cx));
@@ -283,16 +283,26 @@ fn opens_again_from_the_palette_and_settings(cx: &mut TestAppContext) {
     assert_eq!(step(cx), Some(0));
     click(cx, "welcome-skip");
     assert!(!shown(cx));
+}
 
+/// Settings › About › Setup guide opens it again at the first step.
+#[gpui::test]
+fn opens_again_from_settings_about(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
+    change(cx, |s| s.onboarding_done = true);
     cx.dispatch_action(crate::workspace::OpenSettings);
     cx.run_until_parked();
     ws.update(cx, |ws, cx| {
         ws.settings_category_for_test(&t!("settings.about"), cx);
     });
-    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
     cx.run_until_parked();
+    assert!(!shown(cx));
     click(cx, "setup-guide-open");
     assert!(shown(cx));
+    assert_eq!(step(cx), Some(0));
 }
 
 /// Someone who updates gets an entry in What's new, not the guide itself; the entry opens it,

@@ -123,7 +123,10 @@ fn home_cards_follow_the_single_click_setting(cx: &mut TestAppContext) {
     wait_until(cx, &view, "load", loaded(r"C:\w"));
     change(cx, |st| st.favorites = Some(vec![p("a")]));
     let click = |cx: &mut VisualTestContext, click_count: usize| {
-        let at = cx.debug_bounds("home-favorite a").expect("card drawn").center();
+        let at = cx
+            .debug_bounds("home-favorite a")
+            .expect("card drawn")
+            .center();
         cx.simulate_event(MouseDownEvent {
             button: MouseButton::Left,
             position: at,
@@ -140,10 +143,13 @@ fn home_cards_follow_the_single_click_setting(cx: &mut TestAppContext) {
         cx.run_until_parked();
     };
     let home_open = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
-        ws.update(cx, |ws, cx| ws.home_favorites_for_test(cx)).is_some()
+        ws.update(cx, |ws, cx| ws.home_favorites_for_test(cx))
+            .is_some()
     };
     let open_home = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
-        ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(false, window, cx));
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_home_for_test(false, window, cx);
+        });
         refresh(cx);
         assert!(home_open(ws, cx), "Home is open");
     };
@@ -151,11 +157,17 @@ fn home_cards_follow_the_single_click_setting(cx: &mut TestAppContext) {
     crate::prefs::apply(&Settings::default());
     open_home(&ws, cx);
     click(cx, 1);
-    assert!(home_open(&ws, cx), "double-click mode: one click doesn't open");
+    assert!(
+        home_open(&ws, cx),
+        "double-click mode: one click doesn't open"
+    );
     refresh(cx);
     click(cx, 1);
     click(cx, 2);
-    assert!(!home_open(&ws, cx), "double-click mode: a double click opens");
+    assert!(
+        !home_open(&ws, cx),
+        "double-click mode: a double click opens"
+    );
     wait_until(cx, &view, "folder", loaded(r"C:\w\a"));
 
     crate::prefs::apply(&Settings {

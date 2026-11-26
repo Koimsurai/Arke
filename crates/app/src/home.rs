@@ -70,6 +70,36 @@ const fn recent_click_opens(single_click: bool, click_count: usize) -> bool {
     single_click || is_double_click(click_count)
 }
 
+/// A card's background: the picked one shows as a selected row.
+fn card_bg(selected: bool) -> gpui::Rgba {
+    if selected {
+        theme::selection()
+    } else {
+        theme::card()
+    }
+}
+
+/// A drive's usage bar, `used` being the fraction in use.
+fn usage_bar(used: f32) -> gpui::Div {
+    let color = if used > NEARLY_FULL {
+        theme::danger()
+    } else {
+        theme::signal()
+    };
+    div()
+        .h(usage_h())
+        .w_full()
+        .rounded(theme::R_FULL)
+        .bg(theme::wash_strong())
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(used.clamp(0., 1.)))
+                .rounded(theme::R_FULL)
+                .bg(color),
+        )
+}
+
 /// What a card is known by while it is the picked one.
 fn card_key(id: (&str, usize)) -> String {
     format!("{}-{}", id.0, id.1)
@@ -774,11 +804,7 @@ impl HomePage {
             .justify_center()
             .gap(theme::s_8())
             .rounded(theme::r_8())
-            .bg(if selected {
-                theme::selection()
-            } else {
-                theme::card()
-            })
+            .bg(card_bg(selected))
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
@@ -901,11 +927,7 @@ impl HomePage {
             .items_center()
             .gap(theme::s_12())
             .rounded(theme::r_8())
-            .bg(if selected {
-                theme::selection()
-            } else {
-                theme::card()
-            })
+            .bg(card_bg(selected))
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
@@ -923,25 +945,7 @@ impl HomePage {
                     .flex_col()
                     .gap(theme::s_4())
                     .child(card_label(label))
-                    .children(used.map(|used| {
-                        let color = if used > NEARLY_FULL {
-                            theme::danger()
-                        } else {
-                            theme::signal()
-                        };
-                        div()
-                            .h(usage_h())
-                            .w_full()
-                            .rounded(theme::R_FULL)
-                            .bg(theme::wash_strong())
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(gpui::relative(used.clamp(0., 1.)))
-                                    .rounded(theme::R_FULL)
-                                    .bg(color),
-                            )
-                    }))
+                    .children(used.map(usage_bar))
                     .children(detail.map(|d| {
                         div()
                             .truncate()

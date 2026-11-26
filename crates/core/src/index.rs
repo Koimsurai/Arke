@@ -255,19 +255,19 @@ struct PoolEntry<'a> {
     next: usize,
 }
 
-/// The pool entry starting at byte `at`, a multiple of 4: the name's char mask in 4 bytes of 7
-/// bits, its length prefix (see [`LONG_NAME`]), the name, then zeros to the next multiple of 4.
+/// The pool entry starting at byte `at`, a multiple of 4: the name's char mask (all 32 bits) in
+/// [`MASK_BYTES`] bytes of 7 bits, its length prefix (see [`LONG_NAME`]), the name, then zeros to the next multiple of 4.
 /// Every byte but the name's is ASCII, so the pool stays valid UTF-8. `None` when the entry isn't
 /// well formed (only in a corrupt file, which [`validate`] rejects). Mask, prefix and name sit
 /// together, so this reads no other memory than the name itself.
 fn pool_entry(pool: &str, at: usize) -> Option<PoolEntry<'_>> {
     let bytes = pool.as_bytes();
-    let m = bytes.get(at..at + 4)?;
-    let mask = u32::from(m[0])
-        | (u32::from(m[1]) << 7)
-        | (u32::from(m[2]) << 14)
-        | (u32::from(m[3]) << 21);
-    let at = at + 4;
+    let mask = bytes
+        .get(at..at + MASK_BYTES)?
+        .iter()
+        .rev()
+        .fold(0u32, |mask, &b| (mask << 7) | u32::from(b));
+    let at = at + MASK_BYTES;
     let (len, skip) = match *bytes.get(at)? {
         n if n < LONG_NAME => (usize::from(n), 1),
         LONG_NAME => {
@@ -290,7 +290,7 @@ fn pool_entry(pool: &str, at: usize) -> Option<PoolEntry<'_>> {
 
 /// The pool entry a node points to (`at`, a multiple of 4; [`pool_entry`]).
 fn node_entry(pool: &str, at: u32) -> Option<PoolEntry<'_>> {
-    if at % 4 != 0 {
+    if !at.is_multiple_of(4) {
         return None;
     }
     pool_entry(pool, at as usize)
@@ -306,16 +306,20 @@ fn name_entry(pool: &str, at: u32) -> Option<&str> {
 fn push_entry(names: &mut Names, name: &str) {
     let mask = char_mask(name);
     let len = name.len();
-    let mut head = [0u8; 7];
-    for (k, b) in head[..4].iter_mut().enumerate() {
+    let mut head = [0u8; MASK_BYTES + 3];
+    for (k, b) in head[..MASK_BYTES].iter_mut().enumerate() {
         *b = ((mask >> (7 * k)) & 0x7F) as u8;
     }
     let used = if len < usize::from(LONG_NAME) {
-        head[4] = len as u8;
-        5
+        head[MASK_BYTES] = len as u8;
+        MASK_BYTES + 1
     } else {
-        head[4..].copy_from_slice(&[LONG_NAME, (len & 0x7F) as u8, ((len >> 7) & 0x7F) as u8]);
-        7
+        head[MASK_BYTES..].copy_from_slice(&[
+            LONG_NAME,
+            (len & 0x7F) as u8,
+            ((len >> 7) & 0x7F) as u8,
+        ]);
+        MASK_BYTES + 3
     };
     // All below 0x80 (ASCII), so these never fail.
     if let Ok(head) = std::str::from_utf8(&head[..used]) {
@@ -331,7 +335,7 @@ fn push_entry(names: &mut Names, name: &str) {
 /// Appends `name`'s entry to an index's pool, marking every [`NAME_CHUNK`]-th one in `marks`
 /// (`count` entries so far).
 fn push_name(names: &mut Names, marks: &mut Column<u32>, count: &mut usize, name: &str) {
-    if *count % NAME_CHUNK == 0
+    if count.is_multiple_of(NAME_CHUNK)
         && let Ok(at) = u32::try_from(names.len())
     {
         marks.push(at);
@@ -343,8 +347,10 @@ fn push_name(names: &mut Names, marks: &mut Column<u32>, count: &mut usize, name
 /// Distinct names per piece of a query's first pass ([`Index::match_names`]).
 const NAME_CHUNK: usize = 4096;
 
-/// The char mask bits fit in the pool's 4 bytes of 7 bits.
-const _: () = assert!(MASK_NON_ASCII < 1 << 28 && MASK_DIGIT < MASK_NON_ASCII);
+/// Bytes of a pool entry's char mask: 7 bits each (ASCII, so the pool stays valid UTF-8), enough
+/// for all 32 bits of [`char_mask`].
+const MASK_BYTES: usize = 5;
+const _: () = assert!(MASK_BYTES * 7 >= u32::BITS as usize);
 
 /// One search hit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2825,7 +2831,7 @@ fn validate_marks(marks: &[u32], pool_len: usize) -> io::Result<()> {
     let ascending = marks.windows(2).all(|w| w[0] < w[1]);
     let aligned = marks
         .iter()
-        .all(|&at| at % 4 == 0 && (at as usize) < pool_len);
+        .all(|&at| at.is_multiple_of(4) && (at as usize) < pool_len);
     if !ascending || !aligned || (pool_len > 0 && marks.first() != Some(&0)) {
         return Err(bad_format());
     }
@@ -4055,7 +4061,7 @@ mod tests {
     /// Bytes `name` takes in the pool: char mask, length prefix, name, padding to 4.
     fn entry_bytes(name: &str) -> usize {
         let prefix = if name.len() < 127 { 1 } else { 3 };
-        (4 + prefix + name.len()).div_ceil(4) * 4
+        (MASK_BYTES + prefix + name.len()).div_ceil(4) * 4
     }
 
     /// Test helper: parse the query, then search.
@@ -5008,6 +5014,8 @@ mod tests {
             longest_windows_name.as_str(),
             longest.as_str(),
             "\u{1F600} emoji.txt",
+            // Every bit of the mask, the top four (`.` `_` `-` space) included.
+            "abcdefghijklmnopqrstuvwxyz 0._-é",
         ];
         let mut pool = Names::default();
         let mut starts = Vec::new();
@@ -5027,6 +5035,11 @@ mod tests {
             assert_eq!(entry.mask, char_mask(name), "{name}");
             assert_eq!(entry.next % 4, 0);
         }
+        assert_eq!(
+            char_mask(names[8]),
+            u32::MAX,
+            "the last name sets every bit"
+        );
         // Malformed entries are refused rather than misread.
         assert_eq!(name_entry(&pool, u32::try_from(pool.len()).unwrap()), None);
         assert_eq!(name_entry(&pool, starts[2] + 2), None, "inside a character");

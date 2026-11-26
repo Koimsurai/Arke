@@ -2888,14 +2888,14 @@ mod tests {
         // The newer one under the alternate name, so the order can't come from the names.
         save(&cache, &older).unwrap();
         save(&alt_path(&cache), &newer).unwrap();
-        let (order, missing) = usable_caches(&cache, |_| true);
-        assert_eq!(order, [alt_path(&cache), cache.clone()]);
+        let (picked, missing) = usable_caches(&cache, |_| true);
+        assert_eq!(picked, [alt_path(&cache), cache.clone()]);
         assert_eq!(missing, Rebuild::NoIndex);
-        let (order, missing) = usable_caches(&cache, |_| false);
-        assert!(order.is_empty());
+        let (picked, missing) = usable_caches(&cache, |_| false);
+        assert!(picked.is_empty());
         assert_eq!(missing, Rebuild::SettingsChanged);
-        let (order, missing) = usable_caches(&dir.join("none.bin"), |_| true);
-        assert!(order.is_empty());
+        let (picked, missing) = usable_caches(&dir.join("none.bin"), |_| true);
+        assert!(picked.is_empty());
         assert_eq!(missing, Rebuild::NoIndex);
 
         let svc = start_fresh(&cache);
@@ -2927,10 +2927,7 @@ mod tests {
         bytes[at] = 0xFF;
         std::fs::write(&alt, &bytes).unwrap();
         assert!(Index::read_header(&alt).is_ok());
-        assert_eq!(
-            usable_caches(&cache, |_| true).0,
-            [alt.clone(), cache.clone()]
-        );
+        assert_eq!(usable_caches(&cache, |_| true).0, [alt, cache.clone()]);
 
         let svc = start_fresh(&cache);
         wait("older loaded", || ready(&svc));

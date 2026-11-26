@@ -281,6 +281,11 @@ fn process_memory() -> Option<Memory> {
     })
 }
 
+/// Highest working set of this process so far, in bytes (`--bench list` reports it too).
+pub(crate) fn peak_working_set() -> Option<u64> {
+    process_memory().map(|m| m.peak_working_set)
+}
+
 /// How a volume's items were gathered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Source {

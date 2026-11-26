@@ -1,0 +1,138 @@
+name: perf
+
+# Performance gates for pull requests to main: the release exe's size (hard limit) and startup,
+# 100,000-item folder and memory numbers against the base build (warnings first).
+#
+# - size: fails when arke.exe is larger than the budget in .github/perf/exe-size-budget.
+# - bench: both builds run on one runner, alternating, several runs each; the medians are
+#   compared in the job summary (.github/perf/bench.ps1). A regression is a warning annotation
+#   until the repository variable PERF_GATE_FAIL is set to `true` (or the manual run asks for it).
+# The two release builds (fat LTO) run side by side as a matrix, restoring the dependencies that
+# release-cache.yml saves from main, so only Arke's own crates compile.
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "README*.md"
+      - CONTRIBUTING.md
+      - SECURITY.md
+      - ".github/assets/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".changeset/**"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Branch, tag or commit to compare against (the selected ref is the PR side)"
+        default: main
+        required: true
+      fail:
+        description: "Fail the run on a benchmark regression, not only warn"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.side }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        side: [base, head]
+    steps:
+      # head is what the pull request would become (the merge commit); base is the tip of main the
+      # pull request was opened against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.side == 'base' && (github.event.pull_request.base.sha || inputs.base) || '' }}
+          persist-credentials: false
+      # Restore only, the key release-cache.yml saves from main. The target directory is set on
+      # the build step only: the cache key hashes CARGO_* variables of the job.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release-x64
+          workspaces: ". -> target/dist"
+          save-if: false
+      - name: build arke.exe
+        env:
+          CARGO_TARGET_DIR: target/dist
+        run: cargo build --locked --release -p arke-app --bin arke
+      - name: collect
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/dist/release/arke.exe out/arke.exe
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exe-${{ matrix.side }}
+          path: out/arke.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  size:
+    name: exe size
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: exe-*
+          path: exe
+      - name: check against the budget
+        shell: bash
+        run: |
+          budget=$(grep -E '^[0-9]+$' .github/perf/exe-size-budget | head -n 1)
+          head_size=$(stat -c %s exe/exe-head/arke.exe)
+          base_size=$(stat -c %s exe/exe-base/arke.exe)
+          delta=$((head_size - base_size))
+          mb() { awk -v b="$1" 'BEGIN { printf "%.2f", b / 1048576 }'; }
+          {
+            echo "## Exe size"
+            echo
+            echo "| | bytes | MiB |"
+            echo "| --- | ---: | ---: |"
+            echo "| base | $base_size | $(mb "$base_size") |"
+            echo "| PR | $head_size | $(mb "$head_size") |"
+            echo "| change | $delta | $(mb "$delta") |"
+            echo "| budget | $budget | $(mb "$budget") |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "arke.exe: $head_size bytes ($(mb "$head_size") MiB), $delta bytes vs base, budget $budget"
+          if [ "$head_size" -gt "$budget" ]; then
+            echo "::error title=Exe size::arke.exe is $head_size bytes, $((head_size - budget)) over the budget of $budget (.github/perf/exe-size-budget). Slim it down, or raise the budget in this pull request with a reason."
+            echo "**Over the budget by $((head_size - budget)) bytes.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  bench:
+    name: startup · 100k folder · memory
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: exe-*
+          path: exe
+      - name: benchmark
+        shell: pwsh
+        env:
+          FAIL_ON_REGRESSION: ${{ inputs.fail || vars.PERF_GATE_FAIL }}
+        run: |
+          $splat = @{ Base = "$PWD\exe\exe-base\arke.exe"; Head = "$PWD\exe\exe-head\arke.exe" }
+          if ($env:FAIL_ON_REGRESSION -eq 'true') { $splat['Fail'] = $true }
+          & .github/perf/bench.ps1 @args

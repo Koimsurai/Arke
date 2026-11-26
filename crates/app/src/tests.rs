@@ -4712,6 +4712,15 @@ fn sorting_by_size_reorders_once_when_sizes_are_done(cx: &mut TestAppContext) {
     }
     let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q");
     wait_until(cx, &view, "load", loaded(r"C:\q"));
+    // The worker reads the folders one at a time, in the order they were asked for, which is the
+    // list's order at that moment. Sorted by size with no size known, the list is in reverse name
+    // order (a tie falls back to the name, flipped for a descending sort), so asking after the sort
+    // would put the folder that stays hung first and block the others behind it. Asking happens
+    // when the rows are drawn, after a background check of the drive (a thread) has answered:
+    // wait for it, so the order is always the name order the rows had.
+    wait_until(cx, &view, "all four handed to the size worker", |v| {
+        v.folder_sizes_pending() == 4
+    });
     view.update(cx, |v, cx| {
         v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
     });

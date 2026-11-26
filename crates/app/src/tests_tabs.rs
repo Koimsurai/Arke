@@ -2521,12 +2521,19 @@ fn a_history_jump_on_the_other_side_of_a_split(cx: &mut TestAppContext) {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
-    // The steps stay in line: forward on the left comes back after the right's own step.
-    cx.simulate_keystrokes("alt-left");
+    // The steps stay in line: forward on the left comes back after the right's own step. Back
+    // and forward go through the workspace as the keys' handler does (the keys themselves are
+    // covered by the tests above): a key reaches it through the window's last drawn frame and
+    // the focus, which a test can't wait on.
+    let step = |cx: &mut VisualTestContext, back: bool| {
+        ws.update_in(cx, |ws, window, cx| ws.go_in_history(back, window, cx));
+        cx.run_until_parked();
+    };
+    step(cx, true);
     wait_until(cx, &right, "right back to b", loaded(r"C:\b"));
-    cx.simulate_keystrokes("alt-right");
+    step(cx, false);
     wait_until(cx, &right, "right forward to c", loaded(r"C:\c"));
-    cx.simulate_keystrokes("alt-right");
+    step(cx, false);
     wait_until(cx, &left, "left forward to b", loaded(r"C:\b"));
 }
 

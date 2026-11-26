@@ -496,7 +496,7 @@ fn tab_in_the_path_bar_completes_typed_text_then_moves_on(cx: &mut TestAppContex
     assert!(stop(&ws, cx).starts_with("toolbar:"), "{}", stop(&ws, cx));
 
     key(cx, "ctrl-l");
-    cx.simulate_input(r"\re");
+    cx.simulate_input(r"C:\work\re");
     settle(cx, "suggestions", |cx| {
         view.update(cx, |v, _| v.suggestion_names() == ["reports"])
     });

@@ -376,6 +376,11 @@ pub(crate) struct Workspace {
     closed: Vec<ClosedTab>,
     /// Sidebar tree: expanded folders and listed children.
     expanded: HashSet<PathBuf>,
+    /// The folders opened under the favorites list (#424): the same folder under This PC opens on
+    /// its own, and following the current folder never touches these.
+    fav_expanded: HashSet<PathBuf>,
+    /// `tree_cue` is a row under the favorites list, not the same folder under This PC.
+    tree_cue_fav: bool,
     /// The tree node just expanded or collapsed: its chevron turns and its children fade in.
     tree_cue: (Option<PathBuf>, crate::motion::Cue),
     /// A tab was just split: the new right pane (its view) slides in from the right as it fades in.
@@ -824,6 +829,8 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             expanded: HashSet::new(),
+            fav_expanded: HashSet::new(),
+            tree_cue_fav: false,
             tree_cue: (None, crate::motion::Cue::default()),
             split_cue: (None, crate::motion::Cue::default()),
             tree_children: HashMap::new(),

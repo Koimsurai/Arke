@@ -1018,3 +1018,22 @@ fn whats_new_links_work_from_the_keyboard(cx: &mut TestAppContext) {
         [crate::build_info::SOURCE_URL]
     );
 }
+
+/// #424: the current folder is a favorite: its row is the one read as selected, not the same
+/// folder's row under This PC.
+#[gpui::test]
+fn a_favorite_that_is_the_current_folder_is_the_selected_row(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.pinned = vec![PathBuf::from(r"C:\w")], cx);
+        });
+    });
+    cx.run_until_parked();
+    let t = tree_with_here(cx);
+    let selected = nodes(&t)
+        .filter(|n| role(n) == "TreeItem" && label(n) == "w")
+        .filter(|n| n["aria"]["selected"] == Value::Bool(true))
+        .count();
+    assert_eq!(selected, 1, "one row of w is the selected one");
+}

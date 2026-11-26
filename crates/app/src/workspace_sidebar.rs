@@ -11,6 +11,7 @@
 //! Undo on a toast.
 //! The context menu is the sidebar's own small menu (open in new tab, pin, favorites, ...).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1424,6 +1425,12 @@ impl Workspace {
         } else {
             self.favorites(cx)
         };
+        // The current folder is a favorite on show: its own row or tile is the selected one (#424).
+        let at_favorite = current.is_some_and(|here| {
+            (!home_hidden && favorites.iter().any(|(p, ..)| p.as_path() == here))
+                || (!list_hidden && !collapsed && pinned.iter().any(|p| p.as_path() == here))
+        });
+        self.sidebar_ui.fav_here.set(at_favorite);
         // Slots count every favorite, tiles or rows: drops and the saved order use them.
         let tile_count = favorites.len();
         let layout = self.tile_layout(tile_count);
@@ -2927,12 +2934,14 @@ impl Workspace {
         out: &mut Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) {
-        let expanded = self.expanded.contains(path);
+        let expanded = self.tree_open(favorite).contains(path);
         // Just toggled: animate the chevron and the rows that appear.
         let cue = (self.tree_cue.0.as_deref() == Some(path)
+            && self.tree_cue_fav == favorite
             && self.tree_cue.1.live_at(std::time::Instant::now()))
         .then(|| self.tree_cue.1.serial());
-        let here = current == Some(path);
+        // A favorite that is the current folder is the selected row, not its twin under This PC.
+        let here = current == Some(path) && (favorite || !self.sidebar_ui.fav_here.get());
         if here {
             // Where the current folder's row is, for scrolling it into view (#241).
             self.sidebar_ui.here_row.set(Some(out.len()));
@@ -2945,7 +2954,7 @@ impl Workspace {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu_path = path.to_path_buf();
-        let renaming = if favorite {
+        let renaming = if favorite && depth == 0 {
             self.favorite_rename_box(path)
         } else {
             self.sidebar_rename_box(path)
@@ -2953,14 +2962,11 @@ impl Workspace {
         // A drive: what the number on the right is, as File Explorer's navigation pane tells.
         let space_tip = space.as_ref().map(|s| s.bytes);
         let indent = tree_indent() * depth as f32;
-        let key = SharedString::from(format!(
-            "{}tree-{depth}-{}",
-            if favorite { "f" } else { "" },
-            path.display()
-        ));
+        let side = if favorite { "f" } else { "" };
+        let key = SharedString::from(format!("{side}tree-{depth}-{}", path.display()));
         let row = div()
                 .id(SharedString::from(format!(
-                    "tree-{depth}-{}",
+                    "{side}tree-{depth}-{}",
                     path.display()
                 )))
                 .a11y_lazy(gpui::Role::TreeItem, || label.clone())
@@ -2988,7 +2994,9 @@ impl Workspace {
                 // Current location: neutral wash.
                 .when(here, |d| d.bg(theme::selection()))
                 .when(!here, |d| d.hover(|s| s.bg(theme::wash())))
-                .child(Self::tree_chevron(path, depth, expanded, leaf, cue, cx))
+                .child(Self::tree_chevron(
+                    path, depth, favorite, expanded, leaf, cue, cx,
+                ))
                 .child(match icon {
                     Some(icon) => crate::assets::tinted(icon, theme::icon(), theme::text_muted()),
                     None => kind_icon(FileKind::Folder, theme::icon()),
@@ -3005,7 +3013,7 @@ impl Workspace {
                     match e.click_count() {
                         0 | 1 => this.open_clicked(open.clone(), e.modifiers(), window, cx),
                         2 if !leaf && !e.modifiers().control => {
-                            this.toggle_expand(open.clone(), cx);
+                            this.toggle_expand(open.clone(), favorite, cx);
                         }
                         _ => {}
                     }
@@ -3019,7 +3027,7 @@ impl Workspace {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        let menu = if favorite {
+                        let menu = if favorite && depth == 0 {
                             this.favorite_menu(&menu_path, cx)
                         } else {
                             this.tree_menu(&menu_path, depth, cx)
@@ -3050,8 +3058,8 @@ impl Workspace {
                 }),
                 expand: (!leaf).then(|| -> Expand {
                     Rc::new(move |this, want, cx| {
-                        if this.expanded.contains(&at) != want {
-                            this.toggle_expand(at.clone(), cx);
+                        if this.tree_open(favorite).contains(&at) != want {
+                            this.toggle_expand(at.clone(), favorite, cx);
                         }
                     })
                 }),
@@ -3074,7 +3082,7 @@ impl Workspace {
                         depth + 1,
                         Some(&key),
                         current,
-                        false,
+                        favorite,
                         out,
                         cx,
                     );
@@ -3084,6 +3092,7 @@ impl Workspace {
         }
         // Just expanded: the new rows drop in under their parent.
         if self.tree_cue.0.as_deref() == Some(path)
+            && self.tree_cue_fav == favorite
             && let Some(t) = self.cue_progress(&self.tree_cue.1)
         {
             let rows: Vec<AnyElement> = out.drain(start..).collect();
@@ -3095,6 +3104,7 @@ impl Workspace {
     fn tree_chevron(
         path: &Path,
         depth: usize,
+        favorite: bool,
         expanded: bool,
         leaf: bool,
         cue: Option<u64>,
@@ -3124,7 +3134,8 @@ impl Workspace {
         };
         div()
             .id(SharedString::from(format!(
-                "chev-{depth}-{}",
+                "{}chev-{depth}-{}",
+                if favorite { "f" } else { "" },
                 path.display()
             )))
             .size(theme::s_20())
@@ -3138,22 +3149,42 @@ impl Workspace {
                     .child(glyph)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_expand(toggle.clone(), cx);
+                        this.toggle_expand(toggle.clone(), favorite, cx);
                     }))
             })
     }
 
-    /// Expands or collapses. Expanding lists subfolders on a background thread. Either way the
-    /// folder is the user's now: following the current folder (#241) no longer closes it.
-    pub(super) fn toggle_expand(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.sidebar_ui.tree_auto.remove(&path);
+    /// The folders open in the tree under the favorites list (`favorite`) or under This PC and
+    /// Network (#424).
+    fn tree_open(&self, favorite: bool) -> &HashSet<PathBuf> {
+        if favorite {
+            &self.fav_expanded
+        } else {
+            &self.expanded
+        }
+    }
+
+    /// Expands or collapses a folder of the tree under the favorites (`favorite`) or under This
+    /// PC. Expanding lists subfolders on a background thread. Either way the folder is the user's
+    /// now: following the current folder (#241) no longer closes it. The two trees open and
+    /// close on their own, also for the same folder (#424).
+    pub(super) fn toggle_expand(&mut self, path: PathBuf, favorite: bool, cx: &mut Context<Self>) {
+        if !favorite {
+            self.sidebar_ui.tree_auto.remove(&path);
+        }
         self.tree_cue.0 = Some(path.clone());
+        self.tree_cue_fav = favorite;
         self.tree_cue.1.fire();
-        if self.expanded.remove(&path) {
+        let open = if favorite {
+            &mut self.fav_expanded
+        } else {
+            &mut self.expanded
+        };
+        if open.remove(&path) {
             cx.notify();
             return;
         }
-        self.expanded.insert(path.clone());
+        open.insert(path.clone());
         // Relist on every expand since the folder may have changed; show the old result meanwhile.
         self.tree_children.entry(path.clone()).or_insert(None);
         let fs = Arc::clone(&self.services.fs);
@@ -3219,6 +3250,10 @@ impl Workspace {
         self.sidebar_ui.followed = Some(key);
         if let Some(cancel) = self.sidebar_ui.follow_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
+        }
+        // A favorite that is the current folder is selected as it is: nothing opens for it (#424).
+        if self.sidebar_ui.fav_here.get() {
+            return;
         }
         let chain = follow_chain(&places, &here, mapped);
         let stale: Vec<PathBuf> = self
@@ -4659,7 +4694,26 @@ impl Workspace {
 #[cfg(test)]
 impl Workspace {
     pub(crate) fn toggle_expand_for_test(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.toggle_expand(path, cx);
+        self.toggle_expand(path, false, cx);
+    }
+
+    /// A click on the chevron of a row under the favorites list.
+    pub(crate) fn toggle_favorite_expand_for_test(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_expand(path, true, cx);
+    }
+
+    /// The current folder's row under the favorites is the one drawn selected (the one under This
+    /// PC isn't).
+    pub(crate) fn favorite_selected_for_test(&self) -> bool {
+        self.sidebar_ui.fav_here.get()
+    }
+
+    pub(crate) fn favorite_expanded_for_test(&self, path: &Path) -> bool {
+        self.fav_expanded.contains(path)
     }
 
     pub(crate) fn tree_expanded_for_test(&self, path: &Path) -> bool {

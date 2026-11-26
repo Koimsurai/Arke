@@ -60,6 +60,10 @@ pub(super) struct SidebarUi {
     /// The follow under way scrolls to the current folder's row once listed: not when that folder
     /// is shown higher up already (a favorite or pinned folder).
     pub(super) reveal_wanted: std::cell::Cell<bool>,
+    /// The current folder is a favorite shown in the sidebar (a tile or a row of the list), drawn
+    /// last frame: that favorite is the selected one, not the folder's row under This PC, and
+    /// following has nothing to open for it (#424).
+    pub(super) fav_here: std::cell::Cell<bool>,
     /// Index among the places of the current folder's row under This PC, while drawing it.
     pub(super) here_row: std::cell::Cell<Option<usize>>,
     /// The places were just scrolled to the current folder's row: next frame, a row of tiles cut

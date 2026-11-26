@@ -509,3 +509,66 @@ fn turning_following_off_from_the_menu_leaves_the_tree(cx: &mut TestAppContext) 
     open_space_menu(cx);
     assert!(!follow_row(&ws, cx).1, "off, so no check");
 }
+
+fn favorite_expanded(ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: &str) -> bool {
+    ws.update(cx, |ws, _| ws.favorite_expanded_for_test(Path::new(path)))
+}
+
+/// #424: following the folder opens the tree under This PC only. A favorite that holds the
+/// current folder stays closed, as the user left it.
+#[gpui::test]
+fn following_a_folder_in_a_favorite_leaves_the_favorite_closed(cx: &mut TestAppContext) {
+    let (ws, cx) = window_at(cx, fs(), r"C:\work");
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work")]);
+    open(&ws, cx, r"C:\work\reports\2026");
+    settle(cx, "the tree opens to 2026", |cx| {
+        expanded(&ws, cx, r"C:\work\reports")
+    });
+    assert!(expanded(&ws, cx, r"C:\work"), "This PC's row opened");
+    assert!(
+        !favorite_expanded(&ws, cx, r"C:\work"),
+        "the favorite's row stays closed"
+    );
+    assert!(!favorite_expanded(&ws, cx, r"C:\work\reports"));
+}
+
+/// #424: the current folder is a favorite: its own row is the selected one and nothing opens
+/// for it, neither under the favorite nor under This PC.
+#[gpui::test]
+fn a_favorite_that_is_the_current_folder_is_selected_as_it_is(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work")]);
+    change(cx, |st| st.sidebar_follow = true);
+    open(&ws, cx, r"C:\work");
+    for _ in 0..5 {
+        refresh(cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!expanded(&ws, cx, r"C:\"), "nothing opened under This PC");
+    assert!(!expanded(&ws, cx, r"C:\work"));
+    assert!(!favorite_expanded(&ws, cx, r"C:\work"));
+    assert!(
+        ws.update(cx, |ws, _| ws.favorite_selected_for_test()),
+        "the favorite's row is the selected one"
+    );
+}
+
+/// #424: a favorite's row and the row of the same folder under This PC open and close on their
+/// own, whichever is clicked.
+#[gpui::test]
+fn a_favorite_and_its_twin_under_this_pc_open_on_their_own(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work")]);
+    refresh(cx);
+    let work = || PathBuf::from(r"C:\work");
+    ws.update(cx, |ws, cx| ws.toggle_favorite_expand_for_test(work(), cx));
+    assert!(favorite_expanded(&ws, cx, r"C:\work"));
+    assert!(!expanded(&ws, cx, r"C:\work"), "This PC's row stays closed");
+
+    ws.update(cx, |ws, cx| ws.toggle_expand_for_test(work(), cx));
+    assert!(favorite_expanded(&ws, cx, r"C:\work") && expanded(&ws, cx, r"C:\work"));
+
+    ws.update(cx, |ws, cx| ws.toggle_favorite_expand_for_test(work(), cx));
+    assert!(!favorite_expanded(&ws, cx, r"C:\work"));
+    assert!(expanded(&ws, cx, r"C:\work"), "closing one leaves the other");
+}

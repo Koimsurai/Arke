@@ -6,6 +6,8 @@
 //!   arke <path> --bench startup|scroll|scroll-grid [--bench-out file]
 //!   arke --bench index [--bench-out file]   build the search index headless, report time and
 //!                                           memory (see `bench_index.rs`)
+//!   arke [folder] --bench list [--bench-out file]   list and sort 100,000 items headless
+//!                                           (see `bench_list.rs`)
 //!   arke --no-resident [path]   don't use or become the resident process
 //!   arke --quit                 quit the resident process
 //!   arke --api <json>           an integration API request; prints the JSON reply (see `api.rs`
@@ -49,6 +51,7 @@ mod archive_password;
 mod assets;
 mod bench;
 mod bench_index;
+mod bench_list;
 mod brand;
 mod build_info;
 mod caption;
@@ -169,6 +172,8 @@ enum BenchArg {
     Window(BenchMode),
     /// `--bench index`: headless index benchmark, no window (`bench_index.rs`)
     Index,
+    /// `--bench list`: headless list-and-sort of 100,000 items (`bench_list.rs`)
+    List,
 }
 
 #[allow(
@@ -231,6 +236,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             Some("--bench") => {
                 args.bench = Some(match it.next().as_ref().and_then(|s| s.to_str()) {
                     Some("index") => BenchArg::Index,
+                    Some("list") => BenchArg::List,
                     Some("scroll") => BenchArg::Window(BenchMode::Scroll),
                     Some("scroll-grid") => BenchArg::Window(BenchMode::ScrollGrid),
                     _ => BenchArg::Window(BenchMode::Startup),
@@ -398,6 +404,9 @@ fn main() -> std::process::ExitCode {
     // Before anything in app_main: no log file, residency handoff, tray or window.
     if args.bench == Some(BenchArg::Index) {
         return bench_index::run(args.bench_out.as_deref());
+    }
+    if args.bench == Some(BenchArg::List) {
+        return bench_list::run(args.path.as_deref(), args.bench_out.as_deref());
     }
     app_main(args);
     std::process::ExitCode::SUCCESS
@@ -2436,6 +2445,14 @@ mod arg_tests {
         assert_eq!(args.window_bench(), None);
         assert_eq!(args.bench_out, Some(PathBuf::from(r"C:\out.txt")));
         assert_eq!(args.path, None);
+    }
+
+    #[test]
+    fn bench_list_takes_a_folder_and_no_window() {
+        let args = parse(&[r"C:\big", "--bench", "list"]);
+        assert_eq!(args.bench, Some(BenchArg::List));
+        assert_eq!(args.window_bench(), None);
+        assert_eq!(args.path, Some(PathBuf::from(r"C:\big")));
     }
 
     #[test]

@@ -1007,8 +1007,6 @@ impl HomePage {
             label: label.to_owned(),
             icon,
         };
-        let home = cx.entity().downgrade();
-        let key = path.to_path_buf();
         let card_id = format!("home-quick-{}", path.display());
         let selected = self.selected_card.as_deref() == Some(card_id.as_str());
         // Known by its folder, not its place: after a reorder the card under the pointer is
@@ -1079,6 +1077,18 @@ impl HomePage {
             },
             cx,
         );
+        Self::quick_cell(ix, card, drag, cx)
+    }
+
+    /// The cell a favorite card sits in, which is what is dragged to reorder the favorites.
+    fn quick_cell(
+        ix: usize,
+        card: Stateful<Div>,
+        drag: DraggedCard,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let home = cx.entity().downgrade();
+        let key = drag.path.clone();
         // The cell holds still while its card slides: drag moves are read against where the
         // cells are, never against a card midway through a slide (which threw reorders off).
         div()
@@ -1282,7 +1292,10 @@ impl HomePage {
                 .absolute()
                 .size_full(),
             )
-            .when(cursor, |d| d.aria_active_descendant())
+            .when(
+                cursor,
+                gpui::StatefulInteractiveElement::aria_active_descendant,
+            )
             .when(cursor && self.ring != Ring::Off, |d| {
                 d.child(
                     div()
@@ -1333,11 +1346,10 @@ impl HomePage {
             return;
         };
         let to = match (to, self.acting_ix()) {
-            (Move::First, _) => Some(0),
             (Move::Last, _) => Some(last),
             (Move::Step(step), Some(at)) => step_to(&shapes, at, step),
-            // The ring wasn't showing: the first key shows it, on the first card.
-            (Move::Step(_), None) => Some(0),
+            // Home, or the ring wasn't showing: the first key shows it, on the first card.
+            (Move::First, _) | (Move::Step(_), None) => Some(0),
         };
         let Some(spot) = to.and_then(|ix| self.spots.borrow().get(ix).map(|s| s.spot.clone()))
         else {

@@ -84,19 +84,20 @@ impl Explorer {
     }
 
     fn marquee_move(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // Read from the list before the marquee is borrowed.
+        let handle = self.marquee_list().0.borrow().base_handle.clone();
+        let offset = handle.offset();
+        let view = self.list_bounds.get();
         let Some(marquee) = self.marquee.as_mut() else {
             return;
         };
         marquee.current = position;
-        let offset = self.marquee_list().0.borrow().base_handle.offset();
         let moved = (position - (marquee.start + offset)).map(|v| v.abs());
         if !marquee.dragging && moved.x < DRAG_THRESHOLD && moved.y < DRAG_THRESHOLD {
             return;
         }
         marquee.dragging = true;
         // Dragged outside the list: scroll that way.
-        let view = self.list_bounds.get();
-        let handle = self.marquee_list().0.borrow().base_handle.clone();
         let over = if position.y > view.bottom() {
             position.y - view.bottom()
         } else if position.y < view.top() {

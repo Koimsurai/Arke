@@ -1087,6 +1087,11 @@ impl Shell for WinShell {
         crate::win_icons::is_local_disk(path)
     }
 
+    fn is_fixed_disk(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_icons::is_fixed_disk(path)
+    }
+
     fn has_recycle_bin(&self, path: &Path) -> bool {
         crate::win_recycle::has_recycle_bin(path)
     }

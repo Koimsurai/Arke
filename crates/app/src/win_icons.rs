@@ -21,20 +21,42 @@ use windows::core::PCWSTR;
 
 use crate::win_fileops::{Com, wide};
 
+/// `GetDriveTypeW` results (WinBase.h).
+const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
+const DRIVE_RAMDISK: u32 = 6;
 
-/// Whether the path is on a local fixed disk (not UNC, network, removable or optical).
-/// `GetDriveTypeW` doesn't hit the network, but call from a background thread anyway.
-pub(crate) fn is_local_disk(path: &Path) -> bool {
+/// The one definition of "local" for a `GetDriveTypeW` result: internal disks, USB sticks, SD
+/// cards and RAM disks. Network and optical drives are not local (thumbnails, folder sizes and
+/// cloud status skip them).
+pub(crate) const fn is_local_drive_type(drive_type: u32) -> bool {
+    matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_RAMDISK)
+}
+
+/// `GetDriveTypeW` of the drive the path is on; `None` for UNC and relative paths.
+/// It doesn't hit the network, but call from a background thread anyway.
+fn drive_type_of(path: &Path) -> Option<u32> {
     let Some(Component::Prefix(prefix)) = path.components().next() else {
-        return false;
+        return None;
     };
     let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
-        return false;
+        return None;
     };
     let root = wide(std::ffi::OsStr::new(&format!("{}:\\", char::from(letter))));
     // SAFETY: root is a NUL-terminated "X:\" wide string.
-    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED }
+    Some(unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) })
+}
+
+/// Whether the path is on a local disk: internal, USB, SD card or RAM disk (not UNC, network or
+/// optical). See [`is_local_drive_type`].
+pub(crate) fn is_local_disk(path: &Path) -> bool {
+    drive_type_of(path).is_some_and(is_local_drive_type)
+}
+
+/// Whether the path is on an internal fixed disk (not removable media). For what should not
+/// touch a USB stick on its own, such as the global search index.
+pub(crate) fn is_fixed_disk(path: &Path) -> bool {
+    drive_type_of(path) == Some(DRIVE_FIXED)
 }
 
 /// System icon for a file as straight-alpha RGBA. `None` means use the theme icon.
@@ -197,11 +219,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn drive_type_classification() {
+        assert!(is_local_drive_type(DRIVE_FIXED));
+        assert!(is_local_drive_type(DRIVE_REMOVABLE));
+        assert!(is_local_drive_type(DRIVE_RAMDISK));
+        // DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_CDROM
+        for other in [0, 1, 4, 5] {
+            assert!(!is_local_drive_type(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn drive_type_classification() {
+        assert!(is_local_drive_type(DRIVE_FIXED));
+        assert!(is_local_drive_type(DRIVE_REMOVABLE));
+        assert!(is_local_drive_type(DRIVE_RAMDISK));
+        // DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_CDROM
+        for other in [0, 1, 4, 5] {
+            assert!(!is_local_drive_type(other), "{other}");
+        }
+    }
+
+    #[test]
     fn local_disk_detection() {
         let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
         assert!(is_local_disk(Path::new(&format!(r"{system}\Windows"))));
         assert!(!is_local_disk(Path::new(r"\\server\share\a.png")));
         assert!(!is_local_disk(Path::new(r"relative\a.png")));
+        assert!(is_fixed_disk(Path::new(&format!(r"{system}\Windows"))));
+        assert!(!is_fixed_disk(Path::new(r"\server\share\a.png")));
     }
 
     #[test]

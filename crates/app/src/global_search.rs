@@ -910,7 +910,7 @@ pub(crate) fn local_drives(shell: &dyn Shell) -> Vec<PathBuf> {
         .into_iter()
         .filter(|p| matches!(p.kind, PlaceKind::Drive { remote: false, .. }))
         .map(|p| p.path)
-        .filter(|p| shell.is_local_disk(p))
+        .filter(|p| shell.is_fixed_disk(p))
         .collect();
     distinct_volumes(roots, |root| {
         drive_of(root)

@@ -820,6 +820,10 @@ fn large_streams_are_copied_in_chunks() {
     );
     assert!(seen.largest_read.load(Ordering::Relaxed) <= CHUNK);
     assert!(seen.reads.load(Ordering::Relaxed) >= 6);
+    assert!(
+        progress.work_in_bytes.load(Ordering::Relaxed),
+        "the sizes are known: progress counts bytes"
+    );
     assert_eq!(progress.work_total.load(Ordering::Relaxed), len);
     assert_eq!(progress.work_done.load(Ordering::Relaxed), len);
 }

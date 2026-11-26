@@ -1228,6 +1228,7 @@ fn archive_workers(shell: &dyn crate::shell::Shell, archive: &Path, folder: &Pat
 /// Writes background compress/extract progress (items, bytes) into the progress center entry.
 fn report(ops: &crate::shell::OpProgress, p: ExtractProgress) {
     ops.done.store(p.files, Ordering::Relaxed);
+    ops.work_in_bytes.store(true, Ordering::Relaxed);
     ops.work_done.store(p.done, Ordering::Relaxed);
     ops.work_total.store(p.total, Ordering::Relaxed);
 }

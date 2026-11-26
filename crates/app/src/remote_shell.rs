@@ -54,6 +54,7 @@ impl Sink<'_> {
         self.0.done.fetch_add(1, Ordering::Relaxed);
     }
     fn add_total(&self, bytes: u64) {
+        self.0.work_in_bytes.store(true, Ordering::Relaxed);
         self.0.bytes_total.fetch_add(bytes, Ordering::Relaxed);
         self.0.work_total.fetch_add(bytes, Ordering::Relaxed);
     }

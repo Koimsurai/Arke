@@ -376,6 +376,8 @@ mod recorder {
         fn UpdateProgress(&self, total: u32, so_far: u32) -> windows::core::Result<()> {
             if let Some(p) = &self.progress {
                 use std::sync::atomic::Ordering;
+                // Windows' own units, shown as a count while nothing is done.
+                p.work_in_bytes.store(false, Ordering::Relaxed);
                 p.work_total.store(u64::from(total), Ordering::Relaxed);
                 p.work_done.store(u64::from(so_far), Ordering::Relaxed);
             }
@@ -705,6 +707,7 @@ fn copy_tracked(
         // The engine reports its own work, starting from nothing.
         progress.work_done.store(0, Ordering::Relaxed);
         progress.work_total.store(0, Ordering::Relaxed);
+        progress.work_in_bytes.store(false, Ordering::Relaxed);
         let rest = FileOp::Copy {
             sources: fast.rest.iter().map(|(_, path)| path.clone()).collect(),
             dest: dest.to_path_buf(),

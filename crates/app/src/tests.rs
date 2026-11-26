@@ -178,6 +178,8 @@ struct FakeShell {
     seq: AtomicU32,
     /// Simulates an operation's effect on the file system (e.g. a new folder appears in FakeFs).
     on_op: Mutex<Option<OpHook>>,
+    /// Copies and moves count each item they were given as done, as Windows' engine does.
+    counts_done: std::sync::atomic::AtomicBool,
     icons: Mutex<Vec<PathBuf>>,
     /// Extensions asked for their registered type icon. Only `dwg` has one (a CAD program's).
     type_icons: Mutex<Vec<String>>,
@@ -347,6 +349,23 @@ impl Shell for FakeShell {
 
     fn format_time(&self, _: SystemTime) -> String {
         "2026-01-01 00:00".into()
+    }
+
+    fn file_op_tracked(
+        &self,
+        op: &FileOp,
+        owner: Option<isize>,
+        progress: &Arc<crate::shell::OpProgress>,
+    ) -> (Result<OpOutcome, ShellError>, Option<crate::shell::Undo>) {
+        let out = self.file_op_undoable(op, owner);
+        if self.counts_done.load(Ordering::Relaxed)
+            && let FileOp::Copy { sources, .. } | FileOp::Move { sources, .. } = op
+        {
+            progress
+                .done
+                .fetch_add(sources.len() as u64, Ordering::Relaxed);
+        }
+        out
     }
 
     fn file_op(&self, op: &FileOp, _owner: Option<isize>) -> Result<OpOutcome, ShellError> {

@@ -499,14 +499,20 @@ fn move_virtual_drop(
             .map(|n| Arc::from(n.to_string_lossy().as_ref()))
             .collect(),
     ));
-    // The move reports its own progress.
+    // The move reports its own progress. The items are counted once, as the drop wrote them:
+    // the move of what was written counts them again (#456).
     progress.work_done.store(0, Ordering::Relaxed);
     progress.work_total.store(0, Ordering::Relaxed);
+    progress.work_in_bytes.store(false, Ordering::Relaxed);
+    let written = progress.done.swap(0, Ordering::Relaxed);
     let op = FileOp::Move {
         sources: extracted.top,
         dest,
     };
     let (result, undo, handed_off) = env.run(&op, progress);
+    if matches!(result, Ok(OpOutcome::Done)) {
+        progress.done.store(written, Ordering::Relaxed);
+    }
     follow.handed_off = handed_off;
     // Undone like a copy: what arrived is removed (to the Recycle Bin), not put back in the
     // temp folder.
@@ -651,6 +657,7 @@ fn verify_copies(
     use std::sync::atomic::Ordering;
     progress.verifying.store(true, Ordering::Relaxed);
     progress.work_done.store(0, Ordering::Relaxed);
+    progress.work_in_bytes.store(true, Ordering::Relaxed);
     progress.work_total.store(
         progress.bytes_total.load(Ordering::Relaxed),
         Ordering::Relaxed,

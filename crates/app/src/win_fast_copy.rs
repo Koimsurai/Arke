@@ -904,6 +904,7 @@ impl Plan {
             full: AtomicBool::new(false),
         };
         progress.work_done.store(0, Ordering::Relaxed);
+        progress.work_in_bytes.store(true, Ordering::Relaxed);
         progress.work_total.store(self.work(), Ordering::Relaxed);
         for level in self.levels() {
             parallel(&level, threads, |&at| self.make_folder(at, &state));

@@ -857,8 +857,7 @@ fn follow_takeover_setting(
     let services = services.clone();
     cx.spawn(async move |cx| {
         while let Ok(request) = rx.recv_async().await {
-            let opened = cx.update(|cx| open_taken_over(cx, &services, &request));
-            let _ = request.reply.send(opened);
+            cx.update(|cx| answer_taken_over(cx, &services, request));
         }
     })
     .detach();
@@ -964,6 +963,66 @@ fn follow_win_e_hook(
         }
     })
     .detach();
+}
+
+/// Answers one request of "Open folders in Arke" ([`open_taken_over`]). A network folder the early
+/// path took without looking ([`win_takeover::OpenRequest::unchecked`]) is looked at off the UI
+/// thread first ([`open_unchecked`]) and answered once that is done; requests after it don't wait
+/// for it.
+fn answer_taken_over(cx: &mut App, services: &Services, request: win_takeover::OpenRequest) {
+    if !request.unchecked {
+        let opened = open_taken_over(cx, services, &request);
+        let _ = request.reply.send(opened);
+        return;
+    }
+    let services = services.clone();
+    cx.spawn(async move |cx| {
+        let opened = open_unchecked(cx, &services, &request).await;
+        let _ = request.reply.send(opened);
+    })
+    .detach();
+}
+
+/// [`open_taken_over`] for a network folder nobody looked at (#285): it is looked at on a thread
+/// of its own, since the server may take seconds to answer. Opens nothing and answers `false` when
+/// it is not a folder (missing, a file, the server unreachable, credentials needed): File Explorer
+/// then gets it back and shows its own prompt or error. Also opens nothing once nobody waits for
+/// the answer: the takeover thread gave it back to File Explorer already.
+async fn open_unchecked(
+    cx: &mut gpui::AsyncApp,
+    services: &Services,
+    request: &win_takeover::OpenRequest,
+) -> bool {
+    let Target::Folder(folder) = &request.target else {
+        return cx.update(|cx| open_taken_over(cx, services, request));
+    };
+    let started = Instant::now();
+    let (tx, rx) = flume::bounded(1);
+    let (fs, path) = (Arc::clone(&services.fs), folder.clone());
+    explorer::spawn_thread("takeover-check", move || {
+        let _ = tx.send(fs.stat(&path).map(|entry| entry.is_dir_like()));
+    });
+    let why = match rx.recv_async().await {
+        Ok(Ok(true)) => None,
+        Ok(Ok(false)) => Some("not a folder".to_owned()),
+        Ok(Err(err)) => Some(err.to_string()),
+        Err(_) => Some("the check did not finish".to_owned()),
+    };
+    let ms = started.elapsed().as_millis();
+    if let Some(why) = why {
+        log::info!(
+            "takeover: network folder {folder:?} given back to File Explorer after {ms} ms: {why}"
+        );
+        return false;
+    }
+    if request.reply.is_disconnected() {
+        log::info!(
+            "takeover: network folder {folder:?} found after {ms} ms, too late: File Explorer has it"
+        );
+        return false;
+    }
+    log::debug!("takeover: network folder {folder:?} found after {ms} ms");
+    cx.update(|cx| open_taken_over(cx, services, request))
 }
 
 /// Opens a window showing what an Explorer window showed. Answers whether Arke has a window.

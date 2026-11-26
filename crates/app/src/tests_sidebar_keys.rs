@@ -439,18 +439,15 @@ fn tab_walks_the_stops_from_the_home_page(cx: &mut TestAppContext) {
         key(cx, "f6");
     }
     assert_eq!(stop(&ws, cx), "list0", "the page has the keyboard");
+    // The pane row and the search box aren't drawn under a page: the page and the sidebar are
+    // the only stops, and Tab never lands on a control that isn't there.
     let forward = round(&ws, cx, "tab");
-    assert_eq!(
-        parts(&forward),
-        ["sidebar", "path", "toolbar", "search"],
-        "{forward:?}"
-    );
+    assert_eq!(parts(&forward), ["sidebar"], "{forward:?}");
     let back = round(&ws, cx, "shift-tab");
-    assert_eq!(
-        parts(&back),
-        ["search", "toolbar", "path", "sidebar"],
-        "{back:?}"
-    );
+    assert_eq!(parts(&back), ["sidebar"], "{back:?}");
+    key(cx, "tab");
+    key(cx, "tab");
+    assert_eq!(stop(&ws, cx), "list0");
 }
 
 /// With a context menu open, or while renaming, Tab doesn't walk to another region.

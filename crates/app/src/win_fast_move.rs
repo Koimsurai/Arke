@@ -50,6 +50,10 @@ pub(crate) struct Moved {
 
 /// What is known about one item, for [`can_rename`].
 #[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a fact table for one yes/no decision; each fact is tested and named on its own"
+)]
 struct Facts {
     /// Source folder and destination are on the same volume.
     same_volume: bool,

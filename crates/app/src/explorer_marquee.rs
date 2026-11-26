@@ -19,8 +19,6 @@ use gpui::{
 use super::{Explorer, ViewMode};
 use crate::theme;
 
-/// Movement needed before it counts as a drag rather than a click on empty space
-const DRAG_THRESHOLD: Pixels = px(4.);
 /// Scroll per mouse move when dragged past the edge, as a fraction of the overshoot
 const EDGE_SCROLL: f32 = 0.5;
 
@@ -93,7 +91,8 @@ impl Explorer {
         };
         marquee.current = position;
         let moved = (position - (marquee.start + offset)).map(|v| v.abs());
-        if !marquee.dragging && moved.x < DRAG_THRESHOLD && moved.y < DRAG_THRESHOLD {
+        let threshold = cx.drag_threshold();
+        if !marquee.dragging && moved.x < threshold.width && moved.y < threshold.height {
             return;
         }
         marquee.dragging = true;

@@ -13,6 +13,9 @@ When gpui-pre is upgraded:
 
 Zed's Windows platform crate (Apache-2.0), unchanged except for:
 
+- `src/platform.rs` `Platform::drag_threshold`: reports `SM_CXDRAG` and `SM_CYDRAG` (at 96 DPI, so
+  logical pixels) for the drag threshold of gpui-pre (see there). Usually 4 px; GPUI's own was 2 px,
+  twice as sensitive as File Explorer.
 - `src/directx_renderer.rs`: the two path intermediate textures (one of them 4x MSAA) are made on
   the first frame that draws a path, and dropped when the window is resized or on the next frame
   without paths, instead of being kept for every window at all times. Together they take 20 of the
@@ -143,6 +146,13 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
 
 Zed's GPUI (Apache-2.0), unchanged except for:
 
+- `src/platform.rs` `Platform::drag_threshold` (default method, 2 px per axis), `src/app.rs`
+  `App::drag_threshold`, `src/elements/div.rs` (the check that turns a press into a drag) and
+  `src/platform/test/platform.rs`, `src/app/test_context.rs` (`TestAppContext::set_drag_threshold`):
+  how far the pointer must move before `on_drag` starts is asked of the platform, per axis (a
+  rectangle centered on the press, like Windows' `SM_CXDRAG`/`SM_CYDRAG`), instead of the fixed 2 px
+  radius. Other platforms keep 2 px. Arke's own thresholds (marquee, right-button drag) use the same
+  value. Worth offering upstream.
 - `src/elements/div.rs` `InteractiveElement::on_focused_bounds` (`Interactivity::focused_bounds_listener`,
   called in `Interactivity::prepaint`): a listener given the element's bounds each time it is
   prepainted while it has the focus. Arke's Settings scroll the control Tab moved to into view with

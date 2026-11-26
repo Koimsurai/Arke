@@ -218,6 +218,11 @@ impl TestAppContext {
         self.test_platform.did_prompt_for_new_path()
     }
 
+    /// Sets how far the pointer must move after a press before it becomes a drag.
+    pub fn set_drag_threshold(&self, threshold: crate::Size<crate::Pixels>) {
+        self.test_platform.set_drag_threshold(threshold);
+    }
+
     /// Returns the number of active idle sleep prevention tokens.
     pub fn active_idle_sleep_preventions(&self) -> usize {
         self.test_platform.active_idle_sleep_preventions()

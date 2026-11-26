@@ -522,3 +522,56 @@ fn network_hides_and_comes_back(cx: &mut TestAppContext) {
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "network-header"), "back");
 }
+
+/// A spot on the places list's scrollbar `from_bottom` above its lower end: right of the rows,
+/// short of the sidebar's edge.
+fn places_track(cx: &mut VisualTestContext, from_bottom: Pixels) -> gpui::Point<Pixels> {
+    let frame = bounds(cx, "sidebar-places-frame");
+    point(frame.right() + px(2.), frame.bottom() - from_bottom)
+}
+
+/// The places list has the tab list's scrollbar (#427): nothing is there while the places fit, and
+/// once they don't a press below the thumb pages down and the thumb can be dragged.
+#[gpui::test]
+fn the_places_list_has_a_scrollbar_once_it_overflows(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let overflow = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, _| ws.places_overflow_for_test())
+    };
+    let offset = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, _| ws.places_offset_for_test())
+    };
+    // Fits: no scrollbar to take the press.
+    assert!(overflow(&ws, cx) < px(1.), "the places fit");
+    let at = places_track(cx, px(8.));
+    click(cx, at);
+    assert_eq!(offset(&ws, cx), px(0.));
+
+    change(cx, |st| {
+        st.pinned = (0..30).map(|i| p(&format!("p{i:02}"))).collect();
+    });
+    refresh(cx);
+    let max = overflow(&ws, cx);
+    assert!(max > px(40.), "the places scroll");
+    // A press below the thumb pages down.
+    let at = places_track(cx, px(8.));
+    click(cx, at);
+    assert!(offset(&ws, cx) < px(-40.), "paged down");
+
+    // The thumb dragged: from the top of the list to its end.
+    ws.update(cx, |ws, cx| ws.scroll_places_for_test(px(0.), cx));
+    refresh(cx);
+    let frame = bounds(cx, "sidebar-places-frame");
+    let grab = point(frame.right() + px(2.), frame.top() + px(3.));
+    cx.simulate_mouse_down(grab, MouseButton::Left, Modifiers::none());
+    let to = point(grab.x, frame.bottom());
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        (offset(&ws, cx) + max).abs() < px(1.),
+        "dragged to the end: {:?} of {max:?}",
+        offset(&ws, cx)
+    );
+}

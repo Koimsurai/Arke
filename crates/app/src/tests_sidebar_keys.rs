@@ -482,3 +482,30 @@ fn tab_stays_put_in_a_menu_and_in_a_rename_box(cx: &mut TestAppContext) {
     assert_eq!(stop(&ws, cx), "none");
     key(cx, "escape");
 }
+
+/// Tab in the path bar completes only what was typed, and moves on once there is nothing more
+/// to complete: it never traps the keyboard.
+#[gpui::test]
+fn tab_in_the_path_bar_completes_typed_text_then_moves_on(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    // Untouched text: Tab moves on at once.
+    key(cx, "ctrl-l");
+    assert_eq!(stop(&ws, cx), "path");
+    key(cx, "tab");
+    assert!(stop(&ws, cx).starts_with("toolbar:"), "{}", stop(&ws, cx));
+
+    key(cx, "ctrl-l");
+    cx.simulate_input(r"C:\work\re");
+    settle(cx, "suggestions", |cx| {
+        view.update(cx, |v, _| v.suggestion_names() == ["reports"])
+    });
+    key(cx, "tab");
+    assert_eq!(
+        view.update(cx, |v, cx| v.path_text(cx)),
+        r"C:\work\reports\"
+    );
+    assert_eq!(stop(&ws, cx), "path", "Tab completed it");
+    key(cx, "tab");
+    assert!(stop(&ws, cx).starts_with("toolbar:"), "{}", stop(&ws, cx));
+}

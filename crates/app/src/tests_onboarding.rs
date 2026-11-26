@@ -44,7 +44,7 @@ fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut Settings)) {
     cx.run_until_parked();
 }
 
-fn click(cx: &mut VisualTestContext, id: &str) {
+fn click(cx: &mut VisualTestContext, id: &'static str) {
     let bounds = cx
         .debug_bounds(id)
         .unwrap_or_else(|| panic!("{id} should be drawn"));
@@ -94,14 +94,20 @@ fn shows_on_a_first_run_until_skipped(cx: &mut TestAppContext) {
 #[gpui::test]
 fn each_preset_applies_exactly_its_settings_on_next(cx: &mut TestAppContext) {
     let (_ws, cx) = start(cx);
-    for (ix, source) in Source::ALL.into_iter().enumerate() {
+    let tiles = [
+        "welcome-source-0",
+        "welcome-source-1",
+        "welcome-source-2",
+        "welcome-source-3",
+    ];
+    for (tile, source) in tiles.into_iter().zip(Source::ALL) {
         // Back to the defaults and the first step for each program.
         change(cx, |s| *s = Settings::default());
         cx.dispatch_action(crate::workspace::OpenSetupGuide);
         cx.run_until_parked();
         assert_eq!(step(cx), Some(0));
         let before = chosen(cx);
-        click(cx, &format!("welcome-source-{ix}"));
+        click(cx, tile);
         assert_eq!(chosen(cx), before, "{source:?}: nothing until Next");
         assert!(
             source.changes(&before).is_empty() || cx.debug_bounds("welcome-changes").is_some(),

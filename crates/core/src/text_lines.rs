@@ -398,6 +398,7 @@ fn content_len(bytes: &[u8], encoding: TextEncoding) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::io::Cursor;
 
     /// Hands out one byte per read, so every break straddles two chunks somewhere.
@@ -486,7 +487,7 @@ mod tests {
         let long = "é".repeat(600); // 1200 bytes
         let text = format!("short\n{long}\nend");
         let index = indexed(text.as_bytes(), 0, TextEncoding::Utf8);
-        let mut reader = Cursor::new(text.clone().into_bytes());
+        let mut reader = Cursor::new(text.into_bytes());
         let got = read_lines(&mut reader, &index, 0..3, 1001, &no_legacy).unwrap();
         // Cut at a character boundary (1001 is inside an é), then the ellipsis.
         assert_eq!(got[0], "short");
@@ -504,7 +505,10 @@ mod tests {
 
     #[test]
     fn a_middle_range_reads_only_its_lines() {
-        let text: String = (0..1000).map(|n| format!("line {n}\n")).collect();
+        let text = (0..1000).fold(String::new(), |mut text, n| {
+            let _ = writeln!(text, "line {n}");
+            text
+        });
         let index = indexed(text.as_bytes(), 0, TextEncoding::Utf8);
         assert_eq!(index.len(), 1001);
         let mut reader = Cursor::new(text.into_bytes());

@@ -55,9 +55,7 @@ const MEASURED_MAX: usize = 1 << 16;
 const MEASURED_KEEP: usize = 4096;
 /// Block requests the reader serves when they pile up (fast scrolling): the newest.
 const QUEUE_KEEP: usize = 8;
-/// Line height in the pane: GPUI's default (phi), which the pane has always used.
-const PANE_LINE_HEIGHT: f32 = 1.618_034;
-/// Line height in Quick Look, roomier like an editor.
+/// Line height in Quick Look, roomier like an editor (the pane keeps GPUI's default, phi).
 const LOOK_LINE_HEIGHT: f32 = 1.6;
 /// Advance of a Cascadia Mono character in ems, for estimating where lines wrap.
 const CHAR_EM: f32 = 0.6;
@@ -906,14 +904,13 @@ pub(super) fn code_view(
     } else {
         theme::fs_12()
     };
-    let line_h = (font
-        * if large {
-            LOOK_LINE_HEIGHT
-        } else {
-            PANE_LINE_HEIGHT
-        })
-    .round()
-    .max(px(1.));
+    // In pixels the way GPUI works out a line height, so the rows are exactly this tall.
+    let spacing = if large {
+        gpui::relative(LOOK_LINE_HEIGHT)
+    } else {
+        gpui::phi()
+    };
+    let line_h = spacing.to_pixels(font.into(), font).round().max(px(1.));
     let count = doc.count();
     let digits = count.max(1).to_string().len();
     // Line numbers take about 8 px a digit at normal size.

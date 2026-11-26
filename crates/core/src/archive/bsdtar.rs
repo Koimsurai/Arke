@@ -221,7 +221,8 @@ mod tests {
     #[test]
     fn decodes_through_system_tar_with_stdin_and_no_window() {
         let tar = PathBuf::from(r"C:\Windows\System32\tar.exe");
-        let input = std::env::temp_dir().join(format!("arke-bsdtar-cmd-{}", std::process::id()));
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input");
         fs::write(&input, b"").unwrap();
         let cmd = command(&tar, File::open(&input).unwrap());
         assert_eq!(cmd.get_program(), tar.as_os_str());
@@ -238,7 +239,6 @@ mod tests {
             .collect();
         assert!(removed.contains(&"TAR_READER_OPTIONS".to_owned()));
         drop(cmd);
-        let _ = fs::remove_file(&input);
         if let Some(found) = tar_exe() {
             let found = found.to_string_lossy().to_ascii_lowercase();
             assert!(found.ends_with(r"\system32\tar.exe"), "{found}");

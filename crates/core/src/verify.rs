@@ -171,14 +171,19 @@ fn fill(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
 mod tests {
     use super::*;
 
-    struct Temp(PathBuf);
+    struct Temp(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Temp {
         fn new(tag: &str) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("arke-verify-{tag}-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-verify-{tag}-"))
+                .tempdir()
+                .unwrap();
+            Self(guard.path().to_path_buf(), guard)
         }
 
         fn write(&self, rel: &str, body: &[u8]) -> PathBuf {
@@ -186,12 +191,6 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, body).unwrap();
             path
-        }
-    }
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 

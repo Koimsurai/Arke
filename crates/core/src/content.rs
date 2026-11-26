@@ -389,30 +389,25 @@ mod tests {
     use crate::fs::RealFs;
     use std::path::PathBuf;
 
-    struct TempDir(PathBuf);
+    struct TempDir(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "arke-content-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-content-{tag}-"))
+                .tempdir()
+                .unwrap();
+            Self(guard.path().to_path_buf(), guard)
         }
 
         fn file(&self, name: &str, bytes: &[u8]) -> PathBuf {
             let path = self.0.join(name);
             std::fs::write(&path, bytes).unwrap();
             path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 

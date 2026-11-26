@@ -1359,9 +1359,8 @@ mod tests {
         use crate::office::fixtures as office;
         use crate::pdf_text::fixtures::pdf;
         use std::fmt::Write as _;
-        let root = std::env::temp_dir().join(format!("arke-content-bench-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let root = tmp_dir.path().to_path_buf();
         let words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu";
         let started = Instant::now();
         let mut bytes = 0_usize;
@@ -1486,6 +1485,5 @@ mod tests {
             long_len / 1024,
             huge_len / 1024
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

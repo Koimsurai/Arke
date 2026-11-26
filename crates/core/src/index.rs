@@ -29,7 +29,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
@@ -261,12 +261,20 @@ struct PoolEntry<'a> {
 /// well formed (only in a corrupt file, which [`validate`] rejects). Mask, prefix and name sit
 /// together, so this reads no other memory than the name itself.
 fn pool_entry(pool: &str, at: usize) -> Option<PoolEntry<'_>> {
-    let bytes = pool.as_bytes();
-    let mask = bytes
+    let (name, next) = entry_name(pool, at)?;
+    let mask = pool
+        .as_bytes()
         .get(at..at + MASK_BYTES)?
         .iter()
         .rev()
         .fold(0u32, |mask, &b| (mask << 7) | u32::from(b));
+    Some(PoolEntry { mask, name, next })
+}
+
+/// The name of the pool entry at `at` and where the next entry starts, without reading the
+/// mask ([`pool_entry`]).
+fn entry_name(pool: &str, at: usize) -> Option<(&str, usize)> {
+    let bytes = pool.as_bytes();
     let at = at + MASK_BYTES;
     let (len, skip) = match *bytes.get(at)? {
         n if n < LONG_NAME => (usize::from(n), 1),
@@ -281,11 +289,7 @@ fn pool_entry(pool: &str, at: usize) -> Option<PoolEntry<'_>> {
     };
     let start = at + skip;
     let name = pool.get(start..start + len)?;
-    Some(PoolEntry {
-        mask,
-        name,
-        next: (start + len).div_ceil(4) * 4,
-    })
+    Some((name, (start + len).div_ceil(4) * 4))
 }
 
 /// The pool entry a node points to (`at`, a multiple of 4; [`pool_entry`]).
@@ -296,9 +300,12 @@ fn node_entry(pool: &str, at: u32) -> Option<PoolEntry<'_>> {
     pool_entry(pool, at as usize)
 }
 
-/// The name whose pool entry starts at `at` ([`node_entry`]).
+/// The name whose pool entry starts at `at`, a multiple of 4 ([`entry_name`]).
 fn name_entry(pool: &str, at: u32) -> Option<&str> {
-    node_entry(pool, at).map(|e| e.name)
+    if !at.is_multiple_of(4) {
+        return None;
+    }
+    entry_name(pool, at as usize).map(|(name, _)| name)
 }
 
 /// Appends `name`'s pool entry ([`pool_entry`]). The caller checked it is at most [`NAME_MAX`]
@@ -1655,11 +1662,11 @@ impl Index {
         let mut count = (keep - 1) * NAME_CHUNK;
         let mut at = from as usize;
         while at < len {
-            let Some(entry) = pool_entry(&self.names, at) else {
+            let Some((_, next)) = entry_name(&self.names, at) else {
                 break;
             };
             count += 1;
-            at = entry.next;
+            at = next;
         }
         self.name_count = count;
     }
@@ -2344,8 +2351,13 @@ impl Index {
         let pool: &str = &self.names;
         let pool_len = pool.len();
         let marks: &[u32] = &self.name_marks;
+        // A bit per 4-byte slot of the pool, set by the threads as they go (a word at a time).
+        let bits: Vec<AtomicU64> = (0..(pool_len / 4 + 1).div_ceil(64))
+            .map(|_| AtomicU64::new(0))
+            .collect();
         let next = AtomicUsize::new(0);
-        let found: parking_lot::Mutex<NamePieces> = parking_lot::Mutex::new(Vec::new());
+        let found: parking_lot::Mutex<Vec<(usize, Vec<NameHit>)>> =
+            parking_lot::Mutex::new(Vec::new());
         let worker = || {
             WORK.with_borrow_mut(|slot| {
                 let work = slot.get_or_insert_with(Work::new);
@@ -2356,38 +2368,12 @@ impl Index {
                         break;
                     }
                     let end = marks.get(k + 1).map_or(pool_len, |&at| at as usize);
-                    let mut hits = Vec::new();
-                    let mut at = marks[k] as usize;
-                    while at < end {
-                        let Some(entry) = pool_entry(pool, at) else {
-                            break;
-                        };
-                        if m.needle.is_none_or(|needle| needle.may_match(entry.mask))
-                            && let Some(score) = pattern
-                                .score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
-                        {
-                            let excluded = m.exclude.is_some_and(|exact| {
-                                exact
-                                    .score(
-                                        Utf32Str::new(entry.name, &mut work.buf),
-                                        &mut work.matcher,
-                                    )
-                                    .is_some()
-                            });
-                            let len = entry.name.len() as u16;
-                            // The pool is under 4 GiB (u32 offsets), so this fits.
-                            hits.push((
-                                (at / 4) as u32,
-                                NameHit {
-                                    score,
-                                    len,
-                                    excluded,
-                                },
-                            ));
-                        }
-                        at = entry.next;
-                    }
-                    mine.push((k, hits));
+                    let piece = Piece {
+                        pool,
+                        from: marks[k] as usize,
+                        end,
+                    };
+                    mine.push((k, piece.matches(m, pattern, work, &bits)));
                 }
                 found.lock().extend(mine);
             });
@@ -2405,7 +2391,8 @@ impl Index {
         }
         let mut found = found.into_inner();
         found.sort_unstable_by_key(|(k, _)| *k);
-        Some(NameMatches::new(pool_len / 4 + 1, found))
+        let bits = bits.into_iter().map(AtomicU64::into_inner).collect();
+        Some(NameMatches::new(bits, found))
     }
 
     /// Builds paths for the selected candidates, applies the folder condition (`dir`: the folder
@@ -2607,9 +2594,8 @@ impl Index {
         let name_marks: Vec<u32> = (0..layout.mark_count)
             .map(|k| le32(layout.name_marks + k * 4))
             .collect();
-        validate(&nodes, &names)?;
+        validate(&nodes, &names, &name_marks, layout.name_count)?;
         validate_big(&big_ids, count)?;
-        validate_marks(&name_marks, names.len())?;
         Ok(Self {
             roots: layout.roots,
             nodes: Column::Owned(nodes),
@@ -2688,9 +2674,8 @@ impl Index {
             offset: layout.name_marks,
             len: layout.mark_count,
         };
-        validate(&nodes, &names)?;
+        validate(&nodes, &names, &name_marks, layout.name_count)?;
         validate_big(&big_ids, layout.count)?;
-        validate_marks(&name_marks, layout.names_len)?;
         Ok(Self {
             roots: layout.roots,
             nodes,
@@ -2799,17 +2784,41 @@ fn bad_format() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "index format")
 }
 
-/// Checks every node's parent and name entry are in bounds (a corrupt file can't make queries go
-/// out of range).
-fn validate(nodes: &[Node], names: &str) -> io::Result<()> {
+/// Checks the name pool is a run of well-formed entries (`name_count` of them, `marks` at every
+/// [`NAME_CHUNK`]-th) and every node's parent and name are in bounds, so a corrupt file can't
+/// make queries go out of range or misread names. One pass along the pool notes where entries
+/// start (a bit per 4-byte slot); each node then only looks its bit up, instead of reading the
+/// pool at a random place.
+fn validate(nodes: &[Node], names: &str, marks: &[u32], name_count: usize) -> io::Result<()> {
     let count = nodes.len();
     if count > MAX_ITEMS {
         return Err(bad_format());
     }
+    let mut starts = vec![0u64; (names.len() / 4).div_ceil(64) + 1];
+    let (mut at, mut entries) = (0usize, 0usize);
+    while at < names.len() {
+        if entries.is_multiple_of(NAME_CHUNK)
+            && marks.get(entries / NAME_CHUNK).copied() != u32::try_from(at).ok()
+        {
+            return Err(bad_format());
+        }
+        let (_, next) = entry_name(names, at).ok_or_else(bad_format)?;
+        starts[at / 256] |= 1 << ((at / 4) % 64);
+        at = next;
+        entries += 1;
+    }
+    if at != names.len() || entries != name_count || marks.len() != entries.div_ceil(NAME_CHUNK) {
+        return Err(bad_format());
+    }
     for node in nodes {
         let parent = node.parent();
+        let at = node.name as usize;
         let parent_ok = parent == NO_PARENT || (parent as usize) < count;
-        if !parent_ok || name_entry(names, node.name).is_none() {
+        let name_ok = at.is_multiple_of(4)
+            && starts
+                .get(at / 256)
+                .is_some_and(|w| w & (1 << ((at / 4) % 64)) != 0);
+        if !parent_ok || !name_ok {
             return Err(bad_format());
         }
     }
@@ -2820,19 +2829,6 @@ fn validate(nodes: &[Node], names: &str) -> io::Result<()> {
 fn validate_big(ids: &[u32], count: usize) -> io::Result<()> {
     let ascending = ids.windows(2).all(|w| w[0] < w[1]);
     if !ascending || ids.last().is_some_and(|&id| id as usize >= count) {
-        return Err(bad_format());
-    }
-    Ok(())
-}
-
-/// Checks the name marks are ascending entry starts inside the pool (a query's first pass splits
-/// the pool there; a wrong one only misreads names, but a corrupt file is rebuilt anyway).
-fn validate_marks(marks: &[u32], pool_len: usize) -> io::Result<()> {
-    let ascending = marks.windows(2).all(|w| w[0] < w[1]);
-    let aligned = marks
-        .iter()
-        .all(|&at| at.is_multiple_of(4) && (at as usize) < pool_len);
-    if !ascending || !aligned || (pool_len > 0 && marks.first() != Some(&0)) {
         return Err(bad_format());
     }
     Ok(())
@@ -3151,8 +3147,67 @@ struct NameHit {
     excluded: bool,
 }
 
-/// The first pass's output: per piece of the pool (its number), (slot, hit) per matching name.
-type NamePieces = Vec<(usize, Vec<(u32, NameHit)>)>;
+/// One piece of the name pool for a query's first pass: entries from `from` up to `end`.
+struct Piece<'a> {
+    pool: &'a str,
+    from: usize,
+    end: usize,
+}
+
+impl Piece<'_> {
+    /// The piece's matching names, in pool order, each with its bit set in `seen` (OR-ed in
+    /// once per 64 slots: pieces next to each other can share a word).
+    fn matches(
+        &self,
+        m: &Matching,
+        pattern: &Pattern,
+        work: &mut Work,
+        seen: &[AtomicU64],
+    ) -> Vec<NameHit> {
+        let flush = |(index, set): (usize, u64)| {
+            if set != 0
+                && let Some(cell) = seen.get(index)
+            {
+                cell.fetch_or(set, Ordering::Relaxed);
+            }
+        };
+        let mut out = Vec::new();
+        // The word of `seen` being filled and its bits so far.
+        let mut pending = (usize::MAX, 0u64);
+        let mut at = self.from;
+        while at < self.end {
+            let Some(entry) = pool_entry(self.pool, at) else {
+                break;
+            };
+            if m.needle.is_none_or(|needle| needle.may_match(entry.mask))
+                && let Some(score) =
+                    pattern.score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
+            {
+                let excluded = m.exclude.is_some_and(|exact| {
+                    exact
+                        .score(Utf32Str::new(entry.name, &mut work.buf), &mut work.matcher)
+                        .is_some()
+                });
+                let slot = at / 4;
+                if slot / 64 != pending.0 {
+                    flush(pending);
+                    pending = (slot / 64, 0);
+                }
+                pending.1 |= 1 << (slot % 64);
+                // Names are at most NAME_MAX bytes, so this fits.
+                let len = entry.name.len() as u16;
+                out.push(NameHit {
+                    score,
+                    len,
+                    excluded,
+                });
+            }
+            at = entry.next;
+        }
+        flush(pending);
+        out
+    }
+}
 
 /// The names that matched in a query's first pass, found by where their pool entry starts.
 struct NameMatches {
@@ -3165,18 +3220,11 @@ struct NameMatches {
 }
 
 impl NameMatches {
-    /// From the first pass's pieces in pool order, each with its (slot, hit) pairs ascending.
-    fn new(slots: usize, pieces: NamePieces) -> Self {
-        let mut bits = vec![0u64; slots.div_ceil(64)];
-        let mut matched = Vec::with_capacity(pieces.iter().map(|(_, h)| h.len()).sum());
-        for (_, piece) in pieces {
-            for (slot, hit) in piece {
-                let slot = slot as usize;
-                if let Some(word) = bits.get_mut(slot / 64) {
-                    *word |= 1 << (slot % 64);
-                    matched.push(hit);
-                }
-            }
+    /// From the first pass's bits and its pieces' hits (by piece number, so in pool order).
+    fn new(bits: Vec<u64>, pieces: Vec<(usize, Vec<NameHit>)>) -> Self {
+        let mut all = Vec::with_capacity(pieces.iter().map(|(_, h)| h.len()).sum());
+        for (_, piece) in &pieces {
+            all.extend_from_slice(piece);
         }
         let mut before = Vec::with_capacity(bits.len());
         let mut set = 0u32;
@@ -3187,7 +3235,7 @@ impl NameMatches {
         Self {
             bits,
             before,
-            hits: matched,
+            hits: all,
         }
     }
 
@@ -5473,7 +5521,10 @@ mod tests {
         assert_eq!(index.name_count, 3 * NAME_CHUNK + 6, "root and files");
         assert_eq!(index.name_marks.len(), 4);
         assert_eq!(index.name_marks[0], 0);
-        validate_marks(&index.name_marks, index.names.len()).unwrap();
+        let check = |index: &Index, marks: &[u32], count: usize| {
+            validate(&index.nodes, &index.names, marks, count)
+        };
+        check(&index, &index.name_marks, index.name_count).unwrap();
         same_both_ways(&index, &q("report_0004"), false);
 
         // Cut back into the second piece.
@@ -5486,7 +5537,7 @@ mod tests {
         }
         assert_eq!(index.name_count, cut + NAME_CHUNK);
         assert_eq!(index.name_marks.len(), 3);
-        validate_marks(&index.name_marks, index.names.len()).unwrap();
+        check(&index, &index.name_marks, index.name_count).unwrap();
         for text in ["again_0001", "report_00041", "report", "zz"] {
             same_both_ways(&index, &q(text), false);
         }
@@ -5496,12 +5547,27 @@ mod tests {
             Some(r"C:\again_0004095.txt")
         );
 
-        // Marks out of order, unaligned or past the pool: refused.
-        assert!(validate_marks(&[0, 0], 64).is_err());
-        assert!(validate_marks(&[0, 6], 64).is_err());
-        assert!(validate_marks(&[0, 64], 64).is_err());
-        assert!(validate_marks(&[4], 64).is_err(), "must start at 0");
-        assert!(validate_marks(&[], 0).is_ok());
+        // A mark off its entry, one missing or extra, or a wrong name count: refused.
+        let marks = index.name_marks.to_vec();
+        let mut moved = marks.clone();
+        moved[1] += 4;
+        assert!(check(&index, &moved, index.name_count).is_err(), "moved");
+        assert!(
+            check(&index, &marks[..2], index.name_count).is_err(),
+            "missing"
+        );
+        let mut extra = marks.clone();
+        extra.push(u32::try_from(index.names.len()).unwrap());
+        assert!(check(&index, &extra, index.name_count).is_err(), "extra");
+        assert!(
+            check(&index, &marks, index.name_count + 1).is_err(),
+            "count"
+        );
+        // A node pointing inside an entry: refused.
+        let mut nodes = index.nodes.to_vec();
+        nodes[1].name += 4;
+        assert!(validate(&nodes, &index.names, &marks, index.name_count).is_err());
+        assert!(validate(&[], "", &[], 0).is_ok());
     }
 
     #[test]

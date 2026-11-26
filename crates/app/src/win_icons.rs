@@ -236,7 +236,7 @@ mod tests {
         assert!(!is_local_disk(Path::new(r"\\server\share\a.png")));
         assert!(!is_local_disk(Path::new(r"relative\a.png")));
         assert!(is_fixed_disk(Path::new(&format!(r"{system}\Windows"))));
-        assert!(!is_fixed_disk(Path::new(r"\server\share\a.png")));
+        assert!(!is_fixed_disk(Path::new(r"\\server\share\a.png")));
     }
 
     #[test]

@@ -518,8 +518,7 @@ fn widening_a_column_past_the_pane_scrolls_the_columns(cx: &mut TestAppContext) 
         columns(&view, cx)
             .iter()
             .find(|c| c.0 == Col::Size)
-            .map(|c| c.1 + c.2)
-            .unwrap_or_default()
+            .map_or_default(|c| c.1 + c.2)
     };
 
     // Everything fits: no sideways range, header and rows at rest.

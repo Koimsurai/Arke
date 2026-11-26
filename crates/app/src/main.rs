@@ -113,6 +113,7 @@ mod win_dragimage;
 mod win_e_hook;
 mod win_eject;
 mod win_fast_copy;
+mod win_fast_move;
 mod win_fast_recycle;
 mod win_fileops;
 mod win_folder_com;

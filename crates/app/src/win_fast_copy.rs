@@ -40,6 +40,11 @@
 //!    (`COPY_FILE_NO_BUFFERING`).
 //! 3. Each folder gets its source's modified time back: adding its contents changed it.
 //!
+//! A copy with an end on the network (a UNC path or a mapped drive) asks for SMB compression
+//! (`COPY_FILE_REQUEST_COMPRESSED_TRAFFIC`) on Windows 11 22H2 and later only; older builds never
+//! get the flag. The checks above keep network paths out for now, so this only matters if they are
+//! ever let in.
+//!
 //! Progress counts files and folders done (`done`, as the engine counts items) and work done out
 //! of a total: the bytes plus a fixed share per item, so a copy of many small files still moves
 //! steadily. Big files report their bytes as they go. Cancel stops before the next file and in the
@@ -57,15 +62,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{CloseHandle, FILETIME};
 use windows::Win32::Storage::FileSystem::{
-    COPY_FILE_FAIL_IF_EXISTS, COPY_FILE_NO_BUFFERING, COPYFILE2_CALLBACK_CHUNK_FINISHED,
-    COPYFILE2_EXTENDED_PARAMETERS, COPYFILE2_MESSAGE, COPYFILE2_MESSAGE_ACTION,
-    COPYFILE2_PROGRESS_CANCEL, COPYFILE2_PROGRESS_CONTINUE, CopyFile2, CreateDirectoryExW,
-    CreateDirectoryW, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
-    FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
-    FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW,
-    GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, OPEN_EXISTING, SetFileAttributesW,
-    SetFileTime, WIN32_FIND_DATAW,
+    COPY_FILE_FAIL_IF_EXISTS, COPY_FILE_FLAGS, COPY_FILE_NO_BUFFERING,
+    COPYFILE2_CALLBACK_CHUNK_FINISHED, COPYFILE2_EXTENDED_PARAMETERS, COPYFILE2_MESSAGE,
+    COPYFILE2_MESSAGE_ACTION, COPYFILE2_PROGRESS_CANCEL, COPYFILE2_PROGRESS_CONTINUE, CopyFile2,
+    CreateDirectoryExW, CreateDirectoryW, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_ATTRIBUTES, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
+    FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW,
+    GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, OPEN_EXISTING,
+    SetFileAttributesW, SetFileTime, WIN32_FIND_DATAW,
 };
 use windows::core::HSTRING;
 
@@ -112,6 +117,13 @@ const FILE_NAMED_STREAMS: u32 = 0x0004_0000;
 /// `GetDriveTypeW` results (WinBase.h).
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
+const DRIVE_REMOTE: u32 = 4;
+/// `COPY_FILE_REQUEST_COMPRESSED_TRAFFIC` (WinBase.h): asks for SMB compression of the traffic.
+/// Only a request, but Windows before 11 22H2 rejects the flag, so it is never given there.
+const COPY_FILE_REQUEST_COMPRESSED_TRAFFIC: COPY_FILE_FLAGS = COPY_FILE_FLAGS(0x1000_0000);
+/// First Windows build whose `CopyFile2` takes [`COPY_FILE_REQUEST_COMPRESSED_TRAFFIC`]
+/// (Windows 11 22H2).
+const COMPRESSION_MIN_BUILD: u32 = 22621;
 
 /// What [`copy`] did.
 #[derive(Debug, Default)]
@@ -154,7 +166,10 @@ fn copy_with(sources: &[PathBuf], dest: &Path, progress: &OpProgress, ssd_only: 
         parents: HashMap::new(),
         names: HashSet::new(),
     };
-    let mut plan = Plan::default();
+    let mut plan = Plan {
+        compress: wants_compression(dest, sources),
+        ..Plan::default()
+    };
     for (index, source) in sources.iter().enumerate() {
         if progress.cancel.load(Ordering::Relaxed) {
             out.cancelled = true;
@@ -365,12 +380,12 @@ impl Admit {
 }
 
 /// Nothing is at `path`, not even a dangling link.
-fn absent(path: &Path) -> bool {
+pub(crate) fn absent(path: &Path) -> bool {
     matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// `path` with every link resolved, `\\?\X:\...`; `None` when it isn't on a drive letter then.
-fn real_path(path: &Path) -> Option<PathBuf> {
+pub(crate) fn real_path(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(arke_core::path::verbatim(path))
         .ok()
         .filter(|real| {
@@ -381,7 +396,7 @@ fn real_path(path: &Path) -> Option<PathBuf> {
 
 /// A path on a fixed or removable drive letter that isn't a subst drive. Local mount information
 /// only, never the network.
-fn local_letter(path: &Path) -> bool {
+pub(crate) fn local_letter(path: &Path) -> bool {
     let Some(Component::Prefix(prefix)) = path.components().next() else {
         return false;
     };
@@ -398,7 +413,7 @@ fn local_letter(path: &Path) -> bool {
 }
 
 /// Where the volume holding `path` is mounted, `X:\` or a folder, with a trailing backslash.
-fn volume_root(path: &Path) -> Option<PathBuf> {
+pub(crate) fn volume_root(path: &Path) -> Option<PathBuf> {
     fn ask(path: &Path, buf: &mut [u16]) -> bool {
         let wide = HSTRING::from(path.as_os_str());
         // SAFETY: wide is NUL-terminated; the buffer and its length are passed together.
@@ -609,6 +624,11 @@ fn list(dir: &Path) -> windows::core::Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// The name as stored and the attributes of the item at `path` (a `\\?\` path); for fast move.
+pub(crate) fn entry_of(path: &Path) -> Option<(OsString, u32)> {
+    find_one(path).map(|entry| (entry.name, entry.attributes))
+}
+
 /// The entry of the item at `path` itself (a `\\?\` path).
 fn find_one(path: &Path) -> Option<Entry> {
     let mut found = None;
@@ -669,6 +689,8 @@ struct Plan {
     files: Vec<File>,
     /// Bytes of all the files.
     bytes: u64,
+    /// Ask for SMB compression on each file (see [`wants_compression`]).
+    compress: bool,
 }
 
 /// How listing an item ended.
@@ -931,7 +953,7 @@ impl Plan {
             size: file.size,
             sent: Cell::new(0),
         };
-        let copied = copy_one(&src, &dst, file.size, &chunks);
+        let copied = copy_one(&src, &dst, file.size, self.compress, &chunks);
         let left = file.size.saturating_sub(chunks.sent.get());
         match copied {
             Ok(()) => {
@@ -1106,10 +1128,80 @@ fn same_refs_volume(src: &Path, dst: &Path) -> bool {
     }
 }
 
+/// Whether `path` is on the network: a UNC path, or a drive letter that `drive_type` (the
+/// `GetDriveTypeW` answer for a letter) says is remote. Path text only, apart from `drive_type`.
+fn is_network_path(path: &Path, drive_type: impl FnOnce(char) -> u32) -> bool {
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return false;
+    };
+    match prefix.kind() {
+        Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            drive_type(char::from(letter)) == DRIVE_REMOTE
+        }
+        Prefix::Verbatim(_) | Prefix::DeviceNS(_) => false,
+    }
+}
+
+/// The drive type of `letter:\`, local mount information only.
+fn drive_type_of(letter: char) -> u32 {
+    let root = HSTRING::from(format!(r"{letter}:\"));
+    // SAFETY: root is NUL-terminated.
+    unsafe { GetDriveTypeW(&root) }
+}
+
+/// Whether this Windows build takes the compression flag; the build is read once.
+fn os_takes_compression() -> bool {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OK.get_or_init(|| {
+        crate::win::windows_version()
+            .is_some_and(|(major, _, build)| build_takes_compression(major, build))
+    })
+}
+
+/// The build gate of [`os_takes_compression`].
+const fn build_takes_compression(major: u32, build: u32) -> bool {
+    major >= 10 && build >= COMPRESSION_MIN_BUILD
+}
+
+/// A copy between `dest` and `sources` asks for SMB compression when the Windows build takes the
+/// flag and any end is on the network. The build is checked first, so older Windows does no more
+/// than read a cached flag.
+fn wants_compression(dest: &Path, sources: &[PathBuf]) -> bool {
+    os_takes_compression()
+        && std::iter::once(dest)
+            .chain(sources.iter().map(PathBuf::as_path))
+            .any(|path| is_network_path(path, drive_type_of))
+}
+
+/// The flags for one file: `base`, plus the compression request when asked for and the build
+/// takes it (`build_ok`; never on an older Windows, which would fail the call).
+const fn with_compression(
+    base: COPY_FILE_FLAGS,
+    compress: bool,
+    build_ok: bool,
+) -> COPY_FILE_FLAGS {
+    if compress && build_ok {
+        COPY_FILE_FLAGS(base.0 | COPY_FILE_REQUEST_COMPRESSED_TRAFFIC.0)
+    } else {
+        base
+    }
+}
+
 /// Copies the file `src` to `dst` (both `\\?\`), which must not exist. Big files report their
-/// bytes to `chunks` as they go.
-fn copy_one(src: &Path, dst: &Path, size: u64, chunks: &Chunks<'_>) -> windows::core::Result<()> {
-    let mut flags = COPY_FILE_FAIL_IF_EXISTS;
+/// bytes to `chunks` as they go. `compress` asks for SMB compression (see [`wants_compression`]).
+fn copy_one(
+    src: &Path,
+    dst: &Path,
+    size: u64,
+    compress: bool,
+    chunks: &Chunks<'_>,
+) -> windows::core::Result<()> {
+    let mut flags = with_compression(
+        COPY_FILE_FAIL_IF_EXISTS,
+        compress,
+        compress && os_takes_compression(),
+    );
     // Only the rare huge file asks about the volume (cached), so small files pay nothing.
     if size >= UNBUFFERED_FILE && no_buffering(size, same_refs_volume(src, dst)) {
         flags |= COPY_FILE_NO_BUFFERING;
@@ -1257,6 +1349,59 @@ mod tests {
         let progress = OpProgress::default();
         let copied = copy_with(sources, dest, &progress, false);
         (copied, progress)
+    }
+
+    #[test]
+    fn network_paths_are_unc_or_remote_drives() {
+        let remote = |letter: char| {
+            if letter == 'Z' {
+                DRIVE_REMOTE
+            } else {
+                DRIVE_FIXED
+            }
+        };
+        assert!(is_network_path(Path::new(r"\\server\share\a.txt"), remote));
+        assert!(is_network_path(
+            Path::new(r"\\?\UNC\server\share\a.txt"),
+            remote
+        ));
+        assert!(is_network_path(Path::new(r"Z:\a.txt"), remote));
+        assert!(is_network_path(Path::new(r"\\?\Z:\a.txt"), remote));
+        assert!(!is_network_path(Path::new(r"C:\a.txt"), remote));
+        assert!(!is_network_path(Path::new(r"\\?\C:\a.txt"), remote));
+        assert!(!is_network_path(Path::new(r"\\.\PIPE\x"), remote));
+        assert!(!is_network_path(Path::new("relative.txt"), remote));
+    }
+
+    #[test]
+    fn compression_needs_windows_11_22h2() {
+        assert!(!build_takes_compression(10, 19045), "Windows 10");
+        assert!(!build_takes_compression(10, 22000), "Windows 11 21H2");
+        assert!(!build_takes_compression(10, 22620));
+        assert!(build_takes_compression(10, 22621), "Windows 11 22H2");
+        assert!(build_takes_compression(10, 26200));
+        assert!(!build_takes_compression(6, 30000), "an old major never");
+    }
+
+    #[test]
+    fn the_compression_flag_is_added_only_when_asked_and_supported() {
+        let base = COPY_FILE_FAIL_IF_EXISTS;
+        assert_eq!(with_compression(base, false, true), base);
+        assert_eq!(with_compression(base, true, false), base, "older Windows");
+        assert_eq!(with_compression(base, false, false), base);
+        assert_eq!(with_compression(base, true, true).0, base.0 | 0x1000_0000);
+        assert_eq!(
+            with_compression(COPY_FILE_NO_BUFFERING, true, true).0,
+            COPY_FILE_NO_BUFFERING.0 | 0x1000_0000,
+            "other flags stay"
+        );
+    }
+
+    #[test]
+    fn a_local_copy_does_not_ask_for_compression() {
+        let sb = Scratch::new("nocompress");
+        let file = sb.file("a.txt", b"a");
+        assert!(!wants_compression(&sb.dst(""), &[file]));
     }
 
     #[test]

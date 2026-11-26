@@ -270,8 +270,8 @@ struct Port {
 impl Port {
     /// The port for local folders or the one for folders on file servers, made on first use.
     fn get(network: bool) -> io::Result<Arc<Self>> {
-        static LOCAL: Mutex<Option<Arc<Port>>> = parking_lot::const_mutex(None);
-        static NETWORK: Mutex<Option<Arc<Port>>> = parking_lot::const_mutex(None);
+        static LOCAL: Mutex<Option<Arc<Port>>> = Mutex::new(None);
+        static NETWORK: Mutex<Option<Arc<Port>>> = Mutex::new(None);
         let which = if network { &NETWORK } else { &LOCAL };
         let mut slot = which.lock();
         if let Some(port) = slot.as_ref() {

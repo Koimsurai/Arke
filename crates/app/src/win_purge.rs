@@ -311,11 +311,10 @@ fn account(result: io::Result<()>, progress: &OpProgress) -> Option<io::Error> {
 
 /// Removes a file or a link (never what a link points to).
 fn remove_child(child: &Child) -> io::Result<()> {
-    match child.kind {
-        Kind::DirLink => fs::remove_dir(&child.path),
-        Kind::File | Kind::Dir => {
-            remove_writable(&child.path, child.readonly, |p| fs::remove_file(p))
-        }
+    if child.kind == Kind::DirLink {
+        fs::remove_dir(&child.path)
+    } else {
+        remove_writable(&child.path, child.readonly, |p| fs::remove_file(p))
     }
 }
 
@@ -358,7 +357,7 @@ fn remove_batch(
     let mut errors = std::thread::scope(|scope| {
         let mut helpers = Vec::new();
         for _ in 1..workers().min(children.len()) {
-            helpers.push(scope.spawn(&work));
+            helpers.push(scope.spawn(work));
         }
         let mut errors = work();
         for helper in helpers {

@@ -43,7 +43,7 @@
 //! A copy with an end on the network (a UNC path or a mapped drive) asks for SMB compression
 //! (`COPY_FILE_REQUEST_COMPRESSED_TRAFFIC`) on Windows 11 22H2 and later only; older builds never
 //! get the flag. The checks above keep network paths out for now, so this only matters if they are
-//! ever let in.
+//! ever let in; for now this stays dormant, by decision (no network copies in fast copy).
 //!
 //! Progress counts files and folders done (`done`, as the engine counts items) and work done out
 //! of a total: the bytes plus a fixed share per item, so a copy of many small files still moves
@@ -62,12 +62,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{CloseHandle, FILETIME};
 use windows::Win32::Storage::FileSystem::{
-    COPY_FILE_FAIL_IF_EXISTS, COPY_FILE_FLAGS, COPY_FILE_NO_BUFFERING,
-    COPYFILE2_CALLBACK_CHUNK_FINISHED, COPYFILE2_EXTENDED_PARAMETERS, COPYFILE2_MESSAGE,
-    COPYFILE2_MESSAGE_ACTION, COPYFILE2_PROGRESS_CANCEL, COPYFILE2_PROGRESS_CONTINUE, CopyFile2,
-    CreateDirectoryExW, CreateDirectoryW, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_WRITE_ATTRIBUTES, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
+    COPY_FILE_FAIL_IF_EXISTS, COPY_FILE_NO_BUFFERING, COPY_FILE_REQUEST_COMPRESSED_TRAFFIC,
+    COPYFILE_FLAGS, COPYFILE2_CALLBACK_CHUNK_FINISHED, COPYFILE2_EXTENDED_PARAMETERS,
+    COPYFILE2_MESSAGE, COPYFILE2_MESSAGE_ACTION, COPYFILE2_PROGRESS_CANCEL,
+    COPYFILE2_PROGRESS_CONTINUE, CopyFile2, CreateDirectoryExW, CreateDirectoryW, CreateFileW,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic,
     FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW,
     GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, OPEN_EXISTING,
     SetFileAttributesW, SetFileTime, WIN32_FIND_DATAW,
@@ -118,9 +118,6 @@ const FILE_NAMED_STREAMS: u32 = 0x0004_0000;
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 const DRIVE_REMOTE: u32 = 4;
-/// `COPY_FILE_REQUEST_COMPRESSED_TRAFFIC` (WinBase.h): asks for SMB compression of the traffic.
-/// Only a request, but Windows before 11 22H2 rejects the flag, so it is never given there.
-const COPY_FILE_REQUEST_COMPRESSED_TRAFFIC: COPY_FILE_FLAGS = COPY_FILE_FLAGS(0x1000_0000);
 /// First Windows build whose `CopyFile2` takes [`COPY_FILE_REQUEST_COMPRESSED_TRAFFIC`]
 /// (Windows 11 22H2).
 const COMPRESSION_MIN_BUILD: u32 = 22621;
@@ -1176,13 +1173,9 @@ fn wants_compression(dest: &Path, sources: &[PathBuf]) -> bool {
 
 /// The flags for one file: `base`, plus the compression request when asked for and the build
 /// takes it (`build_ok`; never on an older Windows, which would fail the call).
-const fn with_compression(
-    base: COPY_FILE_FLAGS,
-    compress: bool,
-    build_ok: bool,
-) -> COPY_FILE_FLAGS {
+const fn with_compression(base: COPYFILE_FLAGS, compress: bool, build_ok: bool) -> COPYFILE_FLAGS {
     if compress && build_ok {
-        COPY_FILE_FLAGS(base.0 | COPY_FILE_REQUEST_COMPRESSED_TRAFFIC.0)
+        COPYFILE_FLAGS(base.0 | COPY_FILE_REQUEST_COMPRESSED_TRAFFIC.0)
     } else {
         base
     }

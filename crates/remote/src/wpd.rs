@@ -31,7 +31,7 @@ use windows::core::{GUID, HRESULT, PCWSTR, PWSTR};
 
 use crate::error::{RemoteError, RemoteResult};
 use crate::hub::TransferSink;
-use crate::mtp::{Device, Object, Portable, device_key, segments};
+use crate::mtp::{Device, DeviceInfo, Object, Portable, device_key, is_portable, segments};
 
 /// One request to a device (listing a big folder over MTP can take a while).
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -240,6 +240,10 @@ impl State {
         let mut out = Vec::new();
         self.ids.clear();
         for id in ids {
+            // Disk volumes WPD also lists are drives, shown under This PC already (#437).
+            if !is_portable(&DeviceInfo { pnp_id: id.clone() }) {
+                continue;
+            }
             let name = friendly_name(&manager, &id).unwrap_or_else(|| id.clone());
             let key = device_key(&name, &id);
             self.ids.insert(key.clone(), id);

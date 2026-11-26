@@ -426,6 +426,14 @@ scope.computer_prompt:
   es: Escriba un nombre para buscar en este equipo
   pt-BR: Digite um nome para pesquisar neste computador
   ja: 名前を入力して PC を検索
+scope.results_incomplete:
+  en: results may be incomplete while indexing
+  zh-TW: 索引建立中，結果可能不完整
+  zh-CN: 索引建立中，结果可能不完整
+  de: Ergebnisse während der Indizierung evtl. unvollständig
+  es: los resultados pueden estar incompletos mientras se indexa
+  pt-BR: os resultados podem estar incompletos durante a indexação
+  ja: インデックス作成中のため、結果が不完全な可能性があります
 scope.building_hint:
   en: "Results appear once the index is ready"
   zh-TW: "索引建好後就會顯示結果"

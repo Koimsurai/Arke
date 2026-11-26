@@ -2039,6 +2039,10 @@ impl Index {
         out: &mut Chunk,
     ) {
         let query = s.query;
+        // Each column (owned or mapped) resolved to a plain slice once per chunk, not per item.
+        let (nodes, masks, mtimes, sizes) =
+            (&*self.nodes, &*self.masks, &*self.mtimes, &*self.sizes);
+        let names: &str = &self.names;
         for k in range {
             let id = match s.within {
                 Some(within) => within[k],
@@ -2047,7 +2051,7 @@ impl Index {
                     Err(_) => break,
                 },
             };
-            let Some(node) = self.nodes.get(id as usize) else {
+            let Some(node) = nodes.get(id as usize) else {
                 continue;
             };
             if !s.show_hidden && node.flags() & FLAG_HIDDEN != 0 {
@@ -2055,15 +2059,15 @@ impl Index {
             }
             // Char mask: a name missing a letter the query needs can't match, no need to read it.
             if let Some(needle) = m.needle
-                && !needle.may_match(self.masks[id as usize])
+                && !needle.may_match(masks[id as usize])
             {
                 continue;
             }
-            let name = self.name(node);
-            let mtime = self.mtimes[id as usize];
+            let name = name_entry(names, node.name).unwrap_or("");
+            let mtime = mtimes[id as usize];
             let is_dir = node.flags() & FLAG_DIR != 0;
             if query.has_filters()
-                && !query.accepts(name, is_dir, self.sizes[id as usize], i64::from(mtime))
+                && !query.accepts(name, is_dir, sizes[id as usize], i64::from(mtime))
             {
                 continue;
             }

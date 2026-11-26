@@ -7031,6 +7031,100 @@ fn whole_pc_results_put_what_you_open_first(cx: &mut TestAppContext) {
     );
 }
 
+/// While the whole-PC index is built with no finished one (first run, or after an update changed
+/// its format), results found so far say they may be incomplete, and a search that finds
+/// nothing yet shows the indexing state rather than "no matches". Both go once it is built.
+#[gpui::test]
+fn whole_pc_results_say_when_the_index_is_still_being_built(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    use crate::global_search::{GlobalSearch, Roots};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![]);
+    fs.insert_dir(r"C:\a", vec![file("found.txt", 1)]);
+    fs.insert_dir(r"C:\slow", vec![file("late.txt", 1)]);
+    fs.hang(r"C:\slow");
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.update(|_, cx| {
+        GlobalSearch::init(
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
+            Roots::Fixed(vec![PathBuf::from(r"C:\")]),
+            None,
+            cx,
+        );
+        GlobalSearch::enable(cx);
+    });
+    let incomplete = t!("scope.results_incomplete").into_owned();
+    let search = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.set_scope(Scope::Computer, cx);
+                v.keep_filter_focus(window, cx);
+                v.run_global(cx);
+            });
+        });
+    };
+    let state = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| view.update(cx, |v, cx| (v.info_parts(cx), v.shows_building_state(cx))))
+    };
+    cx.dispatch_action(FocusFilter);
+    cx.simulate_input("found");
+
+    // Found so far: listed, marked as possibly incomplete.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        search(cx);
+        cx.run_until_parked();
+        if view.update(cx, |v, _| final_hits(v)) == [r"C:\a\found.txt"] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for partial results"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (parts, building) = state(cx);
+    assert!(parts.contains(&incomplete), "{parts:?}");
+    assert!(!building, "results are listed");
+
+    // Not walked yet: the indexing state, not "no matches".
+    cx.simulate_keystrokes("backspace backspace backspace backspace backspace");
+    cx.simulate_input("late");
+    search(cx);
+    wait_until(cx, &view, "searched", |v| {
+        v.search_results.as_ref().is_some_and(|r| !r.searching)
+    });
+    let (parts, building) = state(cx);
+    assert!(building);
+    assert!(
+        !parts.contains(&incomplete),
+        "nothing listed to mark: {parts:?}"
+    );
+
+    // Built: plain results again.
+    fs.release_all();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        search(cx);
+        cx.run_until_parked();
+        if view.update(cx, |v, _| final_hits(v)) == [r"C:\slow\late.txt"]
+            && !state(cx).1
+            && !state(cx).0.contains(&incomplete)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the built index"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// When nothing in this folder matches, the empty state offers wider scopes; the query is kept.
 #[gpui::test]
 fn no_filter_match_offers_wider_scopes(cx: &mut TestAppContext) {

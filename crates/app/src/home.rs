@@ -70,10 +70,10 @@ const fn recent_click_opens(single_click: bool, click_count: usize) -> bool {
     single_click || is_double_click(click_count)
 }
 
-/// A card's background: the picked one shows as a selected row.
+/// A card's background: the picked one wears the accent wash of a selected file row.
 fn card_bg(selected: bool) -> gpui::Rgba {
     if selected {
-        theme::selection()
+        theme::list_selection(true)
     } else {
         theme::card()
     }
@@ -808,7 +808,7 @@ impl HomePage {
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
-            .hover(|s| s.bg(theme::wash()))
+            .when(!selected, |d| d.hover(|s| s.bg(theme::wash())))
             .child(crate::assets::tinted(
                 icon,
                 card_icon(),
@@ -931,7 +931,7 @@ impl HomePage {
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
-            .hover(|s| s.bg(theme::wash()))
+            .when(!selected, |d| d.hover(|s| s.bg(theme::wash())))
             .child(crate::assets::tinted(
                 icon,
                 card_icon(),

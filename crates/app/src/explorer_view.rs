@@ -1052,7 +1052,8 @@ impl Explorer {
             .chain((range.end..prefetch_end).filter_map(key))
             .chain((prefetch_start..range.start).rev().filter_map(key))
             .collect();
-        self.media.update(cx, |m, cx| m.want(wanted, cx));
+        let view = cx.entity_id();
+        self.media.update(cx, |m, cx| m.want(view, wanted, cx));
         let media = self.media.read(cx);
         // A thumbnail decoded for another icon size stands in until this size's arrives.
         keys.iter()
@@ -3282,6 +3283,10 @@ impl Explorer {
 impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::a11y::sync(window);
+        // What the lists below ask of the media cache this frame replaces what they asked before.
+        let (window_id, view) = (window.window_handle().window_id(), cx.entity_id());
+        self.media
+            .update(cx, |m, cx| m.drawing(window_id, view, cx));
         self.before_render(window, cx);
         let searching = self.search_box_state(window, cx) == layout::SearchBox::Typing;
         div()

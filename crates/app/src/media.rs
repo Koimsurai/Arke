@@ -9,10 +9,14 @@
 //! - The visible tab calls [`MediaStore::want`] every frame with visible items first; requests
 //!   scrolled away are dropped before work starts (`arke_core::loader`).
 //! - Decoded images have a small budget: least recently used ones are freed and removed from the GPU
-//!   atlas, but never the ones on screen or one page around it. Scrolling back decodes them again
-//!   from the compressed copy, on the UI thread while it fits in a few milliseconds.
+//!   atlas, but never the ones on screen or one page around it, in any window or pane, nor a
+//!   picture of another size standing in for one (`media_budget.rs` has the rules). Scrolling back
+//!   decodes them again from the compressed copy, on the UI thread while it fits in a few
+//!   milliseconds.
+//! - Each view says per frame what it wants: [`MediaStore::drawing`] when it renders, then
+//!   [`MediaStore::want`] per list. The loaders are told when the frame ends, if that changed.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -25,17 +29,20 @@ use arke_core::filetype::{
 use arke_core::loader::Loader;
 use arke_core::thumb_cache::{ThumbCache, ThumbKey};
 use arke_core::thumbs::{SOURCE_SIZES, THUMBNAIL_SIZE, Thumbnail, decode_thumbnail};
-use gpui::{App, AppContext, Context, Entity, Global, RenderImage, Task};
+use gpui::{
+    App, AppContext, Context, Entity, EntityId, Global, RenderImage, Subscription, Task, WindowId,
+};
 use parking_lot::Mutex;
 
 use crate::explorer::Services;
+use crate::media_budget::{Decoded, Pins};
 
 /// System icon pixel size (the grid shows them at 64 px, the list at 16).
 pub(crate) const SYSTEM_ICON_SIZE: u32 = 64;
 /// Path of a type icon's key: `*` can't be in a file name, so it never names a file.
 const TYPE_ICON_PREFIX: &str = "*.";
-/// Decoded pixel bytes kept beyond what is on screen and a page around it. A 192px thumbnail is
-/// about 150 KB, so roughly 100 fit; the compressed copies cover the rest.
+/// Decoded pixel bytes kept, counting what is on screen and a page around it (which stay even past
+/// it). A 192px thumbnail is about 150 KB, so roughly 100 fit; the compressed copies cover the rest.
 const CACHE_BUDGET: usize = 16 * 1024 * 1024;
 /// Compressed thumbnails in memory: 5–15 KB each, so several thousand.
 const COMPRESSED_BUDGET: usize = 48 * 1024 * 1024;
@@ -237,24 +244,24 @@ impl Global for GlobalMedia {}
 
 pub(crate) struct MediaStore {
     services: Services,
-    /// `None` means loading failed (not retried until the file changes)
-    cache: HashMap<MediaKey, Option<Arc<RenderImage>>>,
-    /// Recency order (oldest first)
-    order: VecDeque<MediaKey>,
-    bytes: usize,
+    /// Decoded images; a `None` means loading failed (not retried until the file changes).
+    decoded: Decoded<MediaKey, Arc<RenderImage>>,
+    /// What each view on screen wants, by view and window.
+    pins: Pins<MediaKey, EntityId, WindowId>,
     thumbs: Loader<MediaKey>,
     icons: Loader<MediaKey>,
     videos: Loader<MediaKey>,
     pdfs: Loader<MediaKey>,
-    last_wanted: Vec<MediaKey>,
-    /// Wanted by the main list (in priority order)
-    main_wanted: Vec<MediaKey>,
-    /// Wanted by the side column (column view's parent), queued after the main list
-    side_wanted: Vec<MediaKey>,
+    /// Compressed thumbnails were decoded on the UI thread this frame (eviction is due after it).
+    decoded_in_frame: bool,
+    /// The loaders are told what is wanted at the end of the next frame even if it didn't change
+    /// (the thumbnail host couldn't be asked, and may start now).
+    resend: bool,
     local_disk: HashMap<PathBuf, bool>,
     local_pending: HashSet<PathBuf>,
     tx: flume::Sender<MediaEvent>,
     _task: Task<()>,
+    _window_closed: Subscription,
 }
 
 /// Drive root (`C:\`); `None` for UNC or relative paths (never thumbnailed).
@@ -457,22 +464,31 @@ impl MediaStore {
                 }
             }
         });
+        // A closed window's views pin nothing anymore.
+        let this = cx.weak_entity();
+        let window_closed = cx.on_window_closed(move |cx, window| {
+            let _ = this.update(cx, |this, cx| {
+                if this.pins.forget_window(window) {
+                    this.apply_wanted();
+                    this.evict(cx);
+                }
+            });
+        });
         Self {
             services,
-            cache: HashMap::new(),
-            order: VecDeque::new(),
-            bytes: 0,
+            decoded: Decoded::new(CACHE_BUDGET),
+            pins: Pins::default(),
             thumbs,
             icons,
             videos,
             pdfs,
-            last_wanted: Vec::new(),
-            main_wanted: Vec::new(),
-            side_wanted: Vec::new(),
+            decoded_in_frame: false,
+            resend: false,
             local_disk: HashMap::new(),
             local_pending: HashSet::new(),
             tx,
             _task: task,
+            _window_closed: window_closed,
         }
     }
 
@@ -495,8 +511,8 @@ impl MediaStore {
                     MediaKind::Pdf => self.pdfs.acknowledge(&key),
                     _ => self.videos.acknowledge(&key),
                 }
-                // Asked again with the next change of what's wanted.
-                self.last_wanted.clear();
+                // Asked again when the next frame ends.
+                self.resend = true;
             }
             MediaEvent::LocalDisk(root, local) => {
                 self.local_pending.remove(&root);
@@ -507,52 +523,46 @@ impl MediaStore {
     }
 
     fn insert(&mut self, key: MediaKey, thumb: Option<Thumbnail>) {
-        let size = thumb.as_ref().map_or(0, |t| t.rgba.len());
         let image = thumb.and_then(to_render_image);
-        if self.cache.insert(key.clone(), image).is_none() {
-            self.order.push_back(key);
-            self.bytes += size;
-        }
+        let pixels = image.as_deref().map_or(0, image_bytes);
+        // A copy made while one was already here (decoded in the frame while the loader made it
+        // too) was never drawn: dropping it is enough.
+        drop(self.decoded.insert(key, image, pixels));
     }
 
-    /// Frees the least recently used decoded images over the budget, except the wanted ones.
+    /// Frees the least recently used decoded images over the budget, except the ones a view wants
+    /// and the other-size pictures standing in for those still loading.
     fn evict(&mut self, cx: &mut App) {
-        if self.bytes <= CACHE_BUDGET {
+        if !self.decoded.over_budget() {
             return;
         }
-        let wanted: HashSet<&MediaKey> = self.last_wanted.iter().collect();
-        let mut kept = VecDeque::new();
-        while self.bytes > CACHE_BUDGET {
-            let Some(key) = self.order.pop_front() else {
-                break;
-            };
-            if wanted.contains(&key) {
-                kept.push_back(key);
-                continue;
-            }
-            if let Some(Some(image)) = self.cache.remove(&key) {
-                self.bytes = self.bytes.saturating_sub(image_bytes(&image));
-                // Remove from every window's GPU atlas; dropping the reference alone leaves the
-                // texture in video memory.
-                crate::media::drop_image_later(image, cx);
-            }
-        }
-        // Still on screen: back at the old end, in the same order.
-        while let Some(key) = kept.pop_back() {
-            self.order.push_front(key);
+        let stand_ins: HashSet<MediaKey> = self
+            .pins
+            .pinned()
+            .filter(|key| !self.decoded.contains(key))
+            .filter_map(|key| self.stand_in(key))
+            .collect();
+        let pins = &self.pins;
+        for image in self
+            .decoded
+            .evict(|key| pins.is_pinned(key) || stand_ins.contains(key))
+        {
+            // Remove from every window's GPU atlas; dropping the reference alone leaves the
+            // texture in video memory.
+            drop_image_later(image, cx);
         }
     }
 
     /// Loaded thumbnails and icons (for the benchmark report).
     pub(crate) fn loaded_count(&self) -> usize {
-        self.cache.values().filter(|v| v.is_some()).count()
+        self.decoded.image_count()
     }
 
     /// Loaded entries (tests).
     #[cfg(test)]
     pub(crate) fn loaded(&self) -> Vec<(PathBuf, MediaKind)> {
         let mut v: Vec<_> = self
-            .cache
+            .decoded
             .iter()
             .filter(|(_, img)| img.is_some())
             .map(|(k, _)| (k.path.clone(), k.kind))
@@ -564,23 +574,17 @@ impl MediaStore {
     /// Frees every decoded image and forgets what was wanted, like scrolling far away and back.
     /// Used when the last window closes, and by tests.
     pub(crate) fn drop_decoded(&mut self, cx: &mut App) {
-        for (_, image) in self.cache.drain() {
-            if let Some(image) = image {
-                crate::media::drop_image_later(image, cx);
-            }
+        for image in self.decoded.drain() {
+            drop_image_later(image, cx);
         }
-        self.cache.shrink_to_fit();
-        self.order = VecDeque::new();
-        self.bytes = 0;
-        self.main_wanted = Vec::new();
-        self.side_wanted = Vec::new();
-        self.last_wanted = Vec::new();
+        self.pins.clear();
+        self.decoded_in_frame = false;
     }
 
     /// Decoded bytes held (tests).
     #[cfg(test)]
     pub(crate) const fn decoded_bytes(&self) -> usize {
-        self.bytes
+        self.decoded.bytes()
     }
 
     /// With no window open: frees decoded images and the in-memory compressed thumbnails. The
@@ -594,16 +598,22 @@ impl MediaStore {
 
     /// Loaded image (`None` if failed or not loaded yet).
     pub(crate) fn get(&self, key: &MediaKey) -> Option<Arc<RenderImage>> {
-        self.cache.get(key).cloned().flatten()
+        self.decoded.get(key).flatten().cloned()
     }
 
     /// Like [`Self::get`], but while a thumbnail isn't loaded at this size yet, the same file's
     /// thumbnail at the closest other size (after an icon size change the grid keeps its pictures
     /// instead of blinking to type icons).
     pub(crate) fn get_or_nearby(&self, key: &MediaKey) -> Option<Arc<RenderImage>> {
-        if let Some(found) = self.cache.get(key) {
-            return found.clone();
+        if let Some(found) = self.decoded.get(key) {
+            return found.cloned();
         }
+        self.stand_in(key).and_then(|other| self.get(&other))
+    }
+
+    /// For a picture not loaded at its own size: the key of the same file's picture at the closest
+    /// other size that is loaded.
+    fn stand_in(&self, key: &MediaKey) -> Option<MediaKey> {
         if !key.kind.is_picture() {
             return None;
         }
@@ -612,7 +622,7 @@ impl MediaStore {
         let mut probe = key.clone();
         others.into_iter().find_map(|px| {
             probe.px = px;
-            self.cache.get(&probe).cloned().flatten()
+            matches!(self.decoded.get(&probe), Some(Some(_))).then(|| probe.clone())
         })
     }
 
@@ -658,20 +668,26 @@ impl MediaStore {
         }
     }
 
-    /// Items the main list needs now (in priority order). Already cached ones are skipped; ones
-    /// with a compressed copy in memory are decoded right away while that stays within a few
-    /// milliseconds, so scrolling back shows them in the same frame.
-    pub(crate) fn want(&mut self, keys: Vec<MediaKey>, cx: &mut Context<Self>) {
-        if keys == self.main_wanted {
-            return;
-        }
+    /// `view` (an explorer pane) starts drawing in `window`. What it asks for until the frame ends
+    /// replaces what it wanted before, so asking for nothing lets its pictures go; views of this
+    /// window that don't draw now (a tab switched away) stop holding theirs.
+    pub(crate) fn drawing(&mut self, window: WindowId, view: EntityId, cx: &mut Context<Self>) {
+        self.open_frame(cx);
+        self.pins.drawing(window, view);
+    }
+
+    /// Items `view`'s main list needs now (in priority order); it may ask several times per frame
+    /// (one list per group). Already cached ones are skipped; ones with a compressed copy in memory
+    /// are decoded right away while that stays within a few milliseconds, so scrolling back shows
+    /// them in the same frame.
+    pub(crate) fn want(&mut self, view: EntityId, keys: Vec<MediaKey>, cx: &mut Context<Self>) {
+        self.open_frame(cx);
         let start = Instant::now();
-        let mut decoded = false;
         for key in &keys {
             if start.elapsed() > SYNC_DECODE {
                 break;
             }
-            if !key.kind.is_picture() || self.cache.contains_key(key) {
+            if !key.kind.is_picture() || self.decoded.contains(key) {
                 continue;
             }
             if let Some(thumb) = thumb_cache()
@@ -679,42 +695,54 @@ impl MediaStore {
                 .and_then(|bytes| arke_core::thumb_cache::decode(&bytes))
             {
                 self.insert(key.clone(), Some(thumb));
-                decoded = true;
+                self.decoded_in_frame = true;
             }
         }
-        self.main_wanted = keys;
-        self.apply_wanted();
-        // Not now: this runs while a window draws, and `drop_image` skips the window being
-        // updated, so its GPU atlas would keep every freed thumbnail.
-        if decoded {
-            let this = cx.entity();
-            cx.defer(move |cx| this.update(cx, |this, cx| this.evict(cx)));
-        }
+        self.pins.want(view, false, keys);
     }
 
-    /// Items for the side column: queued after the main list and never cancel it.
-    pub(crate) fn want_side(&mut self, keys: Vec<MediaKey>) {
-        if keys == self.side_wanted {
+    /// Items for `view`'s side column: queued after every main list and never cancel them.
+    pub(crate) fn want_side(
+        &mut self,
+        view: EntityId,
+        keys: Vec<MediaKey>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_frame(cx);
+        self.pins.want(view, true, keys);
+    }
+
+    /// Ends the frame once the update under way is done. Not now: this runs while a window draws,
+    /// and `drop_image` skips the window being updated, so its GPU atlas would keep every freed
+    /// thumbnail.
+    fn open_frame(&mut self, cx: &mut Context<Self>) {
+        if self.pins.frame_open() {
             return;
         }
-        self.side_wanted = keys;
-        self.apply_wanted();
+        let this = cx.entity();
+        cx.defer(move |cx| this.update(cx, |this, cx| this.end_frame(cx)));
+    }
+
+    /// What the views asked for this frame takes effect: the loaders hear of it (only if it
+    /// changed) and what no view holds anymore may be evicted.
+    fn end_frame(&mut self, cx: &mut Context<Self>) {
+        let changed = self.pins.end_frame();
+        let resend = std::mem::take(&mut self.resend);
+        let decoded = std::mem::take(&mut self.decoded_in_frame);
+        if changed || resend {
+            self.apply_wanted();
+        }
+        if changed || decoded {
+            self.evict(cx);
+        }
     }
 
     fn apply_wanted(&mut self) {
-        let keys: Vec<MediaKey> = self
-            .main_wanted
-            .iter()
-            .chain(self.side_wanted.iter())
-            .cloned()
-            .collect();
-        if keys == self.last_wanted {
-            return;
-        }
+        let keys = self.pins.wanted();
         let (mut thumbs, mut icons, mut videos, mut pdfs) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for key in &keys {
-            if self.cache.contains_key(key) {
+            if self.decoded.contains(key) {
                 continue;
             }
             match key.kind {
@@ -728,16 +756,11 @@ impl MediaStore {
         self.icons.set_wanted(icons);
         self.videos.set_wanted(videos);
         self.pdfs.set_wanted(pdfs);
-        // Move used entries to the recent end so visible thumbnails aren't evicted.
-        for key in &keys {
-            if self.cache.get(key).is_some_and(Option::is_some)
-                && let Some(pos) = self.order.iter().position(|k| k == key)
-                && let Some(k) = self.order.remove(pos)
-            {
-                self.order.push_back(k);
-            }
+        // Wanted ones become the most recently used, the first (on screen) last: once no view
+        // holds them, they are the last to go.
+        for key in keys.iter().rev() {
+            self.decoded.touch(key);
         }
-        self.last_wanted = keys;
     }
 }
 

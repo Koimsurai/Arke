@@ -65,6 +65,7 @@ mod instance;
 mod keynav;
 mod localized;
 mod media;
+mod media_budget;
 mod menu_order;
 mod menu_pin_looks;
 mod motion;

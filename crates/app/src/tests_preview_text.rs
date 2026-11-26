@@ -1,6 +1,8 @@
 //! GPUI tests for text previews of large files: only the lines on screen are laid out, the rest
 //! of the file is read once it is scrolled to, and the last line can be reached, wrapped or not.
 
+use std::fmt::Write as _;
+
 use super::*;
 use crate::explorer::{PreviewBody, take_built_rows_for_test};
 use gpui::{point, px};
@@ -104,13 +106,17 @@ fn line_bounds(cx: &mut VisualTestContext, ix: usize) -> Option<gpui::Bounds<gpu
     cx.debug_bounds(selector)
 }
 
-/// Line `ix` is drawn inside the text's frame.
+/// Line `ix` is drawn in the text's frame with its end in view: all of it, or for a wrapped line
+/// taller than the frame its last rows, at the bottom.
 fn assert_drawn_inside(cx: &mut VisualTestContext, ix: usize) -> gpui::Bounds<gpui::Pixels> {
     let frame = cx.debug_bounds("preview-text").expect("the text is drawn");
     let line = line_bounds(cx, ix).unwrap_or_else(|| panic!("line {ix} is drawn"));
+    let tall = line.size.height > frame.size.height;
     assert!(
-        line.top() >= frame.top() - px(1.) && line.bottom() <= frame.bottom() + px(1.),
-        "line {ix} at {line:?} is inside {frame:?}"
+        line.bottom() <= frame.bottom() + px(1.)
+            && line.bottom() > frame.top()
+            && (tall || line.top() >= frame.top() - px(1.)),
+        "line {ix} at {line:?} ends in {frame:?}"
     );
     line
 }
@@ -156,7 +162,10 @@ fn a_large_log_lays_out_only_the_lines_on_screen(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_large_table_reaches_its_last_row_unwrapped(cx: &mut TestAppContext) {
     const ROWS: usize = 100_000;
-    let mut body: String = (0..ROWS - 1).map(|n| format!("{n},a,b\n")).collect();
+    let mut body = (0..ROWS - 1).fold(String::new(), |mut body, n| {
+        let _ = writeln!(body, "{n},a,b");
+        body
+    });
     let long = "x".repeat(2000);
     body.push_str(&long);
     let (view, cx) = previewed(cx, r"C:\tab", "data.csv", body);

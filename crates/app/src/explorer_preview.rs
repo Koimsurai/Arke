@@ -763,8 +763,11 @@ fn load(
                 .and_then(arke_core::highlight::lang_for);
             let marks = lang.map_or_default(|lang| arke_core::highlight::highlight(&text, lang));
             // A local file may go on past its head: the rest is read as it is scrolled to. A
-            // server's file is read only this far, as before.
-            let more = bytes.len() as u64 >= TEXT_HEAD && !arke_core::remote::is_remote(path);
+            // file on a server or a network share is read only this far, as before: indexing
+            // would read all of it over the network.
+            let more = bytes.len() as u64 >= TEXT_HEAD
+                && !arke_core::remote::is_remote(path)
+                && !arke_core::fs::is_network_path(path);
             PreviewData::Text(TextHead {
                 lines: split_lines(&text, &marks),
                 encoding,

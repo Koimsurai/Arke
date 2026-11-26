@@ -2399,7 +2399,7 @@ impl Workspace {
                 .when(!horizontal, gpui::Styled::flex_initial)
                 // The dragged height is an upper limit: shorter places leave the line right under
                 // them (#453), and it goes back down as they grow. Style only, one layout pass.
-                .when_some(split, |d, height| d.max_h(height))
+                .when_some(split, gpui::Styled::max_h)
                 // At least two rows stay visible, so it's clear this part scrolls too.
                 .min_h(theme::h_row_side() * 2.),
         )

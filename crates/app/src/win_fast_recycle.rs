@@ -504,21 +504,88 @@ fn user_sid() -> Option<String> {
     }
 }
 
+/// What the `$I` records already in a bin say about their layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    /// No records yet: nothing to compare with.
+    Empty,
+    /// Every record looked at is the version written here.
+    Current,
+    /// A record of another version (1 is Vista to 8.1, 2 is Windows 10 and later) is there.
+    Other,
+    /// A record couldn't be read or isn't well formed.
+    Unreadable,
+}
+
+impl Layout {
+    /// The verdict for the versions of the records looked at (`None`: not readable).
+    /// A foreign version outweighs an unreadable record.
+    fn judge(versions: impl IntoIterator<Item = Option<i64>>) -> Self {
+        let mut verdict = Self::Empty;
+        for version in versions {
+            match version {
+                Some(v) if v != VERSION => return Self::Other,
+                Some(_) if verdict == Self::Empty => verdict = Self::Current,
+                Some(_) => {}
+                None => verdict = Self::Unreadable,
+            }
+        }
+        verdict
+    }
+
+    /// Whether items may be written here directly: nothing seen says the layout differs.
+    const fn allows(self) -> bool {
+        matches!(self, Self::Empty | Self::Current)
+    }
+
+    /// Whether the verdict rests on records actually seen, so it can be remembered.
+    const fn settled(self) -> bool {
+        matches!(self, Self::Current | Self::Other)
+    }
+}
+
+/// Verdicts per bin folder for this run of Arke.
+static LAYOUTS: LazyLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, bool>>> =
+    LazyLock::new(Default::default);
+
 /// The `$I` records already there are all the version written here (or there are none yet).
+/// A verdict based on records is remembered per bin, so later deletes don't read any; an empty
+/// bin or an unreadable record is looked at again next time.
 fn layout_is_known(bin: &Path) -> bool {
+    layout_allowed(&LAYOUTS, bin, || probe_bin(bin, |p| fs::read(p).ok()))
+}
+
+/// [`Layout::allows`] for `bin`, asking `probe` only when `cache` has no verdict for it.
+fn layout_allowed(
+    cache: &parking_lot::Mutex<std::collections::HashMap<PathBuf, bool>>,
+    bin: &Path,
+    probe: impl FnOnce() -> Layout,
+) -> bool {
+    if let Some(&known) = cache.lock().get(bin) {
+        return known;
+    }
+    let layout = probe();
+    if layout.settled() {
+        cache.lock().insert(bin.to_path_buf(), layout.allows());
+    }
+    layout.allows()
+}
+
+/// Looks at the first [`PROBE_RECORDS`] `$I` records of `bin`, read with `read`.
+fn probe_bin(bin: &Path, read: impl Fn(&Path) -> Option<Vec<u8>>) -> Layout {
     let Ok(entries) = fs::read_dir(bin) else {
-        return false;
+        return Layout::Unreadable;
     };
-    entries
+    let versions = entries
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("$I"))
         .take(PROBE_RECORDS)
-        .all(|e| {
-            fs::read(e.path())
-                .ok()
+        .map(|e| {
+            read(&e.path())
                 .and_then(|bytes| decode(&bytes))
-                .is_some_and(|record| record.version == VERSION)
-        })
+                .map(|r| r.version)
+        });
+    Layout::judge(versions)
 }
 
 /// Total size of the files below `dir`, from directory listings (no file is opened). Links are
@@ -1330,6 +1397,74 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn only_records_of_the_written_version_allow_direct_writes() {
+        let judge = |v: &[Option<i64>]| Layout::judge(v.iter().copied());
+        assert_eq!(judge(&[]), Layout::Empty);
+        assert_eq!(judge(&[Some(2), Some(2)]), Layout::Current);
+        assert_eq!(judge(&[Some(2), Some(1)]), Layout::Other);
+        assert_eq!(judge(&[Some(3)]), Layout::Other);
+        assert_eq!(judge(&[Some(2), None]), Layout::Unreadable);
+        assert_eq!(judge(&[None, Some(1)]), Layout::Other, "foreign wins");
+        let allowed: Vec<bool> = [
+            Layout::Empty,
+            Layout::Current,
+            Layout::Other,
+            Layout::Unreadable,
+        ]
+        .map(Layout::allows)
+        .to_vec();
+        assert_eq!(allowed, [true, true, false, false]);
+    }
+
+    #[test]
+    fn records_are_probed_through_the_injected_read() {
+        let sb = Scratch::new("layout-probe");
+        let bin = &sb.0;
+        for name in ["$IAAAAAA.txt", "$RAAAAAA.txt", "desktop.ini"] {
+            fs::write(bin.join(name), "x").unwrap();
+        }
+        let record = |version: i64| encode(version, 1, 0, Path::new(r"C:\a.txt"));
+        assert_eq!(probe_bin(bin, |_| Some(record(2))), Layout::Current);
+        assert_eq!(probe_bin(bin, |_| Some(record(1))), Layout::Other);
+        assert_eq!(probe_bin(bin, |_| None), Layout::Unreadable);
+        assert_eq!(
+            probe_bin(bin, |_| Some(vec![2, 0])),
+            Layout::Unreadable,
+            "too short"
+        );
+        assert_eq!(
+            probe_bin(&bin.join("missing"), |_| Some(record(2))),
+            Layout::Unreadable
+        );
+    }
+
+    #[test]
+    fn a_settled_verdict_is_remembered_and_others_are_asked_again() {
+        let cache = parking_lot::Mutex::new(std::collections::HashMap::new());
+        let asked = std::cell::Cell::new(0);
+        let ask = |bin: &str, layout: Layout| {
+            layout_allowed(&cache, Path::new(bin), || {
+                asked.set(asked.get() + 1);
+                layout
+            })
+        };
+        // A foreign version: the engine, and no second read of the bin.
+        assert!(!ask(r"C:\bin", Layout::Other));
+        assert!(!ask(r"C:\bin", Layout::Current), "cached, not asked");
+        assert_eq!(asked.get(), 1);
+        // The version written here is remembered per bin.
+        assert!(ask(r"D:\bin", Layout::Current));
+        assert!(ask(r"D:\bin", Layout::Other), "cached, not asked");
+        assert_eq!(asked.get(), 2);
+        // Nothing to compare with, or unreadable: asked again each time.
+        assert!(ask(r"E:\bin", Layout::Empty));
+        assert!(ask(r"E:\bin", Layout::Empty));
+        assert!(!ask(r"F:\bin", Layout::Unreadable));
+        assert!(!ask(r"F:\bin", Layout::Unreadable));
+        assert_eq!(asked.get(), 6);
     }
 
     /// Ten files of 100 bytes and a subfolder with 500 more.

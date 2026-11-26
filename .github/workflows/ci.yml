@@ -96,6 +96,31 @@ jobs:
       - name: test
         run: cargo nextest run --locked --workspace --profile ci
 
+  # The `#[ignore]` tests don't run in `test`. These do: the fast Recycle Bin writes the
+  # undocumented `$I` records itself, so a Windows update that changes them must turn this red.
+  # Each test only recycles temp files it creates and purges them at the end; the benchmarks
+  # (`*_timing`) stay out.
+  live-recycle:
+    name: live recycle bin
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      - name: live recycle tests
+        run: >
+          cargo nextest run --locked -p arke-app --profile ci --run-ignored only --test-threads 1
+          -E "(test(/win_fast_recycle::tests::/) | test(/live_recycle::/)) & not test(/_timing$/)"
+
   coverage:
     name: coverage
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

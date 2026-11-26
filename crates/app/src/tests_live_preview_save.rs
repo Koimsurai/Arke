@@ -107,7 +107,7 @@ fn save_and_check(tag: &str, save: fn(&Path, &str), cx: &mut TestAppContext) {
         remotes: crate::remote_shell::test_remotes(),
     };
     let here = folder.0.to_str().expect("a UTF-8 path").to_owned();
-    let (ws, cx) = setup_workspace_services(cx, services, folder.0.clone());
+    let (ws, cx) = setup_workspace_services(cx, services, folder.0);
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(&here));
     cx.simulate_resize(gpui::size(px(1200.), px(900.)));

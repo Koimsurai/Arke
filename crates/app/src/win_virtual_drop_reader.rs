@@ -249,10 +249,17 @@ struct Shared {
     stop: AtomicBool,
     /// The thread has let go of everything and is ending.
     done: AtomicBool,
-    /// The read being made: when it started and its size.
-    reading: Mutex<Option<(Instant, usize)>>,
-    /// The worker gave up on that read (cancelled it to read on in small pieces).
-    recover: AtomicBool,
+    /// The read being made.
+    reading: Mutex<Reading>,
+}
+
+/// The read the source thread is making, for the worker's [`Link::watch`].
+#[derive(Default)]
+struct Reading {
+    /// When it started and its size.
+    current: Option<(Instant, usize)>,
+    /// The worker gave up on it (cancelled it to read on in small pieces).
+    given_up: bool,
 }
 
 /// The worker's end: asks, waits for answers while watching Cancel, and lets go.
@@ -273,8 +280,7 @@ impl Link {
             signal: Signal::new()?,
             stop: AtomicBool::new(false),
             done: AtomicBool::new(false),
-            reading: Mutex::new(None),
-            recover: AtomicBool::new(false),
+            reading: Mutex::new(Reading::default()),
         });
         let (asks, asked) = flume::unbounded();
         let (answer, answers) = flume::unbounded();
@@ -327,12 +333,13 @@ impl Link {
         if self.thread.is_none() || self.finished() {
             return;
         }
-        let reading = self.shared.reading.lock();
-        if let Some((since, len)) = *reading
+        let mut reading = self.shared.reading.lock();
+        if let Some((since, len)) = reading.current
             && len > FIRST_CHUNK
             && since.elapsed() >= RECOVER_AFTER
-            && !self.shared.recover.swap(true, Ordering::AcqRel)
+            && !reading.given_up
         {
+            reading.given_up = true;
             // Under the lock: the thread can't have moved on to another read.
             cancel_call(self.thread_id);
         }
@@ -610,16 +617,12 @@ fn read_once(
 ) -> (usize, HRESULT, Duration, bool) {
     let len = len.min(buffer.len());
     let started = Instant::now();
-    *shared.reading.lock() = Some((started, len));
+    shared.reading.lock().current = Some((started, len));
     let mut got = 0u32;
     // SAFETY: `buffer` has room for `len` bytes; `got` receives the count.
     let hr = unsafe { stream.Read(buffer.as_mut_ptr().cast(), len as u32, Some(&raw mut got)) };
     let took = started.elapsed();
-    let given_up = {
-        let mut reading = shared.reading.lock();
-        *reading = None;
-        shared.recover.swap(false, Ordering::AcqRel)
-    };
+    let given_up = std::mem::take(&mut *shared.reading.lock()).given_up;
     (got as usize, hr, took, given_up)
 }
 

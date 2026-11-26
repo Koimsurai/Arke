@@ -29,6 +29,7 @@ use super::{AppEvent, Explorer, ViewMode, layout, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::prefs::Col;
+use crate::press_guard::is_double_click;
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
 
@@ -873,7 +874,7 @@ fn column_resize_handle(col: Col, cx: &mut Context<Explorer>) -> impl IntoElemen
             cx.new(|_| ColumnDragView)
         })
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if e.click_count() >= 2 {
+            if is_double_click(e.click_count()) {
                 this.autofit_column(col, window, cx);
             }
         }))

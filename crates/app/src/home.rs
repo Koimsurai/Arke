@@ -21,6 +21,7 @@ use arke_core::format::format_size;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{kind_icon, spawn_thread};
+use crate::press_guard::is_double_click;
 use crate::settings::SettingsStore;
 use crate::shell::{Place, PlaceKind, Shell};
 use crate::text_input::TextInput;
@@ -63,10 +64,15 @@ fn recent_row_h() -> gpui::Pixels {
 /// A favorite as the sidebar shows it: folder, its name (a name of its own first) and icon.
 pub(crate) type Favorite = (PathBuf, String, Icon);
 
-/// Whether a click on a recent file opens it: always with "Single click to open", otherwise
-/// on the second click of a double click.
+/// Whether a click on a recent file or a card opens it: always with "Single click to open",
+/// otherwise on the second click of a double click.
 const fn recent_click_opens(single_click: bool, click_count: usize) -> bool {
-    single_click || click_count >= 2
+    single_click || is_double_click(click_count)
+}
+
+/// What a card is known by while it is the picked one.
+fn card_key(id: (&str, usize)) -> String {
+    format!("{}-{}", id.0, id.1)
 }
 
 /// One recent file.
@@ -223,6 +229,8 @@ pub(crate) struct HomePage {
     /// The recent file picked with one click (a double click opens it, or one click with
     /// "Single click to open").
     selected_recent: Option<PathBuf>,
+    /// The card (favorite, drive, network location) picked with one click, by its id.
+    selected_card: Option<String>,
     focus: FocusHandle,
     scroll: ScrollHandle,
     /// The favorite card being dragged: its cell stays empty while the card is under the pointer.
@@ -343,6 +351,7 @@ impl HomePage {
             names: crate::place_names::Names::new(),
             rename: None,
             selected_recent: None,
+            selected_card: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             dragging: None,
@@ -587,6 +596,7 @@ impl HomePage {
                         this.open_file(open.clone(), cx);
                     } else {
                         this.selected_recent = Some(open.clone());
+                        this.selected_card = None;
                         cx.notify();
                     }
                 }))
@@ -625,22 +635,32 @@ impl HomePage {
             .into_any_element()
     }
 
-    /// Click opens; middle click or Ctrl+click opens in a new tab (when there's a folder to open).
+    /// Click opens (a double click, unless "Single click to open"; the first click of a double
+    /// click only picks the card); middle click or Ctrl+click opens in a new tab (when there's a
+    /// folder to open).
     fn card_actions(
         el: gpui::Stateful<gpui::Div>,
+        key: String,
         event: HomeEvent,
         new_tab: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let ctrl_tab = new_tab.clone();
-        el.on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+        el.on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
             // Ctrl: a new tab, in front with Shift too, as a link in a browser (#291).
             match &ctrl_tab {
                 Some(path) if e.modifiers().control => cx.emit(HomeEvent::OpenInNewTab {
                     path: path.clone(),
                     activate: e.modifiers().shift,
                 }),
-                _ => cx.emit(event.clone()),
+                _ if recent_click_opens(crate::prefs::single_click(), e.click_count()) => {
+                    cx.emit(event.clone());
+                }
+                _ => {
+                    this.selected_card = Some(key.clone());
+                    this.selected_recent = None;
+                    cx.notify();
+                }
             }
         }))
         .when_some(new_tab, |el, path| {
@@ -709,6 +729,11 @@ impl HomePage {
         cx.notify();
     }
 
+    /// Whether the card with this id is the one picked with a click.
+    fn card_picked(&self, id: (&str, usize)) -> bool {
+        self.selected_card.as_deref() == Some(card_key(id).as_str())
+    }
+
     fn quick_card(
         &self,
         ix: usize,
@@ -731,10 +756,12 @@ impl HomePage {
         };
         let home = cx.entity().downgrade();
         let key = path.to_path_buf();
+        let card_id = format!("home-quick-{}", path.display());
+        let selected = self.selected_card.as_deref() == Some(card_id.as_str());
         // Known by its folder, not its place: after a reorder the card under the pointer is
         // another one, and its hover and tooltip must not carry over.
         let card = div()
-            .id(SharedString::from(format!("home-quick-{}", path.display())))
+            .id(SharedString::from(card_id.clone()))
             .relative()
             .when_some(shift, |d, (dx, dy)| d.left(px(dx)).top(px(dy)))
             .when(dragged, gpui::Styled::invisible)
@@ -747,7 +774,11 @@ impl HomePage {
             .justify_center()
             .gap(theme::s_8())
             .rounded(theme::r_8())
-            .bg(theme::card())
+            .bg(if selected {
+                theme::selection()
+            } else {
+                theme::card()
+            })
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
@@ -773,6 +804,7 @@ impl HomePage {
         let menu_path = path.to_path_buf();
         let card = Self::card_actions(
             card,
+            card_id,
             HomeEvent::OpenFolder(path.to_path_buf()),
             Some(path.to_path_buf()),
             cx,
@@ -820,6 +852,7 @@ impl HomePage {
     /// with free space.
     fn place_card(
         id: (&'static str, usize),
+        selected: bool,
         icon: Icon,
         label: CardName,
         detail: Option<String>,
@@ -868,7 +901,11 @@ impl HomePage {
             .items_center()
             .gap(theme::s_12())
             .rounded(theme::r_8())
-            .bg(theme::card())
+            .bg(if selected {
+                theme::selection()
+            } else {
+                theme::card()
+            })
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
@@ -913,7 +950,7 @@ impl HomePage {
                             .child(d)
                     })),
             );
-        Self::card_actions(card, event, new_tab, cx)
+        Self::card_actions(card, card_key(id), event, new_tab, cx)
             .when_some(menu_path, |el, path| {
                 el.on_mouse_down(
                     MouseButton::Right,
@@ -967,6 +1004,7 @@ impl Render for HomePage {
             .map(|(ix, (p, space))| {
                 Self::place_card(
                     ("home-drive", ix),
+                    self.card_picked(("home-drive", ix)),
                     Icon::Drive,
                     CardName::Text(p.label),
                     None,
@@ -979,6 +1017,7 @@ impl Render for HomePage {
         if !SettingsStore::global(cx).read(cx).settings.recycle_pinned {
             drives.push(Self::place_card(
                 ("home-recycle", 0),
+                self.card_picked(("home-recycle", 0)),
                 Icon::Trash,
                 CardName::Text(t!("recycle.title").into_owned()),
                 None,
@@ -1017,6 +1056,7 @@ impl Render for HomePage {
                 .then(|| path.display().to_string());
                 Self::place_card(
                     ("home-net", ix),
+                    self.card_picked(("home-net", ix)),
                     Icon::NetDrive,
                     self.card_name(&path, label),
                     detail,
@@ -1095,6 +1135,8 @@ mod tests {
     fn recent_files_open_by_double_click_unless_single_click_is_on() {
         assert!(!recent_click_opens(false, 1));
         assert!(recent_click_opens(false, 2));
+        assert!(!recent_click_opens(false, 3));
+        assert!(recent_click_opens(false, 4));
         assert!(recent_click_opens(true, 1));
     }
 

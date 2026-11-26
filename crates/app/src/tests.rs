@@ -31,6 +31,8 @@ use crate::workspace::{CloseTab, NewTab, Workspace};
 mod a11y_tree;
 #[path = "tests_archive_password.rs"]
 mod archive_password;
+#[path = "tests_click_parity.rs"]
+mod click_parity;
 #[path = "tests_column_view.rs"]
 mod column_view;
 #[path = "tests_compress.rs"]

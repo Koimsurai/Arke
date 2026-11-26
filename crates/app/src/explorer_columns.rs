@@ -28,6 +28,7 @@ use super::view::listed_visual;
 use super::{AppEvent, Explorer, ViewMode, layout, spawn_thread};
 use crate::media::MediaKey;
 use crate::prefs::ViewColumn;
+use crate::press_guard::is_double_click;
 use crate::theme;
 
 /// Default width of the left (parent) column
@@ -467,7 +468,7 @@ impl Explorer {
                 },
             ))
             .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                if e.click_count() >= 2 {
+                if is_double_click(e.click_count()) {
                     this.fit_view_column(ViewColumn::Parent, window, cx);
                 }
             }))

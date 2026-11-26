@@ -116,6 +116,7 @@ pub(crate) use view::{caption_buttons, error_toast, ghost_button, kind_icon, too
 
 use crate::bench::{Bench, BenchStep};
 use crate::media::MediaStore;
+use crate::press_guard::is_double_click;
 use crate::settings::{Density, SettingsStore};
 use crate::shell::{Place, Shell};
 use crate::text_input::{InputEvent, TextInput};
@@ -3613,7 +3614,7 @@ impl Explorer {
                 let selected = view
                     .get(ix)
                     .is_some_and(|e| self.selection.contains(&e.name));
-                if event.click_count < 2 || !selected {
+                if !is_double_click(event.click_count) || !selected {
                     self.selection.toggle(&view, ix);
                 }
             } else if in_selection && self.selection.len() > 1 {
@@ -3625,10 +3626,13 @@ impl Explorer {
             self.scroll_to_cursor = None;
         }
         // Double-click opens. In single-click mode, opening happens on release (`on_row_click`), so
-        // don't
-        // open again here: the second click would land on whatever is under the cursor in the new
-        // folder.
-        if event.click_count >= 2 && !m.control && !m.shift && !crate::prefs::single_click() {
+        // don't open again here: the second click would land on whatever is under the cursor in
+        // the new folder. Only the even clicks of a quick run are double-clicks.
+        if is_double_click(event.click_count)
+            && !m.control
+            && !m.shift
+            && !crate::prefs::single_click()
+        {
             if m.alt {
                 // Alt+double-click: Properties of the selection it is in, as in File Explorer
                 // (#337).
@@ -3639,7 +3643,7 @@ impl Explorer {
         }
         // Ctrl+double-click on a folder: a new tab, in the background; with Shift too, in front, as
         // Ctrl+click on a link in a browser (#291). Ctrl+click alone selects, as in File Explorer.
-        if event.click_count == 2
+        if is_double_click(event.click_count)
             && m.control
             && let Some((path, true)) = self.path_at(ix)
         {

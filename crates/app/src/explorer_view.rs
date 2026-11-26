@@ -40,6 +40,7 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::media::MediaKey;
 use crate::op_center::ToastDelays;
+use crate::press_guard::is_double_click;
 use crate::text_input::TextInput;
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
@@ -1750,7 +1751,7 @@ impl Explorer {
                     window.focus(&this.list_focus, cx);
                     // Double click on empty space goes up (setting, off by default); presses on
                     // items are handled by the row.
-                    let up = e.click_count == 2
+                    let up = is_double_click(e.click_count)
                         && !this.row_pressed
                         && crate::settings::SettingsStore::global(cx)
                             .read(cx)

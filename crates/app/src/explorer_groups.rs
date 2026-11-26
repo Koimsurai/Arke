@@ -32,6 +32,7 @@ use rust_i18n::t;
 use super::{Explorer, ViewMode};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
+use crate::press_guard::is_double_click;
 use crate::theme;
 
 /// One row in the list.
@@ -828,7 +829,7 @@ impl Explorer {
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 window.focus(&this.list_focus, cx);
-                if event.click_count() >= 2 {
+                if is_double_click(event.click_count()) {
                     this.toggle_group(&on_double, cx);
                     return;
                 }

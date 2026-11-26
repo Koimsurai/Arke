@@ -1587,7 +1587,7 @@ impl Explorer {
                             })),
                     ),
             )
-            .child(self.location_cell(ix, &hit.rel, location, cx))
+            .child(Self::location_cell(ix, &hit.rel, location, cx))
             .child(
                 div()
                     .w(crate::prefs::modified_width())
@@ -1607,7 +1607,6 @@ impl Explorer {
     /// A search hit's Location. A double-click on it opens the folder with the hit selected
     /// (#398), so it looks like a link under the pointer, as the preview pane's Location does.
     fn location_cell(
-        &self,
         ix: usize,
         rel: &Arc<str>,
         location: String,

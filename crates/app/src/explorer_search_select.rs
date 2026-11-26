@@ -20,6 +20,9 @@ use gpui::{Bounds, Context, Modifiers, Pixels, ScrollStrategy};
 use super::Explorer;
 use super::similar::hit_at_row;
 
+/// The hits, and the same hits as entries named by `rel` (what `Selection` takes).
+type HitKeys = (Arc<Vec<Arc<SearchHit>>>, Arc<Vec<Entry>>);
+
 /// Selection state of the search results (see the module docs).
 #[derive(Default)]
 pub(crate) struct SearchPick {
@@ -28,7 +31,7 @@ pub(crate) struct SearchPick {
     /// The user chose the selection. Until then the hit under the cursor counts as selected.
     pub(crate) picked: bool,
     /// The hits `keys` was made from, and the hits as entries named by `rel`.
-    keys: Option<(Arc<Vec<Arc<SearchHit>>>, Arc<Vec<Entry>>)>,
+    keys: Option<HitKeys>,
     /// The last press landed on this hit's Location (set by the cell, read by the row's
     /// handler, which runs after it).
     location_pressed: Option<usize>,

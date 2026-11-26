@@ -68,6 +68,28 @@ pub(crate) fn pretend_missing(names: &[&str]) -> impl Drop {
     Restore(before)
 }
 
+/// Whether `name` is loaded in this process right now.
+#[cfg(test)]
+pub(crate) fn is_loaded(name: &str) -> bool {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    // SAFETY: only looks the module up; nothing is loaded or called.
+    unsafe { GetModuleHandleW(&HSTRING::from(name)) }.is_ok()
+}
+
+/// For a test that pretends `names` are missing: they must not be loaded yet (else the test
+/// would pass by accident; nextest gives each test its own process), and afterwards the
+/// gated code must not have loaded them, which is what a delayed load would do.
+#[cfg(test)]
+pub(crate) fn assert_not_loaded(names: &[&str], when: &str) {
+    for name in names {
+        assert!(
+            !is_loaded(name),
+            "{name} is loaded {when}: something in this process loaded it (run the test alone, \
+             as nextest does)"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

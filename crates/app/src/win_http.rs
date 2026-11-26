@@ -398,10 +398,12 @@ mod tests {
     /// Without `winhttp.dll` a request fails with an error, before anything calls into the DLL.
     #[test]
     fn a_missing_winhttp_is_an_error() {
+        crate::win_dll::assert_not_loaded(&["winhttp.dll"], "before the test");
         let _missing = crate::win_dll::pretend_missing(&["winhttp.dll"]);
         let error = super::get_text("https://example.invalid/", &[]).unwrap_err();
         assert!(matches!(error, super::HttpError::Windows(_)), "{error}");
         assert!(!error.to_string().is_empty());
+        crate::win_dll::assert_not_loaded(&["winhttp.dll"], "after the gated call");
     }
 
     /// #343: a WinHTTP failure (here "name not resolved") says what went wrong instead of

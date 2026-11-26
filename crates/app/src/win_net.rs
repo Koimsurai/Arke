@@ -600,6 +600,7 @@ mod tests {
     /// lookups find nothing, and no `WNet*` or `Net*` function is called.
     #[test]
     fn missing_network_dlls_are_errors_not_crashes() {
+        crate::win_dll::assert_not_loaded(&["mpr.dll", "netapi32.dll"], "before the test");
         let _missing = crate::win_dll::pretend_missing(&["mpr.dll", "netapi32.dll"]);
         assert!(matches!(
             disconnect(Path::new(r"Z:\")),
@@ -613,6 +614,7 @@ mod tests {
         assert!(mapped_drive_label('Z').is_none());
         assert!(reconnect_drive('Z').is_err());
         assert!(server_shares("arke-test-server").is_err());
+        crate::win_dll::assert_not_loaded(&["mpr.dll", "netapi32.dll"], "after the gated calls");
     }
 
     #[test]

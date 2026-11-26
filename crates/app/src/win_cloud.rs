@@ -177,6 +177,7 @@ mod tests {
     /// scan is empty.
     #[test]
     fn a_missing_cloud_api_means_no_cloud_status() {
+        crate::win_dll::assert_not_loaded(&[CLDAPI], "before the test");
         let _missing = crate::win_dll::pretend_missing(&[CLDAPI]);
         let dir = std::env::temp_dir();
         assert!(!available());
@@ -185,5 +186,6 @@ mod tests {
         let mut buffer = vec![0_u64; 520];
         assert_eq!(not_in_sync(&dir.join("a.txt"), &mut buffer), None);
         assert_eq!(scan(&dir, &[Arc::from("a.txt")]), CloudScan::default());
+        crate::win_dll::assert_not_loaded(&[CLDAPI], "after the gated calls");
     }
 }

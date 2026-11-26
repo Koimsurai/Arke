@@ -393,9 +393,11 @@ mod tests {
     /// Without `rstrtmgr.dll` nobody is named, whatever the path.
     #[test]
     fn a_missing_restart_manager_names_no_one() {
+        crate::win_dll::assert_not_loaded(&["rstrtmgr.dll"], "before the test");
         let _missing = crate::win_dll::pretend_missing(&["rstrtmgr.dll"]);
         assert!(holders(&crate::win::long_temp_dir()).is_empty());
         assert!(Session::start().is_err());
+        crate::win_dll::assert_not_loaded(&["rstrtmgr.dll"], "after the gated calls");
     }
 
     struct Sandbox(PathBuf);

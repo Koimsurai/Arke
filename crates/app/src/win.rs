@@ -1793,11 +1793,7 @@ fn format_local_time(time: SystemTime) -> Option<String> {
 
 /// Day number of a local date (proleptic Gregorian, since 1970-01-01; only used for differences).
 fn day_number(t: &SYSTEMTIME) -> i64 {
-    arke_core::time::days_from_civil(
-        i64::from(t.wYear),
-        i64::from(t.wMonth),
-        i64::from(t.wDay),
-    )
+    arke_core::time::days_from_civil(i64::from(t.wYear), i64::from(t.wMonth), i64::from(t.wDay))
 }
 
 fn local_time(time: SystemTime) -> Option<SYSTEMTIME> {

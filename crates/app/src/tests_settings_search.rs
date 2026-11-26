@@ -93,7 +93,9 @@ fn chinese_and_english_find_the_same_setting(cx: &mut TestAppContext) {
     assert_eq!(shown, "顯示隱藏的項目", "the UI is in Traditional Chinese");
     let want = (1, shown.clone());
 
-    let chinese = search(&ws, cx, "隱藏的項目");
+    // Part of the Chinese name: the words after "show".
+    let part: String = shown.chars().skip(2).collect();
+    let chinese = search(&ws, cx, &part);
     assert!(chinese.contains(&want), "found in Chinese: {chinese:?}");
 
     cx.simulate_keystrokes("escape");

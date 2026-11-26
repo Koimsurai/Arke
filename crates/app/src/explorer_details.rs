@@ -172,13 +172,18 @@ impl Explorer {
                 let _ = this.update(cx, Self::save_column_widths);
             });
         }
-        // Clamped like the list clamps its own offset (a wheel can overshoot before the list's
-        // next layout), so the header always lines up with the rows.
+        // Clamped to the range the list will have this frame (this frame's row and pane widths,
+        // not the last layout's) and written back, so the list reads the very same offset and the
+        // header never differs from the rows, after a wheel overshoot or when the columns fit
+        // again.
         let handle = self.header_list();
-        let scroll_x = handle
-            .offset()
-            .x
-            .clamp(-handle.max_offset().x.max(px(0.)), px(0.));
+        let room = self.pane_width - layout::list_chrome();
+        let max = self.cols.map_or(px(0.), |c| (c.row - room).max(px(0.)));
+        let at = handle.offset();
+        let scroll_x = at.x.clamp(-max, px(0.));
+        if scroll_x != at.x {
+            handle.set_offset(gpui::point(scroll_x, at.y));
+        }
         self.header_x.set(Some(scroll_x));
         // The columns, laid out like the rows below (same padding and gaps) and moved with the
         // list when it scrolls sideways. What's right of them is blank, like the list.

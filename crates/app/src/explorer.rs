@@ -1826,13 +1826,23 @@ impl Explorer {
     /// Folders the back (or forward) button's menu lists, the nearest first. None in a pinned
     /// tab, whose buttons are off too.
     pub(crate) fn history_menu(&self, back: bool) -> Vec<PathBuf> {
+        self.history_list(back, HISTORY_MENU_MAX)
+    }
+
+    /// The folder the back (or forward) button goes to: the top row of its menu.
+    pub(crate) fn history_next(&self, back: bool) -> Option<PathBuf> {
+        self.history_list(back, 1).into_iter().next()
+    }
+
+    /// The first `limit` folders of [`Self::history_menu`].
+    fn history_list(&self, back: bool, limit: usize) -> Vec<PathBuf> {
         if self.locked {
             return Vec::new();
         }
-        let entries: Vec<&Path> = if back {
-            self.history.back_entries().collect()
+        let entries: Box<dyn Iterator<Item = &Path>> = if back {
+            Box::new(self.history.back_entries())
         } else {
-            self.history.forward_entries().collect()
+            Box::new(self.history.forward_entries())
         };
         // Home was where the tab started: Back stops on Home, so the folders under it can't be
         // reached by going back (the menu doesn't offer them either).
@@ -1841,8 +1851,7 @@ impl Explorer {
             _ => usize::MAX,
         };
         entries
-            .into_iter()
-            .take(HISTORY_MENU_MAX.min(reachable))
+            .take(limit.min(reachable))
             .map(Path::to_path_buf)
             .collect()
     }
@@ -2824,15 +2833,9 @@ impl Explorer {
     /// Input placeholders. They're set at creation, so reset them when the language or search mode
     /// changes.
     fn refresh_placeholders(&mut self, locale: &str, cx: &mut Context<Self>) {
-        let filter = match self.scope() {
-            scope::Scope::Here => t!("filter.placeholder", locale = locale),
-            scope::Scope::Subfolders => self.search_in_name().map_or_else(
-                || t!("filter.search_placeholder", locale = locale),
-                |name| t!("filter.search_in_placeholder", name = name, locale = locale),
-            ),
-            scope::Scope::Computer => t!("filter.computer_placeholder", locale = locale),
-        }
-        .to_string();
+        let filter = self.filter_placeholder(locale, false);
+        // The next frame fits it to the box's width again.
+        self.reset_placeholder_fit();
         let path = t!("path.placeholder", locale = locale).to_string();
         self.filter_input
             .update(cx, |input, cx| input.set_placeholder(filter, cx));

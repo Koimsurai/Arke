@@ -269,6 +269,46 @@ impl Workspace {
         }
     }
 
+    /// Tooltip of the back (or forward) button of the active pane: names the folder it goes to
+    /// ("Back to src (Alt+←)"). A button that is off, or whose folder isn't known, keeps the
+    /// plain one.
+    pub(super) fn nav_tip(&self, back: bool, cx: &mut App) -> String {
+        use rust_i18n::t;
+        let plain = if back {
+            t!("nav.back")
+        } else {
+            t!("nav.forward")
+        }
+        .into_owned();
+        let view = self.active_view();
+        if !view.read(cx).can_go(back) {
+            return plain;
+        }
+        let pane = view.entity_id();
+        let folder = self
+            .timeline_entry(pane, back, cx)
+            .map(|(name, _)| name.to_string())
+            .or_else(|| {
+                view.read(cx)
+                    .history_next(back)
+                    .map(|path| super::sidebar::display_name(&path))
+            });
+        folder.map_or(plain, |folder| {
+            if back {
+                t!("nav.back_to", folder = folder)
+            } else {
+                t!("nav.forward_to", folder = folder)
+            }
+            .into_owned()
+        })
+    }
+
+    /// Tooltip of the active pane's back (or forward) button, for tests.
+    #[cfg(test)]
+    pub(crate) fn nav_tip_for_test(&self, back: bool, cx: &mut App) -> String {
+        self.nav_tip(back, cx)
+    }
+
     /// The step back (or forward) across tabs takes first, when it isn't one in `pane`'s own
     /// history: a menu row for the folder it goes to.
     fn timeline_entry(

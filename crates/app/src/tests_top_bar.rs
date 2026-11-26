@@ -286,7 +286,7 @@ fn the_active_pane_has_a_thin_outline_not_a_tint(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("active-pane-outline").is_none());
 }
 
-/// A search box too narrow for "Search <folder> or this PC" shows the short placeholder.
+/// A search box too narrow for "Search <folder> (Ctrl+F)" shows the short placeholder.
 #[gpui::test]
 fn a_narrow_search_box_shows_the_short_placeholder(cx: &mut TestAppContext) {
     let placeholder = |cx: &mut VisualTestContext, view: &Entity<Explorer>| {
@@ -300,7 +300,7 @@ fn a_narrow_search_box_shows_the_short_placeholder(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(800.), px(650.)));
     settle(cx);
     let narrow = placeholder(cx, &view);
-    assert_eq!(narrow, t!("filter.placeholder_short").into_owned());
+    assert_eq!(narrow, t!("filter.placeholder").into_owned());
     assert!(!narrow.contains("reports"));
     cx.simulate_resize(size(px(1600.), px(650.)));
     settle(cx);
@@ -524,4 +524,42 @@ fn tooltips_clear_the_pointer(cx: &mut TestAppContext) {
         cx.simulate_mouse_move(point(px(600.), px(500.)), None, Modifiers::none());
         settle(cx);
     }
+}
+
+/// The search box's placeholder always starts with the same verb, whatever the scope (#388): the
+/// folder shown, the subfolders of it, the whole PC. The shortcut hint stays on the folder one.
+#[gpui::test]
+fn the_search_placeholder_follows_the_scope(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    rust_i18n::set_locale("en");
+    let (_ws, view, cx) = open_deep(cx, 1600.);
+    let shown = |cx: &mut VisualTestContext| {
+        settle(cx);
+        view.update(cx, |v, cx| {
+            v.filter_input_for_test().read(cx).placeholder_for_test()
+        })
+    };
+    assert_eq!(shown(cx), "Search reports (Ctrl+F)");
+    view.update(cx, |v, cx| v.set_scope(Scope::Subfolders, cx));
+    assert_eq!(shown(cx), "Search subfolders of reports");
+    view.update(cx, |v, cx| v.set_scope(Scope::Computer, cx));
+    assert_eq!(shown(cx), "Search this PC");
+    view.update(cx, |v, cx| v.set_scope(Scope::Here, cx));
+    assert_eq!(shown(cx), "Search reports (Ctrl+F)");
+
+    // Other languages go through the same function; only the verb and the wording differ.
+    let in_zh = |cx: &mut VisualTestContext, scope: Scope, locale: &str| {
+        view.update(cx, |v, cx| {
+            v.set_scope(scope, cx);
+            v.filter_placeholder(locale, false)
+        })
+    };
+    assert_eq!(in_zh(cx, Scope::Here, "zh-TW"), "搜尋「reports」（Ctrl+F）");
+    assert_eq!(
+        in_zh(cx, Scope::Subfolders, "zh-TW"),
+        "搜尋「reports」的子資料夾"
+    );
+    assert_eq!(in_zh(cx, Scope::Computer, "zh-TW"), "搜尋整台電腦");
+    assert_eq!(in_zh(cx, Scope::Here, "zh-CN"), "搜索“reports”（Ctrl+F）");
+    assert_eq!(in_zh(cx, Scope::Computer, "zh-CN"), "搜索整台电脑");
 }

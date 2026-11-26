@@ -693,7 +693,7 @@ impl Workspace {
                 button(
                     "rail-back",
                     Icon::ArrowLeft,
-                    t!("nav.back").into_owned(),
+                    self.nav_tip(true, cx),
                     can_back,
                 )
                 .on_click(move |_, window, cx| {
@@ -705,7 +705,7 @@ impl Workspace {
                 button(
                     "rail-forward",
                     Icon::ArrowRight,
-                    t!("nav.forward").into_owned(),
+                    self.nav_tip(false, cx),
                     can_forward,
                 )
                 .on_click(move |_, window, cx| {

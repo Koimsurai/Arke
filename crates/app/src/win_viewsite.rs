@@ -230,6 +230,7 @@ pub(crate) mod open_thread {
             };
             thread.send(job)?;
             threads.push(thread);
+            drop(threads);
             Ok(())
         }
 
@@ -583,7 +584,7 @@ pub(crate) mod open_thread {
                 let site = probe(&c, &r);
                 let table = interface_table();
                 // SAFETY: a plain COM call on this STA thread with a valid interface id.
-                let cookie = unsafe { table.RegisterInterfaceInGlobal(&site, &iid) };
+                let cookie = unsafe { table.RegisterInterfaceInGlobal(&site, &raw const iid) };
                 (cookie.expect("registered"), Some(site))
             });
             let (answer_tx, answer) = flume::bounded(1);
@@ -593,7 +594,8 @@ pub(crate) mod open_thread {
                 let table = interface_table();
                 let mut proxy = std::ptr::null_mut();
                 // SAFETY: a plain COM call with a valid interface id; proxy is an out pointer.
-                let got = unsafe { table.GetInterfaceFromGlobal(cookie, &iid, &raw mut proxy) };
+                let got =
+                    unsafe { table.GetInterfaceFromGlobal(cookie, &raw const iid, &raw mut proxy) };
                 got.expect("a proxy to the site");
                 // SAFETY: as above.
                 let _ = unsafe { table.RevokeInterfaceFromGlobal(cookie) };

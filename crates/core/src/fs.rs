@@ -36,6 +36,51 @@ pub enum WatchEvent {
     Rescan,
 }
 
+/// What a change notification said about one item (see [`Fs::watch_changes`]).
+#[derive(Debug, Clone)]
+pub enum Change {
+    /// Something about this path changed: stat it to see what it is now.
+    Unknown(PathBuf),
+    /// This path is gone (deleted, or renamed to another name).
+    Removed(PathBuf),
+    /// This path exists, and the notification described it: the entry [`Fs::stat`] would give,
+    /// under the name the notification used.
+    Present(PathBuf, Entry),
+}
+
+impl Change {
+    /// The path this change is about.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Unknown(path) | Self::Removed(path) | Self::Present(path, _) => path,
+        }
+    }
+}
+
+/// Change notification from [`Fs::watch_changes`].
+#[derive(Debug, Clone)]
+pub enum ChangeEvent {
+    /// These items changed; later changes of one path supersede earlier ones.
+    Changed(Vec<Change>),
+    /// Events were lost (buffer overflow etc.); relist the directory.
+    Rescan,
+}
+
+impl From<WatchEvent> for ChangeEvent {
+    fn from(event: WatchEvent) -> Self {
+        match event {
+            WatchEvent::Changed(paths) => {
+                Self::Changed(paths.into_iter().map(Change::Unknown).collect())
+            }
+            WatchEvent::Rescan => Self::Rescan,
+        }
+    }
+}
+
+/// Handler of [`Fs::watch_changes`]; called on the watcher's background thread, which it must
+/// not block (and from which it must not start or close watches).
+pub type ChangeCallback = Box<dyn Fn(ChangeEvent) + Send + Sync>;
+
 /// One entry seen by a folder size walk ([`Fs::scan_sizes`]).
 #[derive(Debug)]
 pub enum SizeItem {
@@ -72,6 +117,15 @@ pub trait Fs: Send + Sync + 'static {
     }
     /// Watches a directory (non-recursive). Dropping the returned value stops watching.
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>>;
+    /// Like [`Fs::watch`], but a change may say what the item is now ([`Change::Present`]) or
+    /// that it is gone ([`Change::Removed`]), so the owner needn't stat it. The default reports
+    /// every change as [`Change::Unknown`].
+    fn watch_changes(&self, path: &Path, on_change: ChangeCallback) -> io::Result<Box<dyn Send>> {
+        self.watch(
+            path,
+            Box::new(move |event| on_change(ChangeEvent::from(event))),
+        )
+    }
     /// Reads a whole file (for thumbnails). Errors without reading if larger than `max_len`.
     fn read(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>>;
     /// Reads up to `len` bytes from the start of a file (for text previews).
@@ -251,6 +305,26 @@ impl Fs for RealFs {
         debug_assert_not_ui_thread("watch_tree", path);
         watch_with(path, notify::RecursiveMode::Recursive, on_event)
     }
+
+    /// Asks for the extended change records (`ReadDirectoryChangesExW`) where the file system has
+    /// them, so changed items needn't be stat'ed (see `winfs`).
+    #[cfg(windows)]
+    fn watch_changes(&self, path: &Path, on_change: ChangeCallback) -> io::Result<Box<dyn Send>> {
+        debug_assert_not_ui_thread("watch_changes", path);
+        let on_change: Arc<ChangeCallback> = Arc::new(on_change);
+        let target = path.to_path_buf();
+        let events = Arc::clone(&on_change);
+        let guard = crate::watches::registry().watch(
+            path,
+            Box::new(move || {
+                let sink = crate::winfs::Sink::Changes(Arc::clone(&events));
+                let watcher = crate::winfs::DirWatcher::start(&target, false, sink)?;
+                Ok(Box::new(watcher) as Box<dyn crate::watches::Armed>)
+            }),
+            Box::new(move || on_change(ChangeEvent::Rescan)),
+        )?;
+        Ok(Box::new(guard))
+    }
 }
 
 /// Watches through the volume registry ([`crate::watches`]), so the watcher can be closed when
@@ -309,8 +383,9 @@ impl crate::watches::Armed for crate::winfs::DirWatcher {
     }
 }
 
-/// Folders shown in a tab use Arke's own watcher ([`crate::winfs::DirWatcher`]: no polling, and
-/// a full change buffer asks for a relist). Whole trees for the search index stay on notify.
+/// Single folders use Arke's own watcher ([`crate::winfs::DirWatcher`]: no polling, one thread
+/// for all of them, and a full change buffer asks for a relist). Whole trees for the search index
+/// stay on notify.
 #[cfg(windows)]
 fn arm_watcher(
     path: &Path,
@@ -319,8 +394,9 @@ fn arm_watcher(
 ) -> io::Result<Box<dyn crate::watches::Armed>> {
     use notify::Watcher;
     if mode == notify::RecursiveMode::NonRecursive {
+        let sink = crate::winfs::Sink::Paths(on_event);
         return Ok(Box::new(crate::winfs::DirWatcher::start(
-            path, false, on_event,
+            path, false, sink,
         )?));
     }
     let (closed_tx, closed) = std::sync::mpsc::channel();

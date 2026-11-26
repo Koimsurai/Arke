@@ -48,6 +48,8 @@ pub(super) enum Format {
     DropEffect,
     /// `Shell IDList Array`: shell IDs, which take parsing every path.
     IdList,
+    /// `FileNameW`: the path, only when there is exactly one (as Explorer offers it).
+    FileNameW,
 }
 
 /// Builds the bytes of a Shell IDList Array for these paths; `None` if a path can't be parsed.
@@ -87,6 +89,9 @@ impl Payload {
             (Format::Hdrop, hdrop_bytes(&self.paths)),
             (Format::DropEffect, drop_effect_bytes(self.cut)),
         ];
+        if let [only] = self.paths.as_slice() {
+            formats.push((Format::FileNameW, file_name_bytes(only)));
+        }
         if self.eager_ids
             && let Some(ids) = self.render(Format::IdList)
         {
@@ -118,6 +123,7 @@ impl Payload {
         match format {
             Format::Hdrop => Some(hdrop_bytes(&self.paths)),
             Format::DropEffect => Some(drop_effect_bytes(self.cut)),
+            Format::FileNameW => self.paths.first().map(|p| file_name_bytes(p)),
             Format::IdList => self
                 .ids
                 .get_or_insert_with(|| (self.build_ids)(&self.paths))
@@ -134,6 +140,14 @@ pub(super) fn drop_effect_bytes(cut: bool) -> Vec<u8> {
         DROPEFFECT_COPY | DROPEFFECT_LINK
     };
     effect.to_le_bytes().to_vec()
+}
+
+/// `FileNameW`: one NUL-terminated wide path.
+pub(super) fn file_name_bytes(path: &std::path::Path) -> Vec<u8> {
+    super::wide(path.as_os_str())
+        .iter()
+        .flat_map(|u| u.to_le_bytes())
+        .collect()
 }
 
 /// A Shell IDList Array (CIDA): the item count, then the offsets of the folder's ID list and each
@@ -160,6 +174,8 @@ fn format_id(format: Format) -> u32 {
     match format {
         Format::Hdrop => u32::from(CF_HDROP.0),
         Format::DropEffect => drop_effect_format(),
+        // SAFETY: the argument is a static wide string.
+        Format::FileNameW => unsafe { RegisterClipboardFormatW(w!("FileNameW")) },
         // SAFETY: the argument is a static wide string.
         Format::IdList => unsafe { RegisterClipboardFormatW(w!("Shell IDList Array")) },
     }
@@ -579,6 +595,21 @@ mod tests {
         assert_eq!(formats, [Format::Hdrop, Format::DropEffect]);
         assert_eq!(payload.render(Format::IdList), None);
         assert_eq!(calls.get(), 1, "a failure isn't retried on every paste");
+    }
+
+    #[test]
+    fn a_single_path_also_offers_its_file_name_at_once() {
+        let build: IdListBuilder = Box::new(|_| None);
+        let one = PathBuf::from("x.txt");
+        let mut payload = Payload::new(vec![one.clone()], false, false, build);
+        let immediate = payload.immediate();
+        let formats: Vec<Format> = immediate.iter().map(|(f, _)| *f).collect();
+        assert_eq!(
+            formats,
+            [Format::Hdrop, Format::DropEffect, Format::FileNameW]
+        );
+        assert_eq!(immediate[2].1, file_name_bytes(&one));
+        assert_eq!(&immediate[2].1[immediate[2].1.len() - 2..], [0, 0]);
     }
 
     #[test]

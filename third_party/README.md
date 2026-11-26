@@ -122,6 +122,22 @@ Zed's Windows platform crate (Apache-2.0), unchanged except for:
   window isn't always the foreground one yet at that point; when it becomes so, no second
   `WM_ACTIVATE` follows. The adapter then thought the window never had focus, so screen readers
   were given no focused element: NVDA read nothing in the main window or Settings. (#322)
+- Windows 10 top border, ported from Zed PR #63821 (not merged upstream yet; every hunk is marked
+  `zed#63821`): `src/util.rs` `is_windows_10`, `top_border_color` and `configure_dwm_dark_mode`;
+  `src/events.rs` `top_border_height`, `needs_win10_top_border`, `update_top_border`,
+  `update_frame_margins`, `handle_size_msg`, `handle_activate_msg`, `handle_create_msg` and
+  `handle_system_theme_changed`; `src/directx_renderer.rs` `DirectComposition`, `TopBorderVisual`,
+  `draw`, `draw_top_border`, `set_top_border_visible` and `resize`; `src/window.rs`
+  `WindowsWindowState::active`, `WindowsWindow::new` and `draw`. A window that hides its title bar
+  gives the whole top edge to its client area, and Windows 10 (build < 22000) then draws no top
+  border at all. The DWM frame is extended 1 px into the client area and the renderer clears that
+  row, so DWM draws the active border there; while the window is inactive, a DirectComposition
+  visual (one premultiplied pixel, `[43, 43, 43, 128]`, stretched to the window's width) draws it
+  instead. These windows ask DWM for a dark frame in either theme, or the border is drawn white.
+  None of it runs on Windows 11 except the root visual the scene now hangs off. Arke's own
+  change to it: anchored popups (menus) are left out, since they have no frame and are never
+  active. Re-apply on every GPUI upgrade until upstream has it, then take upstream's version.
+  (#420)
 
 ## gpui-pre 0.3.11
 

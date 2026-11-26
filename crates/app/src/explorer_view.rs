@@ -798,10 +798,8 @@ impl Explorer {
                 this.on_row_released(ix, event, window, cx);
                 if this.click_select == Some(ix) && event.click_count() == 1 {
                     this.click_select = None;
-                    if let Some(view) = this.view() {
-                        this.selection.select_only(&view, ix);
-                        cx.notify();
-                    }
+                    this.narrow_selection_to(ix);
+                    cx.notify();
                 }
             }))
             // Drop: folders, and files inside an expanded folder (into that folder).
@@ -1534,8 +1532,11 @@ impl Explorer {
             (None, Some(parent)) => parent.display().to_string(),
             (None, None) => t!("list.here").into_owned(),
         };
-        self.row_shell(ix, cursor == Some(ix), false, focused, cx)
-            .a11y_item(ix, cursor == Some(ix), cursor == Some(ix), || {
+        let is_selected = self.hit_selected(ix, hit);
+        // As in a folder's rows: no ring when the cursor is the only selected item.
+        let is_cursor = cursor == Some(ix) && !(is_selected && self.search_selected_count() <= 1);
+        self.row_shell(ix, is_selected, is_cursor, focused, cx)
+            .a11y_item(ix, is_selected, cursor == Some(ix), || {
                 let modified = entry.modified.map(|t| shell.format_time(t));
                 let content = hit
                     .snippet
@@ -1586,18 +1587,7 @@ impl Explorer {
                             })),
                     ),
             )
-            .child(
-                div()
-                    .w(theme::col_location())
-                    .flex_none()
-                    // Keep the end of long paths (the folders nearest the file).
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_start()
-                    .text_size(theme::fs_12())
-                    .text_color(theme::text_muted())
-                    .child(location),
-            )
+            .child(Self::location_cell(ix, &hit.rel, location, cx))
             .child(
                 div()
                     .w(crate::prefs::modified_width())
@@ -1612,6 +1602,34 @@ impl Explorer {
             )
             .child(size_cell(entry, super::sizes::FolderSize::Unknown))
             .into_any_element()
+    }
+
+    /// A search hit's Location. A double-click on it opens the folder with the hit selected
+    /// (#398), so it looks like a link under the pointer, as the preview pane's Location does.
+    fn location_cell(
+        ix: usize,
+        rel: &Arc<str>,
+        location: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let rel = Arc::clone(rel);
+        div()
+            .debug_selector(move || format!("location:{rel}"))
+            .w(theme::col_location())
+            .flex_none()
+            // Keep the end of long paths (the folders nearest the file).
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis_start()
+            .text_size(theme::fs_12())
+            .text_color(theme::text_muted())
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::text()).underline())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _, _| this.on_location_pressed(ix)),
+            )
+            .child(location)
     }
 
     /// List content: rows, tiles, search results, or the empty/loading state.

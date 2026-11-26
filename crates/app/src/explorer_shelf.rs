@@ -11,15 +11,10 @@ use super::{AddToShelf, Explorer};
 use crate::shelf::ShelfStore;
 
 impl Explorer {
-    /// Selected items (or the search result under the cursor) with whether each is a folder.
+    /// Selected items (or search results) with whether each is a folder.
     fn shelf_targets(&self) -> Vec<(PathBuf, bool)> {
         if self.search_mode {
-            return self
-                .search_hit(self.search_cursor)
-                .zip(self.search_results.as_ref())
-                .map_or_default(|(hit, r)| {
-                    vec![(r.root.join(&*hit.rel), hit.entry.is_dir_like())]
-                });
+            return self.selected_hit_items();
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
@@ -96,7 +91,7 @@ impl Explorer {
     /// the list shown, so nested rows of the Details tree (named by relative path) count too.
     pub(crate) fn drag_items(&self, ix: usize) -> Vec<(PathBuf, bool)> {
         if self.search_mode {
-            return self.path_at(ix).into_iter().collect();
+            return self.search_drag_items(ix);
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();

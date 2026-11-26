@@ -627,6 +627,39 @@ fn disk_space(root: &[u16]) -> Option<(u64, u64)> {
     (total > 0).then_some((free, total))
 }
 
+/// The ProgID of the program `path` opens with by default, for its extension and the user's
+/// choice. `None` without an extension or an association. Reads the registry; not for the UI
+/// thread.
+fn handler_progid(path: &Path) -> Option<String> {
+    use windows::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_PROGID, AssocQueryStringW};
+    use windows::core::PWSTR;
+    debug_assert!(!arke_core::fs::is_ui_thread());
+    let ext = path.extension()?;
+    let assoc = wide(&std::ffi::OsString::from(format!(
+        ".{}",
+        ext.to_string_lossy()
+    )));
+    let mut buffer = [0u16; 260];
+    let mut len = 260u32;
+    // SAFETY: `assoc` is NUL-terminated; the buffer holds `len` characters.
+    let asked = unsafe {
+        AssocQueryStringW(
+            ASSOCF_NONE,
+            ASSOCSTR_PROGID,
+            PCWSTR(assoc.as_ptr()),
+            PCWSTR::null(),
+            Some(PWSTR(buffer.as_mut_ptr())),
+            &raw mut len,
+        )
+    };
+    if asked.is_err() {
+        return None;
+    }
+    let end = (len as usize).saturating_sub(1).min(buffer.len());
+    let progid = String::from_utf16_lossy(&buffer[..end]);
+    (!progid.is_empty()).then_some(progid)
+}
+
 impl Shell for WinShell {
     fn quick_access_pinned(&self) -> Option<Vec<PathBuf>> {
         crate::quick_access::read_windows_pins()
@@ -757,8 +790,19 @@ impl Shell for WinShell {
         let com =
             unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
         // The folder view it is opened from, so Photos and the like can step through the folder
-        // in this order (`win_viewsite.rs`).
-        let site = sort.and_then(|sort| crate::win_viewsite::site(path, &sort));
+        // in this order (`win_viewsite.rs`). Packaged apps only: handed a folder view, Windows
+        // Photo Viewer stays on "Loading..." (#412).
+        let site = sort
+            .filter(|_| {
+                let progid = handler_progid(path);
+                let wanted = crate::win_viewsite::handler_wants_site(progid.as_deref());
+                log::debug!(
+                    "open {}: handler {progid:?}, view site {wanted}",
+                    path.display()
+                );
+                wanted
+            })
+            .and_then(|sort| crate::win_viewsite::site(path, &sort));
         let mut info = SHELLEXECUTEINFOW {
             cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
             // NOASYNC: return only when done, since this thread exits right after.

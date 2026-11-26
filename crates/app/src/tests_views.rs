@@ -321,33 +321,33 @@ fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
         ]
     );
 
-    // Name descending: children reverse too, and folders trail the files at every level.
+    // Name descending: children reverse too, and folders still lead the files at every level.
     view.update(cx, |v, cx| {
         v.set_sort(SortSpec::by(SortColumn::Name, false, false), cx);
     });
     wait_until(cx, &view, "resorted", |v| {
-        view_names(v).first().map(String::as_str) == Some("top.txt")
+        view_names(v).first().map(String::as_str) == Some("beta")
             && view_names(v).get(4) == Some(&sep(&["alpha", "a0.txt"]))
     });
     assert_eq!(
         view.update(cx, |v, _| view_names(v)),
         [
-            "top.txt".to_string(),
-            "beta".into(),
+            "beta".to_string(),
             "alpha".into(),
+            sep(&["alpha", "inner"]),
             sep(&["alpha", "a1.txt"]),
             sep(&["alpha", "a0.txt"]),
-            sep(&["alpha", "inner"]),
+            "top.txt".into(),
         ]
     );
 
     // The expanded folder is deleted: its rows and its expansion go away (still descending, so
-    // the folder left trails the file).
+    // the folder left leads the file).
     wait_watcher(&fs, Path::new(r"C:\t"));
     fs.remove(Path::new(r"C:\t"), "alpha");
     fs.emit_changed(Path::new(r"C:\t"), &["alpha"]);
     wait_until(cx, &view, "alpha gone", |v| {
-        view_names(v) == ["top.txt", "beta"] && v.tree_expanded().is_empty()
+        view_names(v) == ["beta", "top.txt"] && v.tree_expanded().is_empty()
     });
 }
 
@@ -1134,8 +1134,8 @@ fn search_results_sort_by_header_clicks(cx: &mut TestAppContext) {
     view.update(cx, |v, _| assert!(v.search_sort.is_none()));
 }
 
-/// #286: grouped by a date, folders go into the section of their date, after the files when
-/// newest first and before them when oldest first, as in File Explorer. Not grouped, they stay a
+/// #286, #435: grouped by a date, folders go into the section of their date and lead within it,
+/// newest first or oldest first. Not grouped, they stay a
 /// block of their own; column view never groups.
 #[gpui::test]
 fn grouped_by_date_folders_join_their_sections(cx: &mut TestAppContext) {
@@ -1185,12 +1185,12 @@ fn grouped_by_date_folders_join_their_sections(cx: &mut TestAppContext) {
     sort(cx, false);
     assert_eq!(
         view.update(cx, |v, _| names(v)),
-        ["new.txt", "old.txt", "new-dir", "old-dir"]
+        ["new-dir", "old-dir", "new.txt", "old.txt"]
     );
     group(cx, true);
     assert_eq!(
         view.update(cx, |v, _| names(v)),
-        ["new.txt", "new-dir", "old.txt", "old-dir"]
+        ["new-dir", "new.txt", "old-dir", "old.txt"]
     );
     assert_eq!(headers(cx), [2, 2], "today and the year, two items each");
     sort(cx, true);

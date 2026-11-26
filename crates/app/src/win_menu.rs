@@ -710,17 +710,7 @@ fn build(
         set_background_site(&menu, &paths[0]);
         menu
     } else {
-        // Arke's selection is always within one folder, so bind to the first item's parent.
-        // SAFETY: pidls.0[0] is a valid absolute PIDL.
-        let folder: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }?;
-        // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
-        let children: Vec<*const ITEMIDLIST> = pidls
-            .0
-            .iter()
-            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
-            .collect();
-        // SAFETY: the PIDLs in children are valid for the call.
-        unsafe { folder.GetUIObjectOf(owner, &children, None) }?
+        items_object(paths, &pidls.0, owner)?
     };
     fill(
         menu,
@@ -729,6 +719,39 @@ fn build(
         menu_directory(paths, background),
         extended,
     )
+}
+
+/// The items' own UI object (their `IContextMenu` or `IDataObject`). Items of one folder are
+/// asked of that folder by their IDs in it, as File Explorer asks. Items from different folders
+/// (search results, #413) have no one folder to ask: they are asked of the desktop by their full
+/// IDs, where each absolute ID is an item of its own. That is the shape Arke's drags give such
+/// items too (`win_fileops::drag_data_object`). The one menu then has the commands for all of
+/// them, third-party ones included, as File Explorer's search results do. `pidls` are the
+/// absolute IDs of `paths`.
+fn items_object<T: Interface>(
+    paths: &[PathBuf],
+    pidls: &[*mut ITEMIDLIST],
+    owner: HWND,
+) -> windows::core::Result<T> {
+    let one_folder = paths
+        .windows(2)
+        .all(|pair| pair[0].parent() == pair[1].parent());
+    if one_folder && let Some(&first) = pidls.first() {
+        // SAFETY: first is a valid absolute PIDL.
+        let folder: IShellFolder = unsafe { SHBindToParent(first, None) }?;
+        let children: Vec<*const ITEMIDLIST> = pidls
+            .iter()
+            // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
+            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
+            .collect();
+        // SAFETY: the PIDLs in children are valid for the call.
+        return unsafe { folder.GetUIObjectOf(owner, &children, None) };
+    }
+    // SAFETY: plain COM call on this STA thread.
+    let desktop: IShellFolder = unsafe { SHGetDesktopFolder() }?;
+    let full: Vec<*const ITEMIDLIST> = pidls.iter().map(|&p| p.cast_const()).collect();
+    // SAFETY: the absolute PIDLs are valid for the call; the desktop takes them as its items.
+    unsafe { desktop.GetUIObjectOf(owner, &full, None) }
 }
 
 /// The folder a menu for `paths` is for: the folder itself for its background, else the items'
@@ -853,17 +876,10 @@ fn build_handler(
     let data: Option<IDataObject> = if background {
         None
     } else {
-        // SAFETY: folder_pidl is our own copy; drop the last ID to get the parent.
+        // SAFETY: folder_pidl is our own copy; drop the last ID to get the parent (the first
+        // item's, for items from several folders).
         let _ = unsafe { ILRemoveLastID(Some(folder_pidl)) };
-        // SAFETY: pidls.0[0] is a valid absolute PIDL.
-        let folder: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }?;
-        let children: Vec<*const ITEMIDLIST> = pidls.0[..paths.len()]
-            .iter()
-            // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
-            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
-            .collect();
-        // SAFETY: the PIDLs in children are valid for the call.
-        Some(unsafe { folder.GetUIObjectOf(owner, &children, None) }?)
+        Some(items_object(paths, &pidls.0[..paths.len()], owner)?)
     };
     let clsid_text = wide(std::ffi::OsStr::new(&handler.clsid));
     // SAFETY: NUL-terminated.
@@ -1544,6 +1560,42 @@ mod tests {
             assert!(!give.ends_with("[]"), "{what}: {give}");
             release(menu.session);
         }
+    }
+
+    /// #413: items from two folders (search results) get one Windows menu with the commands for
+    /// both, as File Explorer's search results do.
+    #[test]
+    #[ignore = "reads this machine's Windows menu; run by hand"]
+    fn items_from_two_folders_get_one_menu() {
+        let base =
+            crate::win::long_temp_dir().join(format!("arke-two-folders-{}", std::process::id()));
+        let files: Vec<PathBuf> = ["a", "b"]
+            .iter()
+            .map(|dir| {
+                let dir = base.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                // The same name in both, as search results often have.
+                let file = dir.join("arke-item.txt");
+                std::fs::write(&file, "x").unwrap();
+                file
+            })
+            .collect();
+        let menu = query(&files, false, false);
+        let _ = std::fs::remove_dir_all(&base);
+        let menu = menu.expect("a menu for both items");
+        let verbs: Vec<String> = menu
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                ShellMenuEntry::Item { verb, .. } => verb.clone(),
+                _ => None,
+            })
+            .collect();
+        release(menu.session);
+        assert!(
+            verbs.iter().any(|v| v.eq_ignore_ascii_case("properties")),
+            "{verbs:?}"
+        );
     }
 
     #[test]

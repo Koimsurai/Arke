@@ -48,6 +48,9 @@ mod integration_api;
 #[path = "tests_lazy_submenus.rs"]
 mod lazy_submenus;
 #[cfg(windows)]
+#[path = "tests_live_preview_save.rs"]
+mod live_preview_save;
+#[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
 #[path = "tests_menu_customize.rs"]
@@ -66,6 +69,8 @@ mod popup_menus;
 mod preview_info;
 #[path = "tests_preview_media.rs"]
 mod preview_media;
+#[path = "tests_preview_resave.rs"]
+mod preview_resave;
 #[path = "tests_preview_shelf.rs"]
 mod preview_shelf;
 #[path = "tests_properties_card.rs"]
@@ -82,6 +87,8 @@ mod quiet_update;
 mod remote;
 #[path = "tests_scale.rs"]
 mod scale;
+#[path = "tests_search_select.rs"]
+mod search_select;
 #[path = "tests_sidebar_keys.rs"]
 mod sidebar_keys;
 #[path = "tests_sidebar_sections.rs"]
@@ -4774,11 +4781,11 @@ fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
         Some("c-mid")
     );
 
-    // Largest first: folders trail a descending sort, like File Explorer.
+    // Largest first: folders still lead a descending sort.
     let mut spec = SortSpec::by(SortColumn::Size, false, false);
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "sort by size", |v| {
-        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
+        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
     });
     assert_eq!(
         view.update(cx, |v, _| selected_name(v)).as_deref(),
@@ -6545,7 +6552,51 @@ fn ctrl_k_searches_the_whole_computer(cx: &mut TestAppContext) {
     });
     cx.simulate_keystrokes("ctrl-k");
     view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
-    // Ctrl+F only puts the cursor back in the box; the scope stays.
+    // Ctrl+F with the cursor already in the box goes back to this folder (#388).
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| {
+        assert_eq!(v.scope(), Scope::Here);
+        assert_eq!(v.query, "report", "the text stays");
+    });
+    assert!(in_box(cx));
+}
+
+/// #388: Ctrl+F from this PC or subfolders with the cursor in the box (and the scope strip open)
+/// returns to this folder; from the list it only focuses the box and the scope stays.
+#[gpui::test]
+fn ctrl_f_in_the_box_returns_to_this_folder(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    let in_box = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx))
+    };
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    cx.simulate_keystrokes("ctrl-k");
+    cx.run_until_parked();
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
+    assert!(in_box(cx));
+    cx.simulate_keystrokes("ctrl-f");
+    cx.run_until_parked();
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    assert!(in_box(cx));
+    // Pressed again in this folder: only selects the box's text, the scope stays.
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    // Subfolders too.
+    cx.simulate_keystrokes("ctrl-shift-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Subfolders));
+    cx.simulate_keystrokes("ctrl-f");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Here));
+    // From the list: focus the box, scope unchanged.
+    cx.simulate_keystrokes("ctrl-k down");
+    cx.run_until_parked();
+    assert!(!in_box(cx), "Down moved the cursor to the list");
+    view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
     cx.simulate_keystrokes("ctrl-f");
     view.update(cx, |v, _| assert_eq!(v.scope(), Scope::Computer));
     assert!(in_box(cx));

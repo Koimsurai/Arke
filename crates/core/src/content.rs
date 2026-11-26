@@ -108,7 +108,7 @@ enum Prefilter {
     /// Every line is a candidate.
     Unfiltered,
     /// ASCII case-insensitive (SIMD prefilters inside the automaton).
-    Ascii(AhoCorasick),
+    Ascii(Box<AhoCorasick>),
     /// Exact bytes: the needle has no letter whose case could differ.
     Literal(memmem::Finder<'static>),
 }
@@ -123,7 +123,7 @@ impl Prefilter {
             return AhoCorasick::builder()
                 .ascii_case_insensitive(true)
                 .build([needle])
-                .map_or(Self::Unfiltered, Self::Ascii);
+                .map_or(Self::Unfiltered, |ac| Self::Ascii(Box::new(ac)));
         }
         Self::Literal(memmem::Finder::new(needle.as_bytes()).into_owned())
     }
@@ -228,7 +228,7 @@ impl ContentMatcher {
         let mut lines = Lines::new(self);
         let mut decoder: Option<Decoder> = None;
         // Reused for blocks that are decoded (UTF-16, a character split across blocks).
-        let mut text = String::new();
+        let mut scratch = String::new();
         loop {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
@@ -246,13 +246,12 @@ impl ContentMatcher {
                 return Ok(None);
             };
             let last = n == 0;
-            let decoded = match decoder.valid_utf8(chunk, last) {
-                Some(valid) => valid,
-                None => {
-                    text.clear();
-                    decoder.decode(chunk, last, &mut text);
-                    text.as_str()
-                }
+            let decoded = if let Some(valid) = decoder.valid_utf8(chunk, last) {
+                valid
+            } else {
+                scratch.clear();
+                decoder.decode(chunk, last, &mut scratch);
+                scratch.as_str()
             };
             if let Some(hit) = lines.feed(decoded) {
                 return Ok(Some(hit));

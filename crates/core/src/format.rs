@@ -218,9 +218,11 @@ pub fn start_type_names(
     if ASK.set(tx).is_err() {
         return;
     }
-    let mut state = SYSTEM_NAMES.lock();
-    state.follow_language();
-    state.ask_known();
+    {
+        let mut state = SYSTEM_NAMES.lock();
+        state.follow_language();
+        state.ask_known();
+    }
     let spawned = std::thread::Builder::new()
         .name("type-names".into())
         .spawn(move || {

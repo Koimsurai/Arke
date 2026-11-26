@@ -324,3 +324,29 @@ fn an_update_offers_the_guide_in_whats_new(cx: &mut TestAppContext) {
     click(cx, "welcome-skip");
     assert!(cx.debug_bounds("whats-new-guide").is_none(), "done");
 }
+
+/// The entry shows after the first update that has the guide only, even if it wasn't used.
+#[gpui::test]
+fn the_whats_new_entry_shows_once(cx: &mut TestAppContext) {
+    let (ws, cx) = start(cx);
+    change(cx, |s| s.whats_new_seen = Some("0.2.0".into()));
+    for (version, entry) in [("0.3.0", true), ("0.4.0", false)] {
+        cx.update(|_, cx| {
+            SettingsStore::global(cx).update(cx, |s, _| s.set_first_run_for_test(false));
+            Workspace::pretend_build_for_test(version, Some(Channel::Stable), cx);
+        });
+        ws.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(
+            ws.update(cx, |ws, _| ws.whats_new_for_test().is_some()),
+            "{version}: What's new opens"
+        );
+        assert_eq!(
+            cx.debug_bounds("whats-new-guide").is_some(),
+            entry,
+            "{version}"
+        );
+    }
+    let s = settings(cx);
+    assert!(s.onboarding_offered && !s.onboarding_done);
+}

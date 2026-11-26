@@ -45,6 +45,8 @@ pub(crate) struct WhatsNewPage {
     sections: Vec<Section>,
     /// Sections shown open; the first one is.
     expanded: BTreeSet<usize>,
+    /// The setup guide's entry is on the page (once, after the first update that has it).
+    guide: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
@@ -97,6 +99,7 @@ impl WhatsNewPage {
         }
         // An update's own notes, or the newest version: open; the rest folded.
         let expanded = (!sections.is_empty()).then_some(0).into_iter().collect();
+        let guide = matches!(mode, Mode::Updated { .. }) && super::welcome::offer_once(cx);
         if let Mode::Available(release) = &mode
             && lang != "en"
         {
@@ -107,6 +110,7 @@ impl WhatsNewPage {
             version,
             sections,
             expanded,
+            guide,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
         }
@@ -298,10 +302,10 @@ impl WhatsNewPage {
 }
 
 impl WhatsNewPage {
-    /// The versions, after an update led by the setup guide for someone who hasn't been
-    /// through it.
+    /// The versions, led after an update by the setup guide's entry (see [`Self::guide`]).
     fn sections_shown(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let guide = matches!(self.mode, Mode::Updated { .. })
+        let guide = self
+            .guide
             .then(|| super::welcome::whats_new_entry(cx))
             .flatten();
         guide

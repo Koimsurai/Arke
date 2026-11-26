@@ -26,11 +26,11 @@ preset rather than guessed.
 | Sort by | Name, ascending | Fresh-install behavior |
 | View | Details | Fresh-install behavior for general items folders (Documents, Downloads) |
 | Show hidden items | Off | Documented: hidden items are off until turned on under View › Show ([Microsoft](https://support.microsoft.com/en-us/windows/view-hidden-files-and-folders-in-windows-97fbc472-c603-9d90-91d0-1166d1d9f4b5)) |
-| Show file name extensions | Off | Option documented: View › Show › File name extensions ([Microsoft](https://support.microsoft.com/en-us/windows/common-file-name-extensions-in-windows-da4a4430-8e76-89c5-59f7-1cdbbc75cb01)); off out of the box ("Hide extensions for known file types") |
+| Show file name extensions | On | **Deliberate deviation.** Explorer hides extensions out of the box ("Hide extensions for known file types", option at View › Show › File name extensions, [Microsoft](https://support.microsoft.com/en-us/windows/common-file-name-extensions-in-windows-da4a4430-8e76-89c5-59f7-1cdbbc75cb01)); the preset keeps them shown, since a hidden extension hides what a file really is |
 | Date format | Full date and time | Fresh-install behavior: Date modified shows date and time |
 | File size units | 1 KB = 1024 bytes | Fresh-install behavior (Arke's default already says "like Windows") |
 | Tabs and sidebar | Top | Fresh-install behavior: Windows 11 22H2 and later have tabs above the address bar |
-| Ctrl+T | New tab with Home | Fresh-install behavior: a new tab opens where "Open File Explorer to" points, Home by default ([Microsoft Q&A](https://learn.microsoft.com/en-us/answers/a/12283558)) |
+| Ctrl+T | New tab with Home | Checked on Windows 11 build 28000: Ctrl+T opens a Home tab; a new tab opens where "Open File Explorer to" points, Home by default ([Microsoft Q&A](https://learn.microsoft.com/en-us/answers/a/12283558)) |
 | New windows open to | Home | Documented as above: File Explorer opens to Home by default ([Microsoft Q&A](https://learn.microsoft.com/en-us/answers/a/12283558)) |
 | Back and forward | Within the current tab | Fresh-install behavior: each tab has its own history |
 | Open This PC to the current folder | Off | Fresh-install behavior: navigation pane "Expand to open folder" is off (same reason as Arke's own default, #416) |

@@ -490,7 +490,7 @@ impl Explorer {
 /// Makes `d` take drops into `dest`, with the list's own functions: the same move or copy, drop
 /// menu, undo and card label as a folder row or the list's background. `highlight`: tint while a
 /// drag that `dest` accepts is over it (rows do; the empty space doesn't, like the list).
-fn accept_drops<E: InteractiveElement + IntoElement>(
+pub(super) fn accept_drops<E: InteractiveElement + IntoElement>(
     d: E,
     dest: PathBuf,
     highlight: bool,

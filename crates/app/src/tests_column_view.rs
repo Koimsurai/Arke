@@ -276,7 +276,12 @@ fn a_wide_parent_column_gives_way_in_a_smaller_window(cx: &mut TestAppContext) {
 /// `y.txt`) and `b.txt`; the column view is open.
 fn drop_columns(
     cx: &mut TestAppContext,
-) -> (Arc<FakeShell>, Entity<Explorer>, &mut VisualTestContext) {
+) -> (
+    Arc<FakeShell>,
+    Entity<Explorer>,
+    Entity<Workspace>,
+    &mut VisualTestContext,
+) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\m", vec![dir("aaa"), dir("one"), file("b.txt", 1)]);
     fs.insert_dir(r"C:\m\aaa", vec![]);
@@ -291,7 +296,7 @@ fn drop_columns(
         v.parent_column_names().len() == 3
     });
     cx.run_until_parked();
-    (shell, view, cx)
+    (shell, view, ws, cx)
 }
 
 /// Centre of the current column's first row (`x.txt`).
@@ -330,7 +335,7 @@ fn drag_and_drop(
 /// moves, Ctrl copies, and the current folder (where the items already are) takes none.
 #[gpui::test]
 fn dropping_on_a_parent_column_folder_moves_or_copies_into_it(cx: &mut TestAppContext) {
-    let (shell, view, cx) = drop_columns(cx);
+    let (shell, view, _ws, cx) = drop_columns(cx);
     let from = x_txt_row(&view, cx);
     let aaa = centre(cx, "parent-row-0");
     drag_and_drop(cx, from, aaa, Modifiers::none());
@@ -368,7 +373,7 @@ fn dropping_on_a_parent_column_folder_moves_or_copies_into_it(cx: &mut TestAppCo
 /// file row in it (like the list's background under a file).
 #[gpui::test]
 fn dropping_on_parent_column_empty_space_goes_to_its_folder(cx: &mut TestAppContext) {
-    let (shell, view, cx) = drop_columns(cx);
+    let (shell, view, _ws, cx) = drop_columns(cx);
     let column = cx.debug_bounds("parent-column").expect("column drawn");
     let empty = point(column.left() + px(60.), column.bottom() - px(40.));
     let from = x_txt_row(&view, cx);
@@ -389,5 +394,123 @@ fn dropping_on_parent_column_empty_space_goes_to_its_folder(cx: &mut TestAppCont
         matches!(&shell.ops()[1], FileOp::Move { dest, .. } if dest == Path::new(r"C:\m")),
         "{:?}",
         shell.ops()
+    );
+}
+
+/// Starts dragging `x.txt` (no drop yet).
+fn start_drag(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Point<Pixels> {
+    let from = x_txt_row(view, cx);
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+    let moved = from + point(px(30.), px(4.));
+    cx.simulate_mouse_move(moved, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        moved + point(px(30.), px(0.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| cx.has_active_drag()), "the drag started");
+    moved + point(px(30.), px(0.))
+}
+
+/// The pointer rests on the path bar's "…" (as far as the spring is concerned): `action`'s
+/// countdown starts, and runs out when `wait`.
+fn hover_more(
+    view: &Entity<Explorer>,
+    cx: &mut VisualTestContext,
+    action: crate::spring::Action,
+    wait: bool,
+) {
+    cx.update(|window, cx| {
+        crate::spring::hover_at(
+            "crumb-more".into(),
+            action,
+            crate::spring::Target::Explorer(view.downgrade()),
+            true,
+            point(px(10.), px(10.)),
+            window,
+            cx,
+        );
+    });
+    if wait {
+        cx.executor().advance_clock(crate::spring::DELAY);
+    }
+    cx.run_until_parked();
+}
+
+fn levels() -> crate::spring::Action {
+    crate::spring::Action::Levels(vec![("aaa".to_owned(), PathBuf::from(r"C:\m\aaa"))])
+}
+
+fn menu_open(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> bool {
+    view.update(cx, |v, _| v.path_popup_for_test().is_some())
+}
+
+/// #430: a drag held on the "…" lists the hidden levels in the pane after the spring delay (not
+/// before), and a drop on a level moves into that folder like a drop on a breadcrumb.
+#[gpui::test]
+fn hovering_the_more_button_in_a_drag_lists_levels_to_drop_on(cx: &mut TestAppContext) {
+    let (shell, view, _ws, cx) = drop_columns(cx);
+    start_drag(&view, cx);
+    hover_more(&view, cx, levels(), false);
+    assert!(!menu_open(&view, cx), "not before the delay");
+    cx.executor().advance_clock(crate::spring::DELAY);
+    cx.run_until_parked();
+    assert!(menu_open(&view, cx), "opens after the delay");
+    let row = centre(cx, "path-drop-row-0");
+    cx.simulate_mouse_move(row, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(row, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    wait_shell_in(cx, "the move", || !shell.ops().is_empty());
+    assert_eq!(
+        shell.ops(),
+        [FileOp::Move {
+            sources: vec![PathBuf::from(r"C:\m\one\x.txt")],
+            dest: PathBuf::from(r"C:\m\aaa"),
+        }]
+    );
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(!menu_open(&view, cx), "closed once the drag ended");
+}
+
+/// #430: the list closes when the drag is cancelled, with nothing moved.
+#[gpui::test]
+fn the_levels_list_closes_when_the_drag_is_cancelled(cx: &mut TestAppContext) {
+    let (shell, view, _ws, cx) = drop_columns(cx);
+    start_drag(&view, cx);
+    hover_more(&view, cx, levels(), true);
+    assert!(menu_open(&view, cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        assert!(!cx.has_active_drag(), "Esc ended the drag");
+        window.refresh();
+    });
+    cx.run_until_parked();
+    assert!(!menu_open(&view, cx), "closed with the drag");
+    assert!(shell.ops().is_empty(), "{:?}", shell.ops());
+}
+
+/// #430: a pinned tab keeps its folder, so a drag over a segment starts no countdown there, but
+/// the "…" list opens no folder and still comes up.
+#[gpui::test]
+fn a_pinned_tab_blocks_navigation_but_not_the_levels_list(cx: &mut TestAppContext) {
+    let (_shell, view, ws, cx) = drop_columns(cx);
+    ws.update(cx, |ws, cx| ws.toggle_pin(0, cx));
+    cx.run_until_parked();
+    start_drag(&view, cx);
+    hover_more(
+        &view,
+        cx,
+        crate::spring::Action::Open(PathBuf::from(r"C:\m\aaa")),
+        false,
+    );
+    assert_eq!(cx.update(|_, cx| crate::spring::pending_key(cx)), None);
+    hover_more(&view, cx, levels(), true);
+    assert!(menu_open(&view, cx), "the list opens on a pinned tab");
+    assert_eq!(
+        view.update(cx, |v, _| v.display_path().map(Path::to_path_buf)),
+        Some(PathBuf::from(r"C:\m\one")),
+        "and the folder stays"
     );
 }

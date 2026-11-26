@@ -110,7 +110,7 @@ pub(crate) fn align_range(offset: u64, len: usize, sector: usize) -> Option<Alig
 
 /// Whether a read of `len` bytes at `offset` into memory at `addr` can go straight to an
 /// unbuffered handle: offset, length and buffer address must all be sector aligned.
-pub(crate) fn is_aligned(offset: u64, addr: usize, len: usize, sector: usize) -> bool {
+pub(crate) const fn is_aligned(offset: u64, addr: usize, len: usize, sector: usize) -> bool {
     let sector = if sector == 0 { 1 } else { sector };
     offset.is_multiple_of(sector as u64)
         && addr.is_multiple_of(sector)
@@ -1449,7 +1449,7 @@ pub(crate) mod tests {
             let r = align_range(offset, len, 512).unwrap();
             assert_eq!(r.start % 512, 0);
             assert_eq!(r.len % 512, 0);
-            assert!(r.start + r.skip as u64 == offset);
+            assert_eq!(r.start + r.skip as u64, offset);
             assert!(r.skip + len <= r.len);
             assert!(r.len < len + 2 * 512);
         }
@@ -1592,7 +1592,8 @@ pub(crate) mod tests {
                 let want = read_mft_sequential(&mut a, &geo, chunk).unwrap();
                 let got = read_mft(&mut b, &geo, chunk, &|| false).unwrap();
                 assert_eq!(dump(&got), dump(&want), "reversed={reversed} chunk={chunk}");
-                assert!(got.files.len() >= 64);
+                // Highest record that creates a slot is 59 (60 is an extension of 29, 61 is deleted).
+                assert_eq!(got.files.len(), 60);
             }
         }
     }

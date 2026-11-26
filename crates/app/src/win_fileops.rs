@@ -650,6 +650,24 @@ pub(crate) fn perform_tracked(
             };
             &rest
         }
+        // Same-volume move: what is only a rename is renamed here (win_fast_move.rs), the rest
+        // goes through the engine below, which asks about conflicts as it always did.
+        FileOp::Move { sources, dest } => {
+            let renamed = crate::win_fast_move::rename(sources, dest, progress);
+            fast = renamed.put_back;
+            let undo = || (!fast.is_empty()).then(|| Undo::PutBack(fast.clone()));
+            if renamed.cancelled {
+                return (Ok(OpOutcome::Cancelled), undo());
+            }
+            if renamed.rest.is_empty() {
+                return (Ok(OpOutcome::Done), undo());
+            }
+            rest = FileOp::Move {
+                sources: renamed.rest,
+                dest: dest.clone(),
+            };
+            &rest
+        }
         other => other,
     };
     HIDE_PROGRESS.set(true);
@@ -2498,6 +2516,72 @@ mod tests {
         });
         rx.recv_timeout(Duration::from_secs(30))
             .expect("the operation did not finish: Windows may be showing a dialog")
+    }
+
+    /// A same-volume move done by `perform_tracked` renames directly and records the same undo the
+    /// engine does: put back, in the order of the sources, and the undo restores everything.
+    #[test]
+    fn tracked_move_renames_and_undoes() {
+        use std::sync::atomic::Ordering;
+        let sb = Sandbox::new("fast-move");
+        let a = sb.file(r"src\a.txt", "aaa");
+        let b = sb.file(r"src\folder\b.txt", "bbb");
+        fs::create_dir_all(sb.0.join("dst")).unwrap();
+        let progress = Arc::new(crate::shell::OpProgress::default());
+        let (result, undo_step) = tracked_with(
+            FileOp::Move {
+                sources: vec![a, b.parent().unwrap().to_path_buf()],
+                dest: sb.0.join("dst"),
+            },
+            &progress,
+        );
+        assert_eq!(result.map_err(|e| e.to_string()), Ok(OpOutcome::Done));
+        assert_eq!(sb.names("src"), Vec::<String>::new());
+        assert_eq!(sb.names("dst"), ["a.txt", "folder"]);
+        assert_eq!(progress.done.load(Ordering::Relaxed), 2);
+        assert_eq!(progress.bytes.load(Ordering::Relaxed), 0);
+        let step = undo_step.expect("a move has an undo step");
+        assert_eq!(step.len(), 2);
+        assert_eq!(
+            undo(&step, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(sb.names("src"), ["a.txt", "folder"]);
+        assert_eq!(sb.names("dst"), Vec::<String>::new());
+    }
+
+    /// Items the fast path leaves alone (a junction) still go through the engine, and the undo of
+    /// both kinds is one list.
+    #[test]
+    fn tracked_move_sends_what_it_cannot_rename_to_the_engine() {
+        let sb = Sandbox::new("fast-move-mixed");
+        let a = sb.file(r"src\a.txt", "aaa");
+        let target = sb.file(r"target\t.txt", "t");
+        let link = sb.0.join(r"src\link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(target.parent().unwrap())
+            .output();
+        if !made.is_ok_and(|o| o.status.success()) {
+            return;
+        }
+        fs::create_dir_all(sb.0.join("dst")).unwrap();
+        let (result, undo_step) = tracked(FileOp::Move {
+            sources: vec![link.clone(), a],
+            dest: sb.0.join("dst"),
+        });
+        assert_eq!(result.map_err(|e| e.to_string()), Ok(OpOutcome::Done));
+        assert_eq!(sb.names("dst"), ["a.txt", "link"]);
+        assert!(target.exists(), "the junction moved, not what it points to");
+        let step = undo_step.expect("a move has an undo step");
+        assert_eq!(step.len(), 2);
+        assert_eq!(
+            undo(&step, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(sb.names("src"), ["a.txt", "link"]);
+        let _ = fs::remove_dir(&link);
     }
 
     /// Recycling two folders where one holds a file in use: the engine reports both, the failed one

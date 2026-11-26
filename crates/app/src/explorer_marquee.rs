@@ -248,7 +248,7 @@ impl Explorer {
 
     /// Tests: the sideways scroll the header was drawn at (`None`: no header).
     #[cfg(test)]
-    pub(crate) const fn header_offset_for_test(&self) -> Option<Pixels> {
+    pub(crate) fn header_offset_for_test(&self) -> Option<Pixels> {
         self.header_x.get()
     }
 

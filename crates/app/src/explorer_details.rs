@@ -223,7 +223,7 @@ impl Explorer {
                 .collect();
             row.child(self.name_header(name, cx)).children(cells)
         };
-        div()
+        let header = div()
             .id("details-header")
             .flex()
             .flex_none()
@@ -242,6 +242,7 @@ impl Explorer {
                 child: row.into_any_element(),
                 handle: self.header_list(),
                 seen: Rc::clone(&self.header_x),
+                content: None,
             })
             // Right-click anywhere on the header, the blank part too: which columns to show.
             .when(!self.search_mode, |d| {
@@ -254,7 +255,15 @@ impl Explorer {
                     }),
                 )
             })
-            .into_any_element()
+            .into_any_element();
+        // The offset is clamped before anything reads it (see `SideScroll`).
+        SideScroll {
+            child: header,
+            handle: self.header_list(),
+            seen: Rc::default(),
+            content: self.cols.map(|c| c.row + layout::list_gutter()),
+        }
+        .into_any_element()
     }
 
     /// The Name column's header: the select-all checkbox, room for the icon (and the tree's
@@ -909,15 +918,21 @@ pub(crate) fn with_link_badge(visual: AnyElement, icon: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// The header's columns, moved sideways by the list's own scroll offset. The offset is read while
-/// prepainting, and the header comes after the list in the tree (the pane lays them out in
-/// reverse), so the list has already clamped it this frame: header and rows can never differ,
-/// whatever the wheel overshot or however the columns and the pane just changed.
+/// Sideways scrolling of the Details header, in two parts that share the list's `ScrollHandle`.
+///
+/// With `content` set it wraps the whole header and, before anything is laid out under it,
+/// clamps the handle's offset to the range the list will have this frame: `content` (the row plus
+/// the blank strip after it) less the header's own width, which is the list's width less its left
+/// inset and right padding. Without `content` it wraps the row and moves it by the handle's
+/// offset, which is therefore already the one the list will use: header and rows can never differ,
+/// whatever a wheel overshot or however the columns and the pane just changed, and the element
+/// tree keeps its order (the header stays before the rows for screen readers and focus).
 struct SideScroll {
     child: AnyElement,
     handle: gpui::ScrollHandle,
-    /// Receives the offset the header was drawn at (tests read it).
+    /// Receives the offset the row was drawn at (tests read it).
     seen: Rc<std::cell::Cell<Option<Pixels>>>,
+    content: Option<Pixels>,
 }
 
 impl IntoElement for SideScroll {
@@ -954,11 +969,22 @@ impl gpui::Element for SideScroll {
         &mut self,
         _: Option<&gpui::GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
-        _: gpui::Bounds<Pixels>,
+        bounds: gpui::Bounds<Pixels>,
         (): &mut (),
         window: &mut Window,
         cx: &mut gpui::App,
     ) {
+        if let Some(content) = self.content {
+            // Rounded like GPUI rounds a scroll range, so both clamp to the same value.
+            let range = ((content - bounds.size.width).max(px(0.)) * 100.).round() / 100.;
+            let at = self.handle.offset();
+            if at.x < -range || at.x > px(0.) {
+                self.handle
+                    .set_offset(gpui::point(at.x.clamp(-range, px(0.)), at.y));
+            }
+            self.child.prepaint(window, cx);
+            return;
+        }
         let x = self.handle.offset().x.min(px(0.));
         self.seen.set(Some(x));
         window.with_element_offset(gpui::point(x, px(0.)), |window| {

@@ -412,6 +412,20 @@ pub(crate) fn windows_version() -> Option<(u32, u32, u32)> {
         .then_some((info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber))
 }
 
+/// Whether scrollbars stay fully drawn: Windows 10, or "Always show scrollbars" on Windows 11
+/// (`DynamicScrollbars` = 0). Reads one registry value; fine on the UI thread.
+pub(crate) fn always_show_scrollbars() -> bool {
+    use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+    crate::scrollbar::always_shown(
+        windows_version().map(|(_, _, build)| build),
+        read_reg_dword(
+            HKEY_CURRENT_USER,
+            r"Control Panel\Accessibility",
+            "DynamicScrollbars",
+        ),
+    )
+}
+
 /// Windows 11 (build 22000+), which Mica needs. RtlGetVersion ignores the compatibility manifest.
 pub(crate) fn supports_mica() -> bool {
     use windows::Wdk::System::SystemServices::RtlGetVersion;

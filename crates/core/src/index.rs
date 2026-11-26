@@ -153,8 +153,10 @@ fn name_hash(name: &str) -> u64 {
     })
 }
 
-/// File format magic (a version mismatch fails to load and we just rebuild). 7: 8-byte nodes
-/// with the flags in the parent's top bits, length-prefixed names.
+/// File format magic (a version mismatch fails to load and we just rebuild). 7 (0.10): 8-byte
+/// nodes with the flags in the parent's top bits, each distinct name once with a length prefix,
+/// 4-byte sizes with the few of 4 GiB - 1 and more in a table of their own (see
+/// [`Index::write_to`]).
 const MAGIC: &[u8; 8] = b"ARKEIDX7";
 /// Items taken per chunk when querying.
 const CHUNK: usize = 16 * 1024;
@@ -210,6 +212,35 @@ impl Node {
 
     fn add_flags(&mut self, flags: u8) {
         self.up |= u32::from(flags) << PARENT_BITS;
+    }
+}
+
+/// Marks a size of 4 GiB - 1 or more in [`Index`]'s 4-byte size column; the real one is in its
+/// big sizes.
+const SIZE_BIG: u32 = u32::MAX;
+
+/// An index's sizes: 4 bytes per item, the few of 4 GiB - 1 and more looked up by id.
+#[derive(Clone, Copy)]
+struct Sizes<'a> {
+    small: &'a [u32],
+    /// Ids whose size is [`SIZE_BIG`], ascending.
+    big_ids: &'a [u32],
+    big: &'a [u64],
+}
+
+impl Sizes<'_> {
+    /// Size of item `i` (0 past the end; a big one missing from the table, only in a corrupt
+    /// file, reads as [`SIZE_BIG`]).
+    fn get(self, i: usize) -> u64 {
+        match self.small.get(i) {
+            Some(&SIZE_BIG) => u32::try_from(i)
+                .ok()
+                .and_then(|id| self.big_ids.binary_search(&id).ok())
+                .and_then(|k| self.big.get(k).copied())
+                .unwrap_or(u64::from(SIZE_BIG)),
+            Some(&small) => u64::from(small),
+            None => 0,
+        }
     }
 }
 
@@ -427,7 +458,13 @@ pub type Lister<'a> = &'a (dyn Fn(&Path, ListSink) -> io::Result<()> + Sync);
 pub struct Index {
     roots: Vec<PathBuf>,
     nodes: Column<Node>,
-    sizes: Column<u64>,
+    /// Size in bytes, or [`SIZE_BIG`] for 4 GiB - 1 and more: those are in `big_ids` and
+    /// `big_sizes` (see [`Sizes`]). Few files are that large, so this halves the column.
+    sizes: Column<u32>,
+    /// Ids whose size is [`SIZE_BIG`], ascending.
+    big_ids: Column<u32>,
+    /// Their sizes, in the same order.
+    big_sizes: Column<u64>,
     /// Modified time in Unix seconds, 0 if unknown.
     mtimes: Column<u32>,
     /// Char mask of each name ([`char_mask`]).
@@ -668,7 +705,7 @@ impl<'a> Reuse<'a> {
                     id,
                     old.name(&node),
                     node.flags(),
-                    old.sizes[i],
+                    old.size(i),
                     old.mtimes[i],
                 ) else {
                     continue;
@@ -693,7 +730,7 @@ impl<'a> Reuse<'a> {
                 id,
                 old.name(&node),
                 node.flags(),
-                old.sizes[c],
+                old.size(c),
                 old.mtimes[c],
             );
         }
@@ -810,13 +847,41 @@ impl Index {
     pub const fn heap_bytes(&self) -> usize {
         self.names.heap_capacity()
             + self.nodes.heap_capacity() * size_of::<Node>()
-            + self.sizes.heap_capacity() * 8
+            + self.sizes.heap_capacity() * 4
+            + self.big_ids.heap_capacity() * 4
+            + self.big_sizes.heap_capacity() * 8
             + self.mtimes.heap_capacity() * 4
             + self.masks.heap_capacity() * 4
     }
 
     fn name(&self, node: &Node) -> &str {
         name_entry(&self.names, node.name).unwrap_or("")
+    }
+
+    /// Size in bytes of item `i`.
+    fn size(&self, i: usize) -> u64 {
+        self.sizes().get(i)
+    }
+
+    /// The size columns as plain slices (resolve once, then look up many).
+    fn sizes(&self) -> Sizes<'_> {
+        Sizes {
+            small: &self.sizes,
+            big_ids: &self.big_ids,
+            big: &self.big_sizes,
+        }
+    }
+
+    /// Appends item `id`'s size (ids come in ascending order, so `big_ids` stays sorted).
+    fn push_size(&mut self, id: u32, size: u64) {
+        match u32::try_from(size) {
+            Ok(small) if small != SIZE_BIG => self.sizes.push(small),
+            _ => {
+                self.sizes.push(SIZE_BIG);
+                self.big_ids.push(id);
+                self.big_sizes.push(size);
+            }
+        }
     }
 
     fn push(&mut self, parent: u32, name: &str, flags: u8, size: u64, mtime: u32) -> Option<u32> {
@@ -848,7 +913,7 @@ impl Index {
             start
         };
         self.nodes.push(Node::new(parent, name_start, flags));
-        self.sizes.push(size);
+        self.push_size(id, size);
         self.mtimes.push(mtime);
         self.masks.push(char_mask(name));
         Some(id)
@@ -1168,6 +1233,8 @@ impl Index {
             roots: self.roots.clone(),
             nodes: Column::Owned(self.nodes.to_vec()),
             sizes: Column::Owned(self.sizes.to_vec()),
+            big_ids: Column::Owned(self.big_ids.to_vec()),
+            big_sizes: Column::Owned(self.big_sizes.to_vec()),
             mtimes: Column::Owned(self.mtimes.to_vec()),
             masks: Column::Owned(self.masks.to_vec()),
             names: Names::Owned(self.names.to_string()),
@@ -1277,7 +1344,7 @@ impl Index {
                     )
                 }
                 None => (
-                    self.sizes[i],
+                    self.size(i),
                     self.mtimes[i],
                     node.flags() & FLAG_HIDDEN != 0,
                 ),
@@ -1355,6 +1422,8 @@ impl Index {
         self.names.shrink_to_fit();
         self.nodes.shrink_to_fit();
         self.sizes.shrink_to_fit();
+        self.big_ids.shrink_to_fit();
+        self.big_sizes.shrink_to_fit();
         self.mtimes.shrink_to_fit();
         self.masks.shrink_to_fit();
     }
@@ -1480,6 +1549,9 @@ impl Index {
     fn truncate(&mut self, nodes: usize, names: usize) {
         self.nodes.owned().truncate(nodes);
         self.sizes.owned().truncate(nodes);
+        let keep = self.big_ids.partition_point(|&id| (id as usize) < nodes);
+        self.big_ids.owned().truncate(keep);
+        self.big_sizes.owned().truncate(keep);
         self.mtimes.owned().truncate(nodes);
         self.masks.owned().truncate(nodes);
         self.names.truncate(names);
@@ -1715,7 +1787,7 @@ impl Index {
                     if let Some(cluster) = detail
                         && !replaced
                     {
-                        count_indexed(&mut direct, self.name(node), self.sizes[i], cluster);
+                        count_indexed(&mut direct, self.name(node), self.size(i), cluster);
                     }
                     continue;
                 }
@@ -1737,10 +1809,10 @@ impl Index {
                     slots[i - first] = slot;
                 }
             } else if !replaced {
-                child.size.bytes += self.sizes[i];
+                child.size.bytes += self.size(i);
                 child.size.files += 1;
                 if let Some(cluster) = detail {
-                    count_indexed(&mut child.usage, self.name(node), self.sizes[i], cluster);
+                    count_indexed(&mut child.usage, self.name(node), self.size(i), cluster);
                 }
             }
         }
@@ -1820,7 +1892,7 @@ impl Index {
                     .and_then(|&(r, t)| tries[r].child(t, name).map(|c| (r, c)));
                 (parent, here)
             };
-            let (mut flags, mut size, mut mtime) = (node.flags(), self.sizes[i], self.mtimes[i]);
+            let (mut flags, mut size, mut mtime) = (node.flags(), self.size(i), self.mtimes[i]);
             let mut name_start = node.name;
             let mut mask = self.masks[i];
             let mut drop_children = false;
@@ -1849,7 +1921,7 @@ impl Index {
             }
             let new = u32::try_from(out.nodes.len()).ok()?;
             out.nodes.push(Node::new(parent, name_start, flags));
-            out.sizes.push(size);
+            out.push_size(new, size);
             out.mtimes.push(mtime);
             out.masks.push(mask);
             new_id[i] = new;
@@ -2041,7 +2113,7 @@ impl Index {
         let query = s.query;
         // Each column (owned or mapped) resolved to a plain slice once per chunk, not per item.
         let (nodes, masks, mtimes, sizes) =
-            (&*self.nodes, &*self.masks, &*self.mtimes, &*self.sizes);
+            (&*self.nodes, &*self.masks, &*self.mtimes, self.sizes());
         let names: &str = &self.names;
         for k in range {
             let id = match s.within {
@@ -2067,7 +2139,7 @@ impl Index {
             let mtime = mtimes[id as usize];
             let is_dir = node.flags() & FLAG_DIR != 0;
             if query.has_filters()
-                && !query.accepts(name, is_dir, sizes[id as usize], i64::from(mtime))
+                && !query.accepts(name, is_dir, sizes.get(id as usize), i64::from(mtime))
             {
                 continue;
             }
@@ -2168,7 +2240,7 @@ impl Index {
             hits.push(IndexHit {
                 highlights: crate::filter::char_ranges_to_bytes(name, &mut indices),
                 is_dir: node.flags() & FLAG_DIR != 0,
-                size: self.sizes[id as usize],
+                size: self.size(id as usize),
                 modified: to_system_time(self.mtimes[id as usize]),
                 path,
                 score,
@@ -2180,9 +2252,10 @@ impl Index {
     // ───────────────────────── Persistence ─────────────────────────
 
     /// Writes to `w`. Format (little-endian): header (version, build time, roots, journal
-    /// positions, name length, item count), then each column contiguous and 8-aligned: names
-    /// (each distinct one once, length-prefixed), nodes (8 bytes, same as in-memory `Node`), sizes,
-    /// mtimes, char masks. That lets [`Index::open`] map the file without copying.
+    /// positions, name length, item count, big size count), then each column contiguous and
+    /// 8-aligned: names (each distinct one once, length-prefixed), nodes (8 bytes, same as
+    /// in-memory `Node`), sizes (4 bytes), mtimes, char masks, then the ids and 8-byte sizes of
+    /// the items of 4 GiB - 1 and more. That lets [`Index::open`] map the file without copying.
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let mut w = Counting { w, pos: 0 };
         w.put(MAGIC)?;
@@ -2215,6 +2288,7 @@ impl Index {
         }
         w.put(&(self.names.len() as u64).to_le_bytes())?;
         w.put(&(self.nodes.len() as u64).to_le_bytes())?;
+        w.put(&(self.big_ids.len() as u64).to_le_bytes())?;
         w.align()?;
         w.put(self.names.as_bytes())?;
         w.align()?;
@@ -2250,6 +2324,18 @@ impl Index {
             buf.extend_from_slice(&v.to_le_bytes());
             flush(&mut buf, &mut w, false)?;
         }
+        flush(&mut buf, &mut w, true)?;
+        w.align()?;
+        for v in self.big_ids.iter() {
+            buf.extend_from_slice(&v.to_le_bytes());
+            flush(&mut buf, &mut w, false)?;
+        }
+        flush(&mut buf, &mut w, true)?;
+        w.align()?;
+        for v in self.big_sizes.iter() {
+            buf.extend_from_slice(&v.to_le_bytes());
+            flush(&mut buf, &mut w, false)?;
+        }
         flush(&mut buf, &mut w, true)
     }
 
@@ -2260,6 +2346,11 @@ impl Index {
         let layout = Layout::parse(&bytes)?;
         let le32 = |at: usize| {
             u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let le64 = |at: usize| {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&bytes[at..at + 8]);
+            u64::from_le_bytes(b)
         };
         let names = std::str::from_utf8(&bytes[layout.names..layout.names + layout.names_len])
             .map_err(|_not_utf8| bad_format())?
@@ -2275,18 +2366,24 @@ impl Index {
                 up: le32(at),
                 name: le32(at + 4),
             });
-            let at = layout.sizes + i * 8;
-            let mut b = [0u8; 8];
-            b.copy_from_slice(&bytes[at..at + 8]);
-            sizes.push(u64::from_le_bytes(b));
+            sizes.push(le32(layout.sizes + i * 4));
             mtimes.push(le32(layout.mtimes + i * 4));
             masks.push(le32(layout.masks + i * 4));
         }
+        let big_ids: Vec<u32> = (0..layout.big_count)
+            .map(|k| le32(layout.big_ids + k * 4))
+            .collect();
+        let big_sizes: Vec<u64> = (0..layout.big_count)
+            .map(|k| le64(layout.big_sizes + k * 8))
+            .collect();
         validate(&nodes, &names)?;
+        validate_big(&big_ids, count)?;
         Ok(Self {
             roots: layout.roots,
             nodes: Column::Owned(nodes),
             sizes: Column::Owned(sizes),
+            big_ids: Column::Owned(big_ids),
+            big_sizes: Column::Owned(big_sizes),
             mtimes: Column::Owned(mtimes),
             masks: Column::Owned(masks),
             names: Names::Owned(names),
@@ -2332,10 +2429,20 @@ impl Index {
             len: n,
         };
         let (m, o, n) = column(layout.sizes);
-        let sizes: Column<u64> = Column::Mapped {
+        let sizes: Column<u32> = Column::Mapped {
             map: m,
             offset: o,
             len: n,
+        };
+        let big_ids: Column<u32> = Column::Mapped {
+            map: Arc::clone(&map),
+            offset: layout.big_ids,
+            len: layout.big_count,
+        };
+        let big_sizes: Column<u64> = Column::Mapped {
+            map: Arc::clone(&map),
+            offset: layout.big_sizes,
+            len: layout.big_count,
         };
         let (m, o, n) = column(layout.mtimes);
         let mtimes: Column<u32> = Column::Mapped {
@@ -2350,10 +2457,13 @@ impl Index {
             len: n,
         };
         validate(&nodes, &names)?;
+        validate_big(&big_ids, layout.count)?;
         Ok(Self {
             roots: layout.roots,
             nodes,
             sizes,
+            big_ids,
+            big_sizes,
             mtimes,
             masks,
             names,
@@ -2472,6 +2582,15 @@ fn validate(nodes: &[Node], names: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Checks the ids of big sizes are ascending and in range (so the lookup's binary search holds).
+fn validate_big(ids: &[u32], count: usize) -> io::Result<()> {
+    let ascending = ids.windows(2).all(|w| w[0] < w[1]);
+    if !ascending || ids.last().is_some_and(|&id| id as usize >= count) {
+        return Err(bad_format());
+    }
+    Ok(())
+}
+
 /// Counts bytes written (for alignment).
 struct Counting<'a, W: Write> {
     w: &'a mut W,
@@ -2500,12 +2619,16 @@ struct Layout {
     skipped_build_dirs: bool,
     excluded_hash: u32,
     count: usize,
+    /// Items of 4 GiB - 1 and more.
+    big_count: usize,
     names: usize,
     names_len: usize,
     nodes: usize,
     sizes: usize,
     mtimes: usize,
     masks: usize,
+    big_ids: usize,
+    big_sizes: usize,
 }
 
 impl Layout {
@@ -2548,14 +2671,17 @@ impl Layout {
         }
         let names_len = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
         let count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
+        let big_count = usize::try_from(u64_at(take(8)?)).map_err(|_too_big| bad_format())?;
         let align = |pos: &mut usize| *pos = pos.div_ceil(8) * 8;
-        let mut sections = [0usize; 5];
+        let mut sections = [0usize; 7];
         let sizes_of = [
             Some(names_len),
             count.checked_mul(8),
-            count.checked_mul(8),
             count.checked_mul(4),
             count.checked_mul(4),
+            count.checked_mul(4),
+            big_count.checked_mul(4),
+            big_count.checked_mul(8),
         ];
         let mut cur = pos;
         for (slot, len) in sections.iter_mut().zip(sizes_of) {
@@ -2566,6 +2692,10 @@ impl Layout {
                 .filter(|&e| e <= b.len())
                 .ok_or_else(bad_format)?;
         }
+        // Nothing after the last column: a file of another layout doesn't pass for this one.
+        if cur != b.len() {
+            return Err(bad_format());
+        }
         Ok(Self {
             roots,
             cursors,
@@ -2573,12 +2703,15 @@ impl Layout {
             skipped_build_dirs: options & 1 != 0,
             excluded_hash: u32::try_from(options >> 1).unwrap_or(0),
             count,
+            big_count,
             names: sections[0],
             names_len,
             nodes: sections[1],
             sizes: sections[2],
             mtimes: sections[3],
             masks: sections[4],
+            big_ids: sections[5],
+            big_sizes: sections[6],
         })
     }
 }
@@ -4616,6 +4749,8 @@ mod tests {
             add(format!("季報告-{i}.pdf"), 30 + i, false);
             add(format!("secret-{i}.txt"), 40 + i, true);
             add(format!("{long}-{i}.log"), 50 + i, false);
+            // Over 4 GiB: kept in the big size table.
+            add(format!("disk-{i}.vhdx"), (5 << 32) + i, false);
             for j in 0..30 {
                 add(format!("report-{i}-{j}.txt"), 1000 * i + j, false);
             }
@@ -4692,6 +4827,7 @@ mod tests {
             "secret",
             "sub",
             "docx",
+            "vhdx",
             "pkg",
             "zzzz",
         ];
@@ -4811,6 +4947,81 @@ mod tests {
                 "{query}"
             );
         }
+        drop(mapped);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sizes take 4 bytes; 4 GiB - 1 and more go to a table of their own and come back exact,
+    /// in memory, read back and mapped, for searches and size filters alike.
+    #[test]
+    fn big_sizes_round_trip() {
+        const GIB4: u64 = 1 << 32;
+        let edge = [0, 1, GIB4 - 2, GIB4 - 1, GIB4, GIB4 + 1, 5 << 40, u64::MAX];
+        let mut index = Index {
+            roots: vec![PathBuf::from(r"C:\")],
+            ..Index::default()
+        };
+        let root = index.push(NO_PARENT, r"C:\", FLAG_DIR, 0, 0).unwrap();
+        // Mixed: a small one after every one of them.
+        let mut want = vec![0u64];
+        for (i, &size) in edge.iter().enumerate() {
+            index
+                .push(root, &format!("big{i}.bin"), 0, size, 0)
+                .unwrap();
+            index
+                .push(root, &format!("small{i}.txt"), 0, i as u64, 0)
+                .unwrap();
+            want.extend([size, i as u64]);
+        }
+        let sizes = |index: &Index| (0..index.len()).map(|i| index.size(i)).collect::<Vec<_>>();
+        assert_eq!(sizes(&index), want);
+        assert_eq!(index.big_ids.len(), 5, "from 4 GiB - 1 up");
+
+        let dir = std::env::temp_dir().join(format!("arke-index-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        let mut bytes = Vec::new();
+        index.write_to(&mut bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let copied = Index::read_from(&mut bytes.as_slice()).unwrap();
+        let mapped = Index::open(&path).unwrap();
+        assert_eq!(sizes(&copied), want);
+        assert_eq!(sizes(&mapped), want);
+
+        let by_size = |index: &Index, query: &str| {
+            let mut found: Vec<(String, u64)> = find(index, query, 50, false)
+                .iter()
+                .map(|h| (h.path.display().to_string(), h.size))
+                .collect();
+            found.sort();
+            found
+        };
+        let named = |i: usize| (format!(r"C:\big{i}.bin"), edge[i]);
+        for query in ["big", "size:>=4gb", "big size:4294967295", "size:4gb..5tb"] {
+            let expected = match query {
+                "big" => (0..edge.len()).map(named).collect::<Vec<_>>(),
+                "size:>=4gb" => vec![named(4), named(5), named(6), named(7)],
+                "big size:4294967295" => vec![named(3)],
+                _ => vec![named(4), named(5), named(6)],
+            };
+            assert_eq!(by_size(&index, query), expected, "{query}");
+            assert_eq!(by_size(&copied, query), expected, "{query} read back");
+            assert_eq!(by_size(&mapped, query), expected, "{query} mapped");
+        }
+
+        // A failed listing takes its big sizes back out with its items.
+        let mut index = flat(2);
+        let (before, names) = (index.len(), index.name_bytes());
+        index.push(0, "huge.iso", 0, 6 << 40, 0).unwrap();
+        index.truncate(before, names);
+        assert_eq!((index.len(), index.big_ids.len()), (before, 0));
+        index.push(0, "next.txt", 0, 3, 0).unwrap();
+        assert_eq!(index.size(before), 3);
+
+        // Big sizes out of order or past the items: refused.
+        assert!(validate_big(&[1, 1], 5).is_err());
+        assert!(validate_big(&[5], 5).is_err());
+        assert!(validate_big(&[0, 4], 5).is_ok());
         drop(mapped);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5267,12 +5478,7 @@ mod tests {
         assert_eq!(all_paths(&merged.index), all_paths(&fresh));
         let sizes = |index: &Index| {
             let mut v: Vec<(String, u64)> = (0..index.len())
-                .map(|i| {
-                    (
-                        index.path_of(i as u32).display().to_string(),
-                        index.sizes[i],
-                    )
-                })
+                .map(|i| (index.path_of(i as u32).display().to_string(), index.size(i)))
                 .collect();
             v.sort();
             v
@@ -5712,6 +5918,161 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Builds an index from `text`, one full path per line (a trailing `\` marks a folder; a path
+    /// that has children is a folder anyway). Sizes are made up from the name length. Returns the
+    /// index and its distinct names.
+    fn index_from_paths(text: &str) -> (Index, HashSet<&str>) {
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let mut index = Index::default();
+        index.reserve(lines.len(), text.len() / 4);
+        // Every path added so far (slices of `text`) -> its id.
+        let mut ids: HashMap<&str, u32> = HashMap::with_capacity(lines.len());
+        let mut unique: HashSet<&str> = HashSet::new();
+        for line in lines {
+            let folder_line = line.ends_with('\\');
+            let path = line.trim_end_matches('\\');
+            let Some(cut) = path.find('\\') else {
+                continue;
+            };
+            let root = &line[..=cut];
+            let mut parent = if let Some(&id) = ids.get(root) {
+                id
+            } else {
+                let Some(id) = index.push(NO_PARENT, root, FLAG_DIR, 0, 0) else {
+                    break;
+                };
+                index.roots.push(PathBuf::from(root));
+                ids.insert(root, id);
+                unique.insert(root);
+                id
+            };
+            let parts: Vec<&str> = path[cut + 1..].split('\\').collect();
+            let last = parts.len().saturating_sub(1);
+            let mut start = cut + 1;
+            for (k, part) in parts.into_iter().enumerate() {
+                let end = start + part.len();
+                let key = &path[..end];
+                start = end + 1;
+                if part.is_empty() {
+                    continue;
+                }
+                let folder = k < last || folder_line;
+                if let Some(&id) = ids.get(key) {
+                    if folder {
+                        index.nodes.owned()[id as usize].add_flags(FLAG_DIR);
+                    }
+                    parent = id;
+                    continue;
+                }
+                let (flags, size) = if folder {
+                    (FLAG_DIR, 0)
+                } else {
+                    (0, part.len() as u64 * 1000)
+                };
+                let Some(id) = index.push(parent, part, flags, size, 0) else {
+                    break;
+                };
+                ids.insert(key, id);
+                unique.insert(part);
+                parent = id;
+            }
+        }
+        index.dedup = None;
+        index.shrink_to_fit();
+        (index, unique)
+    }
+
+    /// Whole-index numbers from a real disk's paths, the same code on every branch, so runs can
+    /// be compared: set `ARKE_INDEX_BENCH_NAMES` to a UTF-8 file with one full path per line
+    /// (`index_from_paths`) and run `cargo test --release -p arke-core -- --ignored --nocapture
+    /// index_bench_from_paths`. Prints the sizes, build and load times, and per query the median
+    /// of 20 runs with a checksum of the hits (equal checksums: equal results).
+    #[test]
+    #[ignore = "benchmark; run manually"]
+    #[allow(
+        clippy::print_stdout,
+        reason = "a benchmark run by hand prints its numbers"
+    )]
+    fn index_bench_from_paths() {
+        let Ok(list) = std::env::var("ARKE_INDEX_BENCH_NAMES") else {
+            println!("set ARKE_INDEX_BENCH_NAMES to a file with one full path per line");
+            return;
+        };
+        let text = std::fs::read_to_string(&list).unwrap();
+        let mb = |bytes: usize| bytes as f64 / 1e6;
+
+        let t = std::time::Instant::now();
+        let (built, unique) = index_from_paths(&text);
+        let build_time = t.elapsed();
+        println!(
+            "items {}, unique names {}, build {build_time:.2?} (includes parsing the list)",
+            built.len(),
+            unique.len()
+        );
+        println!(
+            "memory: heap {:.1} MB (all columns), name storage {:.1} MB, nodes {:.1} MB",
+            mb(built.heap_bytes()),
+            mb(built.name_bytes()),
+            mb(built.len() * size_of::<Node>())
+        );
+
+        let dir = std::env::temp_dir().join(format!("arke-index-bench-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        {
+            let mut w = io::BufWriter::new(std::fs::File::create(&path).unwrap());
+            built.write_to(&mut w).unwrap();
+            w.flush().unwrap();
+        }
+        let file_size = std::fs::metadata(&path).unwrap().len();
+        drop(built);
+        let t = std::time::Instant::now();
+        let index = Index::open(&path).unwrap();
+        let load_time = t.elapsed();
+        println!(
+            "saved file {:.1} MB, load (map and validate, file cached) {load_time:.2?}",
+            file_size as f64 / 1e6
+        );
+
+        // Longest name, ties broken by the text: the same "rare long name" on every branch.
+        let longest = unique
+            .iter()
+            .copied()
+            .max_by_key(|n| (n.len(), *n))
+            .unwrap_or("x")
+            .to_owned();
+        let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        for text in ["a", "png", longest.as_str(), "報告", r"windows\dll"] {
+            let query = q(text);
+            let hits = index.find(&query, 100, false, threads);
+            let mut listed = String::new();
+            for h in &hits {
+                listed.push_str(&format!("{}|{}\n", h.score, h.path.display()));
+            }
+            let mut times: Vec<Duration> = (0..20)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    std::hint::black_box(index.find(&query, 100, false, threads));
+                    t.elapsed()
+                })
+                .collect();
+            times.sort_unstable();
+            println!(
+                "{:>24}: {:>3} hits, checksum {:016x}, median {:>9.2?} ({threads} threads)",
+                text.chars().take(24).collect::<String>(),
+                hits.len(),
+                name_hash(&listed),
+                times[times.len() / 2]
+            );
+        }
+        drop(index);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Query speed over many items (`cargo test -p arke-core -- --ignored --nocapture
     /// index_speed`).
     #[test]
@@ -5778,6 +6139,7 @@ mod tests {
         // A small index, where getting the scan going weighs the most.
         let small = Index {
             nodes: Column::Owned(index.nodes[..40_000].to_vec()),
+            // index_speed's sizes are all small.
             sizes: Column::Owned(index.sizes[..40_000].to_vec()),
             mtimes: Column::Owned(index.mtimes[..40_000].to_vec()),
             masks: Column::Owned(index.masks[..40_000].to_vec()),

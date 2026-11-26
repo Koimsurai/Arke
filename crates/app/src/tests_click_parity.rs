@@ -121,3 +121,89 @@ fn ctrl_double_click_opens_a_tab_on_even_counts_only(cx: &mut TestAppContext) {
         ]
     );
 }
+
+/// A folder tree where each level has one subfolder: `C:\t\a\b\c\d`.
+fn nested_fs() -> Arc<FakeFs> {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![dir("a")]);
+    fs.insert_dir(r"C:\t\a", vec![dir("b")]);
+    fs.insert_dir(r"C:\t\a\b", vec![dir("c")]);
+    fs.insert_dir(r"C:\t\a\b\c", vec![dir("d")]);
+    fs.insert_dir(r"C:\t\a\b\c\d", Vec::new());
+    fs
+}
+
+/// "Open items with a single click": every click of a quick run opens, so three clicks at one spot
+/// go down three levels, as in File Explorer (#425).
+#[gpui::test]
+fn single_click_mode_opens_on_every_click_of_a_run(cx: &mut TestAppContext) {
+    single_click(true);
+    let (ws, cx) = setup_workspace(cx, nested_fs(), r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let at = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
+
+    click(cx, at, Modifiers::none(), 1);
+    wait_until(cx, &view, "1: a", loaded(r"C:\t\a"));
+    click(cx, at, Modifiers::none(), 2);
+    wait_until(cx, &view, "2: b", loaded(r"C:\t\a\b"));
+    click(cx, at, Modifiers::none(), 3);
+    wait_until(cx, &view, "3: c", loaded(r"C:\t\a\b\c"));
+    single_click(false);
+}
+
+/// Double-click mode: of a run of four clicks, the 2nd and the 4th open, two levels (#425).
+#[gpui::test]
+fn double_click_mode_opens_on_even_counts_in_nested_folders(cx: &mut TestAppContext) {
+    single_click(false);
+    let (ws, cx) = setup_workspace(cx, nested_fs(), r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let at = point(bounds.left() + px(60.), bounds.top() + row * 0.5);
+
+    click(cx, at, Modifiers::none(), 1);
+    assert!(
+        view.update(cx, |v, _| loaded(r"C:\t")(v)),
+        "1: only selects"
+    );
+    click(cx, at, Modifiers::none(), 2);
+    wait_until(cx, &view, "2: a", loaded(r"C:\t\a"));
+    click(cx, at, Modifiers::none(), 3);
+    assert!(view.update(cx, |v, _| loaded(r"C:\t\a")(v)), "3: nothing");
+    click(cx, at, Modifiers::none(), 4);
+    wait_until(cx, &view, "4: b", loaded(r"C:\t\a\b"));
+}
+
+/// Single-click mode: the 2nd click of a run lands on the file the 1st one launched, which stays
+/// under the cursor. It must not launch it again.
+#[gpui::test]
+fn single_click_mode_launches_a_file_once_per_run(cx: &mut TestAppContext) {
+    single_click(true);
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![file("f.txt", 1), file("g.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    cx.run_until_parked();
+    let (bounds, row) = view.update(cx, |v, _| (v.list_bounds_for_test(), v.row_height()));
+    let at = |n: f32| point(bounds.left() + px(60.), bounds.top() + row * (n + 0.5));
+
+    click(cx, at(0.), Modifiers::none(), 1);
+    click(cx, at(0.), Modifiers::none(), 2);
+    wait_shell_in(cx, "f.txt launched", || !shell.opened.lock().is_empty());
+    // A later run on another file proves nothing else was launched in between.
+    click(cx, at(1.), Modifiers::none(), 1);
+    wait_shell_in(cx, "g.txt launched", || shell.opened.lock().len() >= 2);
+    let mut opened = shell.opened.lock().clone();
+    opened.sort();
+    assert_eq!(
+        opened,
+        [PathBuf::from(r"C:\t\f.txt"), PathBuf::from(r"C:\t\g.txt")]
+    );
+    single_click(false);
+}

@@ -943,6 +943,11 @@ pub(crate) struct Explorer {
     /// Press inside a multi-selection: keep the selection (it may be dragged) and narrow to this
     /// item on release if no drag happened.
     click_select: Option<usize>,
+    /// What the last single-click-mode click opened: the item and the folder it was in. A later
+    /// click of the same quick run that lands on the same item in the same folder must not open
+    /// it again (a file would launch twice; a folder that did not navigate is not worth a retry).
+    /// A folder that did navigate never matches: the folder differs.
+    last_click_open: Option<(PathBuf, Option<PathBuf>)>,
     /// The last press landed on this item's name (set by the name, read by the item's handler,
     /// which runs after it).
     name_pressed: Option<usize>,
@@ -1282,6 +1287,7 @@ impl Explorer {
             pane: PaneInfo::default(),
             compare: None,
             click_select: None,
+            last_click_open: None,
             name_pressed: None,
             rename_press: None,
             rename_wait: None,
@@ -3863,8 +3869,9 @@ impl Explorer {
         self.name_pressed = Some(ix);
     }
 
-    /// Single-click mode: opens on release if there was no drag and no Ctrl/Shift. Returns whether
-    /// it opened.
+    /// Single-click mode: opens on release if there was no drag and no Ctrl/Shift. Every click of
+    /// a quick run opens (counts 1, 2, 3...), as in File Explorer, so clicking where a folder's
+    /// only subfolder shows goes down a level per click. Returns whether the click was handled.
     pub(super) fn on_row_click(
         &mut self,
         ix: usize,
@@ -3872,21 +3879,31 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> bool {
         let m = event.modifiers();
-        if !crate::prefs::single_click()
-            || event.click_count() != 1
-            || m.control
-            || m.shift
-            || m.alt
-            || self.renaming.is_some()
+        let previous = self.last_click_open.take();
+        if !crate::prefs::single_click() || m.control || m.shift || m.alt || self.renaming.is_some()
         {
             return false;
         }
         self.click_select = None;
+        let here = (
+            self.path_at(ix).map(|(path, _)| path),
+            self.current_path().map(Path::to_path_buf),
+        );
+        if event.click_count() > 1
+            && let (Some(item), folder) = &here
+            && previous.as_ref() == Some(&(item.clone(), folder.clone()))
+        {
+            // Still on what the run's previous click opened, in the same folder: don't open it
+            // again.
+            self.last_click_open = previous;
+            return true;
+        }
         if self.take_location_click(ix) {
             self.open_hit_location(ix, cx);
         } else {
             self.open_index(ix, cx);
         }
+        self.last_click_open = here.0.map(|item| (item, here.1));
         true
     }
 

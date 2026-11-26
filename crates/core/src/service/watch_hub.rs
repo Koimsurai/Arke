@@ -163,9 +163,9 @@ impl Watched {
 
 /// The hub's thread: sleeps until a message comes or a batch is due, forever.
 fn run(rx: &flume::Receiver<Msg>, back: &flume::Sender<Msg>) {
-    let mut watches: HashMap<WatchId, Watched> = HashMap::new();
+    let mut folders: HashMap<WatchId, Watched> = HashMap::new();
     loop {
-        let due = watches.values().filter_map(Watched::due).min();
+        let due = folders.values().filter_map(Watched::due).min();
         let msg = match due {
             None => match rx.recv() {
                 Ok(msg) => Some(msg),
@@ -179,9 +179,9 @@ fn run(rx: &flume::Receiver<Msg>, back: &flume::Sender<Msg>) {
         };
         let now = Instant::now();
         match msg {
-            Some(msg) => handle(&mut watches, msg),
+            Some(msg) => handle(&mut folders, msg),
             None => {
-                for watched in watches.values() {
+                for watched in folders.values() {
                     if watched.due().is_some_and(|due| due <= now) {
                         watched.job.woke();
                     }
@@ -189,8 +189,8 @@ fn run(rx: &flume::Receiver<Msg>, back: &flume::Sender<Msg>) {
             }
         }
         // Folders left since are dropped (and their OS watches stopped); due batches go out.
-        watches.retain(|_, watched| !watched.job.is_stale());
-        for (id, watched) in &mut watches {
+        folders.retain(|_, watched| !watched.job.is_stale());
+        for (id, watched) in &mut folders {
             if watched.due().is_some_and(|due| due <= now) {
                 watched.flush(*id, back);
             }
@@ -198,30 +198,30 @@ fn run(rx: &flume::Receiver<Msg>, back: &flume::Sender<Msg>) {
     }
 }
 
-fn handle(watches: &mut HashMap<WatchId, Watched>, msg: Msg) {
+fn handle(folders: &mut HashMap<WatchId, Watched>, msg: Msg) {
     match msg {
         Msg::Add(id, watched) => {
             // Left before the watch got here: its stop may have come first.
             if !watched.job.is_stale() {
-                watches.insert(id, *watched);
+                folders.insert(id, *watched);
             }
         }
         Msg::Armed(id, guard) => {
-            if let Some(watched) = watches.get_mut(&id) {
+            if let Some(watched) = folders.get_mut(&id) {
                 watched.guard = Some(guard);
             }
         }
         Msg::Event(id, event) => {
-            if let Some(watched) = watches.get_mut(&id) {
+            if let Some(watched) = folders.get_mut(&id) {
                 watched.job.woke();
                 watched.record(event);
             }
         }
         Msg::Stop(id) => {
-            watches.remove(&id);
+            folders.remove(&id);
         }
         Msg::Flushed(id) => {
-            if let Some(watched) = watches.get_mut(&id) {
+            if let Some(watched) = folders.get_mut(&id) {
                 watched.job.woke();
                 watched.busy = false;
             }

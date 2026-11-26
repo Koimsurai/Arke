@@ -569,6 +569,15 @@ fn unpinning_the_current_folder_follows_it(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(!expanded(&ws, cx, r"C:\work"), "a favorite: nothing opens");
+    // Frames at a favorite schedule nothing: there is nothing to follow.
+    let scheduled = ws.update(cx, |ws, _| ws.follows_scheduled_for_test());
+    for _ in 0..5 {
+        refresh(cx);
+    }
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.follows_scheduled_for_test()),
+        scheduled
+    );
 
     change(cx, |st| st.pinned = Vec::new());
     settle(cx, "the tree opens to reports", |cx| {

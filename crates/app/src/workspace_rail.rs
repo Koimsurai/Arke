@@ -66,6 +66,9 @@ pub(super) struct SidebarUi {
     /// last frame: that favorite is the selected one, not the folder's row under This PC, and
     /// following has nothing to open for it (#424).
     pub(super) fav_here: std::cell::Cell<bool>,
+    /// Tests: how many follows were scheduled after a frame.
+    #[cfg(test)]
+    pub(super) follows_scheduled: std::cell::Cell<usize>,
     /// Index among the places of the current folder's row under This PC, while drawing it.
     pub(super) here_row: std::cell::Cell<Option<usize>>,
     /// The places were just scrolled to the current folder's row: next frame, a row of tiles cut

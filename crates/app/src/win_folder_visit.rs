@@ -583,9 +583,7 @@ impl State {
         } else {
             String::new()
         };
-        self.journal
-            .borrow_mut()
-            .note_notification(kind, || paths);
+        self.journal.borrow_mut().note_notification(kind, || paths);
         relists_on_notification(event, target)
     }
 
@@ -1994,10 +1992,8 @@ mod tests {
         assert!(!relists_on_notification(update, None));
         assert!(relists_on_notification(SHCNE_CREATE.0, None));
         assert!(relists_on_notification(SHCNE_UPDATEDIR.0, None));
-        assert!(!relists_on_notification(
-            windows::Win32::UI::Shell::SHCNE_ATTRIBUTES.0,
-            None
-        ));
+        let attributes = windows::Win32::UI::Shell::SHCNE_ATTRIBUTES.0;
+        assert!(!relists_on_notification(attributes, None));
         assert_eq!(WATCHED_EVENTS & update, update, "registered for");
     }
 

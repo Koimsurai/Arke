@@ -642,7 +642,26 @@ impl Explorer {
         if let Some(status) = index_status_text(cx) {
             parts.push(status);
         }
+        if self
+            .search_results
+            .as_ref()
+            .is_some_and(|r| !r.hits.is_empty())
+            && index_incomplete(cx)
+        {
+            parts.push(t!("scope.results_incomplete").into_owned());
+        }
         parts
+    }
+
+    /// Whether "this PC" shows the "still indexing" state instead of results: the index is
+    /// incomplete ([`index_incomplete`]) and nothing has been found yet (a search that finished
+    /// empty would otherwise read as "no matches").
+    pub(crate) fn shows_building_state(&self, cx: &App) -> bool {
+        index_incomplete(cx)
+            && self
+                .search_results
+                .as_ref()
+                .is_none_or(|r| r.hits.is_empty() && !r.searching)
     }
 
     /// Placeholder for "this PC" when there's nothing to list yet (off, no text, still indexing);
@@ -669,8 +688,7 @@ impl Explorer {
                 Some(t!("search.syntax").into_owned()),
             ));
         }
-        let building = GlobalSearch::global(cx).is_some_and(|g| g.read(cx).status.count.is_none());
-        if building && self.search_results.is_none() {
+        if self.shows_building_state(cx) {
             return Some(Self::empty_state(
                 svg()
                     .path(Icon::Drive.path())
@@ -1119,6 +1137,15 @@ impl Explorer {
     pub(crate) const fn panel_dismissed_for_test(&self) -> bool {
         self.panel_dismissed
     }
+}
+
+/// The whole-PC index is being built with no finished one to answer from (first run, or after
+/// an update changed its format): searches only see what the walk has found so far.
+fn index_incomplete(cx: &App) -> bool {
+    GlobalSearch::global(cx).is_some_and(|g| {
+        let g = g.read(cx);
+        g.enabled() && g.status.count.is_none()
+    })
 }
 
 /// Index status ("this PC N items · live updates…"); `None` when off.

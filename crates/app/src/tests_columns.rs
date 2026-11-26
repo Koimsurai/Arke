@@ -576,9 +576,16 @@ fn widening_a_column_past_the_pane_scrolls_the_columns(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
     assert!(scroll_max(cx) < px(0.5), "fits again");
-    assert_eq!(scroll_x(cx), px(0.));
+    assert_eq!(
+        scroll_x(cx),
+        px(0.),
+        "offset after fitting again, range {:?}",
+        scroll_max(cx)
+    );
     assert_eq!(
         view.update(cx, |v, _| v.header_offset_for_test()),
-        Some(px(0.))
+        Some(px(0.)),
+        "header after fitting again, list at {:?}",
+        scroll_x(cx)
     );
 }

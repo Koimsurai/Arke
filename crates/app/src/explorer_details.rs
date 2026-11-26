@@ -175,6 +175,11 @@ impl Explorer {
         // Clamped like the list clamps its own offset (a wheel can overshoot before the list's
         // next layout), so the header always lines up with the rows.
         let handle = self.header_list();
+        // Columns that fit again (a sub-pixel range counts as fitting) leave nothing to scroll:
+        // back to the start, so the rows aren't left shifted.
+        if handle.max_offset().x < px(0.5) && handle.offset().x != px(0.) {
+            handle.set_offset(gpui::point(px(0.), handle.offset().y));
+        }
         let scroll_x = handle
             .offset()
             .x

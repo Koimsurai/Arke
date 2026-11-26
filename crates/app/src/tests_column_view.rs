@@ -229,7 +229,9 @@ fn a_fitted_column_shows_its_names_whole(cx: &mut TestAppContext) {
     assert_eq!(tips(&view, cx), [true, false], "the long name sorts first");
     let at = preview_edge(&view, cx);
     double_click(cx, at);
-    let want = (px(120.) + text_w(name) + px(4.)).ceil();
+    // The row's chrome: the list's left inset (#448) plus 112 px of right padding, gutter, row
+    // padding, icon and folder arrow.
+    let want = (crate::theme::list_inset() + px(112.) + text_w(name) + px(4.)).ceil();
     assert!(want > px(160.), "{want:?}");
     assert_eq!(
         crate::prefs::view_column_width(ViewColumn::Current),

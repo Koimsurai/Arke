@@ -48,11 +48,11 @@ mod integration_api;
 #[path = "tests_lazy_submenus.rs"]
 mod lazy_submenus;
 #[cfg(windows)]
-#[path = "tests_live_recycle.rs"]
-mod live_recycle;
-#[cfg(windows)]
 #[path = "tests_live_preview_save.rs"]
 mod live_preview_save;
+#[cfg(windows)]
+#[path = "tests_live_recycle.rs"]
+mod live_recycle;
 #[path = "tests_menu_customize.rs"]
 mod menu_customize;
 #[path = "tests_menu_parts.rs"]

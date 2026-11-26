@@ -76,8 +76,8 @@ fn word_dance(file: &Path, text: &str) {
 
 /// `ReplaceFileW`, with no backup file.
 fn replace_file(file: &Path, text: &str) {
-    use windows::Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW};
-    use windows::core::{HSTRING, PCWSTR};
+    use ::windows::Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW};
+    use ::windows::core::{HSTRING, PCWSTR};
     let tmp = file.with_file_name("note.txt.new");
     fs::write(&tmp, text).expect("write the replacement");
     let (to, from) = (

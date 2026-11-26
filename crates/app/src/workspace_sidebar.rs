@@ -2175,7 +2175,8 @@ impl Workspace {
     /// The tree follows the folder (#241). Drawing can't change the tree, so following runs right
     /// after this frame, once per change of folder (or of This PC's places, which load later).
     fn schedule_follow(&self, current: Option<&PathBuf>, places: &[Place], cx: &mut Context<Self>) {
-        let Some(here) = current else {
+        // A favorite that is the current folder is selected as it is, nothing is to follow (#424).
+        let Some(here) = current.filter(|_| !self.sidebar_ui.fav_here.get()) else {
             return;
         };
         let mapped = SettingsStore::global(cx)
@@ -2191,6 +2192,10 @@ impl Workspace {
         if followed || self.sidebar_ui.follow_pending.replace(true) {
             return;
         }
+        #[cfg(test)]
+        self.sidebar_ui
+            .follows_scheduled
+            .set(self.sidebar_ui.follows_scheduled.get() + 1);
         let this = cx.entity().downgrade();
         cx.defer(move |cx| {
             let _ = this.update(cx, |this, cx| {
@@ -2281,9 +2286,6 @@ impl Workspace {
                 settings.is_hidden(SidebarSection::Network),
             )
         };
-        if !this_pc_collapsed && !this_pc_hidden {
-            self.schedule_follow(current.as_ref(), &places, cx);
-        }
         // Places (pins, This PC, Network) and the vertical tab list each scroll on their own. When
         // they don't both fit, the tab list gives way first, down to three tabs, so opening many
         // tabs doesn't squeeze the places; only then do the places shrink too. The tabs never
@@ -2294,6 +2296,10 @@ impl Workspace {
         self.tab_drag.rows.frame();
         let mut items = self.render_pins(current.as_deref(), cx);
         let pins_end = items.len();
+        // After the favorites are drawn: whether the current folder is one of them is known.
+        if !this_pc_collapsed && !this_pc_hidden {
+            self.schedule_follow(current.as_ref(), &places, cx);
+        }
         if this_pc_hidden {
             // Hidden (#323): no row of the current folder to scroll to.
             self.sidebar_ui.here_row.set(None);
@@ -3165,7 +3171,7 @@ impl Workspace {
 
     /// The folders open in the tree under the favorites list (`favorite`) or under This PC and
     /// Network (#424).
-    fn tree_open(&self, favorite: bool) -> &HashSet<PathBuf> {
+    const fn tree_open(&self, favorite: bool) -> &HashSet<PathBuf> {
         if favorite {
             &self.fav_expanded
         } else {
@@ -3256,13 +3262,14 @@ impl Workspace {
         {
             return;
         }
+        // A favorite that is the current folder is selected as it is: nothing opens for it
+        // (#424). The folder isn't marked as followed, so unpinning it follows it.
+        if self.sidebar_ui.fav_here.get() {
+            return;
+        }
         self.sidebar_ui.followed = Some(key);
         if let Some(cancel) = self.sidebar_ui.follow_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
-        }
-        // A favorite that is the current folder is selected as it is: nothing opens for it (#424).
-        if self.sidebar_ui.fav_here.get() {
-            return;
         }
         let chain = follow_chain(&places, &here, mapped);
         let stale: Vec<PathBuf> = self
@@ -4719,6 +4726,11 @@ impl Workspace {
     /// PC isn't).
     pub(crate) fn favorite_selected_for_test(&self) -> bool {
         self.sidebar_ui.fav_here.get()
+    }
+
+    /// How many times following the folder was scheduled after a frame.
+    pub(crate) fn follows_scheduled_for_test(&self) -> usize {
+        self.sidebar_ui.follows_scheduled.get()
     }
 
     pub(crate) fn favorite_expanded_for_test(&self, path: &Path) -> bool {

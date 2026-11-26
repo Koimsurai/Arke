@@ -170,7 +170,8 @@ fn read_changes_ex() -> Option<ReadChangesEx> {
         // SAFETY: kernel32 is loaded in every process; the name is a NUL-terminated literal.
         let module = unsafe { GetModuleHandleW(w!("kernel32.dll")) }.ok()?;
         // SAFETY: as above.
-        let proc = unsafe { GetProcAddress(module, PCSTR(b"ReadDirectoryChangesExW\0".as_ptr())) }?;
+        let proc =
+            unsafe { GetProcAddress(module, PCSTR(c"ReadDirectoryChangesExW".as_ptr().cast())) }?;
         // SAFETY: the documented signature (BOOL is an i32, the information class an enum).
         Some(unsafe {
             std::mem::transmute::<unsafe extern "system" fn() -> isize, ReadChangesEx>(proc)
@@ -683,8 +684,8 @@ fn extended_records(raw: &[u8]) -> Option<Vec<ExtendedRecord>> {
         let name_bytes = u32_at(raw, at + extended::NAME_LENGTH)? as usize;
         let start = at + extended::NAME;
         let name = raw.get(start..start.checked_add(name_bytes)?)?;
-        let fits = next == 0 || (next >= extended::NAME + name_bytes && next % 4 == 0);
-        if !(1..=5).contains(&action) || name_bytes % 2 != 0 || !fits {
+        let fits = next == 0 || (next >= extended::NAME + name_bytes && next.is_multiple_of(4));
+        if !(1..=5).contains(&action) || !name_bytes.is_multiple_of(2) || !fits {
             return None;
         }
         records.push(ExtendedRecord {

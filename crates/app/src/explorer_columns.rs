@@ -147,8 +147,9 @@ impl Explorer {
                         .and_then(|e| MediaKey::for_entry(&dir, e, false))
                 })
                 .collect();
-            self.media.update(cx, |m, _| {
-                m.want_side(keys.iter().flatten().cloned().collect());
+            let view = cx.entity_id();
+            self.media.update(cx, |m, cx| {
+                m.want_side(view, keys.iter().flatten().cloned().collect(), cx);
             });
             let media = self.media.read(cx);
             keys.iter()

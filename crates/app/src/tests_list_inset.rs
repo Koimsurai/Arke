@@ -22,7 +22,7 @@ fn set_density(cx: &mut VisualTestContext, density: Density) {
     cx.run_until_parked();
 }
 
-fn drawn(cx: &mut VisualTestContext, selector: &str) -> Bounds<Pixels> {
+fn drawn(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
     cx.debug_bounds(selector)
         .unwrap_or_else(|| panic!("{selector} not drawn"))
 }

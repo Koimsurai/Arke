@@ -174,8 +174,13 @@ mod tests {
     fn names_are_mixed_and_distinct_enough() {
         let names: std::collections::HashSet<_> = (0..1000).map(item_name).collect();
         assert!(names.len() > 900);
-        assert!(names.iter().any(|n| n.ends_with(".JPG")));
-        assert!(names.iter().any(|n| n.ends_with(".md")));
+        let has = |ext: &str| {
+            names
+                .iter()
+                .any(|n| Path::new(n).extension().is_some_and(|e| e == ext))
+        };
+        assert!(has("JPG"));
+        assert!(has("md"));
     }
 
     #[test]

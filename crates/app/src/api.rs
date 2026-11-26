@@ -655,7 +655,9 @@ struct PaneKey {
     entries: (u64, u64),
     /// Which names are selected, for selections up to [`HASHED_MAX`] items
     names: usize,
-    search: Option<(usize, Option<usize>)>,
+    /// Search results shown: the hits, the cursor, and what is selected in them (picked, how
+    /// many, which, as for `names`).
+    search: Option<(usize, Option<usize>, bool, usize, usize)>,
 }
 
 /// Up to this many selected items, which ones they are is part of [`PaneKey`]; past it only
@@ -727,16 +729,22 @@ fn path_text(path: &Path) -> String {
     }
 }
 
-fn pane_key(pane: &PaneInput<'_>) -> PaneKey {
-    let explorer = pane.explorer;
-    let selection = &explorer.selection;
-    let names = if selection.len() <= HASHED_MAX {
+/// Which names `selection` has, for selections up to [`HASHED_MAX`] items (0 past it).
+fn names_hash(selection: &arke_core::Selection) -> usize {
+    if selection.len() <= HASHED_MAX {
         selection.names().fold(0usize, |hash, name| {
             hash ^ (Arc::as_ptr(name).cast::<u8>() as usize)
         })
     } else {
         0
-    };
+    }
+}
+
+fn pane_key(pane: &PaneInput<'_>) -> PaneKey {
+    let explorer = pane.explorer;
+    let selection = &explorer.selection;
+    let names = names_hash(selection);
+    let pick = &explorer.search_pick;
     PaneKey {
         location: location_of(pane),
         selected: selection.len(),
@@ -750,12 +758,20 @@ fn pane_key(pane: &PaneInput<'_>) -> PaneKey {
             .search_results
             .as_ref()
             .filter(|_| searching(explorer))
-            .map(|r| (Arc::as_ptr(&r.hits) as usize, explorer.search_cursor)),
+            .map(|r| {
+                (
+                    Arc::as_ptr(&r.hits) as usize,
+                    explorer.search_cursor,
+                    pick.picked,
+                    pick.selection.len(),
+                    names_hash(&pick.selection),
+                )
+            }),
     }
 }
 
-/// The selection as full paths: the items selected in list order, or in a search the result
-/// under the cursor (as the menus take it).
+/// The selection as full paths: the items selected in list order, or in a search the results
+/// selected (as the menus take them).
 fn selection_of(pane: &PaneInput<'_>) -> Vec<String> {
     if pane.page.is_some() {
         return Vec::new();
@@ -763,14 +779,9 @@ fn selection_of(pane: &PaneInput<'_>) -> Vec<String> {
     let explorer = pane.explorer;
     if searching(explorer) {
         return explorer
-            .search_results
-            .as_ref()
-            .zip(explorer.search_cursor)
-            .and_then(|(results, ix)| {
-                let hit = results.hits.get(ix)?;
-                Some(path_text(&results.root.join(&*hit.rel)))
-            })
-            .into_iter()
+            .selected_hits()
+            .iter()
+            .map(|(path, _)| path_text(path))
             .collect();
     }
     let selection = &explorer.selection;

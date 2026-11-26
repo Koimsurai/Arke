@@ -59,9 +59,6 @@ pub(super) struct SidebarUi {
     pub(super) follow_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The current folder's row is to be scrolled into view the next time it is drawn.
     pub(super) reveal: std::cell::Cell<bool>,
-    /// The follow under way scrolls to the current folder's row once listed: not when that folder
-    /// is shown higher up already (a favorite or pinned folder).
-    pub(super) reveal_wanted: std::cell::Cell<bool>,
     /// The current folder is a favorite shown in the sidebar (a tile or a row of the list), drawn
     /// last frame: that favorite is the selected one, not the folder's row under This PC, and
     /// following has nothing to open for it (#424).

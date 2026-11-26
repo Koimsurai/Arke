@@ -11,10 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::ThreadId;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{
-    DV_E_FORMATETC, E_NOTIMPL, FILETIME, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT, S_FALSE, S_OK,
+    DV_E_FORMATETC, E_FAIL, E_NOTIMPL, FILETIME, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT, S_FALSE,
+    S_OK,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     IStorage, STGFMT_STORAGE, StgCreateStorageEx,
@@ -34,6 +36,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{BOOL, HRESULT, Interface as _, PCWSTR, Ref, implement};
 
+use super::reader::{ChunkSize, FIRST_CHUNK};
 use super::{CHUNK, ComThread, VirtualDrop, registered, safe_parts};
 use crate::shell::OpProgress;
 
@@ -102,6 +105,69 @@ pub(crate) const fn pattern(pos: u64) -> u8 {
     (pos % 251) as u8
 }
 
+/// How a fake stream answers reads.
+#[derive(Clone, Default)]
+pub(crate) enum Pace {
+    /// At once, as much as asked.
+    #[default]
+    Instant,
+    /// Like a remote control program (#456): each read takes `delay` (a round trip to the
+    /// other computer), and a read of more than `limit` bytes never comes back.
+    Remote {
+        delay: Duration,
+        limit: usize,
+        gate: Gate,
+    },
+    /// At most this many bytes a read, without it being the end.
+    Trickle(u64),
+    /// No read comes back until the gate opens.
+    Stuck(Gate),
+}
+
+/// Holds reads of fake streams until the test opens it.
+#[derive(Clone)]
+pub(crate) struct Gate {
+    /// Never sent on: disconnects when the test drops its opener.
+    opened: flume::Receiver<()>,
+    /// Told each time a read starts waiting.
+    entered: flume::Sender<()>,
+    /// Told when a stream holding the gate is released.
+    released: flume::Sender<()>,
+}
+
+/// The test's side of a [`Gate`].
+struct Keeper {
+    /// Dropping it opens the gate.
+    opener: flume::Sender<()>,
+    entered: flume::Receiver<()>,
+    released: flume::Receiver<()>,
+}
+
+impl Gate {
+    fn new() -> (Self, Keeper) {
+        let (opener, opened) = flume::unbounded();
+        let (entered_tx, entered) = flume::unbounded();
+        let (released_tx, released) = flume::unbounded();
+        (
+            Self {
+                opened,
+                entered: entered_tx,
+                released: released_tx,
+            },
+            Keeper {
+                opener,
+                entered,
+                released,
+            },
+        )
+    }
+
+    fn wait(&self) {
+        let _ = self.entered.send(());
+        let _ = self.opened.recv();
+    }
+}
+
 /// What the source saw.
 #[derive(Default)]
 pub(crate) struct Seen {
@@ -127,6 +193,8 @@ pub(crate) struct FakeSource {
     cancel_after: Option<(usize, Arc<OpProgress>)>,
     seen: Arc<Seen>,
     started: AtomicBool,
+    /// How its streams answer reads.
+    pace: Pace,
 }
 
 impl FakeSource {
@@ -139,6 +207,7 @@ impl FakeSource {
             cancel_after: None,
             seen: Arc::default(),
             started: AtomicBool::new(false),
+            pace: Pace::Instant,
         }
     }
 
@@ -326,6 +395,7 @@ impl IDataObject_Impl for FakeSource_Impl {
                     pos: AtomicU64::new(0),
                     seen: Arc::clone(&self.seen),
                     cancel_after: self.cancel_after.clone(),
+                    pace: self.pace.clone(),
                 }
                 .into();
                 Ok(STGMEDIUM {
@@ -430,6 +500,15 @@ struct FakeStream {
     pos: AtomicU64,
     seen: Arc<Seen>,
     cancel_after: Option<(usize, Arc<OpProgress>)>,
+    pace: Pace,
+}
+
+impl Drop for FakeStream {
+    fn drop(&mut self) {
+        if let Pace::Remote { gate, .. } | Pace::Stuck(gate) = &self.pace {
+            let _ = gate.released.send(());
+        }
+    }
 }
 
 impl ISequentialStream_Impl for FakeStream_Impl {
@@ -443,8 +522,25 @@ impl ISequentialStream_Impl for FakeStream_Impl {
         {
             progress.cancel.store(true, Ordering::Relaxed);
         }
+        let mut give = u64::from(cb);
+        match &self.pace {
+            Pace::Instant => {}
+            Pace::Remote { delay, limit, gate } => {
+                // The source's own pace, not a wait of the test's.
+                std::thread::sleep(*delay);
+                if cb as usize > *limit {
+                    gate.wait();
+                    return E_FAIL;
+                }
+            }
+            Pace::Trickle(most) => give = give.min(*most),
+            Pace::Stuck(gate) => {
+                gate.wait();
+                return E_FAIL;
+            }
+        }
         let pos = self.pos.load(Ordering::Relaxed);
-        let n = u64::from(cb).min(self.len.saturating_sub(pos));
+        let n = give.min(self.len.saturating_sub(pos));
         // SAFETY: the caller's buffer has room for `cb` bytes.
         let out = unsafe { std::slice::from_raw_parts_mut(pv.cast::<u8>(), n as usize) };
         for (i, b) in out.iter_mut().enumerate() {
@@ -455,7 +551,7 @@ impl ISequentialStream_Impl for FakeStream_Impl {
             // SAFETY: the caller's count, checked above.
             unsafe { *read = n as u32 };
         }
-        if n < u64::from(cb) { S_FALSE } else { S_OK }
+        if n < give { S_FALSE } else { S_OK }
     }
 
     fn Write(&self, _: *const std::ffi::c_void, _: u32, _: *mut u32) -> HRESULT {
@@ -543,6 +639,26 @@ fn extract_on_worker(
     .join()
     .unwrap()
 }
+
+/// Writes a drop into `stage` on a worker thread, as Arke does; the result arrives on the
+/// receiver, so a test can tell a copy that never ends from one that does.
+fn extract_in_background(
+    drop: VirtualDrop,
+    stage: &Path,
+    progress: &Arc<OpProgress>,
+) -> flume::Receiver<super::Extraction> {
+    let (tx, rx) = flume::bounded(1);
+    let stage = stage.to_path_buf();
+    let progress = Arc::clone(progress);
+    std::thread::spawn(move || {
+        let _com = ComThread::init();
+        let _ = tx.send(drop.extract(&stage, &progress));
+    });
+    rx
+}
+
+/// Long enough for anything that should happen to happen; only reached when it doesn't.
+const NEVER: Duration = Duration::from_secs(60);
 
 fn expected_stream(len: u64) -> Vec<u8> {
     (0..len).map(pattern).collect()
@@ -668,6 +784,174 @@ fn cancel_stops_mid_stream() {
     assert!(out.cancelled);
     assert!(!stage.join("first.bin").exists());
     assert!(!stage.join("second.txt").exists());
+}
+
+/// A remote control program's stream (#456): each read waits for the other computer, and a
+/// read bigger than it can carry never comes back. Reads stay small enough, so the copy ends.
+#[test]
+fn a_source_that_answers_slowly_is_never_asked_for_more_than_it_gives() {
+    let _com = ComThread::init();
+    let len = 16 * FIRST_CHUNK as u64 + 5;
+    let (gate, keeper) = Gate::new();
+    let mut source = FakeSource::new(vec![FakeItem::stream("remote.bin", len)]);
+    source.pace = Pace::Remote {
+        delay: Duration::from_millis(5),
+        limit: FIRST_CHUNK,
+        gate,
+    };
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("remote");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_in_background(drop, &stage, &progress)
+        .recv_timeout(NEVER)
+        .expect("the copy ends");
+    assert!(out.failed.is_none() && !out.cancelled, "{:?}", out.failed);
+    assert_eq!(
+        std::fs::read(stage.join("remote.bin")).unwrap(),
+        expected_stream(len)
+    );
+    assert_eq!(seen.largest_read.load(Ordering::Relaxed), FIRST_CHUNK);
+    assert!(keeper.entered.is_empty(), "no read was too big");
+    assert_eq!(progress.work_done.load(Ordering::Relaxed), len);
+}
+
+/// A source whose read never comes back: Cancel still ends the copy at once and removes the
+/// half-written file, and the thread left waiting on the source lets go of the stream once the
+/// source answers at last.
+#[test]
+fn cancel_leaves_a_source_that_never_answers() {
+    let _com = ComThread::init();
+    let (gate, keeper) = Gate::new();
+    let mut source = FakeSource::new(vec![
+        FakeItem::stream("stuck.bin", 4 * CHUNK as u64),
+        FakeItem::memory("after.txt", b"after"),
+    ]);
+    source.pace = Pace::Stuck(gate);
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("stuck");
+    let progress = Arc::new(OpProgress::default());
+    let done = extract_in_background(drop, &stage, &progress);
+    keeper
+        .entered
+        .recv_timeout(NEVER)
+        .expect("a read waits on the source");
+    assert!(
+        stage.join("stuck.bin").exists(),
+        "the file is being written"
+    );
+
+    let cancelled = Instant::now();
+    progress.cancel.store(true, Ordering::Relaxed);
+    let out = done
+        .recv_timeout(NEVER)
+        .expect("Cancel ends the copy although the source never answers");
+    assert!(
+        cancelled.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        cancelled.elapsed()
+    );
+    assert!(out.cancelled);
+    assert!(
+        !stage.join("stuck.bin").exists(),
+        "the partial file is gone"
+    );
+    assert!(!stage.join("after.txt").exists());
+
+    // The source answers at last: the thread that waited on it releases the stream.
+    std::mem::drop(keeper.opener);
+    keeper
+        .released
+        .recv_timeout(NEVER)
+        .expect("the stream is released");
+}
+
+/// A stream that gives less than asked without being at its end is read on to the end, and
+/// reads don't grow while it does.
+#[test]
+fn short_reads_are_read_to_the_end() {
+    let _com = ComThread::init();
+    let len = 300_007;
+    let mut source = FakeSource::new(vec![FakeItem::stream("trickle.bin", len)]);
+    source.pace = Pace::Trickle(1000);
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("trickle");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_on_worker(drop, &stage, &progress);
+    assert!(out.failed.is_none() && !out.cancelled, "{:?}", out.failed);
+    assert_eq!(
+        std::fs::read(stage.join("trickle.bin")).unwrap(),
+        expected_stream(len)
+    );
+    assert_eq!(seen.largest_read.load(Ordering::Relaxed), FIRST_CHUNK);
+    assert!(seen.reads.load(Ordering::Relaxed) > 300);
+    assert_eq!(progress.bytes.load(Ordering::Relaxed), len);
+}
+
+/// Reads start small, double while a source keeps up, never pass the largest size, halve when
+/// a read is slow, and stay small for a source that is one round trip over the network a read.
+#[test]
+fn reads_grow_while_the_source_keeps_up() {
+    let fast = Duration::from_micros(100);
+    let mut chunk = ChunkSize::new();
+    assert_eq!(chunk.get(), FIRST_CHUNK);
+    for _ in 0..3 {
+        chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(
+        chunk.get(),
+        FIRST_CHUNK,
+        "a few fast reads aren't enough yet"
+    );
+    chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    assert_eq!(chunk.get(), 2 * FIRST_CHUNK);
+    // Answers to reads asked at the old size, still on their way, don't count.
+    for _ in 0..10 {
+        chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(chunk.get(), 2 * FIRST_CHUNK);
+    let mut grew = 0;
+    while chunk.get() < CHUNK {
+        let size = chunk.get();
+        chunk.learn(size, size, fast);
+        grew += 1;
+        assert!(grew < 100, "keeps growing to the largest size");
+    }
+    for _ in 0..20 {
+        chunk.learn(CHUNK, CHUNK, fast);
+    }
+    assert_eq!(chunk.get(), CHUNK, "never past the largest size");
+
+    chunk.learn(CHUNK, CHUNK, Duration::from_millis(300));
+    assert_eq!(chunk.get(), CHUNK / 2, "a slow read halves");
+    for _ in 0..20 {
+        let size = chunk.get();
+        chunk.learn(size, size, Duration::from_secs(1));
+    }
+    assert_eq!(chunk.get(), FIRST_CHUNK, "never below the first size");
+
+    // 64 KiB in 2 ms (32 MB/s, a round trip a read) doesn't keep up: reads stay small.
+    let mut remote = ChunkSize::new();
+    for _ in 0..100 {
+        remote.learn(FIRST_CHUNK, FIRST_CHUNK, Duration::from_millis(2));
+    }
+    assert_eq!(remote.get(), FIRST_CHUNK);
+
+    // Short reads don't grow it, and one that misses starts the streak again.
+    let mut short = ChunkSize::new();
+    for _ in 0..100 {
+        short.learn(FIRST_CHUNK, 1000, fast);
+    }
+    assert_eq!(short.get(), FIRST_CHUNK);
+    for _ in 0..3 {
+        short.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    short.learn(FIRST_CHUNK, FIRST_CHUNK, Duration::from_millis(2));
+    for _ in 0..3 {
+        short.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(short.get(), FIRST_CHUNK);
 }
 
 /// Names from the source can't leave the target folder or use names Windows refuses.

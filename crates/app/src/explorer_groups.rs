@@ -753,6 +753,7 @@ impl Explorer {
     ) -> AnyElement {
         let on_chevron = label.clone();
         let on_double = label.clone();
+        let height = height.unwrap_or_else(|| self.row_height());
         div()
             .id(("group-header", row))
             .a11y_lazy(gpui::Role::Heading, || format!("{label} ({count})"))
@@ -764,11 +765,17 @@ impl Explorer {
             // Full width, and at least as wide as Details rows when they scroll sideways.
             .w_full()
             .when_some(self.cols, |d, c| d.min_w(c.row))
-            .h(height.unwrap_or_else(|| self.row_height()))
+            .h(height)
             .px(theme::s_12())
             .flex()
-            .items_end()
-            .pb(theme::s_6())
+            // In a compact row there is no room to sit the heading low: centered instead.
+            .map(|d| {
+                if height < theme::h_row_tight() {
+                    d.items_center()
+                } else {
+                    d.items_end().pb(theme::s_6())
+                }
+            })
             .gap(theme::s_8())
             .cursor_pointer()
             .rounded(theme::r_8())

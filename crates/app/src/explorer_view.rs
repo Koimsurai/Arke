@@ -906,6 +906,7 @@ impl Explorer {
                 self.shown_name_of(entry),
                 true,
                 Some(press),
+                rename_box_h(self.row_height()),
             ))
             .children(super::compare::compare_badge(
                 self.compare_mark(&entry.name),
@@ -1085,7 +1086,14 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match rename_input {
-            Some(rename) => name_cell(entry, Some(rename), SharedString::default(), false, None),
+            Some(rename) => name_cell(
+                entry,
+                Some(rename),
+                SharedString::default(),
+                false,
+                None,
+                theme::s_24(),
+            ),
             None => div()
                 .debug_selector({
                     let name = Arc::clone(&entry.name);
@@ -2901,6 +2909,12 @@ pub(crate) fn shown_name(entry: &Entry, show_ext: bool) -> SharedString {
     }
 }
 
+/// The rename box's height in a Details row `row` high: 24, or the row's height in a shorter
+/// (compact) row, like Explorer's box filling its compact row.
+fn rename_box_h(row: Pixels) -> Pixels {
+    row.min(theme::s_24())
+}
+
 /// Space between the rename box's edge and its text: its padding plus the 1 px border.
 fn rename_inset() -> gpui::Pixels {
     crate::theme::scaled_px(4. + 1.)
@@ -2930,6 +2944,7 @@ fn name_cell(
     shown: SharedString,
     in_row: bool,
     on_press: Option<NamePress>,
+    box_h: Pixels,
 ) -> AnyElement {
     match rename {
         Some((input, problem)) => div()
@@ -2950,7 +2965,9 @@ fn name_cell(
                 }
             })
             .min_w_0()
-            .h(theme::s_24())
+            .h(box_h)
+            // Shorter than its usual 24 (a compact row): a tighter line keeps the text whole.
+            .when(box_h < theme::s_24(), |d| d.line_height(gpui::relative(theme::LH_TIGHT)))
             .px(rename_inset() - px(1.))
             .flex()
             .items_center()

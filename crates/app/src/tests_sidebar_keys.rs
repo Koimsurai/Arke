@@ -250,7 +250,7 @@ fn sidebar_rows_follow_the_density(cx: &mut TestAppContext) {
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     let mut tiles = Vec::new();
     for (density, side, list) in [
-        (Density::Compact, 24., 24.),
+        (Density::Compact, 24., 21.),
         (Density::Standard, 32., 32.),
         (Density::Comfortable, 32., 40.),
     ] {

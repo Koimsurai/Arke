@@ -212,9 +212,9 @@ scaled!(s_32, 32.);
 
 // List row height (standard density).
 scaled!(h_row, 32.);
-// List row height in compact density, close to File Explorer's compact view (#438). No lower:
-// the rename box (24) must fit in the row, and 24 is the smallest comfortable pointer target.
-scaled!(h_row_compact, 24.);
+// List row height in compact density: File Explorer's compact view (21 px at 100%, #438). The
+// row is the pointer target, as in Explorer; the rename box shrinks to fit it (`LH_TIGHT`).
+scaled!(h_row_compact, 21.);
 // Rows a little tighter than standard: split panes (half width), pinned tabs and the column
 // view's parent column, outside compact density.
 scaled!(h_row_tight, 28.);
@@ -437,6 +437,10 @@ scaled!(r_8, 8.);
 scaled!(r_12, 12.);
 /// Pills, progress bars.
 pub(crate) const R_FULL: Pixels = px(999.);
+/// Line height (relative to the font size) for text in a box shorter than the default line
+/// (1.618): the rename box in a compact row. Still above the UI fonts' ascent plus descent
+/// (about 1.33 for Segoe UI and the CJK fallbacks), so nothing is cut off.
+pub(crate) const LH_TIGHT: f32 = 1.35;
 
 // --- Raw layer ---
 

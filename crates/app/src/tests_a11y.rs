@@ -245,22 +245,25 @@ fn f6_names_each_area(cx: &mut TestAppContext) {
     );
 }
 
-/// #416: the tree doesn't follow the folder by default, so the sidebar has no current folder's row
-/// to start on: F6 still reaches the sidebar, and the arrows move onto a row a screen reader can
-/// name.
+/// #416: the tree doesn't follow the folder by default, so it may not show the current one: F6
+/// still reaches the sidebar, on the nearest row above the folder (File Explorer lands on its own
+/// row), and the arrows move on to rows a screen reader can name.
 #[gpui::test]
 fn the_sidebar_is_usable_from_the_keyboard_when_the_tree_does_not_follow(cx: &mut TestAppContext) {
     let (_ws, cx) = window_following(cx, false);
     cx.simulate_keystrokes("f6");
     let start = focused(&tree(cx));
-    assert_eq!(start.0, "Tree", "no row to start on: {start:?}");
-    cx.simulate_keystrokes("down");
+    assert_eq!(start.0, "TreeItem", "starts on a row: {start:?}");
+    assert!(
+        start.1.contains("C:"),
+        "the drive above the folder: {start:?}"
+    );
+    cx.simulate_keystrokes("home");
     let first = focused(&tree(cx));
-    assert_ne!(first.0, "Tree", "Down reaches a row: {first:?}");
     assert!(!first.1.is_empty(), "the row is named: {first:?}");
-    cx.simulate_keystrokes("down");
-    let next = focused(&tree(cx));
-    assert_ne!(next, first, "Down goes on to the next row");
+    cx.simulate_keystrokes("end");
+    let last = focused(&tree(cx));
+    assert!(!last.1.is_empty(), "the row is named: {last:?}");
     cx.simulate_keystrokes("home");
     assert_eq!(focused(&tree(cx)), first, "Home goes back to the first row");
 }

@@ -121,6 +121,9 @@ pub(super) struct SidebarKeys {
     pub(super) cursor: RefCell<Option<SharedString>>,
     /// The current folder's row, where the cursor starts.
     here: RefCell<Option<SharedString>>,
+    /// When the current folder has no row (its parents are collapsed), the row of its nearest
+    /// drawn ancestor, with how deep that folder is: the deepest one wins.
+    nearest: RefCell<Option<(usize, SharedString)>>,
     /// Scroll the cursor's row into view once it has been drawn.
     reveal: Cell<bool>,
 }
@@ -139,6 +142,7 @@ impl SidebarKeys {
             .flatten();
         self.rows.borrow_mut().clear();
         self.here.borrow_mut().take();
+        self.nearest.borrow_mut().take();
         reveal
     }
 
@@ -161,6 +165,23 @@ impl SidebarKeys {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         out.into_iter().map(|(k, r, _)| (k, r)).collect()
+    }
+
+    /// Notes that the row `key`, drawn this frame, is a folder above the current one, `depth`
+    /// components deep. The deepest such row is where F6 lands when the current folder has no row.
+    pub(super) fn note_ancestor(&self, depth: usize, key: &SharedString) {
+        let mut nearest = self.nearest.borrow_mut();
+        if nearest.as_ref().is_none_or(|(d, _)| depth > *d) {
+            *nearest = Some((depth, key.clone()));
+        }
+    }
+
+    /// Where the cursor starts: the current folder's row, else its nearest drawn ancestor's.
+    fn start_row(&self) -> Option<SharedString> {
+        self.here
+            .borrow()
+            .clone()
+            .or_else(|| self.nearest.borrow().as_ref().map(|(_, k)| k.clone()))
     }
 
     fn row(&self, key: &SharedString) -> Option<NavRow> {
@@ -453,7 +474,7 @@ impl Workspace {
                     .as_ref()
                     .is_some_and(|c| keys.rows.borrow().contains_key(c));
                 if !known {
-                    let start = keys.here.borrow().clone();
+                    let start = keys.start_row();
                     *keys.cursor.borrow_mut() = start;
                 }
                 keys.reveal.set(true);

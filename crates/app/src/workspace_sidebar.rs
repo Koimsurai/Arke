@@ -3022,6 +3022,15 @@ impl Workspace {
         let indent = tree_indent() * depth as f32;
         let side = if favorite { "f" } else { "" };
         let key = SharedString::from(format!("{side}tree-{depth}-{}", path.display()));
+        if !here
+            && let Some(current) = current
+            && current.starts_with(path)
+        {
+            // F6 lands here when the current folder's own row isn't shown.
+            self.sidebar_ui
+                .keys
+                .note_ancestor(path.components().count(), &key);
+        }
         let row = div()
                 .id(SharedString::from(format!(
                     "{side}tree-{depth}-{}",

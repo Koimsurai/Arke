@@ -34,12 +34,21 @@ fn drive(letter: char) -> Place {
 
 /// A window on `C:\work`, with drives `C:` and `D:` under This PC.
 fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+    window_following(cx, true)
+}
+
+/// The same window with the tree following the current folder or not. Not following, the tree
+/// shows the drives closed (#416).
+fn window_following(
+    cx: &mut TestAppContext,
+    follow: bool,
+) -> (Entity<Workspace>, &mut VisualTestContext) {
     let shell = Arc::new(FakeShell::default());
     shell.extra_places.lock().extend([drive('C'), drive('D')]);
-    // The tree opens to the folder: off by default (#416), these tests are about it.
+    // The tree opens to the folder: off by default (#416), most of these tests are about it.
     cx.update(|cx| {
         crate::settings::SettingsStore::global(cx)
-            .update(cx, |s, cx| s.update(|st| st.sidebar_follow = true, cx));
+            .update(cx, |s, cx| s.update(|st| st.sidebar_follow = follow, cx));
     });
     let (ws, cx) = setup_workspace_with(cx, fs(), shell, r"C:\work");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
@@ -47,8 +56,13 @@ fn window(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext
         loaded(r"C:\work")(v) && v.places.len() > 2
     });
     cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(900.)));
-    settle(cx, "the tree shows the folder", |cx| {
-        cx.debug_bounds("sidebar work").is_some()
+    let row = if follow {
+        "sidebar work"
+    } else {
+        "sidebar Local Disk (C:)"
+    };
+    settle(cx, "the tree shows its rows", |cx| {
+        cx.debug_bounds(row).is_some()
     });
     (ws, cx)
 }
@@ -113,6 +127,45 @@ fn f6_goes_round_the_window(cx: &mut TestAppContext) {
     assert_eq!(region(&ws, cx), "sidebar");
     key(cx, "escape");
     assert_eq!(region(&ws, cx), "list", "Escape goes back to the list");
+}
+
+/// #416: the tree doesn't follow the folder, so it may not show it. F6 lands on the folder's own
+/// row when the tree shows it, as in File Explorer, else on the nearest folder above it that it
+/// does, and nothing opens for it.
+#[gpui::test]
+fn f6_lands_on_the_current_folder_when_the_tree_does_not_follow(cx: &mut TestAppContext) {
+    // The tree opened to the folder while it followed, then following was turned off.
+    let (ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx)
+            .update(cx, |s, cx| s.update(|st| st.sidebar_follow = false, cx));
+    });
+    assert_eq!(cursor(&ws, cx), None);
+    key(cx, "f6");
+    assert_eq!(region(&ws, cx), "sidebar");
+    assert_eq!(
+        cursor(&ws, cx).as_deref(),
+        Some(r"tree-1-C:\work"),
+        "the folder's own row"
+    );
+}
+
+/// The folder isn't in the tree (its drive is closed): F6 lands on the nearest row above it, and
+/// the tree stays as it is.
+#[gpui::test]
+fn f6_lands_on_the_nearest_folder_above_when_the_current_one_is_hidden(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, false);
+    assert!(
+        cx.debug_bounds("sidebar work").is_none(),
+        "the drive is closed"
+    );
+    key(cx, "f6");
+    assert_eq!(region(&ws, cx), "sidebar");
+    assert_eq!(cursor(&ws, cx).as_deref(), Some(r"tree-0-C:\"));
+    assert!(
+        !ws.update(cx, |ws, _| ws.tree_expanded_for_test(Path::new(r"C:\"))),
+        "nothing opens for it"
+    );
 }
 
 /// The arrow keys walk the tree: Left goes up to the folder above, collapses it, Down reaches

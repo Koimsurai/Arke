@@ -150,6 +150,15 @@ impl Recheck {
         false
     }
 
+    /// The running listing found items came or went, but the list can't take that from it (it
+    /// changed meanwhile, or a listing is running): one more after it, against the list as it is
+    /// then, so the change isn't lost.
+    const fn rerun(&mut self) {
+        if let Self::Running { .. } = *self {
+            *self = Self::Running { again: true };
+        }
+    }
+
     /// The listing finished. Returns whether to start another one now.
     const fn finished(&mut self, ready: bool) -> bool {
         match *self {
@@ -413,8 +422,18 @@ impl Explorer {
             .model
             .as_ref()
             .is_some_and(|m| m.generation == generation && m.version == version);
-        if changed && current && self.pending.is_none() {
+        let reload = changed && current && self.pending.is_none();
+        log::info!(
+            "cloud recheck of {}: changed {changed}, list moved {}, reload {reload}",
+            dir.display(),
+            !current
+        );
+        if reload {
             self.reload(cx);
+        } else if changed {
+            // Compared with a list that has changed since (a watcher delta, a re-sort) or is
+            // being listed again: dropping the result would lose the hint that asked for it.
+            self.cloud.recheck.rerun();
         }
         let ready = self.list_ready(dir);
         if self.cloud.recheck.finished(ready) {
@@ -495,6 +514,34 @@ mod tests {
         assert!(!r.finished(true));
         assert!(!r.ready(true));
         assert_eq!(r, Recheck::Idle);
+    }
+
+    /// A listing that found a change the list couldn't take (it moved meanwhile) runs once more,
+    /// also when no hint came meanwhile; with hints meanwhile, still only once more.
+    #[test]
+    fn a_change_found_against_a_moved_list_runs_again() {
+        let mut r = Recheck::default();
+        assert!(r.ask(true));
+        r.rerun();
+        assert!(r.finished(true), "once more");
+        assert!(!r.finished(true));
+        assert_eq!(r, Recheck::Idle);
+
+        assert!(r.ask(true));
+        assert!(!r.ask(true));
+        r.rerun();
+        assert!(r.finished(true), "once more for both");
+        assert!(!r.finished(true));
+
+        assert!(r.ask(true));
+        r.rerun();
+        assert!(!r.finished(false), "a reload is running");
+        assert_eq!(r, Recheck::Waiting);
+        assert!(r.ready(true));
+
+        let mut idle = Recheck::default();
+        idle.rerun();
+        assert_eq!(idle, Recheck::Idle, "nothing running, nothing to repeat");
     }
 
     const HIDDEN: u32 = 0x2;

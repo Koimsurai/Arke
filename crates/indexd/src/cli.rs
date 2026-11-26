@@ -122,12 +122,14 @@ pub fn run(args: Vec<String>, prefix: Option<&'static str>) -> ExitCode {
 
 /// Reads the MFT once, builds the listing with Arke's rules and prints stats only (writes nothing).
 fn mft_probe(args: &[String]) -> ExitCode {
-    let root = PathBuf::from(args.get(1).map_or(r"C:\", String::as_str));
+    let root = args.get(1).filter(|a| !a.starts_with("--"));
+    let root = PathBuf::from(root.map_or(r"C:\", String::as_str));
     let started = Instant::now();
-    let mut table = match crate::mft::read_volume(&root, &|| false) {
-        Ok(t) => t,
-        Err(err) => return fail(&format!("{} (run as administrator): {err}", root.display())),
-    };
+    let mut table =
+        match crate::mft::read_volume(&root, args.iter().any(|a| a == "--background"), &|| false) {
+            Ok(t) => t,
+            Err(err) => return fail(&format!("{} (run as administrator): {err}", root.display())),
+        };
     let read = started.elapsed();
     let privacy = changes::Privacy {
         profiles: None,

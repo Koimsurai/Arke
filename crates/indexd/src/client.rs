@@ -359,12 +359,25 @@ pub fn profiles() -> Option<arke_core::dirsize::Profiles> {
 pub struct ServiceJournal {
     /// Development or test pipe; `None` means the installed service.
     custom: Option<String>,
+    /// Ask the service to read the MFT at very low I/O priority (see [`Request::List`]).
+    background: bool,
 }
 
 impl ServiceJournal {
     /// Uses the installed service (or `ARKE_INDEXD_PIPE` in debug builds).
     pub fn new() -> Self {
-        Self { custom: dev_pipe() }
+        Self {
+            custom: dev_pipe(),
+            background: false,
+        }
+    }
+
+    /// Lists at very low I/O priority. Only for a rescan with an older index to show, and only
+    /// against a service that knows the flag (an older one rejects the request).
+    #[must_use]
+    pub const fn background(mut self, on: bool) -> Self {
+        self.background = on;
+        self
     }
 
     /// Connects to the named pipe (tests only; no service, server not verified).
@@ -372,6 +385,7 @@ impl ServiceJournal {
     pub fn at(pipe: &str) -> Self {
         Self {
             custom: Some(pipe.to_string()),
+            background: false,
         }
     }
 }
@@ -393,11 +407,12 @@ impl Journal for ServiceJournal {
     fn list(&self, root: &Path, sink: ListSink) -> io::Result<()> {
         let root = root.to_path_buf();
         let custom = self.custom.clone();
+        let background = self.background;
         // Connecting may wait for the service to start: the sink is asked meanwhile too. A pipe
         // that comes after it gave up is dropped, which tells the service nobody is listening.
         let pipe = with_timeout_while(CONNECT_TIMEOUT * 2, &mut || sink(Vec::new()), move || {
             let pipe = session(custom.as_deref())?;
-            send(&pipe, &Request::List { root }).ok()?;
+            send(&pipe, &Request::List { root, background }).ok()?;
             Some(pipe)
         })?
         .ok_or_else(|| io::Error::other("Arke index service unavailable"))?;

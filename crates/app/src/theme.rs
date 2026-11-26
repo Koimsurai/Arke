@@ -212,10 +212,20 @@ scaled!(s_32, 32.);
 
 // List row height (standard density).
 scaled!(h_row, 32.);
-// List row height (compact, used in dual pane).
-scaled!(h_row_compact, 28.);
+// List row height in compact density, close to File Explorer's compact view (#438). No lower:
+// the rename box (24) must fit in the row, and 24 is the smallest comfortable pointer target.
+scaled!(h_row_compact, 24.);
+// Rows a little tighter than standard: split panes (half width), pinned tabs and the column
+// view's parent column, outside compact density.
+scaled!(h_row_tight, 28.);
 // List row height (comfortable).
 scaled!(h_row_comfortable, 40.);
+
+/// Sidebar rows (folders, places, tabs, the Shelf, Home and Settings): compact rows in compact
+/// density (#438), the standard height otherwise. Section headings keep [`h_row`].
+pub(crate) fn h_row_side() -> Pixels {
+    by_room(24., 32., 32.)
+}
 // Controls: buttons, inputs.
 scaled!(h_ctl, 32.);
 // Small controls: context bar actions.

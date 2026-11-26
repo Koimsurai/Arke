@@ -175,7 +175,7 @@ impl Workspace {
                 this.toggle_shelf(cx);
             })
             .relative()
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .flex()
             .flex_none()
             .items_center()
@@ -286,7 +286,7 @@ impl Workspace {
         if held.is_empty() {
             rows.push(
                 div()
-                    .h(theme::h_row())
+                    .h(theme::h_row_side())
                     .flex()
                     .flex_none()
                     .items_center()
@@ -371,7 +371,7 @@ impl Workspace {
                 crate::a11y::item_label(name, &[folder.as_str(), state.as_str()])
             })
             .group(group.clone())
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .flex()
             .flex_none()
             .items_center()

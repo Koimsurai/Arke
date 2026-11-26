@@ -955,7 +955,7 @@ impl Workspace {
             .a11y(gpui::Role::Link, t!("settings.title"))
             .relative()
             .flex_none()
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .mx(theme::s_8())
             // Its bottom lines up with the paper's.
             .mb(theme::paper_gap())

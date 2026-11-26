@@ -143,7 +143,7 @@ impl Workspace {
             .id("open-recycle")
             .a11y(gpui::Role::TreeItem, t!("recycle.title"))
             .aria_selected(open)
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .flex()
             .flex_none()
             .items_center()

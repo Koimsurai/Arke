@@ -3374,13 +3374,12 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Split panes are half width, so they use compact density.
+    /// Split panes are half width, so outside compact density their rows are tighter than the
+    /// density's.
     pub(crate) fn row_height(&self) -> Pixels {
-        if self.pane.split {
-            return theme::h_row_compact();
-        }
         match self.density {
             Density::Compact => theme::h_row_compact(),
+            _ if self.pane.split => theme::h_row_tight(),
             Density::Standard => theme::h_row(),
             Density::Comfortable => theme::h_row_comfortable(),
         }

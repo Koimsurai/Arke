@@ -381,7 +381,7 @@ impl Workspace {
             .a11y(gpui::Role::Link, t!("home.title"))
             .relative()
             .flex_none()
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .mx(theme::s_8())
             .mb(theme::s_4())
             .pl(theme::s_8())

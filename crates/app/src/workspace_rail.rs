@@ -29,6 +29,8 @@ pub(super) struct SidebarUi {
     /// sidebar and in the column of icons.
     pub(super) places_scroll: gpui::ScrollHandle,
     pub(super) tabs_scroll: gpui::ScrollHandle,
+    /// The places list's scrollbar (#427): the tab list's, on the list above it.
+    pub(super) places_bar: crate::scrollbar::ScrollbarDrag,
     /// The vertical tab list's scrollbar (#323), and the tab last scrolled into view there (the
     /// active one, once each time it changes or the list changes height).
     pub(super) tabs_bar: crate::scrollbar::ScrollbarDrag,

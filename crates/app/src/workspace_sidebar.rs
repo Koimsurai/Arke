@@ -2354,7 +2354,16 @@ impl Workspace {
                 .min_h(theme::h_row() * 2.),
         )
         .relative()
-        .when(scrolled, |d| d.child(scroll_shadow()));
+        .when(scrolled, |d| d.child(scroll_shadow()))
+        // The same scrollbar as the tab list's (#427), in the gutter beside the rows and only
+        // while the places don't fit.
+        .child(
+            crate::scrollbar::scrollbar(
+                self.sidebar_ui.places_scroll.clone(),
+                std::rc::Rc::clone(&self.sidebar_ui.places_bar),
+            )
+            .right(px(2.) - theme::s_8()),
+        );
         let keys_here = self.sidebar_ui.keys.focused.get();
         let sidebar = div()
             .id("sidebar")

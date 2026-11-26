@@ -232,6 +232,7 @@ impl VirtualDrop {
         let known: u64 = items.iter().filter_map(|i| i.size).sum();
         let files = items.iter().filter(|i| !i.is_dir).count() as u64;
         progress.bytes_total.store(known, Ordering::Relaxed);
+        progress.work_in_bytes.store(known > 0, Ordering::Relaxed);
         progress
             .work_total
             .store(if known > 0 { known } else { files }, Ordering::Relaxed);

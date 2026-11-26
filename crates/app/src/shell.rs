@@ -684,6 +684,9 @@ pub(crate) struct OpProgress {
     /// Work reported by Windows (done/total); total is 0 while still counting.
     pub(crate) work_done: std::sync::atomic::AtomicU64,
     pub(crate) work_total: std::sync::atomic::AtomicU64,
+    /// `work_done` and `work_total` count bytes (or work weighted by bytes), not items: until
+    /// some is done, the total is no count of items to show.
+    pub(crate) work_in_bytes: std::sync::atomic::AtomicBool,
     /// Bytes of files finished copying or moving across volumes, for speed. Same-volume moves are renames and do not count.
     pub(crate) bytes: std::sync::atomic::AtomicU64,
     /// Total size to copy, computed in the background at start (0 if unknown or too many to count).

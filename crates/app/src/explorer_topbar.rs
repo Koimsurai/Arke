@@ -42,8 +42,9 @@ fn search_rest_max() -> gpui::Pixels {
     crate::theme::scaled_px(600.)
 }
 /// A path bar narrower than this shows only "… › current folder" (no trailing ›, little blank
-/// end), so the current folder's name keeps some room.
-fn path_compact_below() -> gpui::Pixels {
+/// end), so the current folder's name keeps some room. The selection's buttons fold into "⋯"
+/// before they would push the path bar below it (#388).
+pub(super) fn path_compact_below() -> gpui::Pixels {
     crate::theme::scaled_px(200.)
 }
 /// The path bar keeps at least this much of the pane row; the item count and the selection's
@@ -392,7 +393,7 @@ impl Explorer {
         .into_any_element();
         let chip = self.render_filter_chip(cx);
         let info = if !self.search_mode && !self.selection.is_empty() {
-            self.render_selection_actions(self.compact_bar(), cx)
+            self.render_selection_actions(self.compact_bar(), window, cx)
         } else {
             self.render_folder_actions(self.compact_bar(), cx)
         };

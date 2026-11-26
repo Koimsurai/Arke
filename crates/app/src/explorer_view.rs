@@ -244,6 +244,8 @@ impl Explorer {
         let loaded = self.model.is_some() && !lists_shares(self.current_path());
         let can_paste = loaded && !self.search_mode && self.services.shell.clipboard_has_files();
         div()
+            .relative()
+            .child(self.info_probe())
             .flex()
             .min_w_0()
             // Squeezed past its buttons (a small window at a large scale): cut off, rather than
@@ -358,6 +360,7 @@ impl Explorer {
     pub(super) fn render_selection_actions(
         &self,
         compact: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // `compact` decides whether the summary includes the total size; action buttons are always
@@ -378,13 +381,15 @@ impl Explorer {
         // Split view with both sides on different folders: Copy to/Move to take the room of the
         // regular buttons. Same folder: they'd copy items onto themselves, so they're left out and
         // the regular buttons come back.
-        if self.selection_folds() {
+        let Some(peer_labels) = self.selection_fit(&summary, count, window) else {
             return self.render_folded_selection(count, cx);
-        }
-        let peer_actions = self.render_peer_actions(cx);
+        };
+        let peer_actions = self.render_peer_actions(peer_labels, cx);
         let crowded = peer_actions.is_some();
         div()
             .debug_selector(|| "selection-actions".to_owned())
+            .relative()
+            .child(self.info_probe())
             .flex()
             .min_w_0()
             .items_center()
@@ -397,6 +402,9 @@ impl Explorer {
                     .items_center()
                     .gap(theme::s_8())
                     .mr(theme::s_4())
+                    // The size the window's text has anyway, set here because `selection_width`
+                    // measures the summary at it.
+                    .text_size(theme::fs_14())
                     .font_weight(theme::FW_STRONG)
                     .child(
                         div()
@@ -467,11 +475,70 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// Whether the pane is too narrow for the selection's buttons next to the path bar and the
-    /// view buttons (a split pane in a small window, say): they fold into a "⋯" menu.
-    pub(crate) fn selection_folds(&self) -> bool {
-        let needs = if self.pane.split { 600. } else { 720. };
-        self.paper_width < theme::scaled_px(needs)
+    /// Whether the selection's buttons, `unfolded` wide, would leave the path bar too little of
+    /// the pane row: they fold into a "⋯" menu before the path bar drops its parent folders
+    /// (below [`super::top_bar::path_compact_below`] it keeps only the current one), so the path
+    /// bar keeps its room to go up several levels (#388). The room is what the path bar and the
+    /// row's info (item count or selection) took on the last frame: their sum doesn't change with
+    /// what the info shows, so the choice settles at once. Before the row was laid out, the
+    /// pane's width decides.
+    pub(crate) fn selection_folds(&self, unfolded: Pixels) -> bool {
+        let path = self.path_slot.get();
+        if path <= px(0.) {
+            let needs = if self.pane.split { 600. } else { 720. };
+            return self.paper_width < theme::scaled_px(needs);
+        }
+        path + self.info_slot.get() - unfolded < super::top_bar::path_compact_below()
+    }
+
+    /// How the selection's buttons fit the pane row next to the path bar (#388): `None` folds
+    /// them into "⋯"; `Some(labels)` shows them, with Copy to/Move to the other side (split view)
+    /// named or as icons. The labels show only when the path bar keeps its room with them too;
+    /// otherwise the icons, and failing that the fold.
+    fn selection_fit(&self, summary: &str, count: usize, window: &Window) -> Option<bool> {
+        let Some(peer) = self.peer_target() else {
+            let unfolded = selection_width(summary, count, None, window);
+            return (!self.selection_folds(unfolded)).then_some(false);
+        };
+        let name = peer_name(peer);
+        let labels = [
+            t!("sel.copy_to", name = name),
+            t!("sel.move_to", name = name),
+        ]
+        .iter()
+        .map(|label| {
+            let text =
+                super::top_bar::text_width(label, theme::fs_12(), gpui::FontWeight::NORMAL, window);
+            // The gap between the icon and the label.
+            theme::s_6() + text
+        })
+        .fold(px(0.), |sum, w| sum + w);
+        if self.paper_width >= peer_labels_min()
+            && !self.selection_folds(selection_width(summary, count, Some(labels), window))
+        {
+            return Some(true);
+        }
+        let icons = selection_width(summary, count, Some(px(0.)), window);
+        (!self.selection_folds(icons)).then_some(false)
+    }
+
+    /// Records the width of the pane row's info (the item count or the selection's actions) for
+    /// [`Self::selection_folds`], drawing once more when it changed, as the path bar's slot does
+    /// (they change together, so this adds no frame of its own).
+    fn info_probe(&self) -> impl IntoElement + use<> {
+        let slot = Rc::clone(&self.info_slot);
+        gpui::canvas(
+            move |b, window, _| {
+                if slot.replace(b.size.width) != b.size.width {
+                    window.refresh();
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 
     /// The selection in a narrow pane: "● 3" (the tooltip has the whole summary) and "⋯", which
@@ -484,6 +551,8 @@ impl Explorer {
         }
         div()
             .debug_selector(|| "selection-actions".to_owned())
+            .relative()
+            .child(self.info_probe())
             .flex()
             .flex_none()
             .items_center()
@@ -554,13 +623,12 @@ impl Explorer {
     /// Split view: "Copy to/Move to the other side", naming the destination. In a narrow pane
     /// they show only their icons (the tooltip still names the destination), since a label cut
     /// down to "…" says nothing.
-    fn render_peer_actions(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let peer = self.peer_target()?.to_path_buf();
-        let labels = self.paper_width >= peer_labels_min();
-        let name = peer.file_name().map_or_else(
-            || peer.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
+    fn render_peer_actions(
+        &self,
+        labels: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let name = peer_name(self.peer_target()?);
         Some(
             div()
                 .flex()
@@ -2450,6 +2518,43 @@ pub(super) fn vertical_divider() -> impl IntoElement {
         .mx(theme::s_4())
         .flex_none()
         .bg(theme::line())
+}
+
+/// The other pane's folder as Copy to/Move to name it.
+fn peer_name(peer: &Path) -> String {
+    peer.file_name().map_or_else(
+        || peer.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// Width of the selection's actions in the pane row, unfolded, from the tokens they are drawn
+/// with (see [`Explorer::render_selection_actions`]): the summary, a divider, then Open, Cut,
+/// Copy (Rename for one item) and Delete, or in split view (`peer`: the width Copy to/Move to's
+/// labels add, zero for icons only) Copy to/Move to the other side and Delete, and the clear
+/// button.
+fn selection_width(summary: &str, count: usize, peer: Option<Pixels>, window: &Window) -> Pixels {
+    let text = super::top_bar::text_width(summary, theme::fs_14(), theme::FW_STRONG, window);
+    // Dot, gap, text and the margin after it.
+    let summary = theme::s_6() + theme::s_8() + text + theme::s_4();
+    let divider = px(1.) + theme::s_4() * 2.;
+    let icon_button = theme::s_6() * 2. + theme::icon();
+    let clear = theme::s_8() * 2. + theme::icon_sm();
+    // The buttons, and how many children of the row they are.
+    let (buttons, children) = if let Some(labels) = peer {
+        // Outlined: a 1 px border on each side. Two of them and a divider, 4 px apart.
+        let outlined = theme::s_8() * 2. + theme::icon() + px(2.);
+        (
+            outlined * 2. + labels + divider + theme::s_4() * 2. + icon_button,
+            2.,
+        )
+    } else {
+        let n = if count == 1 { 5. } else { 4. };
+        (icon_button * n, n)
+    };
+    // The summary, the divider, the buttons, the spacer and the clear button, 4 px apart.
+    let gaps = theme::s_4() * (children + 3.);
+    summary + divider + buttons + clear + gaps
 }
 
 /// Opens the selection's menu where Shift+F10 would: "⋯" pressed by a screen reader or from the

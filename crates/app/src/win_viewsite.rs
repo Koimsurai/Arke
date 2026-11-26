@@ -577,13 +577,13 @@ pub(crate) mod open_thread {
             let threads = OpenThreads::new("test-open", SITE_KEEP);
             let (calls, released) = counters();
             let (c, r) = (Arc::clone(&calls), Arc::clone(&released));
-            let iid = &IServiceProvider::IID;
+            let iid = IServiceProvider::IID;
             // Put in the interface table, so another apartment gets a proxy to it.
             let cookie = on(&threads, move || {
                 let site = probe(&c, &r);
                 let table = interface_table();
                 // SAFETY: a plain COM call on this STA thread with a valid interface id.
-                let cookie = unsafe { table.RegisterInterfaceInGlobal(&site, iid) };
+                let cookie = unsafe { table.RegisterInterfaceInGlobal(&site, &iid) };
                 (cookie.expect("registered"), Some(site))
             });
             let (answer_tx, answer) = flume::bounded(1);
@@ -593,7 +593,7 @@ pub(crate) mod open_thread {
                 let table = interface_table();
                 let mut proxy = std::ptr::null_mut();
                 // SAFETY: a plain COM call with a valid interface id; proxy is an out pointer.
-                let got = unsafe { table.GetInterfaceFromGlobal(cookie, iid, &raw mut proxy) };
+                let got = unsafe { table.GetInterfaceFromGlobal(cookie, &iid, &raw mut proxy) };
                 got.expect("a proxy to the site");
                 // SAFETY: as above.
                 let _ = unsafe { table.RevokeInterfaceFromGlobal(cookie) };
@@ -601,17 +601,18 @@ pub(crate) mod open_thread {
                 let site = unsafe { IServiceProvider::from_raw(proxy) };
                 // SAFETY: a plain call on a valid proxy.
                 let asked = unsafe { site.QueryService::<IFolderView>(&IFolderView::IID) };
+                let code = asked.map(drop).map_err(|e| e.code());
                 drop((site, table));
                 if com.is_ok() {
                     // SAFETY: pairs with the successful CoInitializeEx above.
                     unsafe { CoUninitialize() };
                 }
-                let _ = answer_tx.send(asked.map(drop).unwrap_err().code());
+                let _ = answer_tx.send(code);
             });
             let code = answer
                 .recv_timeout(Duration::from_secs(10))
                 .expect("the call came back");
-            assert_eq!(code, E_NOINTERFACE, "the probe's own answer");
+            assert_eq!(code, Err(E_NOINTERFACE), "the probe's own answer");
             assert_eq!(read(&calls), 1);
             assert!(threads.close());
             assert_eq!(read(&released), 1);

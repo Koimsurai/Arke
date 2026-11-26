@@ -4370,6 +4370,14 @@ menu.extract_to:
   es: "Extraer en “%{name}\\”"
   pt-BR: "Extrair para “%{name}\\”"
   ja: "「%{name}\\」に展開"
+menu.extract_each:
+  en: Extract each to its own folder
+  zh-TW: 分別解壓縮到各自的資料夾
+  zh-CN: 分别解压到各自的文件夹
+  de: Jeweils in eigenen Ordner extrahieren
+  es: Extraer cada uno en su carpeta
+  pt-BR: Extrair cada um em sua pasta
+  ja: それぞれのフォルダーに展開
 menu.extract_here:
   en: Extract here
   zh-TW: 解壓縮到此處
@@ -5996,14 +6004,6 @@ error.path:
   es: "%{path}: %{error}"
   pt-BR: "%{path}: %{error}"
   ja: "%{path}: %{error}"
-extract.busy:
-  en: An extraction is already running
-  zh-TW: 已有解壓縮正在進行
-  zh-CN: 已有解压任务正在进行
-  de: Es läuft bereits eine Extraktion
-  es: Ya hay una extracción en curso
-  pt-BR: Já há uma extração em andamento
-  ja: 展開が既に実行中です
 extract.failed:
   en: "Couldn't extract %{name}: %{error}"
   zh-TW: "無法解壓縮 %{name}：%{error}"
@@ -10227,6 +10227,14 @@ access.terminal:
   pt-BR: "A"
   ja: "L"
 access.extract_to:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "E"
+  pt-BR: "T"
+  ja: "A"
+access.extract_each:
   en: "A"
   zh-TW: "A"
   zh-CN: "A"

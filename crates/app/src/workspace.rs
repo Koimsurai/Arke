@@ -406,6 +406,9 @@ pub(crate) struct Workspace {
     net_dialog: Option<NetDialogSlot>,
     /// An archive's password, asked when extracting it (#346).
     archive_password: Option<ArchivePasswordSlot>,
+    /// Further archives asking for their password while that dialog is open (several extracted
+    /// at once, #407): asked one after another.
+    archive_password_waiting: Vec<(Entity<Explorer>, crate::archive_password::PasswordAsk)>,
     /// Saved workspaces panel.
     workspaces: Option<(Entity<saved::WorkspacesPanel>, Subscription)>,
     /// The saved workspace this window was opened from or saved as last (#269).
@@ -525,6 +528,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let (view, ask) = (view.clone(), ask.clone());
+        if self.archive_password.is_some() {
+            self.archive_password_waiting.push((view, ask));
+            return;
+        }
         let name = ask.archive.file_name().map_or_else(
             || ask.archive.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -559,6 +566,10 @@ impl Workspace {
             slot.view.update(cx, |v, cx| {
                 v.extract_archive(slot.archive, slot.here, Some(password), cx);
             });
+        }
+        if !self.archive_password_waiting.is_empty() {
+            let (view, ask) = self.archive_password_waiting.remove(0);
+            self.ask_password(&view, &ask, window, cx);
         }
         cx.notify();
     }
@@ -843,6 +854,7 @@ impl Workspace {
             closing_palette: None,
             net_dialog: None,
             archive_password: None,
+            archive_password_waiting: Vec::new(),
             workspaces: None,
             saved_shown: None,
             _saved_workspaces: saved_workspaces,

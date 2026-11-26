@@ -62,7 +62,7 @@ fn start_compress(view: &Entity<Explorer>, cx: &mut VisualTestContext, names: &[
 /// [`start_compress`], then waits until the job is over.
 fn compress(view: &Entity<Explorer>, cx: &mut VisualTestContext, names: &[&str]) {
     start_compress(view, cx, names);
-    wait_until(cx, view, "compressed", |v| v.extract_job.is_none());
+    wait_until(cx, view, "compressed", |v| v.extract_jobs.is_empty());
 }
 
 /// The archive shows up in the folder listing.
@@ -192,7 +192,7 @@ fn another_folder_is_left_alone(cx: &mut TestAppContext) {
     start_compress(&view, cx, &["a.txt", "b.txt"]);
     view.update(cx, |v, cx| v.navigate(other.clone(), NavKind::New, cx));
     wait_until(cx, &view, "other folder", loaded(&other_str));
-    wait_until(cx, &view, "compressed", |v| v.extract_job.is_none());
+    wait_until(cx, &view, "compressed", |v| v.extract_jobs.is_empty());
     assert!(dir.join("Report.zip").is_file());
     // The archive lands in the folder left behind; this view isn't showing it.
     fs.add_file(&dir, "Report.zip", 100);

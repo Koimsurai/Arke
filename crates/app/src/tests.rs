@@ -37,6 +37,8 @@ mod click_parity;
 mod column_view;
 #[path = "tests_compress.rs"]
 mod compress;
+#[path = "tests_extract_queue.rs"]
+mod extract_queue;
 #[path = "tests_favorites.rs"]
 mod favorites;
 #[path = "tests_folder_views.rs"]
@@ -5757,7 +5759,7 @@ fn extract_zip_from_context_menu(cx: &mut TestAppContext) {
     right_click(&view, cx, Some(0));
     run_command(&view, cx, MenuCommand::ExtractToFolder);
     wait_until(cx, &view, "extract done", |v| {
-        v.extract_job.is_none() && v.selection.contains("album")
+        v.extract_jobs.is_empty() && v.selection.contains("album")
     });
     // A clean extraction says nothing; it is in the operation center.
     assert_eq!(view.update(cx, |v, _| v.notice.clone()), None);
@@ -5785,7 +5787,7 @@ fn extract_zip_from_context_menu(cx: &mut TestAppContext) {
     right_click(&view, cx, Some(0));
     run_command(&view, cx, MenuCommand::ExtractHere);
     wait_until(cx, &view, "extract here", |v| {
-        v.extract_job.is_none()
+        v.extract_jobs.is_empty()
             && v.notice
                 .as_deref()
                 .is_some_and(|n| n.contains(skipped.as_str()))

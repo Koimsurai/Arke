@@ -337,7 +337,11 @@ pub(crate) enum AppEvent {
     OpenFolder(PathBuf),
     /// Go to the item's folder and select it ("Open file location" on a shortcut).
     RevealPath(PathBuf),
-    ExtractProgress(arke_core::archive::ExtractProgress),
+    /// Progress of the extraction or compression with this progress center id.
+    ExtractProgress {
+        job: u64,
+        progress: arke_core::archive::ExtractProgress,
+    },
     /// One subfolder's size finished (None if unreadable).
     FolderSize {
         dir: PathBuf,
@@ -345,14 +349,18 @@ pub(crate) enum AppEvent {
         bytes: Option<u64>,
     },
     CompressDone {
+        job: u64,
         result: Result<arke_core::archive::CompressSummary, arke_core::archive::ArchiveError>,
         name: String,
         dest: PathBuf,
     },
     ExtractDone {
+        job: u64,
         result: Result<arke_core::archive::ExtractSummary, arke_core::archive::ArchiveError>,
         folder: Option<String>,
     },
+    /// The queued extraction or compression with this id was cancelled before it started.
+    ArchiveJobDropped(u64),
     Preview {
         generation: u64,
         data: preview::PreviewData,
@@ -900,7 +908,11 @@ pub(crate) struct Explorer {
     pub(crate) early_menu: Option<menu::EarlyMenu>,
     /// A dismissed context menu fading out (drawn inert, see `motion::Leaving`).
     pub(crate) closing_menu: Option<crate::motion::Leaving<menu::ContextMenu>>,
-    pub(crate) extract_job: Option<menu::ExtractJob>,
+    /// This tab's extractions and compressions, in line (#407): the first runs, the others wait
+    /// for it.
+    pub(crate) extract_jobs: Vec<menu::ExtractJob>,
+    /// This tab's place in the archive queue (`op_queue::enter_archive`), unique in the process.
+    pub(crate) archive_line: u64,
     /// After creating a folder, start renaming it once it shows up in the list (`true`: whole name
     /// selected, see [`ops::NewItem::File`]).
     rename_when_appears: Option<(Arc<str>, bool)>,
@@ -1262,7 +1274,8 @@ impl Explorer {
             context_menu: None,
             early_menu: None,
             closing_menu: None,
-            extract_job: None,
+            extract_jobs: Vec::new(),
+            archive_line: menu::next_archive_line(),
             rename_when_appears: None,
             rename_after_compress: None,
             pending_create: None,
@@ -2071,16 +2084,28 @@ impl Explorer {
                 self.error = Some(msg);
                 cx.notify();
             }
-            AppEvent::ExtractProgress(p) => self.handle_extract_progress(p, cx),
+            AppEvent::ExtractProgress { job, progress } => {
+                self.handle_extract_progress(job, progress, cx);
+            }
             AppEvent::FolderSize { dir, name, bytes } => {
                 self.handle_folder_size(&dir, name, bytes, cx);
             }
-            AppEvent::CompressDone { result, name, dest } => {
-                self.handle_compress_done(result, name, dest, cx);
+            AppEvent::CompressDone {
+                job,
+                result,
+                name,
+                dest,
+            } => {
+                self.handle_compress_done(job, result, name, dest, cx);
             }
-            AppEvent::ExtractDone { result, folder } => {
-                self.handle_extract_done(result, folder, cx);
+            AppEvent::ExtractDone {
+                job,
+                result,
+                folder,
+            } => {
+                self.handle_extract_done(job, result, folder, cx);
             }
+            AppEvent::ArchiveJobDropped(job) => self.handle_archive_job_dropped(job, cx),
             AppEvent::Preview { generation, data } => self.handle_preview(generation, data, cx),
             AppEvent::PanePdfPage(page) => self.handle_pane_pdf_page(page, cx),
             AppEvent::PreviewCreated {

@@ -53,7 +53,7 @@ fn wait_dialog(
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         cx.run_until_parked();
-        let idle = view.update(cx, |v, _| v.extract_job.is_none());
+        let idle = view.update(cx, |v, _| v.extract_jobs.is_empty());
         if idle && dialog(ws, cx).is_some() == open {
             return;
         }
@@ -109,7 +109,7 @@ fn a_protected_zip_asks_for_its_password(cx: &mut TestAppContext) {
     // The right one extracts into the folder, selected, as one job in the operation center.
     enter(&ws, cx, "secret");
     wait_until(cx, &view, "extracted", |v| {
-        v.extract_job.is_none() && v.selection.contains("secret")
+        v.extract_jobs.is_empty() && v.selection.contains("secret")
     });
     assert!(dialog(&ws, cx).is_none());
     let text = std::fs::read_to_string(sandbox.join("secret").join("a.txt")).unwrap();
@@ -174,7 +174,7 @@ fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
     right_click(&view, cx, Some(0));
     run_command(&view, cx, MenuCommand::ExtractToFolder);
     wait_until(cx, &view, "failed", |v| {
-        v.extract_job.is_none() && v.error.is_some()
+        v.extract_jobs.is_empty() && v.error.is_some()
     });
     assert_eq!(
         view.update(cx, |v, _| v.error_action.clone()),

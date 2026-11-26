@@ -905,6 +905,9 @@ impl Shell for RemoteShell {
     fn decode_ansi(&self, bytes: &[u8]) -> String {
         self.inner.decode_ansi(bytes)
     }
+    fn solid_state(&self, path: &Path) -> bool {
+        remote(path).is_none() && self.inner.solid_state(path)
+    }
     fn net_probe(&self) -> Option<Arc<dyn arke_core::net::NetProbe>> {
         self.inner.net_probe()
     }

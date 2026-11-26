@@ -349,6 +349,7 @@ fn a_pinned_submenu_filled_on_opening_fills_once(cx: &mut TestAppContext) {
     *shell.lazy_submenus.lock() = vec![(
         "Give access to".into(),
         vec![ShellMenuEntry::Item {
+            access: None,
             id: 30,
             verb: None,
             label: "Remove access".into(),

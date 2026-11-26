@@ -20,6 +20,7 @@ fn seven_zip() -> MenuHandler {
 fn shell_with_extensions() -> Arc<FakeShell> {
     let shell = Arc::new(FakeShell::default());
     let item = |id, label: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: None,
         label: label.into(),
@@ -227,6 +228,7 @@ const TERMINAL: &str = "{9F156763-7844-4DC4-B2B1-901F640F5155}";
 fn shell_with_commands() -> Arc<FakeShell> {
     let shell = shell_with_extensions();
     let item = |id, label: &str, verb: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: Some(verb.into()),
         label: label.into(),
@@ -375,6 +377,7 @@ fn a_command_in_a_packaged_submenu_shows_on_its_own(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let shell = shell_with_extensions();
     let item = |id, label: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: None,
         label: label.into(),
@@ -384,6 +387,7 @@ fn a_command_in_a_packaged_submenu_shows_on_its_own(cx: &mut TestAppContext) {
         icon: None,
     };
     let nana_menu = || ShellMenuEntry::Submenu {
+        access: None,
         label: "NanaZip".into(),
         enabled: true,
         icon: None,
@@ -583,6 +587,7 @@ fn a_command_in_a_cascading_menu_shows_on_its_own(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let shell = shell_with_extensions();
     let item = |id, label: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: Some("01_one".into()),
         label: label.into(),
@@ -592,6 +597,7 @@ fn a_command_in_a_cascading_menu_shows_on_its_own(cx: &mut TestAppContext) {
         icon: None,
     };
     let tools = |child| ShellMenuEntry::Submenu {
+        access: None,
         label: "Tools".into(),
         enabled: true,
         icon: None,
@@ -754,6 +760,7 @@ fn send_to_comes_from_the_hosts_own_list(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let shell = shell_with_extensions();
     let item = |id, label: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: None,
         label: label.into(),
@@ -768,6 +775,7 @@ fn send_to_comes_from_the_hosts_own_list(cx: &mut TestAppContext) {
     shell.extensions.lock().push((
         MenuHandler::send_to(),
         vec![ShellMenuEntry::Submenu {
+            access: None,
             label: "Send to".into(),
             enabled: true,
             icon: None,
@@ -937,6 +945,7 @@ fn a_submenu_left_filling_is_filled_right_after(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     let item = |id, label: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: None,
         label: label.into(),
@@ -1008,6 +1017,7 @@ fn a_command_windows_names_keeps_its_row(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
     let item = |id, label: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: Some("runas".into()),
         label: label.into(),
@@ -1115,6 +1125,7 @@ fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
     fs.insert_dir(r"C:\p", vec![file("a.exe", 1)]);
     let shell = Arc::new(FakeShell::default());
     let item = |id, label: &str, verb: &str| ShellMenuEntry::Item {
+        access: None,
         id,
         verb: Some(verb.into()),
         label: label.into(),

@@ -1223,6 +1223,7 @@ mod tests {
         let menu = ShellMenu {
             session: 3,
             entries: vec![ShellMenuEntry::Item {
+                access: None,
                 id: 9,
                 verb: Some("copy".into()),
                 label: "Compress".into(),

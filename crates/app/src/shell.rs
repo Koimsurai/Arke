@@ -359,6 +359,9 @@ pub(crate) enum ShellMenuEntry {
         #[serde(default)]
         verb: Option<String>,
         label: String,
+        /// Its access key (`&O` in Windows' text), kept apart from `label`.
+        #[serde(default)]
+        access: Option<crate::win_menu::Access>,
         enabled: bool,
         checked: bool,
         /// Default command (Windows draws it bold).
@@ -368,6 +371,8 @@ pub(crate) enum ShellMenuEntry {
     },
     Submenu {
         label: String,
+        #[serde(default)]
+        access: Option<crate::win_menu::Access>,
         enabled: bool,
         #[serde(with = "icon_wire")]
         icon: Option<arke_core::thumbs::Thumbnail>,

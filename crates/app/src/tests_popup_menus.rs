@@ -673,3 +673,45 @@ fn the_path_bar_lists_the_drives_before_the_first_segment(cx: &mut TestAppContex
         "Home opens"
     );
 }
+
+/// Whether the menu's access keys are underlined, and how many submenus are open.
+fn cues_and_depth(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Option<(bool, usize)> {
+    view.update(cx, |v, _| {
+        v.context_menu
+            .as_ref()
+            .map(|m| (m.cues_shown_for_test(), m.depth()))
+    })
+}
+
+/// A menu opened with the mouse has no underlines until a key is pressed in it. A letter nothing
+/// has does nothing else; the letter of a submenu opens it (#422).
+#[gpui::test]
+fn a_menu_opened_with_the_mouse_shows_its_access_keys_once_a_key_is_pressed(
+    cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    open_menu_at(&view, cx, point(px(300.), px(200.)));
+    assert_eq!(cues_and_depth(&view, cx), Some((false, 0)));
+    cx.simulate_keystrokes("z");
+    assert_eq!(cues_and_depth(&view, cx), Some((true, 0)));
+    // "New" is the one with W.
+    cx.simulate_keystrokes("w");
+    assert_eq!(cues_and_depth(&view, cx), Some((true, 1)));
+}
+
+/// A menu opened from the keyboard (Shift+F10) has them from the start.
+#[gpui::test]
+fn a_menu_opened_from_the_keyboard_shows_its_access_keys(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.open_context_menu_by_keyboard_for_test(window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(cues_and_depth(&view, cx), Some((true, 0)));
+}

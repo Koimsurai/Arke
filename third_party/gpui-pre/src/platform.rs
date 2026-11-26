@@ -1580,6 +1580,13 @@ pub trait PlatformTextSystem: Send + Sync {
     fn glyph_dilation_for_color(&self, _color: Hsla) -> u8 {
         0
     }
+    /// Sets the locale (a BCP 47 name such as `zh-TW`) text is laid out in, which picks
+    /// locale-specific glyphs and the fonts characters missing from a font fall back to. `None`
+    /// restores the platform's default. Returns whether it changed. Platforms that don't support
+    /// it keep their default and return `false`.
+    fn set_locale(&self, _locale: Option<&str>) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 #[expect(missing_docs)]

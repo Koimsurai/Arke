@@ -1014,7 +1014,7 @@ pub(crate) struct Explorer {
     cols: Option<layout::Columns>,
     /// Sideways scroll the header was drawn at in this render (`None`: no header), to redraw it
     /// if the list clamps its own.
-    header_x: std::cell::Cell<Option<Pixels>>,
+    header_x: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
     /// Height the side preview's frame got at the last layout (less than asked for in a short
     /// window), so a PDF's pages fit what is shown.
     pane_frame_h: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
@@ -1333,7 +1333,7 @@ impl Explorer {
             pane_width: crate::theme::scaled_px(1000.),
             fit: layout::Fit::default(),
             cols: None,
-            header_x: std::cell::Cell::new(None),
+            header_x: std::rc::Rc::default(),
             pane_frame_h: std::rc::Rc::default(),
             pane_split: std::rc::Rc::default(),
             pane_info_scroll: Default::default(),

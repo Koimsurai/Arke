@@ -16,6 +16,7 @@
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use arke_core::{Entry, Gen, SearchColumn};
@@ -154,13 +155,6 @@ impl Explorer {
         handle.0.borrow().base_handle.clone()
     }
 
-    /// The header's sideways scroll at this render and the list it follows, so painting can tell
-    /// when the list clamped its scroll (the pane grew, a column narrowed) and draw once more to
-    /// line the header up again. `None` while no header is drawn.
-    pub(super) fn header_follow(&self) -> Option<(Pixels, gpui::ScrollHandle)> {
-        self.header_x.get().map(|x| (x, self.header_list()))
-    }
-
     // ───────────────────────── Header ─────────────────────────
 
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -172,27 +166,13 @@ impl Explorer {
                 let _ = this.update(cx, Self::save_column_widths);
             });
         }
-        // Clamped to the range the list will have this frame (this frame's row and pane widths,
-        // not the last layout's) and written back, so the list reads the very same offset and the
-        // header never differs from the rows, after a wheel overshoot or when the columns fit
-        // again.
-        let handle = self.header_list();
-        let room = self.pane_width - layout::list_chrome();
-        let max = self.cols.map_or(px(0.), |c| (c.row - room).max(px(0.)));
-        let at = handle.offset();
-        let scroll_x = at.x.clamp(-max, px(0.));
-        if scroll_x != at.x {
-            handle.set_offset(gpui::point(scroll_x, at.y));
-        }
-        self.header_x.set(Some(scroll_x));
-        // The columns, laid out like the rows below (same padding and gaps) and moved with the
-        // list when it scrolls sideways. What's right of them is blank, like the list.
+        // The columns, laid out like the rows below (same padding and gaps). What's right of them
+        // is blank, like the list.
         let row = div()
             .flex()
             .flex_none()
             .h_full()
             .items_center()
-            .ml(scroll_x)
             .pl(layout::row_pad_l())
             .pr(layout::row_pad_r())
             .gap(layout::col_gap());
@@ -257,7 +237,12 @@ impl Explorer {
             .border_color(theme::line())
             .text_size(theme::fs_12())
             .text_color(theme::text_muted())
-            .child(row)
+            // Moved with the list when it scrolls sideways (see `SideScroll`).
+            .child(SideScroll {
+                child: row.into_any_element(),
+                handle: self.header_list(),
+                seen: Rc::clone(&self.header_x),
+            })
             // Right-click anywhere on the header, the blank part too: which columns to show.
             .when(!self.search_mode, |d| {
                 d.on_mouse_down(
@@ -922,4 +907,75 @@ pub(crate) fn with_link_badge(visual: AnyElement, icon: Pixels) -> AnyElement {
                 .child(layer(Icon::LinkBadgeArrow, theme::signal())),
         )
         .into_any_element()
+}
+
+/// The header's columns, moved sideways by the list's own scroll offset. The offset is read while
+/// prepainting, and the header comes after the list in the tree (the pane lays them out in
+/// reverse), so the list has already clamped it this frame: header and rows can never differ,
+/// whatever the wheel overshot or however the columns and the pane just changed.
+struct SideScroll {
+    child: AnyElement,
+    handle: gpui::ScrollHandle,
+    /// Receives the offset the header was drawn at (tests read it).
+    seen: Rc<std::cell::Cell<Option<Pixels>>>,
+}
+
+impl IntoElement for SideScroll {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl gpui::Element for SideScroll {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        let x = self.handle.offset().x.min(px(0.));
+        self.seen.set(Some(x));
+        window.with_element_offset(gpui::point(x, px(0.)), |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        (): &mut (),
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.paint(window, cx);
+    }
 }

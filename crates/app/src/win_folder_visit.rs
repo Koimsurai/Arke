@@ -20,9 +20,9 @@
 //! - the view as the window's `Document`, giving itself for `SID_SFolderView`: that is how
 //!   `SHOpenFolderAndSelectItems` reaches a window it found in the list to select items, and it
 //!   fails instead of opening File Explorer when the document is missing;
-//! - `DWebBrowserEvents` and `DWebBrowserEvents2` connection points: every listener is told the
-//!   navigation completed (`NavigateComplete`, `NavigateComplete2`, `DownloadComplete`,
-//!   `DocumentComplete`) as soon as it subscribes, once.
+//! - `DWebBrowserEvents` and `DWebBrowserEvents2` connection points: every listener is told of
+//!   the navigation as soon as it subscribes, once, with File Explorer's whole sequence
+//!   ([`tell_navigation`]).
 //!
 //! One registration per pane, the way each File Explorer tab has its own registration under the
 //! window's one `HWND`. It lasts exactly as long as the pane shows that folder: the pane going
@@ -43,7 +43,9 @@
 //!   items: they are selected in the pane, as they would be in File Explorer.
 //!
 //! When a visit ends, one log line sums up what it saw ([`Journal`]): the shell notifications by
-//! kind, the listeners' calls by method, the hints and how many relists they made.
+//! kind, the listeners' calls by method (every method of every object handed out), the events
+//! fired at them, the hints and how many relists they made, and when the visit registered and
+//! first heard from a listener.
 //!
 //! Nothing is downloaded: the folder is only named, never opened or read.
 
@@ -56,6 +58,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 use windows::Win32::Foundation::{
@@ -78,8 +81,8 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Variant::{
-    InitVariantFromBuffer, VARENUM, VARIANT, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_VARIANT,
-    VariantClear,
+    InitVariantFromBuffer, VARENUM, VARIANT, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_I4,
+    VT_VARIANT, VariantClear,
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
@@ -100,7 +103,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostThreadMessageW, RegisterClassW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
     WM_QUIT, WNDCLASSW,
 };
-use windows::core::{BSTR, GUID, IUnknown, Interface, PCWSTR, PWSTR, Ref, implement};
+use windows::core::{BSTR, GUID, HRESULT, IUnknown, Interface, PCWSTR, PWSTR, Ref, implement};
 
 use crate::shell::FolderVisit;
 use crate::win_openinfolder::Pidl;
@@ -282,16 +285,37 @@ impl Relist {
 }
 
 /// What a visit saw, for one compact log block when it ends: shell notifications by kind (count
-/// and the first one's paths), listener calls by method, hints and relists.
+/// and the first one's paths), listener calls by method, the interfaces and services asked of
+/// the window's objects (answered or refused), hints and relists.
 #[derive(Debug, Default)]
 struct Journal {
     notifications: Vec<(&'static str, u32, String)>,
-    calls: Vec<(&'static str, u32)>,
+    calls: Vec<(String, u32)>,
     hints: Vec<(Trigger, u32)>,
     relists: u32,
+    /// Events fired at listeners: the DISPID, whether the call succeeded.
+    fired: Vec<(i32, bool, u32)>,
+    /// When the visit started, for [`Self::mark`].
+    started: Option<Instant>,
+    /// The first time each step happened, after `started`.
+    marks: Vec<(&'static str, Duration)>,
 }
 
 impl Journal {
+    /// The visit starts now.
+    fn start(&mut self) {
+        self.started = Some(Instant::now());
+    }
+
+    /// `step` happened now: kept the first time only (`registered`, `first listener`, ...).
+    fn mark(&mut self, step: &'static str) {
+        if let Some(started) = self.started
+            && !self.marks.iter().any(|(s, _)| *s == step)
+        {
+            self.marks.push((step, started.elapsed()));
+        }
+    }
+
     /// Whether no notification of `kind` was noted yet (its paths are worth reading).
     fn first_of(&self, kind: &str) -> bool {
         !self.notifications.iter().any(|(k, ..)| *k == kind)
@@ -305,11 +329,19 @@ impl Journal {
         }
     }
 
-    fn note_call(&mut self, method: &'static str) {
-        if let Some(entry) = self.calls.iter_mut().find(|(m, _)| *m == method) {
+    fn note_call(&mut self, method: &str) {
+        if let Some(entry) = self.calls.iter_mut().find(|(m, _)| m == method) {
             entry.1 += 1;
         } else {
-            self.calls.push((method, 1));
+            self.calls.push((method.to_owned(), 1));
+        }
+    }
+
+    fn note_fired(&mut self, id: i32, ok: bool) {
+        if let Some(entry) = self.fired.iter_mut().find(|f| f.0 == id && f.1 == ok) {
+            entry.2 += 1;
+        } else {
+            self.fired.push((id, ok, 1));
         }
     }
 
@@ -349,6 +381,15 @@ impl Journal {
             let _ = write!(out, "{sep}{trigger:?} x{count}");
         }
         let _ = write!(out, " -> relists {}", self.relists);
+        for (i, (id, ok, count)) in self.fired.iter().enumerate() {
+            let sep = if i == 0 { "; fired:" } else { "," };
+            let answer = if *ok { "ok" } else { "failed" };
+            let _ = write!(out, "{sep} {id} {answer} x{count}");
+        }
+        for (i, (step, at)) in self.marks.iter().enumerate() {
+            let sep = if i == 0 { "; timing: " } else { ", " };
+            let _ = write!(out, "{sep}{step} +{} ms", at.as_millis());
+        }
         out
     }
 }
@@ -565,9 +606,12 @@ impl State {
         }
     }
 
-    /// A listener called `method`, for the log.
-    fn note_call(&self, method: &'static str) {
-        self.journal.borrow_mut().note_call(method);
+    /// A listener called `method`, for the log. Skipped if the journal is busy (a call coming in
+    /// while it is being written to cannot be, but the log must never panic).
+    fn note_call(&self, method: &str) {
+        if let Ok(mut journal) = self.journal.try_borrow_mut() {
+            journal.note_call(method);
+        }
     }
 
     /// A shell notification for the folder or an item in it: `event` about `first` (and `second`,
@@ -580,6 +624,7 @@ impl State {
     ) -> bool {
         let target = (event & SHCNE_UPDATEITEM.0 != 0).then(|| self.target(first));
         let kind = event_name(event, target);
+        self.journal.borrow_mut().mark("first notification");
         // The paths are read outside the borrow, and only for the first of each kind.
         let first_of_kind = self.journal.borrow().first_of(kind);
         let paths = if first_of_kind {
@@ -683,7 +728,6 @@ fn pidl_path(pidl: *const ITEMIDLIST) -> Option<PathBuf> {
 )]
 mod com {
     use super::*;
-    use windows::core::HRESULT;
     use windows::core::IUnknownImpl as _;
 
     type Res<T> = windows::core::Result<T>;
@@ -724,9 +768,11 @@ mod com {
 
     impl IDispatch_Impl for Browser_Impl {
         fn GetTypeInfoCount(&self) -> Res<u32> {
+            self.state.note_call("Browser.GetTypeInfoCount");
             Ok(u32::from(self.state.type_info.is_some()))
         }
         fn GetTypeInfo(&self, index: u32, _: u32) -> Res<ITypeInfo> {
+            self.state.note_call("Browser.GetTypeInfo");
             match (&self.state.type_info, index) {
                 (Some(info), 0) => Ok(info.clone()),
                 _ => Err(DISP_E_BADINDEX.into()),
@@ -740,6 +786,7 @@ mod com {
             _: u32,
             ids: *mut i32,
         ) -> Res<()> {
+            self.state.note_call("Browser.GetIDsOfNames");
             let Some(info) = &self.state.type_info else {
                 return Err(DISP_E_UNKNOWNNAME.into());
             };
@@ -757,6 +804,7 @@ mod com {
             exception: *mut EXCEPINFO,
             arg_error: *mut u32,
         ) -> Res<()> {
+            self.state.note_call("Browser.Invoke");
             let Some(info) = &self.state.type_info else {
                 return Err(DISP_E_MEMBERNOTFOUND.into());
             };
@@ -780,15 +828,19 @@ mod com {
 
     impl IWebBrowser_Impl for Browser_Impl {
         fn GoBack(&self) -> Res<()> {
+            self.state.note_call("Browser.GoBack");
             Err(E_NOTIMPL.into())
         }
         fn GoForward(&self) -> Res<()> {
+            self.state.note_call("Browser.GoForward");
             Err(E_NOTIMPL.into())
         }
         fn GoHome(&self) -> Res<()> {
+            self.state.note_call("Browser.GoHome");
             Err(E_NOTIMPL.into())
         }
         fn GoSearch(&self) -> Res<()> {
+            self.state.note_call("Browser.GoSearch");
             Err(E_NOTIMPL.into())
         }
         fn Navigate(
@@ -799,143 +851,178 @@ mod com {
             _: *const VARIANT,
             _: *const VARIANT,
         ) -> Res<()> {
+            self.state.note_call("Browser.Navigate");
             Err(E_NOTIMPL.into())
         }
         fn Refresh(&self) -> Res<()> {
-            self.state.note_call("Refresh");
+            self.state.note_call("Browser.Refresh");
             self.state.hint(Trigger::ListenerRefresh);
             Ok(())
         }
         fn Refresh2(&self, _: *const VARIANT) -> Res<()> {
-            self.state.note_call("Refresh2");
+            self.state.note_call("Browser.Refresh2");
             self.state.hint(Trigger::ListenerRefresh);
             Ok(())
         }
         fn Stop(&self) -> Res<()> {
+            self.state.note_call("Browser.Stop");
             Ok(())
         }
         fn Application(&self) -> Res<IDispatch> {
+            self.state.note_call("Browser.Application");
             self.to_interface::<IWebBrowser2>().cast()
         }
         fn Parent(&self) -> Res<IDispatch> {
+            self.state.note_call("Browser.Parent");
             self.Application()
         }
         fn Container(&self) -> Res<IDispatch> {
+            self.state.note_call("Browser.Container");
             self.Application()
         }
         fn Document(&self) -> Res<IDispatch> {
-            self.state.note_call("Document");
+            self.state.note_call("Browser.Document");
             self.view.cast()
         }
         fn TopLevelContainer(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.TopLevelContainer");
             Ok(VARIANT_TRUE)
         }
         fn Type(&self) -> Res<BSTR> {
+            self.state.note_call("Browser.Type");
             Ok(BSTR::from("Arke"))
         }
         fn Left(&self) -> Res<i32> {
+            self.state.note_call("Browser.Left");
             Ok(0)
         }
         fn SetLeft(&self, _: i32) -> Res<()> {
+            self.state.note_call("Browser.SetLeft");
             Err(E_NOTIMPL.into())
         }
         fn Top(&self) -> Res<i32> {
+            self.state.note_call("Browser.Top");
             Ok(0)
         }
         fn SetTop(&self, _: i32) -> Res<()> {
+            self.state.note_call("Browser.SetTop");
             Err(E_NOTIMPL.into())
         }
         fn Width(&self) -> Res<i32> {
+            self.state.note_call("Browser.Width");
             Ok(0)
         }
         fn SetWidth(&self, _: i32) -> Res<()> {
+            self.state.note_call("Browser.SetWidth");
             Err(E_NOTIMPL.into())
         }
         fn Height(&self) -> Res<i32> {
+            self.state.note_call("Browser.Height");
             Ok(0)
         }
         fn SetHeight(&self, _: i32) -> Res<()> {
+            self.state.note_call("Browser.SetHeight");
             Err(E_NOTIMPL.into())
         }
         fn LocationName(&self) -> Res<BSTR> {
-            self.state.note_call("LocationName");
+            self.state.note_call("Browser.LocationName");
             Ok(BSTR::from(self.state.name.as_str()))
         }
         fn LocationURL(&self) -> Res<BSTR> {
-            self.state.note_call("LocationURL");
+            self.state.note_call("Browser.LocationURL");
             Ok(BSTR::from(self.state.url.as_str()))
         }
         fn Busy(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.Busy");
             Ok(VARIANT_FALSE)
         }
     }
 
     impl IWebBrowserApp_Impl for Browser_Impl {
         fn Quit(&self) -> Res<()> {
+            self.state.note_call("Browser.Quit");
             // Never closes Arke's window.
             Ok(())
         }
         fn ClientToWindow(&self, _: *mut i32, _: *mut i32) -> Res<()> {
+            self.state.note_call("Browser.ClientToWindow");
             Ok(())
         }
         fn PutProperty(&self, _: &BSTR, _: &VARIANT) -> Res<()> {
+            self.state.note_call("Browser.PutProperty");
             Err(E_NOTIMPL.into())
         }
         fn GetProperty(&self, _: &BSTR) -> Res<VARIANT> {
+            self.state.note_call("Browser.GetProperty");
             Err(E_NOTIMPL.into())
         }
         fn Name(&self) -> Res<BSTR> {
+            self.state.note_call("Browser.Name");
             Ok(BSTR::from("Arke"))
         }
         fn HWND(&self) -> Res<SHANDLE_PTR> {
-            self.state.note_call("HWND");
+            self.state.note_call("Browser.HWND");
             Ok(SHANDLE_PTR(self.state.hwnd.0 as isize))
         }
         fn FullName(&self) -> Res<BSTR> {
+            self.state.note_call("Browser.FullName");
             let exe = std::env::current_exe().unwrap_or_default();
             Ok(BSTR::from(exe.to_string_lossy().as_ref()))
         }
         fn Path(&self) -> Res<BSTR> {
+            self.state.note_call("Browser.Path");
             let exe = std::env::current_exe().unwrap_or_default();
             let dir = exe.parent().unwrap_or(&exe);
             Ok(BSTR::from(dir.to_string_lossy().as_ref()))
         }
         fn Visible(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.Visible");
             // SAFETY: reads a window's style; a closed window reads as invisible.
             let visible = unsafe { IsWindowVisible(self.state.hwnd) }.as_bool();
             Ok(if visible { VARIANT_TRUE } else { VARIANT_FALSE })
         }
         fn SetVisible(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetVisible");
             Err(E_NOTIMPL.into())
         }
         fn StatusBar(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.StatusBar");
             Ok(VARIANT_FALSE)
         }
         fn SetStatusBar(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetStatusBar");
             Err(E_NOTIMPL.into())
         }
         fn StatusText(&self) -> Res<BSTR> {
+            self.state.note_call("Browser.StatusText");
             Ok(BSTR::new())
         }
         fn SetStatusText(&self, _: &BSTR) -> Res<()> {
+            self.state.note_call("Browser.SetStatusText");
             Err(E_NOTIMPL.into())
         }
         fn ToolBar(&self) -> Res<i32> {
+            self.state.note_call("Browser.ToolBar");
             Ok(0)
         }
         fn SetToolBar(&self, _: i32) -> Res<()> {
+            self.state.note_call("Browser.SetToolBar");
             Err(E_NOTIMPL.into())
         }
         fn MenuBar(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.MenuBar");
             Ok(VARIANT_FALSE)
         }
         fn SetMenuBar(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetMenuBar");
             Err(E_NOTIMPL.into())
         }
         fn FullScreen(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.FullScreen");
             Ok(VARIANT_FALSE)
         }
         fn SetFullScreen(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetFullScreen");
             Err(E_NOTIMPL.into())
         }
     }
@@ -949,9 +1036,11 @@ mod com {
             _: *const VARIANT,
             _: *const VARIANT,
         ) -> Res<()> {
+            self.state.note_call("Browser.Navigate2");
             Err(E_NOTIMPL.into())
         }
         fn QueryStatusWB(&self, _: OLECMDID) -> Res<OLECMDF> {
+            self.state.note_call("Browser.QueryStatusWB");
             Err(E_NOTIMPL.into())
         }
         fn ExecWB(
@@ -961,6 +1050,7 @@ mod com {
             _: *const VARIANT,
             _: *mut VARIANT,
         ) -> Res<()> {
+            self.state.note_call("Browser.ExecWB");
             Err(E_NOTIMPL.into())
         }
         fn ShowBrowserBar(
@@ -969,51 +1059,67 @@ mod com {
             _: *const VARIANT,
             _: *const VARIANT,
         ) -> Res<()> {
+            self.state.note_call("Browser.ShowBrowserBar");
             Err(E_NOTIMPL.into())
         }
         fn ReadyState(&self) -> Res<READYSTATE> {
+            self.state.note_call("Browser.ReadyState");
             Ok(READYSTATE_COMPLETE)
         }
         fn Offline(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.Offline");
             Ok(VARIANT_FALSE)
         }
         fn SetOffline(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetOffline");
             Err(E_NOTIMPL.into())
         }
         fn Silent(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.Silent");
             Ok(VARIANT_TRUE)
         }
         fn SetSilent(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetSilent");
             Err(E_NOTIMPL.into())
         }
         fn RegisterAsBrowser(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.RegisterAsBrowser");
             Ok(VARIANT_TRUE)
         }
         fn SetRegisterAsBrowser(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetRegisterAsBrowser");
             Err(E_NOTIMPL.into())
         }
         fn RegisterAsDropTarget(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.RegisterAsDropTarget");
             Ok(VARIANT_FALSE)
         }
         fn SetRegisterAsDropTarget(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetRegisterAsDropTarget");
             Err(E_NOTIMPL.into())
         }
         fn TheaterMode(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.TheaterMode");
             Ok(VARIANT_FALSE)
         }
         fn SetTheaterMode(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetTheaterMode");
             Err(E_NOTIMPL.into())
         }
         fn AddressBar(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.AddressBar");
             Ok(VARIANT_TRUE)
         }
         fn SetAddressBar(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetAddressBar");
             Err(E_NOTIMPL.into())
         }
         fn Resizable(&self) -> Res<VARIANT_BOOL> {
+            self.state.note_call("Browser.Resizable");
             Ok(VARIANT_TRUE)
         }
         fn SetResizable(&self, _: VARIANT_BOOL) -> Res<()> {
+            self.state.note_call("Browser.SetResizable");
             Err(E_NOTIMPL.into())
         }
     }
@@ -1030,9 +1136,9 @@ mod com {
             }
             // SAFETY: ppv is a valid out pointer supplied by the caller.
             unsafe { *ppv = std::ptr::null_mut() };
-            self.state.note_call("QueryService");
             // Every service (SID_STopLevelBrowser, SID_SShellBrowser, ...) is this browser.
             let unknown: IUnknown = self.to_interface();
+            self.state.note_call("Browser.QueryService");
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             unsafe { unknown.query(riid, ppv) }.ok()
         }
@@ -1040,27 +1146,34 @@ mod com {
 
     impl IOleWindow_Impl for Browser_Impl {
         fn GetWindow(&self) -> Res<HWND> {
+            self.state.note_call("Browser.GetWindow");
             Ok(self.state.hwnd)
         }
         fn ContextSensitiveHelp(&self, _: windows::core::BOOL) -> Res<()> {
+            self.state.note_call("Browser.ContextSensitiveHelp");
             Err(E_NOTIMPL.into())
         }
     }
 
     impl IShellBrowser_Impl for Browser_Impl {
         fn InsertMenusSB(&self, _: HMENU, _: *mut OLEMENUGROUPWIDTHS) -> Res<()> {
+            self.state.note_call("Browser.InsertMenusSB");
             Err(E_NOTIMPL.into())
         }
         fn SetMenuSB(&self, _: HMENU, _: isize, _: HWND) -> Res<()> {
+            self.state.note_call("Browser.SetMenuSB");
             Err(E_NOTIMPL.into())
         }
         fn RemoveMenusSB(&self, _: HMENU) -> Res<()> {
+            self.state.note_call("Browser.RemoveMenusSB");
             Err(E_NOTIMPL.into())
         }
         fn SetStatusTextSB(&self, _: &PCWSTR) -> Res<()> {
+            self.state.note_call("Browser.SetStatusTextSB");
             Ok(())
         }
         fn EnableModelessSB(&self, _: windows::core::BOOL) -> Res<()> {
+            self.state.note_call("Browser.EnableModelessSB");
             Ok(())
         }
         fn TranslateAcceleratorSB(
@@ -1068,25 +1181,31 @@ mod com {
             _: *const windows::Win32::UI::WindowsAndMessaging::MSG,
             _: u16,
         ) -> Res<()> {
+            self.state.note_call("Browser.TranslateAcceleratorSB");
             Err(E_NOTIMPL.into())
         }
         fn BrowseObject(&self, _: *const ITEMIDLIST, _: u32) -> Res<()> {
+            self.state.note_call("Browser.BrowseObject");
             Err(E_NOTIMPL.into())
         }
         fn GetViewStateStream(&self, _: u32) -> Res<IStream> {
+            self.state.note_call("Browser.GetViewStateStream");
             Err(E_NOTIMPL.into())
         }
         fn GetControlWindow(&self, _: u32) -> Res<HWND> {
+            self.state.note_call("Browser.GetControlWindow");
             Err(E_NOTIMPL.into())
         }
         fn SendControlMsg(&self, _: u32, _: u32, _: WPARAM, _: LPARAM, _: *mut LRESULT) -> Res<()> {
+            self.state.note_call("Browser.SendControlMsg");
             Err(E_NOTIMPL.into())
         }
         fn QueryActiveShellView(&self) -> Res<IShellView> {
-            self.state.note_call("QueryActiveShellView");
+            self.state.note_call("Browser.QueryActiveShellView");
             Ok(self.view.clone())
         }
         fn OnViewWindowActive(&self, _: Ref<IShellView>) -> Res<()> {
+            self.state.note_call("Browser.OnViewWindowActive");
             Ok(())
         }
         fn SetToolbarItems(
@@ -1095,15 +1214,18 @@ mod com {
             _: u32,
             _: u32,
         ) -> Res<()> {
+            self.state.note_call("Browser.SetToolbarItems");
             Err(E_NOTIMPL.into())
         }
     }
 
     impl IConnectionPointContainer_Impl for Browser_Impl {
         fn EnumConnectionPoints(&self) -> Res<IEnumConnectionPoints> {
+            self.state.note_call("Browser.EnumConnectionPoints");
             Err(E_NOTIMPL.into())
         }
         fn FindConnectionPoint(&self, riid: *const GUID) -> Res<IConnectionPoint> {
+            self.state.note_call("Browser.FindConnectionPoint");
             // SAFETY: riid is null or a GUID supplied by the caller.
             let iid =
                 unsafe { riid.as_ref() }.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
@@ -1120,9 +1242,11 @@ mod com {
 
     impl IConnectionPoint_Impl for EventPoint_Impl {
         fn GetConnectionInterface(&self) -> Res<GUID> {
+            self.state.note_call("Events.GetConnectionInterface");
             Ok(self.events.iid())
         }
         fn GetConnectionPointContainer(&self) -> Res<IConnectionPointContainer> {
+            self.state.note_call("Events.GetConnectionPointContainer");
             Ok(self.container.clone())
         }
         fn Advise(&self, sink: Ref<IUnknown>) -> Res<u32> {
@@ -1147,11 +1271,12 @@ mod com {
                 told: false,
             });
             self.state.note_call(self.events.advise_name());
+            self.state.journal.borrow_mut().mark("first listener");
             self.state.listener_added();
             Ok(cookie)
         }
         fn Unadvise(&self, cookie: u32) -> Res<()> {
-            self.state.note_call("Unadvise");
+            self.state.note_call("Events.Unadvise");
             let mut sinks = self.state.sinks.borrow_mut();
             let before = sinks.len();
             sinks.retain(|s| s.cookie != cookie);
@@ -1164,6 +1289,7 @@ mod com {
             }
         }
         fn EnumConnections(&self) -> Res<IEnumConnections> {
+            self.state.note_call("Events.EnumConnections");
             Err(E_NOTIMPL.into())
         }
     }
@@ -1171,9 +1297,11 @@ mod com {
     /// The view as a document: nothing to automate, only `IServiceProvider` behind it.
     impl IDispatch_Impl for View_Impl {
         fn GetTypeInfoCount(&self) -> Res<u32> {
+            self.state.note_call("View.GetTypeInfoCount");
             Ok(0)
         }
         fn GetTypeInfo(&self, _: u32, _: u32) -> Res<ITypeInfo> {
+            self.state.note_call("View.GetTypeInfo");
             Err(DISP_E_BADINDEX.into())
         }
         fn GetIDsOfNames(
@@ -1184,6 +1312,7 @@ mod com {
             _: u32,
             _: *mut i32,
         ) -> Res<()> {
+            self.state.note_call("View.GetIDsOfNames");
             Err(DISP_E_UNKNOWNNAME.into())
         }
         fn Invoke(
@@ -1197,6 +1326,7 @@ mod com {
             _: *mut EXCEPINFO,
             _: *mut u32,
         ) -> Res<()> {
+            self.state.note_call("View.Invoke");
             Err(DISP_E_MEMBERNOTFOUND.into())
         }
     }
@@ -1213,9 +1343,9 @@ mod com {
             }
             // SAFETY: ppv is a valid out pointer supplied by the caller.
             unsafe { *ppv = std::ptr::null_mut() };
-            self.state.note_call("View.QueryService");
             // Every service (SID_SFolderView, ...) is this view.
             let unknown: IUnknown = self.to_interface();
+            self.state.note_call("View.QueryService");
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             unsafe { unknown.query(riid, ppv) }.ok()
         }
@@ -1223,9 +1353,11 @@ mod com {
 
     impl IOleWindow_Impl for View_Impl {
         fn GetWindow(&self) -> Res<HWND> {
+            self.state.note_call("View.GetWindow");
             Ok(self.state.hwnd)
         }
         fn ContextSensitiveHelp(&self, _: windows::core::BOOL) -> Res<()> {
+            self.state.note_call("View.ContextSensitiveHelp");
             Err(E_NOTIMPL.into())
         }
     }
@@ -1235,12 +1367,15 @@ mod com {
             &self,
             _: *const windows::Win32::UI::WindowsAndMessaging::MSG,
         ) -> HRESULT {
+            self.state.note_call("View.TranslateAccelerator");
             E_NOTIMPL
         }
         fn EnableModeless(&self, _: windows::core::BOOL) -> Res<()> {
+            self.state.note_call("View.EnableModeless");
             Ok(())
         }
         fn UIActivate(&self, _: u32) -> Res<()> {
+            self.state.note_call("View.UIActivate");
             Ok(())
         }
         fn Refresh(&self) -> Res<()> {
@@ -1255,12 +1390,15 @@ mod com {
             _: Ref<IShellBrowser>,
             _: *const windows::Win32::Foundation::RECT,
         ) -> Res<HWND> {
+            self.state.note_call("View.CreateViewWindow");
             Err(E_NOTIMPL.into())
         }
         fn DestroyViewWindow(&self) -> Res<()> {
+            self.state.note_call("View.DestroyViewWindow");
             Ok(())
         }
         fn GetCurrentInfo(&self) -> Res<FOLDERSETTINGS> {
+            self.state.note_call("View.GetCurrentInfo");
             Ok(FOLDERSETTINGS::default())
         }
         fn AddPropertySheetPages(
@@ -1269,17 +1407,20 @@ mod com {
             _: windows::Win32::UI::Controls::LPFNSVADDPROPSHEETPAGE,
             _: LPARAM,
         ) -> Res<()> {
+            self.state.note_call("View.AddPropertySheetPages");
             Err(E_NOTIMPL.into())
         }
         fn SaveViewState(&self) -> Res<()> {
+            self.state.note_call("View.SaveViewState");
             Ok(())
         }
         fn SelectItem(&self, item: *const ITEMIDLIST, flags: u32) -> Res<()> {
-            self.state.note_call("SelectItem");
+            self.state.note_call("View.IShellView.SelectItem");
             self.state.select_item(item, flags);
             Ok(())
         }
         fn GetItemObject(&self, _: &_SVGIO, riid: *const GUID, ppv: *mut *mut c_void) -> Res<()> {
+            self.state.note_call("View.GetItemObject");
             if riid.is_null() || ppv.is_null() {
                 return Err(E_POINTER.into());
             }
@@ -1293,18 +1434,20 @@ mod com {
 
     impl IFolderView_Impl for View_Impl {
         fn GetCurrentViewMode(&self) -> Res<u32> {
+            self.state.note_call("View.GetCurrentViewMode");
             Ok(1)
         }
         fn SetCurrentViewMode(&self, _: u32) -> Res<()> {
+            self.state.note_call("View.SetCurrentViewMode");
             Ok(())
         }
         fn GetFolder(&self, riid: *const GUID, ppv: *mut *mut c_void) -> Res<()> {
+            self.state.note_call("View.GetFolder");
             if riid.is_null() || ppv.is_null() {
                 return Err(E_POINTER.into());
             }
             // SAFETY: ppv is a valid out pointer supplied by the caller.
             unsafe { *ppv = std::ptr::null_mut() };
-            self.state.note_call("GetFolder");
             let pidl = self.state.folder.0.cast_const();
             // SAFETY: riid was checked above; the folder's item id list is valid. Binding names
             // the folder only, nothing in it is opened.
@@ -1324,33 +1467,43 @@ mod com {
             unsafe { folder.query(riid, ppv) }.ok()
         }
         fn Item(&self, _: i32) -> Res<*mut ITEMIDLIST> {
+            self.state.note_call("View.Item");
             Err(E_NOTIMPL.into())
         }
         fn ItemCount(&self, _: &_SVGIO) -> Res<i32> {
+            self.state.note_call("View.ItemCount");
             Ok(0)
         }
         fn Items(&self, _: &_SVGIO, _: *const GUID, _: *mut *mut c_void) -> Res<()> {
+            self.state.note_call("View.Items");
             Err(E_NOINTERFACE.into())
         }
         fn GetSelectionMarkedItem(&self) -> Res<i32> {
+            self.state.note_call("View.GetSelectionMarkedItem");
             Ok(-1)
         }
         fn GetFocusedItem(&self) -> Res<i32> {
+            self.state.note_call("View.GetFocusedItem");
             Ok(-1)
         }
         fn GetItemPosition(&self, _: *const ITEMIDLIST) -> Res<windows::Win32::Foundation::POINT> {
+            self.state.note_call("View.GetItemPosition");
             Err(E_NOTIMPL.into())
         }
         fn GetSpacing(&self, _: *mut windows::Win32::Foundation::POINT) -> Res<()> {
+            self.state.note_call("View.GetSpacing");
             Err(E_NOTIMPL.into())
         }
         fn GetDefaultSpacing(&self) -> Res<windows::Win32::Foundation::POINT> {
+            self.state.note_call("View.GetDefaultSpacing");
             Err(E_NOTIMPL.into())
         }
         fn GetAutoArrange(&self) -> Res<()> {
+            self.state.note_call("View.GetAutoArrange");
             Err(E_NOTIMPL.into())
         }
         fn SelectItem(&self, _: i32, _: u32) -> Res<()> {
+            self.state.note_call("View.IFolderView.SelectItem");
             Ok(())
         }
         fn SelectAndPositionItems(
@@ -1360,10 +1513,10 @@ mod com {
             _: *const windows::Win32::Foundation::POINT,
             flags: u32,
         ) -> Res<()> {
+            self.state.note_call("View.SelectAndPositionItems");
             if items.is_null() {
                 return Err(E_POINTER.into());
             }
-            self.state.note_call("SelectAndPositionItems");
             for index in 0..count as usize {
                 // SAFETY: the caller passes `count` item id list pointers.
                 let item = unsafe { *items.add(index) };
@@ -1381,16 +1534,18 @@ mod com {
 
     impl IPersist_Impl for View_Impl {
         fn GetClassID(&self) -> Res<GUID> {
+            self.state.note_call("View.GetClassID");
             Err(E_NOTIMPL.into())
         }
     }
 
     impl IPersistIDList_Impl for View_Impl {
         fn SetIDList(&self, _: *const ITEMIDLIST) -> Res<()> {
+            self.state.note_call("View.SetIDList");
             Err(E_NOTIMPL.into())
         }
         fn GetIDList(&self) -> Res<*mut ITEMIDLIST> {
-            self.state.note_call("GetIDList");
+            self.state.note_call("View.GetIDList");
             // SAFETY: duplicates a valid list with the COM allocator; the caller frees it.
             let copy = unsafe { ILCombine(Some(self.state.folder.0.cast_const()), None) };
             if copy.is_null() {
@@ -1485,30 +1640,118 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
     if !due.is_empty() {
         state.running.set_calling(true);
     }
-    for (events, sink) in &due {
-        match events {
-            Events::Old => {
-                let mut url = [bstr_variant(&state.url)];
-                fire(sink, DISPID_NAVIGATECOMPLETE, &mut url);
-                fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
-                clear(&mut url);
-            }
-            Events::New => {
-                let mut url = bstr_variant(&state.url);
-                let mut args = [variant_ref(&mut url), dispatch_variant(browser)];
-                fire(sink, DISPID_NAVIGATECOMPLETE2, &mut args);
-                fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
-                fire(sink, DISPID_DOCUMENTCOMPLETE, &mut args);
-                clear(&mut args);
-                clear(std::slice::from_mut(&mut url));
-            }
+    // Each call noted in the log.
+    let noted = |sink: &IDispatch, id: i32, args: &mut [VARIANT]| {
+        let ok = fire(sink, id, args);
+        if let Ok(mut journal) = state.journal.try_borrow_mut() {
+            journal.note_fired(id, ok);
         }
+    };
+    for (events, sink) in &due {
+        tell_navigation(state, *events, sink, browser, &noted);
     }
     if !due.is_empty() {
         state.running.set_calling(false);
         // Their event calls are back: what they filled inside them is there now.
         state.hint(Trigger::Told);
     }
+}
+
+/// `DWebBrowserEvents::BeforeNavigate`, `DownloadBegin` (both interfaces)
+const DISPID_BEFORENAVIGATE: i32 = 100;
+const DISPID_DOWNLOADBEGIN: i32 = 106;
+/// `DWebBrowserEvents2::BeforeNavigate2`
+const DISPID_BEFORENAVIGATE2: i32 = 250;
+
+/// Tells a listener of the navigation the way File Explorer does, with the folder's path as the
+/// URL. `DWebBrowserEvents`: BeforeNavigate, DownloadBegin, NavigateComplete, DownloadComplete.
+/// `DWebBrowserEvents2`: BeforeNavigate2, DownloadBegin, NavigateComplete2, DownloadComplete,
+/// DocumentComplete. Arguments go last to first, as `IDispatch` wants them. WPS Cloud tells a
+/// window the folder it shows was filled (`SHCNE_UPDATEDIR`) only after the whole sequence; with
+/// NavigateComplete alone it filled the folder and said nothing (#319).
+fn tell_navigation(
+    state: &State,
+    events: Events,
+    sink: &IDispatch,
+    browser: &IDispatch,
+    fire: &dyn Fn(&IDispatch, i32, &mut [VARIANT]),
+) {
+    let path = state.dir.to_string_lossy();
+    let mut cancel = VARIANT_FALSE;
+    match events {
+        Events::Old => {
+            // BeforeNavigate(URL, Flags, TargetFrameName, PostData, Headers, Cancel)
+            let mut post_data = VARIANT::default();
+            let mut before = [
+                bool_ref(&mut cancel),
+                bstr_variant(""),
+                variant_ref(&mut post_data),
+                bstr_variant(""),
+                i4_variant(0),
+                bstr_variant(&path),
+            ];
+            fire(sink, DISPID_BEFORENAVIGATE, &mut before);
+            clear(&mut before);
+            fire(sink, DISPID_DOWNLOADBEGIN, &mut []);
+            let mut url = [bstr_variant(&path)];
+            fire(sink, DISPID_NAVIGATECOMPLETE, &mut url);
+            clear(&mut url);
+            fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
+        }
+        Events::New => {
+            // BeforeNavigate2(pDisp, URL, Flags, TargetFrameName, PostData, Headers, Cancel)
+            let mut url = bstr_variant(&path);
+            let (mut flags, mut target, mut post_data, mut headers) = (
+                i4_variant(0),
+                VARIANT::default(),
+                VARIANT::default(),
+                VARIANT::default(),
+            );
+            let mut before = [
+                bool_ref(&mut cancel),
+                variant_ref(&mut headers),
+                variant_ref(&mut post_data),
+                variant_ref(&mut target),
+                variant_ref(&mut flags),
+                variant_ref(&mut url),
+                dispatch_variant(browser),
+            ];
+            fire(sink, DISPID_BEFORENAVIGATE2, &mut before);
+            clear(&mut before);
+            fire(sink, DISPID_DOWNLOADBEGIN, &mut []);
+            // NavigateComplete2 and DocumentComplete(pDisp, URL)
+            let mut args = [variant_ref(&mut url), dispatch_variant(browser)];
+            fire(sink, DISPID_NAVIGATECOMPLETE2, &mut args);
+            fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
+            fire(sink, DISPID_DOCUMENTCOMPLETE, &mut args);
+            clear(&mut args);
+            clear(std::slice::from_mut(&mut url));
+        }
+    }
+}
+
+/// A `VT_BYREF | VT_BOOL` VARIANT pointing at `target`, which must outlive it. Owns nothing.
+fn bool_ref(target: &mut VARIANT_BOOL) -> VARIANT {
+    let mut v = VARIANT::default();
+    // SAFETY: a by-reference VARIANT only stores the pointer.
+    unsafe {
+        let inner = &mut *v.Anonymous.Anonymous;
+        inner.vt = VARENUM(VT_BYREF.0 | VT_BOOL.0);
+        inner.Anonymous.pboolVal = std::ptr::from_mut(target);
+    }
+    v
+}
+
+/// A `VT_I4` VARIANT.
+fn i4_variant(value: i32) -> VARIANT {
+    let mut v = VARIANT::default();
+    // SAFETY: a zeroed VARIANT is VT_EMPTY; it now holds an i32.
+    unsafe {
+        let inner = &mut *v.Anonymous.Anonymous;
+        inner.vt = VT_I4;
+        inner.Anonymous.lVal = value;
+    }
+    v
 }
 
 fn clear(variants: &mut [VARIANT]) {
@@ -1715,7 +1958,9 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
         relist: Cell::default(),
         journal: RefCell::default(),
     });
+    state.journal.borrow_mut().start();
     let result = register_and_wait(&state, pidl, &dir);
+    state.journal.borrow_mut().mark("ended");
     if result.is_ok() {
         log::info!(
             "folder visit for {} ended: {}",
@@ -1809,6 +2054,7 @@ fn navigate_and_wait(
     // SAFETY: the variant was made by InitVariantFromBuffer above.
     let _ = unsafe { VariantClear(&raw mut location) };
     let cookie = registered?;
+    state.journal.borrow_mut().mark("registered");
     // Queued behind the WM_TELL of the listeners that subscribed meanwhile, so they are told
     // first: then the folder is listed once more.
     // SAFETY: posts to this visit's own window.
@@ -2118,6 +2364,189 @@ mod tests {
         let summary = state.journal.borrow().summary();
         assert!(summary.contains("Told x2"), "{summary}");
         assert!(summary.ends_with("-> relists 3"), "{summary}");
+    }
+
+    /// The log names the events fired at listeners, and whether they went through.
+    #[test]
+    fn the_visit_log_has_the_events_fired() {
+        let mut journal = Journal::default();
+        journal.note_fired(101, true);
+        journal.note_fired(101, true);
+        journal.note_fired(104, false);
+        let summary = journal.summary();
+        assert!(
+            summary.contains("; fired: 101 ok x2, 104 failed x1"),
+            "{summary}"
+        );
+    }
+
+    /// Each listener is told of the navigation once, with File Explorer's whole sequence and the
+    /// folder's path as the URL, on both event interfaces (WPS Cloud waits for it, #319).
+    #[test]
+    fn listeners_get_explorers_navigation_sequence() {
+        let state = Rc::new(State {
+            hwnd: HWND::default(),
+            messages: HWND::default(),
+            dir: PathBuf::from(r"C:\cloud\docs"),
+            folder: Pidl(std::ptr::null_mut()),
+            url: "file:///C:/cloud/docs".into(),
+            name: "docs".into(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(|| {}),
+            select: Box::new(|_| {}),
+            running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
+        });
+        let (old, new): (Seen, Seen) = Default::default();
+        for (events, seen, cookie) in [(Events::Old, &old, 1), (Events::New, &new, 2)] {
+            state.sinks.borrow_mut().push(Sink {
+                cookie,
+                events,
+                dispatch: Recorder {
+                    seen: Rc::clone(seen),
+                }
+                .into(),
+                told: false,
+            });
+        }
+        let view: IShellView = com::View {
+            state: Rc::clone(&state),
+        }
+        .into();
+        let browser: IDispatch = view.cast().unwrap();
+        tell_listeners(&state, &browser);
+        tell_listeners(&state, &browser);
+        let path = Some(r"C:\cloud\docs".to_owned());
+        assert_eq!(
+            *old.borrow(),
+            [
+                (DISPID_BEFORENAVIGATE, 6, path.clone()),
+                (DISPID_DOWNLOADBEGIN, 0, None),
+                (DISPID_NAVIGATECOMPLETE, 1, path.clone()),
+                (DISPID_DOWNLOADCOMPLETE, 0, None),
+            ],
+            "once, in order"
+        );
+        assert_eq!(
+            *new.borrow(),
+            [
+                (DISPID_BEFORENAVIGATE2, 7, path.clone()),
+                (DISPID_DOWNLOADBEGIN, 0, None),
+                (DISPID_NAVIGATECOMPLETE2, 2, path.clone()),
+                (DISPID_DOWNLOADCOMPLETE, 0, None),
+                (DISPID_DOCUMENTCOMPLETE, 2, path),
+            ]
+        );
+        let summary = state.journal.borrow().summary();
+        assert!(
+            summary.contains("; fired: 100 ok x1, 106 ok x2"),
+            "{summary}"
+        );
+    }
+
+    /// An event a listener got: DISPID, how many arguments, and the URL among them.
+    type Fired = (i32, u32, Option<String>);
+
+    /// The events one listener got.
+    type Seen = Rc<RefCell<Vec<Fired>>>;
+
+    #[allow(
+        clippy::inline_always,
+        clippy::ref_as_ptr,
+        clippy::wildcard_imports,
+        reason = "The macro-generated code of #[implement] trips them, as in `mod com`"
+    )]
+    mod recorder {
+        use super::*;
+
+        /// A listener that notes every event it gets.
+        #[implement(IDispatch)]
+        pub(super) struct Recorder {
+            pub(super) seen: Seen,
+        }
+
+        impl IDispatch_Impl for Recorder_Impl {
+            fn GetTypeInfoCount(&self) -> windows::core::Result<u32> {
+                Ok(0)
+            }
+            fn GetTypeInfo(&self, _: u32, _: u32) -> windows::core::Result<ITypeInfo> {
+                Err(E_NOTIMPL.into())
+            }
+            fn GetIDsOfNames(
+                &self,
+                _: *const GUID,
+                _: *const PCWSTR,
+                _: u32,
+                _: u32,
+                _: *mut i32,
+            ) -> windows::core::Result<()> {
+                Err(E_NOTIMPL.into())
+            }
+            fn Invoke(
+                &self,
+                id: i32,
+                _: *const GUID,
+                _: u32,
+                _: DISPATCH_FLAGS,
+                params: *const DISPPARAMS,
+                _: *mut VARIANT,
+                _: *mut EXCEPINFO,
+                _: *mut u32,
+            ) -> windows::core::Result<()> {
+                // SAFETY: the caller's arguments, valid for the call.
+                let params = unsafe { &*params };
+                let args: &[VARIANT] = if params.cArgs == 0 {
+                    &[]
+                } else {
+                    // SAFETY: `cArgs` VARIANT values at `rgvarg`.
+                    unsafe { std::slice::from_raw_parts(params.rgvarg, params.cArgs as usize) }
+                };
+                let url = args.iter().find_map(text_of);
+                self.seen.borrow_mut().push((id, params.cArgs, url));
+                Ok(())
+            }
+        }
+    }
+    use recorder::Recorder;
+
+    /// The text of a `VT_BSTR` argument, or of a by-reference VARIANT holding one.
+    fn text_of(arg: &VARIANT) -> Option<String> {
+        // SAFETY: reads the VARIANT by its type tag.
+        unsafe {
+            let inner = &*arg.Anonymous.Anonymous;
+            if inner.vt == VT_BSTR {
+                let text = (*inner.Anonymous.bstrVal).to_string();
+                return (!text.is_empty()).then_some(text);
+            }
+            if inner.vt == VARENUM(VT_BYREF.0 | VT_VARIANT.0) && !inner.Anonymous.pvarVal.is_null()
+            {
+                return text_of(&*inner.Anonymous.pvarVal);
+            }
+        }
+        None
+    }
+
+    /// The log says when the visit registered and first heard from a listener or the shell, the
+    /// first time each, after the visit started.
+    #[test]
+    fn the_visit_log_has_its_timing() {
+        let mut journal = Journal::default();
+        journal.mark("registered");
+        assert!(journal.marks.is_empty(), "nothing before the visit started");
+        journal.start();
+        journal.mark("registered");
+        journal.mark("first listener");
+        journal.mark("registered");
+        journal.mark("ended");
+        let steps: Vec<&str> = journal.marks.iter().map(|(s, _)| *s).collect();
+        assert_eq!(steps, ["registered", "first listener", "ended"]);
+        let summary = journal.summary();
+        assert!(summary.contains("; timing: registered +"), "{summary}");
+        assert!(summary.contains(" ms, first listener +"), "{summary}");
     }
 
     /// The log block: notifications by kind with the first one's paths, calls by method.

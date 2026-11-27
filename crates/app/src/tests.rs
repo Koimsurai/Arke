@@ -276,6 +276,8 @@ struct FakeShell {
     /// What `cloud_scan` reports, and the folders and items it was asked about.
     cloud: Mutex<crate::shell::CloudScan>,
     cloud_scans: Mutex<Vec<(PathBuf, Vec<Arc<str>>)>>,
+    /// Items `cloud_verify` finds to be placeholders although they listed as plain ones.
+    cloud_placeholders: Mutex<Vec<Arc<str>>>,
     /// What panes told the shell they show (`None`: left), and the last visit's callbacks.
     folder_visits: Mutex<Vec<(u64, Option<PathBuf>)>>,
     visit_changed: Mutex<Option<Box<dyn Fn() + Send>>>,
@@ -1110,6 +1112,16 @@ impl Shell for FakeShell {
 
     fn net_probe(&self) -> Option<Arc<dyn arke_core::net::NetProbe>> {
         self.net_probe.lock().clone()
+    }
+
+    /// Items `cloud_placeholders` names are placeholders whatever their attributes say.
+    fn cloud_verify(&self, _: &Path, plain: Vec<Arc<str>>) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+        let placeholders = self.cloud_placeholders.lock();
+        let not_synced = plain
+            .into_iter()
+            .filter(|name| !placeholders.contains(name))
+            .collect();
+        (not_synced, Vec::new())
     }
 
     fn cloud_scan(&self, dir: &Path, items: &[Arc<str>]) -> crate::shell::CloudScan {

@@ -300,8 +300,10 @@ const fn menu_group(action: &SidebarAction) -> u8 {
         A::ShelfClear | A::ShelfRemove(_) => 10,
         A::HistoryJump { .. } | A::TimelineStep { .. } => 11,
         A::SetSidebarPeek(_) => 12,
-        A::HideSection(_) | A::ShowSection(..) => 13,
+        A::ShowSection(..) => 13,
         A::ToggleFollow(_) => 14,
+        // A heading's own Hide, kept apart from the sections list under it (#465).
+        A::HideSection(_) => 15,
     }
 }
 
@@ -1022,12 +1024,15 @@ const HIDEABLE: [SidebarSection; 4] = [
     SidebarSection::Network,
 ];
 
-/// The menu of a hideable section's heading (or Home's row): Hide.
-pub(super) fn section_menu(section: SidebarSection) -> Vec<SidebarRow> {
-    vec![row(
+/// The menu of a hideable section's heading (or Home's row): Hide, then the menu of the
+/// sidebar's empty space, so a hidden section can be brought back from any heading (#465).
+pub(super) fn section_menu(section: SidebarSection, cx: &App) -> Vec<SidebarRow> {
+    let mut items = vec![row(
         t!("sidebar.hide_section"),
         SidebarAction::HideSection(section),
-    )]
+    )];
+    items.extend(Workspace::sidebar_space_menu(cx));
+    items
 }
 
 /// Whether a section of the sidebar is hidden (#323).
@@ -3481,13 +3486,14 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_section(section, cx);
             }))
-            // Home, Favorites, This PC and Network can be hidden (#323, #387); a right click elsewhere on the
-            // sidebar brings them back.
+            // Home, Favorites, This PC and Network can be hidden (#323, #387); the menu also
+            // brings them back (#465), as a right click elsewhere on the sidebar does.
             .when(HIDEABLE.contains(&section), |d| {
                 d.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.open_sidebar_menu(e.position, section_menu(section), cx);
+                        let items = section_menu(section, cx);
+                        this.open_sidebar_menu(e.position, items, cx);
                     }),
                 )
             });

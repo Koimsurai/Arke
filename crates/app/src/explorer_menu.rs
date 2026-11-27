@@ -1189,15 +1189,6 @@ impl ContextMenu {
         self.cues.shown()
     }
 
-    /// Test helper: the command of the highlighted row in the open level.
-    #[cfg(test)]
-    pub(crate) fn highlighted_command_for_test(&self) -> Option<MenuCommand> {
-        match self.level(self.open.len()).get(self.highlighted?)? {
-            MenuEntry::Item(i) => Some(i.command),
-            _ => None,
-        }
-    }
-
     /// Test helper: where `level` was drawn, and how far it is scrolled.
     #[cfg(test)]
     pub(crate) fn panel_for_test(&self, level: usize) -> (Option<Bounds<Pixels>>, Pixels) {
@@ -4981,8 +4972,11 @@ mod access_tests {
         };
         assert_eq!(items[0].access, None);
         assert!(items[1].access.is_some());
-        // The key still only highlights the row.
-        assert_eq!(access_hit(&entries, None, 't'), AccessHit::Move(0));
+        // The row is now the only T, so it runs at once.
+        assert_eq!(
+            access_hit(&entries, None, 't'),
+            AccessHit::Run(C::OpenTerminal)
+        );
     }
 
     #[test]

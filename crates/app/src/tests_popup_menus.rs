@@ -762,10 +762,10 @@ fn shift_with_deletes_key_asks_to_delete_permanently(cx: &mut TestAppContext) {
     assert!(shell.ops().is_empty());
 }
 
-/// In a folder's menu, T is Open in Terminal's key and Cut's button has none to run: T only
-/// highlights the row, nothing is cut, and Enter runs it (#422).
+/// In a folder's menu, Cut's button takes no letter, so T is Open in Terminal's alone: it runs
+/// at once, and nothing is cut (#422).
 #[gpui::test]
-fn in_a_folders_menu_t_highlights_open_in_terminal_and_enter_runs_it(cx: &mut TestAppContext) {
+fn in_a_folders_menu_t_opens_the_terminal(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\m", vec![dir("sub")]);
     let shell = Arc::new(FakeShell::default());
@@ -779,16 +779,9 @@ fn in_a_folders_menu_t_highlights_open_in_terminal_and_enter_runs_it(cx: &mut Te
         });
     });
     cx.run_until_parked();
+    assert!(cues_and_depth(&view, cx).is_some());
     cx.simulate_keystrokes("t");
-    let lit = view.update(cx, |v, _| {
-        v.context_menu
-            .as_ref()
-            .and_then(crate::explorer::ContextMenuForTest::highlighted_command_for_test)
-    });
-    assert_eq!(lit, Some(MenuCommand::OpenTerminal));
-    assert!(shell.clipboard().is_none(), "T did not cut");
-    cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!(cues_and_depth(&view, cx), None);
-    assert!(shell.clipboard().is_none());
+    assert!(shell.clipboard().is_none(), "T did not cut");
 }

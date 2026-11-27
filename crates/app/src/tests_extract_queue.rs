@@ -253,8 +253,11 @@ fn a_second_extraction_waits_in_the_line_and_can_be_cancelled(cx: &mut TestAppCo
 fn make_zip_many(path: &Path, count: usize) {
     let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
     for n in 0..count {
-        zip.start_file(format!("f{n}.txt"), zip::write::SimpleFileOptions::default())
-            .unwrap();
+        zip.start_file(
+            format!("f{n}.txt"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         zip.write_all(b"x").unwrap();
     }
     zip.finish().unwrap();

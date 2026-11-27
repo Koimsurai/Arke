@@ -590,7 +590,7 @@ fn the_home_row_opens_the_sections_menu(cx: &mut TestAppContext) {
 fn the_headings_open_the_sections_menu_with_the_tabs_on_top(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
     change(cx, |st| {
-        st.tab_layout = crate::settings::TabLayout::Horizontal
+        st.tab_layout = crate::settings::TabLayout::Horizontal;
     });
     refresh(cx);
     assert!(!drawn(cx, "tabs-header"), "the tabs are on top");

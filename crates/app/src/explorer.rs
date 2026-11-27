@@ -968,6 +968,9 @@ pub(crate) struct Explorer {
     /// it again (a file would launch twice; a folder that did not navigate is not worth a retry).
     /// A folder that did navigate never matches: the folder differs.
     last_click_open: Option<(PathBuf, Option<PathBuf>)>,
+    /// An Alt+click just opened Properties (single-click mode); its double-click must not open a
+    /// second window (#493).
+    alt_props_opened: bool,
     /// The last press landed on this item's name (set by the name, read by the item's handler,
     /// which runs after it).
     name_pressed: Option<usize>,
@@ -1310,6 +1313,7 @@ impl Explorer {
             compare: None,
             click_select: None,
             last_click_open: None,
+            alt_props_opened: false,
             name_pressed: None,
             rename_press: None,
             rename_wait: None,
@@ -3721,6 +3725,7 @@ impl Explorer {
         let m = event.modifiers;
         self.rename_wait = None;
         self.rename_press = None;
+        let alt_props_opened = std::mem::take(&mut self.alt_props_opened);
         // Explorer's slow second click: the item was already the only selection, the list
         // already had focus (the click isn't the one bringing Arke or the list back), and the
         // press is on the name.
@@ -3761,8 +3766,10 @@ impl Explorer {
         {
             if m.alt {
                 // Alt+double-click: Properties of the selection it is in, as in File Explorer
-                // (#337).
-                self.open_properties(self.menu_targets(), cx);
+                // (#337). Not again if its first click already opened them (#493).
+                if !alt_props_opened {
+                    self.open_properties(self.menu_targets(), cx);
+                }
             } else if on_location {
                 // A search hit's Location: its folder, with it selected (#398).
                 self.open_hit_location(ix, cx);
@@ -3940,6 +3947,7 @@ impl Explorer {
             // window (#493).
             if !is_double_click(event.click_count()) {
                 self.click_select = None;
+                self.alt_props_opened = true;
                 self.open_properties(self.menu_targets(), cx);
             }
             return true;

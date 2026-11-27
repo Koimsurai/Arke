@@ -20,9 +20,9 @@
 //! - the view as the window's `Document`, giving itself for `SID_SFolderView`: that is how
 //!   `SHOpenFolderAndSelectItems` reaches a window it found in the list to select items, and it
 //!   fails instead of opening File Explorer when the document is missing;
-//! - `DWebBrowserEvents` and `DWebBrowserEvents2` connection points: every listener is told the
-//!   navigation completed (`NavigateComplete`, `NavigateComplete2`, `DownloadComplete`,
-//!   `DocumentComplete`) as soon as it subscribes, once.
+//! - `DWebBrowserEvents` and `DWebBrowserEvents2` connection points: every listener is told of
+//!   the navigation as soon as it subscribes, once, with File Explorer's whole sequence
+//!   ([`tell_navigation`]).
 //!
 //! One registration per pane, the way each File Explorer tab has its own registration under the
 //! window's one `HWND`. It lasts exactly as long as the pane shows that folder: the pane going
@@ -43,10 +43,9 @@
 //!   items: they are selected in the pane, as they would be in File Explorer.
 //!
 //! When a visit ends, one log line sums up what it saw ([`Journal`]): the shell notifications by
-//! kind, the listeners' calls by method (every method of every object handed out, `QueryService`
-//! with the service and interface, `GetIDsOfNames` with the names, `Invoke` with the member), the
-//! interfaces asked of each object's identity, answered or refused ([`log_queries`]), the hints
-//! and how many relists they made, and when the visit registered and first heard from a listener.
+//! kind, the listeners' calls by method (every method of every object handed out), the events
+//! fired at them, the hints and how many relists they made, and when the visit registered and
+//! first heard from a listener.
 //!
 //! Nothing is downloaded: the folder is only named, never opened or read.
 
@@ -58,7 +57,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
@@ -292,18 +291,10 @@ impl Relist {
 struct Journal {
     notifications: Vec<(&'static str, u32, String)>,
     calls: Vec<(String, u32)>,
-    /// `QueryInterface` on an object's identity: the object, the interface, whether it was there.
-    queries: Vec<(&'static str, GUID, bool, u32)>,
-    /// `QueryService`: the object, the service, the interface, whether it was there.
-    services: Vec<(&'static str, GUID, GUID, bool, u32)>,
     hints: Vec<(Trigger, u32)>,
     relists: u32,
     /// Events fired at listeners: the DISPID, whether the call succeeded.
     fired: Vec<(i32, bool, u32)>,
-    /// Messages the fake windows got (`ARKE_WPS_EXPERIMENT`): class, message, wParam, lParam.
-    window_messages: Vec<(String, u32, usize, isize, u32)>,
-    /// The test-only switches on, if any.
-    experiment: String,
     /// When the visit started, for [`Self::mark`].
     started: Option<Instant>,
     /// The first time each step happened, after `started`.
@@ -346,49 +337,11 @@ impl Journal {
         }
     }
 
-    fn note_query(&mut self, object: &'static str, iid: GUID, found: bool) {
-        let entry = self
-            .queries
-            .iter_mut()
-            .find(|q| q.0 == object && q.1 == iid && q.2 == found);
-        if let Some(entry) = entry {
-            entry.3 += 1;
-        } else {
-            self.queries.push((object, iid, found, 1));
-        }
-    }
-
-    fn note_service(&mut self, object: &'static str, service: GUID, iid: GUID, found: bool) {
-        let entry = self
-            .services
-            .iter_mut()
-            .find(|q| q.0 == object && q.1 == service && q.2 == iid && q.3 == found);
-        if let Some(entry) = entry {
-            entry.4 += 1;
-        } else {
-            self.services.push((object, service, iid, found, 1));
-        }
-    }
-
     fn note_fired(&mut self, id: i32, ok: bool) {
         if let Some(entry) = self.fired.iter_mut().find(|f| f.0 == id && f.1 == ok) {
             entry.2 += 1;
         } else {
             self.fired.push((id, ok, 1));
-        }
-    }
-
-    /// A message to a fake window. Distinct ones only, at most 64 of them.
-    fn note_window_message(&mut self, class: String, msg: u32, w: usize, l: isize) {
-        const MAX_MESSAGES: usize = 64;
-        let entry = self
-            .window_messages
-            .iter_mut()
-            .find(|m| m.0 == class && m.1 == msg && m.2 == w && m.3 == l);
-        if let Some(entry) = entry {
-            entry.4 += 1;
-        } else if self.window_messages.len() < MAX_MESSAGES {
-            self.window_messages.push((class, msg, w, l, 1));
         }
     }
 
@@ -428,32 +381,10 @@ impl Journal {
             let _ = write!(out, "{sep}{trigger:?} x{count}");
         }
         let _ = write!(out, " -> relists {}", self.relists);
-        // Only when there were any: what the window's objects were asked for, and refused.
-        for (found, label) in [(true, "; QI ok:"), (false, "; QI refused:")] {
-            let queries = self.queries.iter().filter(|q| q.2 == found);
-            for (i, (object, iid, _, count)) in queries.enumerate() {
-                let sep = if i == 0 { label } else { "," };
-                let _ = write!(out, "{sep} {object} {} x{count}", guid_name(iid));
-            }
-        }
-        for (i, (object, service, iid, found, count)) in self.services.iter().enumerate() {
-            let sep = if i == 0 { "; QueryService:" } else { "," };
-            let answer = if *found { "ok" } else { "refused" };
-            let (service, iid) = (guid_name(service), guid_name(iid));
-            let _ = write!(out, "{sep} {object} {service}/{iid} {answer} x{count}");
-        }
         for (i, (id, ok, count)) in self.fired.iter().enumerate() {
             let sep = if i == 0 { "; fired:" } else { "," };
             let answer = if *ok { "ok" } else { "failed" };
             let _ = write!(out, "{sep} {id} {answer} x{count}");
-        }
-        if !self.experiment.is_empty() {
-            let _ = write!(out, "; experiment: {}", self.experiment);
-        }
-        for (i, (class, msg, w, l, count)) in self.window_messages.iter().enumerate() {
-            let sep = if i == 0 { "; window messages:" } else { "," };
-            let name = message_name(*msg);
-            let _ = write!(out, "{sep} {class} {name}(w {w:#x}, l {l:#x}) x{count}");
         }
         for (i, (step, at)) in self.marks.iter().enumerate() {
             let sep = if i == 0 { "; timing: " } else { ", " };
@@ -635,9 +566,6 @@ struct State {
     running: Arc<Running>,
     relist: Cell<Relist>,
     journal: RefCell<Journal>,
-    /// Test-only switches (#319), see [`Experiment`].
-    experiment: Experiment,
-    fake: FakeWindows,
 }
 
 impl State {
@@ -683,35 +611,6 @@ impl State {
     fn note_call(&self, method: &str) {
         if let Ok(mut journal) = self.journal.try_borrow_mut() {
             journal.note_call(method);
-        }
-    }
-
-    /// `QueryService(service, iid)` on `object`, and whether it was answered.
-    fn note_service(
-        &self,
-        object: &'static str,
-        service: *const GUID,
-        iid: *const GUID,
-        found: bool,
-    ) {
-        // SAFETY: both are null or GUIDs the caller passed for the call.
-        let (service, iid) = unsafe { (service.as_ref(), iid.as_ref()) };
-        if let (Some(service), Some(iid), Ok(mut journal)) =
-            (service, iid, self.journal.try_borrow_mut())
-        {
-            journal.note_service(object, *service, *iid, found);
-        }
-    }
-
-    /// `GetIDsOfNames` on `object`: one call per name asked for.
-    fn note_names(&self, object: &str, names: *const PCWSTR, count: u32) {
-        if names.is_null() {
-            return;
-        }
-        for index in 0..count as usize {
-            // SAFETY: the caller passes `count` NUL-terminated names.
-            let name = unsafe { (*names.add(index)).to_string() }.unwrap_or_default();
-            self.note_call(&format!("{object}.GetIDsOfNames({name})"));
         }
     }
 
@@ -818,169 +717,6 @@ fn pidl_path(pidl: *const ITEMIDLIST) -> Option<PathBuf> {
     }
 }
 
-/// Well-known interface and service ids, by name, for the visit's log.
-static KNOWN_IDS: LazyLock<Vec<(GUID, &'static str)>> = LazyLock::new(|| {
-    use windows::Win32::System::Com::{IExternalConnection, IPersist, IStdMarshalInfo};
-    use windows::Win32::System::Ole::{
-        IDispatchEx, IObjectWithSite, IOleCommandTarget, IOleObject, IOleWindow, IProvideClassInfo,
-    };
-    use windows::Win32::UI::Shell::{
-        IBrowserService, IBrowserService2, ICommDlgBrowser, IExplorerBrowser, IFolderView2,
-        IFolderViewOptions, IPersistFolder, IPersistFolder2, IPersistFolder3, IShellFolderView,
-        IShellFolderViewDual, IShellFolderViewDual2, IShellItem2, IShellItemArray, IShellView2,
-        IShellView3, IWebBrowser, IWebBrowserApp, SID_DefView, SID_SCommDlgBrowser,
-        SID_SInPlaceBrowser, SID_STopLevelBrowser, SID_STopWindow,
-    };
-    /// `SID_SFolderView`
-    const SID_SFOLDERVIEW: GUID = GUID::from_u128(0xcde7_25b0_ccc9_4519_917e_325d_72fa_b4ce);
-    /// COM's own, asked when an object is marshaled to another process.
-    const IMARSHAL: GUID = GUID::from_u128(0x0000_0003_0000_0000_c000_0000_0000_0046);
-    const IPROXYMANAGER: GUID = GUID::from_u128(0x0000_0008_0000_0000_c000_0000_0000_0046);
-    const IFASTRUNDOWN: GUID = GUID::from_u128(0x0000_0040_0000_0000_c000_0000_0000_0046);
-    const INOMARSHAL: GUID = GUID::from_u128(0xecc8_691b_c1db_4dc0_855e_65f6_c551_af49);
-    const IAGILEOBJECT: GUID = GUID::from_u128(0x94ea_2b94_e9cc_49e0_c0ff_ee64_ca8f_5b90);
-    vec![
-        (IUnknown::IID, "IUnknown"),
-        (windows::core::IInspectable::IID, "IInspectable"),
-        (IDispatch::IID, "IDispatch"),
-        (IDispatchEx::IID, "IDispatchEx"),
-        (IWebBrowser::IID, "IWebBrowser"),
-        (IWebBrowserApp::IID, "IWebBrowserApp"),
-        (IWebBrowser2::IID, "IWebBrowser2"),
-        (DWebBrowserEvents::IID, "DWebBrowserEvents"),
-        (DWebBrowserEvents2::IID, "DWebBrowserEvents2"),
-        (IServiceProvider::IID, "IServiceProvider"),
-        (IShellBrowser::IID, "IShellBrowser"),
-        (IBrowserService::IID, "IBrowserService"),
-        (IBrowserService2::IID, "IBrowserService2"),
-        (ICommDlgBrowser::IID, "ICommDlgBrowser"),
-        (IExplorerBrowser::IID, "IExplorerBrowser"),
-        (IOleWindow::IID, "IOleWindow"),
-        (IOleObject::IID, "IOleObject"),
-        (IOleCommandTarget::IID, "IOleCommandTarget"),
-        (IObjectWithSite::IID, "IObjectWithSite"),
-        (IProvideClassInfo::IID, "IProvideClassInfo"),
-        (IConnectionPointContainer::IID, "IConnectionPointContainer"),
-        (IConnectionPoint::IID, "IConnectionPoint"),
-        (IShellView::IID, "IShellView"),
-        (IShellView2::IID, "IShellView2"),
-        (IShellView3::IID, "IShellView3"),
-        (IFolderView::IID, "IFolderView"),
-        (IFolderView2::IID, "IFolderView2"),
-        (IFolderViewOptions::IID, "IFolderViewOptions"),
-        (IShellFolderView::IID, "IShellFolderView"),
-        (IShellFolderViewDual::IID, "IShellFolderViewDual"),
-        (IShellFolderViewDual2::IID, "IShellFolderViewDual2"),
-        (IPersist::IID, "IPersist"),
-        (IPersistIDList::IID, "IPersistIDList"),
-        (IPersistFolder::IID, "IPersistFolder"),
-        (IPersistFolder2::IID, "IPersistFolder2"),
-        (IPersistFolder3::IID, "IPersistFolder3"),
-        (IShellFolder::IID, "IShellFolder"),
-        (IShellItem::IID, "IShellItem"),
-        (IShellItem2::IID, "IShellItem2"),
-        (IShellItemArray::IID, "IShellItemArray"),
-        (IExternalConnection::IID, "IExternalConnection"),
-        (IStdMarshalInfo::IID, "IStdMarshalInfo"),
-        (IMARSHAL, "IMarshal"),
-        (IPROXYMANAGER, "IProxyManager"),
-        (IFASTRUNDOWN, "IFastRundown"),
-        (INOMARSHAL, "INoMarshal"),
-        (IAGILEOBJECT, "IAgileObject"),
-        (SID_STopLevelBrowser, "SID_STopLevelBrowser"),
-        (SID_STopWindow, "SID_STopWindow"),
-        (SID_SInPlaceBrowser, "SID_SInPlaceBrowser"),
-        (SID_SCommDlgBrowser, "SID_SCommDlgBrowser"),
-        (SID_DefView, "SID_DefView"),
-        (SID_SFOLDERVIEW, "SID_SFolderView"),
-    ]
-});
-
-/// A readable name for an interface or service id in the visit's log: the well-known ones by
-/// name (`SID_SShellBrowser` is `IShellBrowser`'s id, so it reads as that), the others as the GUID.
-fn guid_name(id: &GUID) -> String {
-    KNOWN_IDS
-        .iter()
-        .find(|(known, _)| known == id)
-        .map_or_else(|| format!("{id:?}"), |(_, name)| (*name).to_owned())
-}
-
-/// An object's identity vtable with `QueryInterface` going through [`logged_query`] first, and
-/// what that needs: the vtable it replaced and the object's name in the log. `vtbl` comes first,
-/// so a pointer to it is a pointer to this.
-#[repr(C)]
-struct LoggedIdentity {
-    vtbl: windows::core::IInspectable_Vtbl,
-    original: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
-    object: &'static str,
-}
-
-/// The logged identity vtable of each kind of object the visit hands out (one per kind: the
-/// vtable it replaces is the same static one for every object of that kind).
-static BROWSER_IDENTITY: OnceLock<LoggedIdentity> = OnceLock::new();
-static VIEW_IDENTITY: OnceLock<LoggedIdentity> = OnceLock::new();
-static EVENTS_IDENTITY: OnceLock<LoggedIdentity> = OnceLock::new();
-
-/// Logs every `QueryInterface` asked of `object` through its identity, which is where the
-/// interfaces a listener in another process asks for arrive (COM's stub asks the object's
-/// identity). Only the visit's own objects, which live only while a sync-root folder is shown.
-fn log_queries(object: &IUnknown, slot: &'static OnceLock<LoggedIdentity>, name: &'static str) {
-    let identity = object
-        .as_raw()
-        .cast::<&'static windows::core::IInspectable_Vtbl>();
-    // SAFETY: `object` is the identity of an object made with `#[implement]`, whose first word
-    // is the reference to its identity vtable (an `IInspectable_Vtbl`); nothing else in this
-    // process holds that word.
-    let old: &'static windows::core::IInspectable_Vtbl = unsafe { identity.read() };
-    let logged = slot.get_or_init(|| LoggedIdentity {
-        vtbl: windows::core::IInspectable_Vtbl {
-            base: windows::core::IUnknown_Vtbl {
-                QueryInterface: logged_query,
-                AddRef: old.base.AddRef,
-                Release: old.base.Release,
-            },
-            GetIids: old.GetIids,
-            GetRuntimeClassName: old.GetRuntimeClassName,
-            GetTrustLevel: old.GetTrustLevel,
-        },
-        original: old.base.QueryInterface,
-        object: name,
-    });
-    if std::ptr::eq(old, &raw const logged.vtbl) {
-        return;
-    }
-    // SAFETY: as above. The object only ever reads that word through raw pointers (COM callers
-    // call through it), and the new vtable is static and has the same layout, with the same
-    // functions except `QueryInterface`, which calls the original one.
-    unsafe { identity.write(&logged.vtbl) };
-}
-
-/// `QueryInterface` of a logged identity: the original one, then a note of what was asked.
-unsafe extern "system" fn logged_query(
-    this: *mut c_void,
-    iid: *const GUID,
-    out: *mut *mut c_void,
-) -> HRESULT {
-    // SAFETY: `this` is an identity whose vtable `log_queries` replaced by a `LoggedIdentity`,
-    // which starts with that vtable.
-    let logged = unsafe { &**this.cast::<*const LoggedIdentity>() };
-    // SAFETY: the caller's arguments, as they came.
-    let result = unsafe { (logged.original)(this, iid, out) };
-    // SAFETY: null or the GUID the caller passed.
-    if let Some(iid) = unsafe { iid.as_ref() } {
-        // The visit's thread (the objects aren't agile); `try_` so the log never panics.
-        let _ = CURRENT.try_with(|current| {
-            if let Ok(current) = current.try_borrow()
-                && let Some(current) = current.as_ref()
-                && let Ok(mut journal) = current.state.journal.try_borrow_mut()
-            {
-                journal.note_query(logged.object, *iid, result.is_ok());
-            }
-        });
-    }
-    result
-}
-
 #[allow(
     clippy::inline_always,
     clippy::ref_as_ptr,
@@ -1050,7 +786,7 @@ mod com {
             _: u32,
             ids: *mut i32,
         ) -> Res<()> {
-            self.state.note_names("Browser", names, count);
+            self.state.note_call("Browser.GetIDsOfNames");
             let Some(info) = &self.state.type_info else {
                 return Err(DISP_E_UNKNOWNNAME.into());
             };
@@ -1068,7 +804,7 @@ mod com {
             exception: *mut EXCEPINFO,
             arg_error: *mut u32,
         ) -> Res<()> {
-            self.state.note_call(&format!("Browser.Invoke({id})"));
+            self.state.note_call("Browser.Invoke");
             let Some(info) = &self.state.type_info else {
                 return Err(DISP_E_MEMBERNOTFOUND.into());
             };
@@ -1391,7 +1127,7 @@ mod com {
     impl IServiceProvider_Impl for Browser_Impl {
         fn QueryService(
             &self,
-            service: *const GUID,
+            _: *const GUID,
             riid: *const GUID,
             ppv: *mut *mut c_void,
         ) -> Res<()> {
@@ -1403,22 +1139,15 @@ mod com {
             // Every service (SID_STopLevelBrowser, SID_SShellBrowser, ...) is this browser.
             let unknown: IUnknown = self.to_interface();
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
-            let found = unsafe { unknown.query(riid, ppv) };
-            self.state
-                .note_service("Browser", service, riid, found.is_ok());
-            found.ok()
+            self.state.note_call("Browser.QueryService");
+            unsafe { unknown.query(riid, ppv) }.ok()
         }
     }
 
     impl IOleWindow_Impl for Browser_Impl {
         fn GetWindow(&self) -> Res<HWND> {
             self.state.note_call("Browser.GetWindow");
-            let fake = self.state.fake.cabinet;
-            Ok(if fake.0.is_null() {
-                self.state.hwnd
-            } else {
-                fake
-            })
+            Ok(self.state.hwnd)
         }
         fn ContextSensitiveHelp(&self, _: windows::core::BOOL) -> Res<()> {
             self.state.note_call("Browser.ContextSensitiveHelp");
@@ -1496,23 +1225,18 @@ mod com {
             Err(E_NOTIMPL.into())
         }
         fn FindConnectionPoint(&self, riid: *const GUID) -> Res<IConnectionPoint> {
+            self.state.note_call("Browser.FindConnectionPoint");
             // SAFETY: riid is null or a GUID supplied by the caller.
             let iid =
                 unsafe { riid.as_ref() }.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
-            let events = Events::of(iid);
-            let answer = if events.is_some() { "ok" } else { "refused" };
-            let call = format!("Browser.FindConnectionPoint({}) {answer}", guid_name(iid));
-            self.state.note_call(&call);
-            let events =
-                events.ok_or_else(|| windows::core::Error::from(CONNECT_E_NOCONNECTION))?;
-            let point: IConnectionPoint = EventPoint {
+            let events = Events::of(iid)
+                .ok_or_else(|| windows::core::Error::from(CONNECT_E_NOCONNECTION))?;
+            Ok(EventPoint {
                 events,
                 container: self.to_interface(),
                 state: Rc::clone(&self.state),
             }
-            .into();
-            log_queries(&point.cast()?, &EVENTS_IDENTITY, "Events");
-            Ok(point)
+            .into())
         }
     }
 
@@ -1583,17 +1307,17 @@ mod com {
         fn GetIDsOfNames(
             &self,
             _: *const GUID,
-            names: *const PCWSTR,
-            count: u32,
+            _: *const PCWSTR,
+            _: u32,
             _: u32,
             _: *mut i32,
         ) -> Res<()> {
-            self.state.note_names("View", names, count);
+            self.state.note_call("View.GetIDsOfNames");
             Err(DISP_E_UNKNOWNNAME.into())
         }
         fn Invoke(
             &self,
-            id: i32,
+            _: i32,
             _: *const GUID,
             _: u32,
             _: DISPATCH_FLAGS,
@@ -1602,7 +1326,7 @@ mod com {
             _: *mut EXCEPINFO,
             _: *mut u32,
         ) -> Res<()> {
-            self.state.note_call(&format!("View.Invoke({id})"));
+            self.state.note_call("View.Invoke");
             Err(DISP_E_MEMBERNOTFOUND.into())
         }
     }
@@ -1610,7 +1334,7 @@ mod com {
     impl IServiceProvider_Impl for View_Impl {
         fn QueryService(
             &self,
-            service: *const GUID,
+            _: *const GUID,
             riid: *const GUID,
             ppv: *mut *mut c_void,
         ) -> Res<()> {
@@ -1622,22 +1346,15 @@ mod com {
             // Every service (SID_SFolderView, ...) is this view.
             let unknown: IUnknown = self.to_interface();
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
-            let found = unsafe { unknown.query(riid, ppv) };
-            self.state
-                .note_service("View", service, riid, found.is_ok());
-            found.ok()
+            self.state.note_call("View.QueryService");
+            unsafe { unknown.query(riid, ppv) }.ok()
         }
     }
 
     impl IOleWindow_Impl for View_Impl {
         fn GetWindow(&self) -> Res<HWND> {
             self.state.note_call("View.GetWindow");
-            let fake = self.state.fake.view;
-            Ok(if fake.0.is_null() {
-                self.state.hwnd
-            } else {
-                fake
-            })
+            Ok(self.state.hwnd)
         }
         fn ContextSensitiveHelp(&self, _: windows::core::BOOL) -> Res<()> {
             self.state.note_call("View.ContextSensitiveHelp");
@@ -1931,27 +1648,7 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
         }
     };
     for (events, sink) in &due {
-        if state.experiment.events {
-            fire_like_explorer(state, *events, sink, browser, &noted);
-            continue;
-        }
-        match events {
-            Events::Old => {
-                let mut url = [bstr_variant(&state.url)];
-                noted(sink, DISPID_NAVIGATECOMPLETE, &mut url);
-                noted(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
-                clear(&mut url);
-            }
-            Events::New => {
-                let mut url = bstr_variant(&state.url);
-                let mut args = [variant_ref(&mut url), dispatch_variant(browser)];
-                noted(sink, DISPID_NAVIGATECOMPLETE2, &mut args);
-                noted(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
-                noted(sink, DISPID_DOCUMENTCOMPLETE, &mut args);
-                clear(&mut args);
-                clear(std::slice::from_mut(&mut url));
-            }
-        }
+        tell_navigation(state, *events, sink, browser, &noted);
     }
     if !due.is_empty() {
         state.running.set_calling(false);
@@ -1960,194 +1657,19 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
     }
 }
 
-/// Test-only switches for #319, from `ARKE_WPS_EXPERIMENT` (comma separated; nothing when unset):
-/// what a sync client may look at before it tells a window its folder changed.
-/// - `class`: `IOleWindow::GetWindow` of the browser gives a hidden `CabinetWClass` window owned
-///   by Arke's, instead of Arke's own window.
-/// - `defview`: as `class`, with Explorer's child windows inside it (`ShellTabWindowClass` >
-///   `DUIViewWndClassName` > `DirectUIHWND` > `SHELLDLL_DefView` > `DirectUIHWND`); the view's
-///   `GetWindow` gives the `SHELLDLL_DefView`.
-/// - `events`: listeners get Explorer's whole navigation sequence, with the folder's path as the
-///   URL ([`fire_like_explorer`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Experiment {
-    class: bool,
-    defview: bool,
-    events: bool,
-}
-
-impl Experiment {
-    fn parse(text: &str) -> Self {
-        let mut experiment = Self::default();
-        for part in text.split(',') {
-            match part.trim() {
-                "class" => experiment.class = true,
-                "defview" => {
-                    experiment.class = true;
-                    experiment.defview = true;
-                }
-                "events" => experiment.events = true,
-                _ => {}
-            }
-        }
-        experiment
-    }
-
-    /// The switches set for this process (read once).
-    fn current() -> Self {
-        static SWITCHES: LazyLock<Experiment> = LazyLock::new(|| {
-            std::env::var("ARKE_WPS_EXPERIMENT")
-                .map_or_else(|_| Experiment::default(), |v| Experiment::parse(&v))
-        });
-        *SWITCHES
-    }
-
-    /// For the log: the switches on, comma separated; empty when none.
-    fn name(self) -> String {
-        [
-            (self.class && !self.defview, "class"),
-            (self.defview, "defview"),
-            (self.events, "events"),
-        ]
-        .iter()
-        .filter(|(on, _)| *on)
-        .map(|(_, name)| *name)
-        .collect::<Vec<_>>()
-        .join(",")
-    }
-}
-
-/// The hidden windows of the `class` and `defview` experiments; null when off.
-#[derive(Clone, Copy, Debug, Default)]
-struct FakeWindows {
-    cabinet: HWND,
-    view: HWND,
-}
-
-/// Makes the experiment's hidden `CabinetWClass` window, owned by `owner` and as large, and with
-/// `defview` Explorer's child windows in it. Messages they get go in the visit's log.
-fn fake_windows(owner: HWND, defview: bool) -> FakeWindows {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
-    };
-    let make = |class: PCWSTR, style: WINDOW_STYLE, parent: HWND, rect: RECT| {
-        // SAFETY: registers a class of this module for our window procedure (twice fails
-        // harmlessly) and creates a hidden window of it on this thread.
-        unsafe {
-            let instance = GetModuleHandleW(None).ok()?;
-            let wc = WNDCLASSW {
-                lpfnWndProc: Some(fake_proc),
-                hInstance: instance.into(),
-                lpszClassName: class,
-                ..Default::default()
-            };
-            RegisterClassW(&raw const wc);
-            CreateWindowExW(
-                WINDOW_EX_STYLE(0),
-                class,
-                PCWSTR::null(),
-                style,
-                rect.left,
-                rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-                Some(parent),
-                None,
-                Some(instance.into()),
-                None,
-            )
-            .ok()
-        }
-    };
-    let mut rect = RECT::default();
-    // SAFETY: reads the owner's position into `rect`.
-    let _ = unsafe { GetWindowRect(owner, &raw mut rect) };
-    let Some(cabinet) = make(
-        windows::core::w!("CabinetWClass"),
-        WS_OVERLAPPEDWINDOW,
-        owner,
-        rect,
-    ) else {
-        return FakeWindows::default();
-    };
-    let mut view = HWND::default();
-    if defview {
-        let inside = RECT {
-            left: 0,
-            top: 0,
-            right: rect.right - rect.left,
-            bottom: rect.bottom - rect.top,
-        };
-        let child = WS_CHILD | WS_CLIPCHILDREN;
-        let mut parent = cabinet;
-        let chain = [
-            windows::core::w!("ShellTabWindowClass"),
-            windows::core::w!("DUIViewWndClassName"),
-            windows::core::w!("DirectUIHWND"),
-            windows::core::w!("SHELLDLL_DefView"),
-            windows::core::w!("DirectUIHWND"),
-        ];
-        /// Where `SHELLDLL_DefView` is in `chain`.
-        const DEFVIEW: usize = 3;
-        for (i, class) in chain.into_iter().enumerate() {
-            let Some(window) = make(class, child, parent, inside) else {
-                break;
-            };
-            if i == DEFVIEW {
-                view = window;
-            }
-            parent = window;
-        }
-    }
-    FakeWindows { cabinet, view }
-}
-
-/// The experiment's windows: every message goes in the visit's log, then the default handling.
-unsafe extern "system" fn fake_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
-    let _ = CURRENT.try_with(|current| {
-        if let Ok(current) = current.try_borrow()
-            && let Some(current) = current.as_ref()
-            && let Ok(mut journal) = current.state.journal.try_borrow_mut()
-        {
-            let mut name = [0_u16; 64];
-            // SAFETY: our own window; the buffer holds 64 units.
-            let len = unsafe { GetClassNameW(hwnd, &mut name) };
-            let class = String::from_utf16_lossy(&name[..usize::try_from(len).unwrap_or(0)]);
-            journal.note_window_message(class, msg, w.0, l.0);
-        }
-    });
-    // SAFETY: forwards to the default procedure with the same arguments.
-    unsafe { DefWindowProcW(hwnd, msg, w, l) }
-}
-
-/// A message's number, and for a registered one (`RegisterWindowMessage`) its name too.
-fn message_name(msg: u32) -> String {
-    use windows::Win32::System::DataExchange::GetClipboardFormatNameW;
-    if msg >= 0xC000 {
-        let mut name = [0_u16; 128];
-        // SAFETY: the buffer holds 128 units; registered messages share the format name table.
-        let len = unsafe { GetClipboardFormatNameW(msg, &mut name) };
-        if len > 0 {
-            let name = String::from_utf16_lossy(&name[..usize::try_from(len).unwrap_or(0)]);
-            return format!("{msg:#06x} \"{name}\"");
-        }
-    }
-    format!("{msg:#06x}")
-}
-
 /// `DWebBrowserEvents::BeforeNavigate`, `DownloadBegin` (both interfaces)
 const DISPID_BEFORENAVIGATE: i32 = 100;
 const DISPID_DOWNLOADBEGIN: i32 = 106;
 /// `DWebBrowserEvents2::BeforeNavigate2`
 const DISPID_BEFORENAVIGATE2: i32 = 250;
 
-/// The `events` experiment: Explorer's sequence for a navigation, with the folder's path as the
+/// Tells a listener of the navigation the way File Explorer does, with the folder's path as the
 /// URL. `DWebBrowserEvents`: BeforeNavigate, DownloadBegin, NavigateComplete, DownloadComplete.
 /// `DWebBrowserEvents2`: BeforeNavigate2, DownloadBegin, NavigateComplete2, DownloadComplete,
-/// DocumentComplete. Arguments go last to first, as `IDispatch` wants them.
-fn fire_like_explorer(
+/// DocumentComplete. Arguments go last to first, as `IDispatch` wants them. WPS Cloud tells a
+/// window the folder it shows was filled (`SHCNE_UPDATEDIR`) only after the whole sequence; with
+/// NavigateComplete alone it filled the folder and said nothing (#319).
+fn tell_navigation(
     state: &State,
     events: Events,
     sink: &IDispatch,
@@ -2414,12 +1936,6 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
     .inspect_err(|err| log::debug!("folder visit: no SHDocVw type info: {err}"))
     .ok();
     let messages = message_window()?;
-    let experiment = Experiment::current();
-    let fake = if experiment.class {
-        fake_windows(hwnd, experiment.defview)
-    } else {
-        FakeWindows::default()
-    };
     let pidl = folder.0.cast_const();
     let state = Rc::new(State {
         hwnd,
@@ -2441,17 +1957,10 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
         running: Arc::clone(running),
         relist: Cell::default(),
         journal: RefCell::default(),
-        experiment,
-        fake,
     });
     state.journal.borrow_mut().start();
-    state.journal.borrow_mut().experiment = experiment.name();
     let result = register_and_wait(&state, pidl, &dir);
     state.journal.borrow_mut().mark("ended");
-    if !state.fake.cabinet.0.is_null() {
-        // SAFETY: our own window, on this thread; its children go with it.
-        let _ = unsafe { DestroyWindow(state.fake.cabinet) };
-    }
     if result.is_ok() {
         log::info!(
             "folder visit for {} ended: {}",
@@ -2476,15 +1985,12 @@ fn register_and_wait(
         state: Rc::clone(state),
     }
     .into();
-    let view_unknown: IUnknown = view.cast()?;
     let browser: IWebBrowser2 = com::Browser {
         state: Rc::clone(state),
         view,
     }
     .into();
     let dispatch: IDispatch = browser.cast()?;
-    log_queries(&browser.cast()?, &BROWSER_IDENTITY, "Browser");
-    log_queries(&view_unknown, &VIEW_IDENTITY, "View");
     CURRENT.with(|c| {
         *c.borrow_mut() = Some(Current {
             state: Rc::clone(state),
@@ -2685,8 +2191,6 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
-            experiment: Experiment::default(),
-            fake: FakeWindows::default(),
         });
         let view: IShellView = com::View {
             state: Rc::clone(&state),
@@ -2794,8 +2298,6 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
-            experiment: Experiment::default(),
-            fake: FakeWindows::default(),
         };
         state.navigated();
         state.navigated();
@@ -2834,8 +2336,6 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
-            experiment: Experiment::default(),
-            fake: FakeWindows::default(),
         };
         state.navigated();
         state.flush_relist();
@@ -2866,18 +2366,31 @@ mod tests {
         assert!(summary.ends_with("-> relists 3"), "{summary}");
     }
 
-    /// What a listener asks of the window's objects is logged through their identity: each
-    /// interface once with a count, answered or refused, and readable names for known ids.
+    /// The log names the events fired at listeners, and whether they went through.
     #[test]
-    fn queries_of_the_window_objects_are_logged() {
-        use windows::Win32::UI::Shell::IFolderView2;
+    fn the_visit_log_has_the_events_fired() {
+        let mut journal = Journal::default();
+        journal.note_fired(101, true);
+        journal.note_fired(101, true);
+        journal.note_fired(104, false);
+        let summary = journal.summary();
+        assert!(
+            summary.contains("; fired: 101 ok x2, 104 failed x1"),
+            "{summary}"
+        );
+    }
+
+    /// Each listener is told of the navigation once, with File Explorer's whole sequence and the
+    /// folder's path as the URL, on both event interfaces (WPS Cloud waits for it, #319).
+    #[test]
+    fn listeners_get_explorers_navigation_sequence() {
         let state = Rc::new(State {
             hwnd: HWND::default(),
             messages: HWND::default(),
-            dir: PathBuf::from(r"C:\cloud"),
+            dir: PathBuf::from(r"C:\cloud\docs"),
             folder: Pidl(std::ptr::null_mut()),
-            url: String::new(),
-            name: String::new(),
+            url: "file:///C:/cloud/docs".into(),
+            name: "docs".into(),
             type_info: None,
             sinks: RefCell::default(),
             next_cookie: Cell::new(0),
@@ -2887,96 +2400,120 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
-            experiment: Experiment::default(),
-            fake: FakeWindows::default(),
         });
+        let (old, new): (Rc<RefCell<Vec<Fired>>>, Rc<RefCell<Vec<Fired>>>) = Default::default();
+        for (events, seen, cookie) in [(Events::Old, &old, 1), (Events::New, &new, 2)] {
+            state.sinks.borrow_mut().push(Sink {
+                cookie,
+                events,
+                dispatch: Recorder {
+                    seen: Rc::clone(seen),
+                }
+                .into(),
+                told: false,
+            });
+        }
         let view: IShellView = com::View {
             state: Rc::clone(&state),
         }
         .into();
-        let identity: IUnknown = view.cast().unwrap();
-        log_queries(&identity, &VIEW_IDENTITY, "View");
-        // Twice: the vtable is replaced once.
-        log_queries(&identity, &VIEW_IDENTITY, "View");
         let browser: IDispatch = view.cast().unwrap();
-        CURRENT.with(|c| {
-            *c.borrow_mut() = Some(Current {
-                state: Rc::clone(&state),
-                browser,
-            });
-        });
-        assert!(identity.cast::<IFolderView>().is_ok());
-        assert!(identity.cast::<IFolderView>().is_ok());
-        assert!(identity.cast::<IFolderView2>().is_err());
-        CURRENT.with(|c| *c.borrow_mut() = None);
+        tell_listeners(&state, &browser);
+        tell_listeners(&state, &browser);
+        let path = Some(r"C:\cloud\docs".to_owned());
+        assert_eq!(
+            *old.borrow(),
+            [
+                (DISPID_BEFORENAVIGATE, 6, path.clone()),
+                (DISPID_DOWNLOADBEGIN, 0, None),
+                (DISPID_NAVIGATECOMPLETE, 1, path.clone()),
+                (DISPID_DOWNLOADCOMPLETE, 0, None),
+            ],
+            "once, in order"
+        );
+        assert_eq!(
+            *new.borrow(),
+            [
+                (DISPID_BEFORENAVIGATE2, 7, path.clone()),
+                (DISPID_DOWNLOADBEGIN, 0, None),
+                (DISPID_NAVIGATECOMPLETE2, 2, path.clone()),
+                (DISPID_DOWNLOADCOMPLETE, 0, None),
+                (DISPID_DOCUMENTCOMPLETE, 2, path),
+            ]
+        );
         let summary = state.journal.borrow().summary();
         assert!(
-            summary.contains("; QI ok: View IFolderView x2"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("; QI refused: View IFolderView2 x1"),
-            "{summary}"
-        );
-        assert_eq!(guid_name(&IShellBrowser::IID), "IShellBrowser");
-        let unknown = GUID::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
-        assert_eq!(guid_name(&unknown), format!("{unknown:?}"));
-    }
-
-    /// `QueryService` and `GetIDsOfNames` go in the log with what was asked.
-    #[test]
-    fn services_and_names_asked_for_are_logged() {
-        use windows::Win32::UI::Shell::SID_STopLevelBrowser;
-        let mut journal = Journal::default();
-        journal.note_service("Browser", SID_STopLevelBrowser, IShellBrowser::IID, true);
-        journal.note_service("Browser", SID_STopLevelBrowser, IShellBrowser::IID, true);
-        journal.note_call("Browser.GetIDsOfNames(LocationURL)");
-        let summary = journal.summary();
-        assert!(
-            summary.contains("; QueryService: Browser SID_STopLevelBrowser/IShellBrowser ok x2"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("Browser.GetIDsOfNames(LocationURL) x1"),
+            summary.contains("; fired: 100 ok x1, 106 ok x2"),
             "{summary}"
         );
     }
 
-    /// `ARKE_WPS_EXPERIMENT`: comma-separated switches, `defview` including `class`, unknown
-    /// words ignored, nothing when empty.
-    #[test]
-    fn experiment_switches_parse() {
-        assert_eq!(Experiment::parse(""), Experiment::default());
-        assert_eq!(Experiment::parse("nonsense").name(), "");
-        let class = Experiment::parse("class");
-        assert!(class.class && !class.defview && !class.events);
-        assert_eq!(class.name(), "class");
-        let both = Experiment::parse(" defview , events ");
-        assert!(both.class && both.defview && both.events);
-        assert_eq!(both.name(), "defview,events");
-        assert_eq!(Experiment::parse("class,events").name(), "class,events");
+    /// An event a listener got: DISPID, how many arguments, and the URL among them.
+    type Fired = (i32, u32, Option<String>);
+
+    /// A listener that notes every event it gets.
+    #[implement(IDispatch)]
+    struct Recorder {
+        seen: Rc<RefCell<Vec<Fired>>>,
     }
 
-    /// The log names fired events and the experiment's window messages.
-    #[test]
-    fn the_visit_log_has_events_and_window_messages() {
-        let mut journal = Journal::default();
-        journal.note_fired(101, true);
-        journal.note_fired(101, true);
-        journal.note_fired(104, false);
-        journal.experiment = "class".into();
-        journal.note_window_message("CabinetWClass".into(), 0x0111, 5, 0);
-        journal.note_window_message("CabinetWClass".into(), 0x0111, 5, 0);
-        let summary = journal.summary();
-        assert!(
-            summary.contains("; fired: 101 ok x2, 104 failed x1"),
-            "{summary}"
-        );
-        assert!(summary.contains("; experiment: class"), "{summary}");
-        assert!(
-            summary.contains("; window messages: CabinetWClass 0x0111(w 0x5, l 0x0) x2"),
-            "{summary}"
-        );
+    impl IDispatch_Impl for Recorder_Impl {
+        fn GetTypeInfoCount(&self) -> windows::core::Result<u32> {
+            Ok(0)
+        }
+        fn GetTypeInfo(&self, _: u32, _: u32) -> windows::core::Result<ITypeInfo> {
+            Err(E_NOTIMPL.into())
+        }
+        fn GetIDsOfNames(
+            &self,
+            _: *const GUID,
+            _: *const PCWSTR,
+            _: u32,
+            _: u32,
+            _: *mut i32,
+        ) -> windows::core::Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+        fn Invoke(
+            &self,
+            id: i32,
+            _: *const GUID,
+            _: u32,
+            _: DISPATCH_FLAGS,
+            params: *const DISPPARAMS,
+            _: *mut VARIANT,
+            _: *mut EXCEPINFO,
+            _: *mut u32,
+        ) -> windows::core::Result<()> {
+            // SAFETY: the caller's arguments, valid for the call.
+            let params = unsafe { &*params };
+            let args: &[VARIANT] = if params.cArgs == 0 {
+                &[]
+            } else {
+                // SAFETY: `cArgs` VARIANTs at `rgvarg`.
+                unsafe { std::slice::from_raw_parts(params.rgvarg, params.cArgs as usize) }
+            };
+            let url = args.iter().find_map(text_of);
+            self.seen.borrow_mut().push((id, params.cArgs, url));
+            Ok(())
+        }
+    }
+
+    /// The text of a `VT_BSTR` argument, or of a by-reference VARIANT holding one.
+    fn text_of(arg: &VARIANT) -> Option<String> {
+        // SAFETY: reads the VARIANT by its type tag.
+        unsafe {
+            let inner = &*arg.Anonymous.Anonymous;
+            if inner.vt == VT_BSTR {
+                let text = (*inner.Anonymous.bstrVal).to_string();
+                return (!text.is_empty()).then_some(text);
+            }
+            if inner.vt == VARENUM(VT_BYREF.0 | VT_VARIANT.0) && !inner.Anonymous.pvarVal.is_null()
+            {
+                return text_of(&*inner.Anonymous.pvarVal);
+            }
+        }
+        None
     }
 
     /// The log says when the visit registered and first heard from a listener or the shell, the
@@ -3066,8 +2603,6 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
-            experiment: Experiment::default(),
-            fake: FakeWindows::default(),
         });
         CURRENT.with(|c| {
             *c.borrow_mut() = Some(Current {

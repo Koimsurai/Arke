@@ -1425,7 +1425,10 @@ fn hung_network_share_never_blocks_ui(cx: &mut TestAppContext) {
     cx.run_until_parked();
     view.update(cx, |v, _| {
         assert_eq!(v.current_path(), Some(Path::new(r"C:\other")));
-        assert_eq!(v.history.back_target(), Some(Path::new(r"C:\home")));
+        assert_eq!(
+            v.history.back_target().and_then(arke_core::Location::as_folder),
+            Some(Path::new(r"C:\home"))
+        );
     });
 }
 
@@ -8755,7 +8758,10 @@ fn path_bar_file_path_opens_file_and_selects_it(cx: &mut TestAppContext) {
             shell.ran.lock().is_empty(),
             "a quoted path is not a command"
         );
-        assert_eq!(v.history.back_target(), Some(Path::new(r"C:\home")));
+        assert_eq!(
+            v.history.back_target().and_then(arke_core::Location::as_folder),
+            Some(Path::new(r"C:\home"))
+        );
     });
 }
 

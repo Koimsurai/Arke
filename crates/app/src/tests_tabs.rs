@@ -1210,15 +1210,172 @@ fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) 
     });
     wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
     back(cx);
-    wait_until(cx, &view, "under Home: work", loaded(r"C:\work"));
     assert_eq!(page(cx).as_deref(), Some(home.as_str()));
     back(cx);
+    wait_until(cx, &view, "work", loaded(r"C:\work"));
     assert_eq!(
         page(cx),
         None,
         "back from Home shows the folder it was opened from"
     );
     assert_eq!(at(cx), Some(p(r"C:\work")));
+}
+
+/// Mouse Back or Forward over the sidebar, where no list takes it.
+fn mouse_step(cx: &mut VisualTestContext, back: bool) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Navigate(if back {
+            NavigationDirection::Back
+        } else {
+            NavigationDirection::Forward
+        }),
+        position: point(px(8.), px(300.)),
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+}
+
+/// #490: Home is a step of the history like a folder, in both directions: folder, Home, Desktop
+/// goes back to Home, then the folder, and forward to Home before Desktop.
+#[gpui::test]
+fn back_and_forward_step_through_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\Users\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let home = t!("home.title").into_owned();
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+
+    mouse_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "back to Home");
+    mouse_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None, "back from Home to t499");
+    assert_eq!(at(cx), Some(p(r"C:\t499")));
+    assert!(!view.update(cx, |e, _| e.can_go(true)), "nothing before t499");
+
+    mouse_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
+    mouse_step(cx, false);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None, "forward from Home to Desktop");
+    assert!(!view.update(cx, |e, _| e.can_go(false)));
+}
+
+/// #490: so is the Recycle Bin. A path typed in the path bar while it shows leaves it, and Back and
+/// Forward go through it.
+#[gpui::test]
+fn back_and_forward_step_through_the_recycle_bin(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\t010\rc2"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let bin = t!("recycle.title").into_owned();
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx)));
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()));
+    go(&view, cx, r"C:\t010\rc2");
+    assert_eq!(page(cx), None, "the path bar left the Recycle Bin");
+
+    mouse_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "back to the bin");
+    mouse_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    assert_eq!(at(cx), Some(p(r"C:\t499")));
+
+    mouse_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "forward to the bin");
+    mouse_step(cx, false);
+    wait_until(cx, &view, "rc2", loaded(r"C:\t010\rc2"));
+    assert_eq!(page(cx), None);
+}
+
+/// #490: the history menu lists Home and the Recycle Bin, and a jump to one (or past one) lands
+/// in the same place as stepping there.
+#[gpui::test]
+fn history_menu_jumps_to_and_over_pages(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t", r"C:\me\Desktop", r"C:\x", r"C:\y"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t", loaded(r"C:\t"));
+    let home = t!("home.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\me\Desktop"));
+    go(&view, cx, r"C:\x");
+    go(&view, cx, r"C:\y");
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["x".into(), "Desktop".into(), home.clone(), "t".into()])
+    );
+    // Jump to Home: the folders passed over wait on the forward side.
+    pick_menu_row(&ws, cx, 2);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(home.clone())
+    );
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec!["Desktop".into(), "x".into(), "y".into()])
+    );
+    // On to the folder under it, then back past Home to t.
+    pick_menu_row(&ws, cx, 0);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\me\Desktop"));
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec![home.clone(), "t".into()])
+    );
+    pick_menu_row(&ws, cx, 1);
+    wait_until(cx, &view, "t again", loaded(r"C:\t"));
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec![home, "Desktop".into(), "x".into(), "y".into()])
+    );
+}
+
+/// #490: Home where the tab starts has nothing before it, so Back stops there.
+#[gpui::test]
+fn back_stops_at_home_where_the_tab_starts(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t", r"C:\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t", loaded(r"C:\t"));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_start_home_for_test(window, cx)));
+    assert!(!view.update(cx, |e, _| e.can_go(true)));
+    mouse_step(cx, true);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(t!("home.title").into_owned())
+    );
+    assert_eq!(
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\t"))
+    );
 }
 
 /// Tab A goes a → b; a new tab B opens at c and goes to d. Returns the two list views.
@@ -2580,10 +2737,10 @@ fn a_history_jump_on_the_other_side_of_a_split(cx: &mut TestAppContext) {
     wait_until(cx, &left, "left forward to b", loaded(r"C:\b"));
 }
 
-/// Jumping back past a folder opened from Home shows Home, as pressing Back that many times
-/// does; with Home where the tab started, the folders under it aren't offered.
+/// Jumping back to Home shows it, as pressing Back that many times does; with Home where the
+/// tab started, the folders under it aren't offered.
 #[gpui::test]
-fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppContext) {
+fn a_history_jump_back_to_home_shows_home(cx: &mut TestAppContext) {
     let fs = folders(&[r"C:\a", r"C:\me", r"C:\me\Desktop", r"C:\x", r"C:\y"]);
     let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
@@ -2600,10 +2757,13 @@ fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppCont
     go(&view, cx, r"C:\y");
     assert_eq!(
         open_history_menu(&ws, &view, cx, true),
-        Some(vec!["x".into(), "Desktop".into(), "me".into()])
+        Some(vec![
+            "x".into(),
+            "Desktop".into(),
+            t!("home.title").into_owned()
+        ])
     );
     pick_menu_row(&ws, cx, 2);
-    wait_until(cx, &view, "me", loaded(r"C:\me"));
     assert_eq!(
         ws.update(cx, |ws, _| ws.shown_page_for_test()),
         Some(t!("home.title").into_owned())

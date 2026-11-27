@@ -73,19 +73,19 @@ pub(super) enum SidebarAction {
     /// Move a pinned list entry up to the tiles.
     MoveToTiles(PathBuf),
     /// A folder picked in the back or forward button's menu: `steps` down that pane's history,
-    /// where `path` was when the menu opened.
+    /// where `loc` was when the menu opened.
     HistoryJump {
         pane: gpui::EntityId,
         back: bool,
         steps: usize,
-        path: PathBuf,
+        loc: arke_core::Location,
     },
     /// The top row of a back or forward menu when the button goes to another tab first: one
-    /// step across tabs, to pane `to` (showing `path`).
+    /// step across tabs, to pane `to` (showing `loc`).
     TimelineStep {
         back: bool,
         to: gpui::EntityId,
-        path: PathBuf,
+        loc: arke_core::Location,
     },
     CloseTab(usize),
     DuplicateTab(usize),
@@ -867,12 +867,26 @@ pub(super) fn display_name(path: &Path) -> String {
     )
 }
 
+/// Name of a history entry: its folder's name, or the page's title.
+pub(super) fn location_name(loc: &arke_core::Location) -> String {
+    match loc {
+        arke_core::Location::Folder(path) => display_name(path),
+        arke_core::Location::Page(arke_core::NavPage::Home) => {
+            rust_i18n::t!("home.title").into_owned()
+        }
+        arke_core::Location::Page(arke_core::NavPage::RecycleBin) => {
+            rust_i18n::t!("recycle.title").into_owned()
+        }
+    }
+}
+
 /// The second, dimmer text of a menu row: the folder a history entry is in.
 fn menu_detail(action: &SidebarAction) -> Option<SharedString> {
     match action {
-        SidebarAction::HistoryJump { path, .. } | SidebarAction::TimelineStep { path, .. } => {
-            arke_core::path::parent(path).map(|p| p.display().to_string().into())
-        }
+        SidebarAction::HistoryJump { loc, .. } | SidebarAction::TimelineStep { loc, .. } => loc
+            .as_folder()
+            .and_then(arke_core::path::parent)
+            .map(|p| p.display().to_string().into()),
         _ => None,
     }
 }
@@ -3964,9 +3978,9 @@ impl Workspace {
                 pane,
                 back,
                 steps,
-                path,
+                loc,
             } => {
-                self.jump_in_history(pane, back, steps, &path, window, cx);
+                self.jump_in_history(pane, back, steps, &loc, window, cx);
             }
             SidebarAction::TimelineStep { back, to, .. } => {
                 self.timeline_step_to(back, to, window, cx);

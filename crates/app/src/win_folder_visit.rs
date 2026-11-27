@@ -82,8 +82,8 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Variant::{
-    InitVariantFromBuffer, VARENUM, VARIANT, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_VARIANT,
-    VariantClear,
+    InitVariantFromBuffer, VARENUM, VARIANT, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_I4,
+    VT_VARIANT, VariantClear,
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
@@ -298,6 +298,12 @@ struct Journal {
     services: Vec<(&'static str, GUID, GUID, bool, u32)>,
     hints: Vec<(Trigger, u32)>,
     relists: u32,
+    /// Events fired at listeners: the DISPID, whether the call succeeded.
+    fired: Vec<(i32, bool, u32)>,
+    /// Messages the fake windows got (`ARKE_WPS_EXPERIMENT`): class, message, wParam, lParam.
+    window_messages: Vec<(String, u32, usize, isize, u32)>,
+    /// The test-only switches on, if any.
+    experiment: String,
     /// When the visit started, for [`Self::mark`].
     started: Option<Instant>,
     /// The first time each step happened, after `started`.
@@ -364,6 +370,28 @@ impl Journal {
         }
     }
 
+    fn note_fired(&mut self, id: i32, ok: bool) {
+        if let Some(entry) = self.fired.iter_mut().find(|f| f.0 == id && f.1 == ok) {
+            entry.2 += 1;
+        } else {
+            self.fired.push((id, ok, 1));
+        }
+    }
+
+    /// A message to a fake window. Distinct ones only, at most 64 of them.
+    fn note_window_message(&mut self, class: String, msg: u32, w: usize, l: isize) {
+        const MAX_MESSAGES: usize = 64;
+        let entry = self
+            .window_messages
+            .iter_mut()
+            .find(|m| m.0 == class && m.1 == msg && m.2 == w && m.3 == l);
+        if let Some(entry) = entry {
+            entry.4 += 1;
+        } else if self.window_messages.len() < MAX_MESSAGES {
+            self.window_messages.push((class, msg, w, l, 1));
+        }
+    }
+
     fn note_hint(&mut self, trigger: Trigger) {
         if let Some(entry) = self.hints.iter_mut().find(|(t, _)| *t == trigger) {
             entry.1 += 1;
@@ -413,6 +441,19 @@ impl Journal {
             let answer = if *found { "ok" } else { "refused" };
             let (service, iid) = (guid_name(service), guid_name(iid));
             let _ = write!(out, "{sep} {object} {service}/{iid} {answer} x{count}");
+        }
+        for (i, (id, ok, count)) in self.fired.iter().enumerate() {
+            let sep = if i == 0 { "; fired:" } else { "," };
+            let answer = if *ok { "ok" } else { "failed" };
+            let _ = write!(out, "{sep} {id} {answer} x{count}");
+        }
+        if !self.experiment.is_empty() {
+            let _ = write!(out, "; experiment: {}", self.experiment);
+        }
+        for (i, (class, msg, w, l, count)) in self.window_messages.iter().enumerate() {
+            let sep = if i == 0 { "; window messages:" } else { "," };
+            let name = message_name(*msg);
+            let _ = write!(out, "{sep} {class} {name}(w {w:#x}, l {l:#x}) x{count}");
         }
         for (i, (step, at)) in self.marks.iter().enumerate() {
             let sep = if i == 0 { "; timing: " } else { ", " };
@@ -594,6 +635,9 @@ struct State {
     running: Arc<Running>,
     relist: Cell<Relist>,
     journal: RefCell<Journal>,
+    /// Test-only switches (#319), see [`Experiment`].
+    experiment: Experiment,
+    fake: FakeWindows,
 }
 
 impl State {
@@ -1369,7 +1413,12 @@ mod com {
     impl IOleWindow_Impl for Browser_Impl {
         fn GetWindow(&self) -> Res<HWND> {
             self.state.note_call("Browser.GetWindow");
-            Ok(self.state.hwnd)
+            let fake = self.state.fake.cabinet;
+            Ok(if fake.0.is_null() {
+                self.state.hwnd
+            } else {
+                fake
+            })
         }
         fn ContextSensitiveHelp(&self, _: windows::core::BOOL) -> Res<()> {
             self.state.note_call("Browser.ContextSensitiveHelp");
@@ -1583,7 +1632,12 @@ mod com {
     impl IOleWindow_Impl for View_Impl {
         fn GetWindow(&self) -> Res<HWND> {
             self.state.note_call("View.GetWindow");
-            Ok(self.state.hwnd)
+            let fake = self.state.fake.view;
+            Ok(if fake.0.is_null() {
+                self.state.hwnd
+            } else {
+                fake
+            })
         }
         fn ContextSensitiveHelp(&self, _: windows::core::BOOL) -> Res<()> {
             self.state.note_call("View.ContextSensitiveHelp");
@@ -1869,20 +1923,31 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
     if !due.is_empty() {
         state.running.set_calling(true);
     }
+    // Each call noted in the log.
+    let noted = |sink: &IDispatch, id: i32, args: &mut [VARIANT]| {
+        let ok = fire(sink, id, args);
+        if let Ok(mut journal) = state.journal.try_borrow_mut() {
+            journal.note_fired(id, ok);
+        }
+    };
     for (events, sink) in &due {
+        if state.experiment.events {
+            fire_like_explorer(state, *events, sink, browser, &noted);
+            continue;
+        }
         match events {
             Events::Old => {
                 let mut url = [bstr_variant(&state.url)];
-                fire(sink, DISPID_NAVIGATECOMPLETE, &mut url);
-                fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
+                noted(sink, DISPID_NAVIGATECOMPLETE, &mut url);
+                noted(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
                 clear(&mut url);
             }
             Events::New => {
                 let mut url = bstr_variant(&state.url);
                 let mut args = [variant_ref(&mut url), dispatch_variant(browser)];
-                fire(sink, DISPID_NAVIGATECOMPLETE2, &mut args);
-                fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
-                fire(sink, DISPID_DOCUMENTCOMPLETE, &mut args);
+                noted(sink, DISPID_NAVIGATECOMPLETE2, &mut args);
+                noted(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
+                noted(sink, DISPID_DOCUMENTCOMPLETE, &mut args);
                 clear(&mut args);
                 clear(std::slice::from_mut(&mut url));
             }
@@ -1893,6 +1958,278 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
         // Their event calls are back: what they filled inside them is there now.
         state.hint(Trigger::Told);
     }
+}
+
+/// Test-only switches for #319, from `ARKE_WPS_EXPERIMENT` (comma separated; nothing when unset):
+/// what a sync client may look at before it tells a window its folder changed.
+/// - `class`: `IOleWindow::GetWindow` of the browser gives a hidden `CabinetWClass` window owned
+///   by Arke's, instead of Arke's own window.
+/// - `defview`: as `class`, with Explorer's child windows inside it (`ShellTabWindowClass` >
+///   `DUIViewWndClassName` > `DirectUIHWND` > `SHELLDLL_DefView` > `DirectUIHWND`); the view's
+///   `GetWindow` gives the `SHELLDLL_DefView`.
+/// - `events`: listeners get Explorer's whole navigation sequence, with the folder's path as the
+///   URL ([`fire_like_explorer`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Experiment {
+    class: bool,
+    defview: bool,
+    events: bool,
+}
+
+impl Experiment {
+    fn parse(text: &str) -> Self {
+        let mut experiment = Self::default();
+        for part in text.split(',') {
+            match part.trim() {
+                "class" => experiment.class = true,
+                "defview" => {
+                    experiment.class = true;
+                    experiment.defview = true;
+                }
+                "events" => experiment.events = true,
+                _ => {}
+            }
+        }
+        experiment
+    }
+
+    /// The switches set for this process (read once).
+    fn current() -> Self {
+        static SWITCHES: LazyLock<Experiment> = LazyLock::new(|| {
+            std::env::var("ARKE_WPS_EXPERIMENT")
+                .map_or_else(|_| Experiment::default(), |v| Experiment::parse(&v))
+        });
+        *SWITCHES
+    }
+
+    /// For the log: the switches on, comma separated; empty when none.
+    fn name(self) -> String {
+        [
+            (self.class && !self.defview, "class"),
+            (self.defview, "defview"),
+            (self.events, "events"),
+        ]
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(",")
+    }
+}
+
+/// The hidden windows of the `class` and `defview` experiments; null when off.
+#[derive(Clone, Copy, Debug, Default)]
+struct FakeWindows {
+    cabinet: HWND,
+    view: HWND,
+}
+
+/// Makes the experiment's hidden `CabinetWClass` window, owned by `owner` and as large, and with
+/// `defview` Explorer's child windows in it. Messages they get go in the visit's log.
+fn fake_windows(owner: HWND, defview: bool) -> FakeWindows {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    };
+    let make = |class: PCWSTR, style: WINDOW_STYLE, parent: HWND, rect: RECT| {
+        // SAFETY: registers a class of this module for our window procedure (twice fails
+        // harmlessly) and creates a hidden window of it on this thread.
+        unsafe {
+            let instance = GetModuleHandleW(None).ok()?;
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(fake_proc),
+                hInstance: instance.into(),
+                lpszClassName: class,
+                ..Default::default()
+            };
+            RegisterClassW(&raw const wc);
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                class,
+                PCWSTR::null(),
+                style,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                Some(parent),
+                None,
+                Some(instance.into()),
+                None,
+            )
+            .ok()
+        }
+    };
+    let mut rect = RECT::default();
+    // SAFETY: reads the owner's position into `rect`.
+    let _ = unsafe { GetWindowRect(owner, &raw mut rect) };
+    let Some(cabinet) = make(
+        windows::core::w!("CabinetWClass"),
+        WS_OVERLAPPEDWINDOW,
+        owner,
+        rect,
+    ) else {
+        return FakeWindows::default();
+    };
+    let mut view = HWND::default();
+    if defview {
+        let inside = RECT {
+            left: 0,
+            top: 0,
+            right: rect.right - rect.left,
+            bottom: rect.bottom - rect.top,
+        };
+        let child = WS_CHILD | WS_CLIPCHILDREN;
+        let mut parent = cabinet;
+        let chain = [
+            windows::core::w!("ShellTabWindowClass"),
+            windows::core::w!("DUIViewWndClassName"),
+            windows::core::w!("DirectUIHWND"),
+            windows::core::w!("SHELLDLL_DefView"),
+            windows::core::w!("DirectUIHWND"),
+        ];
+        /// Where `SHELLDLL_DefView` is in `chain`.
+        const DEFVIEW: usize = 3;
+        for (i, class) in chain.into_iter().enumerate() {
+            let Some(window) = make(class, child, parent, inside) else {
+                break;
+            };
+            if i == DEFVIEW {
+                view = window;
+            }
+            parent = window;
+        }
+    }
+    FakeWindows { cabinet, view }
+}
+
+/// The experiment's windows: every message goes in the visit's log, then the default handling.
+unsafe extern "system" fn fake_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    let _ = CURRENT.try_with(|current| {
+        if let Ok(current) = current.try_borrow()
+            && let Some(current) = current.as_ref()
+            && let Ok(mut journal) = current.state.journal.try_borrow_mut()
+        {
+            let mut name = [0_u16; 64];
+            // SAFETY: our own window; the buffer holds 64 units.
+            let len = unsafe { GetClassNameW(hwnd, &mut name) };
+            let class = String::from_utf16_lossy(&name[..usize::try_from(len).unwrap_or(0)]);
+            journal.note_window_message(class, msg, w.0, l.0);
+        }
+    });
+    // SAFETY: forwards to the default procedure with the same arguments.
+    unsafe { DefWindowProcW(hwnd, msg, w, l) }
+}
+
+/// A message's number, and for a registered one (`RegisterWindowMessage`) its name too.
+fn message_name(msg: u32) -> String {
+    use windows::Win32::System::DataExchange::GetClipboardFormatNameW;
+    if msg >= 0xC000 {
+        let mut name = [0_u16; 128];
+        // SAFETY: the buffer holds 128 units; registered messages share the format name table.
+        let len = unsafe { GetClipboardFormatNameW(msg, &mut name) };
+        if len > 0 {
+            let name = String::from_utf16_lossy(&name[..usize::try_from(len).unwrap_or(0)]);
+            return format!("{msg:#06x} \"{name}\"");
+        }
+    }
+    format!("{msg:#06x}")
+}
+
+/// `DWebBrowserEvents::BeforeNavigate`, `DownloadBegin` (both interfaces)
+const DISPID_BEFORENAVIGATE: i32 = 100;
+const DISPID_DOWNLOADBEGIN: i32 = 106;
+/// `DWebBrowserEvents2::BeforeNavigate2`
+const DISPID_BEFORENAVIGATE2: i32 = 250;
+
+/// The `events` experiment: Explorer's sequence for a navigation, with the folder's path as the
+/// URL. `DWebBrowserEvents`: BeforeNavigate, DownloadBegin, NavigateComplete, DownloadComplete.
+/// `DWebBrowserEvents2`: BeforeNavigate2, DownloadBegin, NavigateComplete2, DownloadComplete,
+/// DocumentComplete. Arguments go last to first, as `IDispatch` wants them.
+fn fire_like_explorer(
+    state: &State,
+    events: Events,
+    sink: &IDispatch,
+    browser: &IDispatch,
+    fire: &dyn Fn(&IDispatch, i32, &mut [VARIANT]),
+) {
+    let path = state.dir.to_string_lossy();
+    let mut cancel = VARIANT_FALSE;
+    match events {
+        Events::Old => {
+            // BeforeNavigate(URL, Flags, TargetFrameName, PostData, Headers, Cancel)
+            let mut post_data = VARIANT::default();
+            let mut before = [
+                bool_ref(&mut cancel),
+                bstr_variant(""),
+                variant_ref(&mut post_data),
+                bstr_variant(""),
+                i4_variant(0),
+                bstr_variant(&path),
+            ];
+            fire(sink, DISPID_BEFORENAVIGATE, &mut before);
+            clear(&mut before);
+            fire(sink, DISPID_DOWNLOADBEGIN, &mut []);
+            let mut url = [bstr_variant(&path)];
+            fire(sink, DISPID_NAVIGATECOMPLETE, &mut url);
+            clear(&mut url);
+            fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
+        }
+        Events::New => {
+            // BeforeNavigate2(pDisp, URL, Flags, TargetFrameName, PostData, Headers, Cancel)
+            let mut url = bstr_variant(&path);
+            let (mut flags, mut target, mut post_data, mut headers) = (
+                i4_variant(0),
+                VARIANT::default(),
+                VARIANT::default(),
+                VARIANT::default(),
+            );
+            let mut before = [
+                bool_ref(&mut cancel),
+                variant_ref(&mut headers),
+                variant_ref(&mut post_data),
+                variant_ref(&mut target),
+                variant_ref(&mut flags),
+                variant_ref(&mut url),
+                dispatch_variant(browser),
+            ];
+            fire(sink, DISPID_BEFORENAVIGATE2, &mut before);
+            clear(&mut before);
+            fire(sink, DISPID_DOWNLOADBEGIN, &mut []);
+            // NavigateComplete2 and DocumentComplete(pDisp, URL)
+            let mut args = [variant_ref(&mut url), dispatch_variant(browser)];
+            fire(sink, DISPID_NAVIGATECOMPLETE2, &mut args);
+            fire(sink, DISPID_DOWNLOADCOMPLETE, &mut []);
+            fire(sink, DISPID_DOCUMENTCOMPLETE, &mut args);
+            clear(&mut args);
+            clear(std::slice::from_mut(&mut url));
+        }
+    }
+}
+
+/// A `VT_BYREF | VT_BOOL` VARIANT pointing at `target`, which must outlive it. Owns nothing.
+fn bool_ref(target: &mut VARIANT_BOOL) -> VARIANT {
+    let mut v = VARIANT::default();
+    // SAFETY: a by-reference VARIANT only stores the pointer.
+    unsafe {
+        let inner = &mut *v.Anonymous.Anonymous;
+        inner.vt = VARENUM(VT_BYREF.0 | VT_BOOL.0);
+        inner.Anonymous.pboolVal = std::ptr::from_mut(target);
+    }
+    v
+}
+
+/// A `VT_I4` VARIANT.
+fn i4_variant(value: i32) -> VARIANT {
+    let mut v = VARIANT::default();
+    // SAFETY: a zeroed VARIANT is VT_EMPTY; it now holds an i32.
+    unsafe {
+        let inner = &mut *v.Anonymous.Anonymous;
+        inner.vt = VT_I4;
+        inner.Anonymous.lVal = value;
+    }
+    v
 }
 
 fn clear(variants: &mut [VARIANT]) {
@@ -2077,6 +2414,12 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
     .inspect_err(|err| log::debug!("folder visit: no SHDocVw type info: {err}"))
     .ok();
     let messages = message_window()?;
+    let experiment = Experiment::current();
+    let fake = if experiment.class {
+        fake_windows(hwnd, experiment.defview)
+    } else {
+        FakeWindows::default()
+    };
     let pidl = folder.0.cast_const();
     let state = Rc::new(State {
         hwnd,
@@ -2098,10 +2441,17 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
         running: Arc::clone(running),
         relist: Cell::default(),
         journal: RefCell::default(),
+        experiment,
+        fake,
     });
     state.journal.borrow_mut().start();
+    state.journal.borrow_mut().experiment = experiment.name();
     let result = register_and_wait(&state, pidl, &dir);
     state.journal.borrow_mut().mark("ended");
+    if !state.fake.cabinet.0.is_null() {
+        // SAFETY: our own window, on this thread; its children go with it.
+        let _ = unsafe { DestroyWindow(state.fake.cabinet) };
+    }
     if result.is_ok() {
         log::info!(
             "folder visit for {} ended: {}",
@@ -2335,6 +2685,8 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
+            experiment: Experiment::default(),
+            fake: FakeWindows::default(),
         });
         let view: IShellView = com::View {
             state: Rc::clone(&state),
@@ -2442,6 +2794,8 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
+            experiment: Experiment::default(),
+            fake: FakeWindows::default(),
         };
         state.navigated();
         state.navigated();
@@ -2480,6 +2834,8 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
+            experiment: Experiment::default(),
+            fake: FakeWindows::default(),
         };
         state.navigated();
         state.flush_relist();
@@ -2531,6 +2887,8 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
+            experiment: Experiment::default(),
+            fake: FakeWindows::default(),
         });
         let view: IShellView = com::View {
             state: Rc::clone(&state),
@@ -2580,6 +2938,43 @@ mod tests {
         );
         assert!(
             summary.contains("Browser.GetIDsOfNames(LocationURL) x1"),
+            "{summary}"
+        );
+    }
+
+    /// `ARKE_WPS_EXPERIMENT`: comma-separated switches, `defview` including `class`, unknown
+    /// words ignored, nothing when empty.
+    #[test]
+    fn experiment_switches_parse() {
+        assert_eq!(Experiment::parse(""), Experiment::default());
+        assert_eq!(Experiment::parse("nonsense").name(), "");
+        let class = Experiment::parse("class");
+        assert!(class.class && !class.defview && !class.events);
+        assert_eq!(class.name(), "class");
+        let both = Experiment::parse(" defview , events ");
+        assert!(both.class && both.defview && both.events);
+        assert_eq!(both.name(), "defview,events");
+        assert_eq!(Experiment::parse("class,events").name(), "class,events");
+    }
+
+    /// The log names fired events and the experiment's window messages.
+    #[test]
+    fn the_visit_log_has_events_and_window_messages() {
+        let mut journal = Journal::default();
+        journal.note_fired(101, true);
+        journal.note_fired(101, true);
+        journal.note_fired(104, false);
+        journal.experiment = "class".into();
+        journal.note_window_message("CabinetWClass".into(), 0x0111, 5, 0);
+        journal.note_window_message("CabinetWClass".into(), 0x0111, 5, 0);
+        let summary = journal.summary();
+        assert!(
+            summary.contains("; fired: 101 ok x2, 104 failed x1"),
+            "{summary}"
+        );
+        assert!(summary.contains("; experiment: class"), "{summary}");
+        assert!(
+            summary.contains("; window messages: CabinetWClass 0x0111(w 0x5, l 0x0) x2"),
             "{summary}"
         );
     }
@@ -2671,6 +3066,8 @@ mod tests {
             running: Arc::default(),
             relist: Cell::default(),
             journal: RefCell::default(),
+            experiment: Experiment::default(),
+            fake: FakeWindows::default(),
         });
         CURRENT.with(|c| {
             *c.borrow_mut() = Some(Current {

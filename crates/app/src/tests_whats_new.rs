@@ -236,6 +236,15 @@ fn the_whats_new_star_line_only_opens_github(cx: &mut TestAppContext) {
     let before = settings(cx);
     assert_eq!(opened_urls(cx), Vec::<String>::new());
 
+    // The notes can be longer than the window: scroll down to the line first.
+    let page = ws
+        .update(cx, |ws, _| ws.whats_new_for_test())
+        .expect("What's new is open");
+    page.update(cx, |page, cx| {
+        page.scroll_to_end_for_test();
+        cx.notify();
+    });
+    cx.run_until_parked();
     click(cx, "whats-new-star");
     assert_eq!(opened_urls(cx), [crate::build_info::SOURCE_URL]);
     assert_eq!(settings(cx), before, "no setting changes");

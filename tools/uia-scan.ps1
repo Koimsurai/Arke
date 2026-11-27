@@ -207,6 +207,7 @@ $seq = New-Object Collections.Generic.List[object]
 $walkFail = New-Object Collections.Generic.List[string]
 $firstKey = if ($start) { $start.Key } else { $null }
 Say "Tab walk: up to $Tabs presses"
+$harnessFail = $false
 $prev = $start; $stuck = 0; $maxStuck = 0; $cycle = 0; $moves = 0
 for ($n = 1; $n -le $Tabs; $n++) {
   [W]::Tab()
@@ -223,7 +224,15 @@ for ($n = 1; $n -le $Tabs; $n++) {
     $stuck++; $maxStuck = [Math]::Max($maxStuck, $stuck); continue
   }
   if ($f.Pid -ne $arkePid) { $walkFail.Add("Tab ${n}: focus left Arke (process $($f.Pid): $(Label $f))"); break }
-  if (-not $known.ContainsKey($f.Key)) { Add-Finding 'focused-not-in-tree' $f "Tab $n focused an element the tree scan did not find" }
+  if (-not $known.ContainsKey($f.Key)) {
+    # Some elements only exist while focus is on them (the address bar's edit box, the search
+    # options): read the tree again now. Found there is fine; still missing is a real finding.
+    foreach ($el in $root.FindAll($descendants, $anything)) {
+      try { $known[($el.GetRuntimeId() -join '.')] = $true } catch { }
+    }
+    if ($known.ContainsKey($f.Key)) { Say "    (appeared on focus: $(Label $f))" }
+    else { Add-Finding 'focused-not-in-tree' $f "Tab $n focused an element that is not in the tree, even when read again" }
+  }
   if (-not ($f.Name -and $f.Name.Trim())) { Add-Finding 'focused-unnamed' $f "Tab $n focused an element with no Name" }
   if ($prev -and $f.Key -eq $prev.Key) { $stuck++; $maxStuck = [Math]::Max($maxStuck, $stuck) } else { $stuck = 0; $moves++ }
   if (-not $firstKey) { $firstKey = $f.Key }
@@ -231,7 +240,7 @@ for ($n = 1; $n -le $Tabs; $n++) {
   $prev = $f
 }
 $distinct = @($seq | Where-Object { $_.Focus } | ForEach-Object { $_.Focus.Key } | Select-Object -Unique).Count
-if ($seq.Count -eq 0) { $walkFail.Add('no Tab press was sent (the press loop did not run)') }
+if ($seq.Count -eq 0) { $walkFail.Add('no Tab press was sent (the press loop did not run)'); $harnessFail = $true }
 if ($moves -lt 2 -or $distinct -lt 3) { $walkFail.Add("focus did not move: $moves moves, $distinct distinct elements in $($seq.Count) presses") }
 if ($maxStuck -ge 3) { $walkFail.Add("keyboard trap: focus stayed on one element (or on nothing) for $maxStuck Tab presses in a row") }
 if (-not $cycle -and $walkFail.Count -eq 0) { $walkFail.Add("focus never came back to the start element within $Tabs presses (no cycle)") }
@@ -273,5 +282,8 @@ Sum ''; Sum '</details>'; Sum ''
 if ($grouped.Count) { $grouped | Export-Csv "$out\findings.csv" -NoTypeInformation }
 
 $failed = $walkFail.Count -gt 0 -or $grouped.Count -gt 0
+# Report-only runs succeed with findings; a harness failure (nothing was tested) always fails.
+if ($harnessFail) { Say 'FAILED: the scan could not run'; exit 1 }
 if ($failed -and $Enforce) { Say 'FAILED'; exit 1 }
 Say $(if ($failed) { 'findings reported (not enforced)' } else { 'clean' })
+exit 0

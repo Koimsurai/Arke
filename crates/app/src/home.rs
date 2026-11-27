@@ -479,6 +479,8 @@ pub(crate) struct HomePage {
     ring: Ring,
     /// Scroll the cursor's card into view when it is next drawn.
     reveal: Rc<Cell<bool>>,
+    /// Shift+Tab brought the keyboard in: pick the first card of the last section once drawn.
+    enter_last: bool,
 }
 
 impl EventEmitter<HomeEvent> for HomePage {}
@@ -601,6 +603,7 @@ impl HomePage {
             spots: RefCell::new(Vec::new()),
             focused: false,
             ring: Ring::Off,
+            enter_last: false,
             reveal: Rc::new(Cell::new(false)),
         };
         this.reload(cx);
@@ -1411,18 +1414,15 @@ impl HomePage {
 
     /// Tab (`forward`) or Shift+Tab into the page from the rest of the window: the first card of
     /// its first or last section, so a round visits every section, whatever was picked before.
+    /// The cards are only recorded while the page has the keyboard, so Shift+Tab picks the last
+    /// section's card in the next frame (`enter_last`); Tab just forgets the pick, which puts the
+    /// ring on the first card.
     pub(crate) fn enter(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let spot = {
-            let spots = self.spots.borrow();
-            let edge = if forward { spots.first() } else { spots.last() };
-            edge.and_then(|e| spots.iter().find(|s| s.section == e.section))
-                .map(|s| s.spot.clone())
-        };
-        if let Some(spot) = spot {
-            self.pick(&spot);
-            self.reveal.set(true);
-            cx.notify();
-        }
+        self.selected_card = None;
+        self.selected_recent = None;
+        self.enter_last = !forward;
+        self.reveal.set(true);
+        cx.notify();
     }
 
     fn home_left(&mut self, _: &HomeLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -1722,6 +1722,22 @@ impl Render for HomePage {
             self.selected_card = None;
             self.selected_recent = None;
             window.request_animation_frame();
+        }
+        if self.enter_last && self.focused {
+            self.enter_last = false;
+            let last = self.spots.borrow().last().map(|s| s.section);
+            let spot = last.and_then(|last| {
+                let spots = self.spots.borrow();
+                spots
+                    .iter()
+                    .find(|s| s.section == last)
+                    .map(|s| s.spot.clone())
+            });
+            if let Some(spot) = spot {
+                self.pick(&spot);
+                self.reveal.set(true);
+                window.request_animation_frame();
+            }
         }
         page
     }

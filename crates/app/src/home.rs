@@ -1381,8 +1381,8 @@ impl HomePage {
     pub(crate) fn tab_section(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
         // The ring isn't on screen (the mouse moved after Tab brought the keyboard here): the
         // first card was never seen as the stop, so Tab shows it instead of walking past it.
-        // With a screen reader attached it already reports that card as focused, so Tab goes on.
-        if forward && !self.has_pick() && self.ring != Ring::Shown && !crate::a11y::active() {
+        // Any UIA client counts, not only screen readers: the ring is what a sighted user goes by.
+        if forward && !self.has_pick() && self.ring != Ring::Shown {
             let first = self.spots.borrow().first().map(|s| s.spot.clone());
             if let Some(spot) = first {
                 self.pick(&spot);

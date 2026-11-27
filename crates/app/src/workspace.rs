@@ -1383,6 +1383,55 @@ impl Workspace {
         self.open_sidebar_menu(position, items, cx);
     }
 
+    /// A pane arrived at a folder: the timeline, Recent, remembered places.
+    fn on_navigated(
+        &mut self,
+        source: &Entity<Explorer>,
+        (tab_ix, pane_ix): (usize, usize),
+        path: &Path,
+        stepped: bool,
+        kind: NavKind,
+        cx: &mut Context<Self>,
+    ) {
+        if stepped {
+            self.note_navigation(source.entity_id(), cx);
+        }
+        self.history_landed(source.entity_id(), kind, cx);
+        crate::search_history::SearchHistory::record(path, true, cx);
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.remember(path);
+                    st.remember_share(path);
+                },
+                cx,
+            );
+        });
+        self.pane_navigated(tab_ix, pane_ix, path, cx);
+    }
+
+    /// History stepped onto a page, or off one back to the folder under it.
+    fn on_history_page(
+        &mut self,
+        source: &Entity<Explorer>,
+        event: &ExplorerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kind = match event {
+            ExplorerEvent::PageShown { page, kind } => {
+                self.show_history_page(source, *page, window, cx);
+                *kind
+            }
+            ExplorerEvent::PageHidden { kind } => {
+                self.hide_pages_of(source, window, cx);
+                *kind
+            }
+            _ => return,
+        };
+        self.history_landed(source.entity_id(), kind, cx);
+    }
+
     fn on_explorer_event(
         &mut self,
         source: &Entity<Explorer>,
@@ -1439,36 +1488,15 @@ impl Workspace {
                 );
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
-            ExplorerEvent::PageShown { page, kind } => {
-                self.show_history_page(source, *page, window, cx);
-                self.history_landed(source.entity_id(), *kind, cx);
-            }
-            ExplorerEvent::PageHidden { kind } => {
-                self.hide_pages_of(source, window, cx);
-                self.history_landed(source.entity_id(), *kind, cx);
+            ExplorerEvent::PageShown { .. } | ExplorerEvent::PageHidden { .. } => {
+                self.on_history_page(source, event, window, cx);
             }
             ExplorerEvent::OpenHome => self.open_home(false, window, cx),
             ExplorerEvent::Navigated {
                 path,
                 stepped,
                 kind,
-            } => {
-                if *stepped {
-                    self.note_navigation(source.entity_id(), cx);
-                }
-                self.history_landed(source.entity_id(), *kind, cx);
-                crate::search_history::SearchHistory::record(path, true, cx);
-                SettingsStore::global(cx).update(cx, |s, cx| {
-                    s.update(
-                        |st| {
-                            st.remember(path);
-                            st.remember_share(path);
-                        },
-                        cx,
-                    );
-                });
-                self.pane_navigated(tab_ix, pane_ix, path, cx);
-            }
+            } => self.on_navigated(source, (tab_ix, pane_ix), path, *stepped, *kind, cx),
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
             ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::FolderMenu { path, position } => {

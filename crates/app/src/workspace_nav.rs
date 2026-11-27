@@ -86,6 +86,15 @@ impl Workspace {
         self.sync_nav_buttons(cx);
     }
 
+    /// `view` went back by itself (a page over it closed onto the folder it was opened from): the
+    /// timeline's step for opening the page is undone with it, so Forward can redo both.
+    pub(super) fn undo_nav_step(&mut self, view: EntityId, cx: &mut Context<Self>) {
+        if self.nav.timeline.behind().next() == Some(&Step::Nav(view)) {
+            self.nav.timeline.back();
+            self.sync_nav_buttons(cx);
+        }
+    }
+
     /// Back (or forward) one step on the timeline. Steps of closed panes, and navigations the
     /// pane can no longer undo, are skipped.
     pub(super) fn step_timeline(
@@ -329,10 +338,11 @@ impl Workspace {
                 let id = if back { from } else { to };
                 let (t, p) = self.pane_of(id)?;
                 let view = self.tabs[t].panes[p].view.read(cx);
-                (
-                    id,
-                    arke_core::Location::Folder(view.display_path()?.to_path_buf()),
-                )
+                let here = match view.page() {
+                    Some(page) => arke_core::Location::Page(page),
+                    None => arke_core::Location::Folder(view.display_path()?.to_path_buf()),
+                };
+                (id, here)
             }
         };
         Some((

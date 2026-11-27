@@ -1428,6 +1428,77 @@ fn history_menu_jumps_to_and_over_pages(cx: &mut TestAppContext) {
     );
 }
 
+/// A few frames, so the workspace has noticed a page that closed.
+fn settle(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+}
+
+/// #490: closing Home (its button, Esc, Settings) over the folder it was opened from is a step
+/// back: Forward opens it again, and Back from there is the folder.
+#[gpui::test]
+fn closing_a_page_onto_the_folder_it_came_from_is_back(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    go(&view, cx, r"C:\b");
+    let home = t!("home.title").into_owned();
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_home_for_test(window, cx)));
+    settle(cx);
+    assert_eq!(page(cx), None);
+    assert!(view.update(cx, |e, _| e.can_go(true)), "a is still behind b");
+    assert!(view.update(cx, |e, _| e.can_go(false)), "Home is ahead");
+
+    mouse_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward reopens Home");
+    mouse_step(cx, true);
+    assert_eq!(page(cx), None);
+    assert_eq!(
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\b"))
+    );
+}
+
+/// #490: Back or Forward on a pane that isn't the active one, onto a page, makes it the active
+/// pane and shows the page there.
+#[gpui::test]
+fn back_to_a_page_from_the_other_side_of_a_split_shows_it_there(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    let (left, right) = split_to(&ws, cx, r"C:\b");
+    let active = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.active_view().entity_id());
+
+    // Home over the left side, then a folder from it: the left side's history has Home.
+    left.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));
+    cx.run_until_parked();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.home_open_folder_for_test(p(r"C:\c"), window, cx));
+    });
+    wait_until(cx, &left, "c", loaded(r"C:\c"));
+    right.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));
+    cx.run_until_parked();
+    assert_eq!(active(cx), right.entity_id());
+
+    cx.update(|window, cx| {
+        left.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(active(cx), left.entity_id(), "the left side came forward");
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(t!("home.title").into_owned())
+    );
+}
+
 /// #490: Home where the tab starts has nothing before it, so Back stops there.
 #[gpui::test]
 fn back_stops_at_home_where_the_tab_starts(cx: &mut TestAppContext) {

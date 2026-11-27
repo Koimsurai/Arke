@@ -717,3 +717,47 @@ fn a_menu_opened_from_the_keyboard_shows_its_access_keys(cx: &mut TestAppContext
     cx.run_until_parked();
     assert_eq!(cues_and_depth(&view, cx), Some((true, 0)));
 }
+
+/// Open in Terminal is picked with T, as in File Explorer (#422): the menu runs it and closes.
+#[gpui::test]
+fn open_in_terminal_is_picked_with_t(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    open_menu_at(&view, cx, point(px(300.), px(200.)));
+    assert!(cues_and_depth(&view, cx).is_some());
+    cx.simulate_keystrokes("t");
+    assert_eq!(cues_and_depth(&view, cx), None);
+}
+
+/// Shift with Delete's key in a file's menu is Shift+Delete: it asks before deleting for good and
+/// leaves the Recycle Bin alone. A fake shell stands in for it, so nothing real is touched.
+#[gpui::test]
+fn shift_with_deletes_key_asks_to_delete_permanently(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    cx.simulate_keystrokes("down");
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.open_context_menu_by_keyboard_for_test(window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert!(cues_and_depth(&view, cx).is_some());
+    cx.simulate_keystrokes("shift-d");
+    view.update(cx, |v, _| {
+        assert_eq!(
+            v.confirm_title().as_deref(),
+            Some(&*t!("recycle.confirm_purge_title"))
+        );
+    });
+    assert!(shell.ops().is_empty(), "nothing is deleted before the yes");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(shell.ops().is_empty());
+}

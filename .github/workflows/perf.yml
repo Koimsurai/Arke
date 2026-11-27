@@ -135,4 +135,4 @@ jobs:
         run: |
           $splat = @{ Base = "$PWD\exe\exe-base\arke.exe"; Head = "$PWD\exe\exe-head\arke.exe" }
           if ($env:FAIL_ON_REGRESSION -eq 'true') { $splat['Fail'] = $true }
-          & .github/perf/bench.ps1 @args
+          & .github/perf/bench.ps1 @splat

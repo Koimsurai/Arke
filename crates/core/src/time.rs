@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn filetimes_round_trip() {
+    fn file_times_round_trip() {
         let t = SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700);
         let ticks = filetime_from_system_time(t).unwrap();
         assert_eq!(

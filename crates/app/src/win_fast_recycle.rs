@@ -878,6 +878,9 @@ fn windows_counted(root: &Path, before: u64) -> bool {
 #[cfg(test)]
 static COUNT_CHECKS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
 
+/// Names handed out so far: set apart from each other, whatever the clock says.
+static NAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Unused `$I`/`$R` names in `bin` for an item with extension `ext`.
 fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -885,7 +888,10 @@ fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_nanos() as u64
-        ^ u64::from(std::process::id()).rotate_left(32);
+        ^ u64::from(std::process::id()).rotate_left(32)
+        // The clock ticks every millisecond or so: threads asking within one tick (two deletes
+        // at once) would get the same names and one of them would lose the race to create them.
+        ^ NAMES.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     for _ in 0..32 {
         let mut tag = String::with_capacity(6);
         for _ in 0..6 {

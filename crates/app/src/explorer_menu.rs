@@ -726,6 +726,14 @@ const fn shift_hit(hit: AccessHit, shift: bool) -> AccessHit {
     }
 }
 
+/// The command a click runs: Shift+click on Delete deletes permanently, as in File Explorer.
+const fn click_command(command: MenuCommand, shift: bool) -> MenuCommand {
+    match command {
+        MenuCommand::Delete if shift => MenuCommand::DeleteForever,
+        other => other,
+    }
+}
+
 /// A row's text with its access key underlined, when the underlines are shown. The CJK form
 /// writes the key after the text, as `(O)`, which is there whether underlined or not.
 fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyElement {
@@ -3816,8 +3824,12 @@ impl Explorer {
                             .on_click(crate::popup::listener_in(
                                 menu.owner,
                                 cx,
-                                move |this, _: &ClickEvent, window, cx| {
-                                    this.run_menu_command(command, window, cx);
+                                move |this, event: &ClickEvent, window, cx| {
+                                    this.run_menu_command(
+                                        click_command(command, event.modifiers().shift),
+                                        window,
+                                        cx,
+                                    );
                                 },
                             ))
                     })
@@ -3985,8 +3997,12 @@ impl Explorer {
                     .on_click(crate::popup::listener_in(
                         menu.owner,
                         cx,
-                        move |this, _: &ClickEvent, window, cx| match command {
-                            Some(command) => this.run_menu_command(command, window, cx),
+                        move |this, event: &ClickEvent, window, cx| match command {
+                            Some(command) => this.run_menu_command(
+                                click_command(command, event.modifiers().shift),
+                                window,
+                                cx,
+                            ),
                             None => this.click_submenu(level, ix, cx),
                         },
                     ))

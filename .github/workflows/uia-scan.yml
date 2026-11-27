@@ -56,10 +56,10 @@ jobs:
           ENFORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.enforce && '1' || '' }}
         run: |
           # Both pages always run; the step fails afterwards if either did (when enforced).
-          $enforce = if ($env:ENFORCE) { @('-Enforce') } else { @() }
+          # No splatting of an empty array: it binds a $null positional argument.
           $bad = 0
           foreach ($page in 'folder', 'home') {
-            & ./tools/uia-scan.ps1 -Page $page @enforce
+            if ($env:ENFORCE) { & ./tools/uia-scan.ps1 -Page $page -Enforce } else { & ./tools/uia-scan.ps1 -Page $page }
             if ($LASTEXITCODE -ne 0) { $bad++ }
           }
           exit $(if ($bad) { 1 } else { 0 })

@@ -17,7 +17,8 @@ use arke_core::net::FailKind;
 use arke_core::service::resort;
 use arke_core::{
     DeltaOutcome, DirModel, DirService, Entry, Fs, Gen, History, IoEvent, ListOptions, ListTiming,
-    Location, NavKind, NavPage, SearchHit, SearchResults, SearchService, Selection, SortColumn, SortSpec, TypeAhead,
+    Location, NavKind, NavPage, SearchHit, SearchResults, SearchService, Selection, SortColumn,
+    SortSpec, TypeAhead,
 };
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, KeyDownEvent,
@@ -498,10 +499,15 @@ pub(crate) enum ExplorerEvent {
     },
     /// Back, forward or a history jump went to a page: the workspace shows it over the tab.
     /// `kind` is how it got there (a history menu jump moves the timeline only once it lands).
-    PageShown { page: NavPage, kind: NavKind },
+    PageShown {
+        page: NavPage,
+        kind: NavKind,
+    },
     /// Back, forward or a history jump went to the folder the page covers: the workspace closes
     /// the page.
-    PageHidden { kind: NavKind },
+    PageHidden {
+        kind: NavKind,
+    },
     /// Home picked from the path bar's drive menu: the workspace shows the Home page.
     OpenHome,
     /// An operation changed this remote folder (servers send no change notifications; panes
@@ -1919,7 +1925,8 @@ impl Explorer {
             return false;
         }
         let stepped = from.is_some();
-        self.history.commit(NavKind::New, from, &Location::Page(page));
+        self.history
+            .commit(NavKind::New, from, &Location::Page(page));
         stepped
     }
 

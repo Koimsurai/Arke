@@ -846,9 +846,7 @@ fn wheel_down(popup_cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
     clippy::too_many_lines,
     reason = "one menu, reached by the wheel and by each key in turn"
 )]
-fn a_menu_taller_than_the_screen_fits_on_it_and_every_row_can_be_reached(
-    cx: &mut TestAppContext,
-) {
+fn a_menu_taller_than_the_screen_fits_on_it_and_every_row_can_be_reached(cx: &mut TestAppContext) {
     let work = ScreenRect::new(0, 0, 1600, 300);
     crate::popup::set_test_monitors(one_monitor(work));
     let fs = FakeFs::new();
@@ -895,9 +893,8 @@ fn a_menu_taller_than_the_screen_fits_on_it_and_every_row_can_be_reached(
     }
     let (end, max, rows) = rows_scroll(&view, cx, 0);
     assert_eq!(end, -max, "scrolled to the end");
-    let (selectable, footer) = view.update(cx, |v, _| {
-        v.context_menu.as_ref().unwrap().rows_for_test(0)
-    });
+    let (selectable, footer) =
+        view.update(cx, |v, _| v.context_menu.as_ref().unwrap().rows_for_test(0));
     assert_row_in_view(rows, row_drawn(&view, cx, 0, footer - 1), "the last row");
     assert_eq!(buttons(&mut popup_cx), cut, "the buttons didn't move");
 
@@ -908,7 +905,11 @@ fn a_menu_taller_than_the_screen_fits_on_it_and_every_row_can_be_reached(
     cx.run_until_parked();
     assert_eq!(highlighted(&view, cx), Some(first));
     let (_, _, rows) = rows_scroll(&view, cx, 0);
-    assert_row_in_view(rows, row_drawn(&view, cx, 0, first), "the first row, by Home");
+    assert_row_in_view(
+        rows,
+        row_drawn(&view, cx, 0, first),
+        "the first row, by Home",
+    );
     // Down, row by row, reaches the last one, which is in view when highlighted.
     for _ in 1..selectable.len() {
         cx.simulate_keystrokes("down");
@@ -1033,9 +1034,7 @@ fn a_submenu_taller_than_the_screen_is_capped_and_scrolls(cx: &mut TestAppContex
 
     cx.simulate_keystrokes("end");
     cx.run_until_parked();
-    let (selectable, _) = view.update(cx, |v, _| {
-        v.context_menu.as_ref().unwrap().rows_for_test(1)
-    });
+    let (selectable, _) = view.update(cx, |v, _| v.context_menu.as_ref().unwrap().rows_for_test(1));
     let last = *selectable.last().unwrap();
     assert_eq!(highlighted(&view, cx), Some(last));
     let (offset, _, rows) = rows_scroll(&view, cx, 1);
@@ -1098,8 +1097,6 @@ fn a_menu_that_fits_is_not_capped_and_does_not_scroll(cx: &mut TestAppContext) {
     assert_eq!(placed, roomy, "same place and size");
     let (offset, max, rows) = rows_scroll(&view, cx, 0);
     assert_eq!((offset, max), (px(0.), px(0.)), "nothing to scroll");
-    let (_, footer) = view.update(cx, |v, _| {
-        v.context_menu.as_ref().unwrap().rows_for_test(0)
-    });
+    let (_, footer) = view.update(cx, |v, _| v.context_menu.as_ref().unwrap().rows_for_test(0));
     assert_row_in_view(rows, row_drawn(&view, cx, 0, footer - 1), "the last row");
 }

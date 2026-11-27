@@ -420,7 +420,10 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     right_click(cx, at);
     pick(&ws, cx, &hide);
     assert!(!drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"));
-    assert!(!drawn(cx, "tile-slot-0"), "the tiles are Favorites', and go with it");
+    assert!(
+        !drawn(cx, "tile-slot-0"),
+        "the tiles are Favorites', and go with it"
+    );
     assert_eq!(
         current(cx).hidden_sections,
         vec![SidebarSection::ThisPc, SidebarSection::Favorites]
@@ -497,11 +500,16 @@ fn favorites_hides_the_tiles_and_the_list_together(cx: &mut TestAppContext) {
     refresh(cx);
     assert!(drawn(cx, "tile-slot-0") && drawn(cx, "pin-row-0"));
 
-    change(cx, |st| st.hidden_sections = vec![SidebarSection::Favorites]);
+    change(cx, |st| {
+        st.hidden_sections = vec![SidebarSection::Favorites]
+    });
     refresh(cx);
     assert!(drawn(cx, "open-home"), "the Home row stays");
     assert!(!drawn(cx, "tile-slot-0"), "no tiles");
-    assert!(!drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"), "no list");
+    assert!(
+        !drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"),
+        "no list"
+    );
 
     change(cx, |st| {
         st.hidden_sections = vec![SidebarSection::Home, SidebarSection::Favorites];
@@ -514,7 +522,10 @@ fn favorites_hides_the_tiles_and_the_list_together(cx: &mut TestAppContext) {
     change(cx, |st| st.hidden_sections = vec![SidebarSection::Home]);
     refresh(cx);
     assert!(!drawn(cx, "open-home"));
-    assert!(drawn(cx, "tile-slot-0") && drawn(cx, "pin-row-0"), "both are back");
+    assert!(
+        drawn(cx, "tile-slot-0") && drawn(cx, "pin-row-0"),
+        "both are back"
+    );
 }
 
 /// The Recycle Bin, once removed from the favorites, comes back from the menu of the sidebar's

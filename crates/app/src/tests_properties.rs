@@ -632,7 +632,12 @@ fn alt_double_click_opens_the_window(cx: &mut TestAppContext) {
 }
 
 /// Presses and releases the left button on `at` with this click count and modifiers.
-fn press_release(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>, m: Modifiers, n: usize) {
+fn press_release(
+    cx: &mut VisualTestContext,
+    at: gpui::Point<gpui::Pixels>,
+    m: Modifiers,
+    n: usize,
+) {
     use gpui::{MouseButton, MouseDownEvent, MouseUpEvent};
     cx.simulate_event(MouseDownEvent {
         position: at,
@@ -673,7 +678,10 @@ fn alt_click_opens_the_window_in_single_click_mode(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "the folder", loaded(r"C:\p"));
     set_single_click(true);
-    let row = cx.debug_bounds("name:a.txt").expect("the row is drawn").center();
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
     let alt = Modifiers {
         alt: true,
         ..Modifiers::default()
@@ -697,7 +705,10 @@ fn alt_double_click_opens_one_window_in_single_click_mode(cx: &mut TestAppContex
     let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "the folder", loaded(r"C:\p"));
     set_single_click(true);
-    let row = cx.debug_bounds("name:a.txt").expect("the row is drawn").center();
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
     let alt = Modifiers {
         alt: true,
         ..Modifiers::default()
@@ -718,7 +729,10 @@ fn plain_click_still_opens_in_single_click_mode(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "the folder", loaded(r"C:\p"));
     set_single_click(true);
-    let row = cx.debug_bounds("name:a.txt").expect("the row is drawn").center();
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
     press_release(cx, row, Modifiers::default(), 1);
     let windows = properties_windows(cx).len();
     set_single_click(false);

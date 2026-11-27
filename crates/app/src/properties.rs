@@ -31,8 +31,8 @@ use arke_core::{Entry, EntryKind};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
     KeyBinding, MouseButton, ObjectFit, ParentElement, Point, Render, RenderImage, SharedString,
-    Size, Styled, Subscription, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowHandle,
-    WindowOptions, actions, div, img, prelude::*, px, relative, size, svg,
+    Size, Styled, Subscription, TitlebarOptions, Window, WindowBounds, WindowControlArea,
+    WindowHandle, WindowOptions, actions, div, img, prelude::*, px, relative, size, svg,
 };
 use rust_i18n::t;
 use sha2::{Digest, Sha256};
@@ -345,7 +345,10 @@ pub(crate) fn place_window(
         },
     );
     let (dx, dy) = (f32::from(display.origin.x), f32::from(display.origin.y));
-    let (dw, dh) = (f32::from(display.size.width), f32::from(display.size.height));
+    let (dw, dh) = (
+        f32::from(display.size.width),
+        f32::from(display.size.height),
+    );
     let (w, h) = (w.min(dw), h.min(dh));
     let (x, y) = if let Some(s) = saved.as_ref().filter(|s| display.contains(&grab(s))) {
         (f32::from(s.origin.x), f32::from(s.origin.y))
@@ -354,10 +357,7 @@ pub(crate) fn place_window(
         (f32::from(c.x) - w / 2., f32::from(c.y) - h / 2.)
     };
     let (x, y) = (x.min(dx + dw - w).max(dx), y.min(dy + dh - h).max(dy));
-    Some(Bounds::new(
-        gpui::point(px(x), px(y)),
-        size(px(w), px(h)),
-    ))
+    Some(Bounds::new(gpui::point(px(x), px(y)), size(px(w), px(h))))
 }
 
 fn leaf(path: &Path) -> String {

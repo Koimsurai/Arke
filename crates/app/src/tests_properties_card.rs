@@ -698,10 +698,7 @@ mod placement {
 
     /// A primary screen and a second one to its right.
     fn screens() -> [Bounds<Pixels>; 2] {
-        [
-            rect(0., 0., 1920., 1080.),
-            rect(1920., 0., 2560., 1440.),
-        ]
+        [rect(0., 0., 1920., 1080.), rect(1920., 0., 2560., 1440.)]
     }
 
     fn saved(x: f32, y: f32, w: f32, h: f32, scale: Option<f32>) -> Saved {
@@ -724,13 +721,8 @@ mod placement {
     fn centers_on_the_source_window_on_the_second_screen() {
         let screens = screens();
         let source = rect(2200., 200., 1200., 800.);
-        let got = place_window(
-            Some((source, 1.)),
-            &screens,
-            size(px(760.), px(520.)),
-            None,
-        )
-        .unwrap();
+        let got =
+            place_window(Some((source, 1.)), &screens, size(px(760.), px(520.)), None).unwrap();
         assert!(inside(got, screens[1]));
         assert_eq!(got.center(), source.center());
     }

@@ -115,12 +115,7 @@ impl Workspace {
 
     /// Shows the Home page over the active tab (`new_tab`: the tab was opened for it). The
     /// history is the caller's: this only draws the page.
-    pub(super) fn show_home(
-        &mut self,
-        new_tab: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn show_home(&mut self, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
         let shell = Arc::clone(&self.services.shell);
         let places = self.active_view().read(cx).places.clone();
         let shares = SettingsStore::global(cx)

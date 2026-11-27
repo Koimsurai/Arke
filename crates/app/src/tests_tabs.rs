@@ -1156,7 +1156,11 @@ fn mouse_back_and_forward_act_on_release(cx: &mut TestAppContext) {
     let nowhere = point(px(-100_000.), px(-100_000.));
     up(cx, NavigationDirection::Back, nowhere, 0);
     up(cx, NavigationDirection::Forward, nowhere, 0);
-    assert_eq!(at(cx), Some(p(r"C:")), "a cancelled press doesn't navigate");
+    assert_eq!(
+        at(cx),
+        Some(p(r"C:")),
+        "a cancelled press doesn't navigate"
+    );
 }
 
 /// #70: a two-finger swipe on a touchpad (sideways wheel messages in fractions of a notch) goes
@@ -1336,7 +1340,10 @@ fn back_and_forward_step_through_home(cx: &mut TestAppContext) {
     wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
     assert_eq!(page(cx), None, "back from Home to t499");
     assert_eq!(at(cx), Some(p(r"C:\t499")));
-    assert!(!view.update(cx, |e, _| e.can_go(true)), "nothing before t499");
+    assert!(
+        !view.update(cx, |e, _| e.can_go(true)),
+        "nothing before t499"
+    );
 
     mouse_step(cx, false);
     assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
@@ -1373,7 +1380,11 @@ fn back_and_forward_step_through_the_recycle_bin(cx: &mut TestAppContext) {
     assert_eq!(at(cx), Some(p(r"C:\t499")));
 
     mouse_step(cx, false);
-    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "forward to the bin");
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(bin.as_str()),
+        "forward to the bin"
+    );
     mouse_step(cx, false);
     wait_until(cx, &view, "rc2", loaded(r"C:\t010\rc2"));
     assert_eq!(page(cx), None);
@@ -1500,7 +1511,11 @@ fn alt_left_and_right_step_through_the_recycle_bin(cx: &mut TestAppContext) {
     wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
     assert_eq!(page(cx), None);
     key_step(cx, false);
-    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "forward to the bin");
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(bin.as_str()),
+        "forward to the bin"
+    );
     key_step(cx, false);
     wait_until(cx, &view, "rc2", loaded(r"C:\t010\rc2"));
     assert_eq!(page(cx), None);
@@ -1559,11 +1574,18 @@ fn closing_a_page_onto_the_folder_it_came_from_is_back(cx: &mut TestAppContext) 
     cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_home_for_test(window, cx)));
     settle(cx);
     assert_eq!(page(cx), None);
-    assert!(view.update(cx, |e, _| e.can_go(true)), "a is still behind b");
+    assert!(
+        view.update(cx, |e, _| e.can_go(true)),
+        "a is still behind b"
+    );
     assert!(view.update(cx, |e, _| e.can_go(false)), "Home is ahead");
 
     mouse_step(cx, false);
-    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward reopens Home");
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(home.as_str()),
+        "forward reopens Home"
+    );
     mouse_step(cx, true);
     assert_eq!(page(cx), None);
     assert_eq!(
@@ -1588,7 +1610,9 @@ fn back_to_a_page_from_the_other_side_of_a_split_shows_it_there(cx: &mut TestApp
     cx.run_until_parked();
     cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
     cx.update(|window, cx| {
-        ws.update(cx, |ws, cx| ws.home_open_folder_for_test(p(r"C:\c"), window, cx));
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\c"), window, cx)
+        });
     });
     wait_until(cx, &left, "c", loaded(r"C:\c"));
     right.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));

@@ -1516,7 +1516,14 @@ impl Workspace {
                 path,
                 stepped,
                 kind,
-            } => self.on_navigated(source, (tab_ix, pane_ix), path, (*stepped, *kind), window, cx),
+            } => self.on_navigated(
+                source,
+                (tab_ix, pane_ix),
+                path,
+                (*stepped, *kind),
+                window,
+                cx,
+            ),
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
             ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::FolderMenu { path, position } => {

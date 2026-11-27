@@ -201,12 +201,18 @@ fn the_keyboard_walk_skips_the_hidden_favorites_not_the_hidden_home(cx: &mut Tes
     };
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
-            s.update(|st| st.favorites = Some(vec![PathBuf::from(r"C:\music")]), cx);
+            s.update(
+                |st| st.favorites = Some(vec![PathBuf::from(r"C:\music")]),
+                cx,
+            );
         });
     });
     refresh(cx);
     let tile = r"tile-C:\music".to_owned();
-    assert!(walk_down(&ws, cx).contains(&tile), "shown: the tile is a stop");
+    assert!(
+        walk_down(&ws, cx).contains(&tile),
+        "shown: the tile is a stop"
+    );
 
     hide(cx, vec![SidebarSection::Home]);
     assert!(

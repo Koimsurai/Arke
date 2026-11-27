@@ -281,9 +281,9 @@ fn name_key(name: &std::ffi::OsStr) -> String {
 fn names_folder(change: &Change, folder: &str) -> bool {
     match change {
         Change::Removed(_) => false,
-        Change::Unknown(path) | Change::Present(path, _) => {
-            path.file_name().is_some_and(|name| name_key(name) == folder)
-        }
+        Change::Unknown(path) | Change::Present(path, _) => path
+            .file_name()
+            .is_some_and(|name| name_key(name) == folder),
     }
 }
 
@@ -1969,7 +1969,11 @@ unsafe extern "system" fn visit_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM)
             LRESULT(0)
         }
         (WM_PARENT_ENTRY, Some(current)) => {
-            current.state.journal.borrow_mut().mark("first parent change");
+            current
+                .state
+                .journal
+                .borrow_mut()
+                .mark("first parent change");
             current.state.hint(Trigger::ParentEntryChanged);
             LRESULT(0)
         }
@@ -2824,9 +2828,8 @@ mod tests {
         use std::ffi::OsStr;
         let parent = Path::new(r"C:\Users\me\WPS Cloud");
         let at = |name: &str| parent.join(name);
-        let present = |name: &str| {
-            Change::Present(at(name), Entry::new(name, EntryKind::Dir, 0, None, 0x10))
-        };
+        let present =
+            |name: &str| Change::Present(at(name), Entry::new(name, EntryKind::Dir, 0, None, 0x10));
         let folder = name_key(OsStr::new("Team"));
         // FILE_ACTION_MODIFIED of the folder, named in another case than the pane's path.
         assert!(names_folder(&present("TEAM"), &folder));
@@ -2846,7 +2849,10 @@ mod tests {
         assert!(!about_folder(&sibling, &folder));
         let renamed = ChangeEvent::Changed(vec![Change::Removed(at("Team.tmp")), present("Team")]);
         assert!(about_folder(&renamed, &folder));
-        assert!(about_folder(&ChangeEvent::Rescan, &folder), "lost changes may have had it");
+        assert!(
+            about_folder(&ChangeEvent::Rescan, &folder),
+            "lost changes may have had it"
+        );
         assert!(!about_folder(&ChangeEvent::Changed(Vec::new()), &folder));
         assert!(relists(Trigger::ParentEntryChanged));
         assert!(ParentWatch::start(HWND::default(), Path::new(r"C:\")).is_none());
@@ -2931,9 +2937,15 @@ mod tests {
         let spelled = PathBuf::from(dir.to_string_lossy().to_uppercase());
         let watch = ParentWatch::start(state.messages, &spelled).expect("the parent is watched");
         set_attributes(&sibling, FILE_ATTRIBUTE_HIDDEN);
-        assert!(!pump(&hinted, Duration::from_millis(500)), "a sibling's change doesn't hint");
+        assert!(
+            !pump(&hinted, Duration::from_millis(500)),
+            "a sibling's change doesn't hint"
+        );
         set_attributes(&dir, FILE_ATTRIBUTE_HIDDEN);
-        assert!(pump(&hinted, Duration::from_secs(10)), "the folder's own change hints");
+        assert!(
+            pump(&hinted, Duration::from_secs(10)),
+            "the folder's own change hints"
+        );
         let summary = state.journal.borrow().summary();
         assert!(summary.contains("hints: ParentEntryChanged x"), "{summary}");
         assert!(summary.contains("first parent change +"), "{summary}");

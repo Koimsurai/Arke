@@ -1815,15 +1815,31 @@ mod tests {
         assert_eq!(before.folders, FolderOrder::First);
         let spec = before.default_sort();
         assert!(!spec.mixed && !spec.always_first);
-        assert!(!SortSpec { ascending: false, ..spec }.folders_lead());
+        assert!(
+            !SortSpec {
+                ascending: false,
+                ..spec
+            }
+            .folders_lead()
+        );
         let always = load(br#"{"folders": "always_first"}"#);
         assert_eq!(always.folders, FolderOrder::AlwaysFirst);
         let spec = always.default_sort();
         assert!(!spec.mixed && spec.always_first);
-        assert!(SortSpec { ascending: false, ..spec }.folders_lead());
+        assert!(
+            SortSpec {
+                ascending: false,
+                ..spec
+            }
+            .folders_lead()
+        );
         let mixed = load(br#"{"folders": "mixed"}"#);
         assert!(mixed.default_sort().mixed);
-        assert_eq!(load(b"{}").folders, FolderOrder::First, "File Explorer's by default");
+        assert_eq!(
+            load(b"{}").folders,
+            FolderOrder::First,
+            "File Explorer's by default"
+        );
     }
 
     /// The TeraCopy and QuickLook switches of 0.9 become the generic programs with the same

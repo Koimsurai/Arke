@@ -868,7 +868,8 @@ mod tests {
         // Mixed: by name the folder "zzz" goes after the file "aaa" going up, before it down,
         // whatever `always_first` says.
         for always_first in [false, true] {
-            let mixed_up = SortSpec::by(SortColumn::Name, true, true).with_always_first(always_first);
+            let mixed_up =
+                SortSpec::by(SortColumn::Name, true, true).with_always_first(always_first);
             assert_eq!(mixed_up.compare(&d, &f), Ordering::Greater);
             let mixed_down =
                 SortSpec::by(SortColumn::Name, false, true).with_always_first(always_first);
@@ -1075,7 +1076,8 @@ mod tests {
                 at(&format!("n{}", i % 17), kind, i * 7 % 900)
             })
             .collect();
-        for (ascending, always_first) in [(true, false), (false, false), (true, true), (false, true)]
+        for (ascending, always_first) in
+            [(true, false), (false, false), (true, true), (false, true)]
         {
             let spec = SortSpec {
                 ascending,
@@ -1234,7 +1236,8 @@ mod tests {
         spec.sort(&mut v);
         assert_eq!(v[0].name.as_ref(), "zz");
         // By Size descending they trail, unless they always lead.
-        let by_size = SortSpec::by(SortColumn::Size, false, false).shift_toggled(SortColumn::Modified);
+        let by_size =
+            SortSpec::by(SortColumn::Size, false, false).shift_toggled(SortColumn::Modified);
         by_size.sort(&mut v);
         assert_eq!(v.last().map(|e| e.name.as_ref()), Some("zz"));
         by_size.with_always_first(true).sort(&mut v);

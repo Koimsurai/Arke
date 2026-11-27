@@ -4117,7 +4117,7 @@ impl Explorer {
 
 /// Where the part of a level that stays in view while its rows scroll begins: the row of icon
 /// buttons at its end and the separator above it. `entries.len()` when it has none.
-fn footer_start(entries: &[MenuEntry]) -> usize {
+const fn footer_start(entries: &[MenuEntry]) -> usize {
     match entries {
         [.., MenuEntry::Separator, MenuEntry::Actions(_)] => entries.len() - 2,
         [.., MenuEntry::Actions(_)] => entries.len() - 1,

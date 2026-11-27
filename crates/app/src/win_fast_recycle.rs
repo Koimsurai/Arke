@@ -1199,6 +1199,125 @@ pub(crate) mod test_support {
         });
     }
 
+    /// Why the fast path would leave `path` to the engine, one line per condition `Drive::check`
+    /// tests with its value. For the messages of failing live tests only.
+    pub(crate) fn diagnose(path: &Path) -> String {
+        use std::fmt::Write as _;
+        use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+        let mut out = format!("\n  path: {}", path.display());
+        let Some(root) = super::drive_root(path) else {
+            return out + "\n  drive_root: none";
+        };
+        let host = windows::core::HSTRING::from(root.as_os_str());
+        let mut fs_name = [0u16; 32];
+        let mut flags = 0u32;
+        // SAFETY: root is NUL-terminated; the out buffers outlive the call.
+        let info = unsafe {
+            GetVolumeInformationW(
+                &host,
+                None,
+                None,
+                None,
+                Some(&raw mut flags),
+                Some(&mut fs_name),
+            )
+        };
+        let _ = write!(
+            out,
+            "\n  root: {}\n  temp dir: {}\n  file system: {:?} (query ok: {}, flags {flags:#x})\n  fixed drive: {}\n  local_ntfs: {}",
+            root.display(),
+            crate::win::long_temp_dir().display(),
+            String::from_utf16_lossy(&fs_name).trim_end_matches('\0'),
+            info.is_ok(),
+            super::fixed_drive(&root),
+            super::local_ntfs(&root),
+        );
+        let _ = write!(
+            out,
+            "\n  policy_allows: {}\n  counted().allowed: {}",
+            super::policy_allows(),
+            super::counted().allowed()
+        );
+        let Some(sid) = super::user_sid() else {
+            return out + "\n  user_sid: none";
+        };
+        let bin = root.join("$Recycle.Bin").join(&sid);
+        let _ = write!(
+            out,
+            "\n  sid: {sid}\n  bin: {} (is_dir: {})",
+            bin.display(),
+            bin.is_dir()
+        );
+        let _ = write!(
+            out,
+            "\n  bin entries: {:?}",
+            fs::read_dir(&bin).map(|d| d
+                .flatten()
+                .map(|e| e.file_name())
+                .take(12)
+                .collect::<Vec<_>>())
+        );
+        let _ = write!(
+            out,
+            "\n  layout (probe): {:?}",
+            super::probe_bin(&bin, |p| fs::read(p).ok())
+        );
+        let guid = {
+            use windows::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
+            let mut name = [0u16; 64];
+            // SAFETY: host is NUL-terminated; the buffer outlives the call.
+            let got = unsafe { GetVolumeNameForVolumeMountPointW(&host, &mut name) };
+            format!(
+                "{:?}: {}",
+                got,
+                String::from_utf16_lossy(&name).trim_end_matches('\0')
+            )
+        };
+        let _ = write!(
+            out,
+            "\n  volume name: {guid}\n  bin_settings (MaxCapacity MB, NukeOnDelete): {:?}",
+            super::bin_settings(&root)
+        );
+        let _ = write!(
+            out,
+            "\n  tracker bytes: {:?}\n  bin_state (SHQueryRecycleBin bytes, items): {:?}\n  counted confirmed: {}",
+            super::tracker().bytes(&bin),
+            super::bin_state(&root),
+            super::counted().confirmed()
+        );
+        out
+    }
+
+    /// Attributes and size of every item below `dir`, for a failing test's message.
+    pub(crate) fn describe_tree(dir: &Path) -> String {
+        use std::os::windows::fs::MetadataExt as _;
+        let mut out = String::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(d) = pending.pop() {
+            let Ok(entries) = fs::read_dir(&d) else {
+                out += &format!("\n  {}: can't list", d.display());
+                continue;
+            };
+            for e in entries.flatten() {
+                match e.metadata() {
+                    Ok(m) => {
+                        out += &format!(
+                            "\n  {} attributes {:#x}, {} bytes",
+                            e.path().display(),
+                            m.file_attributes(),
+                            m.len()
+                        );
+                        if m.is_dir() {
+                            pending.push(e.path());
+                        }
+                    }
+                    Err(err) => out += &format!("\n  {}: {err}", e.path().display()),
+                }
+            }
+        }
+        out
+    }
+
     impl Drop for Sandbox {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
@@ -1624,7 +1743,10 @@ mod tests {
         let folder = sb.0.join("photos.v2");
 
         let Some(now) = recycle(&folder) else {
-            panic!("this drive should take the fast path (fixed NTFS, bin folder present)");
+            panic!(
+                "this drive should take the fast path (fixed NTFS, bin folder present){}",
+                test_support::diagnose(&folder)
+            );
         };
         assert!(!folder.exists());
         assert!(now.file_name().unwrap().to_string_lossy().starts_with("$R"));
@@ -1663,7 +1785,7 @@ mod tests {
             None,
             true,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e} / {e:?}"))
     }
 
     /// The `$R` name past the six random characters: what Windows keeps of the original name.
@@ -1741,7 +1863,7 @@ mod tests {
                 name: f.name.clone(),
             }]);
             assert_eq!(
-                crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+                crate::win_fileops::undo(&back, None, true).map_err(|e| format!("{e} / {e:?}")),
                 Ok(OpOutcome::Done),
                 "{name}: restore"
             );
@@ -1899,7 +2021,13 @@ mod tests {
             assert!(ok, "attrib");
             folder
         });
-        assert_eq!(engine(vec![engine_item.clone()]), Ok(OpOutcome::Done));
+        assert_eq!(
+            engine(vec![engine_item.clone()]),
+            Ok(OpOutcome::Done),
+            "the engine refused the folder; what is in it:{}{}",
+            test_support::describe_tree(&engine_item),
+            test_support::diagnose(&engine_item)
+        );
         recycle(&fast_item).expect("taken");
         let e = &recycled_from(engine_item.parent().unwrap())[0];
         let f = &recycled_from(fast_item.parent().unwrap())[0];
@@ -1982,7 +2110,12 @@ mod tests {
             }
         });
         let done = done.into_inner();
-        assert!(done.iter().all(|(_, now)| now.is_some()), "all taken");
+        assert!(
+            done.iter().all(|(_, now)| now.is_some()),
+            "all taken ({} of {ITEMS} were){}",
+            done.iter().filter(|(_, now)| now.is_some()).count(),
+            test_support::diagnose(&sb.0)
+        );
         let mut places: Vec<&PathBuf> = done.iter().filter_map(|(_, now)| now.as_ref()).collect();
         places.sort();
         places.dedup();

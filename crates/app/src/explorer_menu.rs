@@ -3314,6 +3314,10 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         if let Some(job) = self.take_extract_job(id) {
+            // The count the job ends with, not the last progress tick the writer got to.
+            if let Ok(s) = &result {
+                job.ops.done.store(s.files, Ordering::Relaxed);
+            }
             let state = outcome(result.as_ref().map(|s| s.cancelled));
             crate::op_center::OpCenter::finish(cx, job.job, "op.compress", &state);
         }
@@ -3401,6 +3405,10 @@ impl Explorer {
             .and_then(|j| j.archive.as_ref().map(|(path, _)| path.clone()));
         let name = match job {
             Some(job) => {
+                // The count the job ends with, not the last progress tick the writer got to.
+                if let Ok(s) = &result {
+                    job.ops.done.store(s.files, Ordering::Relaxed);
+                }
                 let state = outcome(result.as_ref().map(|s| s.cancelled));
                 crate::op_center::OpCenter::finish(cx, job.job, "op.extract", &state);
                 job.name

@@ -359,6 +359,15 @@ impl Explorer {
             ))
     }
 
+    /// A click on a Delete button: Shift deletes permanently after asking, as in File Explorer.
+    fn delete_clicked(&mut self, e: &ClickEvent, w: &mut Window, cx: &mut Context<Self>) {
+        if e.modifiers().shift {
+            self.delete_permanently(&DeletePermanently, w, cx);
+        } else {
+            self.delete_files(&DeleteFiles, w, cx);
+        }
+    }
+
     pub(super) fn render_selection_actions(
         &self,
         compact: bool,
@@ -467,13 +476,7 @@ impl Explorer {
                 t!("sel.delete"),
                 Tone::Danger,
                 compact,
-                cx.listener(|this, e: &ClickEvent, w, cx| {
-                    if e.modifiers().shift {
-                        this.delete_permanently(&DeletePermanently, w, cx);
-                    } else {
-                        this.delete_files(&DeleteFiles, w, cx);
-                    }
-                }),
+                cx.listener(Self::delete_clicked),
             ))
             .child(div().flex_1())
             .child(clear_selection_button(

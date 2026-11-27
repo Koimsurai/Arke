@@ -473,19 +473,23 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    /// Thousands of new items at once (an extracted archive) while the consumer is busy overflow
+    /// Hundreds of new items at once (an extracted archive) while the consumer is busy overflow
     /// the change buffer. That must ask for a relist, and watching must go on afterwards.
     /// Folders rather than files: they make the same change records, and an antivirus doesn't
-    /// scan them, so creating thousands takes seconds instead of minutes.
+    /// scan them. Long names make each record big (about 290 bytes), so the two 64 KB buffers a
+    /// busy watch has (the pending read's and the kernel's) fill after about 450 items: 1,200
+    /// overflow them for sure while creating far fewer folders than short names would need, which
+    /// keeps the test quick when the whole suite runs at once. Every wait is for a condition.
     #[test]
     fn overflowing_watch_asks_for_a_rescan_and_keeps_watching() {
-        const FILES: usize = 3000;
+        const FILES: usize = 1200;
+        /// Generous: under a loaded suite creating the folders alone can take many seconds.
+        const WAIT: Duration = Duration::from_secs(60);
         let tmp_dir = tempfile::tempdir().unwrap();
         let dir = tmp_dir.path().to_path_buf();
         let seen: Arc<Mutex<HashSet<String>>> = Arc::default();
         let rescans = Arc::new(AtomicUsize::new(0));
-        let last = Arc::new(Mutex::new(Instant::now()));
-        let (seen2, rescans2, last2) = (Arc::clone(&seen), Arc::clone(&rescans), Arc::clone(&last));
+        let (seen2, rescans2) = (Arc::clone(&seen), Arc::clone(&rescans));
         // The consumer is busy (as the UI or an antivirus scan can be) until everything exists.
         let created = Arc::new(AtomicBool::new(false));
         let busy = Arc::clone(&created);
@@ -507,37 +511,35 @@ mod tests {
                             rescans2.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    *last2.lock() = Instant::now();
                 }),
             )
             .unwrap();
         std::fs::write(dir.join("first.txt"), b"x").unwrap();
+        let padding = "x".repeat(124);
         for i in 0..FILES {
-            std::fs::create_dir(dir.join(format!("extracted-{i:05}"))).unwrap();
+            std::fs::create_dir(dir.join(format!("extracted-{i:05}-{padding}"))).unwrap();
         }
         created.store(true, Ordering::Relaxed);
-        *last.lock() = Instant::now();
-        // Until no event came for a while.
-        let start = Instant::now();
-        while last.lock().elapsed() < Duration::from_millis(800)
-            && start.elapsed() < Duration::from_secs(20)
-        {
+        // Either a relist was asked for, or every change came through; anything else is lost.
+        let got = || {
+            seen.lock()
+                .iter()
+                .filter(|n| n.starts_with("extracted-"))
+                .count()
+        };
+        let deadline = Instant::now() + WAIT;
+        while rescans.load(Ordering::Relaxed) == 0 && got() < FILES {
+            assert!(
+                Instant::now() < deadline,
+                "changes were lost without asking for a rescan: saw {} of {FILES}",
+                got()
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
-        let got = seen
-            .lock()
-            .iter()
-            .filter(|n| n.starts_with("extracted-"))
-            .count();
-        let rescanned = rescans.load(Ordering::Relaxed) > 0;
-        assert!(
-            rescanned || got == FILES,
-            "changes were lost without asking for a rescan: saw {got} of {FILES}"
-        );
 
         // Still watching.
         std::fs::write(dir.join("after.txt"), b"y").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + WAIT;
         while !seen.lock().contains("after.txt") {
             assert!(
                 Instant::now() < deadline,

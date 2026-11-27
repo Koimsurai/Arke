@@ -12,6 +12,17 @@ store-success-output = false
 # A test running for 30 s is stuck (UI tests normally take ~2 s)
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Tests that make thousands of real file system changes. Under the full suite they compete with
+# everything else for the disk and the antivirus, so they get longer to finish and run at most two
+# at a time. Add others to the filter.
+[test-groups]
+heavy = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(arke-core) & test(overflowing_watch_asks_for_a_rescan_and_keeps_watching)'
+test-group = 'heavy'
+slow-timeout = { period = "30s", terminate-after = 4 }
+
 
 # The UI tests (`tests::`) run real threads beside GPUI's test clock; on a slow, busy CI runner one
 # now and then misses a step. Retry them more before calling the run red.

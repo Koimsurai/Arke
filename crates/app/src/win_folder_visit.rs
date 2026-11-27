@@ -1138,8 +1138,8 @@ mod com {
             unsafe { *ppv = std::ptr::null_mut() };
             // Every service (SID_STopLevelBrowser, SID_SShellBrowser, ...) is this browser.
             let unknown: IUnknown = self.to_interface();
-            // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             self.state.note_call("Browser.QueryService");
+            // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             unsafe { unknown.query(riid, ppv) }.ok()
         }
     }
@@ -1345,8 +1345,8 @@ mod com {
             unsafe { *ppv = std::ptr::null_mut() };
             // Every service (SID_SFolderView, ...) is this view.
             let unknown: IUnknown = self.to_interface();
-            // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             self.state.note_call("View.QueryService");
+            // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
             unsafe { unknown.query(riid, ppv) }.ok()
         }
     }
@@ -2401,7 +2401,7 @@ mod tests {
             relist: Cell::default(),
             journal: RefCell::default(),
         });
-        let (old, new): (Rc<RefCell<Vec<Fired>>>, Rc<RefCell<Vec<Fired>>>) = Default::default();
+        let (old, new): (Seen, Seen) = Default::default();
         for (events, seen, cookie) in [(Events::Old, &old, 1), (Events::New, &new, 2)] {
             state.sinks.borrow_mut().push(Sink {
                 cookie,
@@ -2451,8 +2451,12 @@ mod tests {
     /// An event a listener got: DISPID, how many arguments, and the URL among them.
     type Fired = (i32, u32, Option<String>);
 
+    /// The events one listener got.
+    type Seen = Rc<RefCell<Vec<Fired>>>;
+
     #[allow(
         clippy::inline_always,
+        clippy::ref_as_ptr,
         clippy::wildcard_imports,
         reason = "The macro-generated code of #[implement] trips them, as in `mod com`"
     )]
@@ -2462,7 +2466,7 @@ mod tests {
         /// A listener that notes every event it gets.
         #[implement(IDispatch)]
         pub(super) struct Recorder {
-            pub(super) seen: Rc<RefCell<Vec<Fired>>>,
+            pub(super) seen: Seen,
         }
 
         impl IDispatch_Impl for Recorder_Impl {

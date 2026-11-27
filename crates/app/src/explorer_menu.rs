@@ -60,6 +60,8 @@ actions!(
         OpenContextMenu,
         MenuUp,
         MenuDown,
+        MenuHome,
+        MenuEnd,
         MenuLeft,
         MenuRight,
         MenuConfirm,
@@ -75,6 +77,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("menu", OpenContextMenu, Some("FileList")),
         KeyBinding::new("up", MenuUp, menu),
         KeyBinding::new("down", MenuDown, menu),
+        KeyBinding::new("home", MenuHome, menu),
+        KeyBinding::new("end", MenuEnd, menu),
         KeyBinding::new("left", MenuLeft, menu),
         KeyBinding::new("right", MenuRight, menu),
         KeyBinding::new("enter", MenuConfirm, menu),
@@ -726,6 +730,14 @@ const fn shift_hit(hit: AccessHit, shift: bool) -> AccessHit {
     }
 }
 
+/// The command a click runs: Shift+click on Delete deletes permanently, as in File Explorer.
+const fn click_command(command: MenuCommand, shift: bool) -> MenuCommand {
+    match command {
+        MenuCommand::Delete if shift => MenuCommand::DeleteForever,
+        other => other,
+    }
+}
+
 /// A row's text with its access key underlined, when the underlines are shown. The CJK form
 /// writes the key after the text, as `(O)`, which is there whether underlined or not.
 fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyElement {
@@ -913,6 +925,23 @@ impl ContextMenu {
             scrolls.resize_with(level + 1, gpui::ScrollHandle::new);
         }
         scrolls[level].clone()
+    }
+
+    /// Scrolls row `ix` of `level` into view when next drawn. The rows of the pinned footer
+    /// ([`footer_start`]) are always in view; the others are the children of the level's scroll
+    /// area, one per entry.
+    fn scroll_row_into_view(&self, level: usize, ix: usize) {
+        if ix < footer_start(self.level(level)) {
+            self.scroll(level).scroll_to_item(ix);
+        }
+    }
+
+    /// Row `ix` of the innermost level highlighted from the keyboard, scrolled into view.
+    fn highlight_by_key(&mut self, ix: usize) {
+        self.highlighted = Some(ix);
+        self.keyboard = true;
+        self.cues.pressed();
+        self.scroll_row_into_view(self.open.len(), ix);
     }
 
     /// Entries at `level` (0 is the top level).
@@ -1196,6 +1225,44 @@ impl ContextMenu {
             self.geometry.borrow().panels.get(&level).copied(),
             self.scroll(level).offset().y,
         )
+    }
+
+    /// Test helper: how far the rows of `level` are scrolled, how far they can be, and the box
+    /// they scroll in (in that level's window).
+    #[cfg(test)]
+    pub(crate) fn rows_scroll_for_test(&self, level: usize) -> (Pixels, Pixels, Bounds<Pixels>) {
+        let scroll = self.scroll(level);
+        (scroll.offset().y, scroll.max_offset().y, scroll.bounds())
+    }
+
+    /// Test helper: where row `ix` of `level` is drawn now, as scrolled (in that level's window).
+    /// `None` for the buttons kept below the rows, or before it is drawn.
+    #[cfg(test)]
+    pub(crate) fn row_drawn_for_test(&self, level: usize, ix: usize) -> Option<Bounds<Pixels>> {
+        let scroll = self.scroll(level);
+        let mut bounds = scroll.bounds_for_item(ix)?;
+        bounds.origin.y += scroll.offset().y;
+        Some(bounds)
+    }
+
+    /// Test helper: the rows of `level` the keys can highlight, and the first entry of the part
+    /// kept in view below the rows.
+    #[cfg(test)]
+    pub(crate) fn rows_for_test(&self, level: usize) -> (Vec<usize>, usize) {
+        let entries = self.level(level);
+        let selectable = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.selectable())
+            .map(|(ix, _)| ix)
+            .collect();
+        (selectable, footer_start(entries))
+    }
+
+    /// Test helper: the highlighted row of the innermost level.
+    #[cfg(test)]
+    pub(crate) const fn highlighted_for_test(&self) -> Option<usize> {
+        self.highlighted
     }
 
     /// Test helper: where submenu row `ix` of `level` was drawn (in that level's window).
@@ -2059,12 +2126,25 @@ impl Explorer {
             (Some(p), true) => (p + 1) % selectable.len(),
             (Some(p), false) => (p + selectable.len() - 1) % selectable.len(),
         };
-        menu.highlighted = Some(selectable[next]);
-        menu.keyboard = true;
-        menu.cues.pressed();
-        // Keep it in view when the level scrolls (its first child is the measuring canvas).
-        menu.scroll(menu.open.len())
-            .scroll_to_item(selectable[next] + 1);
+        menu.highlight_by_key(selectable[next]);
+        cx.notify();
+    }
+
+    /// Home and End: the first or last row that can be picked, as in a Windows menu.
+    fn highlight_edge(&mut self, last: bool, cx: &mut Context<Self>) {
+        let Some(menu) = self.context_menu.as_mut() else {
+            return;
+        };
+        let entries = menu.level(menu.open.len());
+        let found = if last {
+            entries.iter().rposition(MenuEntry::selectable)
+        } else {
+            entries.iter().position(MenuEntry::selectable)
+        };
+        let Some(ix) = found else {
+            return;
+        };
+        menu.highlight_by_key(ix);
         cx.notify();
     }
 
@@ -2074,6 +2154,14 @@ impl Explorer {
 
     pub(super) fn menu_down(&mut self, _: &MenuDown, _: &mut Window, cx: &mut Context<Self>) {
         self.move_highlight(true, cx);
+    }
+
+    pub(super) fn menu_home(&mut self, _: &MenuHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.highlight_edge(false, cx);
+    }
+
+    pub(super) fn menu_end(&mut self, _: &MenuEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.highlight_edge(true, cx);
     }
 
     /// A letter or digit: picks the row with that access key (`access_hit`), as Windows does.
@@ -2112,13 +2200,10 @@ impl Explorer {
             AccessHit::Run(command) => self.run_menu_command(command, window, cx),
             AccessHit::Open(ix) => {
                 menu.highlighted = Some(ix);
+                menu.scroll_row_into_view(menu.open.len(), ix);
                 self.enter_submenu(cx);
             }
-            AccessHit::Move(ix) => {
-                menu.highlighted = Some(ix);
-                menu.keyboard = true;
-                menu.scroll(menu.open.len()).scroll_to_item(ix + 1);
-            }
+            AccessHit::Move(ix) => menu.highlight_by_key(ix),
         }
     }
 
@@ -3544,6 +3629,8 @@ impl Explorer {
                 .track_focus(&menu.focus)
                 .on_action(cx.listener(Self::menu_up))
                 .on_action(cx.listener(Self::menu_down))
+                .on_action(cx.listener(Self::menu_home))
+                .on_action(cx.listener(Self::menu_end))
                 .on_action(cx.listener(Self::menu_left))
                 .on_action(cx.listener(Self::menu_right))
                 .on_action(cx.listener(Self::menu_confirm))
@@ -3743,7 +3830,7 @@ impl Explorer {
         let current = level == menu.open.len();
         let open_here = menu.open.get(level).copied();
         let marks = entries.iter().any(MenuEntry::has_mark);
-        let rows: Vec<AnyElement> = entries
+        let mut rows: Vec<AnyElement> = entries
             .iter()
             .enumerate()
             .map(|(ix, entry)| {
@@ -3752,7 +3839,10 @@ impl Explorer {
                 Self::render_menu_row(menu, level, ix, entry, highlighted, marks, pinned, cx)
             })
             .collect();
+        let footer = rows.split_off(footer_start(entries));
         let geometry = Rc::clone(&menu.geometry);
+        // A level taller than the screen is capped at `max_h`: its rows scroll, and the buttons
+        // at its bottom stay in view under them. One that fits lays out as a plain stack.
         div()
             .id(("context-menu", level))
             .role(gpui::Role::Menu)
@@ -3761,8 +3851,8 @@ impl Explorer {
             .min_w(crate::theme::scaled_px(240.))
             .max_w(crate::theme::scaled_px(420.))
             .max_h(max_h)
-            .overflow_y_scroll()
-            .track_scroll(&menu.scroll(level))
+            .flex()
+            .flex_col()
             .py(theme::s_4())
             .rounded(theme::r_12())
             .bg(theme::overlay())
@@ -3779,9 +3869,22 @@ impl Explorer {
                     |_, (), _, _| {},
                 )
                 .absolute()
+                .top_0()
+                .left_0()
                 .size_full(),
             )
-            .children(rows)
+            // Only rows in here, one child per entry, so `scroll_to_item` takes an entry's index.
+            // The measuring canvas stays outside: inside, set off by the padding, it made a level
+            // that fits scroll by that much.
+            .child(
+                div()
+                    .id(("context-menu-rows", level))
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&menu.scroll(level))
+                    .children(rows),
+            )
+            .when(!footer.is_empty(), |d| d.child(div().flex_none().children(footer)))
     }
 
     /// Bottom row of icon buttons: icon above label, equal widths.
@@ -3816,8 +3919,12 @@ impl Explorer {
                             .on_click(crate::popup::listener_in(
                                 menu.owner,
                                 cx,
-                                move |this, _: &ClickEvent, window, cx| {
-                                    this.run_menu_command(command, window, cx);
+                                move |this, event: &ClickEvent, window, cx| {
+                                    this.run_menu_command(
+                                        click_command(command, event.modifiers().shift),
+                                        window,
+                                        cx,
+                                    );
                                 },
                             ))
                     })
@@ -3985,8 +4092,12 @@ impl Explorer {
                     .on_click(crate::popup::listener_in(
                         menu.owner,
                         cx,
-                        move |this, _: &ClickEvent, window, cx| match command {
-                            Some(command) => this.run_menu_command(command, window, cx),
+                        move |this, event: &ClickEvent, window, cx| match command {
+                            Some(command) => this.run_menu_command(
+                                click_command(command, event.modifiers().shift),
+                                window,
+                                cx,
+                            ),
                             None => this.click_submenu(level, ix, cx),
                         },
                     ))
@@ -4017,6 +4128,16 @@ impl Explorer {
             // Chevron points left when the submenu opens to the left.
             .when(submenu, |d| d.child(submenu_chevron(chevron_left)))
             .into_any_element()
+    }
+}
+
+/// Where the part of a level that stays in view while its rows scroll begins: the row of icon
+/// buttons at its end and the separator above it. `entries.len()` when it has none.
+const fn footer_start(entries: &[MenuEntry]) -> usize {
+    match entries {
+        [.., MenuEntry::Separator, MenuEntry::Actions(_)] => entries.len() - 2,
+        [.., MenuEntry::Actions(_)] => entries.len() - 1,
+        _ => entries.len(),
     }
 }
 

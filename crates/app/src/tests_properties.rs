@@ -631,6 +631,115 @@ fn alt_double_click_opens_the_window(cx: &mut TestAppContext) {
     assert!(shell.opened.lock().is_empty(), "not opened");
 }
 
+/// Presses and releases the left button on `at` with this click count and modifiers.
+fn press_release(
+    cx: &mut VisualTestContext,
+    at: gpui::Point<gpui::Pixels>,
+    m: Modifiers,
+    n: usize,
+) {
+    use gpui::{MouseButton, MouseDownEvent, MouseUpEvent};
+    cx.simulate_event(MouseDownEvent {
+        position: at,
+        modifiers: m,
+        button: MouseButton::Left,
+        click_count: n,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position: at,
+        modifiers: m,
+        button: MouseButton::Left,
+        click_count: n,
+    });
+    cx.run_until_parked();
+}
+
+fn properties_windows(cx: &mut VisualTestContext) -> Vec<gpui::WindowHandle<Properties>> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Properties>())
+        .collect()
+}
+
+fn set_single_click(on: bool) {
+    crate::prefs::apply(&crate::settings::Settings {
+        single_click: on,
+        ..crate::settings::Settings::default()
+    });
+}
+
+/// #493: with "Open items with a single click", Alt+click opens the Properties window for the
+/// item, without opening it.
+#[gpui::test]
+fn alt_click_opens_the_window_in_single_click_mode(cx: &mut TestAppContext) {
+    let fs = file_fs();
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "the folder", loaded(r"C:\p"));
+    set_single_click(true);
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    press_release(cx, row, alt, 1);
+    let windows = properties_windows(cx);
+    set_single_click(false);
+    assert_eq!(windows.len(), 1, "the Properties window");
+    let shown = windows[0].read_with(cx, |p, _| p.path_for_test()).unwrap();
+    assert_eq!(shown, Some(PathBuf::from(r"C:\p\a.txt")));
+    assert!(shell.opened.lock().is_empty(), "not opened");
+    assert!(view.update(cx, |v, _| loaded(r"C:\p")(v)), "not navigated");
+}
+
+/// #493: Alt+double-click in single-click mode opens one Properties window, not two, and does
+/// not open the item.
+#[gpui::test]
+fn alt_double_click_opens_one_window_in_single_click_mode(cx: &mut TestAppContext) {
+    let fs = file_fs();
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "the folder", loaded(r"C:\p"));
+    set_single_click(true);
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    press_release(cx, row, alt, 1);
+    press_release(cx, row, alt, 2);
+    let count = properties_windows(cx).len();
+    set_single_click(false);
+    assert_eq!(count, 1, "one Properties window");
+    assert!(shell.opened.lock().is_empty(), "not opened");
+}
+
+/// #493: a plain click in single-click mode still opens the item, and opens no Properties.
+#[gpui::test]
+fn plain_click_still_opens_in_single_click_mode(cx: &mut TestAppContext) {
+    let fs = file_fs();
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\p");
+    wait_until(cx, &view, "the folder", loaded(r"C:\p"));
+    set_single_click(true);
+    let row = cx
+        .debug_bounds("name:a.txt")
+        .expect("the row is drawn")
+        .center();
+    press_release(cx, row, Modifiers::default(), 1);
+    let windows = properties_windows(cx).len();
+    set_single_click(false);
+    assert_eq!(windows, 0, "no Properties window");
+    wait_shell_in(cx, "a.txt opened", || !shell.opened.lock().is_empty());
+}
+
 /// The folder background menu has Arke's own Properties, for the folder shown (as Alt+Enter with
 /// nothing selected); Windows' one under "Show more options" opened Explorer's dialog.
 #[gpui::test]

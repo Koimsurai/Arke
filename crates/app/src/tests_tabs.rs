@@ -1043,7 +1043,7 @@ fn closing_the_last_tab_closes_the_window(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, NavigationDirection, point, px};
     let fs = FakeFs::new();
     for dir in [r"C:\a", r"C:\b", r"C:\c"] {
         fs.insert_many(dir, 1);
@@ -1057,12 +1057,11 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     }
     cx.run_until_parked();
     let press = |cx: &mut VisualTestContext, direction, position| {
-        cx.simulate_event(MouseDownEvent {
+        cx.simulate_event(MouseUpEvent {
             button: MouseButton::Navigate(direction),
             position,
             modifiers: Modifiers::none(),
             click_count: 1,
-            first_mouse: false,
         });
         cx.run_until_parked();
     };
@@ -1086,6 +1085,82 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     press(cx, NavigationDirection::Forward, beside);
     wait_until(cx, &view, "forward to b", loaded(r"C:\b"));
     assert_eq!(at(cx), Some(p(r"C:\b")));
+}
+
+/// #497: like File Explorer and browsers, the mouse back/forward buttons act on release. A press
+/// alone does nothing (held for any time), the release goes back once, and a release that went
+/// to another window (the press guard's cancel) doesn't.
+#[gpui::test]
+fn mouse_back_and_forward_act_on_release(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, NavigationDirection};
+    use gpui::{point, px};
+    let fs = FakeFs::new();
+    for dir in [r"C:", r"C:", r"C:\c"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:"));
+    for path in [r"C:", r"C:\c"] {
+        view.update(cx, |e, cx| e.navigate(p(path), NavKind::New, cx));
+        wait_until(cx, &view, path, loaded(path));
+    }
+    cx.run_until_parked();
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let list = view.update(cx, |e, _| e.list_bounds_for_test());
+    let over_list = point(list.left() + px(40.), list.top() + px(10.));
+    let beside = point(px(8.), list.top() + px(10.));
+    let down = |cx: &mut VisualTestContext, direction, position| {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Navigate(direction),
+            position,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+    };
+    let up = |cx: &mut VisualTestContext, direction, position, click_count| {
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Navigate(direction),
+            position,
+            modifiers: Modifiers::none(),
+            click_count,
+        });
+        cx.run_until_parked();
+    };
+
+    // A pane: the press alone does nothing, the release goes back once.
+    down(cx, NavigationDirection::Back, over_list);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(at(cx), Some(p(r"C:\c")), "a press alone doesn't navigate");
+    up(cx, NavigationDirection::Back, over_list, 1);
+    wait_until(cx, &view, "back to b", loaded(r"C:"));
+    assert_eq!(at(cx), Some(p(r"C:")), "the release goes back, once");
+
+    // Beside the list (the sidebar): the same.
+    down(cx, NavigationDirection::Back, beside);
+    assert_eq!(at(cx), Some(p(r"C:")), "a press alone doesn't navigate");
+    up(cx, NavigationDirection::Back, beside, 1);
+    wait_until(cx, &view, "back to a", loaded(r"C:"));
+    assert_eq!(at(cx), Some(p(r"C:")), "the release goes back, once");
+    down(cx, NavigationDirection::Forward, beside);
+    assert_eq!(at(cx), Some(p(r"C:")), "a press alone doesn't navigate");
+    up(cx, NavigationDirection::Forward, beside, 1);
+    wait_until(cx, &view, "forward to b", loaded(r"C:"));
+    assert_eq!(at(cx), Some(p(r"C:")), "the release goes forward, once");
+
+    // A release that went to another window is a cancel (no click), not a navigation.
+    let nowhere = point(px(-100_000.), px(-100_000.));
+    up(cx, NavigationDirection::Back, nowhere, 0);
+    up(cx, NavigationDirection::Forward, nowhere, 0);
+    assert_eq!(
+        at(cx),
+        Some(p(r"C:")),
+        "a cancelled press doesn't navigate"
+    );
 }
 
 /// #70: a two-finger swipe on a touchpad (sideways wheel messages in fractions of a notch) goes
@@ -1147,7 +1222,7 @@ fn touchpad_swipes_go_back_and_forward(cx: &mut TestAppContext) {
 /// is as far back as it goes; Home opened over a folder goes back to that folder.
 #[gpui::test]
 fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, NavigationDirection, point, px};
     let fs = FakeFs::new();
     for dir in [r"C:\Users\me", r"C:\Users\me\Desktop", r"C:\work"] {
         fs.insert_many(dir, 1);
@@ -1161,12 +1236,11 @@ fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) 
     };
     let back = |cx: &mut VisualTestContext| {
         // Over the sidebar, as with Home showing there is no list to press over.
-        cx.simulate_event(MouseDownEvent {
+        cx.simulate_event(MouseUpEvent {
             button: MouseButton::Navigate(NavigationDirection::Back),
             position: point(px(8.), px(300.)),
             modifiers: Modifiers::none(),
             click_count: 1,
-            first_mouse: false,
         });
         cx.run_until_parked();
     };
@@ -1210,15 +1284,370 @@ fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) 
     });
     wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
     back(cx);
-    wait_until(cx, &view, "under Home: work", loaded(r"C:\work"));
     assert_eq!(page(cx).as_deref(), Some(home.as_str()));
     back(cx);
+    wait_until(cx, &view, "work", loaded(r"C:\work"));
     assert_eq!(
         page(cx),
         None,
         "back from Home shows the folder it was opened from"
     );
     assert_eq!(at(cx), Some(p(r"C:\work")));
+}
+
+/// Mouse Back or Forward over the sidebar, where no list takes it.
+fn mouse_step(cx: &mut VisualTestContext, back: bool) {
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, NavigationDirection, point, px};
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Navigate(if back {
+            NavigationDirection::Back
+        } else {
+            NavigationDirection::Forward
+        }),
+        position: point(px(8.), px(300.)),
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+}
+
+/// #490: Home is a step of the history like a folder, in both directions: folder, Home, Desktop
+/// goes back to Home, then the folder, and forward to Home before Desktop.
+#[gpui::test]
+fn back_and_forward_step_through_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\Users\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let home = t!("home.title").into_owned();
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+
+    mouse_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "back to Home");
+    mouse_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None, "back from Home to t499");
+    assert_eq!(at(cx), Some(p(r"C:\t499")));
+    assert!(
+        !view.update(cx, |e, _| e.can_go(true)),
+        "nothing before t499"
+    );
+
+    mouse_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
+    mouse_step(cx, false);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None, "forward from Home to Desktop");
+    assert!(!view.update(cx, |e, _| e.can_go(false)));
+}
+
+/// #490: so is the Recycle Bin. A path typed in the path bar while it shows leaves it, and Back and
+/// Forward go through it.
+#[gpui::test]
+fn back_and_forward_step_through_the_recycle_bin(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\t010\rc2"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let bin = t!("recycle.title").into_owned();
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx)));
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()));
+    go(&view, cx, r"C:\t010\rc2");
+    assert_eq!(page(cx), None, "the path bar left the Recycle Bin");
+
+    mouse_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "back to the bin");
+    mouse_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    assert_eq!(at(cx), Some(p(r"C:\t499")));
+
+    mouse_step(cx, false);
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(bin.as_str()),
+        "forward to the bin"
+    );
+    mouse_step(cx, false);
+    wait_until(cx, &view, "rc2", loaded(r"C:\t010\rc2"));
+    assert_eq!(page(cx), None);
+}
+
+/// #490: the history menu lists Home and the Recycle Bin, and a jump to one (or past one) lands
+/// in the same place as stepping there.
+#[gpui::test]
+fn history_menu_jumps_to_and_over_pages(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t", r"C:\me\Desktop", r"C:\x", r"C:\y"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t", loaded(r"C:\t"));
+    let home = t!("home.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\me\Desktop"));
+    go(&view, cx, r"C:\x");
+    go(&view, cx, r"C:\y");
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec!["x".into(), "Desktop".into(), home.clone(), "t".into()])
+    );
+    // Jump to Home: the folders passed over wait on the forward side.
+    pick_menu_row(&ws, cx, 2);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(home.clone())
+    );
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec!["Desktop".into(), "x".into(), "y".into()])
+    );
+    // On to the folder under it, then back past Home to t.
+    pick_menu_row(&ws, cx, 0);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\me\Desktop"));
+    assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, true),
+        Some(vec![home.clone(), "t".into()])
+    );
+    pick_menu_row(&ws, cx, 1);
+    wait_until(cx, &view, "t again", loaded(r"C:\t"));
+    assert_eq!(
+        open_history_menu(&ws, &view, cx, false),
+        Some(vec![home, "Desktop".into(), "x".into(), "y".into()])
+    );
+}
+
+/// Alt+Left or Alt+Right, as typed.
+fn key_step(cx: &mut VisualTestContext, back: bool) {
+    cx.simulate_keystrokes(if back { "alt-left" } else { "alt-right" });
+    cx.run_until_parked();
+}
+
+/// A click on the Back or Forward button of the toolbar.
+fn click_nav_button(cx: &mut VisualTestContext, back: bool) {
+    use gpui::Modifiers;
+    let id = if back { "back" } else { "forward" };
+    let bounds = cx
+        .debug_bounds(id)
+        .unwrap_or_else(|| panic!("{id} should be drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// #490, with the keyboard: Alt+Left and Alt+Right go through Home both ways, also once the page
+/// gave way to the folder under it (the list has the keys again).
+#[gpui::test]
+fn alt_left_and_right_step_through_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\Users\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let home = t!("home.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+
+    key_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "back to Home");
+    key_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    {
+        use gpui::Focusable;
+        let list = view.read_with(cx, Explorer::focus_handle);
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the list has the keyboard again after the page gave way"
+        );
+    }
+    key_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
+    key_step(cx, false);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+}
+
+/// #490, with the keyboard, through the Recycle Bin.
+#[gpui::test]
+fn alt_left_and_right_step_through_the_recycle_bin(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\t010\rc2"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let bin = t!("recycle.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx)));
+    go(&view, cx, r"C:\t010\rc2");
+
+    key_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "back to the bin");
+    key_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    key_step(cx, false);
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(bin.as_str()),
+        "forward to the bin"
+    );
+    key_step(cx, false);
+    wait_until(cx, &view, "rc2", loaded(r"C:\t010\rc2"));
+    assert_eq!(page(cx), None);
+}
+
+/// #490, with the toolbar buttons: the same steps as the mouse and the keys.
+#[gpui::test]
+fn toolbar_back_and_forward_step_through_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\Users\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let home = t!("home.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+
+    click_nav_button(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "back to Home");
+    click_nav_button(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    click_nav_button(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
+    click_nav_button(cx, false);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+}
+
+/// A few frames, so the workspace has noticed a page that closed.
+fn settle(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+}
+
+/// #490: closing Home (its button, Esc, Settings) over the folder it was opened from is a step
+/// back: Forward opens it again, and Back from there is the folder.
+#[gpui::test]
+fn closing_a_page_onto_the_folder_it_came_from_is_back(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    go(&view, cx, r"C:\b");
+    let home = t!("home.title").into_owned();
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.close_home_for_test(window, cx)));
+    settle(cx);
+    assert_eq!(page(cx), None);
+    assert!(
+        view.update(cx, |e, _| e.can_go(true)),
+        "a is still behind b"
+    );
+    assert!(view.update(cx, |e, _| e.can_go(false)), "Home is ahead");
+
+    mouse_step(cx, false);
+    assert_eq!(
+        page(cx).as_deref(),
+        Some(home.as_str()),
+        "forward reopens Home"
+    );
+    mouse_step(cx, true);
+    assert_eq!(page(cx), None);
+    assert_eq!(
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\b"))
+    );
+}
+
+/// #490: Back or Forward on a pane that isn't the active one, onto a page, makes it the active
+/// pane and shows the page there.
+#[gpui::test]
+fn back_to_a_page_from_the_other_side_of_a_split_shows_it_there(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    let (left, right) = split_to(&ws, cx, r"C:\b");
+    let active = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.active_view().entity_id());
+
+    // Home over the left side, then a folder from it: the left side's history has Home.
+    left.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));
+    cx.run_until_parked();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\c"), window, cx);
+        });
+    });
+    wait_until(cx, &left, "c", loaded(r"C:\c"));
+    right.update(cx, |_, cx| cx.emit(ExplorerEvent::Activated));
+    cx.run_until_parked();
+    assert_eq!(active(cx), right.entity_id());
+
+    cx.update(|window, cx| {
+        left.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(active(cx), left.entity_id(), "the left side came forward");
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(t!("home.title").into_owned())
+    );
+}
+
+/// #490: Home where the tab starts has nothing before it, so Back stops there.
+#[gpui::test]
+fn back_stops_at_home_where_the_tab_starts(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t", r"C:\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t", loaded(r"C:\t"));
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_start_home_for_test(window, cx)));
+    assert!(!view.update(cx, |e, _| e.can_go(true)));
+    mouse_step(cx, true);
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(t!("home.title").into_owned())
+    );
+    assert_eq!(
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf)),
+        Some(p(r"C:\t"))
+    );
 }
 
 /// Tab A goes a → b; a new tab B opens at c and goes to d. Returns the two list views.
@@ -1657,8 +2086,8 @@ fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
     cx.simulate_click(at, gpui::Modifiers::none());
     wait_until(cx, &view, "work", loaded(r"C:\work"));
 
-    // #323: the hidden sections leave the column too. Home takes Home and the tiles, Favorites
-    // the pinned folders and the Recycle Bin, This PC the drives; the Shelf stays.
+    // #323: the hidden sections leave the column too. Home takes its button, Favorites the
+    // tiles, the pinned folders and the Recycle Bin (#463), This PC the drives; the Shelf stays.
     let [_, bin, kept_shelf, letter] = wanted[..] else {
         unreachable!()
     };
@@ -1690,7 +2119,7 @@ fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
     assert!(cx.debug_bounds(home).is_none());
-    for shown in [pin, bin, letter, kept_shelf] {
+    for shown in [tile, pin, bin, letter, kept_shelf] {
         assert!(cx.debug_bounds(shown).is_some(), "{shown} is back");
     }
 }
@@ -2580,10 +3009,10 @@ fn a_history_jump_on_the_other_side_of_a_split(cx: &mut TestAppContext) {
     wait_until(cx, &left, "left forward to b", loaded(r"C:\b"));
 }
 
-/// Jumping back past a folder opened from Home shows Home, as pressing Back that many times
-/// does; with Home where the tab started, the folders under it aren't offered.
+/// Jumping back to Home shows it, as pressing Back that many times does; with Home where the
+/// tab started, the folders under it aren't offered.
 #[gpui::test]
-fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppContext) {
+fn a_history_jump_back_to_home_shows_home(cx: &mut TestAppContext) {
     let fs = folders(&[r"C:\a", r"C:\me", r"C:\me\Desktop", r"C:\x", r"C:\y"]);
     let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
@@ -2600,10 +3029,13 @@ fn a_history_jump_past_a_folder_opened_from_home_shows_home(cx: &mut TestAppCont
     go(&view, cx, r"C:\y");
     assert_eq!(
         open_history_menu(&ws, &view, cx, true),
-        Some(vec!["x".into(), "Desktop".into(), "me".into()])
+        Some(vec![
+            "x".into(),
+            "Desktop".into(),
+            t!("home.title").into_owned()
+        ])
     );
     pick_menu_row(&ws, cx, 2);
-    wait_until(cx, &view, "me", loaded(r"C:\me"));
     assert_eq!(
         ws.update(cx, |ws, _| ws.shown_page_for_test()),
         Some(t!("home.title").into_owned())

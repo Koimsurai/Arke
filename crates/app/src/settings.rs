@@ -47,8 +47,9 @@ pub(crate) enum PinSlot {
     List(usize),
 }
 
-/// A sidebar section. Favorites, This PC and Network collapse to their heading; Home (its row and
-/// tiles) never collapses, nor do the tabs. Home, Favorites and This PC can be hidden (#323).
+/// A sidebar section. Favorites, This PC and Network collapse to their heading; Home (its row)
+/// never collapses, nor do the tabs. Home, Favorites and This PC can be hidden (#323); the tiles
+/// belong to Favorites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SidebarSection {
@@ -306,6 +307,9 @@ pub(crate) struct PropertiesPlace {
     pub(crate) width: f32,
     #[serde(default)]
     pub(crate) height: Option<f32>,
+    /// Scale of the monitor the size was saved on; absent in older files (then used as is).
+    #[serde(default)]
+    pub(crate) scale: Option<f32>,
 }
 
 /// Last window position and size in logical pixels. When maximized this is the restored size.
@@ -444,9 +448,11 @@ pub(crate) struct ColumnViewWidths {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FolderOrder {
-    /// Folders always first, as in Windows Explorer.
+    /// Before files, as in File Explorer: first when ascending, last when descending.
     #[default]
     First,
+    /// Always first: on top in both directions (#499).
+    AlwaysFirst,
     /// Mixed with files.
     Mixed,
 }
@@ -934,6 +940,7 @@ impl Settings {
             !self.sort_descending,
             self.folders == FolderOrder::Mixed,
         )
+        .with_always_first(self.folders == FolderOrder::AlwaysFirst)
     }
 
     pub(crate) fn remember(&mut self, path: &Path) {
@@ -1800,6 +1807,43 @@ mod tests {
         bytes.extend_from_slice(br#"{"global_search": true, "show_hidden": true}"#);
         let s = parse_settings(&bytes, Path::new("settings.json")).unwrap();
         assert!(s.global_search && s.show_hidden);
+    }
+
+    /// #499: "first", as 0.10 saved it, now means "before files" (File Explorer); "always_first" is
+    /// the new choice, and each gives its own sort spec.
+    #[test]
+    fn folder_order_is_read_and_reaches_the_sort_spec() {
+        let path = Path::new("settings.json");
+        let load = |json: &[u8]| parse_settings(json, path).unwrap();
+        let before = load(br#"{"folders": "first"}"#);
+        assert_eq!(before.folders, FolderOrder::First);
+        let spec = before.default_sort();
+        assert!(!spec.mixed && !spec.always_first);
+        assert!(
+            !SortSpec {
+                ascending: false,
+                ..spec
+            }
+            .folders_lead()
+        );
+        let always = load(br#"{"folders": "always_first"}"#);
+        assert_eq!(always.folders, FolderOrder::AlwaysFirst);
+        let spec = always.default_sort();
+        assert!(!spec.mixed && spec.always_first);
+        assert!(
+            SortSpec {
+                ascending: false,
+                ..spec
+            }
+            .folders_lead()
+        );
+        let mixed = load(br#"{"folders": "mixed"}"#);
+        assert!(mixed.default_sort().mixed);
+        assert_eq!(
+            load(b"{}").folders,
+            FolderOrder::First,
+            "File Explorer's by default"
+        );
     }
 
     /// The TeraCopy and QuickLook switches of 0.9 become the generic programs with the same

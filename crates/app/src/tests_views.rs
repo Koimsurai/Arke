@@ -321,9 +321,13 @@ fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
         ]
     );
 
-    // Name descending: children reverse too, and folders still lead the files at every level.
+    // Name descending, folders always first (#499): children reverse too, and folders lead the
+    // files at every level.
     view.update(cx, |v, cx| {
-        v.set_sort(SortSpec::by(SortColumn::Name, false, false), cx);
+        v.set_sort(
+            SortSpec::by(SortColumn::Name, false, false).with_always_first(true),
+            cx,
+        );
     });
     wait_until(cx, &view, "resorted", |v| {
         view_names(v).first().map(String::as_str) == Some("beta")
@@ -341,13 +345,33 @@ fn tree_follows_sort_and_watcher(cx: &mut TestAppContext) {
         ]
     );
 
+    // Name descending, folders before files (File Explorer): they trail the files at every level.
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Name, false, false), cx);
+    });
+    wait_until(cx, &view, "resorted again", |v| {
+        view_names(v).first().map(String::as_str) == Some("top.txt")
+            && view_names(v).get(4) == Some(&sep(&["alpha", "a0.txt"]))
+    });
+    assert_eq!(
+        view.update(cx, |v, _| view_names(v)),
+        [
+            "top.txt".to_string(),
+            "beta".into(),
+            "alpha".into(),
+            sep(&["alpha", "a1.txt"]),
+            sep(&["alpha", "a0.txt"]),
+            sep(&["alpha", "inner"]),
+        ]
+    );
+
     // The expanded folder is deleted: its rows and its expansion go away (still descending, so
-    // the folder left leads the file).
+    // the folder left trails the file).
     wait_watcher(&fs, Path::new(r"C:\t"));
     fs.remove(Path::new(r"C:\t"), "alpha");
     fs.emit_changed(Path::new(r"C:\t"), &["alpha"]);
     wait_until(cx, &view, "alpha gone", |v| {
-        view_names(v) == ["beta", "top.txt"] && v.tree_expanded().is_empty()
+        view_names(v) == ["top.txt", "beta"] && v.tree_expanded().is_empty()
     });
 }
 
@@ -1134,9 +1158,9 @@ fn search_results_sort_by_header_clicks(cx: &mut TestAppContext) {
     view.update(cx, |v, _| assert!(v.search_sort.is_none()));
 }
 
-/// #286, #435: grouped by a date, folders go into the section of their date and lead within it,
-/// newest first or oldest first. Not grouped, they stay a
-/// block of their own; column view never groups.
+/// #286, #499: grouped by a date, folders go into the section of their date. Newest first they
+/// trail the files of it (before files) or lead them (always first); oldest first they lead. Not
+/// grouped, they stay a block of their own; column view never groups.
 #[gpui::test]
 fn grouped_by_date_folders_join_their_sections(cx: &mut TestAppContext) {
     use std::time::{Duration, SystemTime};
@@ -1185,14 +1209,33 @@ fn grouped_by_date_folders_join_their_sections(cx: &mut TestAppContext) {
     sort(cx, false);
     assert_eq!(
         view.update(cx, |v, _| names(v)),
-        ["new-dir", "old-dir", "new.txt", "old.txt"]
+        ["new.txt", "old.txt", "new-dir", "old-dir"]
     );
     group(cx, true);
     assert_eq!(
         view.update(cx, |v, _| names(v)),
-        ["new-dir", "new.txt", "old-dir", "old.txt"]
+        ["new.txt", "new-dir", "old.txt", "old-dir"]
     );
     assert_eq!(headers(cx), [2, 2], "today and the year, two items each");
+    // Always first: the folders lead each section newest first too.
+    view.update(cx, |v, cx| {
+        v.set_sort(
+            SortSpec::by(SortColumn::Modified, false, false).with_always_first(true),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["new-dir", "new.txt", "old-dir", "old.txt"]
+    );
+    assert_eq!(headers(cx), [2, 2]);
+    group(cx, false);
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        ["new-dir", "old-dir", "new.txt", "old.txt"]
+    );
+    group(cx, true);
     sort(cx, true);
     assert_eq!(
         view.update(cx, |v, _| names(v)),

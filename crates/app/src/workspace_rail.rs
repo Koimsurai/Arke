@@ -428,14 +428,11 @@ impl Workspace {
     }
 
     /// The quick access folders, the current one lit. Those the full sidebar draws as tiles go
-    /// with Home when it is hidden, the others with Favorites (#323).
+    /// with Favorites when it is hidden (#323, #463); hiding Home leaves them.
     fn rail_tiles(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let current = self.rail_here(cx);
-        let (home_hidden, list_hidden) = (
-            super::sidebar::section_hidden(SidebarSection::Home, cx),
-            super::sidebar::section_hidden(SidebarSection::Favorites, cx),
-        );
-        let favorites = if home_hidden && list_hidden {
+        let list_hidden = super::sidebar::section_hidden(SidebarSection::Favorites, cx);
+        let favorites = if list_hidden {
             Vec::new()
         } else {
             self.favorites(cx)
@@ -443,7 +440,6 @@ impl Workspace {
         favorites
             .into_iter()
             .enumerate()
-            .filter(|_| !home_hidden)
             .map(|(ix, (path, label, kf_icon))| {
                 let here = current.as_deref() == Some(path.as_path());
                 let tint = crate::assets::tinted(

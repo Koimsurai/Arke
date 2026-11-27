@@ -7,6 +7,7 @@ use gpui::{App, Context, EntityId, Window};
 
 use super::Workspace;
 use crate::assets::Icon;
+use crate::explorer::PageClosed;
 
 /// The owning tab: its list view (which side in dual pane) and the folder it was on when the page opened.
 #[derive(Clone, Debug)]
@@ -67,6 +68,88 @@ impl Workspace {
         let view = self.active_view().clone();
         view.update(cx, |e, cx| act(e, window, cx));
         cx.notify();
+    }
+
+    /// History stepped to `page` in `view`: shows it over the tab. Only one Home page (and one
+    /// Recycle Bin page) exists, so one open in another tab moves here.
+    pub(super) fn show_history_page(
+        &mut self,
+        view: &gpui::Entity<crate::explorer::Explorer>,
+        page: arke_core::NavPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A page only shows over the active pane: the pane whose button was used comes first.
+        if let Some((tab, pane)) = self.locate(view)
+            && self.active_view().entity_id() != view.entity_id()
+        {
+            self.activate_pane(tab, pane, window, cx);
+        }
+        self.clear_pages_here();
+        match page {
+            arke_core::NavPage::Home => {
+                self.home_page = None;
+                self.show_home(false, window, cx);
+                self.focus_active(window, cx);
+            }
+            arke_core::NavPage::RecycleBin => {
+                self.recycle_page = None;
+                self.show_recycle(false, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// History stepped from a page to the folder under it in `view`: the page closes, the tab
+    /// stays.
+    pub(super) fn hide_pages_of(
+        &mut self,
+        view: &gpui::Entity<crate::explorer::Explorer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = view.entity_id();
+        if self.home_page.as_ref().is_some_and(|p| p.owner.view == id) {
+            self.home_page = None;
+        }
+        if self
+            .recycle_page
+            .as_ref()
+            .is_some_and(|p| p.owner.view == id)
+        {
+            self.recycle_page = None;
+        }
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// A pane the history has on a page that the workspace no longer shows (the page was closed
+    /// without going anywhere) is on the folder under it, as a folder opened from the page.
+    pub(super) fn sync_history_pages(&mut self, cx: &mut Context<Self>) {
+        let shown = |owner: Option<&Owner>| owner.map(|o| o.view);
+        let home = shown(self.home_page.as_ref().map(|p| &p.owner));
+        let recycle = shown(self.recycle_page.as_ref().map(|p| &p.owner));
+        let views: Vec<_> = self
+            .tabs
+            .iter()
+            .flat_map(|t| t.panes.iter().map(|p| p.view.clone()))
+            .collect();
+        for view in views {
+            let id = view.entity_id();
+            let covered = match view.read(cx).page() {
+                None => continue,
+                Some(arke_core::NavPage::Home) => home == Some(id),
+                Some(arke_core::NavPage::RecycleBin) => recycle == Some(id),
+            };
+            if covered {
+                continue;
+            }
+            match view.update(cx, |e, _| e.page_closed()) {
+                PageClosed::Nothing => {}
+                PageClosed::Stepped => self.note_navigation(id, cx),
+                PageClosed::Undone => self.undo_nav_step(id, cx),
+            }
+        }
     }
 
     /// Closes the page the active tab shows, keeping the tab.

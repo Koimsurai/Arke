@@ -571,13 +571,14 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
                         y: 80.,
                         width: 800.,
                         height: None,
+                        scale: None,
                     });
                 },
                 cx,
             );
         });
     });
-    let bounds = cx.update(|_, cx| crate::properties::start_bounds(cx));
+    let bounds = cx.update(|_, cx| crate::properties::start_bounds(None, cx));
     assert_eq!(
         (
             f32::from(bounds.origin.x),
@@ -596,13 +597,14 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
                         y: 80.,
                         width: 500.,
                         height: None,
+                        scale: None,
                     });
                 },
                 cx,
             );
         });
     });
-    let bounds = cx.update(|_, cx| crate::properties::start_bounds(cx));
+    let bounds = cx.update(|_, cx| crate::properties::start_bounds(None, cx));
     assert_eq!(f32::from(bounds.size.width), 760.);
     assert_eq!(f32::from(bounds.size.height), 520.);
     // A place that is on no screen any more is not used.
@@ -615,13 +617,14 @@ fn the_window_fits_its_content_and_remembers_its_place(cx: &mut TestAppContext) 
                         y: 90_000.,
                         width: 800.,
                         height: Some(700.),
+                        scale: None,
                     });
                 },
                 cx,
             );
         });
     });
-    let bounds = cx.update(|_, cx| crate::properties::start_bounds(cx));
+    let bounds = cx.update(|_, cx| crate::properties::start_bounds(None, cx));
     assert!(f32::from(bounds.origin.x) < 5_000., "centered instead");
     assert_eq!(
         f32::from(bounds.size.height),
@@ -683,4 +686,107 @@ fn the_attributes_sit_under_the_times_when_there_is_no_space_card(cx: &mut TestA
     let readonly = cx.debug_bounds("props-readonly").expect("attributes");
     assert!(readonly.left() >= right.left(), "on the right");
     assert!(readonly.top() > modified.top(), "under the times");
+}
+
+mod placement {
+    use crate::properties::{Saved, place_window};
+    use gpui::{Bounds, Pixels, point, px, size};
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    /// A primary screen and a second one to its right.
+    fn screens() -> [Bounds<Pixels>; 2] {
+        [rect(0., 0., 1920., 1080.), rect(1920., 0., 2560., 1440.)]
+    }
+
+    fn saved(x: f32, y: f32, w: f32, h: f32, scale: Option<f32>) -> Saved {
+        Saved {
+            origin: point(px(x), px(y)),
+            size: size(px(w), px(h)),
+            scale,
+        }
+    }
+
+    fn inside(inner: Bounds<Pixels>, outer: Bounds<Pixels>) -> bool {
+        outer.contains(&inner.origin)
+            && outer.contains(&point(
+                inner.origin.x + inner.size.width - px(1.),
+                inner.origin.y + inner.size.height - px(1.),
+            ))
+    }
+
+    #[test]
+    fn centers_on_the_source_window_on_the_second_screen() {
+        let screens = screens();
+        let source = rect(2200., 200., 1200., 800.);
+        let got =
+            place_window(Some((source, 1.)), &screens, size(px(760.), px(520.)), None).unwrap();
+        assert!(inside(got, screens[1]));
+        assert_eq!(got.center(), source.center());
+    }
+
+    #[test]
+    fn a_saved_place_on_another_screen_is_ignored() {
+        let screens = screens();
+        let source = rect(2200., 200., 1200., 800.);
+        let got = place_window(
+            Some((source, 1.)),
+            &screens,
+            size(px(760.), px(520.)),
+            Some(saved(100., 80., 800., 600., Some(1.))),
+        )
+        .unwrap();
+        assert!(inside(got, screens[1]));
+        // The size is still the saved one.
+        assert_eq!(got.size, size(px(800.), px(600.)));
+    }
+
+    #[test]
+    fn a_saved_place_on_the_same_screen_is_used() {
+        let screens = screens();
+        let source = rect(2200., 200., 1200., 800.);
+        let got = place_window(
+            Some((source, 1.)),
+            &screens,
+            size(px(760.), px(520.)),
+            Some(saved(2500., 300., 800., 600., Some(1.))),
+        )
+        .unwrap();
+        assert_eq!(got, rect(2500., 300., 800., 600.));
+    }
+
+    #[test]
+    fn a_size_saved_at_another_scale_is_adjusted() {
+        let screens = screens();
+        let source = rect(2200., 200., 1200., 800.);
+        let got = place_window(
+            Some((source, 1.5)),
+            &screens,
+            size(px(760.), px(520.)),
+            Some(saved(2500., 300., 900., 600., Some(1.))),
+        )
+        .unwrap();
+        // The same size in real pixels: 900 at 1.0 is 600 at 1.5.
+        assert_eq!(got.size, size(px(600.), px(400.)));
+        assert_eq!(got.origin, point(px(2500.), px(300.)));
+        // Without a saved scale (older files) the size is taken as it is.
+        let old = place_window(
+            Some((source, 1.5)),
+            &screens,
+            size(px(760.), px(520.)),
+            Some(saved(2500., 300., 900., 600., None)),
+        )
+        .unwrap();
+        assert_eq!(old.size, size(px(900.), px(600.)));
+    }
+
+    #[test]
+    fn without_a_source_the_saved_screen_or_the_first_one_is_used() {
+        let screens = screens();
+        let got = place_window(None, &screens, size(px(760.), px(520.)), None).unwrap();
+        assert!(inside(got, screens[0]));
+        assert!(place_window(None, &[], size(px(760.), px(520.)), None).is_none());
+    }
 }

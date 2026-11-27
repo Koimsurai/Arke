@@ -57,11 +57,16 @@ pub const MAX_SORT_KEYS: usize = 3;
 pub struct SortSpec {
     /// Primary sort column.
     pub column: SortColumn,
-    /// Ascending order. Folders kept apart ([`Self::folders_apart`]) lead either way.
+    /// Ascending order. Folders kept apart ([`Self::folders_apart`]) lead an ascending sort and,
+    /// unless [`Self::always_first`] is set, trail a descending one ([`Self::folders_lead`]).
     pub ascending: bool,
     /// Sort folders and files together (default `false`: folders kept apart, see
     /// [`Self::folders_apart`]).
     pub mixed: bool,
+    /// Folders kept apart lead in both directions (#499). Off (default), they behave as in File
+    /// Explorer: first when ascending, last when descending (by Type they lead either way).
+    /// Ignored when `mixed`.
+    pub always_first: bool,
     /// Secondary and tertiary keys, compared in order when the ones before tie. Filled from the
     /// front: a `None` is never followed by a key. A fixed array keeps the spec `Copy` and the
     /// comparison free of allocation.
@@ -164,9 +169,18 @@ impl SortSpec {
             column,
             ascending,
             mixed,
+            always_first: false,
             then: [None; MAX_SORT_KEYS - 1],
             sections: None,
         }
+    }
+
+    /// The same spec with folders leading in both directions (`true`) or as in File Explorer
+    /// (`false`); see [`Self::always_first`].
+    #[must_use]
+    pub const fn with_always_first(mut self, always_first: bool) -> Self {
+        self.always_first = always_first;
+        self
     }
 
     /// The date sections the list is grouped in, when folders go into them (#286): grouping by
@@ -225,7 +239,7 @@ impl SortSpec {
         } else {
             column.starts_ascending()
         };
-        Self::by(column, ascending, self.mixed)
+        Self::by(column, ascending, self.mixed).with_always_first(self.always_first)
     }
 
     /// Shift+click on a column header: a column already in the sort flips its direction; a new one
@@ -253,15 +267,23 @@ impl SortSpec {
         next
     }
 
-    /// Whether folders form their own block (everything but "folders and files together"). The
-    /// block always leads, ascending or descending, whatever the column (#435).
+    /// Whether folders form their own block (everything but "folders and files together").
     #[must_use]
     pub const fn folders_apart(&self) -> bool {
         !self.mixed
     }
 
-    /// Full comparison: folders as a block first (unless mixed with files), then each key in
-    /// turn, then name (in the primary direction) as a tiebreaker so the order is total.
+    /// Whether the folder block comes before the files: always with [`Self::always_first`];
+    /// otherwise, like File Explorer, when ascending (and by Type, either way). Only the primary
+    /// key counts; Shift+click keys never move folders.
+    #[must_use]
+    pub const fn folders_lead(&self) -> bool {
+        self.always_first || self.ascending || matches!(self.column, SortColumn::Type)
+    }
+
+    /// Full comparison: folders as a block first (unless mixed with files; last when descending
+    /// unless they always lead, see [`Self::folders_lead`]), then each key in turn, then name (in
+    /// the primary direction) as a tiebreaker so the order is total.
     ///
     /// Type texts are read afresh on every call, so for many comparisons in a row (sorting,
     /// searching a sorted list) take [`TypeKeys::for_entries`] once and use [`Self::compare_with`].
@@ -293,9 +315,22 @@ impl SortSpec {
             }
         }
         if self.folders_apart() {
+            let lead = self.folders_lead();
             match (a.is_dir_like(), b.is_dir_like()) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
+                (true, false) => {
+                    return if lead {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    };
+                }
+                (false, true) => {
+                    return if lead {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    };
+                }
                 _ => {}
             }
         }
@@ -355,7 +390,8 @@ impl SortSpec {
             let (mut i, mut j) = (0, split);
             let mut from = Vec::with_capacity(entries.len());
             while i < split || j < entries.len() {
-                // Same section: the folders first.
+                // Same section: the leading block's items first (the folders, or the files when
+                // descending and folders trail).
                 if j == entries.len() || (i < split && first(sections[i], sections[j])) {
                     from.push(i);
                     i += 1;
@@ -788,10 +824,11 @@ mod tests {
         }
     }
 
-    /// #435: kept apart, folders lead in both directions, whatever the column; mixed, they sort
-    /// among the files.
+    /// #177, #435, #499: kept apart, folders lead an ascending sort and trail a descending one
+    /// like File Explorer (but lead by Type either way); "always first" keeps them on top in
+    /// both directions; mixed, they sort among the files.
     #[test]
-    fn folders_lead_in_both_directions() {
+    fn folders_lead_by_mode_and_direction() {
         let d = Entry::new("zzz", EntryKind::Dir, 0, None, 0);
         let f = Entry::new("aaa", EntryKind::File, 5, None, 0);
         for column in [
@@ -802,26 +839,46 @@ mod tests {
             SortColumn::Extension,
             SortColumn::Attributes,
         ] {
+            // Before files: lead going up, trail going down.
             let up = SortSpec::by(column, true, false);
             assert_eq!(up.compare(&d, &f), Ordering::Less, "{column:?} ascending");
             assert_eq!(up.compare(&f, &d), Ordering::Greater);
             let down = SortSpec::by(column, false, false);
             assert_eq!(
                 down.compare(&d, &f),
-                Ordering::Less,
+                Ordering::Greater,
                 "{column:?} descending"
             );
-            assert_eq!(down.compare(&f, &d), Ordering::Greater);
+            assert_eq!(down.compare(&f, &d), Ordering::Less);
+            // Always first: lead both ways.
+            for ascending in [true, false] {
+                let spec = SortSpec::by(column, ascending, false).with_always_first(true);
+                assert_eq!(
+                    spec.compare(&d, &f),
+                    Ordering::Less,
+                    "{column:?} always first, ascending {ascending}"
+                );
+                assert_eq!(spec.compare(&f, &d), Ordering::Greater);
+            }
         }
-        // Mixed: by name the folder "zzz" goes after the file "aaa" going up, before it down.
-        let mixed_up = SortSpec::by(SortColumn::Name, true, true);
-        assert_eq!(mixed_up.compare(&d, &f), Ordering::Greater);
-        let mixed_down = SortSpec::by(SortColumn::Name, false, true);
-        assert_eq!(mixed_down.compare(&d, &f), Ordering::Less);
+        // By Type folders lead either way, in both modes.
+        let by_type = SortSpec::by(SortColumn::Type, false, false);
+        assert!(by_type.folders_lead());
+        assert_eq!(by_type.compare(&d, &f), Ordering::Less);
+        // Mixed: by name the folder "zzz" goes after the file "aaa" going up, before it down,
+        // whatever `always_first` says.
+        for always_first in [false, true] {
+            let mixed_up =
+                SortSpec::by(SortColumn::Name, true, true).with_always_first(always_first);
+            assert_eq!(mixed_up.compare(&d, &f), Ordering::Greater);
+            let mixed_down =
+                SortSpec::by(SortColumn::Name, false, true).with_always_first(always_first);
+            assert_eq!(mixed_down.compare(&d, &f), Ordering::Less);
+        }
     }
 
-    /// #177, #435: sorted by a date, folders stay a block that leads either way: newest folders
-    /// first, then the files newest first.
+    /// #177, #499: sorted by a date, folders stay a block: newest files first, then the folders
+    /// newest first (before files); or the folders on top both ways (always first).
     #[test]
     fn dates_keep_folders_apart() {
         use std::time::{Duration, UNIX_EPOCH};
@@ -844,9 +901,13 @@ mod tests {
         for column in [SortColumn::Modified, SortColumn::Created] {
             let down = SortSpec::by(column, false, false);
             down.sort(&mut v);
+            assert_eq!(names(&v), ["new.txt", "old.txt", "mid-dir", "old-dir"]);
+            down.with_always_first(true).sort(&mut v);
             assert_eq!(names(&v), ["mid-dir", "old-dir", "new.txt", "old.txt"]);
             let up = SortSpec::by(column, true, false);
             up.sort(&mut v);
+            assert_eq!(names(&v), ["old-dir", "mid-dir", "old.txt", "new.txt"]);
+            up.with_always_first(true).sort(&mut v);
             assert_eq!(names(&v), ["old-dir", "mid-dir", "old.txt", "new.txt"]);
             // Together with files, they sort by date among them.
             SortSpec::by(column, false, true).sort(&mut v);
@@ -854,20 +915,34 @@ mod tests {
         }
     }
 
-    /// Folders lead whatever the keys: no column, direction or Shift+click key moves them behind
-    /// the files, and only "together with files" mixes them in.
+    /// Only the primary key decides where folders go; Shift+click keys never move them. By Type
+    /// they lead either way, and "always first" keeps them on top whatever the keys.
     #[test]
-    fn folders_lead_whatever_the_keys() {
+    fn folder_placement_follows_the_primary_key() {
         let d = Entry::new("d", EntryKind::Dir, 0, None, 0);
         let f = Entry::new("f", EntryKind::File, 1, None, 0);
         let down_second =
             SortSpec::by(SortColumn::Name, true, false).shift_toggled(SortColumn::Modified);
+        assert!(down_second.folders_lead());
         assert_eq!(down_second.compare(&d, &f), Ordering::Less);
         let down_first =
             SortSpec::by(SortColumn::Modified, false, false).shift_toggled(SortColumn::Name);
-        assert_eq!(down_first.compare(&d, &f), Ordering::Less);
-        let by_type = SortSpec::by(SortColumn::Type, false, false);
-        assert_eq!(by_type.compare(&d, &f), Ordering::Less);
+        assert!(!down_first.folders_lead());
+        assert_eq!(down_first.compare(&d, &f), Ordering::Greater);
+        assert!(down_first.with_always_first(true).folders_lead());
+        assert_eq!(
+            down_first.with_always_first(true).compare(&d, &f),
+            Ordering::Less
+        );
+        // By Type folders lead either way, as in File Explorer.
+        assert!(SortSpec::by(SortColumn::Type, false, false).folders_lead());
+        // Clicking a header keeps where folders go.
+        assert!(
+            SortSpec::by(SortColumn::Name, true, false)
+                .with_always_first(true)
+                .toggled(SortColumn::Size)
+                .always_first
+        );
         // Mixed, the name decides: going down the file "f" comes before the folder "d".
         let mixed = SortSpec::by(SortColumn::Name, false, true);
         assert_eq!(mixed.compare(&d, &f), Ordering::Greater);
@@ -922,8 +997,9 @@ mod tests {
         assert_eq!(days.section(None), DateSection::Unknown);
     }
 
-    /// #286, #435: grouped by a date, folders go into their date's section, and the folder block
-    /// leads within it, newest first or oldest first.
+    /// #286, #499: grouped by a date, folders go into their date's section. Within it they lead
+    /// when oldest first and trail when newest first (before files), or lead either way (always
+    /// first); mixed with files, the sections change nothing.
     #[test]
     fn date_sections_take_the_folders_in() {
         use std::time::{Duration, UNIX_EPOCH};
@@ -957,13 +1033,38 @@ mod tests {
             sections: Some(days),
             ..newest
         };
-        assert_eq!(order(newest), ["new-dir", "old-dir", "new.txt", "old.txt"]);
-        assert_eq!(order(grouped), ["new-dir", "new.txt", "old-dir", "old.txt"]);
+        // Before files.
+        assert_eq!(order(newest), ["new.txt", "old.txt", "new-dir", "old-dir"]);
+        assert_eq!(order(grouped), ["new.txt", "new-dir", "old.txt", "old-dir"]);
         let oldest = SortSpec {
             ascending: true,
             ..grouped
         };
         assert_eq!(order(oldest), ["old-dir", "old.txt", "new-dir", "new.txt"]);
+        // Always first: the folders lead each section either way.
+        let first = grouped.with_always_first(true);
+        assert_eq!(
+            order(newest.with_always_first(true)),
+            ["new-dir", "old-dir", "new.txt", "old.txt"]
+        );
+        assert_eq!(order(first), ["new-dir", "new.txt", "old-dir", "old.txt"]);
+        assert_eq!(
+            order(SortSpec {
+                ascending: true,
+                ..first
+            }),
+            ["old-dir", "old.txt", "new-dir", "new.txt"]
+        );
+        // Mixed with files: plain date order, the sections change nothing.
+        for always_first in [false, true] {
+            let mixed = SortSpec {
+                mixed: true,
+                ..grouped.with_always_first(always_first)
+            };
+            assert!(mixed.date_sections().is_none());
+            // Newest first among all: the two new items, then old-dir, then old.txt.
+            assert_eq!(order(mixed)[2..], ["old-dir", "old.txt"]);
+        }
         // The merge in `sort` gives what the comparison does, for many items in both directions.
         let many: Vec<Entry> = (0..500u64)
             .map(|i| {
@@ -975,9 +1076,12 @@ mod tests {
                 at(&format!("n{}", i % 17), kind, i * 7 % 900)
             })
             .collect();
-        for ascending in [true, false] {
+        for (ascending, always_first) in
+            [(true, false), (false, false), (true, true), (false, true)]
+        {
             let spec = SortSpec {
                 ascending,
+                always_first,
                 ..grouped
             };
             let mut merged = many.clone();
@@ -1035,8 +1139,12 @@ mod tests {
                 .collect()
         };
         let mut spec = SortSpec::by(SortColumn::Size, false, false);
-        // Descending: folders still lead (the uncomputed one, c, counts as 0).
+        // Descending: folders trail (the uncomputed one, c, counts as 0).
+        assert_eq!(names(spec), ["f", "b", "a", "c"]);
+        // Always first: they lead descending too.
+        spec.always_first = true;
         assert_eq!(names(spec), ["b", "a", "c", "f"]);
+        spec.always_first = false;
         spec.ascending = true;
         assert_eq!(names(spec), ["c", "a", "b", "f"]);
         // Mixed: folders and files compared together.
@@ -1123,14 +1231,16 @@ mod tests {
         let spec = SortSpec::by(SortColumn::Type, false, false).shift_toggled(SortColumn::Size);
         spec.sort(&mut v);
         assert_eq!(names(&v), ["d.txt", "b.txt", "a.txt", "c.jpg", "e.jpg"]);
-        // Folders lead even descending, whatever the other keys.
+        // By Type folders lead even descending, whatever the other keys.
         v.push(Entry::new("zz", EntryKind::Dir, 0, None, 0));
         spec.sort(&mut v);
         assert_eq!(v[0].name.as_ref(), "zz");
-        // By Size descending they lead too.
-        SortSpec::by(SortColumn::Size, false, false)
-            .shift_toggled(SortColumn::Modified)
-            .sort(&mut v);
+        // By Size descending they trail, unless they always lead.
+        let by_size =
+            SortSpec::by(SortColumn::Size, false, false).shift_toggled(SortColumn::Modified);
+        by_size.sort(&mut v);
+        assert_eq!(v.last().map(|e| e.name.as_ref()), Some("zz"));
+        by_size.with_always_first(true).sort(&mut v);
         assert_eq!(v[0].name.as_ref(), "zz");
         let spec = SortSpec::by(SortColumn::Type, true, false).shift_toggled(SortColumn::Size);
         spec.sort(&mut v);

@@ -30,9 +30,9 @@ use arke_core::takeover::Target;
 use arke_core::{Entry, EntryKind};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
-    KeyBinding, MouseButton, ObjectFit, ParentElement, Render, RenderImage, SharedString, Styled,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowHandle,
-    WindowOptions, actions, div, img, prelude::*, px, relative, size, svg,
+    KeyBinding, MouseButton, ObjectFit, ParentElement, Point, Render, RenderImage, SharedString,
+    Size, Styled, Subscription, TitlebarOptions, Window, WindowBounds, WindowControlArea,
+    WindowHandle, WindowOptions, actions, div, img, prelude::*, px, relative, size, svg,
 };
 use rust_i18n::t;
 use sha2::{Digest, Sha256};
@@ -240,7 +240,13 @@ pub(crate) fn open(
         return None;
     }
     let title = window_title(&targets);
-    let bounds = start_bounds(cx);
+    // The window this one was opened from: the Properties window goes on its monitor.
+    let source = cx.active_window().and_then(|handle| {
+        handle
+            .update(cx, |_, window, _| (window.bounds(), window.scale_factor()))
+            .ok()
+    });
+    let bounds = start_bounds(source, cx);
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -270,8 +276,12 @@ pub(crate) fn open(
     }
 }
 
-/// Where a new window goes: where the last one was if that is still on a screen, else centered.
-pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
+/// Where a new window goes: on the monitor of the window it was opened from (`source`: its bounds
+/// and scale), where the last one was if that is on the same monitor, else centered on the source.
+pub(crate) fn start_bounds(
+    source: Option<(Bounds<gpui::Pixels>, f32)>,
+    cx: &mut App,
+) -> Bounds<gpui::Pixels> {
     let saved = SettingsStore::global(cx)
         .read(cx)
         .settings
@@ -280,21 +290,74 @@ pub(crate) fn start_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
         .and_then(|p| p.height)
         .unwrap_or_else(|| sc(START_HEIGHT));
     // A width saved by the old, narrow window would only give a single column: start afresh.
+    let narrow = saved.is_some_and(|p| p.width < sc(MIN_WIDTH));
     let width = saved
-        .filter(|p| p.width >= sc(MIN_WIDTH))
+        .filter(|p| !narrow && p.width >= sc(MIN_WIDTH))
         .map_or_else(|| sc(WIDTH), |p| p.width.min(sc(1200.)));
-    let fresh = Bounds::centered(None, size(px(width), px(height)), cx);
-    let Some(place) = saved else {
-        return fresh;
-    };
-    let origin = gpui::point(px(place.x), px(place.y));
-    // A corner of the title bar must be on some screen (a monitor may have been unplugged).
-    let grab = origin + gpui::point(px(40.), px(20.));
-    if cx.displays().iter().any(|d| d.bounds().contains(&grab)) {
-        Bounds::new(origin, size(px(width), px(height)))
-    } else {
-        fresh
+    let fresh = size(px(width), px(height));
+    let displays: Vec<_> = cx.displays().iter().map(|d| d.bounds()).collect();
+    let saved = saved.map(|p| Saved {
+        origin: gpui::point(px(p.x), px(p.y)),
+        size: fresh,
+        // The fresh width is already at this window's scale.
+        scale: if narrow { None } else { p.scale },
+    });
+    place_window(source, &displays, fresh, saved)
+        .unwrap_or_else(|| Bounds::centered(None, fresh, cx))
+}
+
+/// A saved Properties window: where and how big it was, and the scale of its monitor then.
+pub(crate) struct Saved {
+    pub(crate) origin: Point<gpui::Pixels>,
+    pub(crate) size: Size<gpui::Pixels>,
+    pub(crate) scale: Option<f32>,
+}
+
+/// The pure placement: the result is on the monitor of `source` (else the one the saved place is
+/// on, else the first). The saved place is used only when it is on that monitor; otherwise the
+/// window is centered on `source`, the way a dialog appears over its owner. A saved size is
+/// adjusted to the monitor's scale, keeping its size in real pixels. `None` without monitors.
+pub(crate) fn place_window(
+    source: Option<(Bounds<gpui::Pixels>, f32)>,
+    displays: &[Bounds<gpui::Pixels>],
+    default: Size<gpui::Pixels>,
+    saved: Option<Saved>,
+) -> Option<Bounds<gpui::Pixels>> {
+    // A corner of the title bar must be on a screen (a monitor may have been unplugged).
+    let grab = |s: &Saved| s.origin + gpui::point(px(40.), px(20.));
+    let display = match (&source, &saved) {
+        (Some((b, _)), _) => displays.iter().find(|d| d.contains(&b.center())),
+        (None, Some(s)) => displays.iter().find(|d| d.contains(&grab(s))),
+        (None, None) => None,
     }
+    .or_else(|| displays.first())?;
+    let factor = match (saved.as_ref().and_then(|s| s.scale), &source) {
+        (Some(was), Some((_, now))) if was > 0. && *now > 0. => was / now,
+        _ => 1.,
+    };
+    let (w, h) = saved.as_ref().map_or_else(
+        || (f32::from(default.width), f32::from(default.height)),
+        |s| {
+            (
+                f32::from(s.size.width) * factor,
+                f32::from(s.size.height) * factor,
+            )
+        },
+    );
+    let (dx, dy) = (f32::from(display.origin.x), f32::from(display.origin.y));
+    let (dw, dh) = (
+        f32::from(display.size.width),
+        f32::from(display.size.height),
+    );
+    let (w, h) = (w.min(dw), h.min(dh));
+    let (x, y) = if let Some(s) = saved.as_ref().filter(|s| display.contains(&grab(s))) {
+        (f32::from(s.origin.x), f32::from(s.origin.y))
+    } else {
+        let c = source.map_or_else(|| display.center(), |(b, _)| b.center());
+        (f32::from(c.x) - w / 2., f32::from(c.y) - h / 2.)
+    };
+    let (x, y) = (x.min(dx + dw - w).max(dx), y.min(dy + dh - h).max(dy));
+    Some(Bounds::new(gpui::point(px(x), px(y)), size(px(w), px(h))))
 }
 
 fn leaf(path: &Path) -> String {
@@ -445,6 +508,7 @@ impl Properties {
             y: f32::from(bounds.origin.y),
             width: f32::from(bounds.size.width),
             height: self.user_sized.then_some(height),
+            scale: Some(window.scale_factor()),
         };
         SettingsStore::global(cx).update(cx, |store, cx| {
             store.update(|s| s.properties_window = Some(place), cx);

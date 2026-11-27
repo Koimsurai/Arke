@@ -145,7 +145,7 @@ mod winfs;
 
 pub use entry::{Entry, EntryKind};
 pub use fs::{Fs, RealFs};
-pub use history::{History, NavKind};
+pub use history::{History, Location, NavKind, NavPage};
 pub use model::{Delta, DeltaOutcome, DirModel};
 pub use search::{SearchHit, SearchResults, SearchService};
 pub use selection::Selection;

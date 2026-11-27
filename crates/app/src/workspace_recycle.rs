@@ -51,6 +51,23 @@ impl Workspace {
         } else {
             self.clear_pages_here();
         }
+        self.show_recycle(new_tab, window, cx);
+        let view = self.active_view().clone();
+        if view.update(cx, |e, _| {
+            e.enter_page(arke_core::NavPage::RecycleBin, new_tab)
+        }) {
+            self.note_navigation(view.entity_id(), cx);
+        }
+    }
+
+    /// Shows the Recycle Bin page over the active tab (`new_tab`: the tab was opened for it).
+    /// The history is the caller's: this only draws the page.
+    pub(super) fn show_recycle(
+        &mut self,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let shell = Arc::clone(&self.services.shell);
         let view = cx.new(|cx| RecycleBin::new(shell, window, cx));
         let events = cx.subscribe_in(&view, window, Self::on_recycle_event);

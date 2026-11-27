@@ -17,7 +17,8 @@ use arke_core::net::FailKind;
 use arke_core::service::resort;
 use arke_core::{
     DeltaOutcome, DirModel, DirService, Entry, Fs, Gen, History, IoEvent, ListOptions, ListTiming,
-    NavKind, SearchHit, SearchResults, SearchService, Selection, SortColumn, SortSpec, TypeAhead,
+    Location, NavKind, NavPage, SearchHit, SearchResults, SearchService, Selection, SortColumn,
+    SortSpec, TypeAhead,
 };
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, KeyDownEvent,
@@ -496,9 +497,16 @@ pub(crate) enum ExplorerEvent {
         stepped: bool,
         kind: NavKind,
     },
-    /// Back left a folder that was opened from Home: the workspace shows Home again.
-    BackToHome {
-        start: bool,
+    /// Back, forward or a history jump went to a page: the workspace shows it over the tab.
+    /// `kind` is how it got there (a history menu jump moves the timeline only once it lands).
+    PageShown {
+        page: NavPage,
+        kind: NavKind,
+    },
+    /// Back, forward or a history jump went to the folder the page covers: the workspace closes
+    /// the page.
+    PageHidden {
+        kind: NavKind,
     },
     /// Home picked from the path bar's drive menu: the workspace shows the Home page.
     OpenHome,
@@ -584,6 +592,16 @@ pub(crate) struct FailedNav {
     pub(crate) reason: String,
 }
 
+/// What [`Explorer::page_closed`] did to the history.
+pub(crate) enum PageClosed {
+    /// Nothing: no page, or a folder is opening.
+    Nothing,
+    /// It stepped back to the folder under the page.
+    Undone,
+    /// It recorded a step to the folder under the page.
+    Stepped,
+}
+
 struct PendingNav {
     generation: Gen,
     path: PathBuf,
@@ -593,8 +611,6 @@ struct PendingNav {
     select: Vec<Arc<str>>,
     /// Per-folder view state to save or put back when this finishes.
     folder_view: folder_view::PendingView,
-    /// Opened from Home: `Some(start)`, where `start` says Home was where the tab started.
-    from_home: Option<bool>,
     /// Arriving starts the history over (the drive the folder was on is gone).
     fresh: bool,
 }
@@ -722,10 +738,10 @@ pub(crate) struct Explorer {
     pub(crate) model: Option<DirModel>,
     pending: Option<PendingNav>,
     pub(crate) history: History,
-    /// The folder at this history depth was opened from Home (and whether Home was where the
-    /// tab started): back from it returns to Home, like a browser. Home is a page over the
-    /// list, not a folder, so the history itself can't hold it.
-    from_home: Option<(usize, bool)>,
+    /// The page the workspace shows over this pane (Home, the Recycle Bin), which is where the
+    /// pane is as far as the history goes: the folder under it stays loaded. Set when a page
+    /// opens or history steps to one, cleared once a folder is opened.
+    page: Option<NavPage>,
     /// Back and forward button states set by the workspace when they follow the timeline
     /// across tabs (`workspace_nav.rs`); `None`: this pane's own history.
     pub(crate) global_nav: Option<(bool, bool)>,
@@ -968,6 +984,9 @@ pub(crate) struct Explorer {
     /// it again (a file would launch twice; a folder that did not navigate is not worth a retry).
     /// A folder that did navigate never matches: the folder differs.
     last_click_open: Option<(PathBuf, Option<PathBuf>)>,
+    /// An Alt+click just opened Properties (single-click mode); its double-click must not open a
+    /// second window (#493).
+    alt_props_opened: bool,
     /// The last press landed on this item's name (set by the name, read by the item's handler,
     /// which runs after it).
     name_pressed: Option<usize>,
@@ -1179,7 +1198,7 @@ impl Explorer {
             model: None,
             pending: None,
             history: History::default(),
-            from_home: None,
+            page: None,
             global_nav: None,
             locked: false,
             sort: defaults.0,
@@ -1310,6 +1329,7 @@ impl Explorer {
             compare: None,
             click_select: None,
             last_click_open: None,
+            alt_props_opened: false,
             name_pressed: None,
             rename_press: None,
             rename_wait: None,
@@ -1631,7 +1651,6 @@ impl Explorer {
             kind,
             select,
             folder_view,
-            from_home: None,
             fresh: false,
         });
         self.typeahead.reset();
@@ -1809,27 +1828,8 @@ impl Explorer {
     }
 
     pub(crate) fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
-        if self.locked {
-            return;
-        }
-        if let Some(target) = self.history.back_target() {
-            let home = self
-                .from_home
-                .filter(|&(at, _)| at == self.history.depth())
-                .map(|(_, start)| start);
-            self.navigate(target.to_path_buf(), NavKind::Back, cx);
-            // This folder was opened from Home: Home comes back over the folder before it.
-            if let Some(start) = home {
-                cx.emit(ExplorerEvent::BackToHome { start });
-            }
-        }
-    }
-
-    /// The navigation just started was opened from Home (`start`: Home was where the tab
-    /// started, so there is nothing before it).
-    pub(crate) const fn opened_from_home(&mut self, start: bool) {
-        if let Some(pending) = self.pending.as_mut() {
-            pending.from_home = Some(start);
+        if !self.locked {
+            self.step_history(NavKind::Back, cx);
         }
     }
 
@@ -1843,51 +1843,171 @@ impl Explorer {
     }
 
     pub(crate) fn go_forward(&mut self, _: &GoForward, _: &mut Window, cx: &mut Context<Self>) {
-        if self.locked {
-            return;
-        }
-        if let Some(target) = self.history.forward_target() {
-            self.navigate(target.to_path_buf(), NavKind::Forward, cx);
+        if !self.locked {
+            self.step_history(NavKind::Forward, cx);
         }
     }
 
-    /// Folders the back (or forward) button's menu lists, the nearest first. None in a pinned
+    /// The location a Back, Forward or Jump goes to, if the history has it.
+    fn history_target(&self, kind: NavKind) -> Option<&Location> {
+        match kind {
+            NavKind::Back => self.history.back_target(),
+            NavKind::Forward => self.history.forward_target(),
+            NavKind::Jump { back: true, steps } => self.history.back_at(steps),
+            NavKind::Jump { back: false, steps } => self.history.forward_at(steps),
+            NavKind::New | NavKind::Refresh => None,
+        }
+    }
+
+    /// Goes to the location `kind` names (Back, Forward or a Jump). A folder is navigated to
+    /// and enters the history once it is listed; a page opens over the pane at once, and so does
+    /// the folder under the page that is shown again (nothing to list). Returns whether it went.
+    fn step_history(&mut self, kind: NavKind, cx: &mut Context<Self>) -> bool {
+        let Some(target) = self.history_target(kind).cloned() else {
+            return false;
+        };
+        match target {
+            Location::Folder(path) => {
+                // The folder under the page is already shown, or still opening for the first
+                // time (a tab restored on Home): nothing to list, the page just goes.
+                let settled = self.model.is_none()
+                    || self
+                        .pending
+                        .as_ref()
+                        .is_none_or(|p| p.kind == NavKind::Refresh);
+                let under = settled
+                    && self.page.is_some()
+                    && self.display_path().is_some_and(|p| same_folder(p, &path));
+                if under {
+                    let from = self.page.take().map(Location::Page);
+                    self.history.commit(kind, from, &Location::Folder(path));
+                    cx.emit(ExplorerEvent::PageHidden { kind });
+                    cx.notify();
+                } else {
+                    self.navigate(path, kind, cx);
+                }
+            }
+            Location::Page(page) => {
+                let from = self.here();
+                self.history.commit(kind, from, &Location::Page(page));
+                self.page = Some(page);
+                cx.emit(ExplorerEvent::PageShown { page, kind });
+                cx.notify();
+            }
+        }
+        true
+    }
+
+    /// Where the pane is for the history: the page over it, else its folder (`None` before the
+    /// first folder is listed).
+    fn here(&self) -> Option<Location> {
+        self.current_path().map(|path| {
+            self.page
+                .map_or_else(|| Location::Folder(path.to_path_buf()), Location::Page)
+        })
+    }
+
+    /// The workspace opened `page` over this pane. The folder (or page) it covers goes into the
+    /// history like any location left behind; `start` says the page is where the tab starts, so
+    /// there is nothing before it. Returns whether the history recorded a step.
+    pub(crate) fn enter_page(&mut self, page: NavPage, start: bool) -> bool {
+        if self.page == Some(page) {
+            return false;
+        }
+        // The folder still opening counts: a tab restored on Home has not listed it yet.
+        let from = self.display_path().map(|path| {
+            self.page
+                .map_or_else(|| Location::Folder(path.to_path_buf()), Location::Page)
+        });
+        self.page = Some(page);
+        if start {
+            self.history = History::default();
+            return false;
+        }
+        let stepped = from.is_some();
+        self.history
+            .commit(NavKind::New, from, &Location::Page(page));
+        stepped
+    }
+
+    /// The workspace shows no page over this pane now, though the pane is on one: it was closed
+    /// (the Home button again, Esc, another page), so the folder under it is where the pane is.
+    /// When that folder is what Back would open, closing the page is Back (Forward opens the page
+    /// again); otherwise it is a step to the folder, as if opened from the page. Waits while a
+    /// folder is opening, which takes the place of the page.
+    pub(crate) fn page_closed(&mut self) -> PageClosed {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.kind != NavKind::Refresh)
+        {
+            return PageClosed::Nothing;
+        }
+        let Some(path) = self.current_path().map(Path::to_path_buf) else {
+            return PageClosed::Nothing;
+        };
+        let Some(page) = self.page.take() else {
+            return PageClosed::Nothing;
+        };
+        let folder = Location::Folder(path);
+        let kind = if self.history.back_target() == Some(&folder) {
+            NavKind::Back
+        } else {
+            NavKind::New
+        };
+        self.history
+            .commit(kind, Some(Location::Page(page)), &folder);
+        if kind == NavKind::Back {
+            PageClosed::Undone
+        } else {
+            PageClosed::Stepped
+        }
+    }
+
+    /// Puts the pane on `page` without touching the history (a tab moved here with its history
+    /// and its Home page).
+    pub(crate) const fn set_page(&mut self, page: Option<NavPage>) {
+        self.page = page;
+    }
+
+    /// The page the pane is on, as far as the history goes.
+    pub(crate) const fn page(&self) -> Option<NavPage> {
+        self.page
+    }
+
+    /// Locations the back (or forward) button's menu lists, the nearest first. None in a pinned
     /// tab, whose buttons are off too.
-    pub(crate) fn history_menu(&self, back: bool) -> Vec<PathBuf> {
+    pub(crate) fn history_menu(&self, back: bool) -> Vec<Location> {
         self.history_list(back, HISTORY_MENU_MAX)
     }
 
-    /// The folder the back (or forward) button goes to: the top row of its menu.
-    pub(crate) fn history_next(&self, back: bool) -> Option<PathBuf> {
+    /// The location the back (or forward) button goes to: the top row of its menu.
+    pub(crate) fn history_next(&self, back: bool) -> Option<Location> {
         self.history_list(back, 1).into_iter().next()
     }
 
-    /// The first `limit` folders of [`Self::history_menu`].
-    fn history_list(&self, back: bool, limit: usize) -> Vec<PathBuf> {
+    /// The first `limit` locations of [`Self::history_menu`].
+    fn history_list(&self, back: bool, limit: usize) -> Vec<Location> {
         if self.locked {
             return Vec::new();
         }
-        let entries: Box<dyn Iterator<Item = &Path>> = if back {
+        let entries: Box<dyn Iterator<Item = &Location>> = if back {
             Box::new(self.history.back_entries())
         } else {
             Box::new(self.history.forward_entries())
         };
-        // Home was where the tab started: Back stops on Home, so the folders under it can't be
-        // reached by going back (the menu doesn't offer them either).
-        let reachable = match self.from_home {
-            Some((at, true)) if back && at <= self.history.depth() => self.history.depth() + 1 - at,
-            _ => usize::MAX,
-        };
-        entries
-            .take(limit.min(reachable))
-            .map(Path::to_path_buf)
-            .collect()
+        entries.take(limit).cloned().collect()
     }
 
-    /// How far down the back (or forward) history `path` is now: `steps` if it is still there,
+    /// How far down the back (or forward) history `target` is now: `steps` if it is still there,
     /// else the nearest place it moved to (the history changed while a menu listing it was
     /// open), or `None` if it is no longer on that side.
-    pub(crate) fn history_steps_to(&self, back: bool, steps: usize, path: &Path) -> Option<usize> {
+    pub(crate) fn history_steps_to(
+        &self,
+        back: bool,
+        steps: usize,
+        target: &Location,
+    ) -> Option<usize> {
         let at = |steps| {
             if back {
                 self.history.back_at(steps)
@@ -1895,48 +2015,27 @@ impl Explorer {
                 self.history.forward_at(steps)
             }
         };
-        if at(steps) == Some(path) {
+        if at(steps) == Some(target) {
             return Some(steps);
         }
-        let mut entries: Box<dyn Iterator<Item = &Path>> = if back {
+        let mut entries: Box<dyn Iterator<Item = &Location>> = if back {
             Box::new(self.history.back_entries())
         } else {
             Box::new(self.history.forward_entries())
         };
-        entries.position(|p| p == path).map(|ix| ix + 1)
+        entries.position(|l| l == target).map(|ix| ix + 1)
     }
 
-    /// Opens the `steps`-th folder of the back (or forward) history (1 is what the button
+    /// Opens the `steps`-th location of the back (or forward) history (1 is what the button
     /// opens), leaving the ones passed over on the other side. Returns whether it started going
-    /// there. Going back past a folder opened from Home shows Home over the folder before it,
-    /// as pressing Back that many times does.
+    /// there.
     pub(crate) fn go_to_history(
         &mut self,
         back: bool,
         steps: usize,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.locked || steps == 0 {
-            return false;
-        }
-        let target = if back {
-            self.history.back_at(steps)
-        } else {
-            self.history.forward_at(steps)
-        };
-        let Some(target) = target.map(Path::to_path_buf) else {
-            return false;
-        };
-        let depth = self.history.depth();
-        let home = self
-            .from_home
-            .filter(|&(at, _)| back && at <= depth && depth - steps + 1 == at)
-            .map(|(_, start)| start);
-        self.navigate(target, NavKind::Jump { back, steps }, cx);
-        if let Some(start) = home {
-            cx.emit(ExplorerEvent::BackToHome { start });
-        }
-        true
+        !self.locked && steps != 0 && self.step_history(NavKind::Jump { back, steps }, cx)
     }
 
     pub(crate) fn go_up(&mut self, _: &GoUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -2489,23 +2588,21 @@ impl Explorer {
     fn commit_navigation(&mut self, pending: PendingNav, path: &Path, sorted_by: SortSpec) -> bool {
         self.failed = None;
         let previous = self.model.as_ref().map(|m| m.path.clone());
+        // Where the pane was: the page over it, else the folder.
+        let from = self.here();
+        let to = Location::Folder(path.to_path_buf());
         let stepped = pending.kind == NavKind::New
             && !pending.fresh
-            && previous.as_deref().is_some_and(|p| p != path);
-        let depth_before = self.history.depth();
+            && from.as_ref().is_some_and(|from| *from != to);
         if pending.fresh {
             self.history = History::default();
-            self.from_home = None;
         } else {
-            self.history.commit(pending.kind, previous.as_deref(), path);
-        }
-        if let Some(start) = pending.from_home {
-            self.from_home = Some((self.history.depth(), start));
-        } else if pending.kind == NavKind::New
-            && self.from_home.is_some_and(|(at, _)| depth_before < at)
-        {
-            // A new folder after going back past the one opened from Home replaces it.
-            self.from_home = None;
+            self.history.commit(pending.kind, from, &to);
+            // A folder opened takes the place of the page over the pane. (The first folder
+            // listed under a page that opened first, and a refresh, leave it.)
+            if pending.kind != NavKind::Refresh && previous.is_some() {
+                self.page = None;
+            }
         }
         if pending.kind != NavKind::Refresh {
             // Going up selects the folder we came from; "Open file location" selects the given
@@ -3410,6 +3507,7 @@ impl Explorer {
             };
             let mut sort = if follow_sort { defaults.0 } else { self.sort };
             sort.mixed = defaults.0.mixed;
+            sort.always_first = defaults.0.always_first;
             if sort != self.sort {
                 self.apply_sort(sort, cx);
             }
@@ -3721,6 +3819,7 @@ impl Explorer {
         let m = event.modifiers;
         self.rename_wait = None;
         self.rename_press = None;
+        let alt_props_opened = std::mem::take(&mut self.alt_props_opened);
         // Explorer's slow second click: the item was already the only selection, the list
         // already had focus (the click isn't the one bringing Arke or the list back), and the
         // press is on the name.
@@ -3761,8 +3860,10 @@ impl Explorer {
         {
             if m.alt {
                 // Alt+double-click: Properties of the selection it is in, as in File Explorer
-                // (#337).
-                self.open_properties(self.menu_targets(), cx);
+                // (#337). Not again if its first click already opened them (#493).
+                if !alt_props_opened {
+                    self.open_properties(self.menu_targets(), cx);
+                }
             } else if on_location {
                 // A search hit's Location: its folder, with it selected (#398).
                 self.open_hit_location(ix, cx);
@@ -3929,6 +4030,22 @@ impl Explorer {
     ) -> bool {
         let m = event.modifiers();
         let previous = self.last_click_open.take();
+        if crate::prefs::single_click()
+            && m.alt
+            && !m.control
+            && !m.shift
+            && self.renaming.is_none()
+        {
+            // Alt+click: Properties of the selection the press made, not opening it, as in File
+            // Explorer. Its double-click is two clicks, and the first one already opened the
+            // window (#493).
+            if !is_double_click(event.click_count()) {
+                self.click_select = None;
+                self.alt_props_opened = true;
+                self.open_properties(self.menu_targets(), cx);
+            }
+            return true;
+        }
         if !crate::prefs::single_click() || m.control || m.shift || m.alt || self.renaming.is_some()
         {
             return false;

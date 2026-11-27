@@ -168,6 +168,82 @@ fn f6_lands_on_the_nearest_folder_above_when_the_current_one_is_hidden(cx: &mut 
     );
 }
 
+/// Every row the cursor reaches walking down from the first one (F6, Home, then Down).
+fn walk_down(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+    key(cx, "f6");
+    key(cx, "home");
+    let mut seen = Vec::new();
+    for _ in 0..40 {
+        let Some(at) = cursor(ws, cx) else { break };
+        if seen.last() == Some(&at) {
+            break;
+        }
+        seen.push(at);
+        key(cx, "down");
+    }
+    key(cx, "escape");
+    seen
+}
+
+/// #463: the favorite tiles belong to Favorites. Hiding Home leaves them in the keyboard walk,
+/// hiding Favorites takes them out of it; Tab still goes round the same parts of the window.
+#[gpui::test]
+fn the_keyboard_walk_skips_the_hidden_favorites_not_the_hidden_home(cx: &mut TestAppContext) {
+    use crate::settings::SidebarSection;
+    let (ws, cx) = window(cx);
+    let hide = |cx: &mut VisualTestContext, sections: Vec<SidebarSection>| {
+        cx.update(|_, cx| {
+            crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+                s.update(move |st| st.hidden_sections = sections, cx);
+            });
+        });
+        refresh(cx);
+    };
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| st.favorites = Some(vec![PathBuf::from(r"C:\music")]),
+                cx,
+            );
+        });
+    });
+    refresh(cx);
+    let tile = r"tile-C:\music".to_owned();
+    assert!(
+        walk_down(&ws, cx).contains(&tile),
+        "shown: the tile is a stop"
+    );
+
+    hide(cx, vec![SidebarSection::Home]);
+    assert!(
+        walk_down(&ws, cx).contains(&tile),
+        "Home hidden: the tiles stay"
+    );
+
+    for hidden in [
+        vec![SidebarSection::Favorites],
+        vec![SidebarSection::Home, SidebarSection::Favorites],
+    ] {
+        hide(cx, hidden.clone());
+        let walked = walk_down(&ws, cx);
+        assert!(
+            walked.iter().all(|at| !at.starts_with("tile-")),
+            "{hidden:?}: no tile is a stop: {walked:?}"
+        );
+        assert!(
+            walked.iter().any(|at| at.starts_with("tree-")),
+            "{hidden:?}: the tree is still walked: {walked:?}"
+        );
+        assert_eq!(stop(&ws, cx), "list0");
+        let forward = round(&ws, cx, "tab");
+        assert_eq!(
+            parts(&forward),
+            ["sidebar", "path", "toolbar", "search"],
+            "{hidden:?}: {forward:?}"
+        );
+    }
+}
+
 /// The arrow keys walk the tree: Left goes up to the folder above, collapses it, Down reaches
 /// the next drive, Right expands it and steps in, Enter opens a folder (the keyboard goes to the
 /// list, as after a click).

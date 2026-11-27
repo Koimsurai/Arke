@@ -137,6 +137,7 @@ fn dragging_a_tab_out_of_the_window_opens_it_in_a_new_window(cx: &mut TestAppCon
             .read(cx)
             .history
             .back_target()
+            .and_then(arke_core::Location::as_folder)
             .map(Path::to_path_buf)
     });
     assert_eq!(back, Some(p(r"C:\b")), "the history came along");

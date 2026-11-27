@@ -1383,6 +1383,75 @@ impl Workspace {
         self.open_sidebar_menu(position, items, cx);
     }
 
+    /// A pane arrived at a folder: the timeline, Recent, remembered places.
+    fn on_navigated(
+        &mut self,
+        source: &Entity<Explorer>,
+        (tab_ix, pane_ix): (usize, usize),
+        path: &Path,
+        (stepped, kind): (bool, NavKind),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if stepped {
+            self.note_navigation(source.entity_id(), cx);
+        }
+        // A page that gave way to this folder had the keyboard focus: the list takes it back, or
+        // Alt+Left and Alt+Right would find nothing to act on. A step of the history lands here
+        // before the page is dropped by a frame, and its focus handle may live on, so drop what
+        // this arrival made stale first and move the focus whatever it is on now.
+        let stepped_by_history = matches!(
+            kind,
+            NavKind::Back | NavKind::Forward | NavKind::Jump { .. }
+        );
+        if stepped_by_history && self.active_view().entity_id() == source.entity_id() {
+            self.recycle_follow_navigation(cx);
+            self.home_follow_navigation(cx);
+            if !self.page_shown() {
+                self.focus_active(window, cx);
+            }
+        } else if kind != NavKind::Refresh
+            && window.focused(cx).is_none()
+            && self.active_view().entity_id() == source.entity_id()
+        {
+            self.focus_active(window, cx);
+        }
+        self.history_landed(source.entity_id(), kind, cx);
+        crate::search_history::SearchHistory::record(path, true, cx);
+        SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.remember(path);
+                    st.remember_share(path);
+                },
+                cx,
+            );
+        });
+        self.pane_navigated(tab_ix, pane_ix, path, cx);
+    }
+
+    /// History stepped onto a page, or off one back to the folder under it.
+    fn on_history_page(
+        &mut self,
+        source: &Entity<Explorer>,
+        event: &ExplorerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kind = match event {
+            ExplorerEvent::PageShown { page, kind } => {
+                self.show_history_page(source, *page, window, cx);
+                *kind
+            }
+            ExplorerEvent::PageHidden { kind } => {
+                self.hide_pages_of(source, window, cx);
+                *kind
+            }
+            _ => return,
+        };
+        self.history_landed(source.entity_id(), kind, cx);
+    }
+
     fn on_explorer_event(
         &mut self,
         source: &Entity<Explorer>,
@@ -1439,29 +1508,22 @@ impl Workspace {
                 );
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
-            ExplorerEvent::BackToHome { start } => self.back_to_home(source, *start, window, cx),
+            ExplorerEvent::PageShown { .. } | ExplorerEvent::PageHidden { .. } => {
+                self.on_history_page(source, event, window, cx);
+            }
             ExplorerEvent::OpenHome => self.open_home(false, window, cx),
             ExplorerEvent::Navigated {
                 path,
                 stepped,
                 kind,
-            } => {
-                if *stepped {
-                    self.note_navigation(source.entity_id(), cx);
-                }
-                self.history_landed(source.entity_id(), *kind, cx);
-                crate::search_history::SearchHistory::record(path, true, cx);
-                SettingsStore::global(cx).update(cx, |s, cx| {
-                    s.update(
-                        |st| {
-                            st.remember(path);
-                            st.remember_share(path);
-                        },
-                        cx,
-                    );
-                });
-                self.pane_navigated(tab_ix, pane_ix, path, cx);
-            }
+            } => self.on_navigated(
+                source,
+                (tab_ix, pane_ix),
+                path,
+                (*stepped, *kind),
+                window,
+                cx,
+            ),
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
             ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::FolderMenu { path, position } => {
@@ -3151,6 +3213,7 @@ impl Render for Workspace {
         self.settings_follow_navigation(cx);
         self.recycle_follow_navigation(cx);
         self.home_follow_navigation(cx);
+        self.sync_history_pages(cx);
         self.whats_new_follow_navigation(cx);
         Self::whats_new_on_startup(window, cx);
         self.save_session_if_changed(window, cx);
@@ -3270,8 +3333,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, a: &crate::explorer::GoUp, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.go_up(a, window, cx));
             }))
-            // Back and forward on a page, as the mouse buttons there: the tab moves, and the page
-            // follows it away. Back on Home is handled first by the capture below.
+            // Back and forward on a page, as the mouse buttons there: the pane steps through its
+            // history, pages included.
             .on_action(cx.listener(|this, a: &crate::explorer::GoBack, window, cx| {
                 let view = this.active_view().clone();
                 view.update(cx, |e, cx| e.go_back(a, window, cx));
@@ -3281,9 +3344,7 @@ impl Render for Workspace {
                 view.update(cx, |e, cx| e.go_forward(a, window, cx));
             }))
             .capture_action(cx.listener(|this, _: &crate::explorer::GoBack, window, cx| {
-                if this.back_closes_home(window, cx) {
-                    cx.stop_propagation();
-                } else if Self::across_tabs(cx) {
+                if Self::across_tabs(cx) {
                     cx.stop_propagation();
                     this.step_timeline(true, window, cx);
                 }
@@ -3294,14 +3355,16 @@ impl Render for Workspace {
                     this.step_timeline(false, window, cx);
                 }
             }))
-            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+            // Mouse back/forward act on release, like File Explorer and browsers (#497).
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
                 let MouseButton::Navigate(direction) = event.button else {
                     return;
                 };
+                if crate::press_guard::is_cancel(event) {
+                    return;
+                }
                 let back = direction == gpui::NavigationDirection::Back;
-                if back && this.back_closes_home(window, cx) {
-                    cx.stop_propagation();
-                } else if Self::across_tabs(cx) {
+                if Self::across_tabs(cx) {
                     cx.stop_propagation();
                     this.step_timeline(back, window, cx);
                 }
@@ -3310,16 +3373,16 @@ impl Render for Workspace {
             .on_scroll(cx.listener(Self::on_swipe))
             // Mouse back/forward anywhere in the window (the sidebar, the tab list, Home and the
             // other pages) move the active tab; over a list the pane itself handles them (#8).
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),
-                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                cx.listener(|this, _: &MouseUpEvent, window, cx| {
                     let view = this.active_view().clone();
                     view.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
                 }),
             )
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
-                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                cx.listener(|this, _: &MouseUpEvent, window, cx| {
                     let view = this.active_view().clone();
                     view.update(cx, |e, cx| {
                         e.go_forward(&crate::explorer::GoForward, window, cx);
@@ -3485,11 +3548,12 @@ impl Workspace {
             .pl(theme::s_12())
             .child(crate::brand::sidebar_mark())
             .child(if self.settings_open()
-                || self.recycle_open()
-                || self.home_open()
                 || self.whats_new_open()
+                || ((self.recycle_open() || self.home_open()) && !can_back)
             {
-                // With Settings or Recycle Bin open, back returns to the previous folder.
+                // With Settings open, or a page with nothing before it, back closes the page and
+                // shows the folder under it. Home and the Recycle Bin with a history before them
+                // step through it like any other location.
                 ghost_button(
                     "back",
                     Icon::ArrowLeft,

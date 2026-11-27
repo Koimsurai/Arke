@@ -5,7 +5,8 @@
 //! by themselves and close again once it moves elsewhere.
 //! Favorites, This PC, Network and Tabs each collapse to their heading (remembered); Home and its
 //! tiles don't. Home, Favorites and This PC can be hidden from their heading's menu (Home's from
-//! its row's) and shown again from the menu of the sidebar's empty space (#323). Tiles drag like
+//! its row's) and shown again from the menu of the sidebar's empty space (#323). The tiles belong
+//! to Favorites: hiding Home leaves them, hiding Favorites takes them too (#463). Tiles drag like
 //! app icons on a phone (`workspace_tabdrag.rs`). A favorite (tile or list entry) dragged out of
 //! the sidebar and let go there leaves the favorites, like an app dragged off the macOS Dock, with
 //! Undo on a toast.
@@ -73,19 +74,19 @@ pub(super) enum SidebarAction {
     /// Move a pinned list entry up to the tiles.
     MoveToTiles(PathBuf),
     /// A folder picked in the back or forward button's menu: `steps` down that pane's history,
-    /// where `path` was when the menu opened.
+    /// where `loc` was when the menu opened.
     HistoryJump {
         pane: gpui::EntityId,
         back: bool,
         steps: usize,
-        path: PathBuf,
+        loc: arke_core::Location,
     },
     /// The top row of a back or forward menu when the button goes to another tab first: one
-    /// step across tabs, to pane `to` (showing `path`).
+    /// step across tabs, to pane `to` (showing `loc`).
     TimelineStep {
         back: bool,
         to: gpui::EntityId,
-        path: PathBuf,
+        loc: arke_core::Location,
     },
     CloseTab(usize),
     DuplicateTab(usize),
@@ -867,12 +868,26 @@ pub(super) fn display_name(path: &Path) -> String {
     )
 }
 
+/// Name of a history entry: its folder's name, or the page's title.
+pub(super) fn location_name(loc: &arke_core::Location) -> String {
+    match loc {
+        arke_core::Location::Folder(path) => display_name(path),
+        arke_core::Location::Page(arke_core::NavPage::Home) => {
+            rust_i18n::t!("home.title").into_owned()
+        }
+        arke_core::Location::Page(arke_core::NavPage::RecycleBin) => {
+            rust_i18n::t!("recycle.title").into_owned()
+        }
+    }
+}
+
 /// The second, dimmer text of a menu row: the folder a history entry is in.
 fn menu_detail(action: &SidebarAction) -> Option<SharedString> {
     match action {
-        SidebarAction::HistoryJump { path, .. } | SidebarAction::TimelineStep { path, .. } => {
-            arke_core::path::parent(path).map(|p| p.display().to_string().into())
-        }
+        SidebarAction::HistoryJump { loc, .. } | SidebarAction::TimelineStep { loc, .. } => loc
+            .as_folder()
+            .and_then(arke_core::path::parent)
+            .map(|p| p.display().to_string().into()),
         _ => None,
     }
 }
@@ -1458,18 +1473,17 @@ impl Workspace {
         let recycle_pinned = settings.recycle_pinned;
         let own_names = settings.favorite_names.clone();
         let collapsed = settings.is_collapsed(SidebarSection::Favorites);
-        // Hidden (#323): Home takes its tiles with it, Favorites its list (with the favorites too
-        // long for a tile, listed there) and the Recycle Bin. The Shelf stays.
-        let home_hidden = settings.is_hidden(SidebarSection::Home);
+        // Hidden (#323, #463): Favorites takes its tiles and its list (with the Recycle Bin) with
+        // it; hiding Home only removes the Home row. The Shelf stays.
         let list_hidden = settings.is_hidden(SidebarSection::Favorites);
-        let favorites = if home_hidden && list_hidden {
+        let favorites = if list_hidden {
             Vec::new()
         } else {
             self.favorites(cx)
         };
         // The current folder is a favorite on show: its own row or tile is the selected one (#424).
         let at_favorite = current.is_some_and(|here| {
-            (!home_hidden && favorites.iter().any(|(p, ..)| p.as_path() == here))
+            (!list_hidden && favorites.iter().any(|(p, ..)| p.as_path() == here))
                 || (!list_hidden && !collapsed && pinned.iter().any(|p| p.as_path() == here))
         });
         self.sidebar_ui.fav_here.set(at_favorite);
@@ -1478,9 +1492,6 @@ impl Workspace {
         let layout = self.tile_layout(tile_count);
         let mut tiles: Vec<AnyElement> = Vec::new();
         for (ix, (path, label, icon)) in favorites.into_iter().enumerate() {
-            if home_hidden {
-                continue;
-            }
             let here = current == Some(path.as_path());
             let tile = self.render_tile(ix, &path, label, icon, here, layout, cx);
             let cell = tiles.len();
@@ -1536,7 +1547,7 @@ impl Workspace {
             && self.tab_drag.started_on_tile();
         let wants_list_drop = tile_dragged;
         let mut out = Vec::new();
-        if home_hidden {
+        if list_hidden {
             // No grid to keep still or snap to; drawn again, it starts afresh.
             self.sidebar_ui.tile_rows.set(0);
             self.sidebar_ui.grid_height.set(None);
@@ -1585,7 +1596,7 @@ impl Workspace {
         // No pins, no section. "Pin to sidebar" makes it appear; no placeholder text.
         let heading = !pinned_rows.is_empty() || wants_list_drop;
         if heading {
-            // Under the tiles (with Home hidden, nothing is above it): a rule sets it apart.
+            // Under the tiles (with Favorites hidden there is no heading; with no tiles, nothing is above it): a rule sets it apart.
             if !out.is_empty() {
                 out.push(section_rule(section_id(SidebarSection::Favorites).0));
             }
@@ -3964,9 +3975,9 @@ impl Workspace {
                 pane,
                 back,
                 steps,
-                path,
+                loc,
             } => {
-                self.jump_in_history(pane, back, steps, &path, window, cx);
+                self.jump_in_history(pane, back, steps, &loc, window, cx);
             }
             SidebarAction::TimelineStep { back, to, .. } => {
                 self.timeline_step_to(back, to, window, cx);

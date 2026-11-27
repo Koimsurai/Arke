@@ -25,11 +25,12 @@ use arke_core::path::NameError;
 use arke_core::search::MAX_HITS;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, ExternalPaths, MouseButton, MouseDownEvent,
-    NavigationDirection, ObjectFit, Pixels, RenderImage, SharedString, Window, WindowControlArea,
-    anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
+    MouseUpEvent, NavigationDirection, ObjectFit, Pixels, RenderImage, SharedString, Window,
+    WindowControlArea, anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
 };
 
 use super::layout;
+use super::ops::DeletePermanently;
 use super::toolbar::ToolbarStop as _;
 use super::{
     CopyFiles, CutFiles, DeleteFiles, ErrorAction, Escape, Explorer, ExplorerEvent, FocusOtherPane,
@@ -358,6 +359,15 @@ impl Explorer {
             ))
     }
 
+    /// A click on a Delete button: Shift deletes permanently after asking, as in File Explorer.
+    fn delete_clicked(&mut self, e: &ClickEvent, w: &mut Window, cx: &mut Context<Self>) {
+        if e.modifiers().shift {
+            self.delete_permanently(&DeletePermanently, w, cx);
+        } else {
+            self.delete_files(&DeleteFiles, w, cx);
+        }
+    }
+
     pub(super) fn render_selection_actions(
         &self,
         compact: bool,
@@ -466,7 +476,7 @@ impl Explorer {
                 t!("sel.delete"),
                 Tone::Danger,
                 compact,
-                cx.listener(|this, _: &ClickEvent, w, cx| this.delete_files(&DeleteFiles, w, cx)),
+                cx.listener(Self::delete_clicked),
             ))
             .child(div().flex_1())
             .child(clear_selection_button(
@@ -2669,6 +2679,7 @@ pub(crate) fn ghost_button_turned(
     let tip = SharedString::from(tip.to_string());
     div()
         .id(id)
+        .debug_selector(|| id.to_owned())
         .a11y_button(tip.clone())
         .a11y_disabled(!enabled)
         .size(theme::h_ctl())
@@ -2713,6 +2724,7 @@ fn action_button(
     let label = SharedString::from(label.to_string());
     div()
         .id(id)
+        .debug_selector(|| id.to_owned())
         .a11y_button(label.clone())
         .group(id)
         .h(theme::h_ctl_sm())
@@ -3920,21 +3932,22 @@ fn cloud_badge(
 
 impl Explorer {
     /// Mouse back/forward over this pane go back in this pane; the window handles them everywhere
-    /// else (sidebar, tab list, pages), so they stop here to move only once (#8).
+    /// else (sidebar, tab list, pages), so they stop here to move only once (#8). They act on release, like File Explorer
+    /// and browsers (#497); a release that went to another window never reaches here.
     fn mouse_navigation(
         d: gpui::Stateful<gpui::Div>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        d.on_mouse_down(
+        d.on_mouse_up(
             MouseButton::Navigate(NavigationDirection::Back),
-            cx.listener(|this, _: &MouseDownEvent, w, cx| {
+            cx.listener(|this, _: &MouseUpEvent, w, cx| {
                 cx.stop_propagation();
                 this.go_back(&GoBack, w, cx);
             }),
         )
-        .on_mouse_down(
+        .on_mouse_up(
             MouseButton::Navigate(NavigationDirection::Forward),
-            cx.listener(|this, _: &MouseDownEvent, w, cx| {
+            cx.listener(|this, _: &MouseUpEvent, w, cx| {
                 cx.stop_propagation();
                 this.go_forward(&GoForward, w, cx);
             }),

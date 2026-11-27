@@ -3348,6 +3348,14 @@ settings.folders_first:
   es: Antes que los archivos
   pt-BR: Antes dos arquivos
   ja: ファイルより前
+settings.folders_always_first:
+  en: "Always first"
+  zh-TW: "永遠在最前面"
+  zh-CN: "永远在最前面"
+  de: Immer zuerst
+  es: Siempre primero
+  pt-BR: Sempre primeiro
+  ja: 常に先頭
 settings.folders_mixed:
   en: "Mixed with files"
   zh-TW: "和檔案一起排"

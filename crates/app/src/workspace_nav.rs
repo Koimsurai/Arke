@@ -86,6 +86,15 @@ impl Workspace {
         self.sync_nav_buttons(cx);
     }
 
+    /// `view` went back by itself (a page over it closed onto the folder it was opened from): the
+    /// timeline's step for opening the page is undone with it, so Forward can redo both.
+    pub(super) fn undo_nav_step(&mut self, view: EntityId, cx: &mut Context<Self>) {
+        if self.nav.timeline.behind().next() == Some(&Step::Nav(view)) {
+            self.nav.timeline.back();
+            self.sync_nav_buttons(cx);
+        }
+    }
+
     /// Back (or forward) one step on the timeline. Steps of closed panes, and navigations the
     /// pane can no longer undo, are skipped.
     pub(super) fn step_timeline(
@@ -182,17 +191,14 @@ impl Workspace {
         self.go_in_history(back, window, cx);
     }
 
-    /// Back or forward from outside a pane (mouse buttons, swipes): closes Home opened over a
-    /// folder, else follows the timeline or moves the active pane.
+    /// Back or forward from outside a pane (mouse buttons, swipes): follows the timeline or moves
+    /// the active pane.
     pub(crate) fn go_in_history(
         &mut self,
         back: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if back && self.back_closes_home(window, cx) {
-            return;
-        }
         if Self::across_tabs(cx) {
             self.step_timeline(back, window, cx);
             return;
@@ -249,14 +255,14 @@ impl Workspace {
                 .history_menu(back)
                 .into_iter()
                 .enumerate()
-                .map(|(ix, path)| {
+                .map(|(ix, loc)| {
                     (
-                        super::sidebar::display_name(&path).into(),
+                        super::sidebar::location_name(&loc).into(),
                         super::sidebar::SidebarAction::HistoryJump {
                             pane,
                             back,
                             steps: ix + 1,
-                            path,
+                            loc,
                         },
                     )
                 }),
@@ -291,7 +297,7 @@ impl Workspace {
             .or_else(|| {
                 view.read(cx)
                     .history_next(back)
-                    .map(|path| super::sidebar::display_name(&path))
+                    .map(|loc| super::sidebar::location_name(&loc))
             });
         folder.map_or(plain, |folder| {
             if back {
@@ -321,7 +327,7 @@ impl Workspace {
             return None;
         }
         let step = self.next_step(back, cx)?;
-        let (to, path) = match step {
+        let (to, loc) = match step {
             Step::Nav(id) if id == pane => return None,
             Step::Nav(id) => {
                 let (t, p) = self.pane_of(id)?;
@@ -332,12 +338,16 @@ impl Workspace {
                 let id = if back { from } else { to };
                 let (t, p) = self.pane_of(id)?;
                 let view = self.tabs[t].panes[p].view.read(cx);
-                (id, view.display_path()?.to_path_buf())
+                let here = match view.page() {
+                    Some(shown) => arke_core::Location::Page(shown),
+                    None => arke_core::Location::Folder(view.display_path()?.to_path_buf()),
+                };
+                (id, here)
             }
         };
         Some((
-            super::sidebar::display_name(&path).into(),
-            super::sidebar::SidebarAction::TimelineStep { back, to, path },
+            super::sidebar::location_name(&loc).into(),
+            super::sidebar::SidebarAction::TimelineStep { back, to, loc },
         ))
     }
 
@@ -385,7 +395,7 @@ impl Workspace {
         pane: EntityId,
         back: bool,
         steps: usize,
-        path: &std::path::Path,
+        target: &arke_core::Location,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -393,7 +403,7 @@ impl Workspace {
             return;
         };
         let view = self.tabs[t].panes[p].view.clone();
-        let Some(steps) = view.read(cx).history_steps_to(back, steps, path) else {
+        let Some(steps) = view.read(cx).history_steps_to(back, steps, target) else {
             return;
         };
         if !view.update(cx, |e, cx| e.go_to_history(back, steps, cx)) {

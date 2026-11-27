@@ -100,7 +100,7 @@ fn favorites_collapse_and_still_take_a_drop(cx: &mut TestAppContext) {
     assert!(!drawn(cx, "pin-row-0"), "the list is hidden");
     assert!(
         drawn(cx, "tile-slot-0"),
-        "the tiles belong to Home and stay"
+        "the tiles belong to Favorites, and stay while the list is collapsed"
     );
 
     // Drag the first tile onto the collapsed heading: it goes first in the list.
@@ -420,7 +420,10 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     right_click(cx, at);
     pick(&ws, cx, &hide);
     assert!(!drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"));
-    assert!(drawn(cx, "tile-slot-0"), "the tiles are Home's");
+    assert!(
+        !drawn(cx, "tile-slot-0"),
+        "the tiles are Favorites', and go with it"
+    );
     assert_eq!(
         current(cx).hidden_sections,
         vec![SidebarSection::ThisPc, SidebarSection::Favorites]
@@ -450,15 +453,15 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
     pick(&ws, cx, &favorites);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(
-        drawn(cx, "pin-list-label") && drawn(cx, "pin-row-0"),
-        "listed again"
+        drawn(cx, "pin-list-label") && drawn(cx, "pin-row-0") && drawn(cx, "tile-slot-0"),
+        "listed again, the tiles with it"
     );
 }
 
-/// Home hides from its row's menu, its tiles with it; the list under Favorites stays. A right
-/// click on the Network heading hides it; the sidebar's empty space brings Home back.
+/// Home hides from its row's menu, and only its row: the tiles and the list under Favorites stay
+/// (#463). The sidebar's empty space brings Home back.
 #[gpui::test]
-fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
+fn home_hides_only_its_row(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
     change(cx, |st| {
         st.favorites = Some(vec![p("a")]);
@@ -473,7 +476,8 @@ fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
     assert_eq!(menu(&ws, cx), Some(with_hide(&hide)));
     pick(&ws, cx, &hide);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Home]);
-    assert!(!drawn(cx, "open-home") && !drawn(cx, "tile-slot-0"));
+    assert!(!drawn(cx, "open-home"), "the Home row is gone");
+    assert!(drawn(cx, "tile-slot-0"), "the tiles stay");
     assert!(drawn(cx, "pin-row-0"), "the list stays");
 
     let at = bounds(cx, "tab-list-end").center();
@@ -482,6 +486,46 @@ fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
     pick(&ws, cx, &home);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "open-home") && drawn(cx, "tile-slot-0"));
+}
+
+/// Favorites hides the tiles and the list together, Home or not; showing it brings both back
+/// (#463).
+#[gpui::test]
+fn favorites_hides_the_tiles_and_the_list_together(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    change(cx, |st| {
+        st.favorites = Some(vec![p("a")]);
+        st.pinned = vec![p("c")];
+    });
+    refresh(cx);
+    assert!(drawn(cx, "tile-slot-0") && drawn(cx, "pin-row-0"));
+
+    change(cx, |st| {
+        st.hidden_sections = vec![SidebarSection::Favorites];
+    });
+    refresh(cx);
+    assert!(drawn(cx, "open-home"), "the Home row stays");
+    assert!(!drawn(cx, "tile-slot-0"), "no tiles");
+    assert!(
+        !drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"),
+        "no list"
+    );
+
+    change(cx, |st| {
+        st.hidden_sections = vec![SidebarSection::Home, SidebarSection::Favorites];
+    });
+    refresh(cx);
+    assert!(!drawn(cx, "open-home") && !drawn(cx, "tile-slot-0"));
+    assert!(!drawn(cx, "pin-list-label") && !drawn(cx, "pin-row-0"));
+    assert!(drawn(cx, "this-pc-header"), "the rest of the sidebar stays");
+
+    change(cx, |st| st.hidden_sections = vec![SidebarSection::Home]);
+    refresh(cx);
+    assert!(!drawn(cx, "open-home"));
+    assert!(
+        drawn(cx, "tile-slot-0") && drawn(cx, "pin-row-0"),
+        "both are back"
+    );
 }
 
 /// The Recycle Bin, once removed from the favorites, comes back from the menu of the sidebar's
@@ -705,10 +749,10 @@ fn section_headings_have_an_icon_and_follow_the_density(cx: &mut TestAppContext)
         );
     }
 
-    // Home and the tiles hidden: Favorites is first, with nothing above it to set apart from.
+    // Home hidden: the tiles stay above Favorites, so its heading keeps its rule (#463).
     change(cx, |st| st.hidden_sections = vec![SidebarSection::Home]);
     refresh(cx);
     assert!(drawn(cx, "pin-list-label"));
-    assert!(!drawn(cx, "pin-list-label-rule"), "no rule at the top");
+    assert!(drawn(cx, "pin-list-label-rule"), "the tiles are above it");
     assert!(drawn(cx, "this-pc-header-rule"));
 }

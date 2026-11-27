@@ -1425,7 +1425,12 @@ fn hung_network_share_never_blocks_ui(cx: &mut TestAppContext) {
     cx.run_until_parked();
     view.update(cx, |v, _| {
         assert_eq!(v.current_path(), Some(Path::new(r"C:\other")));
-        assert_eq!(v.history.back_target(), Some(Path::new(r"C:\home")));
+        assert_eq!(
+            v.history
+                .back_target()
+                .and_then(arke_core::Location::as_folder),
+            Some(Path::new(r"C:\home"))
+        );
     });
 }
 
@@ -2466,12 +2471,11 @@ fn restores_home_from_the_last_session(cx: &mut TestAppContext) {
     assert_eq!(ws.update(cx, |ws, cx| ws.session_snapshot(cx)), session);
     // Back (the mouse button, over the sidebar) shows the folder under it, which the session no
     // longer marks as Home.
-    cx.simulate_event(gpui::MouseDownEvent {
+    cx.simulate_event(gpui::MouseUpEvent {
         button: gpui::MouseButton::Navigate(gpui::NavigationDirection::Back),
         position: gpui::point(gpui::px(8.), gpui::px(300.)),
         modifiers: gpui::Modifiers::none(),
         click_count: 1,
-        first_mouse: false,
     });
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);
@@ -4877,17 +4881,28 @@ fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
         Some("c-mid")
     );
 
-    // Largest first: folders still lead a descending sort.
+    // Largest first: folders trail a descending sort, like File Explorer.
     let mut spec = SortSpec::by(SortColumn::Size, false, false);
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "sort by size", |v| {
-        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
+        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
     });
     assert_eq!(
         view.update(cx, |v, _| selected_name(v)).as_deref(),
         Some("c-mid"),
         "selection should follow the item"
     );
+    // Always first (#499): the folders lead the descending sort too.
+    spec.always_first = true;
+    view.update(cx, |v, cx| v.set_sort(spec, cx));
+    wait_until(cx, &view, "folders always first", |v| {
+        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
+    });
+    spec.always_first = false;
+    view.update(cx, |v, cx| v.set_sort(spec, cx));
+    wait_until(cx, &view, "folders before files again", |v| {
+        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
+    });
     spec.ascending = true;
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "smallest first", |v| {
@@ -8755,7 +8770,12 @@ fn path_bar_file_path_opens_file_and_selects_it(cx: &mut TestAppContext) {
             shell.ran.lock().is_empty(),
             "a quoted path is not a command"
         );
-        assert_eq!(v.history.back_target(), Some(Path::new(r"C:\home")));
+        assert_eq!(
+            v.history
+                .back_target()
+                .and_then(arke_core::Location::as_folder),
+            Some(Path::new(r"C:\home"))
+        );
     });
 }
 

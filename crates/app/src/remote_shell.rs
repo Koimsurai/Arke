@@ -902,6 +902,9 @@ impl Shell for RemoteShell {
     fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
         self.inner.run_program(program, args)
     }
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        self.inner.write_pipe(pipe, line)
+    }
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         self.inner.local_parts(time)
     }

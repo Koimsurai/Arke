@@ -61,6 +61,7 @@ mod crashlog;
 mod elevation;
 mod explorer;
 mod external;
+mod external_pipe;
 mod folder_handler;
 mod folder_views;
 mod frame_probe;

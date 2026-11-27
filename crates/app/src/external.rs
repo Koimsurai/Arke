@@ -16,6 +16,7 @@
 //! - `{dest}` (copy): the destination folder.
 //! - `{op}` (copy): `Copy` or `Move`. Moves go to the program only when the template has `{op}`,
 //!   since it couldn't tell them from copies otherwise; without it Arke moves by itself.
+//! - `{sid}` (both): the current user's SID as text, for programs that name things after it.
 //! - `{{` and `}}`: a literal `{` or `}`.
 //!
 //! A template without any path placeholder gets them at the end: `{file}` for preview,
@@ -27,11 +28,32 @@
 //! can't contain `"`, so nothing inside the quotes needs escaping (a path that has one is
 //! refused). The program is started directly with this command line (`CreateProcess`), never
 //! through `cmd` or another shell, so `&`, `|`, `%` and `^` in names mean nothing.
+//!
+//! # Named pipe form (preview only)
+//!
+//! A program that is already running can be reached faster than by starting another copy of it
+//! that only passes the item on. The preview setting may instead be
+//!
+//! ```text
+//! pipe:\\.\pipe\<name> <message> [|| <command line>]
+//! ```
+//!
+//! Arke writes the message as one UTF-8 line (ended with CR LF) to the pipe and closes it. The pipe
+//! name comes first, up to the first space, and must be a local pipe (`\\.\pipe\...`); the message
+//! is the rest. `{sid}` may be in the name and the message, `{file}` in the message, as the item's
+//! path exactly as it is, not quoted (a path that isn't valid Unicode can't be sent). Connecting
+//! to a pipe that doesn't exist fails at once; one that is busy is waited for 200 ms at most.
+//!
+//! `||` with a space on both sides ends the pipe form and starts the fallback, a command line as
+//! above, used when the pipe isn't there (the program isn't running), so that it gets started.
+//! Paths can't contain `|`, so nothing in a path can be taken for it. Without a fallback, a missing
+//! pipe is an error like a command that doesn't start, and Arke shows its own Quick Look.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write as _};
 use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shell::{FileOp, Shell, ShellError};
@@ -59,6 +81,7 @@ enum Piece {
     List,
     Dest,
     File,
+    Sid,
 }
 
 impl Piece {
@@ -86,6 +109,24 @@ pub(crate) enum TemplateError {
     /// A path with a `"` in it, which no quoting would carry safely.
     #[error("a path with a quote in it: {0}")]
     Quote(String),
+    /// `pipe:` and then nothing.
+    #[error("the pipe form has no pipe name")]
+    NoPipe,
+    /// A pipe name that isn't `\\.\pipe\` and a name.
+    #[error("not a local pipe name: {0}")]
+    BadPipe(String),
+    /// A pipe and no message to write to it.
+    #[error("the pipe form has no message")]
+    NoMessage,
+    /// `{sid}` when the user's SID can't be read.
+    #[error("the user's SID can't be read")]
+    NoSid,
+    /// A path that can't be written as UTF-8 text.
+    #[error("a path that isn't valid Unicode: {0}")]
+    NotUnicode(String),
+    /// The pipe form in the external copy program.
+    #[error("a named pipe is only for the preview program")]
+    PipeForCopy,
 }
 
 impl From<TemplateError> for ShellError {
@@ -110,6 +151,7 @@ struct Paths<'a> {
     list: Option<&'a Path>,
     dest: Option<&'a Path>,
     file: Option<&'a Path>,
+    sid: Option<&'a str>,
 }
 
 impl Command {
@@ -120,6 +162,9 @@ impl Command {
     }
 
     fn parse_line(line: &str, usage: Use) -> Result<Self, TemplateError> {
+        if usage == Use::Copy && starts_with_pipe(line) {
+            return Err(TemplateError::PipeForCopy);
+        }
         let (program, args) = split_program(line);
         let program = program.trim();
         if program.is_empty() {
@@ -160,8 +205,23 @@ impl Command {
     pub(crate) fn preview_args(&self, file: &Path) -> Result<OsString, TemplateError> {
         self.expand(&Paths {
             file: Some(file),
+            sid: self.sid(),
             ..Paths::default()
         })
+    }
+
+    /// Starts the program for a preview of `item`. Background thread.
+    fn start_preview(&self, shell: &dyn Shell, item: &Path) -> Result<(), ShellError> {
+        let args = self.preview_args(item)?;
+        shell.run_program(&self.program, &args)
+    }
+
+    /// The user's SID, when the template has `{sid}`.
+    fn sid(&self) -> Option<&'static str> {
+        self.pieces
+            .contains(&Piece::Sid)
+            .then(current_sid)
+            .flatten()
     }
 
     /// The arguments for a copy or move (`list`: the list file, when the template has `{list}`).
@@ -185,6 +245,7 @@ impl Command {
             list,
             dest: Some(dest),
             file: None,
+            sid: self.sid(),
         }))
     }
 
@@ -205,6 +266,7 @@ impl Command {
                 Piece::List => push_quoted(&mut out, paths.list)?,
                 Piece::Dest => push_quoted(&mut out, paths.dest)?,
                 Piece::File => push_quoted(&mut out, paths.file)?,
+                Piece::Sid => out.push(paths.sid.ok_or(TemplateError::NoSid)?),
             }
         }
         Ok(out)
@@ -226,6 +288,190 @@ impl Command {
             .copy_args(op, list.as_deref())
             .ok_or(ShellError::Unsupported)??;
         shell.run_program(&self.program, &args)
+    }
+}
+
+/// The pipe form starts with this (any letter case).
+const PIPE_FORM: &str = "pipe:";
+/// Every pipe name starts with this: a pipe on this computer.
+const PIPE_ROOT: &str = r"\\.\pipe\";
+
+/// `text` after `prefix`, if it starts with it in any ASCII letter case.
+fn strip_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
+}
+
+/// Whether a setting is written in the pipe form.
+fn starts_with_pipe(line: &str) -> bool {
+    strip_ignore_case(line.trim_start(), PIPE_FORM).is_some()
+}
+
+/// The current user's SID as text; read once.
+fn current_sid() -> Option<&'static str> {
+    static SID: OnceLock<Option<String>> = OnceLock::new();
+    SID.get_or_init(arke_indexd::sec::current_user_sid)
+        .as_deref()
+}
+
+/// Splits `pipe form || command line` at the first `||` that has a space (or the end) on both
+/// sides, so a `||` inside the message is left alone.
+fn split_fallback(text: &str) -> (&str, Option<&str>) {
+    let mut from = 0;
+    while let Some(found) = text[from..].find("||") {
+        let at = from + found;
+        let after = at + "||".len();
+        let space_before = text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_whitespace);
+        let space_after = text[after..].chars().next().is_none_or(char::is_whitespace);
+        if space_before && space_after {
+            return (&text[..at], Some(&text[after..]));
+        }
+        from = after;
+    }
+    (text, None)
+}
+
+/// A template as plain text: no quoting, for a message that isn't a command line.
+fn plain(pieces: &[Piece], paths: &Paths<'_>) -> Result<String, TemplateError> {
+    let mut out = String::new();
+    for piece in pieces {
+        match piece {
+            Piece::Text(text) => out.push_str(text),
+            Piece::Sid => out.push_str(paths.sid.ok_or(TemplateError::NoSid)?),
+            Piece::File => {
+                let file = paths.file.unwrap_or_else(|| Path::new(""));
+                let text = file
+                    .to_str()
+                    .ok_or_else(|| TemplateError::NotUnicode(file.display().to_string()))?;
+                out.push_str(text);
+            }
+            // The preview setting has none of the copy placeholders.
+            Piece::Op | Piece::Sources | Piece::List | Piece::Dest => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The pipe part of a preview setting: where to write, and what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PipeLine {
+    name: Vec<Piece>,
+    message: Vec<Piece>,
+}
+
+impl PipeLine {
+    /// Reads `\\.\pipe\<name> <message>` (what follows `pipe:`, up to any fallback).
+    fn parse(text: &str) -> Result<Self, TemplateError> {
+        let end = text.find(char::is_whitespace).unwrap_or(text.len());
+        let (name, message) = text.split_at(end);
+        if name.is_empty() {
+            return Err(TemplateError::NoPipe);
+        }
+        if strip_ignore_case(name, PIPE_ROOT).is_none_or(str::is_empty) {
+            return Err(TemplateError::BadPipe(name.to_owned()));
+        }
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(TemplateError::NoMessage);
+        }
+        let name = template(name, Use::Preview)?;
+        if name.iter().any(Piece::is_path) {
+            return Err(TemplateError::Unknown("file".to_owned()));
+        }
+        Ok(Self {
+            name,
+            message: template(message, Use::Preview)?,
+        })
+    }
+
+    fn needs_sid(&self) -> bool {
+        self.name.contains(&Piece::Sid) || self.message.contains(&Piece::Sid)
+    }
+
+    /// The pipe's name and the line to write to it for `item`: the message and a CR LF.
+    fn render(&self, item: &Path, sid: Option<&str>) -> Result<(String, String), TemplateError> {
+        let paths = Paths {
+            file: Some(item),
+            sid,
+            ..Paths::default()
+        };
+        let name = plain(&self.name, &paths)?;
+        let mut line = plain(&self.message, &paths)?;
+        line.push_str("\r\n");
+        Ok((name, line))
+    }
+
+    /// Writes the line for `item` to the pipe. Background thread.
+    fn write(&self, shell: &dyn Shell, item: &Path) -> Result<(), ShellError> {
+        let sid = self.needs_sid().then(current_sid).flatten();
+        let (name, line) = self.render(item, sid)?;
+        shell.write_pipe(&name, &line)
+    }
+}
+
+/// Whether an error from the pipe means that the fallback should be tried: the pipe isn't there,
+/// or the message can't be made for this item. Anything else (a busy pipe that never freed up)
+/// means the program is running but not answering, and a second copy would only wait on it.
+fn is_miss(err: &ShellError) -> bool {
+    matches!(err, ShellError::Io(err)
+        if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput))
+}
+
+/// The external preview program setting: a command line, or the pipe form with an optional
+/// fallback command line (see the module notes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Preview {
+    pipe: Option<PipeLine>,
+    launch: Option<Command>,
+}
+
+impl Preview {
+    /// Reads the setting. `None` when it is empty: the setting is off.
+    pub(crate) fn parse(line: &str) -> Option<Result<Self, TemplateError>> {
+        let line = line.trim();
+        (!line.is_empty()).then(|| Self::parse_line(line))
+    }
+
+    fn parse_line(line: &str) -> Result<Self, TemplateError> {
+        let Some(rest) = strip_ignore_case(line, PIPE_FORM) else {
+            return Command::parse_line(line, Use::Preview).map(|launch| Self {
+                pipe: None,
+                launch: Some(launch),
+            });
+        };
+        let (pipe, fallback) = split_fallback(rest);
+        let pipe = PipeLine::parse(pipe.trim())?;
+        let launch = fallback
+            .map(|line| Command::parse(line, Use::Preview).ok_or(TemplateError::NoProgram)?)
+            .transpose()?;
+        Ok(Self {
+            pipe: Some(pipe),
+            launch,
+        })
+    }
+
+    /// Previews `item`: writes to the pipe if there is one, and starts the program if there is no
+    /// pipe to write to (and a fallback command). Returns once the line is written or the program
+    /// has started; an error means neither happened, and the caller shows its own Quick Look.
+    /// Background thread.
+    pub(crate) fn open(&self, shell: &dyn Shell, item: &Path) -> Result<(), ShellError> {
+        if let Some(pipe) = &self.pipe {
+            match pipe.write(shell, item) {
+                Ok(()) => return Ok(()),
+                Err(err) if self.launch.is_some() && is_miss(&err) => {
+                    log::debug!("no pipe for the preview program, starting it: {err}");
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        match &self.launch {
+            Some(launch) => launch.start_preview(shell, item),
+            None => Err(io::Error::from(io::ErrorKind::NotFound).into()),
+        }
     }
 }
 
@@ -300,6 +546,7 @@ fn template(text: &str, usage: Use) -> Result<Vec<Piece>, TemplateError> {
 /// The placeholder `{name}` stands for, if `usage` has it.
 fn placeholder(name: &str, usage: Use) -> Option<Piece> {
     Some(match (usage, name) {
+        (_, "sid") => Piece::Sid,
         (Use::Preview, "file") => Piece::File,
         (Use::Copy, "op") => Piece::Op,
         (Use::Copy, "sources") => Piece::Sources,
@@ -623,5 +870,147 @@ mod tests {
         assert!(is_list_name(OsStr::new("arke-teracopy-12-0.TXT")));
         assert!(!is_list_name(OsStr::new("arke-list-12-0.log")));
         assert!(!is_list_name(OsStr::new("notes.txt")));
+    }
+
+    fn look(line: &str) -> Preview {
+        Preview::parse(line).expect("not empty").expect("valid")
+    }
+
+    fn look_err(line: &str) -> TemplateError {
+        Preview::parse(line)
+            .expect("not empty")
+            .expect_err("can't be used")
+    }
+
+    const PIPE: &str = r"pipe:\\.\pipe\Tool.Pipe.{sid} Toggle|{file}";
+
+    #[test]
+    fn a_command_line_is_a_preview_without_a_pipe() {
+        assert_eq!(Preview::parse("  "), None);
+        let cmd = look(r#""C:\v\v.exe" {file}"#);
+        assert_eq!(cmd.pipe, None);
+        assert_eq!(cmd.launch, Some(preview(r#""C:\v\v.exe" {file}"#)));
+    }
+
+    #[test]
+    fn the_pipe_form_has_a_pipe_a_message_and_maybe_a_fallback() {
+        let alone = look(PIPE);
+        assert!(alone.launch.is_none());
+        let pipe = alone.pipe.expect("a pipe");
+        assert_eq!(
+            pipe.render(Path::new(r"C:\q\a b.txt"), Some("S-1-5-21-7")),
+            Ok((
+                r"\\.\pipe\Tool.Pipe.S-1-5-21-7".to_owned(),
+                "Toggle|C:\\q\\a b.txt\r\n".to_owned()
+            ))
+        );
+
+        let both = look(&format!(r#"{PIPE} || "C:\Program Files\T\T.exe" {{file}}"#));
+        assert!(both.pipe.is_some());
+        assert_eq!(
+            both.launch,
+            Some(preview(r#""C:\Program Files\T\T.exe" {file}"#))
+        );
+        // The prefix may be in any case, and the spaces around `||` any whitespace.
+        let loose = look("PIPE:\\\\.\\PIPE\\x  msg {file}\t||\tv.exe");
+        assert_eq!(loose.launch, Some(preview("v.exe")));
+        // A `||` that isn't set apart belongs to the message.
+        let inside = look(r"pipe:\\.\pipe\x a||b {file}");
+        assert!(inside.launch.is_none());
+        let pipe = inside.pipe.expect("a pipe");
+        assert_eq!(
+            pipe.render(Path::new(r"C:\a"), None).map(|(_, line)| line),
+            Ok("a||b C:\\a\r\n".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_message_carries_the_path_as_it_is_and_the_user_sid() {
+        let pipe = look(r"pipe:\\.\pipe\x {sid}|{{{file}}}|{sid}")
+            .pipe
+            .expect("a pipe");
+        assert_eq!(
+            pipe.render(Path::new(r"D:\"), Some("S-1")).unwrap().1,
+            "S-1|{D:\\}|S-1\r\n"
+        );
+        // No SID to put in, or a path that isn't text: refused, not sent half-made.
+        assert_eq!(
+            pipe.render(Path::new(r"D:\"), None),
+            Err(TemplateError::NoSid)
+        );
+        let odd = PathBuf::from(OsString::from_wide(&[u16::from(b'C'), 0xD800]));
+        let plain = look(r"pipe:\\.\pipe\x {file}").pipe.expect("a pipe");
+        assert!(matches!(
+            plain.render(&odd, None),
+            Err(TemplateError::NotUnicode(_))
+        ));
+        assert!(pipe.needs_sid() && !plain.needs_sid());
+    }
+
+    #[test]
+    fn sid_fills_a_command_line_too() {
+        let cmd = preview(r"v.exe --user {sid} {file}");
+        let paths = Paths {
+            file: Some(Path::new(r"C:\a")),
+            sid: Some("S-1-5-7"),
+            ..Paths::default()
+        };
+        assert_eq!(
+            cmd.expand(&paths).unwrap(),
+            OsString::from(r#"--user S-1-5-7 "C:\a""#)
+        );
+        let none = Paths { sid: None, ..paths };
+        assert_eq!(cmd.expand(&none), Err(TemplateError::NoSid));
+        assert!(
+            copy(r"c.exe {sid} {sources} {dest}")
+                .pieces
+                .contains(&Piece::Sid)
+        );
+    }
+
+    #[test]
+    fn bad_pipe_settings_say_what_is_wrong() {
+        assert_eq!(look_err("pipe:"), TemplateError::NoPipe);
+        assert_eq!(look_err("pipe:   || v.exe"), TemplateError::NoPipe);
+        assert_eq!(
+            look_err(r"pipe:\\server\pipe\x msg"),
+            TemplateError::BadPipe(r"\\server\pipe\x".to_owned())
+        );
+        assert_eq!(
+            look_err("pipe:Tool msg {file}"),
+            TemplateError::BadPipe("Tool".to_owned())
+        );
+        assert_eq!(
+            look_err(r"pipe:\\.\pipe\ msg"),
+            TemplateError::BadPipe(r"\\.\pipe\".to_owned())
+        );
+        assert_eq!(look_err(r"pipe:\\.\pipe\x"), TemplateError::NoMessage);
+        assert_eq!(look_err(r"pipe:\\.\pipe\x  || v"), TemplateError::NoMessage);
+        assert_eq!(
+            look_err(r"pipe:\\.\pipe\x {file}  ||  "),
+            TemplateError::NoProgram
+        );
+        assert_eq!(
+            look_err(r"pipe:\\.\pipe\x msg {path}"),
+            TemplateError::Unknown("path".to_owned())
+        );
+        assert_eq!(
+            look_err(r"pipe:\\.\pipe\{file} msg"),
+            TemplateError::Unknown("file".to_owned())
+        );
+        assert_eq!(
+            look_err(r"pipe:\\.\pipe\x {file} || v.exe {dest}"),
+            TemplateError::Unknown("dest".to_owned())
+        );
+        // A bad command line is still one.
+        assert_eq!(look_err("v.exe {file"), TemplateError::Unclosed);
+    }
+
+    #[test]
+    fn the_copy_program_has_no_pipe_form() {
+        assert_eq!(
+            Command::parse(r"pipe:\\.\pipe\x {sources}", Use::Copy),
+            Some(Err(TemplateError::PipeForCopy))
+        );
     }
 }

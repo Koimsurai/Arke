@@ -2068,9 +2068,19 @@ fn single_click_card(s: &Settings) -> AnyElement {
 /// A line under a card's title row for one more of its choices: lined up with the title, without
 /// an icon of its own.
 fn sub_row(title: Cow<'static, str>, control: AnyElement) -> AnyElement {
+    sub_row_with(title, None, control)
+}
+
+/// [`sub_row`] with a second line under the title.
+fn sub_row_with(
+    title: Cow<'static, str>,
+    desc: Option<Cow<'static, str>>,
+    control: AnyElement,
+) -> AnyElement {
     let a11y = crate::a11y::active();
     let title = SharedString::from(title.into_owned());
-    let lit = search::note(&title, None);
+    let spoken = desc.as_ref().map(|d| SharedString::from(d.to_string()));
+    let lit = search::note(&title, spoken.as_deref());
     let row = div()
         .pl(theme::s_16() + icon_col() + theme::s_16())
         .pr(theme::s_16())
@@ -2078,8 +2088,10 @@ fn sub_row(title: Cow<'static, str>, control: AnyElement) -> AnyElement {
         .flex()
         .items_center()
         .gap(theme::s_16())
-        .when(a11y, |d| d.child(crate::a11y::label_scope(title.clone())))
-        .child(row_text(title, None))
+        .when(a11y, |d| {
+            d.child(crate::a11y::described_scope(title.clone(), spoken))
+        })
+        .child(row_text(title, desc.map(row_desc)))
         .child(div().flex_none().child(control))
         .when(a11y, |d| d.child(crate::a11y::end_label_scope()));
     search::light(row, lit)
@@ -2174,8 +2186,9 @@ fn preview_card(s: &crate::settings::Settings, input: (&Entity<TextInput>, bool)
                 st.preview_pane = !st.preview_pane;
             }),
         ))
-        .child(sub_row(
+        .child(sub_row_with(
             t!("settings.external_preview"),
+            Some(t!("settings.external_preview_desc")),
             command_field(input),
         ))
         .into_any_element()

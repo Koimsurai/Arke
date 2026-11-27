@@ -3328,10 +3328,14 @@ impl Render for Workspace {
                     this.step_timeline(false, window, cx);
                 }
             }))
-            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+            // Mouse back/forward act on release, like File Explorer and browsers (#497).
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
                 let MouseButton::Navigate(direction) = event.button else {
                     return;
                 };
+                if crate::press_guard::is_cancel(event) {
+                    return;
+                }
                 let back = direction == gpui::NavigationDirection::Back;
                 if Self::across_tabs(cx) {
                     cx.stop_propagation();
@@ -3342,16 +3346,16 @@ impl Render for Workspace {
             .on_scroll(cx.listener(Self::on_swipe))
             // Mouse back/forward anywhere in the window (the sidebar, the tab list, Home and the
             // other pages) move the active tab; over a list the pane itself handles them (#8).
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),
-                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                cx.listener(|this, _: &MouseUpEvent, window, cx| {
                     let view = this.active_view().clone();
                     view.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
                 }),
             )
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
-                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                cx.listener(|this, _: &MouseUpEvent, window, cx| {
                     let view = this.active_view().clone();
                     view.update(cx, |e, cx| {
                         e.go_forward(&crate::explorer::GoForward, window, cx);

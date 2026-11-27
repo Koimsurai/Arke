@@ -140,6 +140,7 @@ pub(crate) fn scan(dir: &Path, items: &[Arc<str>]) -> CloudScan {
     if !available() || !in_sync_root(dir) {
         return CloudScan::default();
     }
+    log_placeholder_mode();
     // Room for the fixed part and the largest file identity (4 KB).
     let mut buffer = vec![0_u64; 4096 / 8 + 8];
     let syncing = items
@@ -155,9 +156,80 @@ pub(crate) fn scan(dir: &Path, items: &[Arc<str>]) -> CloudScan {
     }
 }
 
+/// See [`crate::shell::Shell::cloud_verify`]: asks each item itself whether it is a placeholder
+/// (`CfGetPlaceholderInfo` on a handle opened for attributes only, nothing is downloaded), since
+/// the attributes a listing gave can say it isn't when it is (#319).
+pub(crate) fn verify(dir: &Path, plain: Vec<Arc<str>>) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+    if !available() {
+        return (plain, Vec::new());
+    }
+    let mut buffer = vec![0_u64; 4096 / 8 + 8];
+    let (mut not_synced, mut syncing) = (Vec::new(), Vec::new());
+    for (i, name) in plain.into_iter().enumerate() {
+        // Past the limit, as before: the attributes have it.
+        let state = if i < MAX_ITEMS {
+            not_in_sync(&dir.join(&*name), &mut buffer)
+        } else {
+            None
+        };
+        match state {
+            // Not a placeholder (or it can't be asked): not synced, as the attributes said.
+            None => not_synced.push(name),
+            Some(true) => syncing.push(name),
+            // A placeholder in sync: nothing to show but its cloud state.
+            Some(false) => {}
+        }
+    }
+    (not_synced, syncing)
+}
+
+/// Logs this process's placeholder compatibility mode once (0 the application default, 1
+/// placeholders disguised as plain files, 2 exposed), the first time a sync root is scanned: a
+/// disguised placeholder lists without its reparse point attribute (#319).
+fn log_placeholder_mode() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+        // SAFETY: ntdll is always loaded; the function takes nothing and returns a CHAR, and is
+        // only called if this Windows has it (1803 and later).
+        let mode = unsafe {
+            GetModuleHandleW(windows::core::w!("ntdll.dll"))
+                .ok()
+                .and_then(|ntdll| {
+                    GetProcAddress(
+                        ntdll,
+                        windows::core::s!("RtlQueryProcessPlaceholderCompatibilityMode"),
+                    )
+                })
+                .map(|query| {
+                    let query = std::mem::transmute::<
+                        unsafe extern "system" fn() -> isize,
+                        unsafe extern "system" fn() -> i8,
+                    >(query);
+                    query()
+                })
+        };
+        log::info!("placeholder compatibility mode of this process: {mode:?}");
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain file in a plain folder is no placeholder: it stays not synced.
+    #[test]
+    fn plain_files_stay_not_synced_when_verified() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        let (not_synced, syncing) = verify(&dir, vec![Arc::from("a.txt"), Arc::from("gone.txt")]);
+        assert_eq!(
+            not_synced,
+            [Arc::<str>::from("a.txt"), Arc::from("gone.txt")]
+        );
+        assert!(syncing.is_empty());
+    }
 
     /// A plain temp folder is no sync root and nothing in it is read as syncing.
     #[test]

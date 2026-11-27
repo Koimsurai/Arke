@@ -281,6 +281,47 @@ fn a_recheck_racing_a_watcher_delta_still_shows_the_items(cx: &mut TestAppContex
     });
 }
 
+/// Items that list as plain ones next to placeholders are not synced only if the items themselves
+/// say they aren't placeholders: WPS Cloud's in-sync folders and files listed without their
+/// reparse point attribute and showed a red mark, File Explorer a green check (#319).
+#[gpui::test]
+fn placeholders_listed_as_plain_items_are_not_marked_not_synced(cx: &mut TestAppContext) {
+    const REPARSE: u32 = 0x400;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\wps",
+        vec![
+            Entry::new(
+                "online.docx",
+                EntryKind::File,
+                1,
+                None,
+                REPARSE | RECALL_ON_DATA_ACCESS,
+            ),
+            Entry::new("sub1", EntryKind::Dir, 0, None, 0x10),
+            Entry::new("top.txt", EntryKind::File, 1, None, 0x20),
+            Entry::new("fresh.txt", EntryKind::File, 1, None, 0x20),
+        ],
+    );
+    let shell = Arc::new(FakeShell::default());
+    *shell.cloud.lock() = crate::shell::CloudScan {
+        sync_root: true,
+        ..Default::default()
+    };
+    *shell.cloud_placeholders.lock() = vec![Arc::from("sub1"), Arc::from("top.txt")];
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\wps");
+    wait_until(cx, &view, "load", loaded(r"C:\wps"));
+    wait_until(cx, &view, "states", |v| {
+        v.cloud.sync_of("fresh.txt") == Some(CloudSync::NotSynced)
+    });
+    view.update(cx, |v, _| {
+        assert_eq!(v.cloud.sync_of("sub1"), None);
+        assert_eq!(v.cloud.sync_of("top.txt"), None);
+        assert_eq!(v.cloud.sync_of("online.docx"), None);
+    });
+}
+
 fn shelf_paths(cx: &mut VisualTestContext) -> Vec<(PathBuf, bool, bool)> {
     cx.update(|_, cx| {
         ShelfStore::global(cx)

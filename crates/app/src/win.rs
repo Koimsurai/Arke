@@ -1780,6 +1780,14 @@ impl Shell for WinShell {
         crate::win_cloud::scan(dir, items)
     }
 
+    fn cloud_verify(
+        &self,
+        dir: &Path,
+        plain: Vec<std::sync::Arc<str>>,
+    ) -> (Vec<std::sync::Arc<str>>, Vec<std::sync::Arc<str>>) {
+        crate::win_cloud::verify(dir, plain)
+    }
+
     fn folder_visit(&self, slot: u64, visit: Option<crate::shell::FolderVisit>) {
         crate::win_folder_visit::visit(slot, visit);
     }

@@ -336,7 +336,16 @@ impl Explorer {
                 .collect();
             let mut scan = shell.cloud_scan(&path, &items);
             if scan.sync_root {
-                scan.not_synced = unsynced_by_attributes(&entries);
+                // What the attributes call not synced, checked with the items themselves: a
+                // placeholder can list as a plain item (#319).
+                let plain = unsynced_by_attributes(&entries);
+                let (not_synced, syncing) = if plain.is_empty() {
+                    (plain, Vec::new())
+                } else {
+                    shell.cloud_verify(&path, plain)
+                };
+                scan.not_synced = not_synced;
+                scan.syncing.extend(syncing);
                 if first {
                     let counts = CloudCounts::of(entries.iter());
                     log::info!("cloud folder {} listed: {counts}", path.display());

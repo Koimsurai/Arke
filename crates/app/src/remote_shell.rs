@@ -958,6 +958,12 @@ impl Shell for RemoteShell {
         }
         self.inner.cloud_scan(dir, items)
     }
+    fn cloud_verify(&self, dir: &Path, plain: Vec<Arc<str>>) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+        if remote(dir).is_some() {
+            return (plain, Vec::new());
+        }
+        self.inner.cloud_verify(dir, plain)
+    }
     fn folder_visit(&self, slot: u64, visit: Option<crate::shell::FolderVisit>) {
         if visit.as_ref().is_some_and(|v| remote(&v.dir).is_some()) {
             return;

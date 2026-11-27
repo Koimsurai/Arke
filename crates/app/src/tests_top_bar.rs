@@ -462,20 +462,34 @@ fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
         one(cx);
         let folded = cx.debug_bounds("sel-more").is_some();
         let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
-        if !folded {
-            assert_eq!(shown, levels, "{width} px: buttons out, path bar squeezed");
-        } else if shown == levels {
+        if !folded && shown < levels {
+            // The path bar collapses only when folding the buttons wouldn't have saved it:
+            // "● 1 ⋯" is well under 110 px.
+            let path = bounds(cx, "path-bar").size.width;
+            let actions = bounds(cx, "selection-actions").size.width;
+            let full = view.update_in(cx, |v, window, _| v.path_full_width(window));
+            assert!(
+                path + actions - px(110.) < full,
+                "{width} px: buttons out, path bar squeezed"
+            );
+        } else if folded && shown == levels {
             saw_fold_keeping_path = true;
         }
     }
-    assert!(saw_fold_keeping_path, "a width where the fold saves the path");
+    assert!(
+        saw_fold_keeping_path,
+        "a width where the fold saves the path"
+    );
     // Too narrow for the path even with the buttons folded: it may collapse.
     cx.simulate_resize(size(px(500.), px(650.)));
     settle(cx);
     one(cx);
     assert!(cx.debug_bounds("sel-more").is_some(), "folded when narrow");
     let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
-    assert!(shown < levels, "the path bar collapses: {shown} of {levels}");
+    assert!(
+        shown < levels,
+        "the path bar collapses: {shown} of {levels}"
+    );
 }
 
 /// #388: folded into "⋯", the selection's buttons are still in reach from the keyboard: F6 to the
@@ -533,7 +547,9 @@ fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
 /// and "⋯", which opens the selection's menu. A wide pane keeps the buttons.
 #[gpui::test]
 fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext) {
-    let (ws, left, cx) = open_deep(cx, 1200.);
+    // Wide enough for the deep path to show every level with the buttons out; at 1200 it fits
+    // only with them folded.
+    let (ws, left, cx) = open_deep(cx, 1600.);
     cx.simulate_keystrokes("ctrl-a");
     settle(cx);
     assert!(

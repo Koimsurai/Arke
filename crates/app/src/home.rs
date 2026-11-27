@@ -1379,10 +1379,9 @@ impl HomePage {
     /// section (favorites, drives, network, recent files). `false` at the last or first section,
     /// where the keyboard goes on to the rest of the window.
     pub(crate) fn tab_section(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
-        // Nothing picked and no ring showing: the first Tab only moves on.
-        let Some(at) = self.acting_ix() else {
-            return false;
-        };
+        // Nothing picked, ring showing or not: the keyboard is on the first card (the one a
+        // screen reader reports as focused), so Tab goes on from there.
+        let at = self.acting_ix().unwrap_or(0);
         let to = {
             let spots = self.spots.borrow();
             let Some(here) = spots.get(at).map(|s| s.section) else {

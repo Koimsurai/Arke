@@ -59,6 +59,21 @@ impl Workspace {
         }
     }
 
+    /// Tab or Shift+Tab inside the Home page: on to its next or previous section. `false` when
+    /// the page has none left, so the keyboard goes on to the rest of the window.
+    pub(super) fn home_tab_section(&self, forward: bool, cx: &mut Context<Self>) -> bool {
+        self.home_page
+            .as_ref()
+            .is_some_and(|p| p.view.update(cx, |home, cx| home.tab_section(forward, cx)))
+    }
+
+    /// Tab or Shift+Tab brings the keyboard to the Home page: its first or last section.
+    pub(super) fn home_enter(&self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(p) = &self.home_page {
+            p.view.update(cx, |home, cx| home.enter(forward, cx));
+        }
+    }
+
     pub(super) fn home_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
         use gpui::Focusable as _;
         self.home_page.as_ref().map(|p| p.view.focus_handle(cx))

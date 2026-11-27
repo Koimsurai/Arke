@@ -26,7 +26,7 @@ Arke's default shortcuts do not use Insert or Caps Lock, the modifier keys of NV
 | --- | --- |
 | F6 | Go to the next area: file list, sidebar, path bar, toolbar, search box, then back to the list |
 | Shift+F6 | Go to the previous area |
-| Tab · Shift+Tab | Go to the next · previous stop: each pane's file list (the other pane of a split view is the next stop), the sidebar, the path bar, each button of the toolbar, the search box and its panel, then back to the list. Menus, dialogs, rename and the Settings pages keep their own Tab |
+| Tab · Shift+Tab | Go to the next · previous stop: each pane's file list (the other pane of a split view is the next stop), the sidebar, the path bar, each button of the toolbar, the search box and its panel, then back to the list. On the Home page each section (favorites, drives, network, recent files) is a stop. Menus, dialogs, rename and the Settings pages keep their own Tab |
 | Ctrl+B | Show or hide the sidebar (F6 skips the sidebar while it is hidden) |
 | Ctrl+L or Alt+D | Go straight to the path bar |
 | Ctrl+F | Go straight to the search box |

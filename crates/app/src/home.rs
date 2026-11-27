@@ -1372,6 +1372,59 @@ impl HomePage {
         cx.notify();
     }
 
+    /// Tab (`forward`) or Shift+Tab inside the page: the first card of the next or previous
+    /// section (favorites, drives, network, recent files). `false` at the last or first section,
+    /// where the keyboard goes on to the rest of the window.
+    pub(crate) fn tab_section(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        // Nothing picked and no ring showing: the first Tab only moves on.
+        let Some(at) = self.acting_ix() else {
+            return false;
+        };
+        let to = {
+            let spots = self.spots.borrow();
+            let Some(here) = spots.get(at).map(|s| s.section) else {
+                return false;
+            };
+            if forward {
+                (at..spots.len()).find(|&ix| spots[ix].section != here)
+            } else {
+                let start = (0..=at)
+                    .rev()
+                    .take_while(|&ix| spots[ix].section == here)
+                    .last();
+                let before = start
+                    .and_then(|ix| ix.checked_sub(1))
+                    .and_then(|ix| spots.get(ix))
+                    .map(|s| s.section);
+                before.and_then(|before| spots.iter().position(|s| s.section == before))
+            }
+        };
+        let Some(spot) = to.and_then(|ix| self.spots.borrow().get(ix).map(|s| s.spot.clone()))
+        else {
+            return false;
+        };
+        self.pick(&spot);
+        self.reveal.set(true);
+        cx.notify();
+        true
+    }
+
+    /// Tab (`forward`) or Shift+Tab into the page from the rest of the window: the first card of
+    /// its first or last section, so a round visits every section, whatever was picked before.
+    pub(crate) fn enter(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let spot = {
+            let spots = self.spots.borrow();
+            let edge = if forward { spots.first() } else { spots.last() };
+            edge.and_then(|e| spots.iter().find(|s| s.section == e.section))
+                .map(|s| s.spot.clone())
+        };
+        if let Some(spot) = spot {
+            self.pick(&spot);
+            self.reveal.set(true);
+            cx.notify();
+        }
+    }
+
     fn home_left(&mut self, _: &HomeLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.move_cursor(Move::Step(Step::Left), cx);
     }

@@ -477,7 +477,28 @@ fn tab_reaches_the_other_pane_and_shift_tab_comes_back(cx: &mut TestAppContext) 
     );
 }
 
-/// The Home page is a stop of its own, and the rest of the round is the same.
+/// Presses `keys` until the keyboard is on the sidebar (at most `max` times); the stops it was on
+/// before that, and whether it got there.
+fn until_sidebar(
+    ws: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+    keys: &str,
+    max: usize,
+) -> (Vec<String>, bool) {
+    let mut went = Vec::new();
+    for _ in 0..max {
+        key(cx, keys);
+        let at = stop(ws, cx);
+        if at == "sidebar" {
+            return (went, true);
+        }
+        went.push(at);
+    }
+    (went, false)
+}
+
+/// The Home page is a stop of its own (its sections are more, see `tests_home_keys.rs`), and the
+/// rest of the round is the same.
 #[gpui::test]
 fn tab_walks_the_stops_from_the_home_page(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
@@ -494,13 +515,36 @@ fn tab_walks_the_stops_from_the_home_page(cx: &mut TestAppContext) {
     assert_eq!(stop(&ws, cx), "list0", "the page has the keyboard");
     // The pane row and the search box aren't drawn under a page: the page and the sidebar are
     // the only stops, and Tab never lands on a control that isn't there.
-    let forward = round(&ws, cx, "tab");
-    assert_eq!(parts(&forward), ["sidebar"], "{forward:?}");
-    let back = round(&ws, cx, "shift-tab");
-    assert_eq!(parts(&back), ["sidebar"], "{back:?}");
-    key(cx, "tab");
-    key(cx, "tab");
-    assert_eq!(stop(&ws, cx), "list0");
+    for keys in ["tab", "shift-tab"] {
+        let (went, got) = until_sidebar(&ws, cx, keys, 12);
+        assert!(got, "{keys}: never reached the sidebar, went {went:?}");
+        assert!(went.iter().all(|s| s == "list0"), "{keys}: {went:?}");
+        // And on from the sidebar: back on the page.
+        key(cx, keys);
+        assert_eq!(stop(&ws, cx), "list0", "{keys} from the sidebar");
+    }
+}
+
+/// The Recycle Bin page is a stop like the Home page: Tab takes the keyboard off it to the
+/// sidebar and back (it went nowhere before), Shift+Tab the other way (#322).
+#[gpui::test]
+fn tab_walks_the_stops_from_the_recycle_bin(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    ws.update_in(cx, |ws, window, cx| ws.open_recycle_for_test(window, cx));
+    refresh(cx);
+    for _ in 0..6 {
+        if stop(&ws, cx) == "list0" {
+            break;
+        }
+        key(cx, "f6");
+    }
+    assert_eq!(stop(&ws, cx), "list0", "the page has the keyboard");
+    for keys in ["tab", "shift-tab"] {
+        key(cx, keys);
+        assert_eq!(stop(&ws, cx), "sidebar", "{keys}");
+        key(cx, keys);
+        assert_eq!(stop(&ws, cx), "list0", "{keys} back");
+    }
 }
 
 /// With a context menu open, or while renaming, Tab doesn't walk to another region.

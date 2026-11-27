@@ -75,7 +75,7 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
     // settings pages. The path bar and the search box use Tab themselves (completing a path,
     // entering the search panel) and hand it on when they have nothing to do with it, so only
     // Shift+Tab is bound there.
-    for context in ["FileList", "Sidebar", "HomePage", "Toolbar"] {
+    for context in ["FileList", "Sidebar", "HomePage", "RecycleBin", "Toolbar"] {
         cx.bind_keys([
             gpui::KeyBinding::new("tab", FocusNextStop, Some(context)),
             gpui::KeyBinding::new("shift-tab", FocusPrevStop, Some(context)),
@@ -346,7 +346,8 @@ impl Workspace {
             None => {}
         }
         if let Some(page) = self.page_focus(cx) {
-            return (self.home_open() && page.is_focused(window)).then_some(Stop::List(0));
+            return ((self.home_open() || self.recycle_open()) && page.is_focused(window))
+                .then_some(Stop::List(0));
         }
         self.tabs[self.active]
             .panes
@@ -397,6 +398,10 @@ impl Workspace {
         {
             return true;
         }
+        // The Home page's sections are stops of their own.
+        if now == Stop::List(0) && self.home_open() && self.home_tab_section(forward, cx) {
+            return true;
+        }
         let ring = self.stops(cx);
         let at = ring.iter().position(|s| *s == now).unwrap_or(0);
         let next = if forward {
@@ -421,6 +426,9 @@ impl Workspace {
     ) {
         match stop {
             Stop::List(pane) => {
+                if self.home_open() {
+                    self.home_enter(forward, cx);
+                }
                 let tab = self.active;
                 if pane == self.tabs[tab].active_pane {
                     self.focus_active(window, cx);
@@ -615,7 +623,8 @@ impl Workspace {
 /// 5. the search box, then, with Tab, its panel (scope, filters, contents), whose last row hands
 ///    Tab on to the first list.
 ///
-/// On a page that replaces the panes (Home...), the stops are the page and the sidebar only.
+/// On a page that replaces the panes (Home, the Recycle Bin), the stops are the page and the
+/// sidebar only; each section of the Home page (favorites, drives, ...) is a stop of its own.
 ///
 /// File Explorer's own order jumps around the window; this one follows F6, so the two keys
 /// agree about where things are. The tab strip and the preview are not stops.

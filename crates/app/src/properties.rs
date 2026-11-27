@@ -330,7 +330,7 @@ pub(crate) fn place_window(
         (None, Some(s)) => displays.iter().find(|d| d.contains(&grab(s))),
         (None, None) => None,
     }
-    .or(displays.first())?;
+    .or_else(|| displays.first())?;
     let factor = match (saved.as_ref().and_then(|s| s.scale), &source) {
         (Some(was), Some((_, now))) if was > 0. && *now > 0. => was / now,
         _ => 1.,
@@ -347,12 +347,11 @@ pub(crate) fn place_window(
     let (dx, dy) = (f32::from(display.origin.x), f32::from(display.origin.y));
     let (dw, dh) = (f32::from(display.size.width), f32::from(display.size.height));
     let (w, h) = (w.min(dw), h.min(dh));
-    let (x, y) = match saved.as_ref().filter(|s| display.contains(&grab(s))) {
-        Some(s) => (f32::from(s.origin.x), f32::from(s.origin.y)),
-        None => {
-            let c = source.map_or_else(|| display.center(), |(b, _)| b.center());
-            (f32::from(c.x) - w / 2., f32::from(c.y) - h / 2.)
-        }
+    let (x, y) = if let Some(s) = saved.as_ref().filter(|s| display.contains(&grab(s))) {
+        (f32::from(s.origin.x), f32::from(s.origin.y))
+    } else {
+        let c = source.map_or_else(|| display.center(), |(b, _)| b.center());
+        (f32::from(c.x) - w / 2., f32::from(c.y) - h / 2.)
     };
     let (x, y) = (x.min(dx + dw - w).max(dx), y.min(dy + dh - h).max(dy));
     Some(Bounds::new(

@@ -512,9 +512,8 @@ fn move_virtual_drop(
     // On a thread of its own: a drop runs here with multithreaded COM (to read the other
     // program's data), but the copy engine of a move to another drive needs a single-threaded
     // one, and a thread can't change (#461).
-    let (result, undo, handed_off) =
-        crate::win_fileops::run_on_sta(|| env.run(&op, progress))
-            .unwrap_or_else(|err| (Err(err.into()), None, false));
+    let ran = crate::win_fileops::run_on_sta(|| env.run(&op, progress));
+    let (result, undo, handed_off) = ran.unwrap_or_else(|err| (Err(err.into()), None, false));
     if matches!(result, Ok(OpOutcome::Done)) {
         progress.done.store(written, Ordering::Relaxed);
     }

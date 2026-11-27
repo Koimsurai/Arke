@@ -93,7 +93,7 @@ rust-i18n = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Release tooling and update verification
-sha2 = "0.10"
+sha2 = "0.11"
 # Update signatures (#249): Arke verifies, the release tooling signs.
 minisign-verify = "0.2.5"
 minisign = { version = "0.7.9", default-features = false }

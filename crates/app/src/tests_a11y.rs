@@ -1092,8 +1092,8 @@ fn home_cards_are_named_and_read_as_the_keyboard_moves(cx: &mut TestAppContext) 
     assert!(link(&home, "w"), "the favorite's card");
     assert!(link(&home, "Local Disk (C:)"), "the drive's card");
 
-    // Tab to the sidebar and back: the page has the keyboard, on its first card.
-    cx.simulate_keystrokes("tab shift-tab");
+    // The first key brings the ring up on the first card.
+    cx.simulate_keystrokes("home");
     let t = tree(cx);
     assert_eq!(focused(&t), ("Link".to_owned(), "w".to_owned()));
     cx.simulate_keystrokes("down");

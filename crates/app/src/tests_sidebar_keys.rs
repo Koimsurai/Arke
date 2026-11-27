@@ -530,7 +530,7 @@ fn tab_walks_the_stops_from_the_home_page(cx: &mut TestAppContext) {
 #[gpui::test]
 fn tab_walks_the_stops_from_the_recycle_bin(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
-    ws.update_in(cx, |ws, window, cx| ws.open_recycle_for_test(window, cx));
+    ws.update_in(cx, Workspace::open_recycle_for_test);
     refresh(cx);
     for _ in 0..6 {
         if stop(&ws, cx) == "list0" {

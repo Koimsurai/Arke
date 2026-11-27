@@ -1290,18 +1290,20 @@ pub(crate) mod test_support {
 
     /// Attributes and size of every item below `dir`, for a failing test's message.
     pub(crate) fn describe_tree(dir: &Path) -> String {
+        use std::fmt::Write as _;
         use std::os::windows::fs::MetadataExt as _;
         let mut out = String::new();
         let mut pending = vec![dir.to_path_buf()];
         while let Some(d) = pending.pop() {
             let Ok(entries) = fs::read_dir(&d) else {
-                out += &format!("\n  {}: can't list", d.display());
+                let _ = write!(out, "\n  {}: can't list", d.display());
                 continue;
             };
             for e in entries.flatten() {
                 match e.metadata() {
                     Ok(m) => {
-                        out += &format!(
+                        let _ = write!(
+                            out,
                             "\n  {} attributes {:#x}, {} bytes",
                             e.path().display(),
                             m.file_attributes(),
@@ -1311,7 +1313,9 @@ pub(crate) mod test_support {
                             pending.push(e.path());
                         }
                     }
-                    Err(err) => out += &format!("\n  {}: {err}", e.path().display()),
+                    Err(err) => {
+                        let _ = write!(out, "\n  {}: {err}", e.path().display());
+                    }
                 }
             }
         }

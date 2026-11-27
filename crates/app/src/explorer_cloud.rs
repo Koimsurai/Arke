@@ -497,12 +497,8 @@ impl Explorer {
             .model
             .as_ref()
             .is_some_and(|m| m.generation == recheck.generation && m.version == recheck.version);
-        let action = recheck_action(
-            recheck.changed,
-            current,
-            self.pending.is_none(),
-            self.cloud.rerun_spent,
-        );
+        let list = ListState::of(current, self.pending.is_none());
+        let action = recheck_action(recheck.changed, list, self.cloud.rerun_spent);
         log::info!(
             "cloud recheck of {}: on disk {}; changed {}, list moved {}: {action:?}; hints merged {}, waiting {}",
             dir.display(),
@@ -555,14 +551,32 @@ enum RecheckAction {
     AlreadyRanAgain,
 }
 
-/// See [`RecheckAction`]. `current`: the list is still the one compared with; `idle`: no listing
-/// or navigation is running; `spent`: this hint already ran again once.
-const fn recheck_action(changed: bool, current: bool, idle: bool, spent: bool) -> RecheckAction {
-    match (changed, current && idle, spent) {
+/// The list a finished recheck compared with, as it is when the result arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListState {
+    /// Still the one compared with, and no listing or navigation is running.
+    Same,
+    /// It changed since (a watcher delta, a re-sort), or the folder is being listed again.
+    Moved,
+}
+
+impl ListState {
+    const fn of(current: bool, idle: bool) -> Self {
+        if current && idle {
+            Self::Same
+        } else {
+            Self::Moved
+        }
+    }
+}
+
+/// See [`RecheckAction`]. `spent`: this hint already ran again once.
+const fn recheck_action(changed: bool, list: ListState, spent: bool) -> RecheckAction {
+    match (changed, list, spent) {
         (false, _, _) => RecheckAction::Nothing,
-        (true, true, _) => RecheckAction::Reload,
-        (true, false, false) => RecheckAction::RunAgain,
-        (true, false, true) => RecheckAction::AlreadyRanAgain,
+        (true, ListState::Same, _) => RecheckAction::Reload,
+        (true, ListState::Moved, false) => RecheckAction::RunAgain,
+        (true, ListState::Moved, true) => RecheckAction::AlreadyRanAgain,
     }
 }
 
@@ -601,21 +615,18 @@ mod tests {
     #[test]
     fn a_recheck_reloads_or_runs_again_once() {
         use RecheckAction as A;
-        assert_eq!(recheck_action(false, true, true, false), A::Nothing);
-        assert_eq!(recheck_action(false, false, false, true), A::Nothing);
-        assert_eq!(recheck_action(true, true, true, false), A::Reload);
-        assert_eq!(recheck_action(true, true, true, true), A::Reload);
-        assert_eq!(
-            recheck_action(true, false, true, false),
-            A::RunAgain,
-            "list moved"
-        );
-        assert_eq!(
-            recheck_action(true, true, false, false),
-            A::RunAgain,
-            "listing"
-        );
-        assert_eq!(recheck_action(true, false, true, true), A::AlreadyRanAgain);
+        let (same, moved) = (ListState::Same, ListState::Moved);
+        assert_eq!(recheck_action(false, same, false), A::Nothing);
+        assert_eq!(recheck_action(false, moved, true), A::Nothing);
+        assert_eq!(recheck_action(true, same, false), A::Reload);
+        assert_eq!(recheck_action(true, same, true), A::Reload);
+        assert_eq!(recheck_action(true, moved, false), A::RunAgain);
+        assert_eq!(recheck_action(true, moved, true), A::AlreadyRanAgain);
+        // The list moved, or a listing is running: either way it can't take the change.
+        assert_eq!(ListState::of(true, true), same);
+        assert_eq!(ListState::of(false, true), moved, "list moved");
+        assert_eq!(ListState::of(true, false), moved, "listing");
+        assert_eq!(ListState::of(false, false), moved);
     }
 
     /// The log's counts: online-only, local placeholders, plain files and folders.

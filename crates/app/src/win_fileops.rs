@@ -99,15 +99,15 @@ impl Drop for Com {
 /// Runs `f` on a thread of its own, which COM sets up as a single-threaded apartment on first
 /// use ([`Com::init`]), and waits for it. For work that needs an STA (the copy engine) called
 /// from a worker that is multithreaded for other reasons, which can't change its mode (#461).
-pub(crate) fn run_on_sta<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+/// Fails only when the thread can't be started.
+pub(crate) fn run_on_sta<T: Send>(f: impl FnOnce() -> T + Send) -> std::io::Result<T> {
     std::thread::scope(|scope| {
-        let worker = std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("file op".into())
-            .spawn_scoped(scope, f);
-        match worker.map(|handle| handle.join()) {
-            Ok(Ok(value)) => value,
-            Ok(Err(panic)) => std::panic::resume_unwind(panic),
-            Err(err) => panic!("failed to spawn the file operation thread: {err}"),
+            .spawn_scoped(scope, f)?;
+        match handle.join() {
+            Ok(value) => Ok(value),
+            Err(panic) => std::panic::resume_unwind(panic),
         }
     })
 }
@@ -3330,7 +3330,7 @@ mod mta_worker_tests {
                 sources: vec![file],
                 dest,
             };
-            let result = run_on_sta(|| perform(&op, None, true));
+            let result = run_on_sta(|| perform(&op, None, true)).unwrap();
             assert!(matches!(result, Ok(OpOutcome::Done)), "{result:?}");
             // SAFETY: pairs with the CoInitializeEx above.
             unsafe { CoUninitialize() };

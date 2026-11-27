@@ -1179,7 +1179,7 @@ pub(crate) mod test_support {
             // Whatever the engine says, the tests below judge what they find.
             let _ = crate::win_fileops::perform(
                 &crate::shell::FileOp::Delete {
-                    paths: vec![file.clone()],
+                    paths: vec![file],
                     recycle: true,
                 },
                 None,

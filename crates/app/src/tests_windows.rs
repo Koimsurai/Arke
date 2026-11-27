@@ -241,6 +241,7 @@ fn taken_over(path: &str, select: &[&str], early: bool) -> crate::win_takeover::
         select: select.iter().map(|name| (*name).to_owned()).collect(),
         explorer_thread: 0,
         early,
+        unchecked: false,
         reply,
     }
 }
@@ -396,6 +397,71 @@ fn two_quick_launches_each_get_their_own_merge(cx: &mut TestAppContext) {
         4,
         "every mark used: a window as usual"
     );
+}
+
+/// A network folder the early path took without looking (#285), with the receiver of its answer.
+fn unchecked(path: &str) -> (crate::win_takeover::OpenRequest, flume::Receiver<bool>) {
+    let (reply, answer) = flume::bounded(1);
+    let request = crate::win_takeover::OpenRequest {
+        target: arke_core::takeover::Target::Folder(p(path)),
+        select: Vec::new(),
+        explorer_thread: 0,
+        early: true,
+        unchecked: true,
+        reply,
+    };
+    (request, answer)
+}
+
+/// Arke's answer to a request, once it comes.
+fn answer(cx: &mut TestAppContext, reply: &flume::Receiver<bool>) -> bool {
+    let mut got = None;
+    until(cx, "Arke's answer", |_| {
+        got = got.or_else(|| reply.try_recv().ok());
+        got.is_some()
+    });
+    got.unwrap_or_default()
+}
+
+/// #285: a network folder the early path took without looking is checked first. A folder opens
+/// as usual and is answered `true`; a missing folder or a file opens nothing and is answered
+/// `false` (File Explorer gets it back); one nobody waits for any more opens nothing.
+#[gpui::test]
+fn an_unchecked_folder_opens_only_once_it_is_found(cx: &mut TestAppContext) {
+    let fs = fake_fs();
+    let (ws, vcx) = setup_workspace(cx, Arc::clone(&fs), r"C:\a");
+    let first = ws.update(vcx, |ws, _| ws.active_view().clone());
+    wait_until(vcx, &first, "a", loaded(r"C:\a"));
+    let cx = &mut vcx.cx;
+    settings(cx, |s| s.single_window = false);
+    let services = services(&fs);
+
+    for missing in [r"C:\missing", r"C:\b\file_000000.txt"] {
+        let (request, reply) = unchecked(missing);
+        cx.update(|cx| crate::answer_taken_over(cx, &services, request));
+        assert!(!answer(cx, &reply), "{missing}: given back");
+        settle(cx);
+        assert_eq!(workspaces(cx).len(), 1, "{missing}: nothing opened");
+    }
+
+    // Nobody waits any more: File Explorer has it already.
+    let (request, reply) = unchecked(r"C:\c");
+    drop(reply);
+    cx.update(|cx| crate::answer_taken_over(cx, &services, request));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(workspaces(cx).len(), 1, "not opened behind File Explorer");
+
+    let before = window_ids(cx);
+    let (request, reply) = unchecked(r"C:\b");
+    cx.update(|cx| crate::answer_taken_over(cx, &services, request));
+    assert!(answer(cx, &reply), "found and opened");
+    let window = opened_window(cx, &before, |_| true);
+    let _ = loaded_view(cx, window, r"C:\b");
+    assert_eq!(workspaces(cx).len(), 2);
 }
 
 /// The forum report: with two windows open, the second one's tabs no longer replace the
@@ -712,13 +778,14 @@ fn restoring_answers_after_the_front_window_and_opens_at_most_twenty(cx: &mut Te
     assert_eq!(workspaces(cx).len(), crate::settings::RESTORED_WINDOWS_MAX);
 }
 
-fn settings_file(name: &str, json: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("arke-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("settings.json");
+fn settings_file(name: &str, json: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-{name}-"))
+        .tempdir()
+        .unwrap();
+    let path = guard.path().join("settings.json");
     std::fs::write(&path, json).unwrap();
-    path
+    (path, guard)
 }
 
 /// The settings file read slowly (%APPDATA% on a network share): a folder visited and Arke
@@ -726,7 +793,7 @@ fn settings_file(name: &str, json: &str) -> PathBuf {
 #[gpui::test]
 fn nothing_is_written_before_the_settings_file_is_read(cx: &mut TestAppContext) {
     let saved = r#"{"show_hidden": true, "recent": ["C:\\old"]}"#;
-    let path = settings_file("unread", saved);
+    let (path, _guard) = settings_file("unread", saved);
     let store = cx.update(|cx| SettingsStore::reading_slowly(path.clone(), cx));
     store.update(cx, |s, cx| {
         s.update(|st| st.remember(Path::new(r"C:\new")), cx);
@@ -739,14 +806,13 @@ fn nothing_is_written_before_the_settings_file_is_read(cx: &mut TestAppContext) 
     cx.quit();
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 /// Folders visited before the file was read join it, and are written even when Arke quits right
 /// after (the write at quit is for a change newer than any written).
 #[gpui::test]
 fn folders_visited_before_the_file_is_read_are_written_with_it(cx: &mut TestAppContext) {
-    let path = settings_file("late", r#"{"show_hidden": true, "recent": ["C:\\old"]}"#);
+    let (path, _guard) = settings_file("late", r#"{"show_hidden": true, "recent": ["C:\\old"]}"#);
     let store = cx.update(|cx| SettingsStore::reading_slowly(path.clone(), cx));
     store.update(cx, |s, cx| {
         s.update(|st| st.remember(Path::new(r"C:\new")), cx);
@@ -772,7 +838,6 @@ fn folders_visited_before_the_file_is_read_are_written_with_it(cx: &mut TestAppC
         serde_json::json!([r"C:\new", r"C:\old"]),
         "{written}"
     );
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 /// A saved window whose tabs are the given folders, the ones in `pinned` pinned.

@@ -57,6 +57,13 @@ pub struct WindowsPlatform {
     raw_window_handles: Arc<RwLock<SmallVec<[TrackedWindow; 4]>>>,
     /// The windowing mode to start in, applied when `run` starts. Windowed when unset.
     initial_windowing: RefCell<Option<WindowingRequest>>,
+    /// Arke: the DirectX devices, made on another thread from `new` on when the platform will
+    /// likely be windowed (see `PendingDevices`). Taken by `attach_gpu`, or dropped by
+    /// `connect_initially` if the platform starts headless after all.
+    pending_devices: RefCell<Option<PendingDevices>>,
+    /// Arke: `run` connected windowed but left the devices to `finish_attach`, which the first
+    /// window, or the end of `on_finish_launching`, calls.
+    attach_pending: Cell<bool>,
     /// Set to stop the current `VSyncProvider` thread, which runs while windowed.
     vsync_stop: RefCell<Option<Arc<AtomicBool>>>,
     /// Arke: wakes the `VSyncProvider` thread when it sleeps because no window needs frames.
@@ -187,6 +194,12 @@ impl Drop for PowerRequest {
 
 impl WindowsPlatform {
     pub fn new(headless: bool) -> Result<Self> {
+        // Arke: the DirectX devices start now, on another thread, when the default windowed start
+        // can show windows (what `connect_initially` checks). They are dropped unused if the app
+        // asks to start headless instead.
+        let pending_devices = (!headless
+            && check_can_show_windows(&GraphicalEnvironment::detect()).is_ok())
+        .then(PendingDevices::start);
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
         }
@@ -286,6 +299,8 @@ impl WindowsPlatform {
             handle,
             raw_window_handles,
             initial_windowing: RefCell::new(None),
+            pending_devices: RefCell::new(pending_devices),
+            attach_pending: Cell::new(false),
             vsync_stop: RefCell::new(None),
             vsync_wake: VSyncWake::new()?,
             headless,
@@ -399,7 +414,8 @@ impl WindowsPlatform {
     }
 
     fn is_windowed(&self) -> bool {
-        self.inner.state.directx_devices.borrow().is_some()
+        // Arke: also while the devices are still being made (see `finish_attach`).
+        self.attach_pending.get() || self.inner.state.directx_devices.borrow().is_some()
     }
 
     /// Connects in the initial windowing mode, before the app finishes launching.
@@ -415,19 +431,48 @@ impl WindowsPlatform {
             .take()
             .unwrap_or_else(|| WindowingRequest::Windowed(GraphicalEnvironment::detect()));
         let WindowingRequest::Windowed(environment) = request else {
+            // Arke: made ahead for nothing.
+            self.pending_devices.borrow_mut().take();
             return;
         };
         if let Err(error) = check_can_show_windows(&environment) {
             log::info!("starting headless: {error:#}");
+            self.pending_devices.borrow_mut().take();
+            return;
+        }
+        // Arke: devices still being made are waited for only once something needs them, so
+        // `on_finish_launching` runs meanwhile.
+        if self.pending_devices.borrow().is_some() {
+            self.attach_pending.set(true);
             return;
         }
         self.attach_gpu()
             .unwrap_or_else(|error| panic!("failed to initialize DirectX: {error:#}"));
     }
 
+    /// Arke: completes the windowed start `connect_initially` left to the devices being made on
+    /// another thread. Called before the first window is made, and once `on_finish_launching`
+    /// returns, so vsync and device-lost handling start as they did before even if no window opens.
+    ///
+    /// # Panics
+    ///
+    /// Panics if DirectX can't be initialized, as `connect_initially` did.
+    fn finish_attach(&self) {
+        if self.attach_pending.replace(false) {
+            self.attach_gpu()
+                .unwrap_or_else(|error| panic!("failed to initialize DirectX: {error:#}"));
+        }
+    }
+
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
+        // Arke: the devices made ahead on another thread, when there are any.
+        let pending = self.pending_devices.borrow_mut().take();
+        let devices = match pending {
+            Some(pending) => pending.wait(),
+            None => DirectXDevices::new(),
+        }
+        .context("Creating DirectX devices")?;
         if let Some(text_system) = &self.direct_write_text_system {
             text_system.handle_gpu_lost(&devices)?;
         }
@@ -438,6 +483,9 @@ impl WindowsPlatform {
 
     /// Stops vsync and releases the DirectX devices. No window may be open.
     fn detach_gpu(&self) {
+        // Arke: devices still being made are dropped when they arrive.
+        self.attach_pending.set(false);
+        self.pending_devices.borrow_mut().take();
         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
             // Not joined: the thread can be sending this thread a message. It exits after its
             // next vsync, and drops its reference to the devices then.
@@ -637,6 +685,8 @@ impl Platform for WindowsPlatform {
             self.connect_initially();
         }
         on_finish_launching();
+        // Arke: if launching opened no window, the devices are taken now (see `finish_attach`).
+        self.finish_attach();
 
         let mut msg = MSG::default();
         unsafe {
@@ -807,6 +857,8 @@ impl Platform for WindowsPlatform {
         if !self.is_windowed() {
             return Err(anyhow!("cannot open windows while headless"));
         }
+        // Arke: the first window waits for the devices made on another thread.
+        self.finish_attach();
         // Arke: a popup is owned by the window it is anchored to.
         let popup_owner = match &options.kind {
             WindowKind::AnchoredPopup(popup) => self
@@ -1099,6 +1151,26 @@ impl Platform for WindowsPlatform {
 
     fn should_auto_hide_scrollbars(&self) -> bool {
         should_auto_hide_scrollbars().log_err().unwrap_or(false)
+    }
+
+    fn drag_threshold(&self) -> Size<Pixels> {
+        use windows::Win32::UI::{
+            HiDpi::GetSystemMetricsForDpi,
+            WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG},
+        };
+        // Logical pixels: the metric at 96 DPI follows the user's setting, and GPUI's scale
+        // factor turns it into the physical distance Windows itself uses.
+        let (width, height) = unsafe {
+            (
+                GetSystemMetricsForDpi(SM_CXDRAG, 96),
+                GetSystemMetricsForDpi(SM_CYDRAG, 96),
+            )
+        };
+        if width > 0 && height > 0 {
+            size(px(width as f32), px(height as f32))
+        } else {
+            size(px(2.), px(2.))
+        }
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {

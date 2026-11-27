@@ -141,8 +141,9 @@ fn arguments(command_line: &[u16]) -> &[u16] {
     &rest[start..]
 }
 
-/// Whether this copy was started by a relaunch.
-fn relaunched() -> bool {
+/// Whether this copy was started by a relaunch (this one's, or an elevated start's, see
+/// `elevation.rs`).
+pub(crate) fn relaunched() -> bool {
     std::env::args_os()
         .nth(1)
         .is_some_and(|arg| arg == RELAUNCHED_ARG)
@@ -229,8 +230,9 @@ fn shell_available() -> bool {
 }
 
 /// Starts this exe again through the desktop shell, with this copy's arguments (after
-/// [`RELAUNCHED_ARG`]) and working folder. Returns once the shell has the request.
-fn relaunch() -> Result<(), String> {
+/// [`RELAUNCHED_ARG`]) and working folder. Returns once the shell has the request. The new copy is
+/// the shell's child: without this one's mitigations, and not elevated when the shell isn't.
+pub(crate) fn relaunch() -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;

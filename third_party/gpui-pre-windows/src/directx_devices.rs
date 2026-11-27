@@ -21,6 +21,14 @@ use windows::Win32::{
 };
 use windows::core::Interface;
 
+// Arke: for `PendingDevices` and the per-device `ShaderCache`.
+use std::{
+    sync::{Arc, mpsc},
+    time::Instant,
+};
+
+use crate::ShaderCache;
+
 pub(crate) fn try_to_recover_from_device_lost<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
     (0..5)
         .map(|i| {
@@ -41,6 +49,8 @@ pub(crate) struct DirectXDevices {
     pub(crate) dxgi_factory: IDXGIFactory6,
     pub(crate) device: ID3D11Device,
     pub(crate) device_context: ID3D11DeviceContext,
+    /// Arke: the renderer's shaders for `device`, shared by every window (see [`ShaderCache`]).
+    pub(crate) shaders: Arc<ShaderCache>,
 }
 
 impl DirectXDevices {
@@ -68,7 +78,87 @@ impl DirectXDevices {
             dxgi_factory,
             device,
             device_context,
+            shaders: Arc::new(ShaderCache::default()),
         })
+    }
+}
+
+/// Arke: DirectX devices being made on a thread of their own.
+///
+/// Making the devices loads the graphics driver, and with the renderer's shaders that took about
+/// 220 ms of a 370 ms cold start on the UI thread, before the app could do anything else. The
+/// platform starts this as soon as it knows it will likely be windowed, so the work overlaps the
+/// text system, the platform window and the app's own startup. The thread hands the devices over
+/// as soon as they exist and then makes the shaders while holding the device's [`ShaderCache`],
+/// so the first window waits only for whichever of the two it still lacks.
+///
+/// The devices are made exactly as [`DirectXDevices::new`] makes them on the UI thread (the same
+/// adapter, the same flags), and device loss is handled as before once they are in use.
+pub(crate) struct PendingDevices {
+    receiver: mpsc::Receiver<Result<DirectXDevices>>,
+    started: Instant,
+}
+
+impl PendingDevices {
+    pub(crate) fn start() -> Self {
+        let started = Instant::now();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("DirectXDevices".to_owned())
+            .spawn(move || {
+                let devices = match DirectXDevices::new() {
+                    Ok(devices) => devices,
+                    Err(error) => {
+                        sender.send(Err(error)).ok();
+                        return;
+                    }
+                };
+                log::info!(
+                    "DirectX devices made in {:.1} ms on another thread",
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+                let shaders = devices.shaders.clone();
+                let device = devices.device.clone();
+                // Taken before the devices are handed over, so a window made meanwhile waits for
+                // these shaders instead of making its own.
+                let mut cached = shaders.lock();
+                if sender.send(Ok(devices)).is_err() {
+                    // Not needed after all (the platform started headless).
+                    return;
+                }
+                let shaders_started = Instant::now();
+                if ShaderCache::fill(&mut cached, &device)
+                    .context("Making the renderer's shaders ahead")
+                    .log_err()
+                    .is_some()
+                {
+                    log::info!(
+                        "renderer shaders made in {:.1} ms on another thread",
+                        shaders_started.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+            });
+        if let Err(error) = spawned {
+            // The sender is gone with the closure, so `wait` makes the devices itself.
+            log::warn!("can't make the DirectX devices on another thread: {error}");
+        }
+        Self { receiver, started }
+    }
+
+    /// Waits for the devices. If the thread couldn't start, or ended without sending them (it
+    /// panicked), they are made here instead, as without this thread.
+    pub(crate) fn wait(self) -> Result<DirectXDevices> {
+        let waiting = Instant::now();
+        let result = match self.receiver.recv() {
+            Ok(result) => result,
+            Err(mpsc::RecvError) => return DirectXDevices::new(),
+        };
+        log::info!(
+            "waited {:.1} ms for the DirectX devices, {:.1} ms after they were started",
+            waiting.elapsed().as_secs_f64() * 1000.0,
+            self.started.elapsed().as_secs_f64() * 1000.0
+        );
+        result
     }
 }
 
@@ -190,5 +280,22 @@ fn get_device(
         Err(anyhow::anyhow!(
             "Required feature StructuredBuffer is not supported by GPU/driver"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devices_made_ahead_bring_their_shaders() -> Result<()> {
+        let devices = PendingDevices::start().wait()?;
+        // The thread holds the cache from before it hands the devices over until the shaders
+        // are made, so once the lock is free they are there.
+        assert!(devices.shaders.lock().is_some());
+        // Clones (every window's copy) share them.
+        let window_copy = devices.clone();
+        assert!(Arc::ptr_eq(&devices.shaders, &window_copy.shaders));
+        Ok(())
     }
 }

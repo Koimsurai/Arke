@@ -169,9 +169,23 @@ pub(crate) fn paused() -> bool {
     queue().paused()
 }
 
-/// See [`Queue::wake`].
+/// See [`Queue::wake`]; wakes the archive queue too.
 pub(crate) fn wake() {
     queue().wake();
+    archive_queue().wake();
+}
+
+/// Extractions and compressions (#407): one at a time per tab, the next waiting in line. Apart
+/// from the file operation queue, so pausing that doesn't hold them, as before.
+fn archive_queue() -> &'static Queue {
+    static QUEUE: LazyLock<Queue> = LazyLock::new(Queue::default);
+    &QUEUE
+}
+
+/// [`Queue::enter`] on the archive queue, behind the earlier jobs of the same tab (`tab`: its
+/// `archive_line`). Background thread.
+pub(crate) fn enter_archive(tab: u64, progress: &OpProgress) -> Option<Turn<'static>> {
+    archive_queue().enter(vec![format!("archive:{tab}")], true, progress)
 }
 
 /// Physical drives the paths are on, one key each ([`Shell::drive_key`], asked once per volume).

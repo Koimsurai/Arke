@@ -342,10 +342,10 @@ fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut crate::settings::Setti
     cx.run_until_parked();
 }
 
-/// #307: working in a folder inside a favorite, the sidebar stays on the favorite: the tree
-/// opens below, out of sight, but doesn't scroll away to the folder.
+/// #424 (it was #307: stay on the favorite): working in a folder inside a favorite, the tree
+/// opens under This PC and the sidebar scrolls to the folder's row there, as File Explorer does.
 #[gpui::test]
-fn inside_a_favorite_the_sidebar_stays_on_it(cx: &mut TestAppContext) {
+fn inside_a_favorite_the_sidebar_scrolls_to_the_folder(cx: &mut TestAppContext) {
     let (ws, cx) = deep_window(cx);
     change(cx, |st| {
         st.favorites = Some(vec![PathBuf::from(r"C:\work")]);
@@ -359,13 +359,20 @@ fn inside_a_favorite_the_sidebar_stays_on_it(cx: &mut TestAppContext) {
     }
     assert!(
         ws.update(cx, |ws, _| ws.places_overflow_for_test()) > gpui::px(0.),
-        "deep is out of sight"
+        "the places overflow"
     );
-    assert_eq!(
-        ws.update(cx, |ws, _| ws.places_offset_for_test()),
-        gpui::px(0.),
-        "the sidebar stays on the favorite"
+    assert!(
+        ws.update(cx, |ws, _| ws.places_offset_for_test()) < gpui::px(0.),
+        "the sidebar scrolled"
     );
+    settle(cx, "deep is in view", |cx| {
+        let frame = cx.debug_bounds("sidebar-places-frame");
+        let deep = cx.debug_bounds("sidebar deep");
+        matches!(
+            (frame, deep),
+            (Some(f), Some(d)) if d.top() >= f.top() && d.bottom() <= f.bottom()
+        )
+    });
 }
 
 /// #299: following the folder turned off, the tree opens only where the user opens it.

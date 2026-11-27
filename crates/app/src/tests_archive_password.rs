@@ -6,17 +6,17 @@ use super::*;
 /// A real folder under %TEMP% (extraction writes to disk) with `secret.zip`: AES-256, password
 /// "secret", holding `a.txt`. Made by 7-Zip: tests never encrypt anything, since anti-ransomware
 /// tools quarantine a test process that does.
-fn sandbox_with_secret(tag: &str) -> PathBuf {
-    let sandbox = std::env::temp_dir().join(format!(
-        "arke-archive-password-{tag}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&sandbox);
-    std::fs::create_dir_all(&sandbox).unwrap();
+/// The guard deletes the folder when dropped.
+fn sandbox_with_secret(tag: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-archive-password-{tag}-"))
+        .tempdir()
+        .unwrap();
+    let sandbox = guard.path().to_path_buf();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(r"..\core\src\archive\tests\fixtures\aes.zip");
     std::fs::copy(fixture, sandbox.join("secret.zip")).unwrap();
-    sandbox
+    (sandbox, guard)
 }
 
 fn open<'a>(
@@ -53,7 +53,7 @@ fn wait_dialog(
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         cx.run_until_parked();
-        let idle = view.update(cx, |v, _| v.extract_job.is_none());
+        let idle = view.update(cx, |v, _| v.extract_jobs.is_empty());
         if idle && dialog(ws, cx).is_some() == open {
             return;
         }
@@ -72,7 +72,7 @@ fn enter(ws: &Entity<Workspace>, cx: &mut VisualTestContext, password: &str) {
 
 #[gpui::test]
 fn a_protected_zip_asks_for_its_password(cx: &mut TestAppContext) {
-    let sandbox = sandbox_with_secret("asks");
+    let (sandbox, _guard) = sandbox_with_secret("asks");
     let (ws, view, cx) = open(cx, &sandbox);
 
     right_click(&view, cx, Some(0));
@@ -109,7 +109,7 @@ fn a_protected_zip_asks_for_its_password(cx: &mut TestAppContext) {
     // The right one extracts into the folder, selected, as one job in the operation center.
     enter(&ws, cx, "secret");
     wait_until(cx, &view, "extracted", |v| {
-        v.extract_job.is_none() && v.selection.contains("secret")
+        v.extract_jobs.is_empty() && v.selection.contains("secret")
     });
     assert!(dialog(&ws, cx).is_none());
     let text = std::fs::read_to_string(sandbox.join("secret").join("a.txt")).unwrap();
@@ -117,12 +117,11 @@ fn a_protected_zip_asks_for_its_password(cx: &mut TestAppContext) {
     let jobs = finished_jobs(cx);
     assert_eq!(jobs.len(), 1, "{jobs:?}");
     assert!(jobs[0].1, "{jobs:?}");
-    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 #[gpui::test]
 fn cancelling_the_password_extracts_nothing(cx: &mut TestAppContext) {
-    let sandbox = sandbox_with_secret("cancel");
+    let (sandbox, _guard) = sandbox_with_secret("cancel");
     let (ws, view, cx) = open(cx, &sandbox);
 
     right_click(&view, cx, Some(0));
@@ -133,7 +132,6 @@ fn cancelling_the_password_extracts_nothing(cx: &mut TestAppContext) {
     assert!(!sandbox.join("a.txt").exists());
     assert_eq!(view.update(cx, |v, _| v.error.clone()), None);
     assert!(finished_jobs(cx).is_empty());
-    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 /// #341: compressed in a way Arke can't read (WavPack here), the error offers the app Windows has
@@ -141,10 +139,8 @@ fn cancelling_the_password_extracts_nothing(cx: &mut TestAppContext) {
 #[gpui::test]
 fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
     use std::io::Write as _;
-    let sandbox =
-        std::env::temp_dir().join(format!("arke-archive-unreadable-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&sandbox);
-    std::fs::create_dir_all(&sandbox).unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let sandbox = tmp_dir.path().to_path_buf();
     let path = sandbox.join("audio.zip");
     {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
@@ -174,7 +170,7 @@ fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
     right_click(&view, cx, Some(0));
     run_command(&view, cx, MenuCommand::ExtractToFolder);
     wait_until(cx, &view, "failed", |v| {
-        v.extract_job.is_none() && v.error.is_some()
+        v.extract_jobs.is_empty() && v.error.is_some()
     });
     assert_eq!(
         view.update(cx, |v, _| v.error_action.clone()),
@@ -188,5 +184,4 @@ fn an_archive_arke_cant_read_offers_the_default_app(cx: &mut TestAppContext) {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
-    let _ = std::fs::remove_dir_all(&sandbox);
 }

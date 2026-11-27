@@ -1043,18 +1043,10 @@ fn parse_number_formats(part: &Part) -> Result<Vec<Format>, OfficeError> {
         .collect())
 }
 
-/// Civil date from days since 1970-01-01 (proleptic Gregorian).
-const fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + (m <= 2) as i64;
-    (y, m, d)
+/// The calendar date `days` after `base` (an Excel serial's day count). `None` past year 9999.
+fn serial_date(base: jiff::civil::Date, days: i64) -> Option<jiff::civil::Date> {
+    base.checked_add(jiff::Span::new().try_days(days).ok()?)
+        .ok()
 }
 
 /// A date serial as "2024-03-15", "13:45" or both. `None` for values no date format shows.
@@ -1076,16 +1068,22 @@ fn format_date(
     let mut out = String::new();
     if date {
         let (y, m, d) = if date1904 {
-            civil_from_days(days - 24_107)
+            let date = serial_date(jiff::civil::date(1904, 1, 1), days)?;
+            (i32::from(date.year()), date.month(), date.day())
         } else if days == 60 {
             // Lotus' phantom 1900-02-29, kept by Excel
             (1900, 2, 29)
         } else if days == 0 {
             (1900, 1, 0)
-        } else if days < 60 {
-            civil_from_days(days - 25_568)
         } else {
-            civil_from_days(days - 25_569)
+            // Serials before the phantom day count from 1899-12-31, later ones from 1899-12-30.
+            let base = if days < 60 {
+                jiff::civil::date(1899, 12, 31)
+            } else {
+                jiff::civil::date(1899, 12, 30)
+            };
+            let date = serial_date(base, days)?;
+            (i32::from(date.year()), date.month(), date.day())
         };
         let _ = write!(out, "{y:04}-{m:02}-{d:02}");
     }

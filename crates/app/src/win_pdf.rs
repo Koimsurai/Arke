@@ -132,8 +132,8 @@ mod tests {
     /// The real Windows renderer, on a file in the temp folder.
     #[test]
     fn renders_pages_with_windows() {
-        let dir = std::env::temp_dir().join(format!("arke-pdf-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("two pages.pdf");
         std::fs::write(&path, tiny_pdf()).unwrap();
         let first = render_page(&path, 0, (400, 400)).unwrap();
@@ -150,6 +150,5 @@ mod tests {
         // Not a PDF: an error, not a panic
         std::fs::write(dir.join("bad.pdf"), b"not a pdf").unwrap();
         assert!(render_page(&dir.join("bad.pdf"), 0, (100, 100)).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

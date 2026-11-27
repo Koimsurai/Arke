@@ -6,8 +6,11 @@
 //! (`aria_active_descendant`) and shows the keyboard ring. Space and Enter press the row (GPUI
 //! does that for the focused element), which runs that button's click.
 //!
-//! The row takes the keyboard only through F6: it tracks its focus handle only while that handle
-//! is focused, so a click on a button leaves the keyboard where it was (in the list), as before.
+//! Tab and Shift+Tab walk the row's buttons one by one (each is a stop, as in File Explorer's
+//! command bar) and leave the row after the last or before the first (`workspace_sidebar_keys.rs`).
+//!
+//! The row takes the keyboard only through F6 or Tab: it tracks its focus handle only while that
+//! handle is focused, so a click on a button leaves the keyboard where it was (in the list).
 //! Buttons are recorded only while the row has the focus, so it costs nothing more otherwise.
 
 use std::cell::RefCell;
@@ -42,6 +45,8 @@ pub(super) struct ToolbarKeys {
     pub(super) focus: FocusHandle,
     /// The button the keyboard is on, by id.
     at: Option<&'static str>,
+    /// The row was entered backwards (Shift+Tab): it starts on its last button.
+    start_last: bool,
     /// The buttons drawn last frame, in order, while the row had the focus.
     buttons: Vec<(&'static str, Press)>,
 }
@@ -51,6 +56,7 @@ impl ToolbarKeys {
         Self {
             focus,
             at: None,
+            start_last: false,
             buttons: Vec::new(),
         }
     }
@@ -67,8 +73,9 @@ impl ToolbarKeys {
         });
     }
 
-    /// The row's buttons are built. Returns `true` when the button the keyboard was on is gone
-    /// (the first takes its place on the next frame).
+    /// The row's buttons are built. Returns `true` when another frame is needed: the button the
+    /// keyboard was on is gone (the first takes its place), or the row was entered from behind
+    /// and the keyboard moved to its last button.
     pub(super) fn end(&mut self) -> bool {
         let Some(row) = ROW.with_borrow_mut(Option::take) else {
             self.buttons.clear();
@@ -82,10 +89,36 @@ impl ToolbarKeys {
             }
             Some(_) => false,
             None => {
-                self.at = self.buttons.first().map(|(id, _)| *id);
-                false
+                let back = std::mem::take(&mut self.start_last);
+                let pick = if back {
+                    self.buttons.last()
+                } else {
+                    self.buttons.first()
+                };
+                self.at = pick.map(|(id, _)| *id);
+                // Entered from behind: the first button was drawn as the current one.
+                back
             }
         }
+    }
+
+    /// Tab (`forward`) or Shift+Tab: onto the next or previous button. `false` at the last or
+    /// first one, or while no buttons are known: Tab then leaves the row.
+    fn walk(&mut self, forward: bool) -> bool {
+        let Some(last) = self.buttons.len().checked_sub(1) else {
+            return false;
+        };
+        let at = self
+            .at
+            .and_then(|at| self.buttons.iter().position(|(id, _)| *id == at))
+            .unwrap_or(0);
+        let to = match (forward, at) {
+            (true, at) if at < last => at + 1,
+            (false, at) if at > 0 => at - 1,
+            _ => return false,
+        };
+        self.at = Some(self.buttons[to].0);
+        true
     }
 
     /// Moves along the row for `key` (Left, Right, Home, End); `false` for any other key. The
@@ -211,8 +244,33 @@ impl Explorer {
     /// F6: the keyboard goes to the pane row, on its first button.
     pub(crate) fn focus_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.toolbar.at = None;
+        self.toolbar.start_last = false;
         window.focus(&self.toolbar.focus, cx);
         cx.notify();
+    }
+
+    /// Shift+Tab into the row from the search box: the keyboard goes to its last button.
+    pub(crate) fn focus_toolbar_last(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toolbar.at = None;
+        self.toolbar.start_last = true;
+        window.focus(&self.toolbar.focus, cx);
+        cx.notify();
+    }
+
+    /// Tab and Shift+Tab in the row: each button is a stop. `false` when the keyboard is on the
+    /// last (first) button, so the key goes on to the next region.
+    pub(crate) fn toolbar_walk(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        let moved = self.toolbar.walk(forward);
+        if moved {
+            cx.notify();
+        }
+        moved
+    }
+
+    /// Tests: the button the keyboard is on.
+    #[cfg(test)]
+    pub(crate) const fn toolbar_at_for_test(&self) -> Option<&'static str> {
+        self.toolbar.at
     }
 
     /// The arrows, Home and End in the row; Escape closes an open flyout, else goes back to the

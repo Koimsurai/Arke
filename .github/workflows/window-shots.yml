@@ -1,0 +1,47 @@
+name: window-shots
+
+# Screenshots of Arke's window on Windows Server 2022 (build 20348), which has Windows 10's DWM:
+# square corners and the 1 px border a custom title bar can lose at the top. Nobody on the team
+# has a Windows 10 machine, so this is where window chrome is checked against it. Run by hand
+# (Actions › window-shots › Run workflow), on any branch.
+on:
+  workflow_dispatch:
+    inputs:
+      theme:
+        description: Theme
+        type: choice
+        options: [light, dark]
+        default: light
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+
+jobs:
+  shots:
+    name: window shots (Server 2022)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: window-shots
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        run: cargo build -p arke-app
+      - name: Screenshots
+        shell: powershell
+        env:
+          THEME: ${{ inputs.theme }}
+        run: ./tools/window-shots.ps1 -Theme $env:THEME
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: window-shots-${{ inputs.theme }}-${{ github.sha }}
+          path: shots

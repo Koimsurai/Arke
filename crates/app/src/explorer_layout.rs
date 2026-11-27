@@ -59,21 +59,23 @@ pub(super) fn col_gap() -> Pixels {
 pub(super) fn list_gutter() -> Pixels {
     theme::s_24()
 }
-/// Horizontal space a Details row can't use for columns: the paper's outer margins (2 × 8), the
-/// list's side padding (2 × 8), [`list_gutter()`], the row's padding ([`row_pad_l()`] +
-/// [`row_pad_r()`]), and the icon with its gap.
+/// Horizontal space a Details row can't use for columns: [`paper_margin()`], the list's left
+/// inset ([`theme::list_inset()`]) and right padding (8), [`list_gutter()`], the row's padding
+/// ([`row_pad_l()`] + [`row_pad_r()`]), and the icon with its gap. At standard spacing this is
+/// what it was before the inset (#448): the inset took the place of 8 px once counted as a left
+/// margin the paper doesn't have.
 pub(super) fn row_chrome() -> Pixels {
-    crate::theme::scaled_px(16. + 16. + 24. + 12. + 16. + 16. + 12.)
+    paper_margin() + theme::list_inset() + theme::scaled_px(8. + 24. + 12. + 16. + 16. + 12.)
 }
-/// What a pane's box loses before its rows: the paper's outer margins, the list's side padding
-/// and [`list_gutter()`].
+/// What a pane's box loses before its rows: [`paper_margin()`], the list's left inset and right
+/// padding, and [`list_gutter()`].
 pub(super) fn list_chrome() -> Pixels {
-    crate::theme::scaled_px(16. + 16. + 24.)
+    paper_margin() + theme::list_inset() + theme::scaled_px(8. + 24.)
 }
 /// The paper's right margin (its left edge touches the sidebar or the split divider): a pane's
 /// box less this is the list and the preview pane.
 pub(super) fn paper_margin() -> Pixels {
-    theme::s_8()
+    theme::paper_gap()
 }
 /// Column view: narrowest a column can be dragged, and the bounds of fitting one to its names.
 pub(super) fn view_column_min() -> gpui::Pixels {
@@ -243,7 +245,7 @@ pub(super) fn fit(input: &FitInput) -> Fit {
 
 /// Space between the right pane's paper and a split tab's shared preview.
 pub(crate) fn shared_gap() -> gpui::Pixels {
-    theme::s_8()
+    theme::paper_gap()
 }
 
 /// A split tab's preview: one for the whole tab, at its right end after both panes.
@@ -732,7 +734,7 @@ mod tests {
         };
         let f = fit(&columns(1400., Some(300.)));
         assert!(
-            f.preview && f.preview_w == px(1400. - 8. - 240. - 300.),
+            f.preview && f.preview_w == px(1400. - 4. - 240. - 300.),
             "{f:?}"
         );
         let f = fit(&columns(1400., None));
@@ -748,14 +750,14 @@ mod tests {
         assert!(f.preview && f.preview_w == preview_min(), "{f:?}");
         assert!(!fit(&columns(500., Some(400.))).preview);
         // A narrow current column is its own minimum, so a small pane keeps the preview.
-        let f = fit(&columns(8. + 240. + 160. + 300., Some(160.)));
+        let f = fit(&columns(4. + 240. + 160. + 300., Some(160.)));
         assert!(
             f.preview && f.preview_w == crate::theme::scaled_px(300.),
             "{f:?}"
         );
         // Dragging stops where the preview would go below its minimum.
         let i = columns(1400., Some(300.));
-        assert_eq!(current_room(&i), px(1400. - 8. - 240.) - preview_min());
+        assert_eq!(current_room(&i), px(1400. - 4. - 240.) - preview_min());
         // The parent may take room until the current column is down to its own width.
         assert_eq!(
             parent_room(&i),

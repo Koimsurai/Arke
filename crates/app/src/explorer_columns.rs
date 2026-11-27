@@ -20,15 +20,20 @@ use std::sync::Arc;
 use arke_core::filetype::FileKind;
 use arke_core::{Entry, NavKind};
 use gpui::{
-    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, Pixels, ScrollStrategy,
-    SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Context, Entity, ExternalPaths, MouseButton, MouseDownEvent, Pixels,
+    ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px,
+    uniform_list,
 };
 
 use super::view::listed_visual;
-use super::{AppEvent, Explorer, ViewMode, layout, spawn_thread};
+use super::{
+    AppEvent, DraggedFiles, Explorer, ViewMode, accepts_drop, drop_external_into, drop_into,
+    layout, report_drop_target, spawn_thread,
+};
 use crate::media::MediaKey;
 use crate::prefs::ViewColumn;
 use crate::press_guard::is_double_click;
+use crate::settings::Density;
 use crate::theme;
 
 /// Default width of the left (parent) column
@@ -116,6 +121,22 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Asks for the side column's icons (queued after the middle column's) and returns the ones
+    /// already loaded.
+    fn side_images(
+        &mut self,
+        keys: &[Option<MediaKey>],
+        cx: &mut Context<Self>,
+    ) -> Vec<Option<Arc<gpui::RenderImage>>> {
+        let view = cx.entity_id();
+        let wanted: Vec<MediaKey> = keys.iter().flatten().cloned().collect();
+        self.media.update(cx, |m, cx| m.want_side(view, wanted, cx));
+        let media = self.media.read(cx);
+        keys.iter()
+            .map(|k| k.as_ref().and_then(|k| media.get(k)))
+            .collect()
+    }
+
     fn render_parent_rows(
         &mut self,
         range: Range<usize>,
@@ -134,26 +155,28 @@ impl Explorer {
         // System icons for .exe/.lnk/.ico like the middle column, loaded after it so they don't
         // compete.
         let images: Vec<Option<Arc<gpui::RenderImage>>> = if self.media_ok(&dir, cx) {
+            let icon_px = crate::media::icon_source_px(f32::from(theme::icon()), self.ui_scale);
             let keys: Vec<Option<MediaKey>> = range
                 .clone()
                 .map(|ix| {
                     entries
                         .get(ix)
                         .and_then(|e| MediaKey::for_entry(&dir, e, false))
+                        .map(|k| k.with_icon_px(icon_px))
                 })
                 .collect();
-            self.media.update(cx, |m, _| {
-                m.want_side(keys.iter().flatten().cloned().collect());
-            });
-            let media = self.media.read(cx);
-            keys.iter()
-                .map(|k| k.as_ref().and_then(|k| media.get(k)))
-                .collect()
+            self.side_images(&keys, cx)
         } else {
             Vec::new()
         };
         let show_ext = self.show_extensions;
         let width = self.parent_column_drawn();
+        let parent_row_h = if self.density == Density::Compact {
+            theme::h_row_compact()
+        } else {
+            theme::h_row_tight()
+        };
+        let me = cx.entity();
         let start = range.start;
         range
             .filter_map(|ix| entries.get(ix).map(|e| (ix, e)))
@@ -165,13 +188,15 @@ impl Explorer {
                 let parent = dir.clone();
                 let shown = super::view::shown_name(entry, show_ext);
                 let cut = name_width(window, &shown) > width - parent_row_chrome(is_dir);
+                let drop_to = is_dir.then(|| path.clone());
                 div()
                     .id(("parent-col", ix))
+                    .debug_selector(move || format!("parent-row-{ix}"))
                     .when(cut, |d| {
                         d.tooltip(super::view::tooltip(SharedString::from(&*entry.name)))
                     })
                     .relative()
-                    .h(theme::h_row_compact())
+                    .h(parent_row_h)
                     .px(theme::s_8())
                     .flex()
                     .items_center()
@@ -201,6 +226,8 @@ impl Explorer {
                             .child(shown),
                     )
                     .when(is_dir, |d| d.child(chevron()))
+                    // A folder here takes drops like a folder row in the list.
+                    .when_some(drop_to, |d, dest| accept_drops(d, dest, true, me.clone()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if is_dir {
                             // Sibling folder: go there
@@ -223,6 +250,7 @@ impl Explorer {
     /// Left column of the column view.
     pub(super) fn render_parent_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let column = div()
+            .debug_selector(|| "parent-column".to_owned())
             .w(self.parent_column_drawn())
             .flex_none()
             .h_full()
@@ -234,6 +262,8 @@ impl Explorer {
         let Some(parent) = &self.parent_column else {
             return column.into_any_element();
         };
+        // The empty space takes drops for the folder the column shows, like the list's own.
+        let column = accept_drops(column, parent.dir.clone(), false, cx.entity());
         let Some(entries) = &parent.entries else {
             return column
                 .items_center()
@@ -364,10 +394,11 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Room a current column row takes besides its name: the list's padding and gutter, the row's
-    /// padding, the checkbox and icon, and the folder arrow (`chevron`).
+    /// Room a current column row takes besides its name: the list's left inset, right padding and
+    /// gutter, the row's padding, the checkbox and icon, and the folder arrow (`chevron`).
     fn current_row_chrome(&self, chevron: bool) -> Pixels {
-        let mut w = theme::s_8() * 2.
+        let mut w = theme::list_inset()
+            + theme::s_8()
             + layout::list_gutter()
             + layout::row_pad_l()
             + layout::row_pad_r()
@@ -473,6 +504,32 @@ impl Explorer {
                 }
             }))
     }
+}
+
+/// Makes `d` take drops into `dest`, with the list's own functions: the same move or copy, drop
+/// menu, undo and card label as a folder row or the list's background. `highlight`: tint while a
+/// drag that `dest` accepts is over it (rows do; the empty space doesn't, like the list).
+pub(super) fn accept_drops<E: InteractiveElement + IntoElement>(
+    d: E,
+    dest: PathBuf,
+    highlight: bool,
+    target: Entity<Explorer>,
+) -> E {
+    let (check, hovered, external) = (dest.clone(), dest.clone(), dest.clone());
+    d.can_drop(move |value, _, cx| accepts_drop(value, &check, cx))
+        .when(highlight, |d| {
+            d.drag_over::<DraggedFiles>(|s, _, _, _| s.bg(theme::signal_wash()))
+                .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(theme::signal_wash()))
+        })
+        .on_drag_move(move |e: &gpui::DragMoveEvent<DraggedFiles>, _, cx| {
+            report_drop_target(&hovered, e, cx);
+        })
+        .on_drop(move |dragged: &DraggedFiles, window, cx| {
+            drop_into(dragged, dest.clone(), window, cx);
+        })
+        .on_drop(move |paths: &ExternalPaths, window, cx| {
+            drop_external_into(paths, external.clone(), &target, window, cx);
+        })
 }
 
 /// Room a parent column row takes besides its name: the column's border, the list's and the

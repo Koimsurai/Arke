@@ -5,7 +5,8 @@ use gpui_util::ResultExt;
 use windows::{
     Win32::{
         Foundation::*,
-        Graphics::Gdi::*,
+        // zed#63821: `DwmExtendFrameIntoClientArea` for the Windows 10 top border.
+        Graphics::{Dwm::DwmExtendFrameIntoClientArea, Gdi::*},
         System::SystemServices::*,
         UI::{
             Controls::*,
@@ -30,6 +31,10 @@ pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
 pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
+
+/// zed#63821: height of the border DWM draws along the top edge of a window. It
+/// is one physical pixel at every DPI, which is why this is not scaled.
+const TOP_BORDER_HEIGHT: u32 = 1;
 
 /// Coordinates window draws on the UI thread. Owned by the platform and
 /// shared with every window (like `WindowsPlatformState::cursor_visible`),
@@ -100,7 +105,7 @@ impl WindowsWindowInner {
             }
             WM_CREATE => self.handle_create_msg(handle),
             WM_MOVE => self.handle_move_msg(handle, lparam),
-            WM_SIZE => self.handle_size_msg(wparam, lparam),
+            WM_SIZE => self.handle_size_msg(handle, wparam, lparam),
             WM_GETMINMAXINFO => self.handle_get_min_max_info_msg(lparam),
             WM_ENTERSIZEMOVE | WM_ENTERMENULOOP => self.handle_size_move_loop(handle),
             WM_EXITSIZEMOVE | WM_EXITMENULOOP => self.handle_size_move_loop_exit(handle),
@@ -223,7 +228,12 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn handle_size_msg(self: &Rc<Self>, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+    fn handle_size_msg(
+        self: &Rc<Self>,
+        handle: HWND,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> Option<isize> {
         // Minimizing and restoring both arrive as `WM_SIZE`; the deferred report
         // reads `IsIconic` at delivery, so one call covers both directions.
         self.report_visibility();
@@ -236,6 +246,10 @@ impl WindowsWindowInner {
                 .set(self.state.callbacks.request_frame.take());
             return Some(0);
         }
+
+        // zed#63821: maximizing or restoring changes whether there is a border at all.
+        self.update_frame_margins(handle);
+        self.update_top_border();
 
         let width = lparam.loword().max(1) as i32;
         let height = lparam.hiword().max(1) as i32;
@@ -894,8 +908,106 @@ impl WindowsWindowInner {
         }
     }
 
+    // zed#63821: Windows 10 top border, from `top_border_height` to `update_frame_margins`.
+    /// Height, in physical pixels, of the system border along the top edge of
+    /// the client area. Zero when the window does not need one.
+    ///
+    /// [`Self::handle_calc_client_size`] gives the whole top edge of the window
+    /// rect to the client area so that the system title bar disappears. The
+    /// left, right and bottom borders survive that, because `DefWindowProc`
+    /// still insets the client rect by the resize frame on those sides, leaving
+    /// room for DWM to draw them in. The top edge has no such room left.
+    ///
+    /// On Windows 11 that costs nothing: DWM paints the border in its own frame
+    /// layer, composited over the top edge of the window (the same layer that
+    /// gives every window rounded corners without the application taking part),
+    /// so it does not care what the client rect says. On Windows 10 DWM only
+    /// paints a top border where the window has frame area of its own, so the
+    /// border disappears entirely.
+    ///
+    /// Windows 10 needs the border put back by hand. [`Self::update_frame_margins`]
+    /// extends the DWM frame exactly this far into the client area and the
+    /// renderer leaves that row alone ([`Self::top_border_color`]), so DWM
+    /// draws the real border into it.
+    ///
+    /// The one alternative, leaving a pixel of *non-client* area for it
+    /// (`rgrc[0].top + 1`), was measured and rejected: DWM does draw a correct
+    /// border, and a full native caption above the window along with it, which
+    /// is the thing the pixel is there to get rid of. DWM draws either the
+    /// whole top frame or none of it.
+    pub(crate) fn top_border_height(&self) -> u32 {
+        if !self.needs_win10_top_border() {
+            return 0;
+        }
+        // A maximized or fullscreen window has no visible border: its resize
+        // frame hangs off the edges of the monitor and is clipped away.
+        if self.state.is_maximized() || self.state.is_fullscreen() {
+            return 0;
+        }
+        TOP_BORDER_HEIGHT
+    }
+
+    /// Whether this window has to put its top border back by hand, which only
+    /// windows that hide the system title bar need, and only on Windows 10.
+    ///
+    /// Arke: never an anchored popup (a menu level). It is a `WS_POPUP` with no
+    /// frame, so there is no border to restore, and it is never activated, so it
+    /// would carry the inactive border at all times.
+    pub(crate) fn needs_win10_top_border(&self) -> bool {
+        self.hide_title_bar && !self.popup && is_windows_10()
+    }
+
+    /// Show the inactive top border, or hide it and let DWM draw the active one.
+    ///
+    /// Deliberately not part of the rendered frame: the border changes on every
+    /// focus change, GPUI does not redraw a window whose scene has not changed,
+    /// and forcing a redraw costs a whole frame - measured at 45-60ms - during
+    /// which the row still shows the previous state while DWM has already
+    /// switched, which reads as a flash. Swapping a composition visual instead
+    /// takes a commit and lands with DWM's own change.
+    pub(crate) fn update_top_border(&self) {
+        if !self.needs_win10_top_border() {
+            return;
+        }
+        let visible = !self.state.active.get() && self.top_border_height() > 0;
+        // A draw may be in flight when activation changes; the next one applies
+        // the same state anyway, so there is nothing to retry.
+        if let Ok(renderer) = self.state.renderer.try_borrow() {
+            renderer.set_top_border_visible(visible).log_err();
+        }
+    }
+
+    /// Extend the DWM frame exactly [`TOP_BORDER_HEIGHT`] pixels into the client
+    /// area, so that DWM draws its own border there and the renderer can leave
+    /// that row transparent for it to show through.
+    ///
+    /// The margin has to be exactly the border height. Extending by the whole
+    /// top frame instead (as an app that keeps `WS_CAPTION` would) makes DWM
+    /// fill it with caption rather than border. Extending at all also makes DWM
+    /// render the border of a light-themed window pure white, which is why
+    /// these windows ask for a dark frame regardless of theme; see
+    /// [`configure_dwm_dark_mode`].
+    pub(crate) fn update_frame_margins(&self, handle: HWND) {
+        if !self.needs_win10_top_border() {
+            return;
+        }
+        // Retracts to nothing while maximized or fullscreen, where
+        // `top_border_height` is zero because there is no visible border.
+        let margins = MARGINS {
+            cxLeftWidth: 0,
+            cxRightWidth: 0,
+            cyTopHeight: self.top_border_height() as i32,
+            cyBottomHeight: 0,
+        };
+        unsafe { DwmExtendFrameIntoClientArea(handle, &margins).log_err() };
+    }
+
     fn handle_activate_msg(self: &Rc<Self>, wparam: WPARAM) -> Option<isize> {
         let activated = wparam.loword() > 0;
+
+        // zed#63821: the inactive top border follows activation.
+        self.state.active.set(activated);
+        self.update_top_border();
 
         let events = self
             .state
@@ -962,6 +1074,8 @@ impl WindowsWindowInner {
 
     fn handle_create_msg(&self, handle: HWND) -> Option<isize> {
         if self.hide_title_bar {
+            // zed#63821
+            self.update_frame_margins(handle);
             notify_frame_changed(handle);
             Some(0)
         } else {
@@ -1360,7 +1474,8 @@ impl WindowsWindowInner {
 
                     callback();
                     self.state.callbacks.appearance_changed.set(Some(callback));
-                    configure_dwm_dark_mode(handle, new_appearance);
+                    // zed#63821: keeps the dark frame the Windows 10 top border needs.
+                    configure_dwm_dark_mode(handle, new_appearance, self.needs_win10_top_border());
                 }
             }
         }

@@ -371,8 +371,13 @@ fn warm_up() {
 }
 
 /// A host asked nothing for [`idle::AFTER`] lowers its memory priority, so Windows takes its
-/// pages first when memory runs short; the next request puts it back first. Nothing changes while
-/// memory is plentiful, and nothing wakes up while it waits.
+/// pages first when memory runs short, and then hands its working set back (`EmptyWorkingSet`)
+/// once no window of its own shows: about 14 MB in use to about 0. The next request puts the
+/// priority back first. Its pages stay in memory as standby pages, so the next menu reads them
+/// back for a few ms (measured: 388 ms against 384 ms for a host never trimmed); only when Windows
+/// needed the memory meanwhile does it read them from disk, and then freeing them was the point.
+/// Exiting instead would cost a cold start, about 1.2–1.7 s, on the next menu. Nothing wakes up
+/// while it waits, except every [`idle::AFTER`] while an extension's window stays open.
 mod idle {
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -385,6 +390,15 @@ mod idle {
     /// Memory priority is low now.
     static LOW: AtomicBool = AtomicBool::new(false);
 
+    /// What the watcher does once the host is idle.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Step {
+        /// Lower the memory priority.
+        Lower,
+        /// Hand the working set back.
+        Trim,
+    }
+
     /// Starts the watcher thread.
     pub(super) fn watch() {
         let (tx, rx) = flume::unbounded::<()>();
@@ -394,22 +408,60 @@ mod idle {
         let _ = std::thread::Builder::new()
             .name("shell-host-idle".into())
             .spawn(move || {
-                let after = after();
-                loop {
-                    match rx.recv_timeout(after) {
-                        Ok(()) => {}
-                        Err(flume::RecvTimeoutError::Timeout) => {
-                            LOW.store(true, Ordering::Release);
-                            crate::resident::set_memory_priority_low(true);
-                            // Asleep until the next request.
-                            if rx.recv().is_err() {
-                                return;
-                            }
-                        }
-                        Err(flume::RecvTimeoutError::Disconnected) => return,
+                run(&rx, after(), super::has_visible_window, |step| match step {
+                    Step::Lower => {
+                        LOW.store(true, Ordering::Release);
+                        crate::resident::set_memory_priority_low(true);
                     }
-                }
+                    // A spare still waiting hands its memory back itself, on its own schedule.
+                    Step::Trim if !super::spare::waiting() => trim(),
+                    Step::Trim => {}
+                });
             });
+    }
+
+    /// Waits for requests on `asked`. After `after` without one: [`Step::Lower`], then
+    /// [`Step::Trim`] once `has_window` says no window of this process shows (checked again
+    /// every `after`: an extension's dialog in use would only read its pages back), then sleeps
+    /// until the next request. Returns when the requests end.
+    fn run(
+        asked: &flume::Receiver<()>,
+        after: Duration,
+        has_window: impl Fn() -> bool,
+        mut step: impl FnMut(Step),
+    ) {
+        'serving: loop {
+            match asked.recv_timeout(after) {
+                Ok(()) => continue,
+                Err(flume::RecvTimeoutError::Timeout) => {}
+                Err(flume::RecvTimeoutError::Disconnected) => return,
+            }
+            step(Step::Lower);
+            while has_window() {
+                match asked.recv_timeout(after) {
+                    Ok(()) => continue 'serving,
+                    Err(flume::RecvTimeoutError::Timeout) => {}
+                    Err(flume::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            step(Step::Trim);
+            // Asleep until the next request.
+            if asked.recv().is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Moves this process's pages out of its working set; they stay in memory as standby pages
+    /// until Windows needs the memory.
+    fn trim() {
+        use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: GetCurrentProcess returns a pseudo handle that needs no closing.
+        let trimmed = unsafe { K32EmptyWorkingSet(GetCurrentProcess()) };
+        if !trimmed.as_bool() {
+            log::debug!("menu host: working set not trimmed");
+        }
     }
 
     /// [`AFTER`]; `ARKE_MENU_HOST_IDLE` (seconds) overrides it in debug builds, for measuring.
@@ -433,6 +485,125 @@ mod idle {
             crate::resident::set_memory_priority_low(false);
         }
         let _ = tx.send(());
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use super::{Step, run};
+
+        /// Long enough that a test waiting on a step never gives up on a loaded machine.
+        const PATIENCE: Duration = Duration::from_secs(20);
+        const AFTER: Duration = Duration::from_millis(20);
+
+        struct Watcher {
+            asked: Option<flume::Sender<()>>,
+            steps: flume::Receiver<Step>,
+            window: Arc<AtomicBool>,
+            checks: Arc<AtomicUsize>,
+            thread: Option<std::thread::JoinHandle<()>>,
+        }
+
+        impl Watcher {
+            fn start(window: bool) -> Self {
+                let (asked, rx) = flume::unbounded();
+                let (step_tx, steps) = flume::unbounded();
+                let window = Arc::new(AtomicBool::new(window));
+                let checks = Arc::new(AtomicUsize::new(0));
+                let thread = {
+                    let window = Arc::clone(&window);
+                    let checks = Arc::clone(&checks);
+                    std::thread::spawn(move || {
+                        run(
+                            &rx,
+                            AFTER,
+                            || {
+                                checks.fetch_add(1, Ordering::SeqCst);
+                                window.load(Ordering::SeqCst)
+                            },
+                            |step| {
+                                let _ = step_tx.send(step);
+                            },
+                        );
+                    })
+                };
+                Self {
+                    asked: Some(asked),
+                    steps,
+                    window,
+                    checks,
+                    thread: Some(thread),
+                }
+            }
+
+            fn next(&self) -> Step {
+                self.steps.recv_timeout(PATIENCE).expect("a step")
+            }
+
+            fn ask(&self) {
+                self.asked.as_ref().unwrap().send(()).unwrap();
+            }
+
+            /// Waits until the window has been looked for `n` times in all.
+            fn wait_checks(&self, n: usize) {
+                let deadline = std::time::Instant::now() + PATIENCE;
+                while self.checks.load(Ordering::SeqCst) < n {
+                    assert!(std::time::Instant::now() < deadline, "not checked again");
+                    std::thread::yield_now();
+                }
+            }
+
+            /// Ends the requests; the watcher returns.
+            fn stop(mut self) {
+                drop(self.asked.take());
+                self.thread.take().unwrap().join().unwrap();
+            }
+        }
+
+        #[test]
+        fn an_idle_host_lowers_its_priority_then_trims() {
+            let w = Watcher::start(false);
+            assert_eq!(w.next(), Step::Lower);
+            assert_eq!(w.next(), Step::Trim);
+            // Asleep: only a request wakes it, and it is idle again after it.
+            w.ask();
+            assert_eq!(w.next(), Step::Lower);
+            assert_eq!(w.next(), Step::Trim);
+            w.stop();
+        }
+
+        #[test]
+        fn no_trim_while_a_window_of_its_own_shows() {
+            let w = Watcher::start(true);
+            assert_eq!(w.next(), Step::Lower);
+            // Looked twice and still showing: no trim yet.
+            w.wait_checks(2);
+            assert!(w.steps.try_recv().is_err(), "trimmed with a window open");
+            w.window.store(false, Ordering::SeqCst);
+            assert_eq!(w.next(), Step::Trim);
+            w.stop();
+        }
+
+        #[test]
+        fn a_request_while_a_window_shows_starts_over() {
+            let w = Watcher::start(true);
+            assert_eq!(w.next(), Step::Lower);
+            w.ask();
+            // Idle again from the request on: lowered again, and still no trim.
+            assert_eq!(w.next(), Step::Lower);
+            w.window.store(false, Ordering::SeqCst);
+            assert_eq!(w.next(), Step::Trim);
+            w.stop();
+        }
+
+        #[test]
+        fn the_watcher_ends_with_the_requests() {
+            let w = Watcher::start(false);
+            w.stop();
+        }
     }
 }
 
@@ -472,6 +643,11 @@ mod spare {
     pub(super) fn begin() {
         *STATE.lock() = State::Idle { before_cap: None };
         crate::resident::set_background_priority(true);
+    }
+
+    /// A spare not asked anything yet.
+    pub(super) fn waiting() -> bool {
+        matches!(*STATE.lock(), State::Idle { .. })
     }
 
     /// A request came in: normal priority and memory again.
@@ -1223,6 +1399,7 @@ mod tests {
         let menu = ShellMenu {
             session: 3,
             entries: vec![ShellMenuEntry::Item {
+                access: None,
                 id: 9,
                 verb: Some("copy".into()),
                 label: "Compress".into(),

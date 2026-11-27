@@ -208,12 +208,15 @@ impl Job {
             JobState::Running if self.progress.cancel.load(Ordering::Relaxed) => {
                 t!("ops.state_stopping").into_owned()
             }
-            JobState::Running if self.queued() => if crate::op_queue::paused() {
-                t!("ops.state_queued_paused")
-            } else {
-                t!("ops.state_queued")
+            // Extractions and compressions wait in a queue of their own, which doesn't pause.
+            JobState::Running if self.queued() => {
+                if crate::op_queue::paused() && !matches!(self.verb, "op.extract" | "op.compress") {
+                    t!("ops.state_queued_paused")
+                } else {
+                    t!("ops.state_queued")
+                }
+                .into_owned()
             }
-            .into_owned(),
             JobState::Running if self.progress.verifying.load(Ordering::Relaxed) => {
                 self.fraction().map_or_else(
                     || t!("ops.state_verifying").into_owned(),
@@ -223,9 +226,9 @@ impl Job {
                     },
                 )
             }
-            JobState::Running if self.done_items() == 0 => match self.fraction() {
+            JobState::Running if self.done_items() == 0 => {
                 // One large file: no item finished yet, but there is progress.
-                Some(f) => {
+                if let Some(f) = self.fraction() {
                     let percent = (f * 100.).floor() as u32;
                     let mut parts = vec![t!("ops.state_percent", percent = percent).into_owned()];
                     parts.extend(self.speed_text());
@@ -235,18 +238,23 @@ impl Job {
                         );
                     }
                     parts.join(&t!("ops.separator"))
+                } else {
+                    // The copy engine counted the items but reports nothing until one finishes
+                    // (a big folder going to the Recycle Bin is a single item): say how many. A
+                    // total of bytes isn't a count (a file dragged out of a zip, before any
+                    // arrived).
+                    let total = self.progress.work_total.load(Ordering::Relaxed);
+                    if total == 0 || self.progress.work_in_bytes.load(Ordering::Relaxed) {
+                        t!("ops.state_preparing").into_owned()
+                    } else {
+                        tn!(
+                            "ops.state_preparing_items",
+                            usize::try_from(total).unwrap_or(usize::MAX)
+                        )
+                        .into_owned()
+                    }
                 }
-                // The copy engine counted the items but reports nothing until one finishes (a
-                // big folder going to the Recycle Bin is a single item): say how many.
-                None => match self.progress.work_total.load(Ordering::Relaxed) {
-                    0 => t!("ops.state_preparing").into_owned(),
-                    total => tn!(
-                        "ops.state_preparing_items",
-                        usize::try_from(total).unwrap_or(usize::MAX)
-                    )
-                    .into_owned(),
-                },
-            },
+            }
             JobState::Running => {
                 let mut parts = vec![tn!("ops.state_running", items).into_owned()];
                 if let Some(speed) = self.speed_text() {
@@ -721,6 +729,34 @@ mod tests {
         assert_eq!(job.detail(), t!("ops.state_preparing"));
         progress.work_total.store(20_022, Ordering::Relaxed);
         assert_eq!(job.detail(), tn!("ops.state_preparing_items", 20_022));
+    }
+
+    /// A job counted in bytes that hasn't read any yet (a big file dragged out of a zip while
+    /// File Explorer unpacks it) is getting ready, not getting 1,572,864,000 items ready (#456).
+    #[test]
+    fn a_job_counted_in_bytes_is_getting_ready_until_bytes_arrive() {
+        let progress = Arc::new(OpProgress::default());
+        let job = Job {
+            id: 1,
+            verb: "op.copy",
+            subject: Some(("big.iso".into(), 1)),
+            progress: Arc::clone(&progress),
+            started: Instant::now(),
+            state: JobState::Running,
+            undo: None,
+            redo: None,
+            retry: None,
+            was_queued: false,
+            samples: VecDeque::new(),
+        };
+        progress.work_in_bytes.store(true, Ordering::Relaxed);
+        progress.work_total.store(1_572_864_000, Ordering::Relaxed);
+        assert_eq!(job.detail(), t!("ops.state_preparing"));
+        progress.work_done.store(786_432_000, Ordering::Relaxed);
+        assert!(
+            job.detail()
+                .starts_with(&*t!("ops.state_percent", percent = 50))
+        );
     }
 
     #[test]

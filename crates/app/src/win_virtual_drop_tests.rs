@@ -11,10 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::ThreadId;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{
-    DV_E_FORMATETC, E_NOTIMPL, FILETIME, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT, S_FALSE, S_OK,
+    DV_E_FORMATETC, E_FAIL, E_NOTIMPL, FILETIME, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT,
+    RPC_E_CALL_CANCELED, S_FALSE, S_OK,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     IStorage, STGFMT_STORAGE, StgCreateStorageEx,
@@ -28,12 +30,14 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
     DROPFILES, FD_ATTRIBUTES, FD_FILESIZE, FD_WRITESTIME, FILEDESCRIPTORA, FILEDESCRIPTORW,
     IDataObjectAsyncCapability, IDataObjectAsyncCapability_Impl,
 };
 use windows::core::{BOOL, HRESULT, Interface as _, PCWSTR, Ref, implement};
 
+use super::reader::{ChunkSize, FIRST_CHUNK};
 use super::{CHUNK, ComThread, VirtualDrop, registered, safe_parts};
 use crate::shell::OpProgress;
 
@@ -102,6 +106,94 @@ pub(crate) const fn pattern(pos: u64) -> u8 {
     (pos % 251) as u8
 }
 
+/// How a fake stream answers reads.
+#[derive(Clone, Default)]
+pub(crate) enum Pace {
+    /// At once, as much as asked.
+    #[default]
+    Instant,
+    /// Like a remote control program (#456): each read takes `delay` (a round trip to the
+    /// other computer), and a read of more than `limit` bytes never comes back.
+    Remote {
+        delay: Duration,
+        limit: usize,
+        gate: Gate,
+    },
+    /// At most this many bytes a read, without it being the end.
+    Trickle(u64),
+    /// No read comes back until the gate opens.
+    Stuck(Gate),
+    /// Small reads at once, but a read of more than `limit` bytes only comes back when cancelled
+    /// (as `CoCancelCall` would end it), with the stream moved on regardless. `seekable: false`
+    /// can't be put back.
+    Choke { limit: usize, seekable: bool },
+}
+
+/// Reads of [`Pace::Choke`] streams waiting to be cancelled: the thread making each, and how to
+/// end it.
+static CHOKED: Mutex<Vec<(u32, flume::Sender<()>)>> = Mutex::new(Vec::new());
+
+/// What `CoCancelCall` would do to the call of thread `id` if the fake were in another process:
+/// ends its choked read.
+pub(crate) fn cancel_call(id: u32) {
+    CHOKED.lock().retain(|(thread, end)| {
+        if *thread == id {
+            let _ = end.send(());
+        }
+        *thread != id
+    });
+}
+
+/// The fake streams' bytes from the start, long enough to copy any read from in one go.
+fn patterned() -> &'static [u8] {
+    static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BYTES.get_or_init(|| (0..(CHUNK + 251) as u64).map(pattern).collect())
+}
+
+/// Holds reads of fake streams until the test opens it.
+#[derive(Clone)]
+pub(crate) struct Gate {
+    /// Never sent on: disconnects when the test drops its opener.
+    shut: flume::Receiver<()>,
+    /// Told each time a read starts waiting.
+    entered: flume::Sender<()>,
+    /// Told when a stream holding the gate is released.
+    released: flume::Sender<()>,
+}
+
+/// The test's side of a [`Gate`].
+struct Keeper {
+    /// Dropping it opens the gate.
+    opener: flume::Sender<()>,
+    entered: flume::Receiver<()>,
+    released: flume::Receiver<()>,
+}
+
+impl Gate {
+    fn new() -> (Self, Keeper) {
+        let (opener, shut) = flume::unbounded();
+        let (entered_tx, entered) = flume::unbounded();
+        let (released_tx, released) = flume::unbounded();
+        (
+            Self {
+                shut,
+                entered: entered_tx,
+                released: released_tx,
+            },
+            Keeper {
+                opener,
+                entered,
+                released,
+            },
+        )
+    }
+
+    fn wait(&self) {
+        let _ = self.entered.send(());
+        let _ = self.shut.recv();
+    }
+}
+
 /// What the source saw.
 #[derive(Default)]
 pub(crate) struct Seen {
@@ -112,6 +204,9 @@ pub(crate) struct Seen {
     /// The largest read asked of a stream, and how many reads there were.
     pub(crate) largest_read: AtomicUsize,
     pub(crate) reads: AtomicUsize,
+    /// Reads of a [`Pace::Choke`] stream that were too big, and the largest read after one.
+    pub(crate) choked: AtomicUsize,
+    pub(crate) largest_after_choke: AtomicUsize,
 }
 
 #[implement(IDataObject, IDataObjectAsyncCapability)]
@@ -127,6 +222,8 @@ pub(crate) struct FakeSource {
     cancel_after: Option<(usize, Arc<OpProgress>)>,
     seen: Arc<Seen>,
     started: AtomicBool,
+    /// How its streams answer reads.
+    pace: Pace,
 }
 
 impl FakeSource {
@@ -139,6 +236,7 @@ impl FakeSource {
             cancel_after: None,
             seen: Arc::default(),
             started: AtomicBool::new(false),
+            pace: Pace::Instant,
         }
     }
 
@@ -326,6 +424,7 @@ impl IDataObject_Impl for FakeSource_Impl {
                     pos: AtomicU64::new(0),
                     seen: Arc::clone(&self.seen),
                     cancel_after: self.cancel_after.clone(),
+                    pace: self.pace.clone(),
                 }
                 .into();
                 Ok(STGMEDIUM {
@@ -430,6 +529,15 @@ struct FakeStream {
     pos: AtomicU64,
     seen: Arc<Seen>,
     cancel_after: Option<(usize, Arc<OpProgress>)>,
+    pace: Pace,
+}
+
+impl Drop for FakeStream {
+    fn drop(&mut self) {
+        if let Pace::Remote { gate, .. } | Pace::Stuck(gate) = &self.pace {
+            let _ = gate.released.send(());
+        }
+    }
 }
 
 impl ISequentialStream_Impl for FakeStream_Impl {
@@ -443,19 +551,57 @@ impl ISequentialStream_Impl for FakeStream_Impl {
         {
             progress.cancel.store(true, Ordering::Relaxed);
         }
+        if self.seen.choked.load(Ordering::Relaxed) > 0 {
+            self.seen
+                .largest_after_choke
+                .fetch_max(cb as usize, Ordering::Relaxed);
+        }
+        let mut give = u64::from(cb);
+        match &self.pace {
+            Pace::Remote { delay, limit, gate } => {
+                // The source's own pace, not a wait of the test's.
+                std::thread::sleep(*delay);
+                if cb as usize > *limit {
+                    gate.wait();
+                    return E_FAIL;
+                }
+            }
+            Pace::Trickle(most) => give = give.min(*most),
+            Pace::Stuck(gate) => {
+                gate.wait();
+                return E_FAIL;
+            }
+            Pace::Choke { limit, .. } if cb as usize > *limit => {
+                let (end, ended) = flume::bounded(1);
+                // SAFETY: plain call.
+                CHOKED.lock().push((unsafe { GetCurrentThreadId() }, end));
+                self.seen.choked.fetch_add(1, Ordering::Relaxed);
+                let _ = ended.recv();
+                // The source went on with the read it was asked for.
+                self.pos.fetch_add(u64::from(cb) / 2, Ordering::Relaxed);
+                return RPC_E_CALL_CANCELED;
+            }
+            Pace::Instant | Pace::Choke { .. } => {}
+        }
         let pos = self.pos.load(Ordering::Relaxed);
-        let n = u64::from(cb).min(self.len.saturating_sub(pos));
+        let n = give.min(self.len.saturating_sub(pos));
         // SAFETY: the caller's buffer has room for `cb` bytes.
         let out = unsafe { std::slice::from_raw_parts_mut(pv.cast::<u8>(), n as usize) };
-        for (i, b) in out.iter_mut().enumerate() {
-            *b = pattern(pos + i as u64);
+        let phase = (pos % 251) as usize;
+        match patterned().get(phase..phase + out.len()) {
+            Some(bytes) => out.copy_from_slice(bytes),
+            None => {
+                for (i, b) in out.iter_mut().enumerate() {
+                    *b = pattern(pos + i as u64);
+                }
+            }
         }
         self.pos.store(pos + n, Ordering::Relaxed);
         if !read.is_null() {
             // SAFETY: the caller's count, checked above.
             unsafe { *read = n as u32 };
         }
-        if n < u64::from(cb) { S_FALSE } else { S_OK }
+        if n < give { S_FALSE } else { S_OK }
     }
 
     fn Write(&self, _: *const std::ffi::c_void, _: u32, _: *mut u32) -> HRESULT {
@@ -465,6 +611,12 @@ impl ISequentialStream_Impl for FakeStream_Impl {
 
 impl IStream_Impl for FakeStream_Impl {
     fn Seek(&self, offset: i64, origin: STREAM_SEEK, new: *mut u64) -> windows::core::Result<()> {
+        if let Pace::Choke {
+            seekable: false, ..
+        } = self.pace
+        {
+            return Err(E_NOTIMPL.into());
+        }
         let base = match origin {
             STREAM_SEEK_SET => 0,
             STREAM_SEEK_CUR => self.pos.load(Ordering::Relaxed).cast_signed(),
@@ -519,12 +671,13 @@ impl IStream_Impl for FakeStream_Impl {
     }
 }
 
-/// An empty scratch folder for one test.
-pub(crate) fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("arke-virtual-test-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// An empty scratch folder for one test, and the guard that deletes it when dropped.
+pub(crate) fn scratch(name: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-virtual-test-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 /// Writes a drop into `stage` on a worker thread, as Arke does.
@@ -542,6 +695,26 @@ fn extract_on_worker(
     .join()
     .unwrap()
 }
+
+/// Writes a drop into `stage` on a worker thread, as Arke does; the result arrives on the
+/// receiver, so a test can tell a copy that never ends from one that does.
+fn extract_in_background(
+    drop: VirtualDrop,
+    stage: &Path,
+    progress: &Arc<OpProgress>,
+) -> flume::Receiver<super::Extraction> {
+    let (tx, rx) = flume::bounded(1);
+    let stage = stage.to_path_buf();
+    let progress = Arc::clone(progress);
+    std::thread::spawn(move || {
+        let _com = ComThread::init();
+        let _ = tx.send(drop.extract(&stage, &progress));
+    });
+    rx
+}
+
+/// Long enough for anything that should happen to happen; only reached when it doesn't.
+const NEVER: Duration = Duration::from_secs(60);
 
 fn expected_stream(len: u64) -> Vec<u8> {
     (0..len).map(pattern).collect()
@@ -594,7 +767,7 @@ fn writes_memory_and_stream_items_with_folders() {
         "folders aren't asked for contents"
     );
 
-    let stage = scratch("mixed");
+    let (stage, _guard) = scratch("mixed");
     let progress = Arc::new(OpProgress::default());
     let out = extract_on_worker(drop, &stage, &progress);
     assert!(!out.cancelled);
@@ -627,7 +800,6 @@ fn writes_memory_and_stream_items_with_folders() {
     );
     assert_eq!(progress.done.load(Ordering::Relaxed), 5);
     assert_eq!(progress.bytes.load(Ordering::Relaxed), 5 + 3000 + 10);
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// A big stream is copied a chunk at a time, never read whole.
@@ -638,7 +810,7 @@ fn large_streams_are_copied_in_chunks() {
     let source = FakeSource::new(vec![FakeItem::stream("big.iso", len)]);
     let seen = source.seen();
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("large");
+    let (stage, _guard) = scratch("large");
     let progress = Arc::new(OpProgress::default());
     let out = extract_on_worker(drop, &stage, &progress);
     assert!(out.failed.is_none() && !out.cancelled);
@@ -648,9 +820,12 @@ fn large_streams_are_copied_in_chunks() {
     );
     assert!(seen.largest_read.load(Ordering::Relaxed) <= CHUNK);
     assert!(seen.reads.load(Ordering::Relaxed) >= 6);
+    assert!(
+        progress.work_in_bytes.load(Ordering::Relaxed),
+        "the sizes are known: progress counts bytes"
+    );
     assert_eq!(progress.work_total.load(Ordering::Relaxed), len);
     assert_eq!(progress.work_done.load(Ordering::Relaxed), len);
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Cancel stops mid-stream: the half-written file is removed and nothing after it is written.
@@ -664,12 +839,271 @@ fn cancel_stops_mid_stream() {
     ]);
     source.cancel_after = Some((2, Arc::clone(&progress)));
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("cancel");
+    let (stage, _guard) = scratch("cancel");
     let out = extract_on_worker(drop, &stage, &progress);
     assert!(out.cancelled);
     assert!(!stage.join("first.bin").exists());
     assert!(!stage.join("second.txt").exists());
-    let _ = std::fs::remove_dir_all(&stage);
+}
+
+/// A remote control program's stream (#456): each read waits for the other computer, and a
+/// read bigger than it can carry never comes back. Reads stay small enough, so the copy ends.
+#[test]
+fn a_source_that_answers_slowly_is_never_asked_for_more_than_it_gives() {
+    let _com = ComThread::init();
+    let len = 16 * FIRST_CHUNK as u64 + 5;
+    let (gate, keeper) = Gate::new();
+    let mut source = FakeSource::new(vec![FakeItem::stream("remote.bin", len)]);
+    source.pace = Pace::Remote {
+        delay: Duration::from_millis(5),
+        limit: FIRST_CHUNK,
+        gate,
+    };
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("remote");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_in_background(drop, &stage, &progress)
+        .recv_timeout(NEVER)
+        .expect("the copy ends");
+    assert!(out.failed.is_none() && !out.cancelled, "{:?}", out.failed);
+    assert_eq!(
+        std::fs::read(stage.join("remote.bin")).unwrap(),
+        expected_stream(len)
+    );
+    assert_eq!(seen.largest_read.load(Ordering::Relaxed), FIRST_CHUNK);
+    assert!(keeper.entered.is_empty(), "no read was too big");
+    assert_eq!(progress.work_done.load(Ordering::Relaxed), len);
+}
+
+/// A source whose read never comes back: Cancel still ends the copy at once and removes the
+/// half-written file, and the thread left waiting on the source lets go of the stream once the
+/// source answers at last.
+#[test]
+fn cancel_leaves_a_source_that_never_answers() {
+    let _com = ComThread::init();
+    let (gate, keeper) = Gate::new();
+    let mut source = FakeSource::new(vec![
+        FakeItem::stream("stuck.bin", 4 * CHUNK as u64),
+        FakeItem::memory("after.txt", b"after"),
+    ]);
+    source.pace = Pace::Stuck(gate);
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("stuck");
+    let progress = Arc::new(OpProgress::default());
+    let done = extract_in_background(drop, &stage, &progress);
+    keeper
+        .entered
+        .recv_timeout(NEVER)
+        .expect("a read waits on the source");
+    assert!(
+        stage.join("stuck.bin").exists(),
+        "the file is being written"
+    );
+
+    let cancelled = Instant::now();
+    progress.cancel.store(true, Ordering::Relaxed);
+    let out = done
+        .recv_timeout(NEVER)
+        .expect("Cancel ends the copy although the source never answers");
+    assert!(
+        cancelled.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        cancelled.elapsed()
+    );
+    assert!(out.cancelled);
+    assert!(
+        !stage.join("stuck.bin").exists(),
+        "the partial file is gone"
+    );
+    assert!(!stage.join("after.txt").exists());
+
+    // The source answers at last: the thread that waited on it releases the stream.
+    std::mem::drop(keeper.opener);
+    keeper
+        .released
+        .recv_timeout(NEVER)
+        .expect("the stream is released");
+}
+
+/// A stream that gives less than asked without being at its end is read on to the end, and
+/// reads don't grow while it does.
+#[test]
+fn short_reads_are_read_to_the_end() {
+    let _com = ComThread::init();
+    let len = 300_007;
+    let mut source = FakeSource::new(vec![FakeItem::stream("trickle.bin", len)]);
+    source.pace = Pace::Trickle(1000);
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("trickle");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_on_worker(drop, &stage, &progress);
+    assert!(out.failed.is_none() && !out.cancelled, "{:?}", out.failed);
+    assert_eq!(
+        std::fs::read(stage.join("trickle.bin")).unwrap(),
+        expected_stream(len)
+    );
+    assert_eq!(seen.largest_read.load(Ordering::Relaxed), FIRST_CHUNK);
+    assert!(seen.reads.load(Ordering::Relaxed) > 300);
+    assert_eq!(progress.bytes.load(Ordering::Relaxed), len);
+}
+
+/// Reads start small, double while a source keeps up, never pass the largest size, halve when
+/// a read is slow, and stay small for a source that is one round trip over the network a read.
+#[test]
+fn reads_grow_while_the_source_keeps_up() {
+    let fast = Duration::from_micros(100);
+    let mut chunk = ChunkSize::new();
+    assert_eq!(chunk.get(), FIRST_CHUNK);
+    for _ in 0..3 {
+        chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(
+        chunk.get(),
+        FIRST_CHUNK,
+        "a few fast reads aren't enough yet"
+    );
+    chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    assert_eq!(chunk.get(), 2 * FIRST_CHUNK);
+    // Answers to reads asked at the old size, still on their way, don't count.
+    for _ in 0..10 {
+        chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(chunk.get(), 2 * FIRST_CHUNK);
+    let mut grew = 0;
+    while chunk.get() < CHUNK {
+        let size = chunk.get();
+        chunk.learn(size, size, fast);
+        grew += 1;
+        assert!(grew < 100, "keeps growing to the largest size");
+    }
+    for _ in 0..20 {
+        chunk.learn(CHUNK, CHUNK, fast);
+    }
+    assert_eq!(chunk.get(), CHUNK, "never past the largest size");
+
+    chunk.learn(CHUNK, CHUNK, Duration::from_millis(300));
+    assert_eq!(chunk.get(), CHUNK / 2, "a slow read halves");
+    for _ in 0..20 {
+        let size = chunk.get();
+        chunk.learn(size, size, Duration::from_secs(1));
+    }
+    assert_eq!(chunk.get(), FIRST_CHUNK, "never below the first size");
+    for _ in 0..20 {
+        chunk.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(chunk.get(), FIRST_CHUNK, "no growing after a slow read");
+    let mut next = chunk.next_item();
+    for _ in 0..20 {
+        next.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(next.get(), FIRST_CHUNK, "nor for the drop's next item");
+
+    // A read given up on pins it to small reads, for the item and the next ones.
+    let mut pinned = ChunkSize::new();
+    for _ in 0..4 {
+        pinned.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(pinned.get(), 2 * FIRST_CHUNK);
+    pinned.pin();
+    assert_eq!(pinned.get(), FIRST_CHUNK);
+    let mut next = pinned.next_item();
+    for _ in 0..20 {
+        pinned.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+        next.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!((pinned.get(), next.get()), (FIRST_CHUNK, FIRST_CHUNK));
+    // Each item starts small again.
+    let mut grown = ChunkSize::new();
+    for _ in 0..4 {
+        grown.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(grown.next_item().get(), FIRST_CHUNK);
+
+    // 64 KiB in 2 ms (32 MB/s, a round trip a read) doesn't keep up: reads stay small.
+    let mut remote = ChunkSize::new();
+    for _ in 0..100 {
+        remote.learn(FIRST_CHUNK, FIRST_CHUNK, Duration::from_millis(2));
+    }
+    assert_eq!(remote.get(), FIRST_CHUNK);
+
+    // Short reads don't grow it, and one that misses starts the streak again.
+    let mut short = ChunkSize::new();
+    for _ in 0..100 {
+        short.learn(FIRST_CHUNK, 1000, fast);
+    }
+    assert_eq!(short.get(), FIRST_CHUNK);
+    for _ in 0..3 {
+        short.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    short.learn(FIRST_CHUNK, FIRST_CHUNK, Duration::from_millis(2));
+    for _ in 0..3 {
+        short.learn(FIRST_CHUNK, FIRST_CHUNK, fast);
+    }
+    assert_eq!(short.get(), FIRST_CHUNK);
+}
+
+/// A source that answers small reads at once but hangs on reads bigger than it carries (#456):
+/// reads grow while it keeps up, the first one too big is given up on, and the copy goes on from
+/// where it stood in small reads, intact, the next item too.
+#[test]
+fn a_read_too_big_for_the_source_is_given_up_and_made_again_small() {
+    let _com = ComThread::init();
+    let len = 4 * CHUNK as u64 + 3;
+    let mut source = FakeSource::new(vec![
+        FakeItem::stream("choke.bin", len),
+        FakeItem::stream("next.bin", 2 * CHUNK as u64),
+    ]);
+    source.pace = Pace::Choke {
+        limit: FIRST_CHUNK,
+        seekable: true,
+    };
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("choke");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_in_background(drop, &stage, &progress)
+        .recv_timeout(NEVER)
+        .expect("the copy ends");
+    assert!(out.failed.is_none() && !out.cancelled, "{:?}", out.failed);
+    assert_eq!(
+        std::fs::read(stage.join("choke.bin")).unwrap(),
+        expected_stream(len)
+    );
+    assert_eq!(
+        std::fs::read(stage.join("next.bin")).unwrap(),
+        expected_stream(2 * CHUNK as u64)
+    );
+    assert_eq!(seen.choked.load(Ordering::Relaxed), 1, "given up on once");
+    assert!(seen.largest_after_choke.load(Ordering::Relaxed) <= FIRST_CHUNK);
+}
+
+/// A read given up on, of a stream that can't be put back where it started: that item fails
+/// and its partial file goes, the next item is still written.
+#[test]
+fn a_read_given_up_on_a_stream_that_cant_seek_fails_the_item() {
+    let _com = ComThread::init();
+    let mut source = FakeSource::new(vec![
+        FakeItem::stream("choke.bin", 4 * CHUNK as u64),
+        FakeItem::memory("after.txt", b"after"),
+    ]);
+    source.pace = Pace::Choke {
+        limit: FIRST_CHUNK,
+        seekable: false,
+    };
+    let seen = source.seen();
+    let drop = VirtualDrop::take(&source.data()).unwrap();
+    let (stage, _guard) = scratch("choke-noseek");
+    let progress = Arc::new(OpProgress::default());
+    let out = extract_in_background(drop, &stage, &progress)
+        .recv_timeout(NEVER)
+        .expect("the copy ends");
+    assert!(!out.cancelled);
+    assert!(out.failed.is_some());
+    assert_eq!(seen.choked.load(Ordering::Relaxed), 1);
+    assert!(!stage.join("choke.bin").exists());
+    assert_eq!(std::fs::read(stage.join("after.txt")).unwrap(), b"after");
 }
 
 /// Names from the source can't leave the target folder or use names Windows refuses.
@@ -694,7 +1128,7 @@ fn names_stay_inside_and_are_valid() {
         FakeItem::memory(r"..", b"nameless"),
     ]);
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("names");
+    let (stage, _guard) = scratch("names");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert_eq!(
         out.top,
@@ -702,7 +1136,6 @@ fn names_stay_inside_and_are_valid() {
         "the nameless item is skipped"
     );
     assert!(!stage.parent().unwrap().join("escaped.txt").exists());
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Older programs only give the ANSI descriptor.
@@ -712,11 +1145,10 @@ fn ansi_descriptor_is_read() {
     let mut source = FakeSource::new(vec![FakeItem::memory("old.txt", b"ansi")]);
     source.ansi = true;
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("ansi");
+    let (stage, _guard) = scratch("ansi");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert_eq!(out.top, [stage.join("old.txt")]);
     assert_eq!(std::fs::read(stage.join("old.txt")).unwrap(), b"ansi");
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// An Outlook message comes as a storage and is saved as a compound file.
@@ -731,7 +1163,7 @@ fn storage_items_are_saved_as_compound_files() {
         body: Body::Storage,
     }]);
     let drop = VirtualDrop::take(&source.data()).unwrap();
-    let stage = scratch("storage");
+    let (stage, _guard) = scratch("storage");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert!(out.failed.is_none(), "{:?}", out.failed);
     let saved = stage.join("Re_ hello.msg");
@@ -743,7 +1175,6 @@ fn storage_items_are_saved_as_compound_files() {
         .collect();
     // SAFETY: a null-terminated path.
     assert!(unsafe { StgIsStorageFile(PCWSTR(wide.as_ptr())) }.is_ok());
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// A source that can finish later is read by the worker, and told when the drop is over.
@@ -759,7 +1190,7 @@ fn sources_that_finish_later_are_read_on_the_worker() {
         seen.contents.lock().is_empty(),
         "nothing read during the drop"
     );
-    let stage = scratch("later");
+    let (stage, _guard) = scratch("later");
     let out = extract_on_worker(drop, &stage, &Arc::default());
     assert_eq!(std::fs::read(stage.join("zip.txt")).unwrap(), b"zipped");
     assert!(out.failed.is_none());
@@ -776,7 +1207,6 @@ fn sources_that_finish_later_are_read_on_the_worker() {
         *seen.ended.lock(),
         [(windows::Win32::Foundation::E_ABORT, 0)]
     );
-    let _ = std::fs::remove_dir_all(&stage);
 }
 
 /// Files on disk win when a source offers both; otherwise the drop stands for virtual files.
@@ -816,7 +1246,7 @@ fn zip_folder_items_are_taken_like_a_drop() {
     let _ = env_logger::builder().is_test(true).try_init();
     // SAFETY: this test's thread becomes an STA, as a window thread is; undone at the end.
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.unwrap();
-    let base = scratch("zip");
+    let (base, _guard) = scratch("zip");
     let zip_path = base.join("album.zip");
     let photo: Vec<u8> = (0..3 * CHUNK as u64 + 7).map(pattern).collect();
     {
@@ -886,7 +1316,6 @@ fn zip_folder_items_are_taken_like_a_drop() {
             assert_eq!(std::fs::read(stage.join(rel)).unwrap(), bytes, "{rel}");
         }
     }
-    let _ = std::fs::remove_dir_all(&base);
     // SAFETY: pairs with CoInitializeEx above.
     unsafe { CoUninitialize() };
 }

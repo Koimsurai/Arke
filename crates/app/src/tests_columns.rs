@@ -499,3 +499,109 @@ fn link_target_column_and_go_to_target(cx: &mut TestAppContext) {
         loaded(r"D:\code")(v) && selected_names(v) == ["proj"]
     });
 }
+
+/// #454: widening a column past the pane keeps every column reachable. The list gets a sideways
+/// scroll range (and its scrollbar), the header and the rows move together, and scrolling to the
+/// end brings the last column into view. Narrowing the column again leaves nothing to scroll.
+#[gpui::test]
+fn widening_a_column_past_the_pane_scrolls_the_columns(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\h", vec![file("a.txt", 1), file("b.txt", 2)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\h");
+    cx.simulate_resize(gpui::size(px(900.), px(600.)));
+    wait_until(cx, &view, "load", loaded(r"C:\h"));
+    apply_prefs(cx);
+    let scroll_max =
+        |cx: &mut VisualTestContext| view.update(cx, |v, _| v.list_scroll_max_for_test().x);
+    let scroll_x = |cx: &mut VisualTestContext| view.update(cx, |v, _| v.list_scroll_for_test().x);
+    let size_right = |cx: &mut VisualTestContext| {
+        columns(&view, cx)
+            .iter()
+            .find(|c| c.0 == Col::Size)
+            .map_or_default(|c| c.1 + c.2)
+    };
+
+    // Everything fits: no sideways range, header and rows at rest.
+    assert!(scroll_max(cx) < px(0.5), "fits without scrolling");
+    assert_eq!(
+        view.update(cx, |v, _| v.header_offset_for_test()),
+        Some(px(0.))
+    );
+    let list = view.update(cx, |v, _| v.list_bounds_for_test());
+    assert!(size_right(cx) <= list.right());
+
+    // Name made much wider than the pane: the last column is pushed past the pane's edge, but the
+    // list can scroll to it.
+    drag_divider(&view, cx, Col::Name, px(700.));
+    let list = view.update(cx, |v, _| v.list_bounds_for_test());
+    let row = view.update(cx, |v, _| v.row_width_for_test());
+    assert!(row > Some(list.size.width), "{row:?} in {list:?}");
+    assert!(scroll_max(cx) > px(0.), "wider than the pane: it scrolls");
+    assert!(
+        size_right(cx) > list.right(),
+        "the last column starts out of reach"
+    );
+
+    // A sideways wheel scrolls rows and header together, up to the end.
+    cx.simulate_event(gpui::ScrollEvent {
+        position: list.origin + point(px(80.), px(40.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(-5000.), px(0.))),
+        ..gpui::ScrollEvent::default()
+    });
+    cx.run_until_parked();
+    assert_eq!(scroll_x(cx), -scroll_max(cx), "scrolled to the end");
+    assert_eq!(
+        view.update(cx, |v, _| v.header_offset_for_test()),
+        Some(scroll_x(cx)),
+        "the header follows the rows"
+    );
+    assert!(
+        size_right(cx) <= list.right(),
+        "the last column is reachable: ends at {:?}, pane ends at {:?}",
+        size_right(cx),
+        list.right()
+    );
+    // Header and rows clip at the same left edge (the list's, where the inset is), and a column's
+    // header sits right over its cells, scrolled or not.
+    assert_eq!(
+        drawn(cx, "details-header-box").left(),
+        list.left(),
+        "the header clips where the rows do"
+    );
+    let type_header = columns(&view, cx)
+        .iter()
+        .find(|c| c.0 == Col::Type)
+        .map_or_default(|c| c.1);
+    assert!(
+        (drawn(cx, "cell-type").left() - type_header).abs() < px(1.),
+        "Type's cells at {:?}, its header at {type_header:?}",
+        drawn(cx, "cell-type").left()
+    );
+    let first_row = drawn(cx, "row-0");
+    assert!(
+        (first_row.right() - size_right(cx) - crate::theme::s_16()).abs() < px(1.),
+        "rows end where the header does: {:?} vs {:?}",
+        first_row.right(),
+        size_right(cx)
+    );
+
+    // Back to a width that fits: nothing left to scroll, everything back in line.
+    view.update(cx, |_, cx| {
+        crate::prefs::set_width(Col::Name, None);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(scroll_max(cx) < px(0.5), "fits again");
+    assert_eq!(
+        scroll_x(cx),
+        px(0.),
+        "offset after fitting again, range {:?}",
+        scroll_max(cx)
+    );
+    assert_eq!(
+        view.update(cx, |v, _| v.header_offset_for_test()),
+        Some(px(0.)),
+        "header after fitting again, list at {:?}",
+        scroll_x(cx)
+    );
+}

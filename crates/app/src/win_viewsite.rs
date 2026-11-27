@@ -130,6 +130,17 @@ pub(crate) fn site(file: &Path, spec: &SortSpec) -> Option<IServiceProvider> {
     )
 }
 
+/// Whether a file whose default handler has ProgID `progid` is opened with a site
+/// ([`site`]). Packaged apps (ProgIDs starting "AppX", as Windows registers them for a package's
+/// file types: Photos, Media Player) read it for their neighboring files query (#200). Classic
+/// handlers get none: handed a folder view, Windows Photo Viewer stays on "Loading..." for good
+/// (#412). No handler, no site.
+pub(crate) fn handler_wants_site(progid: Option<&str>) -> bool {
+    progid
+        .and_then(|p| p.get(..4))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("AppX"))
+}
+
 /// The site for `folder`'s empty-space context menu: answers `SID_SFolderView` with a view that
 /// stands for the folder (File Explorer's view is that menu's site).
 pub(crate) fn background_site(folder: &Path) -> Option<IServiceProvider> {
@@ -652,6 +663,26 @@ mod tests {
     }
 
     #[test]
+    fn only_packaged_handlers_get_a_site() {
+        assert!(handler_wants_site(Some(
+            "AppX43hnxtbyyps62jhe9sqpdzxn1790zetc"
+        )));
+        assert!(handler_wants_site(Some(
+            "appx6eg8h5sxqq90pv53845wmnbewywdqq5h"
+        )));
+        for classic in [
+            "PhotoViewer.FileAssoc.Tiff",
+            "WPS.Docx.6",
+            "pngfile",
+            "App",
+            "",
+        ] {
+            assert!(!handler_wants_site(Some(classic)), "{classic}");
+        }
+        assert!(!handler_wants_site(None));
+    }
+
+    #[test]
     fn every_column_has_a_property() {
         for column in [
             SortColumn::Name,
@@ -672,8 +703,8 @@ mod tests {
     fn site_reports_the_folder_and_sort_of_the_view() {
         // SAFETY: COM for this test thread; paired below.
         let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-viewsite-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let file = dir.join("b.png");
         std::fs::write(&file, b"x").unwrap();
         {
@@ -727,7 +758,6 @@ mod tests {
                 );
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };
@@ -743,8 +773,8 @@ mod tests {
         use windows::Win32::UI::Shell::{IShellFolder, SIGDN_FILESYSPATH, SVGIO_ALLVIEW};
         // SAFETY: COM for this test thread; paired below.
         let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-bgview-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         {
             let site = background_site(&dir).expect("site");
@@ -781,7 +811,6 @@ mod tests {
                 assert!(view.Item(0).is_err());
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };

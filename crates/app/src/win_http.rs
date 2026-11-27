@@ -6,14 +6,7 @@
 
 use std::io::Write;
 
-use windows::Win32::Networking::WinHttp::{
-    INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-    WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders,
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
-    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
-};
-use windows::core::{PCWSTR, w};
+use arke_remote::http::{Session, Url, error_text, split_url};
 
 /// Why an HTTPS GET failed. Display is the text shown in Settings > About.
 #[derive(Debug, thiserror::Error)]
@@ -24,8 +17,14 @@ pub(crate) enum HttpError {
         /// The rejected URL.
         url: String,
     },
+    /// The URL has no usable host or port.
+    #[error("not a valid URL: {url}")]
+    BadUrl {
+        /// The rejected URL.
+        url: String,
+    },
     /// A WinHTTP call failed (no network, TLS, proxy, timeout, ...).
-    #[error("{}", describe(.0))]
+    #[error("{}", error_text(.0))]
     Windows(#[from] windows::core::Error),
     /// The server answered with a status other than 200.
     #[error("HTTP {0}")]
@@ -41,82 +40,20 @@ pub(crate) enum HttpError {
     Stopped,
 }
 
-/// The text for a failed WinHTTP call. WinHTTP's own codes (12001–12999: timeout, name not
-/// resolved, can't connect, TLS) aren't in the system message table, so `message()` is empty for
-/// them; their text is in winhttp.dll, in the Windows display language. The code if neither has it.
-fn describe(error: &windows::core::Error) -> String {
-    let system = error.message();
-    if !system.trim().is_empty() {
-        return system;
-    }
-    let code = error.code().0.cast_unsigned();
-    if code >> 16 == 0x8007 && (12001..13000).contains(&(code & 0xFFFF)) {
-        use windows::Win32::System::Diagnostics::Debug::{
-            FORMAT_MESSAGE_FROM_HMODULE, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
-        };
-        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-        // SAFETY: winhttp.dll is loaded (the failed call came from it); the buffer outlives the
-        // call and its length is passed.
-        unsafe {
-            if let Ok(module) = GetModuleHandleW(w!("winhttp.dll")) {
-                let mut buf = [0u16; 512];
-                let n = FormatMessageW(
-                    FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_IGNORE_INSERTS,
-                    Some(module.0.cast_const()),
-                    code & 0xFFFF,
-                    0,
-                    windows::core::PWSTR(buf.as_mut_ptr()),
-                    buf.len() as u32,
-                    None,
-                ) as usize;
-                let text = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
-                if !text.trim().is_empty() {
-                    return format!("{} ({})", text.trim(), code & 0xFFFF);
-                }
-            }
-        }
-    }
-    format!("0x{code:08X}")
-}
-
-/// WinHTTP handle, closed on drop.
-struct Handle(*mut core::ffi::c_void);
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: returned by WinHttpOpen/Connect/OpenRequest and not yet closed.
-            let _ = unsafe { WinHttpCloseHandle(self.0) };
-        }
-    }
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-/// `https://host[:port]/path?q` -> (host, port, path?q). Only https is accepted.
-fn split_url(url: &str) -> Result<(&str, u16, &str), HttpError> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| HttpError::NotHttps {
+/// `url` taken apart; only `https://` is accepted.
+fn https_url(url: &str) -> Result<Url<'_>, HttpError> {
+    match split_url(url) {
+        Some(parts) if parts.secure => Ok(parts),
+        Some(_) => Err(HttpError::NotHttps {
             url: url.to_owned(),
-        })?;
-    let (authority, path) = match rest.find('/') {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, "/"),
-    };
-    let default = INTERNET_DEFAULT_HTTPS_PORT;
-    Ok(
-        match authority
-            .rsplit_once(':')
-            .filter(|(host, _)| !host.ends_with(']') || authority.starts_with('['))
-            .and_then(|(host, port)| port.parse::<u16>().ok().map(|p| (host, p)))
-        {
-            Some((host, port)) => (host, port, path),
-            None => (authority, default, path),
-        },
-    )
+        }),
+        None if url.starts_with("http://") => Err(HttpError::NotHttps {
+            url: url.to_owned(),
+        }),
+        None => Err(HttpError::BadUrl {
+            url: url.to_owned(),
+        }),
+    }
 }
 
 /// Where a response goes: told the status and length first, then given the body chunk by chunk.
@@ -253,98 +190,37 @@ fn fetch(
     body: &mut dyn Body,
     proxy: Option<&str>,
 ) -> Result<(), HttpError> {
-    let (host, port, path) = split_url(url)?;
-    let agent = wide(&format!("Arke/{}", crate::build_info::VERSION));
-    let host_w = wide(host);
-    let path_w = wide(path);
-    let proxy_w = proxy.map(wide);
-    // SAFETY: all strings are NUL-terminated and outlive the calls; handles are owned by
-    // Handle and closed in reverse creation order.
-    unsafe {
-        let session = Handle(match &proxy_w {
-            Some(proxy) => WinHttpOpen(
-                PCWSTR(agent.as_ptr()),
-                WINHTTP_ACCESS_TYPE_NAMED_PROXY,
-                PCWSTR(proxy.as_ptr()),
-                w!("<local>"),
-                0,
-            ),
-            None => WinHttpOpen(
-                PCWSTR(agent.as_ptr()),
-                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                PCWSTR::null(),
-                PCWSTR::null(),
-                0,
-            ),
-        });
-        if session.0.is_null() {
-            return Err(windows::core::Error::from_thread().into());
-        }
-        // Resolve 10 s, connect 15 s, send and receive 30 s each.
-        let _ = WinHttpSetTimeouts(session.0, 10_000, 15_000, 30_000, 30_000);
-        let connect = Handle(WinHttpConnect(session.0, PCWSTR(host_w.as_ptr()), port, 0));
-        if connect.0.is_null() {
-            return Err(windows::core::Error::from_thread().into());
-        }
-        let request = Handle(WinHttpOpenRequest(
-            connect.0,
-            w!("GET"),
-            PCWSTR(path_w.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            std::ptr::null(),
-            WINHTTP_FLAG_SECURE,
-        ));
-        if request.0.is_null() {
-            return Err(windows::core::Error::from_thread().into());
-        }
-        for header in headers {
-            let h: Vec<u16> = header.encode_utf16().collect();
-            WinHttpAddRequestHeaders(request.0, &h, WINHTTP_ADDREQ_FLAG_ADD)?;
-        }
-        WinHttpSendRequest(request.0, None, None, 0, 0, 0)?;
-        WinHttpReceiveResponse(request.0, std::ptr::null_mut())?;
-        let mut status = 0u32;
-        let mut size = u32::try_from(size_of::<u32>()).unwrap_or(4);
-        WinHttpQueryHeaders(
-            request.0,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            PCWSTR::null(),
-            Some((&raw mut status).cast()),
-            &raw mut size,
-            std::ptr::null_mut(),
-        )?;
-        // Content-Length, if present, for progress.
-        let mut length = 0u32;
-        let mut size = u32::try_from(size_of::<u32>()).unwrap_or(4);
-        let total = WinHttpQueryHeaders(
-            request.0,
-            windows::Win32::Networking::WinHttp::WINHTTP_QUERY_CONTENT_LENGTH
-                | WINHTTP_QUERY_FLAG_NUMBER,
-            PCWSTR::null(),
-            Some((&raw mut length).cast()),
-            &raw mut size,
-            std::ptr::null_mut(),
+    let parts = https_url(url)?;
+    // A stripped Windows can lack winhttp.dll; a delayed load of it would end the process.
+    if !crate::win_dll::system_dll("winhttp.dll") {
+        return Err(windows::core::Error::from(
+            windows::Win32::Foundation::ERROR_MOD_NOT_FOUND.to_hresult(),
         )
-        .ok()
-        .map(|()| u64::from(length));
-        body.start(status, total)?;
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let mut read = 0u32;
-            WinHttpReadData(
-                request.0,
-                buf.as_mut_ptr().cast(),
-                u32::try_from(buf.len()).unwrap_or(u32::MAX),
-                &raw mut read,
-            )?;
-            if read == 0 {
-                break;
-            }
-            body.write(&buf[..read as usize])?;
-        }
-        Ok(())
+        .into());
     }
+    // Resolve 10 s, connect 15 s, send and receive 30 s each.
+    let session = Session::open(
+        &format!("Arke/{}", crate::build_info::VERSION),
+        proxy,
+        15_000,
+    )?;
+    let exchange = session.exchange(&parts, "GET")?;
+    for header in headers {
+        exchange.add_header(header)?;
+    }
+    exchange.send_empty()?;
+    exchange.receive()?;
+    let status = exchange.status()?;
+    body.start(status, exchange.content_length())?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let read = exchange.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        body.write(&buf[..read])?;
+    }
+    Ok(())
 }
 
 /// GETs `url` and returns the body as text.
@@ -365,27 +241,32 @@ pub(crate) fn get_text_via(
 
 #[cfg(test)]
 mod tests {
-    use super::split_url;
+    use super::{HttpError, https_url};
 
+    /// Only `https://` URLs are fetched, and the ones that can't be taken apart are refused.
     #[test]
-    fn splits_https_urls() {
-        assert_eq!(
-            split_url("https://api.github.com/repos/a/b/releases?per_page=30").ok(),
-            Some(("api.github.com", 443, "/repos/a/b/releases?per_page=30"))
-        );
-        assert_eq!(
-            split_url("https://example.com").ok(),
-            Some(("example.com", 443, "/"))
-        );
-        // A mirror on its own port (`update_route.rs`).
-        assert_eq!(
-            split_url("https://mirror.example.com:8443/https://github.com/x").ok(),
-            Some(("mirror.example.com", 8443, "/https://github.com/x"))
-        );
+    fn only_https_urls_are_fetched() {
+        assert!(https_url("https://api.github.com/repos/a/b/releases?per_page=30").is_ok());
+        assert!(https_url("https://[::1]:8443/x").is_ok());
         assert!(matches!(
-            split_url("http://example.com/x"),
-            Err(super::HttpError::NotHttps { .. })
+            https_url("http://example.com/x"),
+            Err(HttpError::NotHttps { .. })
         ));
+        assert!(matches!(
+            https_url("https://example.com:port/x"),
+            Err(HttpError::BadUrl { .. })
+        ));
+    }
+
+    /// Without `winhttp.dll` a request fails with an error, before anything calls into the DLL.
+    #[test]
+    fn a_missing_winhttp_is_an_error() {
+        crate::win_dll::assert_not_loaded(&["winhttp.dll"], "before the test");
+        let _missing = crate::win_dll::pretend_missing(&["winhttp.dll"]);
+        let error = super::get_text("https://example.invalid/", &[]).unwrap_err();
+        assert!(matches!(error, super::HttpError::Windows(_)), "{error}");
+        assert!(!error.to_string().is_empty());
+        crate::win_dll::assert_not_loaded(&["winhttp.dll"], "after the gated call");
     }
 
     /// #343: a WinHTTP failure (here "name not resolved") says what went wrong instead of

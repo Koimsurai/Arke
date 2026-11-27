@@ -245,22 +245,25 @@ fn f6_names_each_area(cx: &mut TestAppContext) {
     );
 }
 
-/// #416: the tree doesn't follow the folder by default, so the sidebar has no current folder's row
-/// to start on: F6 still reaches the sidebar, and the arrows move onto a row a screen reader can
-/// name.
+/// #416: the tree doesn't follow the folder by default, so it may not show the current one: F6
+/// still reaches the sidebar, on the nearest row above the folder (File Explorer lands on its own
+/// row), and the arrows move on to rows a screen reader can name.
 #[gpui::test]
 fn the_sidebar_is_usable_from_the_keyboard_when_the_tree_does_not_follow(cx: &mut TestAppContext) {
     let (_ws, cx) = window_following(cx, false);
     cx.simulate_keystrokes("f6");
     let start = focused(&tree(cx));
-    assert_eq!(start.0, "Tree", "no row to start on: {start:?}");
-    cx.simulate_keystrokes("down");
+    assert_eq!(start.0, "TreeItem", "starts on a row: {start:?}");
+    assert!(
+        start.1.contains("C:"),
+        "the drive above the folder: {start:?}"
+    );
+    cx.simulate_keystrokes("home");
     let first = focused(&tree(cx));
-    assert_ne!(first.0, "Tree", "Down reaches a row: {first:?}");
     assert!(!first.1.is_empty(), "the row is named: {first:?}");
-    cx.simulate_keystrokes("down");
-    let next = focused(&tree(cx));
-    assert_ne!(next, first, "Down goes on to the next row");
+    cx.simulate_keystrokes("end");
+    let last = focused(&tree(cx));
+    assert!(!last.1.is_empty(), "the row is named: {last:?}");
     cx.simulate_keystrokes("home");
     assert_eq!(focused(&tree(cx)), first, "Home goes back to the first row");
 }
@@ -1036,4 +1039,99 @@ fn a_favorite_that_is_the_current_folder_is_the_selected_row(cx: &mut TestAppCon
         .filter(|n| n["aria"]["selected"] == Value::Bool(true))
         .count();
     assert_eq!(selected, 1, "one row of w is the selected one");
+}
+
+/// Settings search (#400): the box is named, its hits are a named list whose items say the
+/// setting and its page, and nothing on the way is unnamed.
+#[gpui::test]
+fn the_settings_search_is_named(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    let page = tree(cx);
+    let find = t!("settings.find_setting");
+    assert!(
+        nodes(&page).any(|n| role(n) == "TextInput" && label(n) == find),
+        "the box is named after its placeholder"
+    );
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("hidden");
+    let found = tree(cx);
+    assert_eq!(unnamed(&found), Vec::<String>::new(), "settings search");
+    assert!(
+        nodes(&found).any(|n| role(n) == "ListBox" && label(n) == t!("a11y.results")),
+        "the hits are a named list"
+    );
+    let item = crate::a11y::item_label(&t!("settings.show_hidden"), &[t!("settings.files")]);
+    assert!(
+        nodes(&found).any(|n| role(n) == "ListBoxOption" && label(n) == item),
+        "{item:?} is listed"
+    );
+    assert!(
+        nodes(&found).any(|n| role(n) == "Button" && label(n) == t!("a11y.clear_filter")),
+        "the clear button is named"
+    );
+}
+
+/// Home's cards are links named like the places they open (#322), and the card under the
+/// keyboard's ring is what a screen reader reads as focused as the arrow keys move it.
+#[gpui::test]
+fn home_cards_are_named_and_read_as_the_keyboard_moves(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.favorites = Some(vec![PathBuf::from(r"C:\w")]), cx);
+        });
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    let home = tree(cx);
+    assert_eq!(unnamed(&home), Vec::<String>::new(), "Home");
+    let link = |t: &Value, name: &str| nodes(t).any(|n| role(n) == "Link" && label(n) == name);
+    assert!(link(&home, "w"), "the favorite's card");
+    assert!(link(&home, "Local Disk (C:)"), "the drive's card");
+
+    // The first key brings the ring up on the first card.
+    cx.simulate_keystrokes("home");
+    let t = tree(cx);
+    assert_eq!(focused(&t), ("Link".to_owned(), "w".to_owned()));
+    cx.simulate_keystrokes("down");
+    let t = tree(cx);
+    assert_eq!(
+        focused(&t),
+        ("Link".to_owned(), "Local Disk (C:)".to_owned())
+    );
+}
+
+/// What the UI Automation scan does on Home: nothing is touched, the page has the keyboard and
+/// the first card is what a screen reader reports as focused (no key pressed, no ring). Tab then
+/// walks the page's sections, reaches the sidebar and comes back round; it never alternates
+/// between two elements (#322).
+#[gpui::test]
+fn tab_from_the_first_home_card_walks_on(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.favorites = Some(vec![PathBuf::from(r"C:\w")]), cx);
+        });
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    let start = focused(&tree(cx));
+    assert_eq!(start.0, "Link", "{start:?}");
+    let mut went = vec![start.clone()];
+    let mut sidebar = false;
+    for _ in 0..8 {
+        cx.simulate_keystrokes("tab");
+        went.push(focused(&tree(cx)));
+        sidebar |= cx.update(|window, cx| ws.read(cx).stop_for_test(window, cx)) == "sidebar";
+    }
+    let mut distinct = went.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert!(distinct.len() > 2, "{went:?}");
+    assert!(sidebar, "Tab reaches the sidebar: {went:?}");
+    assert!(went[1..].contains(&start), "and comes back: {went:?}");
 }

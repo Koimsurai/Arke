@@ -7,20 +7,19 @@
 
 use super::*;
 
-/// `%TEMP%\arke-compress-<tag>-<pid>\Report` with `a.txt`, `b.txt` and `c.txt`.
-fn sandbox(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("arke-compress-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let dir = root.join("Report");
+/// `%TEMP%\arke-compress-<tag>-<random>\Report` with `a.txt`, `b.txt` and `c.txt`. The guard
+/// deletes the folder when dropped.
+fn sandbox(tag: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-compress-{tag}-"))
+        .tempdir()
+        .unwrap();
+    let dir = guard.path().join("Report");
     std::fs::create_dir_all(&dir).unwrap();
     for name in ["a.txt", "b.txt", "c.txt"] {
         std::fs::write(dir.join(name), name).unwrap();
     }
-    dir
-}
-
-fn cleanup(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    (dir, guard)
 }
 
 /// The folder opened in a view, listing the three files and `extra`.
@@ -62,7 +61,7 @@ fn start_compress(view: &Entity<Explorer>, cx: &mut VisualTestContext, names: &[
 /// [`start_compress`], then waits until the job is over.
 fn compress(view: &Entity<Explorer>, cx: &mut VisualTestContext, names: &[&str]) {
     start_compress(view, cx, names);
-    wait_until(cx, view, "compressed", |v| v.extract_job.is_none());
+    wait_until(cx, view, "compressed", |v| v.extract_jobs.is_empty());
 }
 
 /// The archive shows up in the folder listing.
@@ -97,19 +96,18 @@ fn selected(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Vec<String> 
 
 #[gpui::test]
 fn several_items_are_named_after_their_folder(cx: &mut TestAppContext) {
-    let dir = sandbox("folder-name");
+    let (dir, _guard) = sandbox("folder-name");
     let (_fs, view, cx) = open(cx, &dir, Vec::new());
     compress(&view, cx, &["a.txt", "b.txt"]);
     assert!(dir.join("Report.zip").is_file());
     assert!(!dir.join("a.zip").exists());
     assert_eq!(view.update(cx, |v, _| v.error.clone()), None);
     assert_eq!(selected(&view, cx), ["Report.zip"]);
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn a_taken_folder_name_is_numbered(cx: &mut TestAppContext) {
-    let dir = sandbox("taken");
+    let (dir, _guard) = sandbox("taken");
     std::fs::write(dir.join("Report.zip"), "old").unwrap();
     let (_fs, view, cx) = open(cx, &dir, vec![file("Report.zip", 3)]);
     compress(&view, cx, &["a.txt", "c.txt"]);
@@ -119,22 +117,20 @@ fn a_taken_folder_name_is_numbered(cx: &mut TestAppContext) {
         "old"
     );
     assert_eq!(selected(&view, cx), ["Report (2).zip"]);
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn one_item_keeps_its_own_name(cx: &mut TestAppContext) {
-    let dir = sandbox("single");
+    let (dir, _guard) = sandbox("single");
     let (_fs, view, cx) = open(cx, &dir, Vec::new());
     compress(&view, cx, &["b.txt"]);
     assert!(dir.join("b.zip").is_file());
     assert!(!dir.join("Report.zip").exists());
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn the_new_archive_is_selected_and_renamed(cx: &mut TestAppContext) {
-    let dir = sandbox("rename");
+    let (dir, _guard) = sandbox("rename");
     let (fs, view, cx) = open(cx, &dir, Vec::new());
     compress(&view, cx, &["a.txt", "b.txt"]);
     // Not listed yet: nothing to rename.
@@ -149,12 +145,11 @@ fn the_new_archive_is_selected_and_renamed(cx: &mut TestAppContext) {
             .as_ref()
             .is_some_and(|r| r.input.read(cx).text().contains('X'))
     }));
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn typing_in_the_search_box_is_left_alone(cx: &mut TestAppContext) {
-    let dir = sandbox("search-box");
+    let (dir, _guard) = sandbox("search-box");
     let (fs, view, cx) = open(cx, &dir, Vec::new());
     compress(&view, cx, &["a.txt", "b.txt"]);
     cx.dispatch_action(FocusFilter);
@@ -163,12 +158,11 @@ fn typing_in_the_search_box_is_left_alone(cx: &mut TestAppContext) {
     assert_eq!(renaming(&view, cx), None);
     assert_eq!(selected(&view, cx), ["Report.zip"]);
     assert!(cx.update(|window, cx| view.read(cx).filter_focused_for_test(window, cx)));
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn typing_in_the_path_bar_is_left_alone(cx: &mut TestAppContext) {
-    let dir = sandbox("path-bar");
+    let (dir, _guard) = sandbox("path-bar");
     let (fs, view, cx) = open(cx, &dir, Vec::new());
     compress(&view, cx, &["a.txt", "b.txt"]);
     cx.dispatch_action(FocusPathBar);
@@ -177,12 +171,11 @@ fn typing_in_the_path_bar_is_left_alone(cx: &mut TestAppContext) {
     assert_eq!(renaming(&view, cx), None);
     assert_eq!(selected(&view, cx), ["Report.zip"]);
     assert!(view.update(cx, |v, _| v.editing_path));
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn another_folder_is_left_alone(cx: &mut TestAppContext) {
-    let dir = sandbox("away");
+    let (dir, _guard) = sandbox("away");
     let other = dir.parent().unwrap().join("Other");
     std::fs::create_dir_all(&other).unwrap();
     let (fs, view, cx) = open(cx, &dir, Vec::new());
@@ -192,7 +185,7 @@ fn another_folder_is_left_alone(cx: &mut TestAppContext) {
     start_compress(&view, cx, &["a.txt", "b.txt"]);
     view.update(cx, |v, cx| v.navigate(other.clone(), NavKind::New, cx));
     wait_until(cx, &view, "other folder", loaded(&other_str));
-    wait_until(cx, &view, "compressed", |v| v.extract_job.is_none());
+    wait_until(cx, &view, "compressed", |v| v.extract_jobs.is_empty());
     assert!(dir.join("Report.zip").is_file());
     // The archive lands in the folder left behind; this view isn't showing it.
     fs.add_file(&dir, "Report.zip", 100);
@@ -210,12 +203,11 @@ fn another_folder_is_left_alone(cx: &mut TestAppContext) {
     });
     frames(cx);
     assert_eq!(renaming(&view, cx), None);
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn a_cancelled_compression_changes_nothing(cx: &mut TestAppContext) {
-    let dir = sandbox("cancelled");
+    let (dir, _guard) = sandbox("cancelled");
     let (fs, view, cx) = open(cx, &dir, Vec::new());
     view.update(cx, |v, _| v.selection.select_name(Arc::from("a.txt")));
     let summary = arke_core::archive::CompressSummary {
@@ -233,12 +225,11 @@ fn a_cancelled_compression_changes_nothing(cx: &mut TestAppContext) {
         view.update(cx, |v, _| v.notice.clone()).as_deref(),
         Some(&*t!("compress.cancelled"))
     );
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn a_failed_compression_changes_nothing(cx: &mut TestAppContext) {
-    let dir = sandbox("failed");
+    let (dir, _guard) = sandbox("failed");
     let (fs, view, cx) = open(cx, &dir, Vec::new());
     view.update(cx, |v, _| v.selection.select_name(Arc::from("a.txt")));
     let error = arke_core::archive::ArchiveError::Exists {
@@ -252,12 +243,11 @@ fn a_failed_compression_changes_nothing(cx: &mut TestAppContext) {
     assert_eq!(renaming(&view, cx), None);
     assert_eq!(selected(&view, cx), ["a.txt"]);
     assert!(view.update(cx, |v, _| v.error.is_some()));
-    cleanup(&dir);
 }
 
 #[gpui::test]
 fn the_sidebar_keeps_the_keyboard(cx: &mut TestAppContext) {
-    let dir = sandbox("sidebar");
+    let (dir, _guard) = sandbox("sidebar");
     let fs = FakeFs::new();
     fs.insert_dir(
         &dir,
@@ -284,13 +274,12 @@ fn the_sidebar_keeps_the_keyboard(cx: &mut TestAppContext) {
     assert_eq!(renaming(&view, cx), None);
     assert_eq!(selected(&view, cx), ["Report.zip"]);
     assert_eq!(region(cx), "sidebar", "focus stays where the user put it");
-    cleanup(&dir);
 }
 
 /// The menu says the name the command will use (#409).
 #[gpui::test]
 fn the_menu_names_the_archive_as_the_command_will(cx: &mut TestAppContext) {
-    let dir = sandbox("label");
+    let (dir, _guard) = sandbox("label");
     let (_fs, view, cx) = open(cx, &dir, Vec::new());
     let label = |view: &Entity<Explorer>, cx: &mut VisualTestContext| {
         menu_labels(view, cx)
@@ -310,5 +299,4 @@ fn the_menu_names_the_archive_as_the_command_will(cx: &mut TestAppContext) {
     view.update(cx, |v, _| v.selection.select_name(Arc::from("b.txt")));
     right_click(&view, cx, Some(1));
     assert!(label(&view, cx).contains("b.zip"));
-    cleanup(&dir);
 }

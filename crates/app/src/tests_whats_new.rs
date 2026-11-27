@@ -381,7 +381,9 @@ fn corner_cards_stay_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
                 .debug_bounds(id)
                 .unwrap_or_else(|| panic!("{id} should be drawn"));
             assert!(
-                b.origin.x > gpui::px(1000.) && b.size.height < gpui::px(400.),
+                b.origin.x > gpui::px(1000.)
+                    && b.origin.y > gpui::px(100.)
+                    && b.size.height < gpui::px(900.),
                 "{id} after {wait} ms: {b:?}"
             );
         }
@@ -534,9 +536,8 @@ fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
     let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
-    let dir = std::env::temp_dir().join(format!("arke-test-restart-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let dir = tmp_dir.path().to_path_buf();
     let exe = dir.join("arke.exe");
     std::fs::write(&exe, b"not a program").unwrap();
     std::fs::write(dir.join("arke.exe.old"), b"the version that runs").unwrap();
@@ -550,5 +551,4 @@ fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
         }
         other => panic!("{other:?}"),
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }

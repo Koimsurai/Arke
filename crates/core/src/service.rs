@@ -14,21 +14,24 @@
 //!   generates traffic). [`DirService::recheck`] (Arke regains focus) relists once, diffs
 //!   against the last listing and sends only the differences.
 //!
-//! The watch and recheck threads sleep until something happens: a change, a recheck request,
-//! or the folder being left (navigating or cancelling wakes them to quit). A tab in the
-//! background costs nothing while its folder doesn't change, and its list stays current.
+//! Watching sleeps until something happens: a change, a recheck request, or the folder being
+//! left (navigating or cancelling stops it). Every watched folder shares one thread that batches
+//! changes into deltas (`watch_hub`), and the OS side shares one too (`winfs`), so a tab in the
+//! background costs no thread of its own and nothing while its folder doesn't change, and its
+//! list stays current.
+
+mod watch_hub;
 
 use parking_lot::Mutex;
 use rust_i18n::t;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::OsString;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::entry::Entry;
-use crate::fs::{Fs, WatchEvent};
+use crate::fs::{Change, Fs};
 use crate::model::Delta;
 use crate::net::{FailKind, NetProbe};
 use crate::sort::SortSpec;
@@ -125,17 +128,11 @@ pub struct DirService {
     cache: Arc<Mutex<NetCache>>,
     /// Recheck trigger for the current network folder ([`DirService::recheck`]).
     recheck: Arc<Mutex<Option<flume::Sender<()>>>>,
-    /// Wakes the current folder's watch thread to quit.
-    watch_stop: Arc<Mutex<Option<flume::Sender<WatchMsg>>>>,
+    /// The current folder's watch, to stop when it is left.
+    watch_stop: Arc<Mutex<Option<watch_hub::WatchId>>>,
     /// How often watch and recheck threads woke up (tests check they don't poll).
     #[cfg(test)]
     wakeups: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-/// What a watch thread waits for.
-enum WatchMsg {
-    Event(WatchEvent),
-    Stop,
 }
 
 /// Number of network folders remembered.
@@ -285,14 +282,16 @@ impl DirService {
         self.stop_threads();
     }
 
-    /// Wakes the previous folder's watch and recheck threads so they quit (call after bumping the
-    /// generation: a thread that registers later sees it is stale and quits by itself).
+    /// Stops the previous folder's watch and wakes its recheck thread to quit (call after bumping
+    /// the generation: a watch that registers later sees it is stale and stops by itself).
     fn stop_threads(&self) {
         // Dropping the sender ends the recheck thread's wait.
         drop(self.recheck.lock().take());
         let stop = self.watch_stop.lock().take();
-        if let Some(stop) = stop {
-            let _ = stop.send(WatchMsg::Stop);
+        if let Some(id) = stop
+            && let Some(hub) = watch_hub::hub()
+        {
+            let _ = hub.send(watch_hub::Msg::Stop(id));
         }
     }
 
@@ -318,7 +317,7 @@ struct Job {
     probe: Option<Arc<dyn NetProbe>>,
     cache: Arc<Mutex<NetCache>>,
     recheck: Arc<Mutex<Option<flume::Sender<()>>>>,
-    watch_stop: Arc<Mutex<Option<flume::Sender<WatchMsg>>>>,
+    watch_stop: Arc<Mutex<Option<watch_hub::WatchId>>>,
     #[cfg(test)]
     wakeups: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether probe or listing decided first; if the probe found the server down, the listing is
@@ -596,90 +595,39 @@ impl Job {
     #[allow(clippy::unused_self, reason = "only tests count wakeups")]
     const fn woke(&self) {}
 
+    /// Watches `dir` through the hub (see `watch_hub`). Opening the OS watch can block on a
+    /// network path, so this runs on a thread of its own, which ends once the watch is open.
     fn watch_dir(self, dir: &Path, show_hidden: bool) {
-        let (tx, rx) = flume::unbounded::<WatchMsg>();
+        let Some(hub) = watch_hub::hub() else {
+            return;
+        };
+        let id = watch_hub::next_id();
         {
-            // Checked under the lock, so a navigation either sees this sender or runs before the
+            // Checked under the lock, so a navigation either sees this watch or runs before the
             // check.
             let mut stop = self.watch_stop.lock();
             if self.is_stale() {
                 return;
             }
-            *stop = Some(tx.clone());
+            *stop = Some(id);
         }
-        let _guard = match self.fs.watch(
+        let fs = Arc::clone(&self.fs);
+        let watched = watch_hub::Watched::new(self, dir.to_path_buf(), show_hidden);
+        let _ = hub.send(watch_hub::Msg::Add(id, Box::new(watched)));
+        let events = hub.clone();
+        let opened = fs.watch_changes(
             dir,
             Box::new(move |event| {
-                let _ = tx.send(WatchMsg::Event(event));
+                let _ = events.send(watch_hub::Msg::Event(id, event));
             }),
-        ) {
-            Ok(guard) => guard,
+        );
+        match opened {
+            Ok(guard) => {
+                let _ = hub.send(watch_hub::Msg::Armed(id, guard));
+            }
             Err(err) => {
                 log::warn!("cannot watch {}: {err}", dir.display());
-                return;
-            }
-        };
-
-        let mut pending: HashSet<OsString> = HashSet::new();
-        let mut first_pending: Option<Instant> = None;
-        let mut last_event = Instant::now();
-        let mut rescan = false;
-
-        loop {
-            // Nothing pending: sleep until a change or the stop. Otherwise until the batch is due.
-            let msg = match first_pending {
-                None => rx.recv().map_err(|flume::RecvError::Disconnected| {
-                    flume::RecvTimeoutError::Disconnected
-                }),
-                Some(first) => {
-                    let due = (last_event + WATCH_DEBOUNCE).min(first + WATCH_MAX_LATENCY);
-                    rx.recv_deadline(due)
-                }
-            };
-            self.woke();
-            match msg {
-                Ok(WatchMsg::Event(WatchEvent::Changed(paths))) => {
-                    for p in &paths {
-                        if p.parent() == Some(dir)
-                            && let Some(name) = p.file_name()
-                        {
-                            pending.insert(name.to_os_string());
-                        }
-                    }
-                    last_event = Instant::now();
-                    first_pending.get_or_insert(last_event);
-                }
-                Ok(WatchMsg::Event(WatchEvent::Rescan)) => {
-                    rescan = true;
-                    last_event = Instant::now();
-                    first_pending.get_or_insert(last_event);
-                }
-                Err(flume::RecvTimeoutError::Timeout) => {}
-                Ok(WatchMsg::Stop) | Err(flume::RecvTimeoutError::Disconnected) => return,
-            }
-            if self.is_stale() {
-                return; // dropping _guard stops the watch
-            }
-            let Some(first) = first_pending else { continue };
-            let quiet = last_event.elapsed() >= WATCH_DEBOUNCE;
-            if !(quiet || first.elapsed() >= WATCH_MAX_LATENCY) {
-                continue;
-            }
-            first_pending = None;
-            if rescan || pending.len() > WATCH_MAX_BATCH {
-                pending.clear();
-                rescan = false;
-                self.send(IoEvent::NeedsRescan {
-                    generation: self.generation,
-                });
-                continue;
-            }
-            let delta = self.stat_names(dir, pending.drain(), show_hidden);
-            if !delta.is_empty() {
-                self.send(IoEvent::Delta {
-                    generation: self.generation,
-                    delta,
-                });
+                let _ = hub.send(watch_hub::Msg::Stop(id));
             }
         }
     }
@@ -790,36 +738,59 @@ impl Job {
         }
     }
 
-    fn stat_names(
-        &self,
-        dir: &Path,
-        names: impl Iterator<Item = OsString>,
-        show_hidden: bool,
-    ) -> Delta {
+    /// Sends the delta for `changes` in `dir`, if there is one. Stats only the changes the
+    /// notification didn't describe.
+    fn send_delta(&self, dir: &Path, changes: Vec<Change>, show_hidden: bool) {
         let mut delta = Delta {
             upserts: Vec::new(),
             removed: Vec::new(),
         };
-        for name in names {
-            let full = dir.join(&name);
-            let name = name.to_string_lossy();
-            match self.fs.stat(&full) {
-                Ok(entry) if !entry.concealed(show_hidden) => {
-                    // Found under another spelling (the case changed, or a short 8.3 name): the
-                    // item goes in under the name it has, and nothing stays under this one (#310).
-                    match self.fs.listed_name(&full) {
-                        Some(listed) => {
-                            delta.upserts.push(entry.renamed(&listed));
-                            delta.removed.push(name.into());
-                        }
-                        None => delta.upserts.push(entry),
+        for change in changes {
+            match change {
+                Change::Present(_, entry) if entry.concealed(show_hidden) => {
+                    delta.removed.push(Arc::clone(&entry.name));
+                }
+                Change::Present(_, entry) => delta.upserts.push(entry),
+                Change::Removed(path) => {
+                    if let Some(name) = path.file_name() {
+                        delta.removed.push(name.to_string_lossy().into());
                     }
                 }
-                // Gone, or now hidden: remove from the list.
-                _ => delta.removed.push(name.into()),
+                Change::Unknown(path) => {
+                    if let Some(name) = path.file_name() {
+                        self.stat_into(&dir.join(name), show_hidden, &mut delta);
+                    }
+                }
             }
         }
-        delta
+        if !delta.is_empty() {
+            self.send(IoEvent::Delta {
+                generation: self.generation,
+                delta,
+            });
+        }
+    }
+
+    /// Adds what `full` is now to `delta`: the entry, or its removal if gone or hidden.
+    fn stat_into(&self, full: &Path, show_hidden: bool, delta: &mut Delta) {
+        let name = full
+            .file_name()
+            .map_or_default(|n| n.to_string_lossy().into_owned());
+        match self.fs.stat(full) {
+            Ok(entry) if !entry.concealed(show_hidden) => {
+                // Found under another spelling (the case changed, or a short 8.3 name): the
+                // item goes in under the name it has, and nothing stays under this one (#310).
+                match self.fs.listed_name(full) {
+                    Some(listed) => {
+                        delta.upserts.push(entry.renamed(&listed));
+                        delta.removed.push(name.into());
+                    }
+                    None => delta.upserts.push(entry),
+                }
+            }
+            // Gone, or now hidden: remove from the list.
+            _ => delta.removed.push(name.into()),
+        }
     }
 }
 
@@ -1529,9 +1500,8 @@ mod tests {
     /// The same on the real file system, in the temp directory.
     #[test]
     fn real_fs_case_only_rename_leaves_one_item() {
-        let dir = std::env::temp_dir().join(format!("arke-core-case-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("report.txt"), b"x").unwrap();
         let (svc, events) = service(Arc::new(RealFs));
         svc.navigate(dir.clone(), opts(true));
@@ -1544,15 +1514,13 @@ mod tests {
             shown(&events)
         );
         svc.cancel();
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Real file system: only touches the temp directory.
     #[test]
     fn real_fs_lists_and_watches_temp_dir() {
-        let dir = std::env::temp_dir().join(format!("arke-core-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         for i in 0..20 {
             std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
         }
@@ -1572,6 +1540,181 @@ mod tests {
             IoEvent::Delta { delta, .. } if delta.upserts.iter().any(|u| &*u.name == "new.txt")
         )));
         svc.cancel();
-        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file system whose watch describes changes (as NTFS's extended records do): the test
+    /// sends them, and counts the stats.
+    struct Describing {
+        inner: Arc<FakeFs>,
+        stats: std::sync::atomic::AtomicUsize,
+        on_change: Mutex<Option<Arc<crate::fs::ChangeCallback>>>,
+    }
+
+    impl Fs for Describing {
+        fn read_dir(&self, path: &Path) -> std::io::Result<crate::fs::DirIter> {
+            self.inner.read_dir(path)
+        }
+        fn stat(&self, path: &Path) -> std::io::Result<Entry> {
+            self.stats.fetch_add(1, Ordering::SeqCst);
+            self.inner.stat(path)
+        }
+        fn watch(
+            &self,
+            path: &Path,
+            cb: crate::fs::WatchCallback,
+        ) -> std::io::Result<Box<dyn Send>> {
+            self.inner.watch(path, cb)
+        }
+        fn watch_changes(
+            &self,
+            _: &Path,
+            on_change: crate::fs::ChangeCallback,
+        ) -> std::io::Result<Box<dyn Send>> {
+            let on_change = Arc::new(on_change);
+            *self.on_change.lock() = Some(Arc::clone(&on_change));
+            Ok(Box::new(on_change))
+        }
+        fn read(&self, _: &Path, _: u64) -> std::io::Result<Vec<u8>> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+        fn read_head(&self, _: &Path, _: u64) -> std::io::Result<Vec<u8>> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    impl Describing {
+        /// Waits until the folder is watched, then sends `changes`.
+        fn send(&self, changes: Vec<Change>) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let watching = self.on_change.lock().clone();
+                if let Some(on_change) = watching {
+                    on_change(crate::fs::ChangeEvent::Changed(changes));
+                    return;
+                }
+                assert!(Instant::now() < deadline, "never watched");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    /// Changes the notification described (a new file with its size, a deleted one, a file now
+    /// hidden) become a delta without any stat; the last change of a name is the one that counts;
+    /// a change it didn't describe is stat'ed as before.
+    #[test]
+    fn described_changes_need_no_stat() {
+        const HIDDEN: u32 = 0x2;
+        let fake = FakeFs::new();
+        let dir = PathBuf::from(r"C:\w");
+        fake.insert_many(&dir, 3);
+        let fs = Arc::new(Describing {
+            inner: Arc::clone(&fake),
+            stats: std::sync::atomic::AtomicUsize::new(0),
+            on_change: Mutex::new(None),
+        });
+        let (svc, events) = service(Arc::clone(&fs) as Arc<dyn Fs>);
+        let hidden_off = ListOptions {
+            show_hidden: false,
+            ..opts(true)
+        };
+        svc.navigate(dir.clone(), hidden_off);
+        assert!(shows(
+            &events,
+            &["file_000000.txt", "file_000001.txt", "file_000002.txt"]
+        ));
+        let file = |name: &str, size: u64, attributes: u32| {
+            Change::Present(
+                dir.join(name),
+                Entry::new(name, EntryKind::File, size, None, attributes),
+            )
+        };
+        fs.send(vec![
+            file("new.txt", 7, 0x20),
+            Change::Removed(dir.join("file_000000.txt")),
+            file("file_000001.txt", 1, HIDDEN),
+            file("gone.txt", 1, 0x20),
+            Change::Removed(dir.join("gone.txt")),
+            Change::Removed(dir.join("back.txt")),
+            file("back.txt", 4, 0x20),
+        ]);
+        assert!(
+            shows(&events, &["back.txt", "file_000002.txt", "new.txt"]),
+            "shown: {:?}",
+            shown(&events)
+        );
+        assert!(events.lock().iter().any(|e| matches!(
+            e,
+            IoEvent::Delta { delta, .. }
+                if delta.upserts.iter().any(|u| &*u.name == "new.txt" && u.size == 7)
+        )));
+        assert_eq!(fs.stats.load(Ordering::SeqCst), 0, "nothing was stat'ed");
+
+        // Not described: looked up.
+        fake.remove(&dir, "file_000002.txt");
+        fs.send(vec![Change::Unknown(dir.join("file_000002.txt"))]);
+        assert!(
+            shows(&events, &["back.txt", "new.txt"]),
+            "shown: {:?}",
+            shown(&events)
+        );
+        assert_eq!(fs.stats.load(Ordering::SeqCst), 1);
+        svc.cancel();
+    }
+
+    /// Many folders watched at once (tabs, panes, the tree) each get their own deltas from the
+    /// shared watch thread, and leaving one stops only its watch.
+    #[test]
+    fn many_watched_folders_share_the_watch_thread() {
+        let fs = FakeFs::new();
+        let dirs: Vec<PathBuf> = (0..8)
+            .map(|i| PathBuf::from(format!(r"C:\tab{i}")))
+            .collect();
+        let services: Vec<(DirService, Events)> = dirs
+            .iter()
+            .map(|dir| {
+                fs.insert_many(dir, 1);
+                let (svc, events) = service(Arc::clone(&fs) as Arc<dyn Fs>);
+                svc.navigate(dir.clone(), opts(true));
+                (svc, events)
+            })
+            .collect();
+        for (dir, (_, events)) in dirs.iter().zip(&services) {
+            assert!(shows(events, &["file_000000.txt"]));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while fs.watcher_count(dir) == 0 {
+                assert!(Instant::now() < deadline, "{} never watched", dir.display());
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        for (i, dir) in dirs.iter().enumerate() {
+            let name = format!("only-in-{i}.txt");
+            fs.add_file(dir, &name, 1);
+            fs.emit_changed(dir, &[name.as_str()]);
+        }
+        for (i, (_, events)) in services.iter().enumerate() {
+            let name = format!("only-in-{i}.txt");
+            assert!(
+                shows(events, &["file_000000.txt", name.as_str()]),
+                "tab {i}: {:?}",
+                shown(events)
+            );
+        }
+        services[3].0.cancel();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fs.watcher_count(&dirs[3]) > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the left folder is still watched"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for (i, dir) in dirs.iter().enumerate() {
+            assert_eq!(
+                fs.watcher_count(dir),
+                usize::from(i != 3),
+                "{}",
+                dir.display()
+            );
+        }
     }
 }

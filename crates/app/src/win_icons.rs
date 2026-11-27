@@ -14,27 +14,49 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::UI::Shell::{
-    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY, SIIGBF_RESIZETOFIT,
-    SIIGBF_THUMBNAILONLY,
+    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF, SIIGBF_ICONONLY,
+    SIIGBF_INCACHEONLY, SIIGBF_RESIZETOFIT, SIIGBF_THUMBNAILONLY,
 };
 use windows::core::PCWSTR;
 
 use crate::win_fileops::{Com, wide};
 
+/// `GetDriveTypeW` results (WinBase.h).
+const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
+const DRIVE_RAMDISK: u32 = 6;
 
-/// Whether the path is on a local fixed disk (not UNC, network, removable or optical).
-/// `GetDriveTypeW` doesn't hit the network, but call from a background thread anyway.
-pub(crate) fn is_local_disk(path: &Path) -> bool {
+/// The one definition of "local" for a `GetDriveTypeW` result: internal disks, USB sticks, SD
+/// cards and RAM disks. Network and optical drives are not local (thumbnails, folder sizes and
+/// cloud status skip them).
+pub(crate) const fn is_local_drive_type(drive_type: u32) -> bool {
+    matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_RAMDISK)
+}
+
+/// `GetDriveTypeW` of the drive the path is on; `None` for UNC and relative paths.
+/// It doesn't hit the network, but call from a background thread anyway.
+fn drive_type_of(path: &Path) -> Option<u32> {
     let Some(Component::Prefix(prefix)) = path.components().next() else {
-        return false;
+        return None;
     };
     let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
-        return false;
+        return None;
     };
     let root = wide(std::ffi::OsStr::new(&format!("{}:\\", char::from(letter))));
     // SAFETY: root is a NUL-terminated "X:\" wide string.
-    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED }
+    Some(unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) })
+}
+
+/// Whether the path is on a local disk: internal, USB, SD card or RAM disk (not UNC, network or
+/// optical). See [`is_local_drive_type`].
+pub(crate) fn is_local_disk(path: &Path) -> bool {
+    drive_type_of(path).is_some_and(is_local_drive_type)
+}
+
+/// Whether the path is on an internal fixed disk (not removable media). For what should not
+/// touch a USB stick on its own, such as the global search index.
+pub(crate) fn is_fixed_disk(path: &Path) -> bool {
+    drive_type_of(path) == Some(DRIVE_FIXED)
 }
 
 /// System icon for a file as straight-alpha RGBA. `None` means use the theme icon.
@@ -70,18 +92,23 @@ pub(crate) fn video_thumbnail(path: &Path, size: u32) -> Option<Thumbnail> {
     let factory: IShellItemImageFactory =
         unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }.ok()?;
     let edge = i32::try_from(size).ok()?;
-    // SAFETY: factory is a valid interface; THUMBNAILONLY returns no icon in place of a picture.
-    let bitmap = unsafe {
-        factory.GetImage(
-            SIZE { cx: edge, cy: edge },
-            SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT,
-        )
-    }
-    .ok()?;
-    let pixels = bitmap_pixels(bitmap);
-    // SAFETY: GetImage hands us ownership of the HBITMAP.
-    let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-    pixels
+    cache_first(|flags| {
+        // SAFETY: factory is a valid interface; THUMBNAILONLY returns no icon in place of a
+        // picture, and INCACHEONLY never runs a thumbnail provider.
+        let bitmap = unsafe { factory.GetImage(SIZE { cx: edge, cy: edge }, flags) }.ok()?;
+        let pixels = bitmap_pixels(bitmap);
+        // SAFETY: GetImage hands us ownership of the HBITMAP.
+        let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+        pixels
+    })
+}
+
+/// Asks `request` for a thumbnail already in Windows' thumbnail cache first (instant), and only
+/// on a miss for one Windows has to generate (seconds for a cold 8K video). The cached picture
+/// may be another size than the one asked for; callers fit it.
+fn cache_first(mut request: impl FnMut(SIIGBF) -> Option<Thumbnail>) -> Option<Thumbnail> {
+    let generate = SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT;
+    request(generate | SIIGBF_INCACHEONLY).or_else(|| request(generate))
 }
 
 /// Reads an HBITMAP as straight-alpha RGBA.
@@ -197,11 +224,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn drive_type_classification() {
+        assert!(is_local_drive_type(DRIVE_FIXED));
+        assert!(is_local_drive_type(DRIVE_REMOVABLE));
+        assert!(is_local_drive_type(DRIVE_RAMDISK));
+        // DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_CDROM
+        for other in [0, 1, 4, 5] {
+            assert!(!is_local_drive_type(other), "{other}");
+        }
+    }
+
+    #[test]
     fn local_disk_detection() {
         let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
         assert!(is_local_disk(Path::new(&format!(r"{system}\Windows"))));
         assert!(!is_local_disk(Path::new(r"\\server\share\a.png")));
         assert!(!is_local_disk(Path::new(r"relative\a.png")));
+        assert!(is_fixed_disk(Path::new(&format!(r"{system}\Windows"))));
+        assert!(!is_fixed_disk(Path::new(r"\\server\share\a.png")));
     }
 
     #[test]
@@ -216,6 +256,53 @@ mod tests {
             icon.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "icon is not fully transparent"
         );
+    }
+
+    fn picture() -> Thumbnail {
+        Thumbnail {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 255],
+        }
+    }
+
+    #[test]
+    fn a_cached_thumbnail_is_used_without_generating() {
+        let mut asked = Vec::new();
+        let got = cache_first(|flags| {
+            asked.push(flags);
+            Some(picture())
+        });
+        assert!(got.is_some());
+        assert_eq!(asked.len(), 1, "one call, from the cache only");
+        assert_eq!(asked[0] & SIIGBF_INCACHEONLY, SIIGBF_INCACHEONLY);
+    }
+
+    #[test]
+    fn a_cache_miss_falls_back_to_generating() {
+        let mut asked = Vec::new();
+        let got = cache_first(|flags| {
+            asked.push(flags);
+            (flags.0 & SIIGBF_INCACHEONLY.0 == 0).then(picture)
+        });
+        assert!(got.is_some());
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0] & SIIGBF_INCACHEONLY, SIIGBF_INCACHEONLY);
+        // The second request is today's, unchanged.
+        assert_eq!(asked[1], SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT);
+    }
+
+    #[test]
+    fn no_thumbnail_anywhere_gives_none() {
+        let mut calls = 0;
+        assert!(
+            cache_first(|_| {
+                calls += 1;
+                None
+            })
+            .is_none()
+        );
+        assert_eq!(calls, 2);
     }
 
     #[test]

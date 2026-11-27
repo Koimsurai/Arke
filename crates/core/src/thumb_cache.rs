@@ -490,23 +490,19 @@ impl ThumbCache {
 mod tests {
     use super::*;
 
-    struct TempDir(PathBuf);
+    struct TempDir(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "arke-thumbcache-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            let _ = fs::remove_dir_all(&dir);
-            Self(dir)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-thumbcache-{tag}-"))
+                .tempdir()
+                .unwrap();
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 
@@ -564,7 +560,7 @@ mod tests {
         assert!(cache.in_memory(&k).is_some());
         assert!(cache.load(&k, || panic!("decoded again")).is_some());
         // A new process (empty memory) reads it from disk.
-        let fresh = ThumbCache::new(1 << 20, Some((tmp.0.clone(), 1 << 20)));
+        let fresh = ThumbCache::new(1 << 20, Some((tmp.0, 1 << 20)));
         assert!(fresh.in_memory(&k).is_none());
         let from_disk = fresh.load(&k, || panic!("decoded again")).unwrap();
         assert_eq!((from_disk.width, from_disk.height), (192, 128));
@@ -574,7 +570,7 @@ mod tests {
     #[test]
     fn an_edited_file_or_another_size_is_a_miss() {
         let tmp = TempDir::new("keys");
-        let cache = ThumbCache::new(1 << 20, Some((tmp.0.clone(), 1 << 20)));
+        let cache = ThumbCache::new(1 << 20, Some((tmp.0, 1 << 20)));
         let k = key("a.jpg", 192);
         cache.load(&k, || Some(photo(32, 32, 255)));
         let mut edited = k.clone();
@@ -595,7 +591,7 @@ mod tests {
     fn a_file_holding_another_key_reads_as_a_miss() {
         let tmp = TempDir::new("collision");
         let disk = Disk {
-            dir: tmp.0.clone(),
+            dir: tmp.0,
             cap: 1 << 20,
             used: Mutex::new(None),
             trimming: AtomicBool::new(false),
@@ -637,7 +633,7 @@ mod tests {
     #[test]
     fn the_folder_is_trimmed_oldest_first_when_over_its_cap() {
         let tmp = TempDir::new("trim");
-        let cache = ThumbCache::new(1 << 20, Some((tmp.0.clone(), 10_000)));
+        let cache = ThumbCache::new(1 << 20, Some((tmp.0, 10_000)));
         let disk = Arc::clone(cache.disk.as_ref().unwrap());
         let keys: Vec<ThumbKey> = (0..6).map(|i| key(&format!("{i}.jpg"), 192)).collect();
         for (i, k) in keys.iter().enumerate() {
@@ -664,7 +660,7 @@ mod tests {
     #[test]
     fn writes_count_toward_the_cap() {
         let tmp = TempDir::new("count");
-        let cache = ThumbCache::new(1 << 20, Some((tmp.0.clone(), 1 << 20)));
+        let cache = ThumbCache::new(1 << 20, Some((tmp.0, 1 << 20)));
         assert_eq!(cache.disk_bytes(), 0);
         cache.load(&key("a.jpg", 192), || Some(photo(64, 64, 255)));
         let one = cache.disk_bytes();
@@ -724,7 +720,7 @@ mod tests {
     #[test]
     fn a_failed_source_stores_nothing() {
         let tmp = TempDir::new("fail");
-        let cache = ThumbCache::new(1 << 20, Some((tmp.0.clone(), 1 << 20)));
+        let cache = ThumbCache::new(1 << 20, Some((tmp.0, 1 << 20)));
         assert_eq!(cache.load(&key("broken.jpg", 192), || None), None);
         assert_eq!(cache.disk_bytes(), 0);
     }

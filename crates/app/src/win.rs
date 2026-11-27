@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{FILETIME, HINSTANCE, SYSTEMTIME};
-use windows::Win32::Globalization::GetUserDefaultLocaleName;
+use windows::Win32::Globalization::{
+    GetUserDefaultLocaleName, GetUserDefaultUILanguage, LCIDToLocaleName,
+};
 use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, QueryDosDeviceW,
 };
@@ -225,53 +227,6 @@ fn volume_label(root: &[u16]) -> Option<String> {
     (!label.is_empty()).then_some(label)
 }
 
-/// Common editors found at their default install paths. Only checks for the exe: no registry,
-/// nothing launched.
-fn editor_apps() -> Vec<(String, PathBuf)> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let programs = std::env::var_os("ProgramFiles").map(PathBuf::from);
-    let candidates: [(&str, Option<PathBuf>); 5] = [
-        (
-            "VS Code",
-            local.as_ref().map(|d| {
-                d.join("Programs")
-                    .join("Microsoft VS Code")
-                    .join("Code.exe")
-            }),
-        ),
-        (
-            "VS Code",
-            programs
-                .as_ref()
-                .map(|d| d.join("Microsoft VS Code").join("Code.exe")),
-        ),
-        (
-            "Zed",
-            local
-                .as_ref()
-                .map(|d| d.join("Programs").join("Zed").join("Zed.exe")),
-        ),
-        (
-            "Zed",
-            programs.as_ref().map(|d| d.join("Zed").join("Zed.exe")),
-        ),
-        (
-            "Cursor",
-            local
-                .as_ref()
-                .map(|d| d.join("Programs").join("cursor").join("Cursor.exe")),
-        ),
-    ];
-    let mut found: Vec<(String, PathBuf)> = Vec::new();
-    for (name, path) in candidates {
-        let Some(path) = path else { continue };
-        if found.iter().all(|(seen, _)| seen != name) && path.is_file() {
-            found.push((name.to_owned(), path));
-        }
-    }
-    found
-}
-
 /// The user's Start menu programs folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`).
 /// Follows `%APPDATA%`, so tests with a temp profile stay in temp.
 fn start_menu_programs(appdata: &std::path::Path) -> PathBuf {
@@ -295,9 +250,7 @@ pub(crate) fn start_menu_shortcut(appdata: &std::path::Path) -> PathBuf {
 }
 
 fn appdata() -> Result<PathBuf, ShellError> {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .ok_or(ShellError::MissingEnv("APPDATA"))
+    crate::paths::roaming_root().ok_or(ShellError::MissingEnv("APPDATA"))
 }
 
 /// Creates or removes the Startup folder shortcut. It points at this exe with `--background`
@@ -459,6 +412,20 @@ pub(crate) fn windows_version() -> Option<(u32, u32, u32)> {
         .then_some((info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber))
 }
 
+/// Whether scrollbars stay fully drawn: Windows 10, or "Always show scrollbars" on Windows 11
+/// (`DynamicScrollbars` = 0). Reads one registry value; fine on the UI thread.
+pub(crate) fn always_show_scrollbars() -> bool {
+    use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+    crate::scrollbar::always_shown(
+        windows_version().map(|(_, _, build)| build),
+        read_reg_dword(
+            HKEY_CURRENT_USER,
+            r"Control Panel\Accessibility",
+            "DynamicScrollbars",
+        ),
+    )
+}
+
 /// Windows 11 (build 22000+), which Mica needs. RtlGetVersion ignores the compatibility manifest.
 pub(crate) fn supports_mica() -> bool {
     use windows::Wdk::System::SystemServices::RtlGetVersion;
@@ -484,16 +451,62 @@ pub(crate) fn ui_locale() -> String {
 }
 
 /// UI language Windows itself is set to (`zh-TW`, `zh-CN`, `ja`, `de`, `es`, `pt-BR` or `en`), ignoring `ARKE_LANG` and the
-/// Language setting. Decides which Chinese font English UI text falls back to.
+/// Language setting.
 pub(crate) fn system_locale() -> &'static str {
+    locale_for(&user_locale_name())
+}
+
+/// The user's locale name as Windows reports it (`zh-HK`, `en-US`), empty if it can't be read.
+pub(crate) fn user_locale_name() -> String {
     let mut buf = [0u16; 85];
     // SAFETY: buf is a valid out buffer (LOCALE_NAME_MAX_LENGTH = 85).
     let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
-    let name = usize::try_from(len)
+    usize::try_from(len)
         .ok()
         .filter(|&n| n > 0)
-        .map_or_default(|n| String::from_utf16_lossy(&buf[..n - 1]));
-    locale_for(&name)
+        .map_or_default(|n| String::from_utf16_lossy(&buf[..n - 1]))
+}
+
+/// Locale text is laid out in for UI language `ui` on a system whose user locale is `system`
+/// (as [`user_locale_name`] reports it), or `None` to keep the system's.
+///
+/// DirectWrite picks the font for characters the UI font lacks by this locale, and Han characters
+/// shared by Chinese, Japanese and Korean take its shapes (U+7F29 in 「压缩」 is drawn
+/// Traditional under `zh-TW`). A CJK UI language sets its own locale unless the system's is
+/// already of that language and script, which keeps its region (`zh-HK` for a Traditional UI on
+/// a Hong Kong system). Other UI languages keep the system's: the file names on it are most
+/// likely written in its language.
+pub(crate) fn text_locale(ui: &str, system: &str) -> Option<&'static str> {
+    let lower = system.to_ascii_lowercase();
+    let (own, same) = match ui {
+        "zh-TW" => ("zh-TW", locale_for(system) == "zh-TW"),
+        // A bare `zh` names no script, so it doesn't count as Simplified here.
+        "zh-CN" => ("zh-CN", locale_for(system) == "zh-CN" && lower != "zh"),
+        "ja" => ("ja-JP", is_language(&lower, "ja")),
+        "ko" => ("ko-KR", is_language(&lower, "ko")),
+        _ => return None,
+    };
+    (!same).then_some(own)
+}
+
+/// The language Windows shows its own texts in (File Explorer's type names), as one of Arke's
+/// locales; `None` when Arke has no translation for it. Not the regional format of
+/// [`system_locale`].
+pub(crate) fn system_display_locale() -> Option<&'static str> {
+    let mut buf = [0u16; 85];
+    // SAFETY: no arguments; buf is a valid out buffer (LOCALE_NAME_MAX_LENGTH = 85).
+    let len = unsafe {
+        let lcid = u32::from(GetUserDefaultUILanguage());
+        LCIDToLocaleName(lcid, Some(&mut buf), 0)
+    };
+    let len = usize::try_from(len).ok().filter(|&n| n > 0)?;
+    display_locale_for(&String::from_utf16_lossy(&buf[..len - 1]))
+}
+
+/// [`locale_for`], but `None` for a language Arke has no locale for (it would read as English).
+fn display_locale_for(name: &str) -> Option<&'static str> {
+    let locale = locale_for(name);
+    (locale != "en" || is_language(&name.to_ascii_lowercase(), "en")).then_some(locale)
 }
 
 /// The temp folder under its long name. Some machines (CI runners) report it as 8.3 short names
@@ -511,6 +524,16 @@ pub(crate) fn long_temp_dir() -> PathBuf {
         return short;
     }
     PathBuf::from(String::from_utf16_lossy(&buf[..len]))
+}
+
+/// A new folder under [`long_temp_dir`], named from `prefix`, deleted when dropped (also when a
+/// test panics).
+#[cfg(test)]
+pub(crate) fn long_tempdir(prefix: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(long_temp_dir())
+        .unwrap()
 }
 
 fn locale_for(system: &str) -> &'static str {
@@ -625,6 +648,39 @@ fn disk_space(root: &[u16]) -> Option<(u64, u64)> {
         .ok()?;
     }
     (total > 0).then_some((free, total))
+}
+
+/// The ProgID of the program `path` opens with by default, for its extension and the user's
+/// choice. `None` without an extension or an association. Reads the registry; not for the UI
+/// thread.
+fn handler_progid(path: &Path) -> Option<String> {
+    use windows::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_PROGID, AssocQueryStringW};
+    use windows::core::PWSTR;
+    debug_assert!(!arke_core::fs::is_ui_thread());
+    let ext = path.extension()?;
+    let assoc = wide(&std::ffi::OsString::from(format!(
+        ".{}",
+        ext.to_string_lossy()
+    )));
+    let mut buffer = [0u16; 260];
+    let mut len = 260u32;
+    // SAFETY: `assoc` is NUL-terminated; the buffer holds `len` characters.
+    let asked = unsafe {
+        AssocQueryStringW(
+            ASSOCF_NONE,
+            ASSOCSTR_PROGID,
+            PCWSTR(assoc.as_ptr()),
+            PCWSTR::null(),
+            Some(PWSTR(buffer.as_mut_ptr())),
+            &raw mut len,
+        )
+    };
+    if asked.is_err() {
+        return None;
+    }
+    let end = (len as usize).saturating_sub(1).min(buffer.len());
+    let progid = String::from_utf16_lossy(&buffer[..end]);
+    (!progid.is_empty()).then_some(progid)
 }
 
 impl Shell for WinShell {
@@ -757,8 +813,19 @@ impl Shell for WinShell {
         let com =
             unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
         // The folder view it is opened from, so Photos and the like can step through the folder
-        // in this order (`win_viewsite.rs`).
-        let site = sort.and_then(|sort| crate::win_viewsite::site(path, &sort));
+        // in this order (`win_viewsite.rs`). Packaged apps only: handed a folder view, Windows
+        // Photo Viewer stays on "Loading..." (#412).
+        let site = sort
+            .filter(|_| {
+                let progid = handler_progid(path);
+                let wanted = crate::win_viewsite::handler_wants_site(progid.as_deref());
+                log::debug!(
+                    "open {}: handler {progid:?}, view site {wanted}",
+                    path.display()
+                );
+                wanted
+            })
+            .and_then(|sort| crate::win_viewsite::site(path, &sort));
         let mut info = SHELLEXECUTEINFOW {
             cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
             // NOASYNC: return only when done, since this thread exits right after.
@@ -1043,6 +1110,11 @@ impl Shell for WinShell {
         crate::win_icons::is_local_disk(path)
     }
 
+    fn is_fixed_disk(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_icons::is_fixed_disk(path)
+    }
+
     fn has_recycle_bin(&self, path: &Path) -> bool {
         crate::win_recycle::has_recycle_bin(path)
     }
@@ -1052,9 +1124,9 @@ impl Shell for WinShell {
         crate::win_icons::file_icon(path, size)
     }
 
-    fn type_icon(&self, ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+    fn type_icon(&self, ext: &str, px: u32) -> Option<arke_core::thumbs::Thumbnail> {
         debug_assert!(!arke_core::fs::is_ui_thread());
-        crate::win_dragimage::registered_type_icon(ext)
+        crate::win_dragimage::registered_type_icon(ext, px)
     }
 
     fn video_thumbnail(
@@ -1148,6 +1220,11 @@ impl Shell for WinShell {
     fn set_clipboard_text(&self, text: &str) -> Result<(), ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         win_fileops::set_clipboard_text(text)
+    }
+
+    fn solid_state(&self, path: &Path) -> bool {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        crate::win_fast_copy::solid_state_at(path)
     }
 
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
@@ -1338,8 +1415,25 @@ impl Shell for WinShell {
         shell_execute(program, &args, dir)
     }
 
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
-        crate::quicklook::toggle(item, exe).map_err(ShellError::from)
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
+        use std::os::windows::process::CommandExt as _;
+        debug_assert!(
+            !arke_core::fs::is_ui_thread(),
+            "run_program must not run on the UI thread"
+        );
+        // Raw: the arguments are already quoted (`external.rs`), and a template may need text
+        // such as `*"list"` exactly as written, which normal argument quoting would rewrite.
+        std::process::Command::new(program).raw_arg(args).spawn()?;
+        Ok(())
+    }
+
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        debug_assert!(
+            !arke_core::fs::is_ui_thread(),
+            "write_pipe must not run on the UI thread"
+        );
+        crate::external_pipe::send_line(pipe, line, crate::external_pipe::BUSY_WAIT)?;
+        Ok(())
     }
 
     fn disk_spaces(&self, roots: &[PathBuf]) -> Vec<(PathBuf, (u64, u64))> {
@@ -1529,6 +1623,27 @@ impl Shell for WinShell {
             FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, OPEN_EXISTING,
         };
         debug_assert!(!arke_core::fs::is_ui_thread());
+        // The menu items are hidden without the Cloud Files API; this is the backstop, so a
+        // delayed load can't fail.
+        if !crate::win_cloud::available() {
+            return Err(ShellError::CloudPin {
+                failed: paths
+                    .iter()
+                    .map(|path| {
+                        let name = path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        (
+                            name,
+                            windows::Win32::Foundation::ERROR_MOD_NOT_FOUND
+                                .to_hresult()
+                                .into(),
+                        )
+                    })
+                    .collect(),
+            });
+        }
         let state = match pin {
             CloudPin::Keep => CF_PIN_STATE_PINNED,
             CloudPin::Free => CF_PIN_STATE_UNPINNED,
@@ -1616,11 +1731,6 @@ impl Shell for WinShell {
         set_start_menu(on)
     }
 
-    fn editor_apps(&self) -> Vec<(String, PathBuf)> {
-        debug_assert!(!arke_core::fs::is_ui_thread());
-        editor_apps()
-    }
-
     fn net_connect(&self, request: &crate::shell::NetConnect) -> Result<(), ShellError> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         Ok(crate::win_net::connect(request)?)
@@ -1695,8 +1805,13 @@ impl Shell for WinShell {
     }
 }
 
-/// 100 ns intervals from 1601-01-01 to 1970-01-01.
-const EPOCH_DIFF_100NS: u64 = 116_444_736_000_000_000;
+/// FILETIME ticks of a time at or after 1970 (`None` before it, as these lookups always did).
+fn unix_filetime(time: SystemTime) -> Option<u64> {
+    if time < UNIX_EPOCH {
+        return None;
+    }
+    arke_core::time::filetime_from_system_time(time)
+}
 
 /// Current time and UTC offset, for date filters like `dm:today` in global search.
 pub(crate) fn clock() -> arke_core::index_query::Clock {
@@ -1712,8 +1827,7 @@ pub(crate) fn clock() -> arke_core::index_query::Clock {
 
 /// Local offset from UTC in seconds, including DST.
 fn utc_offset(now: SystemTime) -> Option<i64> {
-    let since_unix = now.duration_since(UNIX_EPOCH).ok()?;
-    let ticks = EPOCH_DIFF_100NS + (since_unix.as_nanos() / 100) as u64;
+    let ticks = unix_filetime(now)?;
     let ft = FILETIME {
         dwLowDateTime: ticks as u32,
         dwHighDateTime: (ticks >> 32) as u32,
@@ -1743,22 +1857,13 @@ fn format_local_time(time: SystemTime) -> Option<String> {
     ))
 }
 
-/// Day number of a local date (proleptic Gregorian, arbitrary epoch; only for differences).
+/// Day number of a local date (proleptic Gregorian, since 1970-01-01; only used for differences).
 fn day_number(t: &SYSTEMTIME) -> i64 {
-    // Howard Hinnant's days_from_civil.
-    let (y, m, d) = (i64::from(t.wYear), i64::from(t.wMonth), i64::from(t.wDay));
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe
+    arke_core::time::days_from_civil(i64::from(t.wYear), i64::from(t.wMonth), i64::from(t.wDay))
 }
 
 fn local_time(time: SystemTime) -> Option<SYSTEMTIME> {
-    let since_unix = time.duration_since(UNIX_EPOCH).ok()?;
-    let ticks = EPOCH_DIFF_100NS + (since_unix.as_nanos() / 100) as u64;
+    let ticks = unix_filetime(time)?;
     let ft = FILETIME {
         dwLowDateTime: ticks as u32,
         dwHighDateTime: (ticks >> 32) as u32,
@@ -1965,7 +2070,8 @@ mod tests {
     /// Real shortcuts in a temp folder: the target reads back, and a name clash gets a number.
     #[test]
     fn creates_shortcuts_that_point_back() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-lnk-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-lnk-");
+        let dir = tmp_dir.path().to_path_buf();
         // Non-ASCII name: the target must read back intact through the shell link API.
         let target = dir.join("報告.txt");
         let dest = dir.join("dest");
@@ -1985,7 +2091,6 @@ mod tests {
         );
         assert!(first[0].exists() && second[0].exists());
         assert_eq!(shell.shortcut_target(&first[0]), Some((target, false)));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2116,7 +2221,52 @@ fn split_command(line: &str) -> (&str, &str) {
 
 #[cfg(test)]
 mod locale_tests {
-    use super::locale_for;
+    use super::{display_locale_for, locale_for, text_locale};
+
+    #[test]
+    fn display_language_without_a_translation_is_none() {
+        assert_eq!(display_locale_for("en-US"), Some("en"));
+        assert_eq!(display_locale_for("zh-TW"), Some("zh-TW"));
+        assert_eq!(display_locale_for("fr-FR"), None);
+    }
+
+    /// A CJK UI language lays text out in its own locale, unless the system's is already of that
+    /// language and script; other UI languages keep the system's.
+    #[test]
+    fn maps_ui_languages_to_text_locales() {
+        for system in ["en-US", "zh-CN", "ja-JP", "ko-KR", "de-DE", ""] {
+            assert_eq!(text_locale("zh-TW", system), Some("zh-TW"), "{system}");
+        }
+        for system in ["en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR", "zh", ""] {
+            assert_eq!(text_locale("zh-CN", system), Some("zh-CN"), "{system}");
+        }
+        for system in ["en-US", "zh-TW", "zh-CN", "ko-KR", "jav"] {
+            assert_eq!(text_locale("ja", system), Some("ja-JP"), "{system}");
+        }
+        for system in ["en-US", "zh-TW", "zh-CN", "ja-JP", "kok-IN"] {
+            assert_eq!(text_locale("ko", system), Some("ko-KR"), "{system}");
+        }
+        // The system's own region stays (Hong Kong, Macao, Singapore glyph conventions).
+        for (ui, system) in [
+            ("zh-TW", "zh-TW"),
+            ("zh-TW", "zh-HK"),
+            ("zh-TW", "zh-MO"),
+            ("zh-TW", "zh-Hant-TW"),
+            ("zh-CN", "zh-CN"),
+            ("zh-CN", "zh-SG"),
+            ("zh-CN", "zh-Hans-HK"),
+            ("ja", "ja-JP"),
+            ("ja", "JA"),
+            ("ko", "ko-KR"),
+        ] {
+            assert_eq!(text_locale(ui, system), None, "{ui} on {system}");
+        }
+        for ui in ["en", "de", "es", "pt-BR", ""] {
+            for system in ["en-US", "zh-TW", "zh-CN", "ja-JP", "ko-KR"] {
+                assert_eq!(text_locale(ui, system), None, "{ui} on {system}");
+            }
+        }
+    }
 
     #[test]
     fn maps_system_locales_to_ui_languages() {

@@ -50,6 +50,10 @@ pub struct WindowsWindowState {
     pub border_offset: WindowBorderOffset,
     pub appearance: Cell<WindowAppearance>,
     pub background_appearance: Cell<WindowBackgroundAppearance>,
+    /// zed#63821: whether the window is active, tracked from `WM_ACTIVATE`. Decides
+    /// whether the inactive top border is shown; see
+    /// [`WindowsWindowInner::update_top_border`].
+    pub active: Cell<bool>,
     pub scale_factor: Cell<f32>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
 
@@ -182,6 +186,8 @@ impl WindowsWindowState {
             border_offset,
             appearance: Cell::new(appearance),
             background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+            // zed#63821
+            active: Cell::new(false),
             scale_factor: Cell::new(scale_factor),
             restore_from_minimized: Cell::new(restore_from_minimized),
             min_size,
@@ -636,7 +642,8 @@ impl WindowsWindow {
 
         if popup.is_some() {
             set_non_rude_hwnd(hwnd, true);
-            configure_dwm_dark_mode(hwnd, appearance);
+            // zed#63821: always false for a popup, see `needs_win10_top_border`.
+            configure_dwm_dark_mode(hwnd, appearance, this.needs_win10_top_border());
             this.state.border_offset.update(hwnd)?;
             if params.show {
                 // Returns whether it was visible before, not an error.
@@ -647,7 +654,8 @@ impl WindowsWindow {
 
         register_drag_drop(&this)?;
         set_non_rude_hwnd(hwnd, true);
-        configure_dwm_dark_mode(hwnd, appearance);
+        // zed#63821: a dark DWM frame for the Windows 10 top border.
+        configure_dwm_dark_mode(hwnd, appearance, this.needs_win10_top_border());
         this.state.border_offset.update(hwnd)?;
         let placement =
             retrieve_window_placement(hwnd, display, params.bounds, &this.state.border_offset)?;
@@ -1148,10 +1156,16 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, scene: &Scene) {
+        // zed#63821: the renderer keeps the Windows 10 top border row clear.
+        let top_border_height = self.top_border_height();
         self.state
             .renderer
             .borrow_mut()
-            .draw(scene, self.state.background_appearance.get())
+            .draw(
+                scene,
+                self.state.background_appearance.get(),
+                top_border_height,
+            )
             .log_err();
         // Arke: a window that presented gets one more tick, which serves anything GPUI deferred
         // meanwhile (a request that came in during a synchronous draw) before it goes idle.
@@ -1195,6 +1209,27 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
+        // Arke: without uiautomationcore.dll (missing on some stripped Windows installs) the
+        // adapter could never answer a screen reader, and its first call into the DLL, which is
+        // delay-loaded, would end the process. With no adapter every a11y path here is a no-op.
+        // See third_party/README.md.
+        // SAFETY: maps the DLL as data from the system folder only (nothing runs, so it is
+        // cheap) and unmaps it again; nothing is called in it.
+        match unsafe {
+            LoadLibraryExW(
+                windows::core::w!("uiautomationcore.dll"),
+                None,
+                LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_AS_DATAFILE,
+            )
+        } {
+            Ok(module) => {
+                let _ = unsafe { FreeLibrary(module) };
+            }
+            Err(_) => {
+                log::info!("uiautomationcore.dll is missing; screen reader support is off");
+                return;
+            }
+        }
         let action_handler = A11yActionHandler(callbacks.action);
         // Whether the window is active, as `WM_ACTIVATE` will report it from now on. The first
         // `WM_ACTIVATE` usually comes before this, while there is no adapter to tell, and the

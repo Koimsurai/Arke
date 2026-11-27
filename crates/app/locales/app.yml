@@ -226,6 +226,22 @@ nav.forward:
   es: Adelante (Alt+→)
   pt-BR: Avançar (Alt+→)
   ja: 進む (Alt+→)
+nav.back_to:
+  en: "Back to %{folder} (Alt+←)"
+  zh-TW: "返回「%{folder}」（Alt+←）"
+  zh-CN: "后退到“%{folder}”（Alt+←）"
+  de: "Zurück zu %{folder} (Alt+←)"
+  es: "Atrás a %{folder} (Alt+←)"
+  pt-BR: "Voltar para %{folder} (Alt+←)"
+  ja: "%{folder} に戻る (Alt+←)"
+nav.forward_to:
+  en: "Forward to %{folder} (Alt+→)"
+  zh-TW: "前進到「%{folder}」（Alt+→）"
+  zh-CN: "前进到“%{folder}”（Alt+→）"
+  de: "Vorwärts zu %{folder} (Alt+→)"
+  es: "Adelante a %{folder} (Alt+→)"
+  pt-BR: "Avançar para %{folder} (Alt+→)"
+  ja: "%{folder} に進む (Alt+→)"
 nav.up:
   en: Up (Alt+↑)
   zh-TW: 上一層（Alt+↑）
@@ -251,22 +267,6 @@ path.placeholder:
   pt-BR: "Digite um caminho, por exemplo C:\\Windows ou %USERPROFILE%"
   ja: "パスを入力（例: C:\\Windows、%USERPROFILE%）"
 filter.placeholder:
-  en: Filter (Ctrl+F)
-  zh-TW: 篩選（Ctrl+F）
-  zh-CN: 筛选（Ctrl+F）
-  de: Filtern (Strg+F)
-  es: Filtrar (Ctrl+F)
-  pt-BR: Filtrar (Ctrl+F)
-  ja: フィルター (Ctrl+F)
-filter.placeholder_in:
-  en: Search %{folder} or this PC (Ctrl+F)
-  zh-TW: 搜尋「%{folder}」或此電腦（Ctrl+F）
-  zh-CN: 搜索“%{folder}”或此电脑（Ctrl+F）
-  de: "%{folder} oder diesen PC durchsuchen (Strg+F)"
-  es: Buscar en %{folder} o en este equipo (Ctrl+F)
-  pt-BR: Pesquisar em %{folder} ou neste computador (Ctrl+F)
-  ja: "%{folder} または PC を検索 (Ctrl+F)"
-filter.placeholder_short:
   en: Search (Ctrl+F)
   zh-TW: 搜尋（Ctrl+F）
   zh-CN: 搜索（Ctrl+F）
@@ -274,6 +274,14 @@ filter.placeholder_short:
   es: Buscar (Ctrl+F)
   pt-BR: Pesquisar (Ctrl+F)
   ja: 検索 (Ctrl+F)
+filter.placeholder_in:
+  en: "Search %{folder} (Ctrl+F)"
+  zh-TW: "搜尋「%{folder}」（Ctrl+F）"
+  zh-CN: "搜索“%{folder}”（Ctrl+F）"
+  de: "In %{folder} suchen (Strg+F)"
+  es: "Buscar en %{folder} (Ctrl+F)"
+  pt-BR: "Pesquisar em %{folder} (Ctrl+F)"
+  ja: "%{folder} を検索 (Ctrl+F)"
 filter.chip_tip:
   en: Show this filter in the search box
   zh-TW: 在搜尋框中顯示這個篩選
@@ -286,23 +294,23 @@ filter.search_placeholder:
   en: Search subfolders
   zh-TW: 搜尋子資料夾
   zh-CN: 搜索子文件夹
-  de: Unterordner durchsuchen
+  de: In Unterordnern suchen
   es: Buscar en subcarpetas
   pt-BR: Pesquisar nas subpastas
   ja: サブフォルダーを検索
 filter.search_in_placeholder:
-  en: "Search in %{name}"
-  zh-TW: "在 %{name} 中搜尋"
-  zh-CN: "在 %{name} 中搜索"
-  de: In %{name} suchen
-  es: Buscar en %{name}
-  pt-BR: Pesquisar em %{name}
-  ja: "%{name} 内を検索"
+  en: "Search subfolders of %{name}"
+  zh-TW: "搜尋「%{name}」的子資料夾"
+  zh-CN: "搜索“%{name}”的子文件夹"
+  de: "In Unterordnern von %{name} suchen"
+  es: "Buscar en subcarpetas de %{name}"
+  pt-BR: "Pesquisar nas subpastas de %{name}"
+  ja: "%{name} のサブフォルダーを検索"
 filter.computer_placeholder:
   en: Search this PC
   zh-TW: 搜尋整台電腦
   zh-CN: 搜索整台电脑
-  de: Diesen PC durchsuchen
+  de: Auf diesem PC suchen
   es: Buscar en este equipo
   pt-BR: Pesquisar neste computador
   ja: PC を検索
@@ -418,6 +426,14 @@ scope.computer_prompt:
   es: Escriba un nombre para buscar en este equipo
   pt-BR: Digite um nome para pesquisar neste computador
   ja: 名前を入力して PC を検索
+scope.results_incomplete:
+  en: results may be incomplete while indexing
+  zh-TW: 索引建立中，結果可能不完整
+  zh-CN: 索引建立中，结果可能不完整
+  de: Ergebnisse während der Indizierung evtl. unvollständig
+  es: los resultados pueden estar incompletos mientras se indexa
+  pt-BR: os resultados podem estar incompletos durante a indexação
+  ja: インデックス作成中のため、結果が不完全な可能性があります
 scope.building_hint:
   en: "Results appear once the index is ready"
   zh-TW: "索引建好後就會顯示結果"
@@ -1140,6 +1156,14 @@ settings.title:
   es: Configuración
   pt-BR: Configurações
   ja: 設定
+settings.find_setting:
+  en: Find a setting
+  zh-TW: 尋找設定
+  zh-CN: 查找设置
+  de: Einstellung suchen
+  es: Buscar una configuración
+  pt-BR: Localizar uma configuração
+  ja: 設定の検索
 settings.menu:
   en: Settings…
   zh-TW: 設定…
@@ -1820,14 +1844,6 @@ openwith.title:
   es: Abrir con
   pt-BR: Abrir com
   ja: プログラムから開く
-openwith.desc:
-  en: "Turn off editors you don't use, or add another program"
-  zh-TW: "關掉用不到的編輯器，或加入其他程式"
-  zh-CN: "关闭用不到的编辑器，或添加其他程序"
-  de: Nicht benötigte Editoren ausschalten oder ein weiteres Programm hinzufügen
-  es: Desactive los editores que no use o agregue otro programa
-  pt-BR: Desative editores que você não usa ou adicione outro programa
-  ja: 使わないエディターをオフにするか、別のプログラムを追加します
 openwith.placeholder:
   en: Path to a program (.exe) to add
   zh-TW: "要加入的程式路徑（.exe）"
@@ -1933,21 +1949,13 @@ menupref.archive:
   pt-BR: Compactar e extrair
   ja: 圧縮と展開
 menupref.open_with:
-  en: Open with VS Code, Zed…
-  zh-TW: 以 VS Code、Zed… 開啟
-  zh-CN: 用 VS Code、Zed… 打开
-  de: Mit VS Code, Zed… öffnen
-  es: Abrir con VS Code, Zed…
-  pt-BR: Abrir com VS Code, Zed…
-  ja: VS Code、Zed などで開く…
-menupref.open_with_note:
-  en: "Only editors installed on this computer"
-  zh-TW: "只列出已安裝的編輯器"
-  zh-CN: "只列出已安装的编辑器"
-  de: Nur auf diesem Computer installierte Editoren
-  es: Solo editores instalados en este equipo
-  pt-BR: Somente editores instalados neste computador
-  ja: このコンピューターにインストールされているエディターのみ
+  en: Open with programs you add
+  zh-TW: 以你加入的程式開啟
+  zh-CN: 用你添加的程序打开
+  de: Mit hinzugefügten Programmen öffnen
+  es: Abrir con los programas que agregue
+  pt-BR: Abrir com os programas que você adicione
+  ja: 追加したプログラムで開く
 menupref.view:
   en: "View, sort and refresh"
   zh-TW: 檢視方式、排序與重新整理
@@ -3036,30 +3044,22 @@ settings.preview_desc:
   es: Muestra el elemento seleccionado a la derecha; Espacio para vista rápida
   pt-BR: Mostra o item selecionado à direita; Espaço para visualização rápida
   ja: 選択した項目を右側に表示します。スペース キーでクイック表示
-settings.space_quicklook:
-  en: Space opens QuickLook
-  zh-TW: 空白鍵開啟 QuickLook
-  zh-CN: 空格键打开 QuickLook
-  de: Leertaste öffnet QuickLook
-  es: Espacio abre QuickLook
-  pt-BR: Espaço abre o QuickLook
-  ja: スペース キーで QuickLook を開く
-settings.space_quicklook_tip:
-  en: "Space opens QuickLook (found at %{path}) instead of Arke's quick look"
-  zh-TW: "空白鍵改用 QuickLook（位於 %{path}）預覽，而不是 Arke 的快速預覽"
-  zh-CN: "空格键改用 QuickLook（位于 %{path}）预览，而不是 Arke 的快速预览"
-  de: Die Leertaste öffnet QuickLook (gefunden unter %{path}) statt der Schnellansicht von Arke
-  es: Espacio abre QuickLook (encontrado en %{path}) en lugar de la vista rápida de Arke
-  pt-BR: Espaço abre o QuickLook (encontrado em %{path}) em vez da visualização rápida do Arke
-  ja: スペース キーで Arke のクイック表示ではなく QuickLook (%{path}) を開きます
-settings.space_quicklook_tip_running:
-  en: "Space opens the running QuickLook instead of Arke's quick look"
-  zh-TW: "空白鍵改用執行中的 QuickLook 預覽，而不是 Arke 的快速預覽"
-  zh-CN: "空格键改用正在运行的 QuickLook 预览，而不是 Arke 的快速预览"
-  de: Die Leertaste öffnet das laufende QuickLook statt der Schnellansicht von Arke
-  es: Espacio abre el QuickLook en ejecución en lugar de la vista rápida de Arke
-  pt-BR: Espaço abre o QuickLook em execução em vez da visualização rápida do Arke
-  ja: スペース キーで Arke のクイック表示ではなく、実行中の QuickLook を開きます
+settings.external_preview:
+  en: Preview program for Space
+  zh-TW: 空白鍵用的預覽程式
+  zh-CN: 空格键用的预览程序
+  de: Vorschauprogramm für die Leertaste
+  es: Programa de vista previa (Espacio)
+  pt-BR: Programa de visualização (Espaço)
+  ja: スペース キー用のプレビュー プログラム
+settings.external_preview_desc:
+  en: 'Or a pipe: pipe:\\.\pipe\name message {file} || command to start it'
+  zh-TW: '或具名管道：pipe:\\.\pipe\name 訊息 {file} || 啟動用的命令'
+  zh-CN: '或命名管道：pipe:\\.\pipe\name 消息 {file} || 启动用的命令'
+  de: 'Oder eine Pipe: pipe:\\.\pipe\name Nachricht {file} || Startbefehl'
+  es: 'O una canalización: pipe:\\.\pipe\name mensaje {file} || comando de inicio'
+  pt-BR: 'Ou um pipe: pipe:\\.\pipe\name mensagem {file} || comando para iniciar'
+  ja: 'またはパイプ：pipe:\\.\pipe\name メッセージ {file} || 起動コマンド'
 settings.startup:
   en: Startup
   zh-TW: 啟動
@@ -3772,22 +3772,6 @@ error.terminal_failed:
   es: "No se pudo abrir un terminal: %{error}"
   pt-BR: "Não foi possível abrir um terminal: %{error}"
   ja: "ターミナルを開けませんでした: %{error}"
-error.quicklook_failed:
-  en: "Couldn't start QuickLook: %{error}"
-  zh-TW: "無法啟動 QuickLook：%{error}"
-  zh-CN: "无法启动 QuickLook：%{error}"
-  de: "QuickLook konnte nicht gestartet werden: %{error}"
-  es: "No se pudo iniciar QuickLook: %{error}"
-  pt-BR: "Não foi possível iniciar o QuickLook: %{error}"
-  ja: "QuickLook を起動できませんでした: %{error}"
-error.quicklook_not_running:
-  en: "QuickLook isn't running"
-  zh-TW: "QuickLook 未在執行"
-  zh-CN: "QuickLook 未在运行"
-  de: QuickLook läuft nicht
-  es: QuickLook no se está ejecutando
-  pt-BR: O QuickLook não está em execução
-  ja: QuickLook は実行されていません
 settings.folder_sizes:
   en: "Calculate folder sizes"
   zh-TW: "計算資料夾大小"
@@ -4370,6 +4354,14 @@ menu.extract_to:
   es: "Extraer en “%{name}\\”"
   pt-BR: "Extrair para “%{name}\\”"
   ja: "「%{name}\\」に展開"
+menu.extract_each:
+  en: Extract each to its own folder
+  zh-TW: 分別解壓縮到各自的資料夾
+  zh-CN: 分别解压到各自的文件夹
+  de: Jeweils in eigenen Ordner extrahieren
+  es: Extraer cada uno en su carpeta
+  pt-BR: Extrair cada um em sua pasta
+  ja: それぞれのフォルダーに展開
 menu.extract_here:
   en: Extract here
   zh-TW: 解壓縮到此處
@@ -5996,14 +5988,6 @@ error.path:
   es: "%{path}: %{error}"
   pt-BR: "%{path}: %{error}"
   ja: "%{path}: %{error}"
-extract.busy:
-  en: An extraction is already running
-  zh-TW: 已有解壓縮正在進行
-  zh-CN: 已有解压任务正在进行
-  de: Es läuft bereits eine Extraktion
-  es: Ya hay una extracción en curso
-  pt-BR: Já há uma extração em andamento
-  ja: 展開が既に実行中です
 extract.failed:
   en: "Couldn't extract %{name}: %{error}"
   zh-TW: "無法解壓縮 %{name}：%{error}"
@@ -8410,7 +8394,7 @@ compare.differs:
   pt-BR: Diferente
   ja: 相違あり
 
-# ─── Redo, operation queue, verify after copy, TeraCopy
+# ─── Redo, operation queue, verify after copy, external copy program
 toast.redo:
   en: "Redo"
   zh-TW: "重做"
@@ -8587,22 +8571,14 @@ settings.verify_copies_desc:
   es: Vuelve a leer cada copia y la compara con el original. Tarda más.
   pt-BR: Lê cada cópia de volta e compara com o original. Demora mais.
   ja: 各コピーを読み戻して元のファイルと比較します。時間がかかります。
-settings.use_teracopy:
-  en: "Use TeraCopy for copy and move"
-  zh-TW: "用 TeraCopy 複製和移動"
-  zh-CN: "用 TeraCopy 复制和移动"
-  de: TeraCopy zum Kopieren und Verschieben verwenden
-  es: Usar TeraCopy para copiar y mover
-  pt-BR: Usar o TeraCopy para copiar e mover
-  ja: コピーと移動に TeraCopy を使う
-settings.use_teracopy_desc:
-  en: "Found at %{path}. Arke can't undo jobs TeraCopy runs."
-  zh-TW: "位於 %{path}。交給 TeraCopy 的工作無法在 Arke 復原"
-  zh-CN: "位于 %{path}。交给 TeraCopy 的任务无法在 Arke 撤销"
-  de: Gefunden unter %{path}. Arke kann von TeraCopy ausgeführte Aufträge nicht rückgängig machen.
-  es: Encontrado en %{path}. Arke no puede deshacer los trabajos que ejecuta TeraCopy.
-  pt-BR: Encontrado em %{path}. O Arke não pode desfazer tarefas executadas pelo TeraCopy.
-  ja: "%{path} で検出。TeraCopy が実行したジョブは Arke では元に戻せません。"
+settings.external_copy:
+  en: External copy program
+  zh-TW: 外部複製程式
+  zh-CN: 外部复制程序
+  de: Externes Kopierprogramm
+  es: Programa de copia externo
+  pt-BR: Programa de cópia externo
+  ja: 外部コピー プログラム
 
 # ─── Cloud file states (badge tooltips)
 cloud.online_only:
@@ -9223,46 +9199,6 @@ settings.start_menu_desc:
   es: Un acceso directo en la carpeta del menú Inicio; sigue a Arke si lo mueve
   pt-BR: Um atalho na pasta do menu Iniciar; acompanha o Arke se você o mover
   ja: スタート メニュー フォルダーにショートカットを作成します。Arke を移動しても追従します
-welcome.title:
-  en: "Add Arke to the Start menu?"
-  zh-TW: "要把 Arke 加到開始功能表嗎？"
-  zh-CN: "要把 Arke 添加到开始菜单吗？"
-  de: Arke zum Startmenü hinzufügen?
-  es: "¿Agregar Arke al menú Inicio?"
-  pt-BR: Adicionar o Arke ao menu Iniciar?
-  ja: Arke をスタート メニューに追加しますか?
-welcome.body:
-  en: "Arke is a single program file. A Start menu shortcut makes it easy to find and pin."
-  zh-TW: "Arke 只是一個程式檔。加到開始功能表就容易找到，也能釘選。"
-  zh-CN: "Arke 只是一个程序文件。添加到开始菜单后更容易找到，也能固定。"
-  de: Arke ist eine einzelne Programmdatei. Eine Startmenü-Verknüpfung macht es leicht zu finden und anzuheften.
-  es: Arke es un único archivo de programa. Un acceso directo en el menú Inicio facilita encontrarlo y anclarlo.
-  pt-BR: O Arke é um único arquivo de programa. Um atalho no menu Iniciar facilita encontrá-lo e fixá-lo.
-  ja: Arke は単一のプログラム ファイルです。スタート メニューにショートカットがあると、見つけやすく、ピン留めもできます。
-welcome.autostart:
-  en: "Also start when I sign in to Windows"
-  zh-TW: "也在登入 Windows 時啟動"
-  zh-CN: "也在登录 Windows 时启动"
-  de: Auch beim Anmelden an Windows starten
-  es: Iniciar también al iniciar sesión en Windows
-  pt-BR: Iniciar também quando eu entrar no Windows
-  ja: Windows へのサインイン時にも起動する
-welcome.add:
-  en: "Add to Start"
-  zh-TW: "加到開始"
-  zh-CN: "添加到开始"
-  de: Zu Start hinzufügen
-  es: Agregar a Inicio
-  pt-BR: Adicionar ao Iniciar
-  ja: スタートに追加
-welcome.not_now:
-  en: "Not now"
-  zh-TW: "暫時不要"
-  zh-CN: "暂时不用"
-  de: Jetzt nicht
-  es: Ahora no
-  pt-BR: Agora não
-  ja: 後で
 welcome.later_hint:
   en: "You can change this later in Settings › Startup"
   zh-TW: "之後可以在 設定 › 啟動 更改"
@@ -9271,6 +9207,312 @@ welcome.later_hint:
   es: Puede cambiarlo más tarde en Configuración › Al iniciar
   pt-BR: Você pode mudar isso depois em Configurações › Inicialização
   ja: 後から [設定] › [起動] で変更できます
+
+# ─── Setup guide (first run, Settings > About, command palette)
+onboarding.welcome:
+  en: "Welcome to Arke"
+  zh-TW: "歡迎使用 Arke"
+  zh-CN: "欢迎使用 Arke"
+  de: "Willkommen bei Arke"
+  es: "Le damos la bienvenida a Arke"
+  pt-BR: "Boas-vindas ao Arke"
+  ja: "Arke へようこそ"
+onboarding.step:
+  en: "Step %{n} of %{total}"
+  zh-TW: "第 %{n} 步，共 %{total} 步"
+  zh-CN: "第 %{n} 步，共 %{total} 步"
+  de: "Schritt %{n} von %{total}"
+  es: "Paso %{n} de %{total}"
+  pt-BR: "Etapa %{n} de %{total}"
+  ja: "ステップ %{n}/%{total}"
+onboarding.source_title:
+  en: "Where are you coming from?"
+  zh-TW: "你之前用哪個檔案管理工具？"
+  zh-CN: "你之前用哪个文件管理器？"
+  de: "Welchen Dateimanager haben Sie bisher benutzt?"
+  es: "¿Qué administrador de archivos usaba?"
+  pt-BR: "Qual gerenciador de arquivos você usava?"
+  ja: "これまで使っていたファイル マネージャーは?"
+onboarding.source_desc:
+  en: "Arke can work the way you're used to. Everything can be changed later in Settings."
+  zh-TW: "Arke 可以照你習慣的方式運作。之後都能在設定裡更改。"
+  zh-CN: "Arke 可以按你习惯的方式工作。之后都能在设置中更改。"
+  de: "Arke kann so arbeiten, wie Sie es gewohnt sind. Alles lässt sich später in den Einstellungen ändern."
+  es: "Arke puede funcionar como está acostumbrado. Puede cambiarlo todo más tarde en Configuración."
+  pt-BR: "O Arke pode funcionar do jeito que você está acostumado. Tudo pode ser mudado depois em Configurações."
+  ja: "使い慣れた動作に合わせられます。あとから [設定] ですべて変更できます。"
+onboarding.from_explorer:
+  en: "Windows File Explorer"
+  zh-TW: "Windows 檔案總管"
+  zh-CN: "Windows 文件资源管理器"
+  de: "Windows-Datei-Explorer"
+  es: "Explorador de archivos"
+  pt-BR: "Explorador de Arquivos"
+  ja: "Windows エクスプローラー"
+onboarding.pick_hint:
+  en: "Or go on with Arke's own defaults."
+  zh-TW: "也可以直接用 Arke 的預設值繼續。"
+  zh-CN: "也可以直接使用 Arke 的默认设置继续。"
+  de: "Oder fahren Sie mit den Standardeinstellungen von Arke fort."
+  es: "O continúe con los valores predeterminados de Arke."
+  pt-BR: "Ou continue com os padrões do próprio Arke."
+  ja: "Arke の既定の設定のまま進むこともできます。"
+onboarding.changes:
+  en: "Next changes:"
+  zh-TW: "按「下一步」後會變更："
+  zh-CN: "点击“下一步”后会更改："
+  de: "Mit „Weiter“ ändert sich:"
+  es: "Al pulsar Siguiente cambia:"
+  pt-BR: "Ao clicar em Avançar, muda:"
+  ja: "[次へ] で変わる設定:"
+onboarding.no_changes:
+  en: "Arke already works this way."
+  zh-TW: "Arke 已經是這樣設定了。"
+  zh-CN: "Arke 已经是这样设置的。"
+  de: "Arke ist bereits so eingestellt."
+  es: "Arke ya funciona así."
+  pt-BR: "O Arke já funciona assim."
+  ja: "Arke はすでにこの設定です。"
+onboarding.column:
+  en: "%{name} column"
+  zh-TW: "「%{name}」欄"
+  zh-CN: "“%{name}”列"
+  de: "Spalte „%{name}“"
+  es: "Columna %{name}"
+  pt-BR: "Coluna %{name}"
+  ja: "[%{name}] 列"
+onboarding.on:
+  en: "On"
+  zh-TW: "開啟"
+  zh-CN: "开启"
+  de: "Ein"
+  es: "Activado"
+  pt-BR: "Ativado"
+  ja: "オン"
+onboarding.off:
+  en: "Off"
+  zh-TW: "關閉"
+  zh-CN: "关闭"
+  de: "Aus"
+  es: "Desactivado"
+  pt-BR: "Desativado"
+  ja: "オフ"
+onboarding.look_title:
+  en: "Pick a look"
+  zh-TW: "選擇外觀"
+  zh-CN: "选择外观"
+  de: "Aussehen wählen"
+  es: "Elija una apariencia"
+  pt-BR: "Escolha a aparência"
+  ja: "外観を選ぶ"
+onboarding.look_desc:
+  en: "Changes show right away."
+  zh-TW: "選了馬上套用。"
+  zh-CN: "选择后立即生效。"
+  de: "Änderungen sind sofort zu sehen."
+  es: "Los cambios se ven al instante."
+  pt-BR: "As mudanças aparecem na hora."
+  ja: "選ぶとすぐに反映されます。"
+onboarding.connect_title:
+  en: "Open folders in Arke?"
+  zh-TW: "要用 Arke 開啟資料夾嗎？"
+  zh-CN: "要用 Arke 打开文件夹吗？"
+  de: "Ordner in Arke öffnen?"
+  es: "¿Abrir carpetas en Arke?"
+  pt-BR: "Abrir pastas no Arke?"
+  ja: "フォルダーを Arke で開きますか?"
+onboarding.connect_desc:
+  en: "Choose how much of File Explorer's work Arke takes on."
+  zh-TW: "選擇要讓 Arke 接手多少檔案總管的工作。"
+  zh-CN: "选择让 Arke 接手多少文件资源管理器的工作。"
+  de: "Wählen Sie, wie viel Arke vom Datei-Explorer übernimmt."
+  es: "Elija cuánto del trabajo del Explorador de archivos asume Arke."
+  pt-BR: "Escolha quanto do trabalho do Explorador de Arquivos o Arke assume."
+  ja: "エクスプローラーの役割をどこまで Arke に任せるかを選びます。"
+onboarding.takeover_off:
+  en: "Keep File Explorer"
+  zh-TW: "繼續用檔案總管"
+  zh-CN: "继续使用文件资源管理器"
+  de: "Datei-Explorer behalten"
+  es: "Seguir con el Explorador de archivos"
+  pt-BR: "Manter o Explorador de Arquivos"
+  ja: "エクスプローラーのまま"
+onboarding.takeover_off_desc:
+  en: "Arke opens only when you start it"
+  zh-TW: "只有你自己啟動時才開 Arke"
+  zh-CN: "只有你自己启动时才打开 Arke"
+  de: "Arke öffnet sich nur, wenn Sie es starten"
+  es: "Arke solo se abre cuando usted lo inicia"
+  pt-BR: "O Arke só abre quando você o inicia"
+  ja: "Arke は自分で起動したときだけ開きます"
+onboarding.takeover_folders_desc:
+  en: "Folders from other apps open in Arke"
+  zh-TW: "其他程式開的資料夾改用 Arke 開啟"
+  zh-CN: "其他程序打开的文件夹改用 Arke 打开"
+  de: "Ordner aus anderen Apps öffnen sich in Arke"
+  es: "Las carpetas de otras aplicaciones se abren en Arke"
+  pt-BR: "Pastas de outros apps abrem no Arke"
+  ja: "ほかのアプリのフォルダーを Arke で開きます"
+onboarding.takeover_all:
+  en: "Also Win+E"
+  zh-TW: "連 Win+E 也是"
+  zh-CN: "包括 Win+E"
+  de: "Auch Win+E"
+  es: "También Win+E"
+  pt-BR: "Também Win+E"
+  ja: "Win+E も"
+onboarding.takeover_all_desc:
+  en: "Win+E and the File Explorer icon open Arke too"
+  zh-TW: "Win+E 和檔案總管圖示也開 Arke"
+  zh-CN: "Win+E 和文件资源管理器图标也打开 Arke"
+  de: "Win+E und das Datei-Explorer-Symbol öffnen ebenfalls Arke"
+  es: "Win+E y el icono del Explorador también abren Arke"
+  pt-BR: "Win+E e o ícone do Explorador também abrem o Arke"
+  ja: "Win+E とエクスプローラーのアイコンでも Arke を開きます"
+onboarding.registry_note:
+  en: "Arke registers itself for your account only, under HKEY_CURRENT_USER\\Software\\Classes. Turning it off puts back exactly what was there."
+  zh-TW: "Arke 只為你的帳戶登錄，位置在 HKEY_CURRENT_USER\\Software\\Classes。關閉時會原樣還原。"
+  zh-CN: "Arke 只为你的账户注册，位置在 HKEY_CURRENT_USER\\Software\\Classes。关闭时会原样还原。"
+  de: "Arke registriert sich nur für Ihr Konto unter HKEY_CURRENT_USER\\Software\\Classes. Beim Ausschalten wird genau der vorherige Zustand wiederhergestellt."
+  es: "Arke se registra solo para su cuenta, en HKEY_CURRENT_USER\\Software\\Classes. Al desactivarlo se restaura exactamente lo que había."
+  pt-BR: "O Arke se registra só para a sua conta, em HKEY_CURRENT_USER\\Software\\Classes. Ao desativar, tudo volta exatamente como estava."
+  ja: "Arke は HKEY_CURRENT_USER\\Software\\Classes に、このアカウントだけを対象に登録します。オフにすると元の状態にそのまま戻ります。"
+onboarding.registry_none:
+  en: "Nothing changes in Windows."
+  zh-TW: "不會變更 Windows 的任何設定。"
+  zh-CN: "不会更改 Windows 的任何设置。"
+  de: "An Windows wird nichts geändert."
+  es: "No se cambia nada en Windows."
+  pt-BR: "Nada muda no Windows."
+  ja: "Windows の設定は何も変わりません。"
+onboarding.background_needed:
+  en: "Needed to open folders in Arke"
+  zh-TW: "用 Arke 開啟資料夾時必須開著"
+  zh-CN: "用 Arke 打开文件夹时必须开启"
+  de: "Nötig, um Ordner in Arke zu öffnen"
+  es: "Necesario para abrir carpetas en Arke"
+  pt-BR: "Necessário para abrir pastas no Arke"
+  ja: "フォルダーを Arke で開くには必要です"
+onboarding.pins_title:
+  en: "Bring your Quick access folders"
+  zh-TW: "帶入快速存取的資料夾"
+  zh-CN: "导入快速访问中的文件夹"
+  de: "Ordner aus dem Schnellzugriff übernehmen"
+  es: "Traiga sus carpetas de Acceso rápido"
+  pt-BR: "Traga suas pastas do Acesso rápido"
+  ja: "クイック アクセスのフォルダーを取り込む"
+onboarding.pins_desc:
+  en: "Folders pinned in File Explorer, added to your favorites. File Explorer stays as it is."
+  zh-TW: "把檔案總管裡釘選的資料夾加到最愛。檔案總管不會被更動。"
+  zh-CN: "把文件资源管理器中固定的文件夹添加到收藏夹。文件资源管理器不会被改动。"
+  de: "In Datei-Explorer angeheftete Ordner werden zu Ihren Favoriten. Datei-Explorer bleibt, wie er ist."
+  es: "Las carpetas ancladas en el Explorador de archivos se agregan a sus favoritos. El Explorador no cambia."
+  pt-BR: "Pastas fixadas no Explorador de Arquivos entram nos seus favoritos. O Explorador fica como está."
+  ja: "エクスプローラーでピン留めしたフォルダーをお気に入りに追加します。エクスプローラーは変更しません。"
+onboarding.pins_reading:
+  en: "Reading Quick access…"
+  zh-TW: "正在讀取快速存取…"
+  zh-CN: "正在读取快速访问…"
+  de: "Schnellzugriff wird gelesen…"
+  es: "Leyendo Acceso rápido…"
+  pt-BR: "Lendo o Acesso rápido…"
+  ja: "クイック アクセスを読み込んでいます…"
+onboarding.pins_failed:
+  en: "File Explorer's Quick access couldn't be read."
+  zh-TW: "無法讀取檔案總管的快速存取。"
+  zh-CN: "无法读取文件资源管理器的快速访问。"
+  de: "Der Schnellzugriff von Datei-Explorer konnte nicht gelesen werden."
+  es: "No se pudo leer el Acceso rápido del Explorador de archivos."
+  pt-BR: "Não foi possível ler o Acesso rápido do Explorador de Arquivos."
+  ja: "エクスプローラーのクイック アクセスを読み込めませんでした。"
+onboarding.pins_none:
+  en: "Everything pinned there is already in your favorites."
+  zh-TW: "那裡釘選的資料夾都已經在最愛裡了。"
+  zh-CN: "那里固定的文件夹都已经在收藏夹中了。"
+  de: "Alles, was dort angeheftet ist, ist bereits in Ihren Favoriten."
+  es: "Todo lo anclado allí ya está en sus favoritos."
+  pt-BR: "Tudo o que está fixado lá já está nos seus favoritos."
+  ja: "そこにピン留めされたフォルダーはすべてお気に入りにあります。"
+onboarding.skip:
+  en: "Skip setup"
+  zh-TW: "略過設定"
+  zh-CN: "跳过设置"
+  de: "Einrichtung überspringen"
+  es: "Omitir configuración"
+  pt-BR: "Pular configuração"
+  ja: "セットアップをスキップ"
+onboarding.back:
+  en: "Back"
+  zh-TW: "上一步"
+  zh-CN: "上一步"
+  de: "Zurück"
+  es: "Atrás"
+  pt-BR: "Voltar"
+  ja: "戻る"
+onboarding.next:
+  en: "Next"
+  zh-TW: "下一步"
+  zh-CN: "下一步"
+  de: "Weiter"
+  es: "Siguiente"
+  pt-BR: "Avançar"
+  ja: "次へ"
+onboarding.done:
+  en: "Done"
+  zh-TW: "完成"
+  zh-CN: "完成"
+  de: "Fertig"
+  es: "Listo"
+  pt-BR: "Concluir"
+  ja: "完了"
+onboarding.whats_new_title:
+  en: "New: a setup guide"
+  zh-TW: "新功能：設定導覽"
+  zh-CN: "新功能：设置向导"
+  de: "Neu: ein Einrichtungsassistent"
+  es: "Novedad: una guía de configuración"
+  pt-BR: "Novo: um guia de configuração"
+  ja: "新機能: セットアップ ガイド"
+onboarding.whats_new_body:
+  en: "Tell Arke which file manager you used before, pick a look, and choose whether Arke opens your folders."
+  zh-TW: "告訴 Arke 你之前用的檔案管理工具、選擇外觀，並決定是否用 Arke 開啟資料夾。"
+  zh-CN: "告诉 Arke 你之前用的文件管理器、选择外观，并决定是否用 Arke 打开文件夹。"
+  de: "Sagen Sie Arke, welchen Dateimanager Sie bisher benutzt haben, wählen Sie das Aussehen und ob Arke Ihre Ordner öffnet."
+  es: "Indique a Arke qué administrador de archivos usaba, elija una apariencia y decida si Arke abre sus carpetas."
+  pt-BR: "Diga ao Arke qual gerenciador de arquivos você usava, escolha a aparência e decida se o Arke abre suas pastas."
+  ja: "これまでのファイル マネージャーを選び、外観を決めて、フォルダーを Arke で開くかどうかを選べます。"
+onboarding.whats_new_open:
+  en: "Open the guide"
+  zh-TW: "開啟導覽"
+  zh-CN: "打开向导"
+  de: "Assistent öffnen"
+  es: "Abrir la guía"
+  pt-BR: "Abrir o guia"
+  ja: "ガイドを開く"
+onboarding.settings_title:
+  en: "Setup guide"
+  zh-TW: "設定導覽"
+  zh-CN: "设置向导"
+  de: "Einrichtungsassistent"
+  es: "Guía de configuración"
+  pt-BR: "Guia de configuração"
+  ja: "セットアップ ガイド"
+onboarding.settings_desc:
+  en: "Where you're coming from, the look, and how Arke opens folders"
+  zh-TW: "之前用的工具、外觀，以及 Arke 如何開啟資料夾"
+  zh-CN: "之前用的工具、外观，以及 Arke 如何打开文件夹"
+  de: "Bisheriger Dateimanager, Aussehen und wie Arke Ordner öffnet"
+  es: "De dónde viene, la apariencia y cómo abre Arke las carpetas"
+  pt-BR: "De onde você vem, a aparência e como o Arke abre pastas"
+  ja: "以前のツール、外観、Arke でフォルダーを開く方法"
+onboarding.settings_open:
+  en: "Open"
+  zh-TW: "開啟"
+  zh-CN: "打开"
+  de: "Öffnen"
+  es: "Abrir"
+  pt-BR: "Abrir"
+  ja: "開く"
 
 # ─── Uninstall (Settings > About, arke --uninstall)
 uninstall.title:
@@ -9829,6 +10071,14 @@ cmd.open_settings:
   es: Configuración
   pt-BR: Configurações
   ja: 設定
+cmd.open_setup_guide:
+  en: Setup guide
+  zh-TW: 設定導覽
+  zh-CN: 设置向导
+  de: Einrichtungsassistent
+  es: Guía de configuración
+  pt-BR: Guia de configuração
+  ja: セットアップ ガイド
 cmd.go_up:
   en: Up one level
   zh-TW: 上一層
@@ -10077,6 +10327,22 @@ cmd.open_location:
   es: Abrir ubicación del archivo
   pt-BR: Abrir local do arquivo
   ja: ファイルの場所を開く
+cmd.focus_next_stop:
+  en: Move to the next control
+  zh-TW: 移到下一個控制項
+  zh-CN: 移到下一个控件
+  de: Zum nächsten Element wechseln
+  es: Ir al siguiente control
+  pt-BR: Ir para o próximo controle
+  ja: 次のコントロールへ移動
+cmd.focus_prev_stop:
+  en: Move to the previous control
+  zh-TW: 移到上一個控制項
+  zh-CN: 移到上一个控件
+  de: Zum vorherigen Element wechseln
+  es: Ir al control anterior
+  pt-BR: Ir para o controle anterior
+  ja: 前のコントロールへ移動
 cmd.focus_other_pane:
   en: Switch to the other pane
   zh-TW: 切換到另一側窗格
@@ -10117,3 +10383,456 @@ tabs.drop_into_window:
   es: Suelte para mover a esta ventana
   pt-BR: Solte para mover para esta janela
   ja: 離すとこのウィンドウに移動します
+
+# ─── Access keys of Arke's own context menus: the letter only, in every language. The key is the
+# first such letter in the matching menu.* label (the key names are in the access_tests of
+# explorer_menu.rs); Chinese and Japanese write it after the text, as "(C)". "-" is no key.
+# Within one menu level every letter must differ (a unit test checks it for each language).
+access.open:
+  en: "O"
+  zh-TW: "O"
+  zh-CN: "O"
+  de: "F"
+  es: "B"
+  pt-BR: "B"
+  ja: "O"
+access.open_tab:
+  en: "B"
+  zh-TW: "B"
+  zh-CN: "B"
+  de: "G"
+  es: "S"
+  pt-BR: "G"
+  ja: "B"
+access.new:
+  en: "W"
+  zh-TW: "W"
+  zh-CN: "W"
+  de: "N"
+  es: "N"
+  pt-BR: "V"
+  ja: "W"
+access.new_folder:
+  en: "N"
+  zh-TW: "N"
+  zh-CN: "N"
+  de: "O"
+  es: "T"
+  pt-BR: "T"
+  ja: "N"
+access.new_text:
+  en: "T"
+  zh-TW: "T"
+  zh-CN: "T"
+  de: "N"
+  es: "D"
+  pt-BR: "N"
+  ja: "T"
+access.new_file_in:
+  en: "N"
+  zh-TW: "N"
+  zh-CN: "N"
+  de: "D"
+  es: "A"
+  pt-BR: "N"
+  ja: "N"
+access.new_folder_in:
+  en: "F"
+  zh-TW: "F"
+  zh-CN: "F"
+  de: "N"
+  es: "N"
+  pt-BR: "P"
+  ja: "F"
+access.search_folder:
+  en: "S"
+  zh-TW: "S"
+  zh-CN: "S"
+  de: "C"
+  es: "U"
+  pt-BR: "Q"
+  ja: "S"
+access.fav_add:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "F"
+  pt-BR: "F"
+  ja: "A"
+access.fav_remove:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "Q"
+  pt-BR: "F"
+  ja: "A"
+access.terminal:
+  en: "L"
+  zh-TW: "L"
+  zh-CN: "L"
+  de: "T"
+  es: "E"
+  pt-BR: "A"
+  ja: "L"
+access.extract_to:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "E"
+  pt-BR: "T"
+  ja: "A"
+access.extract_each:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "E"
+  pt-BR: "T"
+  ja: "A"
+access.extract_here:
+  en: "E"
+  zh-TW: "E"
+  zh-CN: "E"
+  de: "T"
+  es: "X"
+  pt-BR: "Q"
+  ja: "E"
+access.set_bg:
+  en: "S"
+  zh-TW: "S"
+  zh-CN: "S"
+  de: "A"
+  es: "E"
+  pt-BR: "F"
+  ja: "S"
+access.import:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "T"
+  pt-BR: "T"
+  ja: "A"
+access.compress:
+  en: "P"
+  zh-TW: "P"
+  zh-CN: "P"
+  de: "I"
+  es: "P"
+  pt-BR: "E"
+  ja: "P"
+access.move_new:
+  en: "F"
+  zh-TW: "F"
+  zh-CN: "F"
+  de: "V"
+  es: "A"
+  pt-BR: "N"
+  ja: "F"
+access.new_window:
+  en: "E"
+  zh-TW: "E"
+  zh-CN: "E"
+  de: "M"
+  es: "V"
+  pt-BR: "J"
+  ja: "E"
+access.link:
+  en: "G"
+  zh-TW: "G"
+  zh-CN: "G"
+  de: "Z"
+  es: "-"
+  pt-BR: "K"
+  ja: "G"
+access.file_location:
+  en: "L"
+  zh-TW: "L"
+  zh-CN: "L"
+  de: "A"
+  es: "U"
+  pt-BR: "Q"
+  ja: "L"
+access.choose_app:
+  en: "W"
+  zh-TW: "W"
+  zh-CN: "W"
+  de: "N"
+  es: "N"
+  pt-BR: "A"
+  ja: "W"
+access.shelf:
+  en: "H"
+  zh-TW: "H"
+  zh-CN: "H"
+  de: "H"
+  es: "G"
+  pt-BR: "D"
+  ja: "H"
+access.copy_path:
+  en: "Y"
+  zh-TW: "Y"
+  zh-CN: "Y"
+  de: "P"
+  es: "C"
+  pt-BR: "C"
+  ja: "Y"
+access.copy_rel:
+  en: "V"
+  zh-TW: "V"
+  zh-CN: "V"
+  de: "R"
+  es: "-"
+  pt-BR: "H"
+  ja: "V"
+access.reveal:
+  en: "X"
+  zh-TW: "X"
+  zh-CN: "X"
+  de: "X"
+  es: "W"
+  pt-BR: "W"
+  ja: "X"
+access.props:
+  en: "R"
+  zh-TW: "R"
+  zh-CN: "R"
+  de: "E"
+  es: "D"
+  pt-BR: "P"
+  ja: "R"
+access.more:
+  en: "I"
+  zh-TW: "I"
+  zh-CN: "I"
+  de: "W"
+  es: "M"
+  pt-BR: "M"
+  ja: "I"
+access.keep:
+  en: "K"
+  zh-TW: "K"
+  zh-CN: "K"
+  de: "D"
+  es: "-"
+  pt-BR: "S"
+  ja: "K"
+access.free:
+  en: "U"
+  zh-TW: "U"
+  zh-CN: "U"
+  de: "S"
+  es: "-"
+  pt-BR: "L"
+  ja: "U"
+access.cut:
+  en: "T"
+  zh-TW: "T"
+  zh-CN: "T"
+  de: "U"
+  es: "O"
+  pt-BR: "O"
+  ja: "T"
+access.copy:
+  en: "C"
+  zh-TW: "C"
+  zh-CN: "C"
+  de: "K"
+  es: "I"
+  pt-BR: "I"
+  ja: "C"
+access.rename:
+  en: "M"
+  zh-TW: "M"
+  zh-CN: "M"
+  de: "B"
+  es: "R"
+  pt-BR: "R"
+  ja: "M"
+access.delete:
+  en: "D"
+  zh-TW: "D"
+  zh-CN: "D"
+  de: "L"
+  es: "L"
+  pt-BR: "X"
+  ja: "D"
+access.paste:
+  en: "P"
+  zh-TW: "P"
+  zh-CN: "P"
+  de: "F"
+  es: "P"
+  pt-BR: "L"
+  ja: "P"
+access.undo:
+  en: "U"
+  zh-TW: "U"
+  zh-CN: "U"
+  de: "R"
+  es: "S"
+  pt-BR: "D"
+  ja: "U"
+access.undo_op:
+  en: "U"
+  zh-TW: "U"
+  zh-CN: "U"
+  de: "R"
+  es: "S"
+  pt-BR: "D"
+  ja: "U"
+access.redo_op:
+  en: "D"
+  zh-TW: "D"
+  zh-CN: "D"
+  de: "D"
+  es: "R"
+  pt-BR: "R"
+  ja: "D"
+access.refresh:
+  en: "E"
+  zh-TW: "E"
+  zh-CN: "E"
+  de: "K"
+  es: "A"
+  pt-BR: "T"
+  ja: "E"
+access.open_explorer:
+  en: "F"
+  zh-TW: "F"
+  zh-CN: "F"
+  de: "I"
+  es: "W"
+  pt-BR: "N"
+  ja: "F"
+access.view:
+  en: "V"
+  zh-TW: "V"
+  zh-CN: "V"
+  de: "C"
+  es: "V"
+  pt-BR: "E"
+  ja: "V"
+access.view_details:
+  en: "D"
+  zh-TW: "D"
+  zh-CN: "D"
+  de: "D"
+  es: "D"
+  pt-BR: "D"
+  ja: "D"
+access.view_icons:
+  en: "I"
+  zh-TW: "I"
+  zh-CN: "I"
+  de: "S"
+  es: "I"
+  pt-BR: "C"
+  ja: "I"
+access.view_columns:
+  en: "C"
+  zh-TW: "C"
+  zh-CN: "C"
+  de: "P"
+  es: "C"
+  pt-BR: "O"
+  ja: "C"
+access.sort_by:
+  en: "O"
+  zh-TW: "O"
+  zh-CN: "O"
+  de: "S"
+  es: "O"
+  pt-BR: "O"
+  ja: "O"
+access.asc:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "U"
+  es: "A"
+  pt-BR: "C"
+  ja: "A"
+access.desc:
+  en: "D"
+  zh-TW: "D"
+  zh-CN: "D"
+  de: "A"
+  es: "D"
+  pt-BR: "S"
+  ja: "D"
+access.copy_address:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "K"
+  es: "C"
+  pt-BR: "E"
+  ja: "A"
+access.copy_as_path:
+  en: "C"
+  zh-TW: "C"
+  zh-CN: "C"
+  de: "A"
+  es: "A"
+  pt-BR: "C"
+  ja: "C"
+access.edit_address:
+  en: "E"
+  zh-TW: "E"
+  zh-CN: "E"
+  de: "E"
+  es: "E"
+  pt-BR: "D"
+  ja: "E"
+access.clear_history:
+  en: "H"
+  zh-TW: "H"
+  zh-CN: "H"
+  de: "V"
+  es: "B"
+  pt-BR: "L"
+  ja: "H"
+access.reset_cols:
+  en: "R"
+  zh-TW: "R"
+  zh-CN: "R"
+  de: "S"
+  es: "R"
+  pt-BR: "R"
+  ja: "R"
+access.drop_move:
+  en: "M"
+  zh-TW: "M"
+  zh-CN: "M"
+  de: "N"
+  es: "M"
+  pt-BR: "M"
+  ja: "M"
+access.drop_copy:
+  en: "C"
+  zh-TW: "C"
+  zh-CN: "C"
+  de: "K"
+  es: "A"
+  pt-BR: "P"
+  ja: "C"
+access.drop_shortcut:
+  en: "S"
+  zh-TW: "S"
+  zh-CN: "S"
+  de: "V"
+  es: "C"
+  pt-BR: "A"
+  ja: "S"
+access.drop_cancel:
+  en: "A"
+  zh-TW: "A"
+  zh-CN: "A"
+  de: "A"
+  es: "N"
+  pt-BR: "C"
+  ja: "A"

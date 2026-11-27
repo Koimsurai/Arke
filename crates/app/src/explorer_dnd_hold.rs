@@ -174,19 +174,19 @@ fn prune(root: &Path) {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("arke-hold-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> (PathBuf, tempfile::TempDir) {
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("arke-hold-test-{name}-"))
+            .tempdir()
+            .unwrap();
+        (guard.path().to_path_buf(), guard)
     }
 
     /// Files and folders in the temp folder survive the source deleting them; files elsewhere
     /// are left alone.
     #[test]
     fn temp_files_are_held_and_others_left() {
-        let base = scratch("held");
+        let (base, _guard) = scratch("held");
         let temp = base.join("temp");
         let root = temp.join("Arke drops");
         let extracted = temp.join("7zE1234");
@@ -225,13 +225,12 @@ mod tests {
         let (again, _) = hold_in(vec![temp.join("d.txt")], &temp, &root);
         assert!(!first.exists(), "emptied folder removed");
         assert!(again[0].exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Nothing in the temp folder: nothing happens, not even the folder of Arke's own.
     #[test]
     fn drops_from_elsewhere_are_untouched() {
-        let base = scratch("elsewhere");
+        let (base, _guard) = scratch("elsewhere");
         let temp = base.join("temp");
         let root = temp.join("Arke drops");
         let file = base.join("e.txt");
@@ -240,6 +239,5 @@ mod tests {
         assert_eq!(paths, [file]);
         assert!(!any);
         assert!(!root.exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

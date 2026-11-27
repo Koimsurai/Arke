@@ -45,6 +45,8 @@ pub(crate) struct WhatsNewPage {
     sections: Vec<Section>,
     /// Sections shown open; the first one is.
     expanded: BTreeSet<usize>,
+    /// The setup guide's entry is on the page (once, after the first update that has it).
+    guide: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
@@ -97,6 +99,7 @@ impl WhatsNewPage {
         }
         // An update's own notes, or the newest version: open; the rest folded.
         let expanded = (!sections.is_empty()).then_some(0).into_iter().collect();
+        let guide = matches!(mode, Mode::Updated { .. }) && super::welcome::offer_once(cx);
         if let Mode::Available(release) = &mode
             && lang != "en"
         {
@@ -107,6 +110,7 @@ impl WhatsNewPage {
             version,
             sections,
             expanded,
+            guide,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
         }
@@ -297,6 +301,25 @@ impl WhatsNewPage {
     }
 }
 
+impl WhatsNewPage {
+    /// The versions, led after an update by the setup guide's entry (see [`Self::guide`]).
+    fn sections_shown(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let guide = self
+            .guide
+            .then(|| super::welcome::whats_new_entry(cx))
+            .flatten();
+        guide
+            .into_iter()
+            .chain(
+                self.sections
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, s)| self.section(ix, s, cx)),
+            )
+            .collect()
+    }
+}
+
 fn render_block(block: &Block) -> AnyElement {
     match block {
         Block::Heading(text) => div()
@@ -323,12 +346,7 @@ fn render_block(block: &Block) -> AnyElement {
 impl Render for WhatsNewPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, subtitle) = self.heading();
-        let sections: Vec<AnyElement> = self
-            .sections
-            .iter()
-            .enumerate()
-            .map(|(ix, s)| self.section(ix, s, cx))
-            .collect();
+        let sections = self.sections_shown(cx);
         let changelog = format!(
             "{}/blob/main/{}",
             build_info::SOURCE_URL,
@@ -667,9 +685,9 @@ impl Workspace {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .mr(theme::s_8())
-                        .mb(theme::s_8())
-                        .rounded(theme::r_12())
+                        .mr(theme::paper_gap())
+                        .mb(theme::paper_gap())
+                        .rounded(theme::r_paper())
                         .bg(theme::paper())
                         .shadow(theme::elev_2())
                         .overflow_hidden()

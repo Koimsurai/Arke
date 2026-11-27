@@ -53,7 +53,7 @@ use crate::{
     Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerMode, Priority, PromptBuilder,
     PromptButton, PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle,
-    Reservation, ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer,
+    Reservation, ScreenCaptureSource, SharedString, Size, SubscriberSet, Subscription, SvgRenderer,
     SystemNotification, SystemNotificationResponse, Task, TextRenderingMode, TextSystem,
     ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
     WindowInvalidator, WindowingRequest,
@@ -2070,6 +2070,12 @@ impl App {
     /// Returns whether the user has configured scrollbars to auto-hide at the platform level.
     pub fn should_auto_hide_scrollbars(&self) -> bool {
         self.platform.should_auto_hide_scrollbars()
+    }
+
+    /// Returns how far the pointer must move after a press before it becomes a drag, per axis,
+    /// following the platform's setting.
+    pub fn drag_threshold(&self) -> Size<Pixels> {
+        self.platform.drag_threshold()
     }
 
     /// Restarts the application.

@@ -8,11 +8,17 @@
 //! the unnamed `$DATA` (size) and `$REPARSE_POINT` (link type). Extension records are merged into
 //! their base record.
 //!
+//! The volume is opened without the system cache (reads are sector aligned, see [`align_range`]),
+//! in 4 MB requests (1 MB on a drive with a seek penalty, so a foreground read waits less), and
+//! one chunk is read while the previous one is parsed. Extents are read in disk order within a
+//! small window (see [`read_order`]) but always parsed in file order, so the result is the same as
+//! a plain front-to-back read.
+//!
 //! Read-only. Parsing ([`Table::add`], [`decode_runs`], [`read_mft`], [`listing`]) never touches
 //! a real disk and is tested with fake data; only [`read_volume`] opens the volume. ReFS has no
 //! MFT: `FSCTL_GET_NTFS_VOLUME_DATA` fails and Arke walks folders as usual.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -45,8 +51,124 @@ const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 /// `is_symlink`).
 const REPARSE_TAG_NAME_SURROGATE: u32 = 0x2000_0000;
 
-/// Read size per chunk (a multiple of the record size).
-const CHUNK: usize = 4 * 1024 * 1024;
+/// Read size per request on a drive without a seek penalty (rounded down to whole records).
+const CHUNK_FAST: usize = 4 * 1024 * 1024;
+/// Read size per request on a drive with a seek penalty: a foreground read that arrives meanwhile
+/// waits for at most one of these (about 6 ms at hard disk speed instead of about 25 ms).
+const CHUNK_SEEK: usize = 1024 * 1024;
+/// Memory for chunks being read or waiting to be parsed.
+const BUFFER_BUDGET: usize = 12 * 1024 * 1024;
+/// Most chunks in flight, however small they are.
+const MAX_WINDOW: usize = 16;
+
+/// Request size for a drive: small on one that reports a seek penalty (hard disk), the default
+/// when it doesn't or the answer is unknown.
+pub(crate) const fn chunk_bytes(seek_penalty: Option<bool>) -> usize {
+    match seek_penalty {
+        Some(true) => CHUNK_SEEK,
+        _ => CHUNK_FAST,
+    }
+}
+
+/// How many chunks of `chunk` bytes may be read ahead of the parser (at least 2 so reading and
+/// parsing overlap).
+pub(crate) const fn window_chunks(chunk: usize) -> usize {
+    let n = BUFFER_BUDGET / if chunk == 0 { 1 } else { chunk };
+    if n < 2 {
+        2
+    } else if n > MAX_WINDOW {
+        MAX_WINDOW
+    } else {
+        n
+    }
+}
+
+/// A byte range widened to the sector grid (for unbuffered reads).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AlignedRange {
+    /// First byte to read (a multiple of the sector size, at or before the wanted offset).
+    pub(crate) start: u64,
+    /// Bytes to read (a multiple of the sector size).
+    pub(crate) len: usize,
+    /// Where the wanted bytes begin inside the widened range.
+    pub(crate) skip: usize,
+}
+
+/// Widens `offset..offset + len` to whole sectors.
+pub(crate) fn align_range(offset: u64, len: usize, sector: usize) -> Option<AlignedRange> {
+    let sector = sector.max(1) as u64;
+    let start = offset - offset % sector;
+    let end = offset
+        .checked_add(len as u64)?
+        .checked_next_multiple_of(sector)?;
+    Some(AlignedRange {
+        start,
+        len: usize::try_from(end - start).ok()?,
+        skip: usize::try_from(offset - start).ok()?,
+    })
+}
+
+/// Whether a read of `len` bytes at `offset` into memory at `addr` can go straight to an
+/// unbuffered handle: offset, length and buffer address must all be sector aligned.
+pub(crate) const fn is_aligned(offset: u64, addr: usize, len: usize, sector: usize) -> bool {
+    let sector = if sector == 0 { 1 } else { sector };
+    offset.is_multiple_of(sector as u64)
+        && addr.is_multiple_of(sector)
+        && len.is_multiple_of(sector)
+}
+
+/// Order to read chunks in. `keys[i]` is where chunk `i` lies on disk. The parser needs chunk 0,
+/// 1, 2... in that order, so the reader may only run `window` chunks ahead of the first one not
+/// yet read; within that window it sweeps upward by disk position (elevator) instead of jumping
+/// back and forth when the MFT's extents lie out of order. Extents that are already in order give
+/// plain `0, 1, 2...`.
+pub(crate) fn read_order(keys: &[u64], window: usize) -> Vec<usize> {
+    let n = keys.len();
+    let window = window.max(1);
+    let mut read = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    let (mut first_unread, mut head) = (0usize, 0u64);
+    while order.len() < n {
+        let limit = (first_unread + window).min(n);
+        let pick = (first_unread..limit)
+            .filter(|&i| !read[i])
+            .min_by_key(|&i| (keys[i] < head, keys[i], i));
+        let Some(i) = pick else { break };
+        read[i] = true;
+        order.push(i);
+        head = keys[i];
+        while first_unread < n && read[first_unread] {
+            first_unread += 1;
+        }
+    }
+    order
+}
+
+/// 4 KB aligned page; volume reads must be sector aligned in memory too.
+#[repr(C, align(4096))]
+#[derive(Clone, Copy)]
+struct Page([u8; 4096]);
+
+/// Zeroed memory aligned to 4 KB (enough for any sector size), usable as a byte slice.
+struct AlignedBuf {
+    pages: Vec<Page>,
+}
+
+impl AlignedBuf {
+    fn new(bytes: usize) -> Self {
+        Self {
+            pages: vec![Page([0; 4096]); bytes.div_ceil(4096).max(1)],
+        }
+    }
+
+    /// The first `len` bytes (fewer if the buffer is smaller).
+    fn bytes_mut(&mut self, len: usize) -> &mut [u8] {
+        let len = len.min(self.pages.len() * 4096);
+        // SAFETY: pages is one contiguous allocation of pages.len() * 4096 initialized bytes,
+        // len is clamped to it, and `u8` has no alignment or validity requirements.
+        unsafe { std::slice::from_raw_parts_mut(self.pages.as_mut_ptr().cast::<u8>(), len) }
+    }
+}
 
 /// Merged file info, indexed by base record number.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -111,9 +233,8 @@ fn le64(b: &[u8], at: usize) -> Option<u64> {
 
 /// FILETIME (100 ns since 1601) to Unix seconds; before 1970 or too far ahead counts as unknown.
 fn unix_secs(filetime: u64) -> u32 {
-    const EPOCH_DIFF: u64 = 11_644_473_600;
     (filetime / 10_000_000)
-        .checked_sub(EPOCH_DIFF)
+        .checked_sub(arke_core::time::UNIX_EPOCH_SECS)
         .and_then(|s| u32::try_from(s).ok())
         .unwrap_or(0)
 }
@@ -521,10 +642,99 @@ fn mft_runs(disk: &mut impl Disk, geo: &Geometry) -> Option<(Vec<Run>, u64)> {
     Some((runs, size?))
 }
 
-/// Reads the whole MFT. Stops with `None` once `cancel()` returns true.
-pub(crate) fn read_mft(
-    disk: &mut impl Disk,
+/// Where a byte of the stream lies on disk (`u64::MAX` if sparse or unmapped, read last).
+fn disk_position(geo: &Geometry, runs: &[Run], pos: u64) -> u64 {
+    let vcn = pos / geo.cluster;
+    let ix = runs.partition_point(|r| r.vcn + r.len <= vcn);
+    match runs.get(ix) {
+        Some(&Run {
+            vcn: first,
+            lcn: Some(lcn),
+            ..
+        }) if first <= vcn => lcn * geo.cluster + (pos - first * geo.cluster),
+        _ => u64::MAX,
+    }
+}
+
+/// What to read and in which order.
+struct Plan {
+    per_chunk: usize,
+    records: usize,
+    window: usize,
+    order: Vec<usize>,
+}
+
+/// Reads the chunks on a second thread (in `plan.order`) while this one parses them in file
+/// order. The reader needs a free buffer per chunk and the parser frees one after each chunk, so
+/// at most `plan.window` chunks are in memory; the reader only reads within `window` of the first
+/// unread chunk (see [`read_order`]), so the parser's next chunk always gets read.
+fn fill_table(
+    disk: &mut (impl Disk + Send),
     geo: &Geometry,
+    runs: &[Run],
+    plan: &Plan,
+    cancel: &dyn Fn() -> bool,
+    table: &mut Table,
+) -> Option<()> {
+    let Plan {
+        per_chunk,
+        records,
+        window,
+        ref order,
+    } = *plan;
+    std::thread::scope(|scope| {
+        let (free_tx, free_rx) = flume::unbounded::<AlignedBuf>();
+        let (filled_tx, filled_rx) = flume::unbounded::<(usize, Option<AlignedBuf>)>();
+        for _ in 0..window {
+            free_tx.send(AlignedBuf::new(per_chunk * geo.record)).ok()?;
+        }
+        scope.spawn(move || {
+            for &i in order {
+                let Ok(mut buf) = free_rx.recv() else { return };
+                let first = i * per_chunk;
+                let n = per_chunk.min(records - first);
+                let bytes = buf.bytes_mut(n * geo.record);
+                let ok = read_stream(disk, geo, runs, (first * geo.record) as u64, bytes);
+                if filled_tx.send((i, ok.then_some(buf))).is_err() || !ok {
+                    return;
+                }
+            }
+        });
+        // Leaving early drops both channels, which ends the reader (blocked on a buffer, or
+        // failing to hand one over).
+        let mut waiting: HashMap<usize, AlignedBuf> = HashMap::new();
+        for i in 0..records.div_ceil(per_chunk) {
+            if cancel() {
+                return None;
+            }
+            let mut buf = loop {
+                if let Some(buf) = waiting.remove(&i) {
+                    break buf;
+                }
+                let (j, buf) = filled_rx.recv().ok()?;
+                waiting.insert(j, buf?);
+            };
+            let first = i * per_chunk;
+            let n = per_chunk.min(records - first);
+            for (k, rec) in buf
+                .bytes_mut(n * geo.record)
+                .chunks_exact_mut(geo.record)
+                .enumerate()
+            {
+                table.add(u32::try_from(first + k).ok()?, rec, geo.sector);
+            }
+            let _ = free_tx.send(buf);
+        }
+        Some(())
+    })
+}
+
+/// Reads the whole MFT in requests of about `chunk` bytes. Stops with `None` once `cancel()`
+/// returns true.
+pub(crate) fn read_mft(
+    disk: &mut (impl Disk + Send),
+    geo: &Geometry,
+    chunk: usize,
     cancel: &dyn Fn() -> bool,
 ) -> Option<Table> {
     if geo.record == 0
@@ -541,26 +751,19 @@ pub(crate) fn read_mft(
         files: Vec::with_capacity(records),
         ..Table::default()
     };
-    let per_chunk = (CHUNK / geo.record).max(1);
-    let mut buf = vec![0u8; per_chunk * geo.record];
-    let mut first = 0usize;
-    while first < records {
-        if cancel() {
-            return None;
-        }
-        let n = per_chunk.min(records - first);
-        let bytes = &mut buf[..n * geo.record];
-        if !read_stream(disk, geo, &runs, (first * geo.record) as u64, bytes) {
-            return None;
-        }
-        for (i, rec) in bytes.chunks_exact_mut(geo.record).enumerate() {
-            let Ok(recno) = u32::try_from(first + i) else {
-                return None;
-            };
-            table.add(recno, rec, geo.sector);
-        }
-        first += n;
-    }
+    // No bigger than the MFT itself, so a small one doesn't allocate a full chunk per buffer.
+    let per_chunk = (chunk / geo.record).clamp(1, records.max(1));
+    let window = window_chunks(per_chunk * geo.record);
+    let keys: Vec<u64> = (0..records.div_ceil(per_chunk))
+        .map(|i| disk_position(geo, &runs, (i * per_chunk * geo.record) as u64))
+        .collect();
+    let plan = Plan {
+        per_chunk,
+        records,
+        window,
+        order: read_order(&keys, window),
+    };
+    fill_table(disk, geo, &runs, &plan, cancel, &mut table)?;
     Some(table)
 }
 
@@ -644,12 +847,77 @@ pub(crate) enum MftError {
     Read,
 }
 
-/// Opens the volume and reads the MFT. Needs admin; fails on non-NTFS volumes.
-pub(crate) fn read_volume(root: &Path, cancel: &dyn Fn() -> bool) -> Result<Table, MftError> {
+/// Whether the drive under `volume` has a seek penalty (a hard disk), as its driver reports it.
+/// `None` when it can't be read (a volume over several disks, an old driver).
+fn seek_penalty(volume: &crate::usn::Volume) -> Option<bool> {
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::{
+        IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_PROPERTY_QUERY,
+        StorageDeviceSeekPenaltyProperty,
+    };
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceSeekPenaltyProperty,
+        QueryType: PropertyStandardQuery,
+        ..Default::default()
+    };
+    // DEVICE_SEEK_PENALTY_DESCRIPTOR: Version, Size, then IncursSeekPenalty (one byte). Read as
+    // plain integers, so no byte the driver writes can make an invalid `bool`.
+    let mut answer = [0u32; 3];
+    let mut written = 0u32;
+    // SAFETY: the handle is open; the query and answer buffers outlive the call and their sizes
+    // are passed with them; no OVERLAPPED, so the call completes before it returns.
+    unsafe {
+        DeviceIoControl(
+            volume.handle(),
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            Some((&raw const query).cast()),
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            Some(answer.as_mut_ptr().cast()),
+            size_of_val(&answer) as u32,
+            Some(&raw mut written),
+            None,
+        )
+    }
+    .ok()?;
+    (written >= 9).then_some(answer[2] & 0xFF != 0)
+}
+
+/// Marks this handle's I/O as very low priority: Windows serves it only when nothing of normal
+/// priority waits (with a trickle so it can't starve), so a rescan yields to the user.
+fn lower_io_priority(volume: &crate::usn::Volume) -> bool {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_IO_PRIORITY_HINT_INFO, FileIoPriorityHintInfo, IoPriorityHintVeryLow,
+        SetFileInformationByHandle,
+    };
+    let info = FILE_IO_PRIORITY_HINT_INFO {
+        PriorityHint: IoPriorityHintVeryLow,
+    };
+    // SAFETY: the handle is open; info is a valid FILE_IO_PRIORITY_HINT_INFO of the size passed.
+    unsafe {
+        SetFileInformationByHandle(
+            volume.handle(),
+            FileIoPriorityHintInfo,
+            (&raw const info).cast(),
+            size_of::<FILE_IO_PRIORITY_HINT_INFO>() as u32,
+        )
+    }
+    .is_ok()
+}
+
+/// Opens the volume and reads the MFT. Needs admin; fails on non-NTFS volumes. `background` reads
+/// at very low I/O priority (for a rescan when an older index is already usable).
+pub(crate) fn read_volume(
+    root: &Path,
+    background: bool,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Table, MftError> {
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::{FSCTL_GET_NTFS_VOLUME_DATA, NTFS_VOLUME_DATA_BUFFER};
     let started = Instant::now();
-    let volume = crate::usn::Volume::open(root).map_err(|source| MftError::Open { source })?;
+    let volume =
+        crate::usn::Volume::open_unbuffered(root).map_err(|source| MftError::Open { source })?;
+    let low = background && lower_io_priority(&volume);
+    let seek = seek_penalty(&volume);
     let mut data = NTFS_VOLUME_DATA_BUFFER::default();
     let mut returned = 0u32;
     // SAFETY: the out buffer is a valid NTFS_VOLUME_DATA_BUFFER of the right size; sync call.
@@ -673,9 +941,13 @@ pub(crate) fn read_volume(root: &Path, cancel: &dyn Fn() -> bool) -> Result<Tabl
         mft_start_lcn: data.MftStartLcn.max(0).cast_unsigned(),
         valid: data.MftValidDataLength.max(0).cast_unsigned(),
     };
-    let table = read_mft(&mut VolumeDisk(&volume), &geo, cancel).ok_or(MftError::Read)?;
+    let mut disk = VolumeDisk {
+        volume: &volume,
+        sector: geo.sector,
+    };
+    let table = read_mft(&mut disk, &geo, chunk_bytes(seek), cancel).ok_or(MftError::Read)?;
     log::info!(
-        "{}: MFT {} records, {} names, {:.1} s",
+        "{}: MFT {} records, {} names, {:.1} s (seek penalty {seek:?}, low priority {low})",
         root.display(),
         table.files.len(),
         table.names.len(),
@@ -684,22 +956,17 @@ pub(crate) fn read_volume(root: &Path, cancel: &dyn Fn() -> bool) -> Result<Tabl
     Ok(table)
 }
 
-struct VolumeDisk<'a>(&'a crate::usn::Volume);
+struct VolumeDisk<'a> {
+    volume: &'a crate::usn::Volume,
+    sector: usize,
+}
 
-/// 4 KB aligned buffer; volume reads must be sector aligned.
-#[repr(C, align(4096))]
-#[derive(Clone, Copy)]
-struct Page([u8; 4096]);
-
-impl Disk for VolumeDisk<'_> {
-    fn read(&mut self, offset: u64, buf: &mut [u8]) -> bool {
+impl VolumeDisk<'_> {
+    /// One read of exactly `buf.len()` bytes; offset, length and address must be sector aligned.
+    fn read_aligned(&self, offset: u64, buf: &mut [u8]) -> bool {
         use windows::Win32::Storage::FileSystem::ReadFile;
         use windows::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
-        let mut pages = vec![Page([0; 4096]); buf.len().div_ceil(4096)];
-        // SAFETY: pages is contiguous, 4096-aligned memory of at least buf.len() bytes, only
-        // viewed as bytes here.
-        let aligned =
-            unsafe { std::slice::from_raw_parts_mut(pages.as_mut_ptr().cast::<u8>(), buf.len()) };
+        let len = buf.len();
         let mut overlapped = OVERLAPPED {
             Anonymous: OVERLAPPED_0 {
                 Anonymous: OVERLAPPED_0_0 {
@@ -710,24 +977,38 @@ impl Disk for VolumeDisk<'_> {
             ..OVERLAPPED::default()
         };
         let mut read = 0u32;
-        // SAFETY: sync handle; aligned, read and overlapped are valid for the call (OVERLAPPED
-        // only sets the offset).
+        // SAFETY: sync handle; buf, read and overlapped are valid for the call (OVERLAPPED only
+        // sets the offset).
         let ok = unsafe {
             ReadFile(
-                self.0.handle(),
-                Some(aligned),
+                self.volume.handle(),
+                Some(buf),
                 Some(&raw mut read),
                 Some(&raw mut overlapped),
             )
         }
         .is_ok();
-        if !ok || read as usize != buf.len() {
+        ok && read as usize == len
+    }
+}
+
+impl Disk for VolumeDisk<'_> {
+    fn read(&mut self, offset: u64, buf: &mut [u8]) -> bool {
+        // The chunk reader hands over aligned memory and sector-multiple ranges, so this goes
+        // straight into the caller's buffer. Anything else (the first record, an attribute list)
+        // is read widened into a bounce buffer.
+        if is_aligned(offset, buf.as_ptr().addr(), buf.len(), self.sector) {
+            return self.read_aligned(offset, buf);
+        }
+        let Some(range) = align_range(offset, buf.len(), self.sector) else {
+            return false;
+        };
+        let mut bounce = AlignedBuf::new(range.len);
+        let bytes = bounce.bytes_mut(range.len);
+        if !self.read_aligned(range.start, bytes) {
             return false;
         }
-        // SAFETY: as above; pages holds at least buf.len() bytes.
-        buf.copy_from_slice(unsafe {
-            std::slice::from_raw_parts(pages.as_ptr().cast::<u8>(), buf.len())
-        });
+        buf.copy_from_slice(&bytes[range.skip..range.skip + buf.len()]);
         true
     }
 }
@@ -985,12 +1266,24 @@ pub(crate) mod tests {
 
     /// Fake volume: 4 KB clusters, $MFT in two runs (record 0 at cluster 2, the rest at 10).
     fn fake_volume(records: Vec<(u32, Vec<u8>)>) -> (Memory, Geometry) {
+        fake_volume_in(records, false)
+    }
+
+    /// As [`fake_volume`]; with `reversed` the first half of the MFT lies after the second half
+    /// on disk (second run at cluster 2, first at 10), so file order and disk order differ.
+    fn fake_volume_in(records: Vec<(u32, Vec<u8>)>, reversed: bool) -> (Memory, Geometry) {
         const CLUSTER: usize = 4096;
         let per_cluster = CLUSTER / RECORD;
         let total = 64usize;
         let mut disk = vec![0u8; 20 * CLUSTER];
-        // Clusters 2..10 hold the first 32 records, clusters 10..18 the last 32.
-        let runlist = [0x11, 8, 2, 0x11, 8, 8, 0];
+        // Clusters 2..10 hold the first 32 records, clusters 10..18 the last 32 (or the other way
+        // round when reversed; the run list then steps back by 8 clusters, 0xF8 as a signed byte).
+        let (first_at, second_at) = if reversed { (10, 2) } else { (2, 10) };
+        let runlist = if reversed {
+            [0x11, 8, 10, 0x11, 8, 0xF8, 0]
+        } else {
+            [0x11, 8, 2, 0x11, 8, 8, 0]
+        };
         let mut all = records;
         all.push((
             0,
@@ -1007,7 +1300,11 @@ pub(crate) mod tests {
         ));
         for (recno, rec) in all {
             let vcn = recno as usize / per_cluster;
-            let lcn = if vcn < 8 { 2 + vcn } else { 10 + (vcn - 8) };
+            let lcn = if vcn < 8 {
+                first_at + vcn
+            } else {
+                second_at + (vcn - 8)
+            };
             let at = lcn * CLUSTER + (recno as usize % per_cluster) * RECORD;
             disk[at..at + RECORD].copy_from_slice(&rec);
         }
@@ -1015,7 +1312,7 @@ pub(crate) mod tests {
             cluster: CLUSTER as u64,
             record: RECORD,
             sector: SECTOR,
-            mft_start_lcn: 2,
+            mft_start_lcn: first_at as u64,
             valid: (total * RECORD) as u64,
         };
         (Memory(disk), geo)
@@ -1058,7 +1355,7 @@ pub(crate) mod tests {
             (43, file(42, "through-junction.txt", 1)),
         ];
         let (mut disk, geo) = fake_volume(records);
-        let mut table = read_mft(&mut disk, &geo, &|| false).unwrap();
+        let mut table = read_mft(&mut disk, &geo, CHUNK_FAST, &|| false).unwrap();
         let mut out = Vec::new();
         assert!(listing(&mut table, Path::new(r"C:\"), &privacy(), |l| {
             out.push(l);
@@ -1104,8 +1401,254 @@ pub(crate) mod tests {
     #[test]
     fn refuses_bad_geometry_and_cancels() {
         let (mut disk, mut geo) = fake_volume(vec![(5, dir(5, ".", 0x16))]);
-        assert!(read_mft(&mut disk, &geo, &|| true).is_none());
+        assert!(read_mft(&mut disk, &geo, CHUNK_FAST, &|| true).is_none());
         geo.record = 1000;
-        assert!(read_mft(&mut disk, &geo, &|| false).is_none());
+        assert!(read_mft(&mut disk, &geo, CHUNK_FAST, &|| false).is_none());
+    }
+
+    #[test]
+    fn widens_unaligned_reads_to_whole_sectors() {
+        // Already aligned: nothing to skip.
+        assert_eq!(
+            align_range(4096, 8192, 512),
+            Some(AlignedRange {
+                start: 4096,
+                len: 8192,
+                skip: 0
+            })
+        );
+        // Starts mid-sector and ends mid-sector: both ends move out.
+        assert_eq!(
+            align_range(1000, 100, 512),
+            Some(AlignedRange {
+                start: 512,
+                len: 1024,
+                skip: 488
+            })
+        );
+        // Ends exactly on a sector boundary after widening the start only.
+        assert_eq!(
+            align_range(4100, 4092, 4096),
+            Some(AlignedRange {
+                start: 4096,
+                len: 4096,
+                skip: 4
+            })
+        );
+        // A record smaller than a 4Kn sector reads the whole sector.
+        assert_eq!(
+            align_range(8192 + 1024, 1024, 4096),
+            Some(AlignedRange {
+                start: 8192,
+                len: 4096,
+                skip: 1024
+            })
+        );
+        assert_eq!(align_range(u64::MAX - 10, 100, 512), None);
+        for (offset, len) in [(0u64, 1usize), (511, 2), (513, 511), (4095, 4097)] {
+            let r = align_range(offset, len, 512).unwrap();
+            assert_eq!(r.start % 512, 0);
+            assert_eq!(r.len % 512, 0);
+            assert_eq!(r.start + r.skip as u64, offset);
+            assert!(r.skip + len <= r.len);
+            assert!(r.len < len + 2 * 512);
+        }
+    }
+
+    #[test]
+    fn direct_reads_need_offset_address_and_length_on_the_sector_grid() {
+        assert!(is_aligned(4096, 8192, 1024 * 1024, 512));
+        assert!(!is_aligned(4097, 8192, 4096, 512));
+        assert!(!is_aligned(4096, 8193, 4096, 512));
+        assert!(!is_aligned(4096, 8192, 4097, 512));
+        assert!(!is_aligned(512, 8192, 4096, 4096));
+        // A buffer from AlignedBuf always qualifies, at any sector size up to 4096.
+        let mut buf = AlignedBuf::new(10_000);
+        assert!(buf.bytes_mut(8192).as_ptr().addr().is_multiple_of(4096));
+        assert_eq!(buf.bytes_mut(1 << 30).len(), 12_288);
+    }
+
+    #[test]
+    fn small_requests_on_a_drive_with_a_seek_penalty() {
+        assert_eq!(chunk_bytes(Some(true)), 1024 * 1024);
+        assert_eq!(chunk_bytes(Some(false)), 4 * 1024 * 1024);
+        // Unknown keeps the default.
+        assert_eq!(chunk_bytes(None), 4 * 1024 * 1024);
+        // Whole records either way, and the memory in flight stays about the same.
+        for chunk in [chunk_bytes(Some(true)), chunk_bytes(Some(false))] {
+            assert_eq!(chunk % 4096, 0);
+            let window = window_chunks(chunk);
+            assert!((2..=MAX_WINDOW).contains(&window));
+            assert!(window * chunk <= BUFFER_BUDGET.max(2 * chunk));
+        }
+        assert_eq!(window_chunks(0), MAX_WINDOW);
+    }
+
+    /// Replays a read order the way the reader and parser interact: a chunk may only be read while
+    /// it lies within `window` of the first unparsed chunk, and the parser takes chunks in file
+    /// order as soon as they are there.
+    fn check_order(keys: &[u64], window: usize) -> Vec<usize> {
+        let order = read_order(keys, window);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..keys.len()).collect::<Vec<_>>(), "a permutation");
+        let (mut read, mut next) = (vec![false; keys.len()], 0usize);
+        for &i in &order {
+            assert!(i < next + window, "chunk {i} is too far ahead of {next}");
+            read[i] = true;
+            while next < keys.len() && read[next] {
+                next += 1;
+            }
+        }
+        assert_eq!(next, keys.len());
+        order
+    }
+
+    #[test]
+    fn extents_in_file_order_are_read_front_to_back() {
+        let keys: Vec<u64> = (0..40).map(|i| 1_000_000 + i * 4096).collect();
+        assert_eq!(check_order(&keys, 3), (0..40).collect::<Vec<_>>());
+        assert!(check_order(&[], 3).is_empty());
+        assert_eq!(check_order(&[7], 3), [0]);
+    }
+
+    #[test]
+    fn out_of_order_extents_are_swept_in_disk_order_within_the_window() {
+        // Chunks 0-3 lie after chunks 4-7 on disk; the window covers four chunks.
+        let keys = [80, 90, 100, 110, 10, 20, 30, 40];
+        let order = check_order(&keys, 4);
+        // Window 0..4 only holds the late extent: read it upward, then the early one.
+        assert_eq!(order, [0, 1, 2, 3, 4, 5, 6, 7]);
+        // With room to look ahead the early extent goes first where that is allowed.
+        let order = check_order(&keys, 8);
+        assert_eq!(order, [4, 5, 6, 7, 0, 1, 2, 3]);
+        // Reversed extents: still one upward sweep inside each window.
+        let keys = [50, 40, 30, 20, 10];
+        assert_eq!(check_order(&keys, 5), [4, 3, 2, 1, 0]);
+        assert_eq!(check_order(&keys, 2), [1, 0, 3, 2, 4]);
+        // A sparse chunk (no disk position) goes last in its window.
+        let keys = [u64::MAX, 5, 6];
+        assert_eq!(check_order(&keys, 3), [1, 2, 0]);
+    }
+
+    /// The old reader: one chunk at a time, in file order, nothing overlapped.
+    fn read_mft_sequential(disk: &mut Memory, geo: &Geometry, chunk: usize) -> Option<Table> {
+        let (runs, size) = mft_runs(disk, geo)?;
+        let records = usize::try_from(size.min(geo.valid) / geo.record as u64).ok()?;
+        let mut table = Table::default();
+        let per_chunk = (chunk / geo.record).max(1);
+        let mut buf = vec![0u8; per_chunk * geo.record];
+        let mut first = 0usize;
+        while first < records {
+            let n = per_chunk.min(records - first);
+            let bytes = &mut buf[..n * geo.record];
+            if !read_stream(disk, geo, &runs, (first * geo.record) as u64, bytes) {
+                return None;
+            }
+            for (i, rec) in bytes.chunks_exact_mut(geo.record).enumerate() {
+                table.add(u32::try_from(first + i).ok()?, rec, geo.sector);
+            }
+            first += n;
+        }
+        Some(table)
+    }
+
+    /// Everything a table holds, in the order it holds it.
+    fn dump(t: &Table) -> (Vec<FileInfo>, Vec<(u32, u32, String)>) {
+        (
+            t.files.clone(),
+            t.names
+                .iter()
+                .map(|n| (n.parent, n.file, t.name(n).to_string()))
+                .collect(),
+        )
+    }
+
+    fn busy_records() -> Vec<(u32, Vec<u8>)> {
+        let mut records = vec![
+            (5, dir(5, ".", 0x16)),
+            (24, dir(5, "Users", 0x11)),
+            (25, dir(24, "Me", 0x10)),
+        ];
+        // Files in both halves of the MFT, an extension record, a deleted record.
+        for n in 26..60u32 {
+            let parent = if n % 3 == 0 { 25 } else { 24 };
+            records.push((n, file(parent, &format!("file-{n}.txt"), u64::from(n))));
+        }
+        records.push((
+            60,
+            record(IN_USE, 29, &[file_name(25, "second-link-to-29", 1)]),
+        ));
+        records.push((61, record(0, 0, &[file_name(5, "deleted.txt", 1)])));
+        records
+    }
+
+    #[test]
+    fn double_buffered_reader_gives_the_same_records_as_the_sequential_one() {
+        for reversed in [false, true] {
+            for chunk in [1024, 2048, 4096, 8192, 16384, 1 << 20] {
+                let (mut a, geo) = fake_volume_in(busy_records(), reversed);
+                let (mut b, _) = fake_volume_in(busy_records(), reversed);
+                let want = read_mft_sequential(&mut a, &geo, chunk).unwrap();
+                let got = read_mft(&mut b, &geo, chunk, &|| false).unwrap();
+                assert_eq!(dump(&got), dump(&want), "reversed={reversed} chunk={chunk}");
+                // Highest record that creates a slot is 59 (60 is an extension of 29, 61 is deleted).
+                assert_eq!(got.files.len(), 60);
+            }
+        }
+    }
+
+    #[test]
+    fn disk_order_follows_the_extents_but_parsing_does_not() {
+        let (mut disk, geo) = fake_volume_in(busy_records(), true);
+        let (runs, _) = mft_runs(&mut disk, &geo).unwrap();
+        // File order: VCN 0 is at cluster 10, VCN 8 at cluster 2.
+        assert_eq!(disk_position(&geo, &runs, 0), 10 * 4096);
+        assert_eq!(disk_position(&geo, &runs, 8 * 4096), 2 * 4096);
+        assert_eq!(disk_position(&geo, &runs, 8 * 4096 + 1024), 2 * 4096 + 1024);
+        assert_eq!(disk_position(&geo, &runs, 99 * 4096), u64::MAX);
+        let keys: Vec<u64> = (0..16)
+            .map(|i| disk_position(&geo, &runs, i * 4096))
+            .collect();
+        // One cluster (4 records) per chunk, window of 16: the second half is read first.
+        let order = check_order(&keys, 16);
+        assert_eq!(order[..8], [8, 9, 10, 11, 12, 13, 14, 15]);
+    }
+
+    /// Fails every read after the first `ok` ones.
+    struct Flaky {
+        inner: Memory,
+        ok: usize,
+    }
+
+    impl Disk for Flaky {
+        fn read(&mut self, offset: u64, buf: &mut [u8]) -> bool {
+            if self.ok == 0 {
+                return false;
+            }
+            self.ok -= 1;
+            self.inner.read(offset, buf)
+        }
+    }
+
+    #[test]
+    fn a_failed_read_or_a_cancel_stops_the_pipeline() {
+        let (inner, geo) = fake_volume_in(busy_records(), true);
+        // The first read (record 0) works; the chunk reads then fail partway.
+        for ok in [1, 2, 3, 5] {
+            let (inner2, _) = fake_volume_in(busy_records(), true);
+            let mut disk = Flaky { inner: inner2, ok };
+            assert!(read_mft(&mut disk, &geo, 4096, &|| false).is_none());
+        }
+        // Cancelling after a few chunks returns without hanging on the reader thread.
+        let mut disk = Memory(inner.0);
+        let calls = std::cell::Cell::new(0);
+        assert!(
+            read_mft(&mut disk, &geo, 4096, &|| {
+                calls.set(calls.get() + 1);
+                calls.get() > 3
+            })
+            .is_none()
+        );
     }
 }

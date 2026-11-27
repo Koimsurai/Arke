@@ -910,7 +910,7 @@ pub(crate) fn local_drives(shell: &dyn Shell) -> Vec<PathBuf> {
         .into_iter()
         .filter(|p| matches!(p.kind, PlaceKind::Drive { remote: false, .. }))
         .map(|p| p.path)
-        .filter(|p| shell.is_local_disk(p))
+        .filter(|p| shell.is_fixed_disk(p))
         .collect();
     distinct_volumes(roots, |root| {
         drive_of(root)
@@ -1026,7 +1026,7 @@ fn is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
 
 /// `%LOCALAPPDATA%\Arke\index.bin` (string handling only).
 pub(crate) fn default_cache_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Arke").join("index.bin"))
+    crate::paths::index_cache_file()
 }
 
 /// Whether a path is on the network (`\\server\share\…` or a mapped drive). Uses the path and the

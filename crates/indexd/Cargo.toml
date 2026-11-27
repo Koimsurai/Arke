@@ -42,4 +42,5 @@ features = [
 workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 env_logger.workspace = true

@@ -31,7 +31,7 @@ use windows::core::{GUID, HRESULT, PCWSTR, PWSTR};
 
 use crate::error::{RemoteError, RemoteResult};
 use crate::hub::TransferSink;
-use crate::mtp::{Device, Object, Portable, device_key, segments};
+use crate::mtp::{Device, DeviceInfo, Object, Portable, device_key, is_portable, segments};
 
 /// One request to a device (listing a big folder over MTP can take a while).
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -240,6 +240,10 @@ impl State {
         let mut out = Vec::new();
         self.ids.clear();
         for id in ids {
+            // Disk volumes WPD also lists are drives, shown under This PC already (#437).
+            if !is_portable(&DeviceInfo { pnp_id: id.clone() }) {
+                continue;
+            }
             let name = friendly_name(&manager, &id).unwrap_or_else(|| id.clone());
             let key = device_key(&name, &id);
             self.ids.insert(key.clone(), id);
@@ -569,9 +573,8 @@ fn ole_date(days: f64) -> Option<SystemTime> {
         windows::Win32::System::Time::SystemTimeToFileTime(&raw const utc, &raw mut file).ok()?;
     }
     let ticks = (u64::from(file.dwHighDateTime) << 32) | u64::from(file.dwLowDateTime);
-    // FILETIME counts 100 ns from 1601; Unix time starts 11644473600 s later.
-    let unix_100ns = ticks.checked_sub(116_444_736_000_000_000)?;
-    Some(SystemTime::UNIX_EPOCH + Duration::from_nanos(unix_100ns.saturating_mul(100)))
+    // Before 1970 counts as unknown, as it always did.
+    arke_core::time::system_time_from_filetime(ticks).filter(|t| *t >= SystemTime::UNIX_EPOCH)
 }
 
 /// The calendar date and time an OLE date stands for.
@@ -583,37 +586,19 @@ fn ole_date(days: f64) -> Option<SystemTime> {
 fn ole_to_systemtime(days: f64) -> Option<SYSTEMTIME> {
     let whole = days.floor();
     let seconds = ((days - whole) * 86_400.0).round() as u32;
-    // Days since 1970-01-01.
-    let z = whole as i64 - 25_569;
-    let (y, m, d) = civil(z);
+    // OLE day 0 is 1899-12-30.
+    let date = jiff::civil::date(1899, 12, 30)
+        .checked_add(jiff::Span::new().try_days(whole as i64).ok()?)
+        .ok()?;
     Some(SYSTEMTIME {
-        wYear: u16::try_from(y).ok()?,
-        wMonth: m,
-        wDay: d,
+        wYear: u16::try_from(date.year()).ok()?,
+        wMonth: u16::from(date.month().cast_unsigned()),
+        wDay: u16::from(date.day().cast_unsigned()),
         wHour: u16::try_from((seconds / 3600).min(23)).ok()?,
         wMinute: u16::try_from((seconds / 60) % 60).ok()?,
         wSecond: u16::try_from(seconds % 60).ok()?,
         ..SYSTEMTIME::default()
     })
-}
-
-/// Days since 1970-01-01 -> (year, month, day) (Howard Hinnant's civil_from_days).
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "month and day are 1..=12 and 1..=31"
-)]
-const fn civil(z: i64) -> (i64, u16, u16) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m as u16, d as u16)
 }
 
 #[cfg(test)]

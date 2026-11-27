@@ -463,7 +463,7 @@ impl Workspace {
             div()
                 .id("tab-pin-drop")
                 .debug_selector(|| "tab-pin-drop".to_owned())
-                .h(theme::h_row())
+                .h(theme::h_row_side())
                 .flex()
                 .flex_none()
                 .items_center()

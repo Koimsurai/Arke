@@ -269,7 +269,7 @@ pub(crate) struct OpFollowUp {
     redo: Option<Box<(&'static str, FileOp)>>,
     /// This is a redo of that operation (verb): says so, and keeps the rest of the redo stack.
     redone: Option<&'static str>,
-    /// Handed to TeraCopy instead of running here.
+    /// Handed to the external copy program instead of running here.
     handed_off: bool,
     /// Folder the operation changed elsewhere (the other pane's): relisted if it is on a server,
     /// which sends no change notifications.
@@ -345,8 +345,8 @@ pub(crate) struct JobEnv {
     serialize: bool,
     /// Read copies back and compare them with their sources (setting).
     verify: bool,
-    /// TeraCopy's exe, when copies and moves go to it (setting, and TeraCopy found).
-    teracopy: Option<PathBuf>,
+    /// The external copy program, when copies and moves go to it (setting).
+    external_copy: Option<crate::external::Command>,
 }
 
 /// Whether `op` would add, rename, move or delete a share itself (`\\server\share`) or put
@@ -366,7 +366,8 @@ pub(crate) fn changes_share_list(op: &FileOp) -> bool {
     }
 }
 
-/// How a job ended: result, how to undo what completed, and whether TeraCopy took it over.
+/// How a job ended: result, how to undo what completed, and whether the external copy program
+/// took it over.
 type JobOutcome = (Result<OpOutcome, ShellError>, Option<Undo>, bool);
 
 impl JobEnv {
@@ -381,8 +382,9 @@ impl JobEnv {
         crate::op_queue::enter(keys, self.serialize, progress).ok_or(OpOutcome::Cancelled)
     }
 
-    /// Runs an operation: hands copies and moves to TeraCopy when set, otherwise waits for its turn
-    /// on the drive (listed jobs only), runs it, and verifies copies when set. Background thread.
+    /// Runs an operation: hands copies and moves to the external copy program when set, otherwise
+    /// waits for its turn on the drive (listed jobs only), runs it, and verifies copies when set.
+    /// Background thread.
     fn run(&self, op: &FileOp, progress: &Arc<OpProgress>) -> JobOutcome {
         // A panic in the copy engine wrapper must still end the job (op center, toast, counters)
         // instead of leaving it running forever.
@@ -395,16 +397,19 @@ impl JobEnv {
             let refused = std::io::Error::other(t!("error.share_list").into_owned());
             return (Err(refused.into()), None, false);
         }
-        // Servers (SFTP, WebDAV) are Arke's own: TeraCopy and verify-after-copy only see local
-        // and network-share paths.
+        // Servers (SFTP, WebDAV) are Arke's own: the external copy program and verify-after-copy
+        // only see local and network-share paths.
         let remote = op_paths(op).iter().any(|p| arke_core::remote::is_remote(p));
-        if let Some(exe) = &self.teracopy
+        if let Some(program) = &self.external_copy
             && !remote
-            && matches!(op, FileOp::Copy { .. } | FileOp::Move { .. })
+            && program.takes(op)
         {
-            match crate::teracopy::hand_off(exe, op) {
+            match program.hand_off(&*self.shell, op) {
                 Ok(()) => return (Ok(OpOutcome::Done), None, true),
-                Err(err) => log::warn!("TeraCopy did not start, copying in Arke: {err}"),
+                Err(err) => log::warn!(
+                    "the external copy program ({}) did not start, copying in Arke: {err}",
+                    program.program.display()
+                ),
             }
         }
         let _turn = if op.listed() {
@@ -455,7 +460,7 @@ fn stage_and_move_virtual(
         Ok(stage) => {
             let result = move_virtual_drop(drop, &stage, dest, env, progress, follow);
             // What the move left (skipped in a conflict, or cancelled) goes too, unless
-            // TeraCopy still has to move it.
+            // the external copy program still has to move it.
             if !follow.handed_off {
                 let _ = std::fs::remove_dir_all(&stage);
             }
@@ -494,14 +499,20 @@ fn move_virtual_drop(
             .map(|n| Arc::from(n.to_string_lossy().as_ref()))
             .collect(),
     ));
-    // The move reports its own progress.
+    // The move reports its own progress. The items are counted once, as the drop wrote them:
+    // the move of what was written counts them again (#456).
     progress.work_done.store(0, Ordering::Relaxed);
     progress.work_total.store(0, Ordering::Relaxed);
+    progress.work_in_bytes.store(false, Ordering::Relaxed);
+    let written = progress.done.swap(0, Ordering::Relaxed);
     let op = FileOp::Move {
         sources: extracted.top,
         dest,
     };
     let (result, undo, handed_off) = env.run(&op, progress);
+    if matches!(result, Ok(OpOutcome::Done)) {
+        progress.done.store(written, Ordering::Relaxed);
+    }
     follow.handed_off = handed_off;
     // Undone like a copy: what arrived is removed (to the Recycle Bin), not put back in the
     // temp folder.
@@ -646,6 +657,7 @@ fn verify_copies(
     use std::sync::atomic::Ordering;
     progress.verifying.store(true, Ordering::Relaxed);
     progress.work_done.store(0, Ordering::Relaxed);
+    progress.work_in_bytes.store(true, Ordering::Relaxed);
     progress.work_total.store(
         progress.bytes_total.load(Ordering::Relaxed),
         Ordering::Relaxed,
@@ -687,9 +699,21 @@ fn verify_copies(
     }
 }
 
+/// The external copy program setting, read for one job: `None` when it is off or can't be used
+/// (said in the log; Arke then copies by itself).
+fn external_copy(line: &str) -> Option<crate::external::Command> {
+    match crate::external::Command::parse(line, crate::external::Use::Copy)? {
+        Ok(program) => Some(program),
+        Err(err) => {
+            log::warn!("the external copy program setting can't be used, copying in Arke: {err}");
+            None
+        }
+    }
+}
+
 impl Explorer {
     /// Settings for a job thread. `transfer`: a copy or move the user started, which may go to
-    /// TeraCopy (undo and redo never do).
+    /// the external copy program (undo and redo never do).
     fn job_env(&self, transfer: bool, cx: &mut App) -> JobEnv {
         let settings = &crate::settings::SettingsStore::global(cx).read(cx).settings;
         JobEnv {
@@ -697,10 +721,9 @@ impl Explorer {
             owner: self.owner,
             serialize: settings.queue_same_drive,
             verify: settings.verify_copies,
-            teracopy: (transfer && settings.use_teracopy)
-                .then(crate::teracopy::found)
-                .flatten()
-                .map(Path::to_path_buf),
+            external_copy: transfer
+                .then(|| external_copy(&settings.external_copy))
+                .flatten(),
         }
     }
 
@@ -712,16 +735,15 @@ impl Explorer {
         }
     }
 
-    /// Full paths of the selection (only visible items while filtering). In search mode, the result
-    /// under the cursor.
+    /// Full paths of the selection (only visible items while filtering), with their names. In
+    /// search mode, the selected results, which may be in different folders.
     pub(super) fn selected_targets(&self) -> Vec<(PathBuf, Arc<str>)> {
         if self.search_mode {
             return self
-                .search_hit(self.search_cursor)
-                .zip(self.search_results.as_ref())
-                .map_or_default(|(hit, r)| {
-                    vec![(r.root.join(&*hit.rel), Arc::clone(&hit.entry.name))]
-                });
+                .selected_hits()
+                .into_iter()
+                .map(|(path, hit)| (path, Arc::clone(&hit.entry.name)))
+                .collect();
         }
         let (Some(model), Some(view)) = (self.model.as_ref(), self.view()) else {
             return Vec::new();
@@ -748,14 +770,19 @@ impl Explorer {
             return;
         }
         // Marked against the folder shown (where the names come from), so items inside expanded
-        // tree folders dim too.
+        // tree folders dim too. Search results may come from several folders: the marks are for
+        // the first one's, and only its items are marked.
         let parent = if self.search_mode {
             targets[0].0.parent().map(PathBuf::from)
         } else {
             self.current_path().map(PathBuf::from)
         }
         .unwrap_or_default();
-        let names: HashSet<Arc<str>> = targets.iter().map(|(_, n)| Arc::clone(n)).collect();
+        let names: HashSet<Arc<str>> = targets
+            .iter()
+            .filter(|(path, _)| !self.search_mode || path.parent() == Some(parent.as_path()))
+            .map(|(_, n)| Arc::clone(n))
+            .collect();
         let files = ClipboardFiles {
             paths: targets.into_iter().map(|(p, _)| p).collect(),
             cut,

@@ -104,6 +104,36 @@ fn virtual_files_dropped_on_a_folder_land_there(cx: &mut TestAppContext) {
     view.update(cx, |v, _| assert_eq!(v.error, None));
 }
 
+/// One file dropped is one item done, though it is written to Arke's folder first and then
+/// moved, and the move counts it too (#456).
+#[gpui::test]
+fn one_virtual_file_dropped_is_one_item_done(cx: &mut TestAppContext) {
+    use crate::op_center::{JobState, OpCenter};
+    let _com = crate::win_virtual_drop::ComThread::init();
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\a", vec![]);
+    let shell = Arc::new(FakeShell::default());
+    shell.counts_done.store(true, Ordering::Relaxed);
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\a");
+    wait_until(cx, &view, "load", loaded(r"C:\a"));
+    cx.run_until_parked();
+
+    let source = FakeSource::new(vec![FakeItem::stream("big.iso", 3000)]);
+    drop_virtual(cx, &view, source.data());
+    wait_until(cx, &view, "drop done", |v| {
+        v.ops_running == 0 && !shell.ops().is_empty()
+    });
+    let (finished, done) = cx.update(|_, cx| {
+        let job = OpCenter::jobs(cx)
+            .iter()
+            .rfind(|job| job.verb == "op.copy")
+            .expect("the drop is listed as a copy");
+        (matches!(job.state, JobState::Done { .. }), job.done_items())
+    });
+    assert!(finished);
+    assert_eq!(done, 1);
+}
+
 /// A source that describes nothing it can hand over: said so, and nothing runs.
 #[gpui::test]
 fn a_virtual_drop_with_nothing_in_it_says_so(cx: &mut TestAppContext) {

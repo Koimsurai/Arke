@@ -323,20 +323,65 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Where a piece of text starts, for highlighting a file piece by piece: inside a block comment
+/// or a string that may run over lines (`` ` ``), left open by the text before it, or in code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Carry {
+    /// Plain code
+    #[default]
+    Code,
+    /// Inside a block comment
+    Comment,
+    /// Inside a string quoted with this character
+    String(char),
+}
+
 /// Ranges to color as byte offsets, in order and non-overlapping.
 pub fn highlight(text: &str, lang: &Lang) -> Vec<(Range<usize>, Token)> {
+    highlight_from(text, lang, Carry::Code).0
+}
+
+/// [`highlight`] for text that goes on from other text: `carry` is where the text before it left
+/// off. Also returns where this text leaves off, for the text after it.
+pub fn highlight_from(
+    text: &str,
+    lang: &Lang,
+    carry: Carry,
+) -> (Vec<(Range<usize>, Token)>, Carry) {
     let mut out: Vec<(Range<usize>, Token)> = Vec::new();
     let bytes = text.as_bytes();
-    let mut i = 0;
+    // Finish what the text before left open.
+    let (mut i, open) = match (carry, lang.block_comment) {
+        (Carry::Comment, Some((_, close))) => {
+            let found = text.find(close);
+            let end = found.map_or(text.len(), |p| p + close.len());
+            out.push((0..end, Token::Comment));
+            (end, found.is_none().then_some(Carry::Comment))
+        }
+        (Carry::String(quote), _) => {
+            let (end, open) = string_end(text, 0, quote);
+            out.push((0..end, Token::String));
+            (end, open.then_some(carry))
+        }
+        _ => (0, None),
+    };
+    out.retain(|(r, _)| !r.is_empty());
+    if let Some(open) = open {
+        return (out, open);
+    }
+    // What the last token left open: only a token that runs to the end of the text does.
+    let mut left = Carry::Code;
     while i < text.len() {
         let rest = &text[i..];
         // Block comments first (Lua's --[[ must match before the -- line comment).
         if let Some((open, close)) = lang.block_comment
             && rest.starts_with(open)
         {
-            let end = rest[open.len()..]
-                .find(close)
-                .map_or(text.len(), |p| i + open.len() + p + close.len());
+            let found = rest[open.len()..].find(close);
+            let end = found.map_or(text.len(), |p| i + open.len() + p + close.len());
+            if found.is_none() {
+                left = Carry::Comment;
+            }
             out.push((i..end, Token::Comment));
             i = end;
             continue;
@@ -354,28 +399,12 @@ pub fn highlight(text: &str, lang: &Lang) -> Vec<(Range<usize>, Token)> {
         }
         let Some(c) = rest.chars().next() else { break };
         if lang.quotes.contains(&c) {
-            // Up to the same quote (backslash escapes the next char); unterminated runs to end of
-            // line.
-            let mut j = i + c.len_utf8();
-            let mut escaped = false;
-            let mut end = None;
-            for (k, ch) in text[j..].char_indices() {
-                if ch == '\n' && c != '`' {
-                    end = Some(j + k);
-                    break;
-                }
-                if escaped {
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == c {
-                    end = Some(j + k + ch.len_utf8());
-                    break;
-                }
+            let (end, open) = string_end(text, i + c.len_utf8(), c);
+            if open {
+                left = Carry::String(c);
             }
-            j = end.unwrap_or(text.len());
-            out.push((i..j, Token::String));
-            i = j;
+            out.push((i..end, Token::String));
+            i = end;
             continue;
         }
         if c.is_ascii_digit() {
@@ -408,7 +437,27 @@ pub fn highlight(text: &str, lang: &Lang) -> Vec<(Range<usize>, Token)> {
         }
         i += c.len_utf8();
     }
-    out
+    (out, left)
+}
+
+/// End of a string quoted with `quote` whose content starts at `from`: after the same quote
+/// (backslash escapes the next char). Unterminated, it runs to the end of the line, or for `` ` ``
+/// (which may span lines) to the end of the text; the flag is set when it is still open there.
+fn string_end(text: &str, from: usize, quote: char) -> (usize, bool) {
+    let mut escaped = false;
+    for (k, ch) in text[from..].char_indices() {
+        if ch == '\n' && quote != '`' {
+            return (from + k, false);
+        }
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == quote {
+            return (from + k + ch.len_utf8(), false);
+        }
+    }
+    (text.len(), quote == '`')
 }
 
 fn starts_with(text: &str, prefix: &str, ignore_case: bool) -> bool {
@@ -474,6 +523,57 @@ mod tests {
         // An unterminated block comment runs to the end of the file.
         assert_eq!(tokens("/* open", "js"), [("/* open", Token::Comment)]);
         assert!(lang_for("txt").is_none());
+    }
+
+    /// Highlighting piece by piece, each piece starting where the one before left off, colors the
+    /// same as highlighting the whole text at once.
+    #[test]
+    fn pieces_carry_open_comments_and_strings() {
+        let lang = lang_for("js").expect("lang");
+        let pieces = [
+            "let a = 1; /* opens",
+            "still comment let",
+            "ends */ let s = `multi",
+            "line ${x}",
+            "done` + 2; // tail",
+        ];
+        let whole = pieces.join("\n");
+        let mut joined = Vec::new();
+        let mut carry = Carry::Code;
+        let mut at = 0;
+        for piece in pieces {
+            let (marks, next) = highlight_from(piece, lang, carry);
+            joined.extend(
+                marks
+                    .into_iter()
+                    .map(|(r, t)| (r.start + at..r.end + at, t)),
+            );
+            carry = next;
+            at += piece.len() + 1;
+        }
+        // The whole text joins a comment or string cut by a piece's end into one range: compare
+        // byte by byte, without the line breaks between the pieces.
+        let bytes = whole.as_bytes();
+        let flat = |marks: Vec<(Range<usize>, Token)>| -> Vec<(usize, Token)> {
+            marks
+                .into_iter()
+                .flat_map(|(r, t)| r.map(move |b| (b, t)))
+                .filter(|&(b, _)| bytes[b] != b'\n')
+                .collect()
+        };
+        assert_eq!(flat(joined), flat(highlight(&whole, lang)));
+        assert_eq!(carry, Carry::Code);
+        // Left open at the end.
+        assert_eq!(highlight_from("/* x", lang, Carry::Code).1, Carry::Comment);
+        assert_eq!(
+            highlight_from("`x", lang, Carry::Code).1,
+            Carry::String('`')
+        );
+        assert_eq!(highlight_from("'x", lang, Carry::Code).1, Carry::Code);
+        assert_eq!(
+            highlight_from("x */ y", lang, Carry::Comment).0,
+            [(0..4, Token::Comment)]
+        );
     }
 
     #[test]

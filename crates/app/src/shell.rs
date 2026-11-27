@@ -359,6 +359,9 @@ pub(crate) enum ShellMenuEntry {
         #[serde(default)]
         verb: Option<String>,
         label: String,
+        /// Its access key (`&O` in Windows' text), kept apart from `label`.
+        #[serde(default)]
+        access: Option<crate::win_menu::Access>,
         enabled: bool,
         checked: bool,
         /// Default command (Windows draws it bold).
@@ -368,6 +371,8 @@ pub(crate) enum ShellMenuEntry {
     },
     Submenu {
         label: String,
+        #[serde(default)]
+        access: Option<crate::win_menu::Access>,
         enabled: bool,
         #[serde(with = "icon_wire")]
         icon: Option<arke_core::thumbs::Thumbnail>,
@@ -679,6 +684,9 @@ pub(crate) struct OpProgress {
     /// Work reported by Windows (done/total); total is 0 while still counting.
     pub(crate) work_done: std::sync::atomic::AtomicU64,
     pub(crate) work_total: std::sync::atomic::AtomicU64,
+    /// `work_done` and `work_total` count bytes (or work weighted by bytes), not items: until
+    /// some is done, the total is no count of items to show.
+    pub(crate) work_in_bytes: std::sync::atomic::AtomicBool,
     /// Bytes of files finished copying or moving across volumes, for speed. Same-volume moves are renames and do not count.
     pub(crate) bytes: std::sync::atomic::AtomicU64,
     /// Total size to copy, computed in the background at start (0 if unknown or too many to count).
@@ -985,8 +993,11 @@ pub(crate) trait Shell: Send + Sync + 'static {
     /// Whether the clipboard has files, virtual ones included (format check only, clipboard not opened). UI thread safe.
     fn clipboard_has_files(&self) -> bool;
 
-    /// Whether the path is on a fixed local disk (thumbnails and system icons are local only). Background thread.
+    /// Whether the path is on a local disk: internal, USB stick, SD card or RAM disk, but not a
+    /// network or optical drive (thumbnails, folder sizes and cloud status are local only). Background thread.
     fn is_local_disk(&self, path: &Path) -> bool;
+    /// Whether the path is on an internal fixed disk (not removable). Background thread.
+    fn is_fixed_disk(&self, path: &Path) -> bool;
     /// Whether deleting `path` can go to the Recycle Bin. Windows has none on network shares, USB
     /// sticks and optical discs, and deletes there permanently. Reads local drive info only, so
     /// it is fine on the UI thread.
@@ -999,8 +1010,9 @@ pub(crate) trait Shell: Send + Sync + 'static {
 
     /// The icon Windows has for files of type `ext` (lowercase, no dot) from the program
     /// registered for it; `None` when none is registered (the theme icon stays). Reads no file.
-    /// Background thread.
-    fn type_icon(&self, _ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
+    /// `px` is the physical size it will be drawn at (the system's own frame for it is used when
+    /// it has one; 0 for the largest available). Background thread.
+    fn type_icon(&self, _ext: &str, _px: u32) -> Option<arke_core::thumbs::Thumbnail> {
         None
     }
 
@@ -1171,10 +1183,17 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (command_line, dir);
         Err(ShellError::Unsupported)
     }
-    /// Toggles QuickLook's preview of `item` (see `quicklook.rs`): over its pipe when it's running,
-    /// otherwise by starting `exe` (if found) with it. Returns once handed off. Background thread.
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
-        let _ = (exe, item);
+    /// Starts `program` with `args` as its command line, as is (`external.rs` quotes the paths in
+    /// it): directly, never through a shell. Returns once it has started. Background thread.
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
+        let _ = (program, args);
+        Err(ShellError::Unsupported)
+    }
+    /// Writes one line to the named pipe `pipe` (`\\.\pipe\...`) and closes it, for the external
+    /// preview program (`external.rs`). A pipe that doesn't exist is `Io` with `NotFound`, at
+    /// once; a busy one is waited for a short while. Background thread.
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        let _ = (pipe, line);
         Err(ShellError::Unsupported)
     }
     /// Local (year, month, day, hour, minute, second), for archive modification times. Pure.
@@ -1184,6 +1203,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
     }
     /// Decodes non-UTF-8 archive entry names with the system ANSI code page (Big5 on Traditional Chinese Windows). Pure.
     fn decode_ansi(&self, bytes: &[u8]) -> String;
+    /// The local drive holding `path` is solid state, where reading or writing many files at once
+    /// beats one after another (a zip is extracted on several threads). `false` when unknown.
+    /// Background thread.
+    fn solid_state(&self, path: &Path) -> bool {
+        let _ = path;
+        false
+    }
 
     /// Network location checks (probing servers, mapped drives). `None` disables probing and network folder tracking (tests).
     fn net_probe(&self) -> Option<std::sync::Arc<dyn arke_core::net::NetProbe>> {
@@ -1199,10 +1225,6 @@ pub(crate) trait Shell: Send + Sync + 'static {
     fn net_disconnect(&self, drive: &Path) -> Result<(), ShellError> {
         let _ = drive;
         Err(ShellError::Unsupported)
-    }
-    /// Installed programs suitable for "Open with" (name, exe). Background thread (checks that files exist).
-    fn editor_apps(&self) -> Vec<(String, PathBuf)> {
-        Vec::new()
     }
     /// Start at Windows sign-in by adding or removing a shortcut in the user's Startup folder, no registry.
     /// Background thread.

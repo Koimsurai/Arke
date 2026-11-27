@@ -537,8 +537,8 @@ mod tests {
     #[test]
     fn a_file_in_use_for_a_moment_is_still_replaced() {
         use std::os::windows::fs::OpenOptionsExt;
-        let dir = std::env::temp_dir().join(format!("arke-install-in-use-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let target = dir.join("arke-indexd.exe");
         let source = dir.join("new.exe");
         std::fs::write(&target, b"old").unwrap();
@@ -562,7 +562,6 @@ mod tests {
         let gone = retry_in_use(|| std::fs::remove_file(dir.join("missing.exe")));
         assert_eq!(gone.unwrap_err().kind(), std::io::ErrorKind::NotFound);
         assert!(started.elapsed() < Duration::from_secs(1));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     const ME: &str = "S-1-5-21-1-2-3-1001";

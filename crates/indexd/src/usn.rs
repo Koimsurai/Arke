@@ -19,11 +19,11 @@ use windows::Win32::Foundation::{
     GENERIC_READ, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ExtendedFileIdType, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED,
-    FILE_FLAGS_AND_ATTRIBUTES, FILE_ID_128, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0,
-    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FileIdType, GETFINALPATHNAMEBYHANDLE_FLAGS, GetFinalPathNameByHandleW,
-    OPEN_EXISTING, OpenFileById, VOLUME_NAME_DOS,
+    CreateFileW, ExtendedFileIdType, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_NO_BUFFERING,
+    FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES, FILE_ID_128, FILE_ID_DESCRIPTOR,
+    FILE_ID_DESCRIPTOR_0, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdType, GETFINALPATHNAMEBYHANDLE_FLAGS,
+    GetFinalPathNameByHandleW, OPEN_EXISTING, OpenFileById, VOLUME_NAME_DOS,
 };
 use windows::Win32::System::IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Ioctl::{
@@ -197,11 +197,22 @@ impl Volume {
 
     /// Opens the volume with read access only.
     pub(crate) fn open(root: &Path) -> windows::core::Result<Self> {
-        Self::open_with(root, GENERIC_READ.0)
+        Self::open_with(root, GENERIC_READ.0, FILE_FLAGS_AND_ATTRIBUTES(0))
     }
 
-    /// Opens the volume with the given access (read-write needs admin).
-    fn open_with(root: &Path, access: u32) -> windows::core::Result<Self> {
+    /// Opens the volume for reading the MFT: no system cache, so a big scan neither evicts the
+    /// user's cached files nor copies every byte twice. Reads must then be sector aligned in
+    /// offset, length and buffer address.
+    pub(crate) fn open_unbuffered(root: &Path) -> windows::core::Result<Self> {
+        Self::open_with(root, GENERIC_READ.0, FILE_FLAG_NO_BUFFERING)
+    }
+
+    /// Opens the volume with the given access (read-write needs admin) and flags.
+    fn open_with(
+        root: &Path,
+        access: u32,
+        flags: FILE_FLAGS_AND_ATTRIBUTES,
+    ) -> windows::core::Result<Self> {
         let letter = drive_letter(root)
             .ok_or_else(|| windows::core::Error::from_hresult(ERROR_INVALID_NAME.to_hresult()))?;
         let name: Vec<u16> = format!(r"\\.\{letter}:")
@@ -216,7 +227,7 @@ impl Volume {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES(0),
+                flags,
                 None,
             )
         }?;
@@ -835,18 +846,15 @@ pub(crate) mod tests {
         let stop = stop_event();
 
         // A file created a little later wakes the wait long before its timeout.
-        let file = std::env::temp_dir().join(format!("arke-usn-wait-{}.txt", std::process::id()));
-        let writer = {
-            let file = file.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(100));
-                std::fs::write(&file, b"x").unwrap();
-            })
-        };
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file = tmp_dir.path().join("wait.txt");
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::write(&file, b"x").unwrap();
+        });
         let started = Instant::now();
         let woke = waiter.wait(journal, next, Duration::from_secs(10), stop.0);
         writer.join().unwrap();
-        let _ = std::fs::remove_file(&file);
         assert_eq!(woke.unwrap(), Wait::Ready);
         assert!(
             started.elapsed() < Duration::from_secs(2),

@@ -27,6 +27,16 @@ pub(crate) const DELAY: Duration = Duration::from_millis(900);
 pub(crate) enum Action {
     Open(PathBuf),
     Back,
+    /// List these levels (the path bar's collapsed "...") in a menu whose rows take the drop.
+    /// Opens no folder, so it also works on a pinned tab.
+    Levels(Vec<(String, PathBuf)>),
+}
+
+impl Action {
+    /// Whether it changes the tab's folder.
+    const fn navigates(&self) -> bool {
+        !matches!(self, Self::Levels(_))
+    }
 }
 
 /// Which tab acts: the list itself (path bar, Back in the list top bar) or the window's current tab
@@ -97,7 +107,7 @@ pub(crate) fn hover_at(
 ) {
     // A pinned tab keeps its folder, and a drag shouldn't open tabs on the way: no countdown
     // over its targets (it used to run to the end and then do nothing).
-    if inside && target.view(cx).is_some_and(|v| v.read(cx).keeps_folder()) {
+    if inside && action.navigates() && target.view(cx).is_some_and(|v| v.read(cx).keeps_folder()) {
         return;
     }
     let state = cx.default_global::<SpringState>();
@@ -148,7 +158,7 @@ fn fire(
         return;
     };
     // A pinned tab keeps its folder, and a drag shouldn't open tabs on the way: no spring there.
-    if view.read(cx).keeps_folder() {
+    if action.navigates() && view.read(cx).keeps_folder() {
         cx.global_mut::<SpringState>().pending = None;
         return;
     }
@@ -160,6 +170,7 @@ fn fire(
     state.pending = None;
     state.cooldown = Some(window.mouse_position());
     if state.origin.is_none()
+        && action.navigates()
         && let Some(here) = here
     {
         state.origin = Some((view.downgrade(), here));
@@ -167,6 +178,7 @@ fn fire(
     view.update(cx, |e, cx| match action {
         Action::Open(path) => e.navigate(path.clone(), arke_core::NavKind::New, cx),
         Action::Back => e.go_back(&crate::explorer::GoBack, window, cx),
+        Action::Levels(levels) => e.open_levels_for_drag(levels.clone(), window, cx),
     });
     window.refresh();
 }

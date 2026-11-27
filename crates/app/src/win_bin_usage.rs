@@ -38,7 +38,7 @@ fn cache_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Arke").join("bin-usage"))
+    crate::paths::bin_usage_dir()
 }
 
 /// What tells a record apart from another one under the same name, from a listing alone.
@@ -814,8 +814,8 @@ mod tests {
     /// cache have no content here, so reading them would have dropped them.
     #[test]
     fn a_later_start_reads_only_new_records() {
-        let dir = std::env::temp_dir().join(format!("arke-test-binusage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let tags: Vec<String> = (0..SAVE_AFTER_READS + 6)
             .map(|i| format!("A{i:05}.txt"))
             .collect();
@@ -840,13 +840,12 @@ mod tests {
             later.set_content(bin().join(format!("$I{tag}")), Vec::new());
         }
         add_record(&later, "NEW", VERSION, 1_000);
-        let tracker = Tracker::new(later, Some(dir.clone()));
+        let tracker = Tracker::new(later, Some(dir));
         assert_eq!(
             tracker.bytes(&bin()),
             Some(10 * (tags.len() as u64 - 1) + 1_000),
             "the one gone is forgotten, the new one read, the rest from the cache"
         );
         drop(tracker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

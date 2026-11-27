@@ -25,6 +25,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::layout::{self, SearchBox};
+use super::scope::Scope;
 use super::toolbar::ToolbarStop as _;
 use super::{Explorer, ExplorerEvent, GoUp};
 use crate::a11y::A11yExt as _;
@@ -42,8 +43,9 @@ fn search_rest_max() -> gpui::Pixels {
     crate::theme::scaled_px(600.)
 }
 /// A path bar narrower than this shows only "… › current folder" (no trailing ›, little blank
-/// end), so the current folder's name keeps some room.
-fn path_compact_below() -> gpui::Pixels {
+/// end), so the current folder's name keeps some room. The selection's buttons fold into "⋯"
+/// before they would push the path bar below it (#388).
+pub(super) fn path_compact_below() -> gpui::Pixels {
     crate::theme::scaled_px(200.)
 }
 /// The path bar keeps at least this much of the pane row; the item count and the selection's
@@ -80,8 +82,9 @@ pub(crate) struct TopRow {
     /// The search box was focused on this press already (its magnifier, or its query): the
     /// click that ends the press leaves its text alone.
     pub(super) search_focused_on_press: bool,
-    /// The folder the search box's placeholder names, and whether it is the short one.
-    placeholder_for: Option<(Option<String>, bool)>,
+    /// What the search box's placeholder was made for: the scope, the folder it names, and
+    /// whether it is the short one.
+    placeholder_for: Option<(Scope, Option<String>, bool)>,
 }
 
 /// Records `bounds` of the element it's drawn in; draws once more when they change (they don't
@@ -181,14 +184,16 @@ impl Explorer {
         width
     }
 
-    /// Names the folder in the search box's placeholder ("Search <folder> or this PC"); a box too
-    /// narrow for that shows the short one.
+    /// Makes the next frame fit the search box's placeholder to its width again.
+    pub(super) fn reset_placeholder_fit(&mut self) {
+        self.top_row.placeholder_for = None;
+    }
+
+    /// The search box's placeholder for the scope in use (see [`Self::filter_placeholder`]); a
+    /// box too narrow for the full one shows the short one.
     fn sync_search_placeholder(&mut self, width: Pixels, window: &Window, cx: &mut Context<Self>) {
-        let folder = self.folder_label();
-        let full = folder.as_ref().map_or_else(
-            || t!("filter.placeholder").into_owned(),
-            |name| t!("filter.placeholder_in", folder = name).into_owned(),
-        );
+        let locale = rust_i18n::locale();
+        let full = self.filter_placeholder(&locale, false);
         let normal = gpui::FontWeight::NORMAL;
         // Padding and border, the magnifier and the gaps around the text, and the scope chip.
         let chrome = theme::s_12()
@@ -203,12 +208,16 @@ impl Explorer {
             + theme::s_8();
         let short =
             width > px(0.) && chrome + text_width(&full, theme::fs_14(), normal, window) > width;
-        let key = (folder, short);
+        let key = (
+            self.scope(),
+            self.search_in_name().or_else(|| self.folder_label()),
+            short,
+        );
         if self.top_row.placeholder_for.as_ref() == Some(&key) {
             return;
         }
         let text = if short {
-            t!("filter.placeholder_short").into_owned()
+            self.filter_placeholder(&locale, true)
         } else {
             full
         };
@@ -392,7 +401,7 @@ impl Explorer {
         .into_any_element();
         let chip = self.render_filter_chip(cx);
         let info = if !self.search_mode && !self.selection.is_empty() {
-            self.render_selection_actions(self.compact_bar(), cx)
+            self.render_selection_actions(self.compact_bar(), window, cx)
         } else {
             self.render_folder_actions(self.compact_bar(), cx)
         };
@@ -407,7 +416,8 @@ impl Explorer {
             .a11y(gpui::Role::Toolbar, t!("a11y.toolbar"))
             // Only while F6 put the keyboard here, so a click leaves it where it was.
             .when(held, |d| {
-                d.track_focus(&self.toolbar.focus)
+                d.key_context("Toolbar")
+                    .track_focus(&self.toolbar.focus)
                     .on_key_down(cx.listener(Self::toolbar_key))
                     .on_click(move |event, window, cx| {
                         Self::toolbar_press(&this, event, window, cx);

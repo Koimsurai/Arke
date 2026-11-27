@@ -60,7 +60,8 @@ Ground rules for the code:
   out the service, saved passwords and the jump list; `--dry-run` only lists the steps.
 - "Report a problem" passes the log through `arke_core::scrub`, which hides the profile folder,
   account, computer and server names. Still never log passwords or file contents.
-- Tests must not touch real user files; use `FakeFs` or a temp directory.
+- Tests must not touch real user files; use `FakeFs` or a temp directory made with the `tempfile` crate (`tempfile::tempdir()`, deleted on drop, also when a test panics), not a name of your own under `%TEMP%`.
+- Files under `%APPDATA%\Arke` and `%LOCALAPPDATA%\Arke` are located only through `crates/app/src/paths.rs`.
 - Code, comments, log messages and tests are in English.
 
 ## Releases

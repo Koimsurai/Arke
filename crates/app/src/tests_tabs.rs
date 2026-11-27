@@ -1468,8 +1468,8 @@ fn alt_left_and_right_step_through_home(cx: &mut TestAppContext) {
     wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
     assert_eq!(page(cx), None);
     {
-        use gpui::Focusable as _;
-        let list = view.read_with(cx, |e, cx| e.focus_handle(cx));
+        use gpui::Focusable;
+        let list = view.read_with(cx, Explorer::focus_handle);
         assert!(
             cx.update(|window, _| list.is_focused(window)),
             "the list has the keyboard again after the page gave way"

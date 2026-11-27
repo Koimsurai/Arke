@@ -1152,7 +1152,7 @@ pub(crate) mod test_support {
     use crate::shell::OpOutcome;
 
     /// A folder under %TEMP% named for this test and process; only it is ever touched.
-    pub(crate) struct Sandbox(pub(crate) PathBuf);
+    pub(crate) struct Sandbox(pub(crate) PathBuf, Vec<crate::shell::RecycledItem>);
 
     impl Sandbox {
         pub(crate) fn new(tag: &str) -> Self {
@@ -1161,8 +1161,8 @@ pub(crate) mod test_support {
                 .join(format!("arke-test-fastbin-{tag}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
-            prime_bin(&dir);
-            Self(dir)
+            let primed = prime_bin();
+            Self(dir, primed)
         }
         pub(crate) fn file(&self, rel: &str, body: &str) -> PathBuf {
             let path = self.0.join(rel);
@@ -1172,37 +1172,42 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Makes sure this user's bin folder on the temp drive exists, as it does on a PC that has
-    /// ever deleted something there: the fast path leaves a drive without one to the engine
-    /// (Windows creates the folder, with the right permissions, and the bin's settings on first
-    /// use). On a fresh machine such as a CI runner nothing has been deleted yet, so a throwaway
-    /// file goes through the engine once. Only this file is recycled, and then purged.
-    fn prime_bin(dir: &Path) {
-        static PRIMED: std::sync::Once = std::sync::Once::new();
-        PRIMED.call_once(|| {
-            let file = dir.join("prime-the-bin.tmp");
-            fs::write(&file, "prime").unwrap();
-            // Whatever the engine says, the tests below judge what they find.
-            let _ = crate::win_fileops::perform(
+    /// Puts one throwaway file of its own in the bin through the engine and returns it, to be
+    /// purged when the sandbox is dropped. The fast path leaves a drive to the engine until its
+    /// bin has a folder for this user, an `$I` record to check the layout against, and a count
+    /// Windows keeps up to date; on a PC that has deleted something that is so, but a fresh
+    /// machine such as a CI runner has an empty bin. The file comes from a folder of its own, so
+    /// it never shows among what a test finds from its sandbox.
+    fn prime_bin() -> Vec<crate::shell::RecycledItem> {
+        let dir = crate::win::long_temp_dir()
+            .join(format!("arke-test-fastbin-prime-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        if fs::create_dir_all(&dir).is_err() {
+            return Vec::new();
+        }
+        let file = dir.join("prime-the-bin.tmp");
+        let primed = fs::write(&file, "prime").is_ok()
+            && crate::win_fileops::perform(
                 &crate::shell::FileOp::Delete {
-                    paths: vec![file.clone()],
+                    paths: vec![file],
                     recycle: true,
                 },
                 None,
                 true,
-            );
-            let here = fs::canonicalize(dir).ok();
-            let primed: Vec<crate::shell::RecycledItem> = crate::win_recycle::list()
+            )
+            .is_ok();
+        let here = fs::canonicalize(&dir).ok();
+        let items = if primed {
+            crate::win_recycle::list()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|item| {
-                    item.name == "prime-the-bin.tmp" && fs::canonicalize(&item.from).ok() == here
-                })
-                .collect();
-            if !primed.is_empty() {
-                purge(&primed);
-            }
-        });
+                .filter(|item| fs::canonicalize(&item.from).ok() == here)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let _ = fs::remove_dir_all(&dir);
+        items
     }
 
     /// Why the fast path would leave `path` to the engine, one line per condition `Drive::check`
@@ -1327,6 +1332,12 @@ pub(crate) mod test_support {
     impl Drop for Sandbox {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+            if !self.1.is_empty() {
+                let _ = crate::win_fileops::purge_recycled(
+                    &self.1,
+                    &crate::shell::OpProgress::default(),
+                );
+            }
         }
     }
 
@@ -2009,8 +2020,9 @@ mod tests {
         let _ = fs::remove_dir(&alone);
     }
 
-    /// Sizes Windows records for files with an alternate data stream, and hidden, system and
-    /// read-only ones, match what the fast path records.
+    /// Sizes Windows records for files with an alternate data stream, and hidden and system
+    /// ones (not read-only: the engine in silent mode refuses read-only system files, where a
+    /// real delete asks), match what the fast path records.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
     fn recorded_sizes_match_windows_for_streams_and_attributes() {
@@ -2024,7 +2036,7 @@ mod tests {
             let flagged = folder.join("flagged.txt");
             fs::write(&flagged, "123").unwrap();
             let ok = std::process::Command::new("attrib")
-                .args(["+h", "+s", "+r"])
+                .args(["+h", "+s"])
                 .arg(&flagged)
                 .status()
                 .unwrap()

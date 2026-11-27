@@ -428,6 +428,9 @@ impl Workspace {
         tab.synced = moved.synced && tab.is_split();
         self.active = ix;
         if moved.home {
+            // Its history already holds the page as the place it was left from.
+            self.active_view()
+                .update(cx, |e, _| e.set_page(Some(arke_core::NavPage::Home)));
             self.open_home_as(false, false, window, cx);
         }
         self.focus_active(window, cx);

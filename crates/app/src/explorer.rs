@@ -586,6 +586,16 @@ pub(crate) struct FailedNav {
     pub(crate) reason: String,
 }
 
+/// What [`Explorer::page_closed`] did to the history.
+pub(crate) enum PageClosed {
+    /// Nothing: no page, or a folder is opening.
+    Nothing,
+    /// It stepped back to the folder under the page.
+    Undone,
+    /// It recorded a step to the folder under the page.
+    Stepped,
+}
+
 struct PendingNav {
     generation: Gen,
     path: PathBuf,
@@ -1887,7 +1897,11 @@ impl Explorer {
         if self.page == Some(page) {
             return false;
         }
-        let from = self.here();
+        // The folder still opening counts: a tab restored on Home has not listed it yet.
+        let from = self.display_path().map(|path| {
+            self.page
+                .map_or_else(|| Location::Folder(path.to_path_buf()), Location::Page)
+        });
         self.page = Some(page);
         if start {
             self.history = History::default();
@@ -1899,29 +1913,43 @@ impl Explorer {
     }
 
     /// The workspace shows no page over this pane now, though the pane is on one: it was closed
-    /// (the Home button again, Esc, another page), so the folder under it is where the pane is,
-    /// as if it had been opened from the page. Returns whether the history recorded a step.
-    /// Waits while a folder is opening, which takes the place of the page.
-    pub(crate) fn page_closed(&mut self) -> bool {
+    /// (the Home button again, Esc, another page), so the folder under it is where the pane is.
+    /// When that folder is what Back would open, closing the page is Back (Forward opens the page
+    /// again); otherwise it is a step to the folder, as if opened from the page. Waits while a
+    /// folder is opening, which takes the place of the page.
+    pub(crate) fn page_closed(&mut self) -> PageClosed {
         if self
             .pending
             .as_ref()
             .is_some_and(|p| p.kind != NavKind::Refresh)
         {
-            return false;
+            return PageClosed::Nothing;
         }
-        let Some(page) = self.page.take() else {
-            return false;
-        };
         let Some(path) = self.current_path().map(Path::to_path_buf) else {
-            return false;
+            return PageClosed::Nothing;
         };
-        self.history.commit(
-            NavKind::New,
-            Some(Location::Page(page)),
-            &Location::Folder(path),
-        );
-        true
+        let Some(page) = self.page.take() else {
+            return PageClosed::Nothing;
+        };
+        let folder = Location::Folder(path);
+        let kind = if self.history.back_target() == Some(&folder) {
+            NavKind::Back
+        } else {
+            NavKind::New
+        };
+        self.history
+            .commit(kind, Some(Location::Page(page)), &folder);
+        if kind == NavKind::Back {
+            PageClosed::Undone
+        } else {
+            PageClosed::Stepped
+        }
+    }
+
+    /// Puts the pane on `page` without touching the history (a tab moved here with its history
+    /// and its Home page).
+    pub(crate) const fn set_page(&mut self, page: Option<NavPage>) {
+        self.page = page;
     }
 
     /// The page the pane is on, as far as the history goes.

@@ -53,7 +53,7 @@ impl Workspace {
         }
         self.show_recycle(new_tab, window, cx);
         let view = self.active_view().clone();
-        if view.update(cx, |e, _| e.enter_page(arke_core::NavPage::RecycleBin, false)) {
+        if view.update(cx, |e, _| e.enter_page(arke_core::NavPage::RecycleBin, new_tab)) {
             self.note_navigation(view.entity_id(), cx);
         }
     }

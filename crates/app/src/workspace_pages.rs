@@ -7,6 +7,7 @@ use gpui::{App, Context, EntityId, Window};
 
 use super::Workspace;
 use crate::assets::Icon;
+use crate::explorer::PageClosed;
 
 /// The owning tab: its list view (which side in dual pane) and the folder it was on when the page opened.
 #[derive(Clone, Debug)]
@@ -78,8 +79,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_view().entity_id() != view.entity_id() {
-            return;
+        // A page only shows over the active pane: the pane whose button was used comes first.
+        if let Some((tab, pane)) = self.locate(view)
+            && self.active_view().entity_id() != view.entity_id()
+        {
+            self.activate_pane(tab, pane, window, cx);
         }
         self.clear_pages_here();
         match page {
@@ -137,8 +141,13 @@ impl Workspace {
                 Some(arke_core::NavPage::Home) => home == Some(id),
                 Some(arke_core::NavPage::RecycleBin) => recycle == Some(id),
             };
-            if !covered && view.update(cx, |e, _| e.page_closed()) {
-                self.note_navigation(id, cx);
+            if covered {
+                continue;
+            }
+            match view.update(cx, |e, _| e.page_closed()) {
+                PageClosed::Nothing => {}
+                PageClosed::Stepped => self.note_navigation(id, cx),
+                PageClosed::Undone => self.undo_nav_step(id, cx),
             }
         }
     }

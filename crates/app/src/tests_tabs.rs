@@ -1727,8 +1727,8 @@ fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
     cx.simulate_click(at, gpui::Modifiers::none());
     wait_until(cx, &view, "work", loaded(r"C:\work"));
 
-    // #323: the hidden sections leave the column too. Home takes Home and the tiles, Favorites
-    // the pinned folders and the Recycle Bin, This PC the drives; the Shelf stays.
+    // #323: the hidden sections leave the column too. Home takes its button, Favorites the
+    // tiles, the pinned folders and the Recycle Bin (#463), This PC the drives; the Shelf stays.
     let [_, bin, kept_shelf, letter] = wanted[..] else {
         unreachable!()
     };
@@ -1760,7 +1760,7 @@ fn the_collapsed_sidebar_has_pins_and_drives(cx: &mut TestAppContext) {
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
     assert!(cx.debug_bounds(home).is_none());
-    for shown in [pin, bin, letter, kept_shelf] {
+    for shown in [tile, pin, bin, letter, kept_shelf] {
         assert!(cx.debug_bounds(shown).is_some(), "{shown} is back");
     }
 }

@@ -547,7 +547,10 @@ fn heading_opens_the_sections_menu(cx: &mut TestAppContext, heading: &str) {
     let at = bounds(cx, heading).center();
     right_click(cx, at);
     let rows = menu(&ws, cx).expect(heading);
-    assert!(rows.contains(&this_pc) && rows.contains(&network), "{rows:?}");
+    assert!(
+        rows.contains(&this_pc) && rows.contains(&network),
+        "{rows:?}"
+    );
     assert_eq!(
         checks(&ws, cx),
         Some(vec![false, true, true, true, true, false])
@@ -586,7 +589,9 @@ fn the_home_row_opens_the_sections_menu(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_headings_open_the_sections_menu_with_the_tabs_on_top(cx: &mut TestAppContext) {
     let (ws, cx) = window(cx);
-    change(cx, |st| st.tab_layout = crate::settings::TabLayout::Horizontal);
+    change(cx, |st| {
+        st.tab_layout = crate::settings::TabLayout::Horizontal
+    });
     refresh(cx);
     assert!(!drawn(cx, "tabs-header"), "the tabs are on top");
     let network = t!("sidebar.network").into_owned();

@@ -16,7 +16,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{ERROR_CANCELLED, GlobalFree, HANDLE, HGLOBAL, HWND, POINT};
+use windows::Win32::Foundation::{
+    ERROR_CANCELLED, GlobalFree, HANDLE, HGLOBAL, HWND, POINT, RPC_E_CHANGED_MODE,
+};
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx,
@@ -64,22 +66,50 @@ pub(crate) fn message(err: &windows::core::Error) -> String {
 }
 
 /// COM (STA) on the current thread, uninitialized on drop.
-pub(crate) struct Com;
+pub(crate) struct Com {
+    /// Whether this guard owns an initialization: false when the thread already had COM in
+    /// another mode (`RPC_E_CHANGED_MODE`), which stays as it is.
+    owned: bool,
+}
 
 impl Com {
     pub(crate) fn init() -> Result<Self, ShellError> {
         // SAFETY: initializes an STA on the caller's thread; on success (including S_FALSE)
         // Drop pairs it with CoUninitialize.
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }.ok()?;
-        Ok(Self)
+        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+        if hr == RPC_E_CHANGED_MODE {
+            // A thread that is already multithreaded (#461): COM is usable, so go on, and
+            // leave it initialized.
+            return Ok(Self { owned: false });
+        }
+        hr.ok()?;
+        Ok(Self { owned: true })
     }
 }
 
 impl Drop for Com {
     fn drop(&mut self) {
-        // SAFETY: pairs with the successful CoInitializeEx in init.
-        unsafe { CoUninitialize() };
+        if self.owned {
+            // SAFETY: pairs with the successful CoInitializeEx in init.
+            unsafe { CoUninitialize() };
+        }
     }
+}
+
+/// Runs `f` on a thread of its own, which COM sets up as a single-threaded apartment on first
+/// use ([`Com::init`]), and waits for it. For work that needs an STA (the copy engine) called
+/// from a worker that is multithreaded for other reasons, which can't change its mode (#461).
+pub(crate) fn run_on_sta<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("file op".into())
+            .spawn_scoped(scope, f);
+        match worker.map(|handle| handle.join()) {
+            Ok(Ok(value)) => value,
+            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            Err(err) => panic!("failed to spawn the file operation thread: {err}"),
+        }
+    })
 }
 
 fn shell_item(path: &Path) -> Result<IShellItem, ShellError> {
@@ -3254,5 +3284,60 @@ mod drag_tests {
         assert_eq!(common_parent(&[p(r"C:\a\x.txt"), p(r"C:\a\sub\y")]), None);
         assert_eq!(common_parent(&[p(r"C:\")]), None, "a drive has no folder");
         assert_eq!(common_parent(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod mta_worker_tests {
+    use super::*;
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+
+    /// A worker that is multithreaded for another reason (a virtual drop reading the other
+    /// program's data) can't set up an STA itself (#461).
+    #[test]
+    fn com_on_a_multithreaded_thread_goes_on_without_owning_it() {
+        std::thread::spawn(|| {
+            // SAFETY: initializes COM on this test thread, paired below.
+            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.unwrap();
+            let com = Com::init().expect("RPC_E_CHANGED_MODE is not a failure");
+            assert!(!com.owned);
+            drop(com);
+            // The thread's own COM is still up: a second guard is still refused the STA mode.
+            assert!(!Com::init().unwrap().owned);
+            // SAFETY: pairs with the CoInitializeEx above.
+            unsafe { CoUninitialize() };
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// The copy engine runs on its own STA thread when the caller is multithreaded, and the
+    /// moved file arrives.
+    #[test]
+    fn a_move_from_a_multithreaded_thread_runs_on_its_own_sta_thread() {
+        let tmp = crate::win::long_tempdir("arke-mta-");
+        let from = tmp.path().join("from");
+        let to = tmp.path().join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let file = from.join("link.url");
+        std::fs::write(&file, "[InternetShortcut]\r\nURL=https://example.com/\r\n").unwrap();
+        let dest = to.clone();
+        std::thread::spawn(move || {
+            // SAFETY: initializes COM on this test thread, paired below.
+            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.unwrap();
+            let op = FileOp::Move {
+                sources: vec![file],
+                dest,
+            };
+            let result = run_on_sta(|| perform(&op, None, true));
+            assert!(matches!(result, Ok(OpOutcome::Done)), "{result:?}");
+            // SAFETY: pairs with the CoInitializeEx above.
+            unsafe { CoUninitialize() };
+        })
+        .join()
+        .unwrap();
+        assert!(to.join("link.url").is_file());
+        assert!(!from.join("link.url").exists());
     }
 }

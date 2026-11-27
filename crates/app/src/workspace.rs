@@ -1396,9 +1396,21 @@ impl Workspace {
         if stepped {
             self.note_navigation(source.entity_id(), cx);
         }
-        // A page that gave way to this folder took the keyboard focus with it: the list takes it
-        // back, or Alt+Left and Alt+Right would find nothing to act on.
-        if kind != NavKind::Refresh
+        // A page that gave way to this folder had the keyboard focus: the list takes it back, or
+        // Alt+Left and Alt+Right would find nothing to act on. A step of the history lands here
+        // before the page is dropped by a frame, and its focus handle may live on, so drop what
+        // this arrival made stale first and move the focus whatever it is on now.
+        let stepped_by_history = matches!(
+            kind,
+            NavKind::Back | NavKind::Forward | NavKind::Jump { .. }
+        );
+        if stepped_by_history && self.active_view().entity_id() == source.entity_id() {
+            self.recycle_follow_navigation(cx);
+            self.home_follow_navigation(cx);
+            if !self.page_shown() {
+                self.focus_active(window, cx);
+            }
+        } else if kind != NavKind::Refresh
             && window.focused(cx).is_none()
             && self.active_view().entity_id() == source.entity_id()
         {

@@ -394,7 +394,7 @@ fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
         info,
         item,
         deleted,
-        stamp: Stamp::of(&meta),
+        stamp: Stamp::of(meta),
     })
 }
 

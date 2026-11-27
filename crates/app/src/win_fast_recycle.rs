@@ -153,13 +153,16 @@ impl Batch {
             .get_or_init(|| policy_allows().then(user_sid).flatten())
             .clone()
         else {
+            declined(|| format!("{}: policy or user", path.display()));
             return Outcome::UNMEASURED;
         };
         // Windows was seen not counting an item moved to a bin: the engine, until Arke restarts.
         if !counted().allowed() {
+            declined(|| format!("{}: Windows was seen not counting", path.display()));
             return Outcome::UNMEASURED;
         }
         let Some(root) = drive_root(path) else {
+            declined(|| format!("{}: no drive letter", path.display()));
             return Outcome::UNMEASURED;
         };
         let Some(drive) = self
@@ -168,18 +171,22 @@ impl Batch {
             .or_insert_with(|| Drive::check(&root, &sid))
             .as_mut()
         else {
+            declined(|| format!("{}: the drive isn't taken (Drive::check)", path.display()));
             return Outcome::UNMEASURED;
         };
         let Ok(meta) = fs::symlink_metadata(path) else {
+            declined(|| format!("{}: metadata unreadable", path.display()));
             return Outcome::UNMEASURED;
         };
         // Links, junctions and cloud placeholders (OneDrive and the like keep a reparse point on
         // every item they sync) stay with the engine, which knows what each of them needs.
         if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            declined(|| format!("{}: reparse point", path.display()));
             return Outcome::UNMEASURED;
         }
         let size = if meta.is_dir() {
             let Some(size) = tree_size(path) else {
+                declined(|| format!("{}: a folder inside can't be listed", path.display()));
                 return Outcome::MEASURED;
             };
             size
@@ -191,11 +198,15 @@ impl Batch {
             Room::Full { need } if drive.can_free(need) => {}
             // Deleting every older item wouldn't make room (some aren't version 2 records, or
             // they are this batch's own): nothing is deleted, and the engine decides.
-            Room::Full { .. } => return Outcome::MEASURED,
+            Room::Full { need } => {
+                declined(|| format!("{}: bin full, can't free {need}", path.display()));
+                return Outcome::MEASURED;
+            }
             // Windows would delete it permanently: Arke asks instead.
             Room::TooBig => return Outcome::TooBig,
         }
         let Some(placed) = place(path, &drive.bin, size) else {
+            declined(|| format!("{}: left to the engine by place()", path.display()));
             return Outcome::MEASURED;
         };
         // The first item moved to a bin on this version of Windows: Windows must count it. If it
@@ -213,6 +224,7 @@ impl Batch {
                     "fast recycle: Windows didn't count {}; put back",
                     path.display()
                 );
+                declined(|| format!("{}: Windows didn't count it", path.display()));
                 counted().fail();
                 let back = move_no_replace(
                     &arke_core::path::verbatim(&placed.item),
@@ -336,7 +348,10 @@ struct Placed {
 /// moved; no record is left behind then.
 fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
     let ext = bin_extension(path);
-    let (info, item) = free_names(bin, &ext)?;
+    let Some((info, item)) = free_names(bin, &ext) else {
+        declined(|| format!("{}: no free name in the bin", path.display()));
+        return None;
+    };
     let deleted = now_filetime();
     let record = encode(VERSION, size, deleted, &arke_core::path::unverbatim(path));
     // The whole record must be in place before anything moves: after it is closed (when
@@ -352,7 +367,14 @@ fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
     let in_place = fs::symlink_metadata(&info)
         .ok()
         .filter(|m| m.len() == record.len() as u64);
-    let (Ok(()), Some(meta)) = (written, in_place) else {
+    let (Ok(()), Some(meta)) = (&written, &in_place) else {
+        declined(|| {
+            format!(
+                "{}: record not written ({written:?}, in place: {})",
+                path.display(),
+                in_place.is_some()
+            )
+        });
         let _ = fs::remove_file(&info);
         return None;
     };
@@ -360,6 +382,7 @@ fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
         &arke_core::path::verbatim(path),
         &arke_core::path::verbatim(&item),
     ) {
+        declined(|| format!("{}: rename failed: {err}", path.display()));
         log::info!(
             "fast recycle: {} stays with the engine: {err}",
             path.display()
@@ -817,6 +840,18 @@ fn bin_state(root: &Path) -> Option<(u64, u64)> {
     ))
 }
 
+/// Notes why an item is left to the engine; only recorded in tests, for their messages.
+fn declined(why: impl FnOnce() -> String) {
+    #[cfg(test)]
+    DECLINES.lock().push(why());
+    #[cfg(not(test))]
+    let _ = why;
+}
+
+/// Every reason [`declined`] was given, for the messages of failing live tests.
+#[cfg(test)]
+static DECLINES: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
 /// Whether Windows' item count for the bin at `root` went above `before` after an item was
 /// moved in. The shell may take a moment to notice what was renamed into the bin, so the count
 /// is asked again a few times (at most ~0.3 s, and only while a version of Windows is unconfirmed).
@@ -843,6 +878,9 @@ fn windows_counted(root: &Path, before: u64) -> bool {
 #[cfg(test)]
 static COUNT_CHECKS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
 
+/// Names handed out so far: set apart from each other, whatever the clock says.
+static NAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Unused `$I`/`$R` names in `bin` for an item with extension `ext`.
 fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -850,7 +888,10 @@ fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_nanos() as u64
-        ^ u64::from(std::process::id()).rotate_left(32);
+        ^ u64::from(std::process::id()).rotate_left(32)
+        // The clock ticks every millisecond or so: threads asking within one tick (two deletes
+        // at once) would get the same names and one of them would lose the race to create them.
+        ^ NAMES.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     for _ in 0..32 {
         let mut tag = String::with_capacity(6);
         for _ in 0..6 {
@@ -1310,6 +1351,7 @@ pub(crate) mod test_support {
             "\n  volume name: {guid}\n  bin_settings (MaxCapacity MB, NukeOnDelete): {:?}",
             super::bin_settings(&root)
         );
+        let _ = write!(out, "\n  declined: {:#?}", super::DECLINES.lock());
         let _ = write!(out, "\n  count checks: {:#?}", super::COUNT_CHECKS.lock());
         let _ = write!(
             out,

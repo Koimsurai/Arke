@@ -1,18 +1,32 @@
 //! Zip extraction on several threads (`zip_parallel`): the same tree, summary and conflicts as
 //! entry by entry, and Cancel leaves no part of a file behind.
+//!
+//! Every file written costs a create (and a virus scan) on a disk the whole test run shares, so
+//! the zips are only as big as the point needs: enough files for four threads
+//! (`FILES_PER_WORKER` each and more), and files bigger than one copy buffer where Cancel must
+//! land inside them.
 
 use super::*;
 
 /// A zip of `files` (name, body) and `dirs` (folder entries), in that order: folders first.
 fn make_zip(path: &Path, dirs: &[String], files: &[(String, Vec<u8>)]) {
+    make_zip_with(path, dirs, files, SimpleFileOptions::default());
+}
+
+/// [`make_zip`] with the files written with `options`.
+fn make_zip_with(
+    path: &Path,
+    dirs: &[String],
+    files: &[(String, Vec<u8>)],
+    options: SimpleFileOptions,
+) {
     let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
     for dir in dirs {
         zip.add_directory(dir.as_str(), SimpleFileOptions::default())
             .unwrap();
     }
     for (name, body) in files {
-        zip.start_file(name.as_str(), SimpleFileOptions::default())
-            .unwrap();
+        zip.start_file(name.as_str(), options).unwrap();
         zip.write_all(body).unwrap();
     }
     zip.finish().unwrap();
@@ -55,7 +69,7 @@ fn extract_on(zip: &Path, dest: &Path, workers: usize) -> Result<ExtractSummary,
 /// Small files in nested folders, some with folder entries and some without.
 fn many_small_files() -> (Vec<String>, Vec<(String, Vec<u8>)>) {
     let dirs = (0..6).map(|d| format!("dir{d}/")).collect();
-    let files = (0..400)
+    let files = (0..96)
         .map(|i| {
             let name = format!("dir{}/sub{}/deeper{}/file{i}.txt", i % 6, i % 5, i % 3);
             let body = format!("file {i} ").repeat(1 + i % 40).into_bytes();
@@ -87,14 +101,27 @@ fn many_small_files_extract_to_the_same_tree_on_several_threads() {
     let parallel = extract(&zip, &several, ArchiveKind::Zip, &options).unwrap();
 
     assert_eq!(parallel, in_order);
-    assert_eq!(parallel.files, 402);
+    assert_eq!(parallel.files, 98);
     assert_eq!(parallel.dirs, 6);
     assert!(!parallel.cancelled);
-    let expected = tree(&one);
-    assert_eq!(tree(&several), expected);
+    // Both trees hold exactly the zip's files, with their bytes (and the folders they need).
+    let mut expected: Vec<(String, Option<Vec<u8>>)> = Vec::new();
     for (name, body) in &files {
-        assert_eq!(&fs::read(several.join(name)).unwrap(), body, "{name}");
+        expected.push((name.clone(), Some(body.clone())));
+        // The names use `/`, which `Path` splits on and keeps.
+        for dir in Path::new(name)
+            .ancestors()
+            .skip(1)
+            .filter(|d| !d.as_os_str().is_empty())
+        {
+            expected.push((dir.to_string_lossy().into_owned(), None));
+        }
     }
+    expected.sort();
+    expected.dedup();
+    let got = tree(&several);
+    assert_eq!(got, expected);
+    assert_eq!(tree(&one), got);
     // Progress never goes back and ends at the total.
     let seen = std::mem::take(&mut *progress.lock());
     assert!(
@@ -111,16 +138,18 @@ fn many_small_files_extract_to_the_same_tree_on_several_threads() {
 fn cancelling_on_several_threads_leaves_only_whole_files() {
     let sb = Sandbox::new("unzip-parallel-cancel");
     let zip = sb.0.join("big.zip");
-    // Each file takes several buffers, so Cancel lands inside files.
-    let files: Vec<(String, Vec<u8>)> = (0..64u32)
+    // Each file takes several 256 KB buffers, so Cancel lands inside files. Stored, so making
+    // the zip costs no compressing.
+    let files: Vec<(String, Vec<u8>)> = (0..32u32)
         .map(|i| {
-            let body: Vec<u8> = (0..700_000u32)
+            let body: Vec<u8> = (0..600_000u32)
                 .map(|n| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)
                 .collect();
             (format!("part{}/file{i}.bin", i % 4), body)
         })
         .collect();
-    make_zip(&zip, &[], &files);
+    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    make_zip_with(&zip, &[], &files, stored);
 
     let cancel = AtomicBool::new(false);
     let progress = |p: ExtractProgress| {
@@ -135,7 +164,7 @@ fn cancelling_on_several_threads_leaves_only_whole_files() {
     let dest = sb.0.join("out");
     let summary = extract(&zip, &dest, ArchiveKind::Zip, &options).unwrap();
     assert!(summary.cancelled);
-    assert!(summary.files < 64, "{summary:?}");
+    assert!(summary.files < 32, "{summary:?}");
     assert_eq!(summary.skipped_existing, 0, "not counted as already there");
     // What is there is whole; what isn't whole isn't there.
     let left: Vec<_> = tree(&dest)
@@ -152,7 +181,7 @@ fn cancelling_on_several_threads_leaves_only_whole_files() {
 #[test]
 fn conflicts_come_out_as_entry_by_entry() {
     let sb = Sandbox::new("unzip-parallel-clash");
-    let mut files: Vec<(String, Vec<u8>)> = (0..100)
+    let mut files: Vec<(String, Vec<u8>)> = (0..40)
         .map(|i| (format!("f{i}.txt"), format!("zip {i}").into_bytes()))
         .collect();
     // Two names Windows sees as one: the first entry wins, the second is skipped.
@@ -175,7 +204,7 @@ fn conflicts_come_out_as_entry_by_entry() {
     }
 
     // No clash inside the zip, so it is split; a file already in the destination still stays.
-    files.truncate(100);
+    files.truncate(40);
     let clean = sb.0.join("clean.zip");
     make_zip(&clean, &[], &files);
     for (dest, workers) in [(sb.0.join("kept-one"), 1), (sb.0.join("kept-several"), 4)] {
@@ -183,7 +212,7 @@ fn conflicts_come_out_as_entry_by_entry() {
         fs::write(dest.join("f7.txt"), "user data").unwrap();
         let summary = extract_on(&clean, &dest, workers).unwrap();
         assert_eq!(summary.skipped_existing, 1);
-        assert_eq!(summary.files, 99);
+        assert_eq!(summary.files, 39);
         assert_eq!(
             fs::read_to_string(dest.join("f7.txt")).unwrap(),
             "user data"

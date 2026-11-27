@@ -745,13 +745,14 @@ mod tests {
         HookGuard(key)
     }
 
-    /// A folder nested 1,000 levels deep (only `\\?\` paths reach that far) is emptied on a thread
+    /// A folder nested 400 levels deep (only `\\?\` paths reach that far) is emptied on a thread
     /// with a small stack: the walk keeps its own stack, so it can't overflow the thread's.
     #[test]
     fn purge_bin_empties_a_very_deep_folder_on_a_small_stack() {
-        // Far more than a recursive walk fits in the small stack below. (Each level costs more the
-        // deeper it is, so 3,000 takes over 30 s with real-time antivirus.)
-        const LEVELS: usize = 1000;
+        // Still several times what a recursive walk fits in the small stack below (a frame of the
+        // walk is hundreds of bytes, the stack 128 KiB). Each level costs more the deeper it is,
+        // so 1,000 took 4 to 10 s alone and timed out under a loaded full run.
+        const LEVELS: usize = 400;
         let sb = Sandbox::new("bin-deep");
         let bin = fake_bin(&sb);
         let item = record(&bin, "AAAAA1", "deep");

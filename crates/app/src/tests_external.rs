@@ -176,3 +176,87 @@ fn space_falls_back_to_quick_look_when_the_preview_program_fails(cx: &mut TestAp
     cx.run_until_parked();
     assert_eq!(runs(&shell).len(), 1);
 }
+
+/// Waits until the fake shell has had `n` lines written to named pipes.
+fn wait_pipe_writes(cx: &mut VisualTestContext, shell: &FakeShell, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while shell.pipe_writes.lock().len() < n && Instant::now() < deadline {
+        cx.run_until_parked();
+        std::thread::yield_now();
+    }
+    assert_eq!(shell.pipe_writes.lock().len(), n, "pipe writes");
+}
+
+const PIPE_LINE: &str = r"pipe:\\.\pipe\arke-test-tool Toggle|{file}";
+
+/// The pipe form of the preview setting writes one line to the pipe, as the item's path, and
+/// starts nothing; Space again writes again (the program toggles).
+#[gpui::test]
+fn space_writes_to_the_preview_pipe_without_starting_a_program(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\q", vec![file("a b.txt", 10)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\q");
+    wait_until(cx, &view, "load", loaded(r"C:\q"));
+
+    set_programs(
+        cx,
+        "",
+        &format!(r#"{PIPE_LINE} || "C:\Gone\viewer.exe" {{file}}"#),
+    );
+    cx.simulate_keystrokes("down space");
+    wait_pipe_writes(cx, &shell, 1);
+    let line = (
+        r"\\.\pipe\arke-test-tool".to_owned(),
+        "Toggle|C:\\q\\a b.txt\r\n".to_owned(),
+    );
+    assert_eq!(
+        shell.pipe_writes.lock().clone(),
+        std::slice::from_ref(&line)
+    );
+    cx.simulate_keystrokes("space");
+    wait_pipe_writes(cx, &shell, 2);
+    assert_eq!(shell.pipe_writes.lock().clone(), [line.clone(), line]);
+    cx.run_until_parked();
+    assert!(runs(&shell).is_empty(), "the pipe was there");
+    assert!(!view.update(cx, |v, _| v.quick_look), "not Arke's");
+}
+
+/// No pipe (the program isn't running): its fallback command line starts it, and without one
+/// Arke's Quick Look opens, as for a program that doesn't start.
+#[gpui::test]
+fn space_starts_the_fallback_when_the_pipe_is_missing(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\q", vec![file("a b.txt", 10)]);
+    let shell = Arc::new(FakeShell::default());
+    shell.pipe_missing.store(true, Ordering::Relaxed);
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\q");
+    wait_until(cx, &view, "load", loaded(r"C:\q"));
+
+    let exe = r"C:\Tools\viewer.exe";
+    set_programs(cx, "", &format!(r#"{PIPE_LINE} || "{exe}" {{file}}"#));
+    cx.simulate_keystrokes("down space");
+    wait_runs(cx, &shell, 1);
+    assert_eq!(
+        shell.pipe_writes.lock().len(),
+        1,
+        "the pipe was tried first"
+    );
+    assert_eq!(
+        runs(&shell),
+        [(PathBuf::from(exe), r#""C:\q\a b.txt""#.to_owned())]
+    );
+    cx.run_until_parked();
+    assert!(!view.update(cx, |v, _| v.quick_look), "the program took it");
+
+    // Pipe alone: nothing to start, so Quick Look.
+    set_programs(cx, "", PIPE_LINE);
+    cx.simulate_keystrokes("space");
+    wait_pipe_writes(cx, &shell, 2);
+    wait_until(cx, &view, "Quick Look opened", |v| v.quick_look);
+    assert_eq!(runs(&shell).len(), 1, "no program to start");
+    view.update(cx, |v, _| {
+        assert_eq!(v.error, None);
+        assert_eq!(v.notice, None);
+    });
+}

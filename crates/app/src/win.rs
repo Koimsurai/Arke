@@ -1427,6 +1427,15 @@ impl Shell for WinShell {
         Ok(())
     }
 
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        debug_assert!(
+            !arke_core::fs::is_ui_thread(),
+            "write_pipe must not run on the UI thread"
+        );
+        crate::external_pipe::send_line(pipe, line, crate::external_pipe::BUSY_WAIT)?;
+        Ok(())
+    }
+
     fn disk_spaces(&self, roots: &[PathBuf]) -> Vec<(PathBuf, (u64, u64))> {
         debug_assert!(!arke_core::fs::is_ui_thread());
         roots

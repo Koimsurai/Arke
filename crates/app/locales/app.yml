@@ -3052,6 +3052,14 @@ settings.external_preview:
   es: Programa de vista previa (Espacio)
   pt-BR: Programa de visualização (Espaço)
   ja: スペース キー用のプレビュー プログラム
+settings.external_preview_desc:
+  en: 'Or a pipe: pipe:\\.\pipe\name message {file} || command to start it'
+  zh-TW: '或具名管道：pipe:\\.\pipe\name 訊息 {file} || 啟動用的命令'
+  zh-CN: '或命名管道：pipe:\\.\pipe\name 消息 {file} || 启动用的命令'
+  de: 'Oder eine Pipe: pipe:\\.\pipe\name Nachricht {file} || Startbefehl'
+  es: 'O una canalización: pipe:\\.\pipe\name mensaje {file} || comando de inicio'
+  pt-BR: 'Ou um pipe: pipe:\\.\pipe\name mensagem {file} || comando para iniciar'
+  ja: 'またはパイプ：pipe:\\.\pipe\name メッセージ {file} || 起動コマンド'
 settings.startup:
   en: Startup
   zh-TW: 啟動

@@ -291,6 +291,10 @@ struct FakeShell {
     program_runs: Mutex<Vec<(PathBuf, String)>>,
     /// Starting a program fails, as when its exe is gone (it is still recorded).
     program_fails: std::sync::atomic::AtomicBool,
+    /// Lines written to named pipes (pipe, line), for the external preview program.
+    pipe_writes: Mutex<Vec<(String, String)>>,
+    /// No pipe exists, as when its program isn't running (writes are still recorded).
+    pipe_missing: std::sync::atomic::AtomicBool,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
     /// Attribute changes asked for (paths, bits set, bits cleared); they fail while
@@ -993,6 +997,20 @@ impl Shell for FakeShell {
             .lock()
             .push((program.to_path_buf(), args.to_string_lossy().into_owned()));
         if self.program_fails.load(Ordering::Relaxed) {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+        }
+        Ok(())
+    }
+
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "write_pipe called on the UI thread"
+        );
+        self.pipe_writes
+            .lock()
+            .push((pipe.to_owned(), line.to_owned()));
+        if self.pipe_missing.load(Ordering::Relaxed) {
             return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
         }
         Ok(())

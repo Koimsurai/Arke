@@ -1209,15 +1209,16 @@ impl Explorer {
     }
 
     /// Space: the external preview program when that setting is set (it toggles its own preview,
-    /// so Space again closes it, as QuickLook does), otherwise Arke's Quick Look. When the program
-    /// can't be started (exe gone, a setting it can't read), Arke's Quick Look opens instead.
+    /// so Space again closes it, as QuickLook does), otherwise Arke's Quick Look. The setting is a
+    /// command line, or a line for a named pipe with a command line as its fallback
+    /// (`external.rs`). When neither works (exe gone, a pipe that isn't there and no fallback, a
+    /// setting it can't read), Arke's Quick Look opens instead.
     pub(super) fn space_preview(&mut self, cx: &mut Context<Self>) {
-        let program = crate::external::Command::parse(
+        let program = crate::external::Preview::parse(
             &crate::settings::SettingsStore::global(cx)
                 .read(cx)
                 .settings
                 .external_preview,
-            crate::external::Use::Preview,
         );
         // Servers (SFTP, WebDAV) are Arke's own; another program can't read them.
         let item = (program.is_some() && !self.quick_look)
@@ -1239,11 +1240,7 @@ impl Explorer {
         let shell = Arc::clone(&self.services.shell);
         let (tx, rx) = flume::bounded(1);
         spawn_thread("external-preview", move || {
-            let started = program
-                .preview_args(&item)
-                .map_err(crate::shell::ShellError::from)
-                .and_then(|args| shell.run_program(&program.program, &args));
-            let _ = tx.send(started);
+            let _ = tx.send(program.open(&*shell, &item));
         });
         cx.spawn(async move |this, cx| {
             let Ok(Err(err)) = rx.recv_async().await else {

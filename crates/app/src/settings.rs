@@ -1542,28 +1542,18 @@ impl Settings {
     /// to TeraCopy) and `space_quicklook` (Space to QuickLook). A file with a switch on and no
     /// generic setting yet gets the generic one set to that program with the same arguments, so
     /// it works as before; `find` looks for the program (`legacy_tools.rs`), and only runs then.
-    /// The old keys are dropped on the next save, so this happens once. A program not found stays
-    /// off: TeraCopy wasn't used then either; a QuickLook run from a folder Arke doesn't look in
-    /// was reached over its pipe before, and has to be set by hand now.
+    /// The old keys are dropped on the next save, so this happens once. TeraCopy not found stays
+    /// off: it wasn't used then either. QuickLook was reached over its pipe, wherever it ran
+    /// from, so its setting is the pipe form, with the exe as the fallback when it was found.
     fn migrate_external_tools(
         &mut self,
         bytes: &[u8],
         find: impl Fn(crate::legacy_tools::Tool) -> Option<PathBuf>,
     ) {
-        use crate::legacy_tools::{QUICKLOOK_ARGS, TERACOPY_ARGS, Tool};
-        const OLD: [(&str, &str, Tool, &str); 2] = [
-            (
-                "use_teracopy",
-                "external_copy",
-                Tool::TeraCopy,
-                TERACOPY_ARGS,
-            ),
-            (
-                "space_quicklook",
-                "external_preview",
-                Tool::QuickLook,
-                QUICKLOOK_ARGS,
-            ),
+        use crate::legacy_tools::{TERACOPY_ARGS, Tool, quicklook_setting};
+        const OLD: [(&str, &str, Tool); 2] = [
+            ("use_teracopy", "external_copy", Tool::TeraCopy),
+            ("space_quicklook", "external_preview", Tool::QuickLook),
         ];
         let has = |key: &str| bytes.windows(key.len()).any(|w| w == key.as_bytes());
         if !OLD.iter().any(|(old, ..)| has(old)) {
@@ -1572,17 +1562,25 @@ impl Settings {
         let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(bytes) else {
             return;
         };
-        for (old, new, tool, args) in OLD {
+        for (old, new, tool) in OLD {
             if map.get(old).and_then(serde_json::Value::as_bool) != Some(true)
                 || map.contains_key(new)
             {
                 continue;
             }
-            let Some(exe) = find(tool) else {
-                log::info!("{old} was on, but {tool:?} isn't installed where it was looked for");
-                continue;
+            let exe = find(tool);
+            let line = match tool {
+                Tool::TeraCopy => {
+                    let Some(exe) = exe else {
+                        log::info!(
+                            "{old} was on, but {tool:?} isn't installed where it was looked for"
+                        );
+                        continue;
+                    };
+                    crate::external::command_line(&exe, TERACOPY_ARGS)
+                }
+                Tool::QuickLook => quicklook_setting(exe.as_deref()),
             };
-            let line = crate::external::command_line(&exe, args);
             log::info!("{old} became {new}: {line}");
             match tool {
                 Tool::TeraCopy => self.external_copy = line,
@@ -1809,7 +1807,7 @@ mod tests {
     /// setting keeps it.
     #[test]
     fn old_teracopy_and_quicklook_switches_become_the_external_programs() {
-        use crate::external::{Command, Use};
+        use crate::external::{Command, Preview, Use};
         use crate::legacy_tools::Tool;
         let path = Path::new("settings.json");
         let teracopy = PathBuf::from(r"C:\Program Files\TeraCopy\TeraCopy.exe");
@@ -1830,10 +1828,14 @@ mod tests {
         );
         assert_eq!(
             s.external_preview,
-            r#""C:\Users\u\AppData\Local\Programs\QuickLook\QuickLook.exe" {file}"#
+            concat!(
+                r"pipe:\\.\pipe\QuickLook.App.Pipe.{sid} QuickLook.App.PipeMessages.Toggle|{file}",
+                r#" || "C:\Users\u\AppData\Local\Programs\QuickLook\QuickLook.exe" {file}"#
+            )
         );
         assert!(s.show_hidden);
-        // What the old hand-offs did: TeraCopy got moves too; QuickLook the item, quoted.
+        // What the old hand-offs did: TeraCopy got moves too; QuickLook the item over its pipe,
+        // and its exe when the pipe wasn't there.
         let copy = Command::parse(&s.external_copy, Use::Copy)
             .unwrap()
             .unwrap();
@@ -1843,13 +1845,9 @@ mod tests {
             dest: PathBuf::from(r"D:\b"),
         };
         assert!(copy.takes(&move_op), "moves went to TeraCopy too");
-        let look = Command::parse(&s.external_preview, Use::Preview)
-            .unwrap()
-            .unwrap();
-        assert_eq!(look.program, quicklook);
-        assert_eq!(
-            look.preview_args(Path::new(r"C:\q\a b.txt")).unwrap(),
-            std::ffi::OsString::from(r#""C:\q\a b.txt""#)
+        assert!(
+            Preview::parse(&s.external_preview).is_some_and(|look| look.is_ok()),
+            "the converted setting reads back"
         );
 
         // Saved without the old keys: read again, nothing is looked for or changed.
@@ -1865,8 +1863,18 @@ mod tests {
         let s = parse_settings_with(off, path, found).unwrap();
         assert!(s.external_copy.is_empty() && s.external_preview.is_empty());
         assert!(looked.lock().is_empty(), "nothing to look for");
+        // Not found: TeraCopy stays off. QuickLook was reached over its pipe wherever it ran, so
+        // it keeps the pipe alone (Arke's Quick Look opens while it isn't running, as before).
         let s = parse_settings_with(old, path, |_| None).unwrap();
-        assert!(s.external_copy.is_empty() && s.external_preview.is_empty());
+        assert!(s.external_copy.is_empty());
+        assert_eq!(
+            s.external_preview,
+            r"pipe:\\.\pipe\QuickLook.App.Pipe.{sid} QuickLook.App.PipeMessages.Toggle|{file}"
+        );
+        assert!(
+            Preview::parse(&s.external_preview).is_some_and(|look| look.is_ok()),
+            "the pipe alone reads back"
+        );
 
         // A file that already has the generic setting (written by 0.10) keeps it.
         let both = br#"{"use_teracopy": true, "external_copy": "", "space_quicklook": true,

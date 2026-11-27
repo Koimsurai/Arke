@@ -10,16 +10,32 @@
 //!   `%LOCALAPPDATA%\Programs`, Program Files, Scoop's `apps\quicklook\current`), then in the
 //!   setup exe's uninstall entry (`InstallLocation`, read only), then through its Start menu and
 //!   Startup shortcuts, which follow a folder chosen in the installer or a portable copy.
-//!   `QuickLook.exe "<path>"` toggles its preview of the path: a second instance hands it to the
-//!   one running, as Arke's pipe message did before.
+//!   Arke wrote one line to QuickLook's named pipe, `\\.\pipe\QuickLook.App.Pipe.<user SID>`
+//!   (`QuickLook.App.PipeMessages.Toggle|<path>`, UTF-8), and started `QuickLook.exe "<path>"`
+//!   when the pipe wasn't there. [`quicklook_setting`] is that, in the pipe form of the external
+//!   preview program with the exe as its fallback.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The arguments that make TeraCopy run a copy or move as Arke handed it before.
 pub(crate) const TERACOPY_ARGS: &str = "{op} *{list} {dest}";
-/// The arguments that make QuickLook toggle its preview of the item.
-pub(crate) const QUICKLOOK_ARGS: &str = "{file}";
+/// What QuickLook is sent for a preview: its pipe, then the line it reads (`external.rs`).
+const QUICKLOOK_PIPE: &str =
+    r"pipe:\\.\pipe\QuickLook.App.Pipe.{sid} QuickLook.App.PipeMessages.Toggle|{file}";
+
+/// The external preview setting that does what `space_quicklook` did: the pipe, then QuickLook's
+/// exe as the fallback when it was found. Without the exe the pipe stands alone, and Space opens
+/// Arke's own Quick Look while QuickLook isn't running.
+pub(crate) fn quicklook_setting(exe: Option<&Path>) -> String {
+    match exe {
+        Some(exe) => format!(
+            "{QUICKLOOK_PIPE} || {}",
+            crate::external::command_line(exe, "{file}")
+        ),
+        None => QUICKLOOK_PIPE.to_owned(),
+    }
+}
 
 /// QuickLook's uninstall entry, written by its setup exe (MicaSetup, `KeyName` "QuickLook").
 const UNINSTALL_KEYS: [&str; 2] = [

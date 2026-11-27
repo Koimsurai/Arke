@@ -1189,6 +1189,13 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (program, args);
         Err(ShellError::Unsupported)
     }
+    /// Writes one line to the named pipe `pipe` (`\\.\pipe\...`) and closes it, for the external
+    /// preview program (`external.rs`). A pipe that doesn't exist is `Io` with `NotFound`, at
+    /// once; a busy one is waited for a short while. Background thread.
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        let _ = (pipe, line);
+        Err(ShellError::Unsupported)
+    }
     /// Local (year, month, day, hour, minute, second), for archive modification times. Pure.
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         let _ = time;

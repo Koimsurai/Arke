@@ -36,9 +36,8 @@
 //!   it again and reloads if items came or went, for placeholders that arrive without a watcher
 //!   event. Hints that arrive together make one relist ([`Relist`]). The shell notifications are
 //!   subscribed to before the window is registered, so a client that fills the folder and says
-//!   so as soon as it hears of the visit can't be missed, and the folder is listed once more after
-//!   the navigation was announced and after each later listener was told of it, for a client
-//!   that fills it inside the navigation events;
+//!   so as soon as it hears of the visit can't be missed. The navigation being announced and a
+//!   listener being told of it are logged but list nothing by themselves (see [`RELIST_ON`]);
 //! - a "Show in folder" caller (`SHOpenFolderAndSelectItems`) that found this registration selects
 //!   items: they are selected in the pane, as they would be in File Explorer.
 //!
@@ -56,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 use windows::Win32::Foundation::{
@@ -140,22 +140,21 @@ enum Trigger {
     /// `IShellView::Refresh`).
     ListenerRefresh,
     /// The navigation was announced (`OnNavigate` returned and the listeners already subscribed
-    /// were told): a client may have filled the folder inside the navigation events, after Arke
-    /// listed it. Once per visit.
+    /// were told). Once per visit. Logged, not acted on (see [`RELIST_ON`]).
     Navigated,
-    /// A listener that subscribed later was told of the navigation and its calls returned: it may
-    /// have filled the folder inside them (a client subscribes only once it hears the window was
-    /// registered, after `OnNavigate`). Once per round of telling.
+    /// A listener that subscribed later was told of the navigation and its calls returned. Once
+    /// per round of telling. Logged, not acted on (see [`RELIST_ON`]).
     Told,
 }
 
-/// The hints the explorer acts on. Drop one here to stop acting on it.
-const RELIST_ON: [Trigger; 4] = [
-    Trigger::ShellNotify,
-    Trigger::ListenerRefresh,
-    Trigger::Navigated,
-    Trigger::Told,
-];
+/// The hints the explorer acts on. Drop one here to stop acting on it, add one to act on it.
+///
+/// [`Trigger::Navigated`] and [`Trigger::Told`] are left out (#319, 0.10.0-rc.1): listing the
+/// folder right when a sync client has just heard of the visit is the moment it starts filling
+/// it, and with them WPS Cloud filled the folder less often than without (0.9.2), so that even
+/// F5 found it empty. File Explorer doesn't list a folder again at those moments either; it goes
+/// by change notifications, as these do.
+const RELIST_ON: [Trigger; 2] = [Trigger::ShellNotify, Trigger::ListenerRefresh];
 
 /// Shell notifications that mean items came, went or were renamed. `SHCNE_UPDATEITEM` (an
 /// item's state changed: sync clients send it all the time) isn't one of them; only the one for
@@ -289,9 +288,27 @@ struct Journal {
     calls: Vec<(&'static str, u32)>,
     hints: Vec<(Trigger, u32)>,
     relists: u32,
+    /// When the visit started, for [`Self::mark`].
+    started: Option<Instant>,
+    /// The first time each step happened, after `started`.
+    marks: Vec<(&'static str, Duration)>,
 }
 
 impl Journal {
+    /// The visit starts now.
+    fn start(&mut self) {
+        self.started = Some(Instant::now());
+    }
+
+    /// `step` happened now: kept the first time only (`registered`, `first listener`, ...).
+    fn mark(&mut self, step: &'static str) {
+        if let Some(started) = self.started
+            && !self.marks.iter().any(|(s, _)| *s == step)
+        {
+            self.marks.push((step, started.elapsed()));
+        }
+    }
+
     /// Whether no notification of `kind` was noted yet (its paths are worth reading).
     fn first_of(&self, kind: &str) -> bool {
         !self.notifications.iter().any(|(k, ..)| *k == kind)
@@ -346,9 +363,14 @@ impl Journal {
         }
         for (i, (trigger, count)) in self.hints.iter().enumerate() {
             let sep = if i == 0 { " " } else { ", " };
-            let _ = write!(out, "{sep}{trigger:?} x{count}");
+            let off = if relists(*trigger) { "" } else { " (off)" };
+            let _ = write!(out, "{sep}{trigger:?} x{count}{off}");
         }
         let _ = write!(out, " -> relists {}", self.relists);
+        for (i, (step, at)) in self.marks.iter().enumerate() {
+            let sep = if i == 0 { "; timing: " } else { ", " };
+            let _ = write!(out, "{sep}{step} +{} ms", at.as_millis());
+        }
         out
     }
 }
@@ -531,10 +553,11 @@ impl State {
     /// Something hints the folder's items changed: one wake-up lists it again for all the hints
     /// that come before it.
     fn hint(&self, trigger: Trigger) {
+        // Noted either way: the log tells hints acted on from ones that are off.
+        self.journal.borrow_mut().note_hint(trigger);
         if !relists(trigger) {
             return;
         }
-        self.journal.borrow_mut().note_hint(trigger);
         let mut relist = self.relist.get();
         let wake = relist.hint();
         self.relist.set(relist);
@@ -580,6 +603,7 @@ impl State {
     ) -> bool {
         let target = (event & SHCNE_UPDATEITEM.0 != 0).then(|| self.target(first));
         let kind = event_name(event, target);
+        self.journal.borrow_mut().mark("first notification");
         // The paths are read outside the borrow, and only for the first of each kind.
         let first_of_kind = self.journal.borrow().first_of(kind);
         let paths = if first_of_kind {
@@ -1147,6 +1171,7 @@ mod com {
                 told: false,
             });
             self.state.note_call(self.events.advise_name());
+            self.state.journal.borrow_mut().mark("first listener");
             self.state.listener_added();
             Ok(cookie)
         }
@@ -1715,7 +1740,9 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
         relist: Cell::default(),
         journal: RefCell::default(),
     });
+    state.journal.borrow_mut().start();
     let result = register_and_wait(&state, pidl, &dir);
+    state.journal.borrow_mut().mark("ended");
     if result.is_ok() {
         log::info!(
             "folder visit for {} ended: {}",
@@ -1809,6 +1836,7 @@ fn navigate_and_wait(
     // SAFETY: the variant was made by InitVariantFromBuffer above.
     let _ = unsafe { VariantClear(&raw mut location) };
     let cookie = registered?;
+    state.journal.borrow_mut().mark("registered");
     // Queued behind the WM_TELL of the listeners that subscribed meanwhile, so they are told
     // first: then the folder is listed once more.
     // SAFETY: posts to this visit's own window.
@@ -2027,11 +2055,13 @@ mod tests {
         assert!(!relist.hint());
         assert!(relist.flush());
         assert!(!relist.flush(), "one relist for the burst");
-        assert!(relists(Trigger::Navigated));
+        // The relist machinery still works for the navigation; the trigger itself is off.
+        assert!(!relists(Trigger::Navigated));
+        assert!(!relists(Trigger::Told));
     }
 
-    /// The visit's state relists once after the navigation, however often it is told, and once
-    /// for hints that come before the wake-up; the log counts them.
+    /// The navigation, however often it is told, lists nothing by itself; hints that come before
+    /// the wake-up list once; the log counts them all.
     #[test]
     fn the_visit_relists_once_after_the_navigation() {
         let count = Rc::new(Cell::new(0));
@@ -2068,10 +2098,11 @@ mod tests {
         assert!(summary.ends_with("-> relists 2"), "{summary}");
     }
 
-    /// A listener told after the navigation's relist (it subscribed later) makes one more; told
-    /// together with a shell notification, one for both. Telling nobody hints nothing.
+    /// The navigation and telling a listener are logged but list nothing (they are off, see
+    /// `RELIST_ON`); a shell notification that comes with them still lists once. Telling nobody
+    /// hints nothing.
     #[test]
-    fn a_listener_told_later_relists_again() {
+    fn a_listener_told_later_is_logged_but_lists_nothing() {
         let count = Rc::new(Cell::new(0));
         let counted = Rc::clone(&count);
         let state = State {
@@ -2093,16 +2124,16 @@ mod tests {
         };
         state.navigated();
         state.flush_relist();
-        assert_eq!(count.get(), 1);
+        assert_eq!(count.get(), 0, "the navigation lists nothing");
         state.hint(Trigger::Told);
         state.flush_relist();
-        assert_eq!(count.get(), 2, "Navigated, then a later Told: two relists");
+        assert_eq!(count.get(), 0, "telling a listener lists nothing");
 
         state.hint(Trigger::Told);
         state.hint(Trigger::ShellNotify);
         state.flush_relist();
         state.flush_relist();
-        assert_eq!(count.get(), 3, "Told and ShellNotify together: one relist");
+        assert_eq!(count.get(), 1, "the shell notification lists once");
 
         // SAFETY: this test thread's apartment, for the browser object below.
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
@@ -2114,10 +2145,33 @@ mod tests {
         let browser: IDispatch = view.cast().unwrap();
         tell_listeners(&state, &browser);
         state.flush_relist();
-        assert_eq!(count.get(), 3, "no listener to tell");
+        assert_eq!(count.get(), 1, "no listener to tell");
         let summary = state.journal.borrow().summary();
-        assert!(summary.contains("Told x2"), "{summary}");
-        assert!(summary.ends_with("-> relists 3"), "{summary}");
+        assert!(summary.contains("Navigated x1 (off)"), "{summary}");
+        assert!(summary.contains("Told x2 (off)"), "{summary}");
+        assert!(
+            summary.ends_with("ShellNotify x1 -> relists 1"),
+            "{summary}"
+        );
+    }
+
+    /// The log says when the visit registered and first heard from a listener or the shell, the
+    /// first time each, after the visit started.
+    #[test]
+    fn the_visit_log_has_its_timing() {
+        let mut journal = Journal::default();
+        journal.mark("registered");
+        assert!(journal.marks.is_empty(), "nothing before the visit started");
+        journal.start();
+        journal.mark("registered");
+        journal.mark("first listener");
+        journal.mark("registered");
+        journal.mark("ended");
+        let steps: Vec<&str> = journal.marks.iter().map(|(s, _)| *s).collect();
+        assert_eq!(steps, ["registered", "first listener", "ended"]);
+        let summary = journal.summary();
+        assert!(summary.contains("; timing: registered +"), "{summary}");
+        assert!(summary.contains(" ms, first listener +"), "{summary}");
     }
 
     /// The log block: notifications by kind with the first one's paths, calls by method.
@@ -2141,7 +2195,7 @@ mod tests {
         journal.relists = 1;
         assert_eq!(
             journal.summary(),
-            r"notifications: UPDATEITEM(folder) x1 [C:\cloud], UPDATEITEM(item) x40 [C:\cloud\a.docx]; listener calls: Advise(DWebBrowserEvents) x1, LocationURL x2; hints: Navigated x1 -> relists 1"
+            r"notifications: UPDATEITEM(folder) x1 [C:\cloud], UPDATEITEM(item) x40 [C:\cloud\a.docx]; listener calls: Advise(DWebBrowserEvents) x1, LocationURL x2; hints: Navigated x1 (off) -> relists 1"
         );
         assert_eq!(
             event_name(SHCNE_UPDATEITEM.0, Some(Target::Folder)),

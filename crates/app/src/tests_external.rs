@@ -210,7 +210,10 @@ fn space_writes_to_the_preview_pipe_without_starting_a_program(cx: &mut TestAppC
         r"\\.\pipe\arke-test-tool".to_owned(),
         "Toggle|C:\\q\\a b.txt\r\n".to_owned(),
     );
-    assert_eq!(shell.pipe_writes.lock().clone(), [line.clone()]);
+    assert_eq!(
+        shell.pipe_writes.lock().clone(),
+        std::slice::from_ref(&line)
+    );
     cx.simulate_keystrokes("space");
     wait_pipe_writes(cx, &shell, 2);
     assert_eq!(shell.pipe_writes.lock().clone(), [line.clone(), line]);

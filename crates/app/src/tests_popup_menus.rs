@@ -763,11 +763,7 @@ fn shift_with_deletes_key_asks_to_delete_permanently(cx: &mut TestAppContext) {
 }
 
 /// Clicks the menu's Delete button, with `modifiers` held, in a menu opened on `a.txt`.
-fn click_menu_delete(
-    view: &Entity<Explorer>,
-    cx: &mut VisualTestContext,
-    modifiers: Modifiers,
-) {
+fn click_menu_delete(view: &Entity<Explorer>, cx: &mut VisualTestContext, modifiers: Modifiers) {
     right_click(view, cx, Some(0));
     let (popup, _) = level_popup(view, cx, 0).unwrap();
     let mut popup_cx = VisualTestContext::from_window(popup, &cx.cx);
@@ -809,7 +805,9 @@ fn shift_click_on_the_menus_delete_button_asks_to_delete_permanently(cx: &mut Te
     // Space confirms.
     click_menu_delete(&view, cx, Modifiers::shift());
     cx.simulate_keystrokes("space");
-    wait_until(cx, &view, "purged", |v| v.ops_running == 0 && names(v).is_empty());
+    wait_until(cx, &view, "purged", |v| {
+        v.ops_running == 0 && names(v).is_empty()
+    });
     assert_eq!(
         shell.ops(),
         [FileOp::Delete {
@@ -829,7 +827,9 @@ fn a_plain_click_on_the_menus_delete_button_recycles(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m");
     wait_until(cx, &view, "load", loaded(r"C:\m"));
     click_menu_delete(&view, cx, Modifiers::none());
-    wait_until(cx, &view, "recycled", |v| v.ops_running == 0 && names(v).is_empty());
+    wait_until(cx, &view, "recycled", |v| {
+        v.ops_running == 0 && names(v).is_empty()
+    });
     assert_eq!(
         shell.ops(),
         [FileOp::Delete {

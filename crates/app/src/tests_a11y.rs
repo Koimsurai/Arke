@@ -1103,3 +1103,35 @@ fn home_cards_are_named_and_read_as_the_keyboard_moves(cx: &mut TestAppContext) 
         ("Link".to_owned(), "Local Disk (C:)".to_owned())
     );
 }
+
+/// What the UI Automation scan does on Home: nothing is touched, the page has the keyboard and
+/// the first card is what a screen reader reports as focused (no key pressed, no ring). Tab then
+/// walks the page's sections, reaches the sidebar and comes back round; it never alternates
+/// between two elements (#322).
+#[gpui::test]
+fn tab_from_the_first_home_card_walks_on(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(|st| st.favorites = Some(vec![PathBuf::from(r"C:\w")]), cx);
+        });
+    });
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    let start = focused(&tree(cx));
+    assert_eq!(start.0, "Link", "{start:?}");
+    let mut went = vec![start.clone()];
+    let mut sidebar = false;
+    for _ in 0..8 {
+        cx.simulate_keystrokes("tab");
+        went.push(focused(&tree(cx)));
+        sidebar |= cx.update(|window, cx| ws.read(cx).stop_for_test(window, cx)) == "sidebar";
+    }
+    let mut distinct = went.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert!(distinct.len() > 2, "{went:?}");
+    assert!(sidebar, "Tab reaches the sidebar: {went:?}");
+    assert!(went[1..].contains(&start), "and comes back: {went:?}");
+}

@@ -136,7 +136,8 @@ fn arrows_move_between_the_home_cards(cx: &mut TestAppContext) {
         "opened with the mouse: no ring yet"
     );
 
-    key(cx, "tab");
+    // The keyboard is on the first section: Shift+Tab leaves the page.
+    key(cx, "shift-tab");
     assert_eq!(stop(&ws, cx), "sidebar");
     assert!(cx.debug_bounds("home-focus-ring").is_none());
     key(cx, "shift-tab");

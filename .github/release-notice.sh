@@ -68,7 +68,12 @@ for n in $numbers; do
     fi
     continue
   fi
-  gh issue comment "$n" --body "$say"$'\n\n'"$marker"
+  # An issue that was converted to a discussion (or locked) takes no comments: note it and go on, so
+  # one such issue doesn't keep the rest from being told.
+  if ! gh issue comment "$n" --body "$say"$'\n\n'"$marker"; then
+    echo "::warning::#$n: can't be commented on (converted to a discussion or locked), skipped"
+    continue
+  fi
   if $keep; then
     echo "#$n: asked to try it, left open"
     continue

@@ -363,6 +363,21 @@ fn menu(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Vec<String
     ws.update(cx, |ws, cx| ws.open_menu_drawn_for_test(cx))
 }
 
+/// A section heading's menu: Hide, a line, then the sections list and the rest of the menu of the
+/// sidebar's empty space (#465).
+fn with_hide(hide: &str) -> Vec<String> {
+    vec![
+        hide.to_owned(),
+        "-".to_owned(),
+        t!("home.title").into_owned(),
+        t!("sidebar.favorites").into_owned(),
+        t!("sidebar.this_pc").into_owned(),
+        t!("sidebar.network").into_owned(),
+        "-".to_owned(),
+        t!("sidebar.follow_folder").into_owned(),
+    ]
+}
+
 fn checks(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Vec<bool>> {
     ws.update(cx, |ws, _| ws.open_menu_checks_for_test())
 }
@@ -391,7 +406,7 @@ fn sections_hide_from_their_heading_and_come_back(cx: &mut TestAppContext) {
 
     let at = bounds(cx, "this-pc-header").center();
     right_click(cx, at);
-    assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
+    assert_eq!(menu(&ws, cx), Some(with_hide(&hide)));
     pick(&ws, cx, &hide);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::ThisPc]);
     assert!(
@@ -455,7 +470,7 @@ fn home_hides_with_its_tiles(cx: &mut TestAppContext) {
 
     let at = bounds(cx, "open-home").center();
     right_click(cx, at);
-    assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
+    assert_eq!(menu(&ws, cx), Some(with_hide(&hide)));
     pick(&ws, cx, &hide);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Home]);
     assert!(!drawn(cx, "open-home") && !drawn(cx, "tile-slot-0"));
@@ -509,7 +524,7 @@ fn network_hides_and_comes_back(cx: &mut TestAppContext) {
 
     let at = bounds(cx, "network-header").center();
     right_click(cx, at);
-    assert_eq!(menu(&ws, cx), Some(vec![hide.clone()]));
+    assert_eq!(menu(&ws, cx), Some(with_hide(&hide)));
     pick(&ws, cx, &hide);
     assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Network]);
     assert!(!drawn(cx, "network-header"), "gone, heading and all");
@@ -521,6 +536,67 @@ fn network_hides_and_comes_back(cx: &mut TestAppContext) {
     pick(&ws, cx, &network);
     assert!(current(cx).hidden_sections.is_empty());
     assert!(drawn(cx, "network-header"), "back");
+}
+
+/// A right click on a section's heading opens the sections menu, even with no empty space to
+/// click (#465).
+fn heading_opens_the_sections_menu(cx: &mut TestAppContext, heading: &str) {
+    let (ws, cx) = window(cx);
+    let this_pc = t!("sidebar.this_pc").into_owned();
+    let network = t!("sidebar.network").into_owned();
+    let at = bounds(cx, heading).center();
+    right_click(cx, at);
+    let rows = menu(&ws, cx).expect(heading);
+    assert!(rows.contains(&this_pc) && rows.contains(&network), "{rows:?}");
+    assert_eq!(
+        checks(&ws, cx),
+        Some(vec![false, true, true, true, true, false])
+    );
+    // Hidden from this heading's menu, shown again from another's.
+    pick(&ws, cx, &this_pc);
+    assert_eq!(current(cx).hidden_sections, vec![SidebarSection::ThisPc]);
+    let other = if heading == "network-header" {
+        "pin-list-label"
+    } else {
+        "network-header"
+    };
+    let at = bounds(cx, other).center();
+    right_click(cx, at);
+    pick(&ws, cx, &this_pc);
+    assert!(current(cx).hidden_sections.is_empty());
+    assert!(drawn(cx, "this-pc-header"), "back");
+}
+
+#[gpui::test]
+fn the_favorites_heading_opens_the_sections_menu(cx: &mut TestAppContext) {
+    heading_opens_the_sections_menu(cx, "pin-list-label");
+}
+
+#[gpui::test]
+fn the_network_heading_opens_the_sections_menu(cx: &mut TestAppContext) {
+    heading_opens_the_sections_menu(cx, "network-header");
+}
+
+#[gpui::test]
+fn the_home_row_opens_the_sections_menu(cx: &mut TestAppContext) {
+    heading_opens_the_sections_menu(cx, "open-home");
+}
+
+/// With the tabs on top the Tabs heading is gone, and the headings still open the menu (#465).
+#[gpui::test]
+fn the_headings_open_the_sections_menu_with_the_tabs_on_top(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    change(cx, |st| st.tab_layout = crate::settings::TabLayout::Horizontal);
+    refresh(cx);
+    assert!(!drawn(cx, "tabs-header"), "the tabs are on top");
+    let network = t!("sidebar.network").into_owned();
+    let at = bounds(cx, "this-pc-header").center();
+    right_click(cx, at);
+    let rows = menu(&ws, cx).expect("a menu");
+    assert!(rows.contains(&network), "{rows:?}");
+    pick(&ws, cx, &network);
+    assert_eq!(current(cx).hidden_sections, vec![SidebarSection::Network]);
+    assert!(!drawn(cx, "network-header"));
 }
 
 /// A spot on the places list's scrollbar `from_bottom` above its lower end: right of the rows,

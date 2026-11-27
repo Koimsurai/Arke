@@ -306,6 +306,9 @@ pub(crate) struct PropertiesPlace {
     pub(crate) width: f32,
     #[serde(default)]
     pub(crate) height: Option<f32>,
+    /// Scale of the monitor the size was saved on; absent in older files (then used as is).
+    #[serde(default)]
+    pub(crate) scale: Option<f32>,
 }
 
 /// Last window position and size in logical pixels. When maximized this is the restored size.

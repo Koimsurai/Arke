@@ -418,6 +418,8 @@ pub(crate) enum AppEvent {
         generation: Gen,
         version: u64,
         changed: bool,
+        /// What the folder holds now, for the log.
+        counts: cloud::CloudCounts,
     },
     /// A "Show in folder" caller selected these items of `dir` through the shell's window list
     /// (`win_folder_visit.rs`).
@@ -2081,7 +2083,16 @@ impl Explorer {
                 generation,
                 version,
                 changed,
-            } => self.cloud_rechecked(&dir, generation, version, changed, cx),
+                counts,
+            } => {
+                let recheck = cloud::Rechecked {
+                    generation,
+                    version,
+                    changed,
+                    counts,
+                };
+                self.cloud_rechecked(&dir, recheck, cx);
+            }
             AppEvent::ShellSelected { dir, names } => {
                 self.select_in_folder(&dir, names, cx);
             }

@@ -47,8 +47,9 @@ pub(crate) enum PinSlot {
     List(usize),
 }
 
-/// A sidebar section. Favorites, This PC and Network collapse to their heading; Home (its row and
-/// tiles) never collapses, nor do the tabs. Home, Favorites and This PC can be hidden (#323).
+/// A sidebar section. Favorites, This PC and Network collapse to their heading; Home (its row)
+/// never collapses, nor do the tabs. Home, Favorites and This PC can be hidden (#323); the tiles
+/// belong to Favorites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SidebarSection {

@@ -436,7 +436,7 @@ impl Workspace {
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
-                    let items = super::sidebar::section_menu(SidebarSection::Home);
+                    let items = super::sidebar::section_menu(SidebarSection::Home, cx);
                     this.open_sidebar_menu(e.position, items, cx);
                 }),
             );

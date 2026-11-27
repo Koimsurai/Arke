@@ -2466,12 +2466,11 @@ fn restores_home_from_the_last_session(cx: &mut TestAppContext) {
     assert_eq!(ws.update(cx, |ws, cx| ws.session_snapshot(cx)), session);
     // Back (the mouse button, over the sidebar) shows the folder under it, which the session no
     // longer marks as Home.
-    cx.simulate_event(gpui::MouseDownEvent {
+    cx.simulate_event(gpui::MouseUpEvent {
         button: gpui::MouseButton::Navigate(gpui::NavigationDirection::Back),
         position: gpui::point(gpui::px(8.), gpui::px(300.)),
         modifiers: gpui::Modifiers::none(),
         click_count: 1,
-        first_mouse: false,
     });
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.shown_page_for_test()), None);

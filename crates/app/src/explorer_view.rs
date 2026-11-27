@@ -25,8 +25,8 @@ use arke_core::path::NameError;
 use arke_core::search::MAX_HITS;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, ExternalPaths, MouseButton, MouseDownEvent,
-    NavigationDirection, ObjectFit, Pixels, RenderImage, SharedString, Window, WindowControlArea,
-    anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
+    MouseUpEvent, NavigationDirection, ObjectFit, Pixels, RenderImage, SharedString, Window,
+    WindowControlArea, anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
 };
 
 use super::layout;
@@ -3920,21 +3920,22 @@ fn cloud_badge(
 
 impl Explorer {
     /// Mouse back/forward over this pane go back in this pane; the window handles them everywhere
-    /// else (sidebar, tab list, pages), so they stop here to move only once (#8).
+    /// else (sidebar, tab list, pages), so they stop here to move only once (#8). They act on release, like File Explorer
+    /// and browsers (#497); a release that went to another window never reaches here.
     fn mouse_navigation(
         d: gpui::Stateful<gpui::Div>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        d.on_mouse_down(
+        d.on_mouse_up(
             MouseButton::Navigate(NavigationDirection::Back),
-            cx.listener(|this, _: &MouseDownEvent, w, cx| {
+            cx.listener(|this, _: &MouseUpEvent, w, cx| {
                 cx.stop_propagation();
                 this.go_back(&GoBack, w, cx);
             }),
         )
-        .on_mouse_down(
+        .on_mouse_up(
             MouseButton::Navigate(NavigationDirection::Forward),
-            cx.listener(|this, _: &MouseDownEvent, w, cx| {
+            cx.listener(|this, _: &MouseUpEvent, w, cx| {
                 cx.stop_propagation();
                 this.go_forward(&GoForward, w, cx);
             }),

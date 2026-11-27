@@ -1043,7 +1043,7 @@ fn closing_the_last_tab_closes_the_window(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, NavigationDirection, point, px};
     let fs = FakeFs::new();
     for dir in [r"C:\a", r"C:\b", r"C:\c"] {
         fs.insert_many(dir, 1);
@@ -1057,12 +1057,11 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     }
     cx.run_until_parked();
     let press = |cx: &mut VisualTestContext, direction, position| {
-        cx.simulate_event(MouseDownEvent {
+        cx.simulate_event(MouseUpEvent {
             button: MouseButton::Navigate(direction),
             position,
             modifiers: Modifiers::none(),
             click_count: 1,
-            first_mouse: false,
         });
         cx.run_until_parked();
     };
@@ -1086,6 +1085,78 @@ fn mouse_back_and_forward_work_anywhere_in_the_window(cx: &mut TestAppContext) {
     press(cx, NavigationDirection::Forward, beside);
     wait_until(cx, &view, "forward to b", loaded(r"C:\b"));
     assert_eq!(at(cx), Some(p(r"C:\b")));
+}
+
+/// #497: like File Explorer and browsers, the mouse back/forward buttons act on release. A press
+/// alone does nothing (held for any time), the release goes back once, and a release that went
+/// to another window (the press guard's cancel) doesn't.
+#[gpui::test]
+fn mouse_back_and_forward_act_on_release(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, NavigationDirection};
+    use gpui::{point, px};
+    let fs = FakeFs::new();
+    for dir in [r"C:", r"C:", r"C:\c"] {
+        fs.insert_many(dir, 1);
+    }
+    let (ws, cx) = setup_workspace(cx, fs, r"C:");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:"));
+    for path in [r"C:", r"C:\c"] {
+        view.update(cx, |e, cx| e.navigate(p(path), NavKind::New, cx));
+        wait_until(cx, &view, path, loaded(path));
+    }
+    cx.run_until_parked();
+    let at = |cx: &mut VisualTestContext| {
+        view.update(cx, |e, _| e.current_path().map(Path::to_path_buf))
+    };
+    let list = view.update(cx, |e, _| e.list_bounds_for_test());
+    let over_list = point(list.left() + px(40.), list.top() + px(10.));
+    let beside = point(px(8.), list.top() + px(10.));
+    let down = |cx: &mut VisualTestContext, direction, position| {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Navigate(direction),
+            position,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+    };
+    let up = |cx: &mut VisualTestContext, direction, position, click_count| {
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Navigate(direction),
+            position,
+            modifiers: Modifiers::none(),
+            click_count,
+        });
+        cx.run_until_parked();
+    };
+
+    // A pane: the press alone does nothing, the release goes back once.
+    down(cx, NavigationDirection::Back, over_list);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(at(cx), Some(p(r"C:\c")), "a press alone doesn't navigate");
+    up(cx, NavigationDirection::Back, over_list, 1);
+    wait_until(cx, &view, "back to b", loaded(r"C:"));
+    assert_eq!(at(cx), Some(p(r"C:")), "the release goes back, once");
+
+    // Beside the list (the sidebar): the same.
+    down(cx, NavigationDirection::Back, beside);
+    assert_eq!(at(cx), Some(p(r"C:")), "a press alone doesn't navigate");
+    up(cx, NavigationDirection::Back, beside, 1);
+    wait_until(cx, &view, "back to a", loaded(r"C:"));
+    assert_eq!(at(cx), Some(p(r"C:")), "the release goes back, once");
+    down(cx, NavigationDirection::Forward, beside);
+    assert_eq!(at(cx), Some(p(r"C:")), "a press alone doesn't navigate");
+    up(cx, NavigationDirection::Forward, beside, 1);
+    wait_until(cx, &view, "forward to b", loaded(r"C:"));
+    assert_eq!(at(cx), Some(p(r"C:")), "the release goes forward, once");
+
+    // A release that went to another window is a cancel (no click), not a navigation.
+    let nowhere = point(px(-100_000.), px(-100_000.));
+    up(cx, NavigationDirection::Back, nowhere, 0);
+    up(cx, NavigationDirection::Forward, nowhere, 0);
+    assert_eq!(at(cx), Some(p(r"C:")), "a cancelled press doesn't navigate");
 }
 
 /// #70: a two-finger swipe on a touchpad (sideways wheel messages in fractions of a notch) goes
@@ -1147,7 +1218,7 @@ fn touchpad_swipes_go_back_and_forward(cx: &mut TestAppContext) {
 /// is as far back as it goes; Home opened over a folder goes back to that folder.
 #[gpui::test]
 fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, NavigationDirection, point, px};
     let fs = FakeFs::new();
     for dir in [r"C:\Users\me", r"C:\Users\me\Desktop", r"C:\work"] {
         fs.insert_many(dir, 1);
@@ -1161,12 +1232,11 @@ fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) 
     };
     let back = |cx: &mut VisualTestContext| {
         // Over the sidebar, as with Home showing there is no list to press over.
-        cx.simulate_event(MouseDownEvent {
+        cx.simulate_event(MouseUpEvent {
             button: MouseButton::Navigate(NavigationDirection::Back),
             position: point(px(8.), px(300.)),
             modifiers: Modifiers::none(),
             click_count: 1,
-            first_mouse: false,
         });
         cx.run_until_parked();
     };

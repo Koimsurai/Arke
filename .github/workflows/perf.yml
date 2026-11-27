@@ -59,10 +59,9 @@ concurrency:
 jobs:
   build:
     name: build ${{ matrix.side }}
-    # A push to main only fills the cache (the PR side). A pull request runs unless it is a
+    # A push to main only fills the cache. A pull request runs unless it is a
     # draft without the label, or the event is some other label being added.
     if: >-
-      (github.event_name != 'push' || matrix.side == 'head') &&
       (github.event_name != 'pull_request' ||
         ((github.event.action != 'labeled' || github.event.label.name == 'perf') &&
          (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'perf'))))
@@ -71,7 +70,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        side: [base, head]
+        # A push to main only needs the head side (the matrix can't be used in the job's `if`).
+        side: ${{ fromJSON(github.event_name == 'push' && '["head"]' || '["base","head"]') }}
     steps:
       # head is what the pull request would become (the merge commit); base is the tip of main the
       # pull request was opened against.

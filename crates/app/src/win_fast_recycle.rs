@@ -1161,6 +1161,7 @@ pub(crate) mod test_support {
                 .join(format!("arke-test-fastbin-{tag}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
+            prime_bin(&dir);
             Self(dir)
         }
         pub(crate) fn file(&self, rel: &str, body: &str) -> PathBuf {
@@ -1169,6 +1170,39 @@ pub(crate) mod test_support {
             fs::write(&path, body).unwrap();
             path
         }
+    }
+
+    /// Makes sure this user's bin folder on the temp drive exists, as it does on a PC that has
+    /// ever deleted something there: the fast path leaves a drive without one to the engine
+    /// (Windows creates the folder, with the right permissions, and the bin's settings on first
+    /// use). On a fresh machine such as a CI runner nothing has been deleted yet, so a throwaway
+    /// file goes through the engine once. Only this file is recycled, and then purged.
+    fn prime_bin(dir: &Path) {
+        static PRIMED: std::sync::Once = std::sync::Once::new();
+        PRIMED.call_once(|| {
+            let file = dir.join("prime-the-bin.tmp");
+            fs::write(&file, "prime").unwrap();
+            // Whatever the engine says, the tests below judge what they find.
+            let _ = crate::win_fileops::perform(
+                &crate::shell::FileOp::Delete {
+                    paths: vec![file.clone()],
+                    recycle: true,
+                },
+                None,
+                true,
+            );
+            let here = fs::canonicalize(dir).ok();
+            let primed: Vec<crate::shell::RecycledItem> = crate::win_recycle::list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|item| {
+                    item.name == "prime-the-bin.tmp" && fs::canonicalize(&item.from).ok() == here
+                })
+                .collect();
+            if !primed.is_empty() {
+                purge(&primed);
+            }
+        });
     }
 
     impl Drop for Sandbox {

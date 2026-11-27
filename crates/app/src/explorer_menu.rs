@@ -1159,6 +1159,15 @@ impl ContextMenu {
         self.cues.shown()
     }
 
+    /// Test helper: the command of the highlighted row in the open level.
+    #[cfg(test)]
+    pub(crate) fn highlighted_command_for_test(&self) -> Option<MenuCommand> {
+        match self.level(self.open.len()).get(self.highlighted?)? {
+            MenuEntry::Item(i) => Some(i.command),
+            _ => None,
+        }
+    }
+
     /// Test helper: where `level` was drawn, and how far it is scrolled.
     #[cfg(test)]
     pub(crate) fn panel_for_test(&self, level: usize) -> (Option<Bounds<Pixels>>, Pixels) {
@@ -4638,6 +4647,8 @@ mod access_tests {
     /// The own items each menu can show at once, by their `access.*` key. An item that never shows
     /// with another (a folder's "Add to favorites" and "Remove from favorites") is in its own
     /// copy of the menu. "Open with <app>", the pane items and the PC search ones have no key.
+    const BUTTONS: &[&str] = &["new_folder", "cut", "copy", "rename", "delete"];
+
     const MENUS: &[(&str, &str)] = &[
         (
             "folder",
@@ -4752,7 +4763,15 @@ mod access_tests {
                         continue;
                     };
                     let letter = letter.to_ascii_lowercase();
-                    if let Some((_, other)) = seen.iter().find(|(l, _)| *l == letter) {
+                    // A row may share its letter with a top-row button: the letter only
+                    // highlights the row (`access_hit`). Two rows or two buttons may not.
+                    // ("New folder" is a row in the "New" menu.)
+                    let is_button = |n: &str| BUTTONS.contains(&n) && *menu != "new_bg";
+                    let button = is_button(name);
+                    if let Some((_, other)) = seen
+                        .iter()
+                        .find(|(l, o)| *l == letter && is_button(o) == button)
+                    {
                         panic!("{locale}, {menu}: {other} and {name} share the key {letter}");
                     }
                     seen.push((letter, name));

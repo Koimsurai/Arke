@@ -1439,7 +1439,14 @@ impl Workspace {
                 );
             }
             // Record once per real navigation. Doing this in observe would make two panes trigger each other via settings.
-            ExplorerEvent::BackToHome { start } => self.back_to_home(source, *start, window, cx),
+            ExplorerEvent::PageShown { page, kind } => {
+                self.show_history_page(source, *page, window, cx);
+                self.history_landed(source.entity_id(), *kind, cx);
+            }
+            ExplorerEvent::PageHidden { kind } => {
+                self.hide_pages_of(source, window, cx);
+                self.history_landed(source.entity_id(), *kind, cx);
+            }
             ExplorerEvent::OpenHome => self.open_home(false, window, cx),
             ExplorerEvent::Navigated {
                 path,
@@ -3151,6 +3158,7 @@ impl Render for Workspace {
         self.settings_follow_navigation(cx);
         self.recycle_follow_navigation(cx);
         self.home_follow_navigation(cx);
+        self.sync_history_pages(cx);
         self.whats_new_follow_navigation(cx);
         Self::whats_new_on_startup(window, cx);
         self.save_session_if_changed(window, cx);
@@ -3270,8 +3278,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, a: &crate::explorer::GoUp, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.go_up(a, window, cx));
             }))
-            // Back and forward on a page, as the mouse buttons there: the tab moves, and the page
-            // follows it away. Back on Home is handled first by the capture below.
+            // Back and forward on a page, as the mouse buttons there: the pane steps through its
+            // history, pages included.
             .on_action(cx.listener(|this, a: &crate::explorer::GoBack, window, cx| {
                 let view = this.active_view().clone();
                 view.update(cx, |e, cx| e.go_back(a, window, cx));
@@ -3281,9 +3289,7 @@ impl Render for Workspace {
                 view.update(cx, |e, cx| e.go_forward(a, window, cx));
             }))
             .capture_action(cx.listener(|this, _: &crate::explorer::GoBack, window, cx| {
-                if this.back_closes_home(window, cx) {
-                    cx.stop_propagation();
-                } else if Self::across_tabs(cx) {
+                if Self::across_tabs(cx) {
                     cx.stop_propagation();
                     this.step_timeline(true, window, cx);
                 }
@@ -3303,9 +3309,7 @@ impl Render for Workspace {
                     return;
                 }
                 let back = direction == gpui::NavigationDirection::Back;
-                if back && this.back_closes_home(window, cx) {
-                    cx.stop_propagation();
-                } else if Self::across_tabs(cx) {
+                if Self::across_tabs(cx) {
                     cx.stop_propagation();
                     this.step_timeline(back, window, cx);
                 }

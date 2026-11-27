@@ -783,7 +783,7 @@ fn in_a_folders_menu_t_highlights_open_in_terminal_and_enter_runs_it(cx: &mut Te
     let lit = view.update(cx, |v, _| {
         v.context_menu
             .as_ref()
-            .and_then(|m| m.highlighted_command_for_test())
+            .and_then(crate::explorer::ContextMenuForTest::highlighted_command_for_test)
     });
     assert_eq!(lit, Some(MenuCommand::OpenTerminal));
     assert!(shell.clipboard().is_none(), "T did not cut");

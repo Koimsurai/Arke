@@ -207,6 +207,14 @@ mod recorder {
             }
         }
 
+        /// Counts the item as done only when the engine finished it. A conflict the engine has
+        /// deferred to its dialog (pending), or one the user skipped, is not done.
+        pub(super) fn tick_for(&self, hr: HRESULT) {
+            if super::finished(hr) {
+                self.tick();
+            }
+        }
+
         fn relocated(&self, hr: HRESULT, item: Option<&IShellItem>, now: Option<&IShellItem>) {
             let (Some(item), Some(now)) = (item, now) else {
                 return;
@@ -295,7 +303,7 @@ mod recorder {
             hr: HRESULT,
             now: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
-            self.tick();
+            self.tick_for(hr);
             self.check(hr, item.as_ref());
             self.relocated(hr, item.as_ref(), now.as_ref());
             Ok(())
@@ -318,7 +326,7 @@ mod recorder {
             hr: HRESULT,
             now: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
-            self.tick();
+            self.tick_for(hr);
             self.check(hr, item.as_ref());
             self.add_bytes(hr, item.as_ref(), now.as_ref(), true);
             self.relocated(hr, item.as_ref(), now.as_ref());
@@ -342,7 +350,7 @@ mod recorder {
             hr: HRESULT,
             now: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
-            self.tick();
+            self.tick_for(hr);
             self.check(hr, item.as_ref());
             self.add_bytes(hr, item.as_ref(), now.as_ref(), false);
             self.created(hr, now.as_ref());
@@ -399,7 +407,7 @@ mod recorder {
             hr: HRESULT,
             now: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
-            self.tick();
+            self.tick_for(hr);
             self.created(hr, now.as_ref());
             Ok(())
         }
@@ -2674,6 +2682,43 @@ mod tests {
         assert!(!finished(
             windows::Win32::Foundation::ERROR_ACCESS_DENIED.to_hresult()
         ));
+    }
+
+    /// While the engine's conflict dialog is open its items are pending, and a skipped one is
+    /// ignored: neither is "done" in the toast or the operation center.
+    #[test]
+    fn conflicting_items_count_only_once_settled() {
+        use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, S_OK};
+        use windows::Win32::UI::Shell::{COPYENGINE_S_PENDING, COPYENGINE_S_USER_IGNORED};
+        let progress = Arc::new(crate::shell::OpProgress::default());
+        let recorder = Recorder {
+            done: std::cell::RefCell::new(Vec::new()),
+            progress: Some(Arc::clone(&progress)),
+            failed: std::cell::RefCell::new(Vec::new()),
+            top: None,
+        };
+        let done = || progress.done.load(Ordering::Relaxed);
+        // Three items wait for the user's choice: nothing is done yet.
+        for _ in 0..3 {
+            recorder.tick_for(COPYENGINE_S_PENDING);
+        }
+        assert_eq!(done(), 0);
+        // Replace one, skip one, the last one is cancelled or fails.
+        recorder.tick_for(S_OK);
+        recorder.tick_for(COPYENGINE_S_USER_IGNORED);
+        recorder.tick_for(ERROR_ACCESS_DENIED.to_hresult());
+        assert_eq!(done(), 1);
+        // "Replace all": the three settle as done.
+        let all = Recorder {
+            done: std::cell::RefCell::new(Vec::new()),
+            progress: Some(Arc::clone(&progress)),
+            failed: std::cell::RefCell::new(Vec::new()),
+            top: None,
+        };
+        for _ in 0..3 {
+            all.tick_for(S_OK);
+        }
+        assert_eq!(done(), 4);
     }
 
     fn failures_of(result: &Result<OpOutcome, ShellError>) -> Vec<(String, FailReason)> {

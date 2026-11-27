@@ -2502,7 +2502,7 @@ mod tests {
                 let args: &[VARIANT] = if params.cArgs == 0 {
                     &[]
                 } else {
-                    // SAFETY: `cArgs` VARIANTs at `rgvarg`.
+                    // SAFETY: `cArgs` VARIANT values at `rgvarg`.
                     unsafe { std::slice::from_raw_parts(params.rgvarg, params.cArgs as usize) }
                 };
                 let url = args.iter().find_map(text_of);

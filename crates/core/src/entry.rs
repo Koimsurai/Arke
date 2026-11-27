@@ -111,7 +111,9 @@ pub enum CloudStatus {
 /// files (no reparse point) count as not synced. Only meaningful inside a Cloud Files sync root,
 /// and only when the folder holds at least one placeholder; a folder without any is either fully
 /// outside the client's control or a provider without placeholders, and flagging every item there
-/// would be noise. System files (`desktop.ini`) are left alone.
+/// would be noise. System files (`desktop.ini`) are left alone, and so are plain folders: some
+/// clients (WPS Cloud) only make a folder a placeholder once it has been filled, so a plain folder
+/// next to placeholders is one not opened yet, not one that failed to sync (#319).
 pub fn unsynced_by_attributes(entries: &[Entry]) -> Vec<Arc<str>> {
     let placeholder = |e: &Entry| e.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     if !entries.iter().any(placeholder) {
@@ -119,7 +121,7 @@ pub fn unsynced_by_attributes(entries: &[Entry]) -> Vec<Arc<str>> {
     }
     entries
         .iter()
-        .filter(|e| !placeholder(e) && !e.is_system() && !matches!(e.kind, EntryKind::Link { .. }))
+        .filter(|e| !placeholder(e) && !e.is_system() && e.kind == EntryKind::File)
         .map(|e| Arc::clone(&e.name))
         .collect()
 }
@@ -296,6 +298,8 @@ impl Entry {
     /// Cloud state shown after the name. `in_cloud`: the folder is inside a sync root; `sync`:
     /// what the sync client reported for this item, if anything. Online-only wins over everything
     /// (opening it would download); outside sync roots only online-only placeholders are marked.
+    /// A plain folder (not a placeholder) gets nothing: the client hasn't taken it over yet, which
+    /// says neither that it is on this device nor that it failed (see [`unsynced_by_attributes`]).
     pub const fn cloud_status(
         &self,
         in_cloud: bool,
@@ -305,6 +309,11 @@ impl Entry {
             return Some(CloudStatus::OnlineOnly);
         }
         if !in_cloud {
+            return None;
+        }
+        if matches!(self.kind, EntryKind::Dir)
+            && self.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        {
             return None;
         }
         Some(match sync {
@@ -515,5 +524,30 @@ mod tests {
         // No placeholder at all: nothing is flagged.
         assert!(unsynced_by_attributes(&[fresh, ini]).is_empty());
         assert!(unsynced_by_attributes(&[synced]).is_empty());
+    }
+
+    /// A plain folder next to placeholders (one the client hasn't filled yet, as WPS Cloud does)
+    /// isn't flagged as not synced, and shows no cloud state at all; a placeholder folder does.
+    #[test]
+    fn plain_folders_in_a_sync_root_show_no_state() {
+        let online = Entry::new(
+            "a.docx",
+            EntryKind::File,
+            1,
+            None,
+            FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+        );
+        let plain = Entry::new("Team", EntryKind::Dir, 0, None, 0);
+        let filled = Entry::new(
+            "Done",
+            EntryKind::Dir,
+            0,
+            None,
+            FILE_ATTRIBUTE_REPARSE_POINT,
+        );
+        assert!(unsynced_by_attributes(&[online, plain.clone(), filled.clone()]).is_empty());
+        assert_eq!(plain.cloud_status(true, None), None);
+        assert_eq!(plain.cloud_status(false, None), None);
+        assert_eq!(filled.cloud_status(true, None), Some(CloudStatus::Local));
     }
 }

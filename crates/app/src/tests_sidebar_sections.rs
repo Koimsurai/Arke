@@ -501,7 +501,7 @@ fn favorites_hides_the_tiles_and_the_list_together(cx: &mut TestAppContext) {
     assert!(drawn(cx, "tile-slot-0") && drawn(cx, "pin-row-0"));
 
     change(cx, |st| {
-        st.hidden_sections = vec![SidebarSection::Favorites]
+        st.hidden_sections = vec![SidebarSection::Favorites];
     });
     refresh(cx);
     assert!(drawn(cx, "open-home"), "the Home row stays");

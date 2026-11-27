@@ -1611,7 +1611,7 @@ fn back_to_a_page_from_the_other_side_of_a_split_shows_it_there(cx: &mut TestApp
     cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
     cx.update(|window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.home_open_folder_for_test(p(r"C:\c"), window, cx)
+            ws.home_open_folder_for_test(p(r"C:\c"), window, cx);
         });
     });
     wait_until(cx, &left, "c", loaded(r"C:\c"));

@@ -10469,13 +10469,13 @@ access.fav_remove:
   pt-BR: "F"
   ja: "A"
 access.terminal:
-  en: "L"
-  zh-TW: "L"
-  zh-CN: "L"
+  en: "T"
+  zh-TW: "T"
+  zh-CN: "T"
   de: "T"
-  es: "E"
+  es: "T"
   pt-BR: "A"
-  ja: "L"
+  ja: "T"
 access.extract_to:
   en: "A"
   zh-TW: "A"

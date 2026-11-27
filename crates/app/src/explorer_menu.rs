@@ -36,7 +36,9 @@ use gpui::{
     prelude::FluentBuilder, px, svg,
 };
 
-use super::ops::{CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RenameFile};
+use super::ops::{
+    CopyFiles, CutFiles, DeleteFiles, DeletePermanently, NewFolder, PasteFiles, RenameFile,
+};
 use super::{AppEvent, Explorer, ExplorerEvent, Refresh, ViewDetails, ViewMode, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -103,6 +105,8 @@ pub(crate) enum MenuCommand {
     Paste,
     Rename,
     Delete,
+    /// Delete's key with Shift: no Recycle Bin, after asking (Shift+Delete).
+    DeleteForever,
     CopyPath,
     /// Details tree: the item's path below the folder shown (`src\ui\view.rs`).
     CopyRelativePath,
@@ -227,7 +231,7 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
         C::Copy | C::CopyAddress | C::DropCopy | C::CopyToPeer => Icon::Copy,
         C::Paste => Icon::Paste,
         C::Rename | C::EditAddress => Icon::Rename,
-        C::Delete | C::ClearHistory => Icon::Trash,
+        C::Delete | C::DeleteForever | C::ClearHistory => Icon::Trash,
         C::CopyPath | C::CopyRelativePath => Icon::CopyPath,
         C::NewFolder | C::NewFolderIn | C::MoveToNewFolder => Icon::FolderPlus,
         C::Undo => Icon::Undo,
@@ -680,6 +684,15 @@ pub(crate) fn access_hit(
             AccessHit::Move(next)
         }
         _ => AccessHit::Nothing,
+    }
+}
+
+/// `hit` with Shift held: Delete's key then deletes permanently, as Shift+Delete does. Every other
+/// key is the same with or without it.
+const fn shift_hit(hit: AccessHit, shift: bool) -> AccessHit {
+    match hit {
+        AccessHit::Run(MenuCommand::Delete) if shift => AccessHit::Run(MenuCommand::DeleteForever),
+        other => other,
     }
 }
 
@@ -2060,7 +2073,10 @@ impl Explorer {
             return;
         }
         cx.stop_propagation();
-        let hit = access_hit(menu.level(menu.open.len()), menu.highlighted, typed);
+        let hit = shift_hit(
+            access_hit(menu.level(menu.open.len()), menu.highlighted, typed),
+            mods.shift,
+        );
         match hit {
             AccessHit::Nothing => {}
             AccessHit::Run(command) => self.run_menu_command(command, window, cx),
@@ -2324,6 +2340,7 @@ impl Explorer {
             C::Paste => self.paste_files(&PasteFiles, window, cx),
             C::Rename => self.rename_file(&RenameFile, window, cx),
             C::Delete => self.delete_files(&DeleteFiles, window, cx),
+            C::DeleteForever => self.delete_permanently(&DeletePermanently, window, cx),
             C::NewFolder => self.new_folder(&NewFolder, window, cx),
             C::NewTextFile => self.new_text_file(cx),
             C::NewFolderIn | C::NewFileIn => {
@@ -4860,6 +4877,43 @@ mod access_tests {
         assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Run(C::Copy));
         assert_eq!(access_hit(&entries, Some(0), 'C'), AccessHit::Run(C::Copy));
         assert_eq!(access_hit(&entries, None, 'T'), AccessHit::Run(C::Cut));
+    }
+
+    #[test]
+    fn open_in_terminal_takes_t_and_shares_it_with_cut() {
+        use MenuCommand as C;
+        let label = t!("menu.open_terminal", locale = "en");
+        let access = access_in("en", "terminal", &label, None).expect("a letter");
+        assert_eq!(access.key, 'T');
+        let entries = [
+            keyed("Cut", 't', C::Cut),
+            keyed("Open in Terminal", 't', C::OpenTerminal),
+        ];
+        // The first T lights one, the next moves to the other, and a third wraps.
+        assert_eq!(access_hit(&entries, None, 't'), AccessHit::Move(0));
+        assert_eq!(access_hit(&entries, Some(0), 't'), AccessHit::Move(1));
+        assert_eq!(access_hit(&entries, Some(1), 't'), AccessHit::Move(0));
+        // Alone, it runs at once.
+        assert_eq!(
+            access_hit(&entries[1..], None, 't'),
+            AccessHit::Run(C::OpenTerminal)
+        );
+    }
+
+    #[test]
+    fn shift_with_deletes_key_deletes_for_good_and_nothing_else_changes() {
+        use MenuCommand as C;
+        let buttons = MenuEntry::Actions(vec![
+            button("Cut", 't', C::Cut, true),
+            button("Delete", 'd', C::Delete, true),
+        ]);
+        let entries = [keyed("Open", 'o', C::Open), buttons];
+        let hit = |typed, shift| shift_hit(access_hit(&entries, None, typed), shift);
+        assert_eq!(hit('D', true), AccessHit::Run(C::DeleteForever));
+        assert_eq!(hit('d', false), AccessHit::Run(C::Delete));
+        assert_eq!(hit('T', true), AccessHit::Run(C::Cut));
+        assert_eq!(hit('O', true), AccessHit::Run(C::Open));
+        assert_eq!(hit('Z', true), AccessHit::Nothing);
     }
 
     #[test]

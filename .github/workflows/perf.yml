@@ -3,15 +3,32 @@ name: perf
 # Performance gates for pull requests to main: the release exe's size (hard limit) and startup,
 # 100,000-item folder and memory numbers against the base build (warnings first).
 #
-# - size: fails when arke.exe is larger than the budget in .github/perf/exe-size-budget.
+# - size: fails when arke.exe is larger than the budget in .github/perf/exe-size-budget-thin.
+#   (The shipped fat-LTO exe is checked against exe-size-budget in release.yml.)
 # - bench: both builds run on one runner, alternating, several runs each; the medians are
 #   compared in the job summary (.github/perf/bench.ps1). A regression is a warning annotation
 #   until the repository variable PERF_GATE_FAIL is set to `true` (or the manual run asks for it).
-# The two release builds (fat LTO) run side by side as a matrix, restoring the dependencies that
-# release-cache.yml saves from main, so only Arke's own crates compile.
+# - Draft pull requests are skipped unless they carry the `perf` label; a pull request runs when
+#   it is ready for review, on every push after that, and when `perf` is added. A skipped job
+#   counts as passed for a required check.
+# Both builds use thin LTO and 16 codegen units (the exe is about 4.5% bigger, startup and memory
+# are the same as fat), which about halves the build. They run side by side as a matrix. The
+# settings are on the build step only, so they apply equally to both sides. Changing codegen
+# units and LTO changes how every dependency is compiled, so release-cache.yml's cache (fat, one
+# unit) can't be used: this workflow keeps its own (`perf-thin`), saved by a push to main that
+# changes the dependencies (that run only builds, no comparison).
 on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - .github/workflows/perf.yml
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths-ignore:
       - "README*.md"
       - CONTRIBUTING.md
@@ -33,13 +50,22 @@ on:
 permissions:
   contents: read
 
+# A run that will be skipped (some other label added) gets a group of its own, so it can't cancel
+# a build in progress.
 concurrency:
-  group: perf-${{ github.ref }}
+  group: perf-${{ github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'perf' && github.run_id || 'run' }}
   cancel-in-progress: true
 
 jobs:
   build:
     name: build ${{ matrix.side }}
+    # A push to main only fills the cache (the PR side). A pull request runs unless it is a
+    # draft without the label, or the event is some other label being added.
+    if: >-
+      (github.event_name != 'push' || matrix.side == 'head') &&
+      (github.event_name != 'pull_request' ||
+        ((github.event.action != 'labeled' || github.event.label.name == 'perf') &&
+         (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'perf'))))
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -53,16 +79,18 @@ jobs:
         with:
           ref: ${{ matrix.side == 'base' && (github.event.pull_request.base.sha || inputs.base) || '' }}
           persist-credentials: false
-      # Restore only, the key release-cache.yml saves from main. The target directory is set on
-      # the build step only: the cache key hashes CARGO_* variables of the job.
+      # Saved by a push to main, restored by everything else. The build settings are on the
+      # build step only, not the job: the cache key hashes the job's CARGO_* variables.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: release-x64
+          shared-key: perf-thin
           workspaces: ". -> target/dist"
-          save-if: false
+          save-if: ${{ github.event_name == 'push' }}
       - name: build arke.exe
         env:
           CARGO_TARGET_DIR: target/dist
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo build --locked --release -p arke-app --bin arke
       - name: collect
         shell: bash
@@ -80,6 +108,7 @@ jobs:
   size:
     name: exe size
     needs: build
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,7 +121,7 @@ jobs:
       - name: check against the budget
         shell: bash
         run: |
-          budget=$(grep -E '^[0-9]+$' .github/perf/exe-size-budget | head -n 1)
+          budget=$(grep -E '^[0-9]+$' .github/perf/exe-size-budget-thin | head -n 1)
           head_size=$(stat -c %s exe/exe-head/arke.exe)
           base_size=$(stat -c %s exe/exe-base/arke.exe)
           delta=$((head_size - base_size))
@@ -110,7 +139,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "arke.exe: $head_size bytes ($(mb "$head_size") MiB), $delta bytes vs base, budget $budget"
           if [ "$head_size" -gt "$budget" ]; then
-            echo "::error title=Exe size::arke.exe is $head_size bytes, $((head_size - budget)) over the budget of $budget (.github/perf/exe-size-budget). Slim it down, or raise the budget in this pull request with a reason."
+            echo "::error title=Exe size::arke.exe is $head_size bytes, $((head_size - budget)) over the budget of $budget (.github/perf/exe-size-budget-thin, thin-LTO build). Slim it down, or raise the budget in this pull request with a reason."
             echo "**Over the budget by $((head_size - budget)) bytes.**" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -118,6 +147,7 @@ jobs:
   bench:
     name: startup · 100k folder · memory
     needs: build
+    if: github.event_name != 'push'
     runs-on: windows-latest
     timeout-minutes: 25
     steps:

@@ -1,0 +1,5 @@
+# Largest arke.exe (x86_64) the perf workflow accepts, in bytes, for ITS build: thin LTO with 16
+# codegen units, about 4.5% bigger than the shipped fat-LTO exe (exe-size-budget). The same
+# limit for the shipped exe is checked in release.yml. Raise both together, in the pull request
+# that adds the weight, with a reason in the commit message.
+49600000

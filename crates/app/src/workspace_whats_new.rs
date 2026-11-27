@@ -151,6 +151,12 @@ impl WhatsNewPage {
             .map_or_default(|s| s.release.blocks.clone())
     }
 
+    /// Scrolls to the end of the page, where the star line is, as a reader would.
+    #[cfg(test)]
+    pub(crate) fn scroll_to_end_for_test(&self) {
+        self.scroll.scroll_to_bottom();
+    }
+
     #[cfg(test)]
     pub(crate) fn versions_for_test(&self) -> Vec<(String, bool)> {
         self.sections

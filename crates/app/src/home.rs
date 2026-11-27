@@ -3,15 +3,23 @@
 //!
 //! Recent files load in the background from the shortcut targets without touching the targets, so
 //! network files can't stall it.
+//!
+//! The keyboard (#322), as on File Explorer's Home: Tab brings it to the page and a ring shows
+//! the picked card, or the first one. The arrow keys move between the cards of a section (Up and
+//! Down go on into the next section at its edge), Home and End to the first and last card, Enter
+//! opens it (whatever the click setting is) and Shift+F10 or the Menu key opens its menu. The card
+//! under the ring is reported to screen readers as the focused item.
 
+use std::cell::{Cell, RefCell};
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Window, div,
-    prelude::*, px, svg,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, DragMoveEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle,
+    SharedString, Stateful, Window, actions, canvas, div, point, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -21,10 +29,200 @@ use arke_core::format::format_size;
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{kind_icon, spawn_thread};
+use crate::press_guard::is_double_click;
 use crate::settings::SettingsStore;
 use crate::shell::{Place, PlaceKind, Shell};
 use crate::text_input::TextInput;
 use crate::theme::{self, UiFont as _};
+
+actions!(
+    home,
+    [
+        /// Left: the card before, in the same section.
+        HomeLeft,
+        /// Right: the card after, in the same section.
+        HomeRight,
+        /// Up: the card above.
+        HomeUp,
+        /// Down: the card below.
+        HomeDown,
+        /// Home: the first card.
+        HomeFirst,
+        /// End: the last card.
+        HomeLast,
+        /// Enter: opens the card.
+        HomeOpen,
+        /// Shift+F10 or the Menu key: the card's menu.
+        HomeMenu
+    ]
+);
+
+/// The page's key context. Tab and Shift+Tab there are the window's (`workspace_sidebar_keys.rs`).
+const CONTEXT: &str = "HomePage";
+
+/// The keys of the cards.
+pub(crate) fn bind_keys(cx: &mut App) {
+    let ctx = Some(CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("left", HomeLeft, ctx),
+        KeyBinding::new("right", HomeRight, ctx),
+        KeyBinding::new("up", HomeUp, ctx),
+        KeyBinding::new("down", HomeDown, ctx),
+        KeyBinding::new("home", HomeFirst, ctx),
+        KeyBinding::new("end", HomeLast, ctx),
+        KeyBinding::new("enter", HomeOpen, ctx),
+        KeyBinding::new("shift-f10", HomeMenu, ctx),
+        KeyBinding::new("menu", HomeMenu, ctx),
+    ]);
+}
+
+/// A card or recent file the keyboard can be on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Spot {
+    /// A card, by its key (as `HomePage::selected_card` holds it).
+    Card(String),
+    Recent(PathBuf),
+}
+
+/// The part of the page a spot is in: Left and Right stay inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    Favorites,
+    Drives,
+    Network,
+    Recent,
+}
+
+/// What Enter (or a screen reader's click) does on a spot.
+#[derive(Clone)]
+enum Open {
+    Event(HomeEvent),
+    File(PathBuf),
+}
+
+/// The menu Shift+F10 opens on a spot: its right click's.
+#[derive(Clone, Copy)]
+enum MenuOf {
+    Favorite,
+    Place,
+    File,
+}
+
+/// A spot drawn this frame.
+struct KeySpot {
+    spot: Spot,
+    section: Section,
+    open: Open,
+    menu: Option<(MenuOf, PathBuf)>,
+    /// Where it was drawn (set while prepainting).
+    at: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
+
+impl KeySpot {
+    fn new(spot: Spot, section: Section, open: Open, menu: Option<(MenuOf, PathBuf)>) -> Self {
+        Self {
+            spot,
+            section,
+            open,
+            menu,
+            at: Rc::new(Cell::new(None)),
+        }
+    }
+}
+
+/// The focus ring, as of the last frame drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ring {
+    /// Not shown: the page doesn't have the keyboard, or the mouse is in use.
+    Off,
+    /// Brought up by the key being handled now: the user hasn't seen where it is, so that key
+    /// only shows it.
+    Fresh,
+    /// Shown since an earlier frame (the keyboard came to the page, or an earlier key).
+    Shown,
+}
+
+/// An arrow key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Where the keyboard goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Move {
+    Step(Step),
+    First,
+    Last,
+}
+
+/// Where an arrow key takes the cursor from spot `at`, given each spot's section and where it
+/// was drawn (in drawing order, which is reading order). Left and Right go to the card before or
+/// after in the same section (not in the recent files, a single column); Up and Down to the card
+/// nearest by its middle in the row above or below, going on into the next section at a
+/// section's edge, so every card can be reached. A spot not drawn yet goes by the order.
+fn step_to(spots: &[(Section, Option<Bounds<Pixels>>)], at: usize, step: Step) -> Option<usize> {
+    let &(section, here) = spots.get(at)?;
+    let (down, other) = match step {
+        Step::Left | Step::Right => {
+            if section == Section::Recent {
+                return None;
+            }
+            let to = if step == Step::Left {
+                at.checked_sub(1)?
+            } else {
+                at + 1
+            };
+            return (spots.get(to)?.0 == section).then_some(to);
+        }
+        Step::Up => (false, at.checked_sub(1)),
+        Step::Down => (true, Some(at + 1).filter(|&ix| ix < spots.len())),
+    };
+    let Some(here) = here else {
+        return other;
+    };
+    // How far past this spot's row a spot is, when it is in a row beyond it.
+    let past = |b: &Bounds<Pixels>| -> Option<f32> {
+        let gap = if down {
+            f32::from(b.top()) - f32::from(here.bottom())
+        } else {
+            f32::from(here.top()) - f32::from(b.bottom())
+        };
+        (gap > -1.).then_some(gap)
+    };
+    // The spots drawn in a row beyond this one, with how far past it.
+    let beyond: Vec<(usize, Bounds<Pixels>, f32)> = spots
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, &(_, b))| {
+            let b = b?;
+            Some((ix, b, past(&b)?))
+        })
+        .collect();
+    let nearest = beyond.iter().map(|&(.., gap)| gap).min_by(f32::total_cmp)?;
+    let off = |b: &Bounds<Pixels>| (f32::from(b.center().x) - f32::from(here.center().x)).abs();
+    beyond
+        .iter()
+        .filter(|&&(.., gap)| gap - nearest < 1.)
+        .min_by(|(_, a, _), (_, b, _)| off(a).total_cmp(&off(b)))
+        .map(|&(ix, ..)| ix)
+}
+
+/// Scrolls the page just enough to show the card drawn at `card`.
+fn reveal_card(scroll: &ScrollHandle, card: Bounds<Pixels>, window: &mut Window) {
+    let shift = crate::keynav::shift_to_show(card, scroll.bounds(), theme::s_16());
+    if shift == px(0.) {
+        return;
+    }
+    let offset = scroll.offset();
+    let y = (offset.y + shift).min(px(0.)).max(-scroll.max_offset().y);
+    scroll.set_offset(point(offset.x, y));
+    // This runs while the window draws: the next frame shows the page at its new place.
+    window.on_next_frame(|window, _| window.refresh());
+}
 
 /// Recent files listed: enough to find today's work, few enough to stay a list and not a log.
 pub(crate) const RECENT_MAX: usize = 10;
@@ -63,10 +261,45 @@ fn recent_row_h() -> gpui::Pixels {
 /// A favorite as the sidebar shows it: folder, its name (a name of its own first) and icon.
 pub(crate) type Favorite = (PathBuf, String, Icon);
 
-/// Whether a click on a recent file opens it: always with "Single click to open", otherwise
-/// on the second click of a double click.
+/// Whether a click on a recent file or a card opens it: always with "Single click to open",
+/// otherwise on the second click of a double click.
 const fn recent_click_opens(single_click: bool, click_count: usize) -> bool {
-    single_click || click_count >= 2
+    single_click || is_double_click(click_count)
+}
+
+/// A card's background: the picked one wears the accent wash of a selected file row.
+fn card_bg(selected: bool) -> gpui::Rgba {
+    if selected {
+        theme::list_selection(true)
+    } else {
+        theme::card()
+    }
+}
+
+/// A drive's usage bar, `used` being the fraction in use.
+fn usage_bar(used: f32) -> gpui::Div {
+    let color = if used > NEARLY_FULL {
+        theme::danger()
+    } else {
+        theme::signal()
+    };
+    div()
+        .h(usage_h())
+        .w_full()
+        .rounded(theme::R_FULL)
+        .bg(theme::wash_strong())
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(used.clamp(0., 1.)))
+                .rounded(theme::R_FULL)
+                .bg(color),
+        )
+}
+
+/// What a card is known by while it is the picked one.
+fn card_key(id: (&str, usize)) -> String {
+    format!("{}-{}", id.0, id.1)
 }
 
 /// One recent file.
@@ -223,6 +456,11 @@ pub(crate) struct HomePage {
     /// The recent file picked with one click (a double click opens it, or one click with
     /// "Single click to open").
     selected_recent: Option<PathBuf>,
+    /// The recent file the last click launched: a later click of the same quick run on it must
+    /// not launch it again (single-click mode, where every click opens).
+    launched_recent: Option<PathBuf>,
+    /// The card (favorite, drive, network location) picked with one click, by its id.
+    selected_card: Option<String>,
     focus: FocusHandle,
     scroll: ScrollHandle,
     /// The favorite card being dragged: its cell stays empty while the card is under the pointer.
@@ -231,6 +469,18 @@ pub(crate) struct HomePage {
     card_cells: std::collections::HashMap<usize, Bounds<Pixels>>,
     /// Cards sliding into their new cell after a reorder.
     card_shift: std::collections::HashMap<PathBuf, crate::motion::Slide<(f32, f32)>>,
+    /// The cards and recent files drawn this frame, in order; only recorded while the page has
+    /// the keyboard or a screen reader is attached.
+    spots: RefCell<Vec<KeySpot>>,
+    /// The page has the keyboard (as of the last frame).
+    focused: bool,
+    /// The focus ring: whether it shows (the page has the keyboard and it is in use) and since
+    /// when (as of the last frame).
+    ring: Ring,
+    /// Scroll the cursor's card into view when it is next drawn.
+    reveal: Rc<Cell<bool>>,
+    /// Shift+Tab brought the keyboard in: pick the first card of the last section once drawn.
+    enter_last: bool,
 }
 
 impl EventEmitter<HomeEvent> for HomePage {}
@@ -343,11 +593,18 @@ impl HomePage {
             names: crate::place_names::Names::new(),
             rename: None,
             selected_recent: None,
+            launched_recent: None,
+            selected_card: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             dragging: None,
             card_cells: std::collections::HashMap::new(),
             card_shift: std::collections::HashMap::new(),
+            spots: RefCell::new(Vec::new()),
+            focused: false,
+            ring: Ring::Off,
+            enter_last: false,
+            reveal: Rc::new(Cell::new(false)),
         };
         this.reload(cx);
         this
@@ -516,7 +773,7 @@ impl HomePage {
             let menu_path = file.path.clone();
             let parent = file.path.parent().map(Path::to_path_buf);
             let group = SharedString::from(format!("home-recent-{ix}"));
-            div()
+            let row = div()
                 .id(("home-recent", ix))
                 .a11y_lazy(gpui::Role::Link, || {
                     crate::a11y::item_label(&name, &[folder.as_str()])
@@ -583,10 +840,19 @@ impl HomePage {
                         })),
                 )
                 .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                    let launched = this.launched_recent.take();
                     if recent_click_opens(crate::prefs::single_click(), e.click_count()) {
+                        // The file is still under the cursor after it launched: the next click
+                        // of the run (counts 2, 3...) would launch it again.
+                        if e.click_count() > 1 && launched.as_ref() == Some(&open) {
+                            this.launched_recent = launched;
+                            return;
+                        }
+                        this.launched_recent = Some(open.clone());
                         this.open_file(open.clone(), cx);
                     } else {
                         this.selected_recent = Some(open.clone());
+                        this.selected_card = None;
                         cx.notify();
                     }
                 }))
@@ -610,8 +876,20 @@ impl HomePage {
                             position: e.position,
                         });
                     }),
-                )
-                .into_any_element()
+                );
+            self.key_spot(
+                row,
+                || {
+                    KeySpot::new(
+                        Spot::Recent(file.path.clone()),
+                        Section::Recent,
+                        Open::File(file.path.clone()),
+                        Some((MenuOf::File, file.path.clone())),
+                    )
+                },
+                cx,
+            )
+            .into_any_element()
         });
         div()
             .flex()
@@ -625,22 +903,32 @@ impl HomePage {
             .into_any_element()
     }
 
-    /// Click opens; middle click or Ctrl+click opens in a new tab (when there's a folder to open).
+    /// Click opens (a double click, unless "Single click to open"; the first click of a double
+    /// click only picks the card); middle click or Ctrl+click opens in a new tab (when there's a
+    /// folder to open).
     fn card_actions(
         el: gpui::Stateful<gpui::Div>,
+        key: String,
         event: HomeEvent,
         new_tab: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let ctrl_tab = new_tab.clone();
-        el.on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+        el.on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
             // Ctrl: a new tab, in front with Shift too, as a link in a browser (#291).
             match &ctrl_tab {
                 Some(path) if e.modifiers().control => cx.emit(HomeEvent::OpenInNewTab {
                     path: path.clone(),
                     activate: e.modifiers().shift,
                 }),
-                _ => cx.emit(event.clone()),
+                _ if recent_click_opens(crate::prefs::single_click(), e.click_count()) => {
+                    cx.emit(event.clone());
+                }
+                _ => {
+                    this.selected_card = Some(key.clone());
+                    this.selected_recent = None;
+                    cx.notify();
+                }
             }
         }))
         .when_some(new_tab, |el, path| {
@@ -709,6 +997,11 @@ impl HomePage {
         cx.notify();
     }
 
+    /// Whether the card with this id is the one picked with a click.
+    fn card_picked(&self, id: (&str, usize)) -> bool {
+        self.selected_card.as_deref() == Some(card_key(id).as_str())
+    }
+
     fn quick_card(
         &self,
         ix: usize,
@@ -729,12 +1022,12 @@ impl HomePage {
             label: label.to_owned(),
             icon,
         };
-        let home = cx.entity().downgrade();
-        let key = path.to_path_buf();
+        let card_id = format!("home-quick-{}", path.display());
+        let selected = self.selected_card.as_deref() == Some(card_id.as_str());
         // Known by its folder, not its place: after a reorder the card under the pointer is
         // another one, and its hover and tooltip must not carry over.
         let card = div()
-            .id(SharedString::from(format!("home-quick-{}", path.display())))
+            .id(SharedString::from(card_id.clone()))
             .relative()
             .when_some(shift, |d, (dx, dy)| d.left(px(dx)).top(px(dy)))
             .when(dragged, gpui::Styled::invisible)
@@ -747,11 +1040,11 @@ impl HomePage {
             .justify_center()
             .gap(theme::s_8())
             .rounded(theme::r_8())
-            .bg(theme::card())
+            .bg(card_bg(selected))
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
-            .hover(|s| s.bg(theme::wash()))
+            .when(!selected, |d| d.hover(|s| s.bg(theme::wash())))
             .child(crate::assets::tinted(
                 icon,
                 card_icon(),
@@ -773,6 +1066,7 @@ impl HomePage {
         let menu_path = path.to_path_buf();
         let card = Self::card_actions(
             card,
+            card_id.clone(),
             HomeEvent::OpenFolder(path.to_path_buf()),
             Some(path.to_path_buf()),
             cx,
@@ -786,6 +1080,30 @@ impl HomePage {
                 });
             }),
         );
+        let card = self.key_spot(
+            card,
+            || {
+                KeySpot::new(
+                    Spot::Card(card_id),
+                    Section::Favorites,
+                    Open::Event(HomeEvent::OpenFolder(path.to_path_buf())),
+                    Some((MenuOf::Favorite, path.to_path_buf())),
+                )
+            },
+            cx,
+        );
+        Self::quick_cell(ix, card, drag, cx)
+    }
+
+    /// The cell a favorite card sits in, which is what is dragged to reorder the favorites.
+    fn quick_cell(
+        ix: usize,
+        card: Stateful<Div>,
+        drag: DraggedCard,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let home = cx.entity().downgrade();
+        let key = drag.path.clone();
         // The cell holds still while its card slides: drag moves are read against where the
         // cells are, never against a card midway through a slide (which threw reorders off).
         div()
@@ -820,13 +1138,14 @@ impl HomePage {
     /// with free space.
     fn place_card(
         id: (&'static str, usize),
+        selected: bool,
         icon: Icon,
         label: CardName,
         detail: Option<String>,
         space: Option<(u64, u64)>,
         event: HomeEvent,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Stateful<Div> {
         let text = match &label {
             CardName::Text(text) => text.clone(),
             CardName::Editing(_) => String::new(),
@@ -868,11 +1187,11 @@ impl HomePage {
             .items_center()
             .gap(theme::s_12())
             .rounded(theme::r_8())
-            .bg(theme::card())
+            .bg(card_bg(selected))
             .border_1()
             .border_color(theme::line())
             .cursor_pointer()
-            .hover(|s| s.bg(theme::wash()))
+            .when(!selected, |d| d.hover(|s| s.bg(theme::wash())))
             .child(crate::assets::tinted(
                 icon,
                 card_icon(),
@@ -886,25 +1205,7 @@ impl HomePage {
                     .flex_col()
                     .gap(theme::s_4())
                     .child(card_label(label))
-                    .children(used.map(|used| {
-                        let color = if used > NEARLY_FULL {
-                            theme::danger()
-                        } else {
-                            theme::signal()
-                        };
-                        div()
-                            .h(usage_h())
-                            .w_full()
-                            .rounded(theme::R_FULL)
-                            .bg(theme::wash_strong())
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(gpui::relative(used.clamp(0., 1.)))
-                                    .rounded(theme::R_FULL)
-                                    .bg(color),
-                            )
-                    }))
+                    .children(used.map(usage_bar))
                     .children(detail.map(|d| {
                         div()
                             .truncate()
@@ -913,8 +1214,9 @@ impl HomePage {
                             .child(d)
                     })),
             );
-        Self::card_actions(card, event, new_tab, cx)
-            .when_some(menu_path, |el, path| {
+        Self::card_actions(card, card_key(id), event, new_tab, cx).when_some(
+            menu_path,
+            |el, path| {
                 el.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |_, e: &MouseDownEvent, _, cx| {
@@ -924,8 +1226,274 @@ impl HomePage {
                         });
                     }),
                 )
+            },
+        )
+    }
+}
+
+/// The keyboard on the page (see the module docs).
+impl HomePage {
+    /// Whether a card or recent file is picked.
+    const fn has_pick(&self) -> bool {
+        self.selected_card.is_some() || self.selected_recent.is_some()
+    }
+
+    fn is_picked(&self, spot: &Spot) -> bool {
+        match spot {
+            Spot::Card(key) => self.selected_card.as_ref() == Some(key),
+            Spot::Recent(path) => self.selected_recent.as_ref() == Some(path),
+        }
+    }
+
+    /// Picks `spot`, as a click on it does.
+    fn pick(&mut self, spot: &Spot) {
+        match spot {
+            Spot::Card(key) => {
+                self.selected_card = Some(key.clone());
+                self.selected_recent = None;
+            }
+            Spot::Recent(path) => {
+                self.selected_recent = Some(path.clone());
+                self.selected_card = None;
+            }
+        }
+    }
+
+    /// Gives a card or recent file (`el`) what the keyboard and screen readers need: its place
+    /// in the keyboard's order, the focus ring while the cursor is on it, the focused-item
+    /// report, and a screen reader's click. `spot` only runs while the page has the keyboard or a
+    /// screen reader is attached; otherwise `el` is left as it is.
+    fn key_spot(
+        &self,
+        el: Stateful<Div>,
+        spot: impl FnOnce() -> KeySpot,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        if !self.focused && !crate::a11y::active() {
+            return el;
+        }
+        let spot = spot();
+        // The picked one, or the first while nothing is.
+        let cursor = if self.has_pick() {
+            self.is_picked(&spot.spot)
+        } else {
+            self.spots.borrow().is_empty()
+        };
+        let home = cx.entity().downgrade();
+        let target = spot.spot.clone();
+        // Not where the card is drawn: one scrolled out of the page couldn't be opened.
+        let el = el.a11y_on_click(move |_, cx| {
+            let _ = home.update(cx, |home, cx| home.open_spot(&target, cx));
+        });
+        let at = Rc::clone(&spot.at);
+        self.spots.borrow_mut().push(spot);
+        if !self.focused {
+            return el;
+        }
+        let reveal = cursor.then(|| (Rc::clone(&self.reveal), self.scroll.clone()));
+        el.relative()
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        at.set(Some(bounds));
+                        if let Some((reveal, scroll)) = &reveal
+                            && reveal.replace(false)
+                        {
+                            reveal_card(scroll, bounds, window);
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when(
+                cursor,
+                gpui::StatefulInteractiveElement::aria_active_descendant,
+            )
+            .when(cursor && self.ring != Ring::Off, |d| {
+                d.child(
+                    div()
+                        .debug_selector(|| "home-focus-ring".to_owned())
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme::r_8())
+                        .shadow(crate::keynav::ring()),
+                )
             })
-            .into_any_element()
+    }
+
+    /// Opens `spot` (Enter, or a screen reader's click on it).
+    fn open_spot(&mut self, spot: &Spot, cx: &mut Context<Self>) {
+        let open = self
+            .spots
+            .borrow()
+            .iter()
+            .find(|s| s.spot == *spot)
+            .map(|s| s.open.clone());
+        match open {
+            Some(Open::Event(event)) => cx.emit(event),
+            Some(Open::File(path)) => self.open_file(path, cx),
+            None => {}
+        }
+    }
+
+    /// The spot the keys act on: the picked one, or the first while the ring shows on it.
+    /// `None` while the ring isn't showing and nothing is picked: a key then only brings it up.
+    fn acting_ix(&self) -> Option<usize> {
+        let spots = self.spots.borrow();
+        spots
+            .iter()
+            .position(|s| self.is_picked(&s.spot))
+            .or_else(|| {
+                (self.ring == Ring::Shown && !self.has_pick() && !spots.is_empty()).then_some(0)
+            })
+    }
+
+    fn move_cursor(&mut self, to: Move, cx: &mut Context<Self>) {
+        let shapes: Vec<(Section, Option<Bounds<Pixels>>)> = self
+            .spots
+            .borrow()
+            .iter()
+            .map(|s| (s.section, s.at.get()))
+            .collect();
+        let Some(last) = shapes.len().checked_sub(1) else {
+            return;
+        };
+        let to = match (to, self.acting_ix()) {
+            (Move::Last, _) => Some(last),
+            (Move::Step(step), Some(at)) => step_to(&shapes, at, step),
+            // Home, or the ring wasn't showing: the first key shows it, on the first card.
+            (Move::First, _) | (Move::Step(_), None) => Some(0),
+        };
+        let Some(spot) = to.and_then(|ix| self.spots.borrow().get(ix).map(|s| s.spot.clone()))
+        else {
+            return;
+        };
+        self.pick(&spot);
+        self.reveal.set(true);
+        cx.notify();
+    }
+
+    /// Tab (`forward`) or Shift+Tab inside the page: the first card of the next or previous
+    /// section (favorites, drives, network, recent files). `false` at the last or first section,
+    /// where the keyboard goes on to the rest of the window.
+    pub(crate) fn tab_section(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        // Nothing picked, ring showing or not: the keyboard is on the first card (the one a
+        // screen reader reports as focused), so Tab goes on from there.
+        let at = self.acting_ix().unwrap_or(0);
+        let to = {
+            let spots = self.spots.borrow();
+            let Some(here) = spots.get(at).map(|s| s.section) else {
+                return false;
+            };
+            if forward {
+                (at..spots.len()).find(|&ix| spots[ix].section != here)
+            } else {
+                let start = (0..=at)
+                    .rev()
+                    .take_while(|&ix| spots[ix].section == here)
+                    .last();
+                let before = start
+                    .and_then(|ix| ix.checked_sub(1))
+                    .and_then(|ix| spots.get(ix))
+                    .map(|s| s.section);
+                before.and_then(|before| spots.iter().position(|s| s.section == before))
+            }
+        };
+        let Some(spot) = to.and_then(|ix| self.spots.borrow().get(ix).map(|s| s.spot.clone()))
+        else {
+            return false;
+        };
+        self.pick(&spot);
+        self.reveal.set(true);
+        cx.notify();
+        true
+    }
+
+    /// Tab (`forward`) or Shift+Tab into the page from the rest of the window: the first card of
+    /// its first or last section, so a round visits every section, whatever was picked before.
+    /// The cards are only recorded while the page has the keyboard, so Shift+Tab picks the last
+    /// section's card in the next frame (`enter_last`); Tab just forgets the pick, which puts the
+    /// ring on the first card.
+    pub(crate) fn enter(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.selected_card = None;
+        self.selected_recent = None;
+        self.enter_last = !forward;
+        self.reveal.set(true);
+        cx.notify();
+    }
+
+    fn home_left(&mut self, _: &HomeLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(Move::Step(Step::Left), cx);
+    }
+
+    fn home_right(&mut self, _: &HomeRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(Move::Step(Step::Right), cx);
+    }
+
+    fn home_up(&mut self, _: &HomeUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(Move::Step(Step::Up), cx);
+    }
+
+    fn home_down(&mut self, _: &HomeDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(Move::Step(Step::Down), cx);
+    }
+
+    fn home_first(&mut self, _: &HomeFirst, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(Move::First, cx);
+    }
+
+    fn home_last(&mut self, _: &HomeLast, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(Move::Last, cx);
+    }
+
+    /// Enter opens the card, with "Single click to open" on or off: that is about the mouse.
+    fn home_open(&mut self, _: &HomeOpen, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.acting_ix() else {
+            self.move_cursor(Move::First, cx);
+            return;
+        };
+        let spot = self.spots.borrow().get(ix).map(|s| s.spot.clone());
+        if let Some(spot) = spot {
+            self.open_spot(&spot, cx);
+        }
+    }
+
+    /// Shift+F10: the card's menu, where the card is (the Recycle Bin has none).
+    fn home_menu(&mut self, _: &HomeMenu, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.acting_ix() else {
+            self.move_cursor(Move::First, cx);
+            return;
+        };
+        let (spot, menu, at) = {
+            let spots = self.spots.borrow();
+            let Some(s) = spots.get(ix) else {
+                return;
+            };
+            (s.spot.clone(), s.menu.clone(), s.at.get())
+        };
+        let (Some((of, path)), Some(at)) = (menu, at) else {
+            return;
+        };
+        self.pick(&spot);
+        cx.notify();
+        let position = at.center();
+        cx.emit(match of {
+            MenuOf::Favorite => HomeEvent::FavoriteMenu { path, position },
+            MenuOf::Place => HomeEvent::PlaceMenu { path, position },
+            MenuOf::File => HomeEvent::FileMenu { path, position },
+        });
+    }
+
+    /// The spot under the keyboard's cursor (tests): a card's key, or a recent file's path.
+    #[cfg(test)]
+    pub(crate) fn cursor_for_test(&self) -> Option<String> {
+        let ix = self.acting_ix()?;
+        self.spots.borrow().get(ix).map(|s| match &s.spot {
+            Spot::Card(key) => key.clone(),
+            Spot::Recent(path) => path.display().to_string(),
+        })
     }
 }
 
@@ -940,6 +1508,21 @@ impl Render for HomePage {
         if !cx.has_active_drag() {
             self.dragging = None;
         }
+        // The cards record themselves again as they are drawn.
+        let (was_focused, was_ring) = (self.focused, self.ring);
+        self.focused = self.focus.is_focused(window);
+        self.ring = match (self.focused && window.last_input_was_keyboard(), was_ring) {
+            (false, _) => Ring::Off,
+            // The page already had the keyboard and the mouse was in use: a key was just pressed
+            // (GPUI draws this frame right before handling it), so the ring wasn't seen yet.
+            (true, Ring::Off) if was_focused => Ring::Fresh,
+            (true, _) => Ring::Shown,
+        };
+        // The ring comes up (Tab to the page, or the first key): its card comes into view.
+        if self.ring != Ring::Off && was_ring == Ring::Off {
+            self.reveal.set(true);
+        }
+        self.spots.borrow_mut().clear();
         let quick: Vec<AnyElement> = self
             .favorites
             .iter()
@@ -965,27 +1548,58 @@ impl Render for HomePage {
             })
             .enumerate()
             .map(|(ix, (p, space))| {
-                Self::place_card(
-                    ("home-drive", ix),
+                let id = ("home-drive", ix);
+                let path = p.path.clone();
+                let card = Self::place_card(
+                    id,
+                    self.card_picked(id),
                     Icon::Drive,
                     CardName::Text(p.label),
                     None,
                     space,
                     HomeEvent::OpenFolder(p.path),
                     cx,
+                );
+                self.key_spot(
+                    card,
+                    || {
+                        KeySpot::new(
+                            Spot::Card(card_key(id)),
+                            Section::Drives,
+                            Open::Event(HomeEvent::OpenFolder(path.clone())),
+                            Some((MenuOf::Place, path)),
+                        )
+                    },
+                    cx,
                 )
+                .into_any_element()
             })
             .collect();
         if !SettingsStore::global(cx).read(cx).settings.recycle_pinned {
-            drives.push(Self::place_card(
-                ("home-recycle", 0),
+            let id = ("home-recycle", 0);
+            let card = Self::place_card(
+                id,
+                self.card_picked(id),
                 Icon::Trash,
                 CardName::Text(t!("recycle.title").into_owned()),
                 None,
                 None,
                 HomeEvent::OpenRecycle,
                 cx,
-            ));
+            );
+            let card = self.key_spot(
+                card,
+                || {
+                    KeySpot::new(
+                        Spot::Card(card_key(id)),
+                        Section::Drives,
+                        Open::Event(HomeEvent::OpenRecycle),
+                        None,
+                    )
+                },
+                cx,
+            );
+            drives.push(card.into_any_element());
         }
         // Network: mapped drives and recently opened shares
         let mut net: Vec<(String, PathBuf)> = self
@@ -1015,25 +1629,50 @@ impl Render for HomePage {
                 let detail = (label != path.display().to_string()
                     && crate::place_names::drive_letter(&path).is_none())
                 .then(|| path.display().to_string());
-                Self::place_card(
-                    ("home-net", ix),
+                let id = ("home-net", ix);
+                let card = Self::place_card(
+                    id,
+                    self.card_picked(id),
                     Icon::NetDrive,
                     self.card_name(&path, label),
                     detail,
                     None,
-                    HomeEvent::OpenFolder(path),
+                    HomeEvent::OpenFolder(path.clone()),
+                    cx,
+                );
+                self.key_spot(
+                    card,
+                    || {
+                        KeySpot::new(
+                            Spot::Card(card_key(id)),
+                            Section::Network,
+                            Open::Event(HomeEvent::OpenFolder(path.clone())),
+                            Some((MenuOf::Place, path)),
+                        )
+                    },
                     cx,
                 )
+                .into_any_element()
             })
             .collect();
         let cards =
             |items: Vec<AnyElement>| div().flex().flex_wrap().gap(theme::s_12()).children(items);
         let has_quick = !quick.is_empty();
         let has_net = !net.is_empty();
-        div()
+        let page = div()
             .id("home-scroll")
-            .key_context("HomePage")
+            .key_context(CONTEXT)
             .track_focus(&self.focus)
+            // The focused node the cards are reported under (see `key_spot`).
+            .a11y(gpui::Role::Group, t!("home.title"))
+            .on_action(cx.listener(Self::home_left))
+            .on_action(cx.listener(Self::home_right))
+            .on_action(cx.listener(Self::home_up))
+            .on_action(cx.listener(Self::home_down))
+            .on_action(cx.listener(Self::home_first))
+            .on_action(cx.listener(Self::home_last))
+            .on_action(cx.listener(Self::home_open))
+            .on_action(cx.listener(Self::home_menu))
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
@@ -1072,7 +1711,34 @@ impl Render for HomePage {
                                     .child(self.render_recent(cx))
                             }),
                     ),
-            )
+            );
+        // The picked card is gone (a favorite removed, a drive unplugged): the ring goes back to
+        // the first card, on the next frame.
+        if self.focused
+            && self.has_pick()
+            && !self.spots.borrow().iter().any(|s| self.is_picked(&s.spot))
+        {
+            self.selected_card = None;
+            self.selected_recent = None;
+            window.request_animation_frame();
+        }
+        if self.enter_last && self.focused {
+            self.enter_last = false;
+            let last = self.spots.borrow().last().map(|s| s.section);
+            let spot = last.and_then(|last| {
+                let spots = self.spots.borrow();
+                spots
+                    .iter()
+                    .find(|s| s.section == last)
+                    .map(|s| s.spot.clone())
+            });
+            if let Some(spot) = spot {
+                self.pick(&spot);
+                self.reveal.set(true);
+                window.request_animation_frame();
+            }
+        }
+        page
     }
 }
 
@@ -1091,10 +1757,76 @@ mod tests {
         }
     }
 
+    /// Two rows of three favorites, a row of two wide drive cards, then two recent files.
+    fn page() -> Vec<(Section, Option<Bounds<Pixels>>)> {
+        let at = |x: f32, y: f32, w: f32, h: f32| {
+            Some(Bounds::new(point(px(x), px(y)), gpui::size(px(w), px(h))))
+        };
+        let mut spots: Vec<_> = (0..6)
+            .map(|i| {
+                let (col, row) = ((i % 3) as f32, (i / 3) as f32);
+                (Section::Favorites, at(col * 144., row * 100., 132., 88.))
+            })
+            .collect();
+        spots.push((Section::Drives, at(0., 240., 260., 72.)));
+        spots.push((Section::Drives, at(272., 240., 260., 72.)));
+        spots.push((Section::Recent, at(0., 360., 800., 48.)));
+        spots.push((Section::Recent, at(0., 408., 800., 48.)));
+        spots
+    }
+
+    #[test]
+    fn arrows_walk_the_grid_and_go_on_at_its_edges() {
+        let page = page();
+        let go = |at: usize, step: Step| step_to(&page, at, step);
+        // Left and Right: along the section, row after row, never out of it.
+        assert_eq!(go(0, Step::Right), Some(1));
+        assert_eq!(go(2, Step::Right), Some(3), "on to the next row");
+        assert_eq!(go(0, Step::Left), None);
+        assert_eq!(go(5, Step::Right), None, "the end of the favorites");
+        assert_eq!(go(6, Step::Left), None, "the start of the drives");
+        // Up and Down: the nearest by its middle in the next row, into the next section.
+        assert_eq!(go(1, Step::Down), Some(4));
+        assert_eq!(
+            go(4, Step::Down),
+            Some(6),
+            "middle 210: nearest is the first drive"
+        );
+        assert_eq!(go(5, Step::Down), Some(7));
+        assert_eq!(
+            go(7, Step::Up),
+            Some(5),
+            "the favorite above the second drive"
+        );
+        assert_eq!(go(4, Step::Up), Some(1));
+        assert_eq!(go(0, Step::Up), None, "nothing above the first row");
+        // The recent files are a column.
+        assert_eq!(go(7, Step::Down), Some(8));
+        assert_eq!(go(8, Step::Down), Some(9));
+        assert_eq!(go(9, Step::Down), None);
+        assert_eq!(go(9, Step::Right), None);
+        assert_eq!(
+            go(8, Step::Up),
+            Some(7),
+            "middle 400: nearer the second drive"
+        );
+    }
+
+    #[test]
+    fn spots_not_drawn_yet_go_by_their_order() {
+        let mut page = page();
+        page[4].1 = None;
+        assert_eq!(step_to(&page, 4, Step::Down), Some(5));
+        assert_eq!(step_to(&page, 4, Step::Up), Some(3));
+        assert_eq!(step_to(&page, 0, Step::Up), None);
+    }
+
     #[test]
     fn recent_files_open_by_double_click_unless_single_click_is_on() {
         assert!(!recent_click_opens(false, 1));
         assert!(recent_click_opens(false, 2));
+        assert!(!recent_click_opens(false, 3));
+        assert!(recent_click_opens(false, 4));
         assert!(recent_click_opens(true, 1));
     }
 

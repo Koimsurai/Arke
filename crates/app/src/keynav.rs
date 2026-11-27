@@ -116,6 +116,12 @@ fn reveal(bounds: Bounds<Pixels>, window: &mut Window, _: &mut App) {
     if !REVEAL.replace(false) {
         return;
     }
+    show(bounds, window);
+}
+
+/// Scrolls the page being drawn just enough to show `bounds` (also a row a Settings search went
+/// to, #400). Call while the page is drawn (prepaint).
+pub(crate) fn show(bounds: Bounds<Pixels>, window: &mut Window) {
     let Some(scroll) = VIEW.with_borrow(Clone::clone) else {
         return;
     };
@@ -135,7 +141,7 @@ fn reveal(bounds: Bounds<Pixels>, window: &mut Window, _: &mut App) {
 
 /// How far to move the content (positive: down) so `item` is inside `view`, `margin` from its
 /// edges where there is room; 0 when it already is.
-fn shift_to_show(item: Bounds<Pixels>, view: Bounds<Pixels>, margin: Pixels) -> Pixels {
+pub(crate) fn shift_to_show(item: Bounds<Pixels>, view: Bounds<Pixels>, margin: Pixels) -> Pixels {
     let margin = margin.min((view.size.height - item.size.height).max(px(0.)) / 2.);
     if item.top() < view.top() + margin {
         view.top() + margin - item.top()

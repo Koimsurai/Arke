@@ -133,6 +133,25 @@ pub fn device_key(name: &str, pnp_id: &str) -> String {
     }
 }
 
+/// What the device list knows of a device before anything is opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// Its PnP device-interface path (what WPD calls the device id).
+    pub pnp_id: String,
+}
+
+/// Whether a device belongs under the portable devices (#437). Windows also shows every disk
+/// volume that has a drive letter (USB sticks, external disks, card-reader media, even floppy
+/// slots) to WPD, through its bus enumerator (`SWD#WPDBUSENUM...`, the WPD mass-storage
+/// driver); those are drives and already listed as such, which is how File Explorer treats them.
+/// Phones and cameras (MTP/PTP) come from the USB stack instead (`USB#VID_...`). So the device
+/// itself decides: no names, and nothing is opened.
+pub fn is_portable(info: &DeviceInfo) -> bool {
+    let id = info.pnp_id.to_ascii_lowercase();
+    let id = id.trim_start_matches(['\\', '?']);
+    !id.starts_with("swd#wpdbusenum")
+}
+
 /// `/a/b` -> `["a", "b"]`; `/` -> `[]`.
 pub fn segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
@@ -161,6 +180,41 @@ mod tests {
         // A valid host for a location.
         let url = format!("mtp://{a}/DCIM");
         assert!(arke_core::remote::RemoteUrl::parse_input(&url).is_some());
+    }
+
+    fn info(id: &str) -> DeviceInfo {
+        DeviceInfo { pnp_id: id.into() }
+    }
+
+    #[test]
+    fn disk_volumes_are_not_portable_devices() {
+        let iface = "{6ac27878-a6fa-4155-ba85-f98f491d4f33}";
+        // An MTP phone.
+        assert!(is_portable(&info(&format!(
+            r"\\?\usb#vid_18d1&pid_4ee1#0a1b2c#{iface}"
+        ))));
+        // A camera (PTP) is the same kind of USB device.
+        assert!(is_portable(&info(&format!(
+            r"\\?\USB#VID_04A9&PID_32B4#5&1f2e3d#{iface}"
+        ))));
+        // A mass-storage stick with a drive letter, and card-reader media in a slot.
+        assert!(!is_portable(&info(&format!(
+            r"\\?\swd#wpdbusenum#{{a1b2c3d4-0000-0000-0000-806e6f6e6963}}#0000000000100000#{iface}"
+        ))));
+        assert!(!is_portable(&info(&format!(
+            r"\\?\SWD#WPDBUSENUMROOT#UMB#2&37C186B&0&STORAGE#VOLUME#_??_USBSTOR#{iface}"
+        ))));
+        // A reader with no media has no volume, hence no WPD device: nothing is listed for it.
+        let listed: Vec<_> = [
+            info(&format!(r"\\?\usb#vid_18d1&pid_4ee1#0a1b2c#{iface}")),
+            info(&format!(
+                r"\\?\swd#wpdbusenum#{{b1}}#0000000000100000#{iface}"
+            )),
+        ]
+        .into_iter()
+        .filter(is_portable)
+        .collect();
+        assert_eq!(listed.len(), 1);
     }
 
     #[test]

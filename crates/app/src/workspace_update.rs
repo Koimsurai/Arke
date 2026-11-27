@@ -348,18 +348,38 @@ fn release_version(state: &UpdateState) -> String {
     }
 }
 
-/// Opens a URL in the default browser on a background thread.
+/// Opens a URL in the default browser on a background thread. Tests record it instead
+/// ([`opened_urls_for_test`]).
 pub(crate) fn open_url(url: &str, cx: &mut App) {
     if url.is_empty() {
         return;
     }
-    let _ = cx;
-    let url = url.to_string();
-    crate::explorer::spawn_thread("open-url", move || {
-        let _ = std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &url])
-            .spawn();
-    });
+    #[cfg(test)]
+    cx.default_global::<OpenedUrls>().0.push(url.to_owned());
+    #[cfg(not(test))]
+    {
+        let _ = cx;
+        let url = url.to_string();
+        crate::explorer::spawn_thread("open-url", move || {
+            let _ = std::process::Command::new("rundll32.exe")
+                .args(["url.dll,FileProtocolHandler", &url])
+                .spawn();
+        });
+    }
+}
+
+/// The URLs [`open_url`] was asked to open, in order (tests open no browser).
+#[cfg(test)]
+#[derive(Default)]
+struct OpenedUrls(Vec<String>);
+
+#[cfg(test)]
+impl gpui::Global for OpenedUrls {}
+
+#[cfg(test)]
+pub(crate) fn opened_urls_for_test(cx: &App) -> Vec<String> {
+    cx.try_global::<OpenedUrls>()
+        .map_or_default(|o| o.0.clone())
 }
 
 fn row(

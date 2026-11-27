@@ -925,8 +925,8 @@ mod tests {
 
     #[test]
     fn other_copies_are_existing_files_listed_once() {
-        let dir =
-            std::env::temp_dir().join(format!("arke-uninstall-others-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let (me, other, missing) = (
             dir.join("a").join("arke.exe"),
             dir.join("b").join("arke.exe"),
@@ -938,7 +938,6 @@ mod tests {
         }
         let upper = PathBuf::from(other.to_string_lossy().to_uppercase());
         let found = distinct_others(&me, [me.clone(), other.clone(), upper, missing]);
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, [other]);
     }
 
@@ -1062,8 +1061,8 @@ mod tests {
 
     #[test]
     fn deletes_only_the_arke_folder_in_a_temp_profile() {
-        let root = std::env::temp_dir().join(format!("arke-test-uninstall-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let root = tmp_dir.path().to_path_buf();
         let roaming = root.join("Roaming");
         let arke = roaming.join("Arke");
         std::fs::create_dir_all(arke.join("sub")).unwrap();
@@ -1080,7 +1079,6 @@ mod tests {
         assert!(matches!(delete_folder(&arke), Outcome::Skipped(_)));
         assert!(matches!(delete_folder(&neighbour), Outcome::Failed(_)));
         assert!(neighbour.exists());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //!
 //! - the layout (Details, Icons, Columns);
 //! - Icons: the icon size slider, any size from small to 256 px (`explorer_icons.rs`);
-//!   Details: row density (not in split panes, which always use compact rows);
+//!   Details: row density (not in split panes, whose rows are tighter unless compact);
 //! - switches for grouping, the Details tree, hidden items and file name extensions. They are the
 //!   same settings as in Settings, so every tab follows.
 //!
@@ -215,7 +215,8 @@ impl Explorer {
             ));
         let size_block = match mode {
             ViewMode::Icons => Some(self.icon_size_block(cx)),
-            // Split panes always use compact rows.
+            // Split panes have tighter rows of their own (compact density, set in Settings, still
+            // applies).
             ViewMode::Details if !self.pane.split => Some(density_block(settings.density)),
             ViewMode::Details | ViewMode::Columns => None,
         };

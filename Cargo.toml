@@ -55,6 +55,9 @@ zip = { version = "9", default-features = false, features = ["deflate", "deflate
 ruzstd = "0.9"
 # CRC-32 of the zstd entries ruzstd decodes; already in the build through flate2
 crc32fast = "1"
+# Content search: SIMD block scan for the needle (already in the build through regex and gpui)
+aho-corasick = "1"
+memchr = "2"
 tar = "0.4"
 # Office Open XML previews (.docx/.xlsx/.pptx): streaming XML reader, no DTD or entity expansion
 quick-xml = "0.42"
@@ -70,6 +73,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Thumbnails: JPEGs decoded at 1/2 to 1/8 size in the DCT, so a big photo is never held at full size
 jpeg-decoder = { version = "0.3", default-features = false }
 log = "0.4"
+# Civil dates in Excel previews and WebDAV timestamps. `default-features = false` keeps the
+# time zone database out of the exe; 0.2 is the series env_logger already pulls in (one copy)
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+# Percent-encoding of URLs and WebDAV paths; already in the build through url
+percent-encoding = "2"
 env_logger = "0.11"
 unicode-segmentation = "1"
 # Locks without poisoning (project rule: no std::sync::Mutex/RwLock/Condvar)
@@ -77,6 +85,8 @@ parking_lot = "0.13"
 # Typed errors for library and platform code (domain layers); tools use anyhow
 thiserror = "2"
 anyhow = "1"
+# Tests' temp folders: removed on drop, so also when a test panics
+tempfile = "3"
 # UI translations, embedded at compile time
 rust-i18n = "4"
 # Settings file (%APPDATA%\Arke\settings.json)

@@ -1,0 +1,5 @@
+# Largest shipped (fat LTO) arke.exe (x86_64), in bytes. release.yml warns above it; the perf
+# workflow checks its own thin-LTO build against exe-size-budget-thin. Set to the size of the 0.9.2 nightly (45,480,448 bytes) plus about 4%.
+# Raising it is a deliberate change: do it in the pull request that adds the weight, with a reason
+# in the commit message.
+47500000

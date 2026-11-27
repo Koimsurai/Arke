@@ -34,9 +34,16 @@
 //! - a listener subscribed: tell it;
 //! - something hints the folder's items changed ([`Trigger`], [`RELIST_ON`]): the explorer lists
 //!   it again and reloads if items came or went, for placeholders that arrive without a watcher
-//!   event;
+//!   event. Hints that arrive together make one relist ([`Relist`]). The shell notifications are
+//!   subscribed to before the window is registered, so a client that fills the folder and says
+//!   so as soon as it hears of the visit can't be missed, and the folder is listed once more after
+//!   the navigation was announced and after each later listener was told of it, for a client
+//!   that fills it inside the navigation events;
 //! - a "Show in folder" caller (`SHOpenFolderAndSelectItems`) that found this registration selects
 //!   items: they are selected in the pane, as they would be in File Explorer.
+//!
+//! When a visit ends, one log line sums up what it saw ([`Journal`]): the shell notifications by
+//! kind, the listeners' calls by method, the hints and how many relists they made.
 //!
 //! Nothing is downloaded: the folder is only named, never opened or read.
 
@@ -77,11 +84,12 @@ use windows::Win32::System::Variant::{
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     _SVGIO, DWebBrowserEvents, DWebBrowserEvents2, FOLDERSETTINGS, IFolderView, IFolderView_Impl,
-    ILCombine, ILGetSize, IPersistIDList, IPersistIDList_Impl, IShellBrowser, IShellBrowser_Impl,
-    IShellFolder, IShellItem, IShellView, IShellView_Impl, IShellWindows, IWebBrowser_Impl,
-    IWebBrowser2, IWebBrowser2_Impl, IWebBrowserApp_Impl, SHBindToObject, SHCNE_CREATE,
-    SHCNE_DELETE, SHCNE_MKDIR, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM, SHCNE_RMDIR, SHCNE_UPDATEDIR,
-    SHCNRF_NewDelivery, SHCNRF_ShellLevel, SHChangeNotification_Lock, SHChangeNotification_Unlock,
+    ILCombine, ILGetSize, ILIsEqual, ILIsParent, IPersistIDList, IPersistIDList_Impl,
+    IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellItem, IShellView, IShellView_Impl,
+    IShellWindows, IWebBrowser_Impl, IWebBrowser2, IWebBrowser2_Impl, IWebBrowserApp_Impl,
+    SHBindToObject, SHCNE_CREATE, SHCNE_DELETE, SHCNE_ID, SHCNE_MKDIR, SHCNE_RENAMEFOLDER,
+    SHCNE_RENAMEITEM, SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNE_UPDATEITEM, SHCNRF_NewDelivery,
+    SHCNRF_ShellLevel, SHChangeNotification_Lock, SHChangeNotification_Unlock,
     SHChangeNotifyDeregister, SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateItemFromIDList,
     SHParseDisplayName, SIGDN_FILESYSPATH, SVSI_DESELECTOTHERS, SVSI_EDIT, SVSI_ENSUREVISIBLE,
     SVSI_FOCUSED, SVSI_SELECT, SWC_BROWSER, ShellWindows, UrlCreateFromPathW,
@@ -114,25 +122,44 @@ const LOCALE_USER_DEFAULT: u32 = 0x400;
 const WM_TELL: u32 = WM_APP + 1;
 /// To the visit's message window: a shell change notification for the folder.
 const WM_SHELL_CHANGE: u32 = WM_APP + 2;
+/// To the visit's message window: `OnNavigate` returned (after the listeners already waiting were
+/// told, since their `WM_TELL` is queued first).
+const WM_NAVIGATED: u32 = WM_APP + 3;
+/// To the visit's message window: hints are pending, list the folder again once for all of them.
+const WM_RELIST: u32 = WM_APP + 4;
 
 /// What may hint that the folder's items changed without a watcher event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Trigger {
-    /// `SHChangeNotify` for the folder or an item in it (items created, deleted, renamed, or the
-    /// whole folder updated), as a sync client that added placeholders may send so File
-    /// Explorer's view refreshes. Shell-level only: plain file system changes are the watcher's.
+    /// `SHChangeNotify` for the folder or an item in it (items created, deleted, renamed, the
+    /// whole folder updated, or `SHCNE_UPDATEITEM` for the folder itself), as a sync client that
+    /// added placeholders may send so File Explorer's view refreshes. Shell-level only: plain file
+    /// system changes are the watcher's.
     ShellNotify,
     /// A listener asked the window to refresh (`IWebBrowser2::Refresh`, `Refresh2`,
     /// `IShellView::Refresh`).
     ListenerRefresh,
+    /// The navigation was announced (`OnNavigate` returned and the listeners already subscribed
+    /// were told): a client may have filled the folder inside the navigation events, after Arke
+    /// listed it. Once per visit.
+    Navigated,
+    /// A listener that subscribed later was told of the navigation and its calls returned: it may
+    /// have filled the folder inside them (a client subscribes only once it hears the window was
+    /// registered, after `OnNavigate`). Once per round of telling.
+    Told,
 }
 
-/// The hints the explorer acts on. Which one WPS Cloud gives (if any: its placeholders may well
-/// come with a watcher event) is to be confirmed on a machine with it; drop the others here.
-const RELIST_ON: [Trigger; 2] = [Trigger::ShellNotify, Trigger::ListenerRefresh];
+/// The hints the explorer acts on. Drop one here to stop acting on it.
+const RELIST_ON: [Trigger; 4] = [
+    Trigger::ShellNotify,
+    Trigger::ListenerRefresh,
+    Trigger::Navigated,
+    Trigger::Told,
+];
 
 /// Shell notifications that mean items came, went or were renamed. `SHCNE_UPDATEITEM` (an
-/// item's state changed: sync clients send it all the time) is left out.
+/// item's state changed: sync clients send it all the time) isn't one of them; only the one for
+/// the folder itself counts ([`relists_on_notification`]).
 const NOTIFY_EVENTS: u32 = SHCNE_CREATE.0
     | SHCNE_MKDIR.0
     | SHCNE_DELETE.0
@@ -140,6 +167,9 @@ const NOTIFY_EVENTS: u32 = SHCNE_CREATE.0
     | SHCNE_RENAMEITEM.0
     | SHCNE_RENAMEFOLDER.0
     | SHCNE_UPDATEDIR.0;
+
+/// What the visit registers for: the above, and `SHCNE_UPDATEITEM` to see the folder's own.
+const WATCHED_EVENTS: u32 = NOTIFY_EVENTS | SHCNE_UPDATEITEM.0;
 
 /// Whether `trigger` makes the explorer list the folder again.
 fn relists(trigger: Trigger) -> bool {
@@ -149,6 +179,178 @@ fn relists(trigger: Trigger) -> bool {
 /// Whether the shell notification `event` (an `SHCNE_*` value) is one to act on.
 const fn notifies_items(event: u32) -> bool {
     event & NOTIFY_EVENTS != 0
+}
+
+/// What an `SHCNE_UPDATEITEM` names, seen from the visited folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    /// The folder itself: a sync client that filled it may say so this way (WPS Cloud, as far
+    /// as known), and File Explorer relists on it.
+    Folder,
+    /// An item in it: sync progress, sent all the time.
+    Inside,
+    /// Anything else (or a name that isn't a file system path).
+    Elsewhere,
+}
+
+/// Whether the shell notification `event`, about `target` when it is an `SHCNE_UPDATEITEM`,
+/// makes the folder be listed again.
+fn relists_on_notification(event: u32, target: Option<Target>) -> bool {
+    notifies_items(event) || (event & SHCNE_UPDATEITEM.0 != 0 && target == Some(Target::Folder))
+}
+
+/// The file system path written the way it compares: no `\\?\`, no trailing separator,
+/// lowercase. A drive root (`C:\`) becomes `c:`.
+fn path_key(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    text.trim_end_matches(['\\', '/']).to_lowercase()
+}
+
+/// Whether `item` (from a shell notification) is the visited `folder` itself, in it, or
+/// elsewhere. Compares paths: the shell's item id lists for one folder may differ (see
+/// `win_openinfolder::folder_locations`).
+fn target_of(item: &Path, folder: &Path) -> Target {
+    let folder = path_key(folder);
+    if path_key(item) == folder {
+        Target::Folder
+    } else if item
+        .parent()
+        .is_some_and(|parent| path_key(parent) == folder)
+    {
+        Target::Inside
+    } else {
+        Target::Elsewhere
+    }
+}
+
+/// The name a shell notification goes by in the visit's log.
+fn event_name(event: u32, target: Option<Target>) -> &'static str {
+    const NAMES: [(SHCNE_ID, &str); 7] = [
+        (SHCNE_CREATE, "CREATE"),
+        (SHCNE_MKDIR, "MKDIR"),
+        (SHCNE_DELETE, "DELETE"),
+        (SHCNE_RMDIR, "RMDIR"),
+        (SHCNE_RENAMEITEM, "RENAMEITEM"),
+        (SHCNE_RENAMEFOLDER, "RENAMEFOLDER"),
+        (SHCNE_UPDATEDIR, "UPDATEDIR"),
+    ];
+    if event & SHCNE_UPDATEITEM.0 != 0 {
+        return match target {
+            Some(Target::Folder) => "UPDATEITEM(folder)",
+            Some(Target::Inside) => "UPDATEITEM(item)",
+            _ => "UPDATEITEM(elsewhere)",
+        };
+    }
+    NAMES
+        .iter()
+        .find(|(id, _)| event & id.0 != 0)
+        .map_or("other", |&(_, name)| name)
+}
+
+/// Relisting after hints: one wake-up for any number of hints that arrive before the loop gets to
+/// it (a burst of notifications is already queued), and the one relist after the navigation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Relist {
+    /// A wake-up is queued.
+    pending: bool,
+    /// The relist after the navigation was asked for already.
+    navigated: bool,
+}
+
+impl Relist {
+    /// A hint came. Returns whether to queue a wake-up (none is queued yet).
+    const fn hint(&mut self) -> bool {
+        let wake = !self.pending;
+        self.pending = true;
+        wake
+    }
+
+    /// The navigation was announced. Returns whether this is the first time in this visit.
+    const fn navigated(&mut self) -> bool {
+        let first = !self.navigated;
+        self.navigated = true;
+        first
+    }
+
+    /// The wake-up arrived. Returns whether to list the folder again now.
+    const fn flush(&mut self) -> bool {
+        let due = self.pending;
+        self.pending = false;
+        due
+    }
+}
+
+/// What a visit saw, for one compact log block when it ends: shell notifications by kind (count
+/// and the first one's paths), listener calls by method, hints and relists.
+#[derive(Debug, Default)]
+struct Journal {
+    notifications: Vec<(&'static str, u32, String)>,
+    calls: Vec<(&'static str, u32)>,
+    hints: Vec<(Trigger, u32)>,
+    relists: u32,
+}
+
+impl Journal {
+    /// Whether no notification of `kind` was noted yet (its paths are worth reading).
+    fn first_of(&self, kind: &str) -> bool {
+        !self.notifications.iter().any(|(k, ..)| *k == kind)
+    }
+
+    fn note_notification(&mut self, kind: &'static str, paths: impl FnOnce() -> String) {
+        if let Some(entry) = self.notifications.iter_mut().find(|(k, ..)| *k == kind) {
+            entry.1 += 1;
+        } else {
+            self.notifications.push((kind, 1, paths()));
+        }
+    }
+
+    fn note_call(&mut self, method: &'static str) {
+        if let Some(entry) = self.calls.iter_mut().find(|(m, _)| *m == method) {
+            entry.1 += 1;
+        } else {
+            self.calls.push((method, 1));
+        }
+    }
+
+    fn note_hint(&mut self, trigger: Trigger) {
+        if let Some(entry) = self.hints.iter_mut().find(|(t, _)| *t == trigger) {
+            entry.1 += 1;
+        } else {
+            self.hints.push((trigger, 1));
+        }
+    }
+
+    /// One line: `notifications: ...; listener calls: ...; hints: ... -> relists N`.
+    fn summary(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from("notifications:");
+        if self.notifications.is_empty() {
+            out.push_str(" none");
+        }
+        for (i, (kind, count, paths)) in self.notifications.iter().enumerate() {
+            let sep = if i == 0 { " " } else { ", " };
+            let _ = write!(out, "{sep}{kind} x{count} [{paths}]");
+        }
+        out.push_str("; listener calls:");
+        if self.calls.is_empty() {
+            out.push_str(" none");
+        }
+        for (i, (method, count)) in self.calls.iter().enumerate() {
+            let sep = if i == 0 { " " } else { ", " };
+            let _ = write!(out, "{sep}{method} x{count}");
+        }
+        out.push_str("; hints:");
+        if self.hints.is_empty() {
+            out.push_str(" none");
+        }
+        for (i, (trigger, count)) in self.hints.iter().enumerate() {
+            let sep = if i == 0 { " " } else { ", " };
+            let _ = write!(out, "{sep}{trigger:?} x{count}");
+        }
+        let _ = write!(out, " -> relists {}", self.relists);
+        out
+    }
 }
 
 /// `SelectItem` flags that select (`SVSI_EDIT` selects and starts a rename).
@@ -280,6 +482,14 @@ impl Events {
     fn of(iid: &GUID) -> Option<Self> {
         [Self::Old, Self::New].into_iter().find(|e| e.iid() == *iid)
     }
+
+    /// `Advise` for these events, as the visit's log names it.
+    const fn advise_name(self) -> &'static str {
+        match self {
+            Self::Old => "Advise(DWebBrowserEvents)",
+            Self::New => "Advise(DWebBrowserEvents2)",
+        }
+    }
 }
 
 /// A subscribed listener.
@@ -298,6 +508,8 @@ struct State {
     hwnd: HWND,
     /// The visit's own message-only window
     messages: HWND,
+    /// The folder, as its path and its item id list.
+    dir: PathBuf,
     folder: Pidl,
     /// `file:///...`
     url: String,
@@ -311,15 +523,100 @@ struct State {
     changed: Box<dyn Fn()>,
     select: Box<dyn Fn(Vec<Arc<str>>)>,
     running: Arc<Running>,
+    relist: Cell<Relist>,
+    journal: RefCell<Journal>,
 }
 
 impl State {
-    /// Something hints the folder's items changed.
+    /// Something hints the folder's items changed: one wake-up lists it again for all the hints
+    /// that come before it.
     fn hint(&self, trigger: Trigger) {
-        if relists(trigger) {
-            log::debug!("folder visit: {trigger:?}, listing again");
+        if !relists(trigger) {
+            return;
+        }
+        self.journal.borrow_mut().note_hint(trigger);
+        let mut relist = self.relist.get();
+        let wake = relist.hint();
+        self.relist.set(relist);
+        if wake && !self.messages.0.is_null() {
+            // SAFETY: posts to this visit's own window.
+            let _ = unsafe { PostMessageW(Some(self.messages), WM_RELIST, WPARAM(0), LPARAM(0)) };
+        }
+    }
+
+    /// The navigation was announced: list the folder once more, the first time.
+    fn navigated(&self) {
+        let mut relist = self.relist.get();
+        let first = relist.navigated();
+        self.relist.set(relist);
+        if first {
+            self.hint(Trigger::Navigated);
+        }
+    }
+
+    /// The wake-up for pending hints arrived.
+    fn flush_relist(&self) {
+        let mut relist = self.relist.get();
+        let due = relist.flush();
+        self.relist.set(relist);
+        if due {
+            self.journal.borrow_mut().relists += 1;
             (self.changed)();
         }
+    }
+
+    /// A listener called `method`, for the log.
+    fn note_call(&self, method: &'static str) {
+        self.journal.borrow_mut().note_call(method);
+    }
+
+    /// A shell notification for the folder or an item in it: `event` about `first` (and `second`,
+    /// for a rename). Returns whether it hints the folder's items changed.
+    fn notification(
+        &self,
+        event: u32,
+        first: *const ITEMIDLIST,
+        second: *const ITEMIDLIST,
+    ) -> bool {
+        let target = (event & SHCNE_UPDATEITEM.0 != 0).then(|| self.target(first));
+        let kind = event_name(event, target);
+        // The paths are read outside the borrow, and only for the first of each kind.
+        let first_of_kind = self.journal.borrow().first_of(kind);
+        let paths = if first_of_kind {
+            [first, second]
+                .into_iter()
+                .filter_map(pidl_path)
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        } else {
+            String::new()
+        };
+        self.journal.borrow_mut().note_notification(kind, || paths);
+        relists_on_notification(event, target)
+    }
+
+    /// What the notification item `item` is, seen from the folder. The item id lists are
+    /// compared first (no path needed for the folder's own list or its children's).
+    fn target(&self, item: *const ITEMIDLIST) -> Target {
+        if item.is_null() {
+            return Target::Elsewhere;
+        }
+        let folder = self.folder.0.cast_const();
+        // SAFETY: both lists are valid for the calls.
+        let (same, child) = unsafe {
+            (
+                ILIsEqual(folder, item).as_bool(),
+                ILIsParent(folder, item, true).as_bool(),
+            )
+        };
+        if same {
+            return Target::Folder;
+        }
+        if child {
+            return Target::Inside;
+        }
+        pidl_path(item).map_or(Target::Elsewhere, |path| target_of(&path, &self.dir))
     }
 
     /// Wakes the loop to tell a new listener (not from inside its `Advise` call, which is waiting).
@@ -345,20 +642,33 @@ impl State {
 
 /// The file name of the child item `item` of the folder `folder`.
 fn child_name(folder: *const ITEMIDLIST, item: *const ITEMIDLIST) -> Option<Arc<str>> {
-    // SAFETY: both lists are valid for the call; the combined list and the name are freed here.
+    // SAFETY: both lists are valid for the call; the combined list is freed here.
+    let full = unsafe { ILCombine(Some(folder), Some(item)) };
+    if full.is_null() {
+        return None;
+    }
+    let path = pidl_path(full);
+    // SAFETY: allocated by ILCombine above.
+    unsafe { CoTaskMemFree(Some(full.cast_const().cast())) };
+    path?
+        .file_name()
+        .map(|n| Arc::from(n.to_string_lossy().as_ref()))
+}
+
+/// The file system path of the absolute item id list `pidl`; `None` for null or an item that
+/// isn't in the file system.
+fn pidl_path(pidl: *const ITEMIDLIST) -> Option<PathBuf> {
+    if pidl.is_null() {
+        return None;
+    }
+    // SAFETY: `pidl` is a valid absolute list for the call; the name is freed here. Naming an item
+    // opens nothing.
     unsafe {
-        let full = ILCombine(Some(folder), Some(item));
-        if full.is_null() {
-            return None;
-        }
-        let shell_item: windows::core::Result<IShellItem> = SHCreateItemFromIDList(full);
-        CoTaskMemFree(Some(full.cast_const().cast()));
-        let name = shell_item.ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let item: IShellItem = SHCreateItemFromIDList(pidl).ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let path = name.to_string().ok().map(PathBuf::from);
         CoTaskMemFree(Some(name.0.cast_const().cast()));
-        path?
-            .file_name()
-            .map(|n| Arc::from(n.to_string_lossy().as_ref()))
+        path
     }
 }
 
@@ -492,10 +802,12 @@ mod com {
             Err(E_NOTIMPL.into())
         }
         fn Refresh(&self) -> Res<()> {
+            self.state.note_call("Refresh");
             self.state.hint(Trigger::ListenerRefresh);
             Ok(())
         }
         fn Refresh2(&self, _: *const VARIANT) -> Res<()> {
+            self.state.note_call("Refresh2");
             self.state.hint(Trigger::ListenerRefresh);
             Ok(())
         }
@@ -512,6 +824,7 @@ mod com {
             self.Application()
         }
         fn Document(&self) -> Res<IDispatch> {
+            self.state.note_call("Document");
             self.view.cast()
         }
         fn TopLevelContainer(&self) -> Res<VARIANT_BOOL> {
@@ -545,9 +858,11 @@ mod com {
             Err(E_NOTIMPL.into())
         }
         fn LocationName(&self) -> Res<BSTR> {
+            self.state.note_call("LocationName");
             Ok(BSTR::from(self.state.name.as_str()))
         }
         fn LocationURL(&self) -> Res<BSTR> {
+            self.state.note_call("LocationURL");
             Ok(BSTR::from(self.state.url.as_str()))
         }
         fn Busy(&self) -> Res<VARIANT_BOOL> {
@@ -573,6 +888,7 @@ mod com {
             Ok(BSTR::from("Arke"))
         }
         fn HWND(&self) -> Res<SHANDLE_PTR> {
+            self.state.note_call("HWND");
             Ok(SHANDLE_PTR(self.state.hwnd.0 as isize))
         }
         fn FullName(&self) -> Res<BSTR> {
@@ -714,6 +1030,7 @@ mod com {
             }
             // SAFETY: ppv is a valid out pointer supplied by the caller.
             unsafe { *ppv = std::ptr::null_mut() };
+            self.state.note_call("QueryService");
             // Every service (SID_STopLevelBrowser, SID_SShellBrowser, ...) is this browser.
             let unknown: IUnknown = self.to_interface();
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
@@ -766,6 +1083,7 @@ mod com {
             Err(E_NOTIMPL.into())
         }
         fn QueryActiveShellView(&self) -> Res<IShellView> {
+            self.state.note_call("QueryActiveShellView");
             Ok(self.view.clone())
         }
         fn OnViewWindowActive(&self, _: Ref<IShellView>) -> Res<()> {
@@ -828,11 +1146,12 @@ mod com {
                 dispatch: sink,
                 told: false,
             });
-            log::info!("folder visit: a listener subscribed to {:?}", self.events);
+            self.state.note_call(self.events.advise_name());
             self.state.listener_added();
             Ok(cookie)
         }
         fn Unadvise(&self, cookie: u32) -> Res<()> {
+            self.state.note_call("Unadvise");
             let mut sinks = self.state.sinks.borrow_mut();
             let before = sinks.len();
             sinks.retain(|s| s.cookie != cookie);
@@ -894,6 +1213,7 @@ mod com {
             }
             // SAFETY: ppv is a valid out pointer supplied by the caller.
             unsafe { *ppv = std::ptr::null_mut() };
+            self.state.note_call("View.QueryService");
             // Every service (SID_SFolderView, ...) is this view.
             let unknown: IUnknown = self.to_interface();
             // SAFETY: riid and ppv are valid; QueryInterface fills ppv on success.
@@ -924,6 +1244,7 @@ mod com {
             Ok(())
         }
         fn Refresh(&self) -> Res<()> {
+            self.state.note_call("View.Refresh");
             self.state.hint(Trigger::ListenerRefresh);
             Ok(())
         }
@@ -954,6 +1275,7 @@ mod com {
             Ok(())
         }
         fn SelectItem(&self, item: *const ITEMIDLIST, flags: u32) -> Res<()> {
+            self.state.note_call("SelectItem");
             self.state.select_item(item, flags);
             Ok(())
         }
@@ -982,6 +1304,7 @@ mod com {
             }
             // SAFETY: ppv is a valid out pointer supplied by the caller.
             unsafe { *ppv = std::ptr::null_mut() };
+            self.state.note_call("GetFolder");
             let pidl = self.state.folder.0.cast_const();
             // SAFETY: riid was checked above; the folder's item id list is valid. Binding names
             // the folder only, nothing in it is opened.
@@ -1040,6 +1363,7 @@ mod com {
             if items.is_null() {
                 return Err(E_POINTER.into());
             }
+            self.state.note_call("SelectAndPositionItems");
             for index in 0..count as usize {
                 // SAFETY: the caller passes `count` item id list pointers.
                 let item = unsafe { *items.add(index) };
@@ -1066,6 +1390,7 @@ mod com {
             Err(E_NOTIMPL.into())
         }
         fn GetIDList(&self) -> Res<*mut ITEMIDLIST> {
+            self.state.note_call("GetIDList");
             // SAFETY: duplicates a valid list with the COM allocator; the caller frees it.
             let copy = unsafe { ILCombine(Some(self.state.folder.0.cast_const()), None) };
             if copy.is_null() {
@@ -1181,6 +1506,8 @@ fn tell_listeners(state: &State, browser: &IDispatch) {
     }
     if !due.is_empty() {
         state.running.set_calling(false);
+        // Their event calls are back: what they filled inside them is there now.
+        state.hint(Trigger::Told);
     }
 }
 
@@ -1235,22 +1562,43 @@ unsafe extern "system" fn visit_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM)
         }
         (WM_SHELL_CHANGE, Some(current)) => {
             let mut event = 0_i32;
+            let mut items: *mut *mut ITEMIDLIST = std::ptr::null_mut();
             // SAFETY: `w` and `l` are the notification's lock handle and process id, as
-            // SHCNRF_NewDelivery hands them; the lock is released right away.
-            unsafe {
+            // SHCNRF_NewDelivery hands them. The two item id lists it locks are only read until
+            // the lock is released, right after.
+            let hints = unsafe {
                 let lock = SHChangeNotification_Lock(
                     HANDLE(w.0 as *mut c_void),
                     l.0 as u32,
-                    None,
+                    Some(&raw mut items),
                     Some(&raw mut event),
                 );
-                if !lock.is_invalid() {
+                if lock.is_invalid() {
+                    false
+                } else {
+                    let (first, second) = if items.is_null() {
+                        (std::ptr::null(), std::ptr::null())
+                    } else {
+                        (items.read().cast_const(), items.add(1).read().cast_const())
+                    };
+                    let hints = current
+                        .state
+                        .notification(event.cast_unsigned(), first, second);
                     let _ = SHChangeNotification_Unlock(lock);
+                    hints
                 }
-            }
-            if notifies_items(event.cast_unsigned()) {
+            };
+            if hints {
                 current.state.hint(Trigger::ShellNotify);
             }
+            LRESULT(0)
+        }
+        (WM_NAVIGATED, Some(current)) => {
+            current.state.navigated();
+            LRESULT(0)
+        }
+        (WM_RELIST, Some(current)) => {
+            current.state.flush_relist();
             LRESULT(0)
         }
         // SAFETY: forwards to the default procedure with the same arguments.
@@ -1349,6 +1697,7 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
     let state = Rc::new(State {
         hwnd,
         messages,
+        dir: dir.clone(),
         folder,
         url: file_url(&name),
         name: dir
@@ -1363,8 +1712,17 @@ fn announce(hwnd: HWND, visit: FolderVisit, running: &Arc<Running>) -> windows::
         changed,
         select,
         running: Arc::clone(running),
+        relist: Cell::default(),
+        journal: RefCell::default(),
     });
     let result = register_and_wait(&state, pidl, &dir);
+    if result.is_ok() {
+        log::info!(
+            "folder visit for {} ended: {}",
+            dir.display(),
+            state.journal.borrow().summary()
+        );
+    }
     CURRENT.with(|c| *c.borrow_mut() = None);
     state.sinks.borrow_mut().clear();
     // SAFETY: our own window, on this thread.
@@ -1394,6 +1752,41 @@ fn register_and_wait(
             browser: dispatch.clone(),
         });
     });
+    // Shell-level notifications for the folder and its items (what SHChangeNotify sends), before
+    // the window is in the list: a client may fill the folder and say so as soon as it hears.
+    let entry = SHChangeNotifyEntry {
+        pidl: pidl.cast_mut(),
+        fRecursive: false.into(),
+    };
+    // SAFETY: our own window gets WM_SHELL_CHANGE; `entry` is read during the call.
+    let notify = unsafe {
+        SHChangeNotifyRegister(
+            state.messages,
+            SHCNRF_ShellLevel | SHCNRF_NewDelivery,
+            WATCHED_EVENTS.cast_signed(),
+            WM_SHELL_CHANGE,
+            1,
+            &raw const entry,
+        )
+    };
+    if notify == 0 {
+        log::debug!("folder visit: no shell notifications for {}", dir.display());
+    }
+    let result = navigate_and_wait(state, pidl, &dispatch);
+    if notify != 0 {
+        // SAFETY: undoes the registration made above.
+        let _ = unsafe { SHChangeNotifyDeregister(notify) };
+    }
+    result
+}
+
+/// Puts the window in the shell's window list for the folder, runs the loop until WM_QUIT and
+/// takes it out again.
+fn navigate_and_wait(
+    state: &State,
+    pidl: *const ITEMIDLIST,
+    dispatch: &IDispatch,
+) -> windows::core::Result<()> {
     // SAFETY: standard COM activation of the shell's window list.
     let windows: IShellWindows =
         unsafe { CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER) }?;
@@ -1403,7 +1796,7 @@ fn register_and_wait(
     // SAFETY: valid interface and variant for the calls.
     let registered = unsafe {
         windows
-            .Register(&dispatch, state.hwnd.0 as i32, SWC_BROWSER)
+            .Register(dispatch, state.hwnd.0 as i32, SWC_BROWSER)
             .and_then(|cookie| {
                 windows
                     .OnNavigate(cookie, &raw const location)
@@ -1416,23 +1809,11 @@ fn register_and_wait(
     // SAFETY: the variant was made by InitVariantFromBuffer above.
     let _ = unsafe { VariantClear(&raw mut location) };
     let cookie = registered?;
-    // Shell-level notifications for the folder and its items (what SHChangeNotify sends).
-    let entry = SHChangeNotifyEntry {
-        pidl: pidl.cast_mut(),
-        fRecursive: false.into(),
-    };
-    // SAFETY: our own window gets WM_SHELL_CHANGE; `entry` is read during the call.
-    let notify = unsafe {
-        SHChangeNotifyRegister(
-            state.messages,
-            SHCNRF_ShellLevel | SHCNRF_NewDelivery,
-            NOTIFY_EVENTS.cast_signed(),
-            WM_SHELL_CHANGE,
-            1,
-            &raw const entry,
-        )
-    };
-    log::debug!("folder visit registered for {}", dir.display());
+    // Queued behind the WM_TELL of the listeners that subscribed meanwhile, so they are told
+    // first: then the folder is listed once more.
+    // SAFETY: posts to this visit's own window.
+    let _ = unsafe { PostMessageW(Some(state.messages), WM_NAVIGATED, WPARAM(0), LPARAM(0)) };
+    log::debug!("folder visit registered for {}", state.dir.display());
     let mut msg = MSG::default();
     // SAFETY: msg is a valid out pointer; blocks until a message arrives. 0 is WM_QUIT: the pane
     // left the folder, closed, or Arke is quitting.
@@ -1443,14 +1824,8 @@ fn register_and_wait(
             DispatchMessageW(&raw const msg);
         }
     }
-    // SAFETY: undoes the registrations made above.
-    unsafe {
-        if notify != 0 {
-            let _ = SHChangeNotifyDeregister(notify);
-        }
-        let _ = windows.Revoke(cookie);
-    }
-    log::debug!("folder visit for {} ended", dir.display());
+    // SAFETY: undoes the registration made above.
+    let _ = unsafe { windows.Revoke(cookie) };
     Ok(())
 }
 
@@ -1541,8 +1916,8 @@ mod tests {
         const SID_SFOLDERVIEW: GUID = GUID::from_u128(0xcde7_25b0_ccc9_4519_917e_325d_72fa_b4ce);
         // SAFETY: this test thread's apartment.
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        let dir = std::env::temp_dir().join(format!("arke-visit-doc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         let parse = |path: &Path| {
             let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -1557,6 +1932,7 @@ mod tests {
         let state = Rc::new(State {
             hwnd: HWND::default(),
             messages: HWND::default(),
+            dir: dir.clone(),
             folder: parse(&dir),
             url: String::new(),
             name: String::new(),
@@ -1567,6 +1943,8 @@ mod tests {
             changed: Box::new(|| {}),
             select: Box::new(move |names| *into.borrow_mut() = names),
             running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
         });
         let view: IShellView = com::View {
             state: Rc::clone(&state),
@@ -1586,7 +1964,6 @@ mod tests {
             .unwrap();
         }
         assert_eq!(*picked.borrow(), [Arc::<str>::from("a.txt")]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Ending a visit before its thread got going still ends it: the thread sees the request.
@@ -1597,5 +1974,282 @@ mod tests {
         assert!(running.quit.load(Ordering::SeqCst));
         running.finish();
         running.wait();
+    }
+
+    /// `SHCNE_UPDATEITEM` relists only for the folder itself (also a sync root's top folder and a
+    /// drive root, however the path is written), never for an item in it or elsewhere.
+    #[test]
+    fn only_the_folders_own_update_relists() {
+        let update = SHCNE_UPDATEITEM.0;
+        let root = Path::new(r"C:\Users\me\WPS Cloud");
+        for (item, folder, target) in [
+            (r"C:\Users\me\WPS Cloud", root, Target::Folder),
+            (r"c:\users\ME\wps cloud\", root, Target::Folder),
+            (r"\\?\C:\Users\me\WPS Cloud", root, Target::Folder),
+            (r"C:\Users\me\WPS Cloud\a.docx", root, Target::Inside),
+            (r"C:\Users\me\WPS Cloud\Team", root, Target::Inside),
+            (
+                r"C:\Users\me\WPS Cloud\Team\b.docx",
+                root,
+                Target::Elsewhere,
+            ),
+            (r"C:\Users\me", root, Target::Elsewhere),
+            (r"C:\Users\me\WPS Cloud 2", root, Target::Elsewhere),
+            (r"C:\", Path::new(r"C:\"), Target::Folder),
+            (r"C:\a.txt", Path::new(r"C:\"), Target::Inside),
+        ] {
+            assert_eq!(target_of(Path::new(item), folder), target, "{item}");
+        }
+        assert!(relists_on_notification(update, Some(Target::Folder)));
+        assert!(!relists_on_notification(update, Some(Target::Inside)));
+        assert!(!relists_on_notification(update, Some(Target::Elsewhere)));
+        assert!(!relists_on_notification(update, None));
+        assert!(relists_on_notification(SHCNE_CREATE.0, None));
+        assert!(relists_on_notification(SHCNE_UPDATEDIR.0, None));
+        let attributes = windows::Win32::UI::Shell::SHCNE_ATTRIBUTES.0;
+        assert!(!relists_on_notification(attributes, None));
+        assert_eq!(WATCHED_EVENTS & update, update, "registered for");
+    }
+
+    /// The navigation makes exactly one relist per visit, and hints that come together (a burst
+    /// of notifications, the navigation) make one.
+    #[test]
+    fn one_relist_after_the_navigation_and_one_per_burst() {
+        let mut relist = Relist::default();
+        assert!(relist.navigated());
+        assert!(relist.hint(), "wakes the loop");
+        assert!(relist.flush(), "lists again");
+        assert!(!relist.flush(), "once");
+        assert!(!relist.navigated(), "only the first navigation of a visit");
+
+        assert!(relist.hint());
+        assert!(!relist.hint(), "already queued");
+        assert!(!relist.hint());
+        assert!(relist.flush());
+        assert!(!relist.flush(), "one relist for the burst");
+        assert!(relists(Trigger::Navigated));
+    }
+
+    /// The visit's state relists once after the navigation, however often it is told, and once
+    /// for hints that come before the wake-up; the log counts them.
+    #[test]
+    fn the_visit_relists_once_after_the_navigation() {
+        let count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&count);
+        let state = State {
+            hwnd: HWND::default(),
+            messages: HWND::default(),
+            dir: PathBuf::from(r"C:\cloud"),
+            folder: Pidl(std::ptr::null_mut()),
+            url: String::new(),
+            name: String::new(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(move || counted.set(counted.get() + 1)),
+            select: Box::new(|_| {}),
+            running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
+        };
+        state.navigated();
+        state.navigated();
+        state.hint(Trigger::ShellNotify);
+        state.flush_relist();
+        state.flush_relist();
+        assert_eq!(count.get(), 1);
+        state.hint(Trigger::ListenerRefresh);
+        state.flush_relist();
+        assert_eq!(count.get(), 2);
+        let summary = state.journal.borrow().summary();
+        assert!(summary.contains("Navigated x1"), "{summary}");
+        assert!(summary.contains("ShellNotify x1"), "{summary}");
+        assert!(summary.ends_with("-> relists 2"), "{summary}");
+    }
+
+    /// A listener told after the navigation's relist (it subscribed later) makes one more; told
+    /// together with a shell notification, one for both. Telling nobody hints nothing.
+    #[test]
+    fn a_listener_told_later_relists_again() {
+        let count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&count);
+        let state = State {
+            hwnd: HWND::default(),
+            messages: HWND::default(),
+            dir: PathBuf::from(r"C:\cloud"),
+            folder: Pidl(std::ptr::null_mut()),
+            url: String::new(),
+            name: String::new(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(move || counted.set(counted.get() + 1)),
+            select: Box::new(|_| {}),
+            running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
+        };
+        state.navigated();
+        state.flush_relist();
+        assert_eq!(count.get(), 1);
+        state.hint(Trigger::Told);
+        state.flush_relist();
+        assert_eq!(count.get(), 2, "Navigated, then a later Told: two relists");
+
+        state.hint(Trigger::Told);
+        state.hint(Trigger::ShellNotify);
+        state.flush_relist();
+        state.flush_relist();
+        assert_eq!(count.get(), 3, "Told and ShellNotify together: one relist");
+
+        // SAFETY: this test thread's apartment, for the browser object below.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let state = Rc::new(state);
+        let view: IShellView = com::View {
+            state: Rc::clone(&state),
+        }
+        .into();
+        let browser: IDispatch = view.cast().unwrap();
+        tell_listeners(&state, &browser);
+        state.flush_relist();
+        assert_eq!(count.get(), 3, "no listener to tell");
+        let summary = state.journal.borrow().summary();
+        assert!(summary.contains("Told x2"), "{summary}");
+        assert!(summary.ends_with("-> relists 3"), "{summary}");
+    }
+
+    /// The log block: notifications by kind with the first one's paths, calls by method.
+    #[test]
+    fn the_visit_log_is_one_compact_line() {
+        let mut journal = Journal::default();
+        assert_eq!(
+            journal.summary(),
+            "notifications: none; listener calls: none; hints: none -> relists 0"
+        );
+        journal.note_notification("UPDATEITEM(folder)", || r"C:\cloud".into());
+        for _ in 0..40 {
+            let paths = || r"C:\cloud\a.docx".to_string();
+            journal.note_notification("UPDATEITEM(item)", paths);
+        }
+        assert!(!journal.first_of("UPDATEITEM(item)"));
+        journal.note_call("Advise(DWebBrowserEvents)");
+        journal.note_call("LocationURL");
+        journal.note_call("LocationURL");
+        journal.note_hint(Trigger::Navigated);
+        journal.relists = 1;
+        assert_eq!(
+            journal.summary(),
+            r"notifications: UPDATEITEM(folder) x1 [C:\cloud], UPDATEITEM(item) x40 [C:\cloud\a.docx]; listener calls: Advise(DWebBrowserEvents) x1, LocationURL x2; hints: Navigated x1 -> relists 1"
+        );
+        assert_eq!(
+            event_name(SHCNE_UPDATEITEM.0, Some(Target::Folder)),
+            "UPDATEITEM(folder)"
+        );
+        assert_eq!(event_name(SHCNE_CREATE.0, None), "CREATE");
+        assert_eq!(event_name(0, None), "other");
+    }
+
+    /// Live: a real `SHCNE_UPDATEITEM` for the folder itself hints, one for an item in it doesn't.
+    /// Goes through the shell's change notifications (explorer.exe delivers them).
+    #[test]
+    #[ignore = "uses the shell's change notifications, delivered by explorer.exe"]
+    fn a_real_update_of_the_folder_itself_hints() {
+        use std::time::{Duration, Instant};
+        use windows::Win32::UI::Shell::{
+            SHCNF_FLAGS, SHCNF_FLUSHNOWAIT, SHCNF_PATHW, SHChangeNotify,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::PM_REMOVE;
+        // SAFETY: this test thread's apartment.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let name: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: NUL-terminated name; raw receives an allocated list.
+        unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &raw mut raw, 0, None) }.unwrap();
+        let count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&count);
+        let state = Rc::new(State {
+            hwnd: HWND::default(),
+            messages: message_window().unwrap(),
+            dir: dir.clone(),
+            folder: Pidl(raw),
+            url: String::new(),
+            name: String::new(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(move || counted.set(counted.get() + 1)),
+            select: Box::new(|_| {}),
+            running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
+        });
+        CURRENT.with(|c| {
+            *c.borrow_mut() = Some(Current {
+                state: Rc::clone(&state),
+                browser: com::View {
+                    state: Rc::clone(&state),
+                }
+                .into(),
+            });
+        });
+        let entry = SHChangeNotifyEntry {
+            pidl: state.folder.0,
+            fRecursive: false.into(),
+        };
+        // SAFETY: our own window; `entry` is read during the call.
+        let notify = unsafe {
+            SHChangeNotifyRegister(
+                state.messages,
+                SHCNRF_ShellLevel | SHCNRF_NewDelivery,
+                WATCHED_EVENTS.cast_signed(),
+                WM_SHELL_CHANGE,
+                1,
+                &raw const entry,
+            )
+        };
+        assert_ne!(notify, 0);
+        let send = |path: &Path| {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let flags = SHCNF_FLAGS(SHCNF_PATHW.0 | SHCNF_FLUSHNOWAIT.0);
+            // SAFETY: a NUL-terminated path for the call.
+            unsafe {
+                SHChangeNotify(SHCNE_UPDATEITEM, flags, Some(wide.as_ptr().cast()), None);
+            }
+        };
+        // Pumps this thread's messages until `kind` was seen (and everything queued after it).
+        let pump_until = |kind: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut msg = MSG::default();
+                // SAFETY: msg is a valid out pointer; this thread's own messages.
+                while unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    // SAFETY: msg came from PeekMessageW.
+                    unsafe { DispatchMessageW(&raw const msg) };
+                }
+                if !state.journal.borrow().first_of(kind) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "no {kind} notification came");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        send(&dir.join("a.txt"));
+        pump_until("UPDATEITEM(item)");
+        assert_eq!(count.get(), 0, "an item's update doesn't relist");
+        send(&dir);
+        pump_until("UPDATEITEM(folder)");
+        assert_eq!(count.get(), 1, "the folder's own update relists once");
+        // SAFETY: undoes the registration and the window made above.
+        unsafe {
+            let _ = SHChangeNotifyDeregister(notify);
+            let _ = DestroyWindow(state.messages);
+        }
+        CURRENT.with(|c| *c.borrow_mut() = None);
     }
 }

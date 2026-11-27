@@ -34,6 +34,9 @@ struct Session(u32);
 
 impl Session {
     fn start() -> Result<Self, windows::core::Error> {
+        if !crate::win_dll::system_dll("rstrtmgr.dll") {
+            return Err(windows::Win32::Foundation::ERROR_MOD_NOT_FOUND.into());
+        }
         let mut handle = 0u32;
         let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
         // SAFETY: handle and key are valid out buffers; key has room for the session key and NUL.
@@ -104,6 +107,11 @@ impl Drop for Session {
 /// Programs that have `path` (a file, or a folder and what is inside it) open. Empty when nothing
 /// is found or the lookup itself fails: the caller then says "open in another program".
 pub(crate) fn holders(path: &Path) -> Vec<Holder> {
+    // Without rstrtmgr.dll (a stripped Windows) nothing can be named, and a delayed load of it
+    // would end the process.
+    if !crate::win_dll::system_dll("rstrtmgr.dll") {
+        return Vec::new();
+    }
     match lookup(path) {
         Ok(found) => found,
         Err(err) => {
@@ -382,23 +390,26 @@ mod tests {
     use super::*;
     use std::process::{Command, Stdio};
 
-    struct Sandbox(PathBuf);
+    /// Without `rstrtmgr.dll` nobody is named, whatever the path.
+    #[test]
+    fn a_missing_restart_manager_names_no_one() {
+        crate::win_dll::assert_not_loaded(&["rstrtmgr.dll"], "before the test");
+        let _missing = crate::win_dll::pretend_missing(&["rstrtmgr.dll"]);
+        assert!(holders(&crate::win::long_temp_dir()).is_empty());
+        assert!(Session::start().is_err());
+        crate::win_dll::assert_not_loaded(&["rstrtmgr.dll"], "after the gated calls");
+    }
+
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-inuse-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            if self.0.starts_with(crate::win::long_temp_dir()) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
+            let guard = crate::win::long_tempdir(&format!("arke-inuse-{tag}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 

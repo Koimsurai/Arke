@@ -16,6 +16,7 @@
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use arke_core::{Entry, Gen, SearchColumn};
@@ -29,6 +30,7 @@ use super::{AppEvent, Explorer, ViewMode, layout, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::prefs::Col;
+use crate::press_guard::is_double_click;
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
 
@@ -153,13 +155,6 @@ impl Explorer {
         handle.0.borrow().base_handle.clone()
     }
 
-    /// The header's sideways scroll at this render and the list it follows, so painting can tell
-    /// when the list clamped its scroll (the pane grew, a column narrowed) and draw once more to
-    /// line the header up again. `None` while no header is drawn.
-    pub(super) fn header_follow(&self) -> Option<(Pixels, gpui::ScrollHandle)> {
-        self.header_x.get().map(|x| (x, self.header_list()))
-    }
-
     // ───────────────────────── Header ─────────────────────────
 
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -171,19 +166,22 @@ impl Explorer {
                 let _ = this.update(cx, Self::save_column_widths);
             });
         }
-        let scroll_x = self.header_list().offset().x.min(px(0.));
-        self.header_x.set(Some(scroll_x));
-        // The columns, laid out like the rows below (same padding and gaps) and moved with the
-        // list when it scrolls sideways. What's right of them is blank, like the list.
+        // The columns, laid out like the rows below (same padding and gaps). What's right of them
+        // is blank, like the list.
         let row = div()
             .flex()
             .flex_none()
             .h_full()
             .items_center()
-            .ml(scroll_x)
             .pl(layout::row_pad_l())
             .pr(layout::row_pad_r())
-            .gap(layout::col_gap());
+            .gap(layout::col_gap())
+            // Thin line between header and list to give the columns structure. It belongs to the
+            // row, so it scrolls with the columns like the rows' own washes do; the minimum width
+            // keeps it running to the pane's right edge while everything fits.
+            .border_b_1()
+            .border_color(theme::line())
+            .min_w(self.pane_width);
         let row = if self.search_mode {
             // Search results start in relevance order; a click on a header sorts them.
             row.child(
@@ -231,19 +229,27 @@ impl Explorer {
                 .collect();
             row.child(self.name_header(name, cx)).children(cells)
         };
-        div()
+        let header = div()
             .id("details-header")
+            .debug_selector(|| "details-header-box".to_owned())
             .flex()
             .flex_none()
             .h(theme::h_header())
-            .mx(theme::s_8())
+            // Clipped where the rows are, at the list's left edge and 8 px short of its right one,
+            // so the columns slide into the inset together with the rows; they start at the
+            // inset when not scrolled.
+            .pl(theme::list_inset())
+            .mr(theme::s_8())
             .overflow_hidden()
-            // Thin line between header and list to give the columns structure.
-            .border_b_1()
-            .border_color(theme::line())
             .text_size(theme::fs_12())
             .text_color(theme::text_muted())
-            .child(row)
+            // Moved with the list when it scrolls sideways (see `SideScroll`).
+            .child(SideScroll {
+                child: row.into_any_element(),
+                handle: self.header_list(),
+                seen: Rc::clone(&self.header_x),
+                content: None,
+            })
             // Right-click anywhere on the header, the blank part too: which columns to show.
             .when(!self.search_mode, |d| {
                 d.on_mouse_down(
@@ -255,7 +261,17 @@ impl Explorer {
                     }),
                 )
             })
-            .into_any_element()
+            .into_any_element();
+        // The offset is clamped before anything reads it (see `SideScroll`).
+        SideScroll {
+            child: header,
+            handle: self.header_list(),
+            seen: Rc::default(),
+            content: self
+                .cols
+                .map(|c| c.row + theme::list_inset() + layout::list_gutter()),
+        }
+        .into_any_element()
     }
 
     /// The Name column's header: the select-all checkbox, room for the icon (and the tree's
@@ -729,7 +745,7 @@ impl Explorer {
     #[cfg(test)]
     pub(crate) fn header_columns_for_test(&self) -> Vec<(Col, Pixels, Pixels)> {
         let mut left = self.list_bounds.get().left()
-            + theme::s_8()
+            + theme::list_inset()
             + layout::row_pad_l()
             + self.header_x.get().unwrap_or_default();
         std::iter::once(Col::Name)
@@ -776,6 +792,7 @@ fn drop_side(moved: Col, target: Col) -> Option<bool> {
 /// Small muted text in a fixed-width column.
 fn text_cell(col: Col, text: impl Into<SharedString>) -> AnyElement {
     div()
+        .debug_selector(move || format!("cell-{}", col.key()))
         .w(crate::prefs::width(col))
         .flex_none()
         .truncate()
@@ -873,7 +890,7 @@ fn column_resize_handle(col: Col, cx: &mut Context<Explorer>) -> impl IntoElemen
             cx.new(|_| ColumnDragView)
         })
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if e.click_count() >= 2 {
+            if is_double_click(e.click_count()) {
                 this.autofit_column(col, window, cx);
             }
         }))
@@ -907,4 +924,92 @@ pub(crate) fn with_link_badge(visual: AnyElement, icon: Pixels) -> AnyElement {
                 .child(layer(Icon::LinkBadgeArrow, theme::signal())),
         )
         .into_any_element()
+}
+
+/// Sideways scrolling of the Details header, in two parts that share the list's `ScrollHandle`.
+///
+/// With `content` set it wraps the whole header and, before anything is laid out under it,
+/// clamps the handle's offset to the range the list will have this frame: `content` (the row plus
+/// the inset before it and the blank strip after it) less the header's own width, which is the
+/// list's width less its right padding. Without `content` it wraps the row and moves it by the handle's
+/// offset, which is therefore already the one the list will use: header and rows can never differ,
+/// whatever a wheel overshot or however the columns and the pane just changed, and the element
+/// tree keeps its order (the header stays before the rows for screen readers and focus).
+struct SideScroll {
+    child: AnyElement,
+    handle: gpui::ScrollHandle,
+    /// Receives the offset the row was drawn at (tests read it).
+    seen: Rc<std::cell::Cell<Option<Pixels>>>,
+    content: Option<Pixels>,
+}
+
+impl IntoElement for SideScroll {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl gpui::Element for SideScroll {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<Pixels>,
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        if let Some(content) = self.content {
+            // Rounded like GPUI rounds a scroll range, so both clamp to the same value.
+            let range = ((content - bounds.size.width).max(px(0.)) * 100.).round() / 100.;
+            let at = self.handle.offset();
+            if at.x < -range || at.x > px(0.) {
+                self.handle
+                    .set_offset(gpui::point(at.x.clamp(-range, px(0.)), at.y));
+            }
+            self.child.prepaint(window, cx);
+            return;
+        }
+        let x = self.handle.offset().x.min(px(0.));
+        self.seen.set(Some(x));
+        window.with_element_offset(gpui::point(x, px(0.)), |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        (): &mut (),
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.paint(window, cx);
+    }
 }

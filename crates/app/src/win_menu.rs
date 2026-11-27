@@ -44,10 +44,10 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
-    GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3, ILClone, ILFindLastID, ILFree,
-    ILRemoveLastID, IShellExtInit, IShellFolder, SHBindToParent, SHGetDesktopFolder,
-    SHParseDisplayName,
+    CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
+    CMINVOKECOMMANDINFOEX, GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3, ILClone,
+    ILFindLastID, ILFree, ILRemoveLastID, IShellExtInit, IShellFolder, SHBindToParent,
+    SHGetDesktopFolder, SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -710,17 +710,7 @@ fn build(
         set_background_site(&menu, &paths[0]);
         menu
     } else {
-        // Arke's selection is always within one folder, so bind to the first item's parent.
-        // SAFETY: pidls.0[0] is a valid absolute PIDL.
-        let folder: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }?;
-        // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
-        let children: Vec<*const ITEMIDLIST> = pidls
-            .0
-            .iter()
-            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
-            .collect();
-        // SAFETY: the PIDLs in children are valid for the call.
-        unsafe { folder.GetUIObjectOf(owner, &children, None) }?
+        items_object(paths, &pidls.0, owner)?
     };
     fill(
         menu,
@@ -729,6 +719,39 @@ fn build(
         menu_directory(paths, background),
         extended,
     )
+}
+
+/// The items' own UI object (their `IContextMenu` or `IDataObject`). Items of one folder are
+/// asked of that folder by their IDs in it, as File Explorer asks. Items from different folders
+/// (search results, #413) have no one folder to ask: they are asked of the desktop by their full
+/// IDs, where each absolute ID is an item of its own. That is the shape Arke's drags give such
+/// items too (`win_fileops::drag_data_object`). The one menu then has the commands for all of
+/// them, third-party ones included, as File Explorer's search results do. `pidls` are the
+/// absolute IDs of `paths`.
+fn items_object<T: Interface>(
+    paths: &[PathBuf],
+    pidls: &[*mut ITEMIDLIST],
+    owner: HWND,
+) -> windows::core::Result<T> {
+    let one_folder = paths
+        .windows(2)
+        .all(|pair| pair[0].parent() == pair[1].parent());
+    if one_folder && let Some(&first) = pidls.first() {
+        // SAFETY: first is a valid absolute PIDL.
+        let folder: IShellFolder = unsafe { SHBindToParent(first, None) }?;
+        let children: Vec<*const ITEMIDLIST> = pidls
+            .iter()
+            // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
+            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
+            .collect();
+        // SAFETY: the PIDLs in children are valid for the call.
+        return unsafe { folder.GetUIObjectOf(owner, &children, None) };
+    }
+    // SAFETY: plain COM call on this STA thread.
+    let desktop: IShellFolder = unsafe { SHGetDesktopFolder() }?;
+    let full: Vec<*const ITEMIDLIST> = pidls.iter().map(|&p| p.cast_const()).collect();
+    // SAFETY: the absolute PIDLs are valid for the call; the desktop takes them as its items.
+    unsafe { desktop.GetUIObjectOf(owner, &full, None) }
 }
 
 /// The folder a menu for `paths` is for: the folder itself for its background, else the items'
@@ -775,6 +798,18 @@ fn fill_single(
     Ok(result)
 }
 
+/// The `uFlags` of `QueryContextMenu`: what File Explorer passes always includes `CMF_EXPLORE`.
+/// A bare `CMF_NORMAL` (0) is what shell code passes for a double-click or a probe, and some
+/// extensions return at once on it, adding nothing (#439). `extended`: Shift was held.
+const fn query_flags(extended: bool) -> u32 {
+    let flags = CMF_NORMAL | CMF_EXPLORE;
+    if extended {
+        flags | CMF_EXTENDEDVERBS
+    } else {
+        flags
+    }
+}
+
 /// Reads `menu` into a [`Session`] that becomes this thread's current menu. `extended`: Shift
 /// was held, so commands registered to show only then are included, as in File Explorer (#272).
 fn fill(
@@ -795,11 +830,7 @@ fn fill(
         directory,
         lazy: Vec::new(),
     };
-    let flags = if extended {
-        CMF_NORMAL | CMF_EXTENDEDVERBS
-    } else {
-        CMF_NORMAL
-    };
+    let flags = query_flags(extended);
     // SAFETY: hmenu is valid; command IDs range over 1..=0x7FFF.
     let hr = unsafe { session.menu.QueryContextMenu(hmenu, 0, 1, 0x7FFF, flags) };
     if hr.is_err() {
@@ -853,17 +884,10 @@ fn build_handler(
     let data: Option<IDataObject> = if background {
         None
     } else {
-        // SAFETY: folder_pidl is our own copy; drop the last ID to get the parent.
+        // SAFETY: folder_pidl is our own copy; drop the last ID to get the parent (the first
+        // item's, for items from several folders).
         let _ = unsafe { ILRemoveLastID(Some(folder_pidl)) };
-        // SAFETY: pidls.0[0] is a valid absolute PIDL.
-        let folder: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }?;
-        let children: Vec<*const ITEMIDLIST> = pidls.0[..paths.len()]
-            .iter()
-            // SAFETY: ILFindLastID points into the same allocation, valid until pidls is freed.
-            .map(|&p| unsafe { ILFindLastID(p) }.cast_const())
-            .collect();
-        // SAFETY: the PIDLs in children are valid for the call.
-        Some(unsafe { folder.GetUIObjectOf(owner, &children, None) }?)
+        Some(items_object(paths, &pidls.0[..paths.len()], owner)?)
     };
     let clsid_text = wide(std::ffi::OsStr::new(&handler.clsid));
     // SAFETY: NUL-terminated.
@@ -1036,7 +1060,7 @@ impl<'a> Reader<'a> {
         // SAFETY: text has room for cch u16s including the NUL.
         unsafe { GetMenuItemInfoW(hmenu, pos, true, &raw mut info) }.ok()?;
         let len = text.iter().position(|&c| c == 0).unwrap_or(text.len());
-        let label = clean_label(&String::from_utf16_lossy(&text[..len]));
+        let (label, access) = read_label(&String::from_utf16_lossy(&text[..len]));
         // Owner-draw items without text can't be read; skip them.
         if label.is_empty() {
             return None;
@@ -1085,6 +1109,7 @@ impl<'a> Reader<'a> {
             }
             return Some(ShellMenuEntry::Submenu {
                 label,
+                access,
                 enabled,
                 icon,
                 children,
@@ -1095,6 +1120,7 @@ impl<'a> Reader<'a> {
             id: info.wID,
             verb: item_verb(menu, info.wID),
             label,
+            access,
             enabled,
             checked: info.fState.0 & MFS_CHECKED.0 != 0,
             default: info.fState.0 & MFS_DEFAULT.0 != 0,
@@ -1224,35 +1250,114 @@ fn item_icon(bitmap: HBITMAP) -> Option<arke_core::thumbs::Thumbnail> {
     crate::win_icons::bitmap_pixels(bitmap)
 }
 
-/// Menu text without access-key markers (`&O`, `(&O)`) or the shortcut text after a tab.
-pub(crate) fn clean_label(raw: &str) -> String {
+/// The access key of a menu label (`&O` in Windows' text): the letter that picks the item while
+/// the menu is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Access {
+    /// The key as written; compared without regard to case.
+    pub(crate) key: char,
+    /// Where it sits in the clean label (byte offset). `None` for the CJK form, `Open(&O)`,
+    /// where the label is kept without the key and it is shown after the text, as `(O)`.
+    pub(crate) at: Option<usize>,
+}
+
+impl Access {
+    /// Whether typing `typed` picks this key.
+    pub(crate) fn matches(self, typed: char) -> bool {
+        self.key.to_lowercase().eq(typed.to_lowercase())
+    }
+}
+
+/// The label and its access key from Windows' menu text: `&Open` is "Open" with key O,
+/// `開啟(&O)` is "開啟" with key O written after it, `&&` is a literal `&`, and the shortcut text
+/// after a tab goes. A marker on something that isn't a letter or digit gives no key.
+pub(crate) fn parse_label(raw: &str) -> (String, Option<Access>) {
     let text = raw.split('\t').next().unwrap_or_default();
     let mut out = String::with_capacity(text.len());
+    let mut key: Option<(char, usize)> = None;
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '&' {
-            if chars.peek() == Some(&'&') {
+        if c != '&' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('&') => {
                 out.push('&');
                 chars.next();
             }
-            continue;
+            // Only the first marker counts, as in Windows.
+            Some(next) if key.is_none() && next.is_alphanumeric() => key = Some((next, out.len())),
+            _ => {}
         }
-        out.push(c);
     }
-    // CJK menus append the access key as "Open(O)": drop a trailing single alphanumeric
-    // in parentheses.
-    let trimmed = out.trim_end();
-    let stripped = trimmed
-        .strip_suffix(')')
-        .and_then(|s| s.rsplit_once('('))
-        .filter(|(_, key)| {
-            key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric())
-        })
-        .map(|(head, _)| head.trim_end().to_owned());
-    stripped
-        .unwrap_or_else(|| trimmed.to_owned())
-        .trim()
-        .to_owned()
+    let start = out.len() - out.trim_start().len();
+    let body = out.trim();
+    // CJK menus write the key after the text, as "Open(&O)": the key is the one in parentheses.
+    if let Some((head, _)) = key_suffix(body)
+        && let Some((c, at)) = key
+        && at == start + head.len() + 1
+    {
+        let access = Access { key: c, at: None };
+        return (head.trim_end().to_owned(), Some(access));
+    }
+    let access = key.and_then(|(key, at)| {
+        let at = at.checked_sub(start).filter(|at| *at < body.len())?;
+        Some(Access { key, at: Some(at) })
+    });
+    (body.to_owned(), access)
+}
+
+/// `Head(K)` with a single letter or digit between the parentheses.
+fn key_suffix(text: &str) -> Option<(&str, char)> {
+    let (head, key) = text.strip_suffix(')')?.rsplit_once('(')?;
+    let mut chars = key.chars();
+    let c = chars.next()?;
+    (chars.next().is_none() && c.is_ascii_alphanumeric()).then_some((head, c))
+}
+
+/// [`parse_label`] for a label read from Windows, where a CJK menu may also write the key after
+/// the text without marking it (`Open(O)`): that is dropped too, as the label is the text only.
+pub(crate) fn read_label(raw: &str) -> (String, Option<Access>) {
+    let (label, access) = parse_label(raw);
+    if access.is_some_and(|a| a.at.is_none()) {
+        return (label, access);
+    }
+    match key_suffix(&label) {
+        Some((head, _)) => {
+            let head = head.trim_end().to_owned();
+            let access = access.filter(|a| a.at.is_some_and(|at| at < head.len()));
+            (head, access)
+        }
+        None => (label, access),
+    }
+}
+
+/// Menu text without access-key markers (`&O`, `(&O)`) or the shortcut text after a tab.
+pub(crate) fn clean_label(raw: &str) -> String {
+    read_label(raw).0
+}
+
+/// Whether Windows is set to always underline access keys (Settings > Accessibility > Keyboard,
+/// `SPI_GETKEYBOARDCUES`). Reads one system parameter: asked once as a menu opens.
+pub(crate) fn keyboard_cues_always() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETKEYBOARDCUES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    if cfg!(test) {
+        return false;
+    }
+    let mut on = windows::core::BOOL::from(false);
+    // SAFETY: on is a correctly sized out param.
+    let asked = unsafe {
+        SystemParametersInfoW(
+            SPI_GETKEYBOARDCUES,
+            0,
+            Some((&raw mut on).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    asked.is_ok() && on.as_bool()
 }
 
 fn invoke_in(
@@ -1299,6 +1404,17 @@ fn invoke_in(
 mod tests {
     use super::*;
 
+    /// Extensions that return on a bare `CMF_NORMAL` (FastCopy's does) must still be asked for
+    /// their items: the flags always carry what File Explorer's do (#439).
+    #[test]
+    fn query_flags_are_never_bare_normal() {
+        assert_ne!(query_flags(false), CMF_NORMAL);
+        assert_ne!(query_flags(true), CMF_NORMAL);
+        assert_ne!(query_flags(false) & CMF_EXPLORE, 0);
+        assert_eq!(query_flags(false) & CMF_EXTENDEDVERBS, 0);
+        assert_ne!(query_flags(true) & CMF_EXTENDEDVERBS, 0);
+    }
+
     /// #278: once the menu host knows "Send to" (it lists it itself), reading the whole Windows
     /// menu doesn't wait for Windows' own to fill: it is left to fill when opened. Prints how
     /// long the whole menu took both ways.
@@ -1309,8 +1425,8 @@ mod tests {
         reason = "a by-hand measurement prints what it found"
     )]
     fn the_whole_menu_doesnt_wait_for_send_to() {
-        let file = crate::win::long_temp_dir()
-            .join(format!("arke-whole-sendto-{}.txt", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-whole-sendto-");
+        let file = tmp_dir.path().join("sendto.txt");
         std::fs::write(&file, "x").unwrap();
         let read = || {
             let started = std::time::Instant::now();
@@ -1324,7 +1440,6 @@ mod tests {
         warm_send_to(&file);
         let label = one::cached_send_to_label().expect("Send To's label");
         let (after, took) = read();
-        let _ = std::fs::remove_file(&file);
         let send_to = |menu: &ShellMenu| {
             menu.entries.iter().find_map(|e| match e {
                 ShellMenuEntry::Submenu {
@@ -1382,8 +1497,8 @@ mod tests {
             })
         }
         let part = std::env::var("ARKE_BG_VERB").unwrap_or_else(|_| "Everything".into());
-        let folder = std::env::temp_dir().join("arke-bg-verb-test");
-        std::fs::create_dir_all(&folder).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let folder = tmp_dir.path().to_path_buf();
         let menu = query(std::slice::from_ref(&folder), true, false).unwrap();
         let (id, label) = find(&menu.entries, &part).expect("the command is in the menu");
         let result = invoke(menu.session, id, (0, 0), None);
@@ -1424,8 +1539,8 @@ mod tests {
                 })
                 .collect()
         }
-        let dir = std::env::temp_dir().join("arke-give-access-to");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         // The submenu's name, from the Sharing extension's own menu for the folder.
         let sharing = crate::win_menu_parts::handlers(std::slice::from_ref(&dir), false)
             .into_iter()
@@ -1465,6 +1580,41 @@ mod tests {
         }
     }
 
+    /// #413: items from two folders (search results) get one Windows menu with the commands for
+    /// both, as File Explorer's search results do.
+    #[test]
+    #[ignore = "reads this machine's Windows menu; run by hand"]
+    fn items_from_two_folders_get_one_menu() {
+        let tmp_dir = crate::win::long_tempdir("arke-two-folders-");
+        let base = tmp_dir.path().to_path_buf();
+        let files: Vec<PathBuf> = ["a", "b"]
+            .iter()
+            .map(|dir| {
+                let dir = base.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                // The same name in both, as search results often have.
+                let file = dir.join("arke-item.txt");
+                std::fs::write(&file, "x").unwrap();
+                file
+            })
+            .collect();
+        let menu = query(&files, false, false);
+        let menu = menu.expect("a menu for both items");
+        let verbs: Vec<String> = menu
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                ShellMenuEntry::Item { verb, .. } => verb.clone(),
+                _ => None,
+            })
+            .collect();
+        release(menu.session);
+        assert!(
+            verbs.iter().any(|v| v.eq_ignore_ascii_case("properties")),
+            "{verbs:?}"
+        );
+    }
+
     #[test]
     fn cleans_menu_labels() {
         assert_eq!(clean_label("&Open"), "Open");
@@ -1481,12 +1631,74 @@ mod tests {
         assert_eq!(clean_label("Size (MB)"), "Size (MB)");
     }
 
+    /// The label and `(key, offset)`, the offset being `None` for the CJK form.
+    fn parsed(raw: &str) -> (String, Option<(char, Option<usize>)>) {
+        let (label, access) = parse_label(raw);
+        (label, access.map(|a| (a.key, a.at)))
+    }
+
+    #[test]
+    fn keeps_the_access_key_apart_from_the_label() {
+        assert_eq!(parsed("&Open"), ("Open".into(), Some(('O', Some(0)))));
+        assert_eq!(parsed("Cop&y"), ("Copy".into(), Some(('y', Some(3)))));
+        assert_eq!(parsed("Save &1"), ("Save 1".into(), Some(('1', Some(5)))));
+        // The CJK form keeps the key in parentheses after the text, as Windows draws it.
+        assert_eq!(parsed("開啟(&O)"), ("開啟".into(), Some(('O', None))));
+        assert_eq!(parsed("发送到(&N)"), ("发送到".into(), Some(('N', None))));
+        // A key in the middle of a label that also ends in a parenthesized letter.
+        assert_eq!(
+            parsed("&Tools (x)"),
+            ("Tools (x)".into(), Some(('T', Some(0))))
+        );
+    }
+
+    #[test]
+    fn a_literal_ampersand_or_no_marker_gives_no_key() {
+        assert_eq!(parsed("Tom && Jerry"), ("Tom & Jerry".into(), None));
+        assert_eq!(parsed("Open"), ("Open".into(), None));
+        // A marker on something that isn't a letter or digit.
+        assert_eq!(parsed("100&%"), ("100%".into(), None));
+        assert_eq!(parsed("Ends with &"), ("Ends with".into(), None));
+        // `&&` first, then the real marker.
+        assert_eq!(parsed("A && &B"), ("A & B".into(), Some(('B', Some(4)))));
+    }
+
+    #[test]
+    fn the_shortcut_after_a_tab_and_stray_spaces_leave_the_key_in_place() {
+        assert_eq!(
+            parsed("Cop&y\tCtrl+C"),
+            ("Copy".into(), Some(('y', Some(3))))
+        );
+        assert_eq!(parsed("  &Open  "), ("Open".into(), Some(('O', Some(0)))));
+        // Only the first marker counts.
+        assert_eq!(
+            parsed("&Open &With"),
+            ("Open With".into(), Some(('O', Some(0))))
+        );
+        // Read from Windows, an unmarked trailing "(N)" is still dropped (as before), key or not.
+        assert_eq!(read_label("開啟(O)"), ("開啟".into(), None));
+        assert_eq!(read_label("Version (2)"), ("Version".into(), None));
+        assert_eq!(
+            read_label("&Open (2)"),
+            ("Open".into(), parse_label("&Open").1)
+        );
+    }
+
+    #[test]
+    fn a_key_is_matched_without_regard_to_case() {
+        let (_, access) = parse_label("Cu&t");
+        let access = access.expect("a key");
+        assert!(access.matches('t') && access.matches('T'));
+        assert!(!access.matches('c'));
+    }
+
     #[test]
     fn tidies_separators() {
         let item = |id| ShellMenuEntry::Item {
             id,
             verb: None,
             label: "x".into(),
+            access: None,
             enabled: true,
             checked: false,
             default: false,

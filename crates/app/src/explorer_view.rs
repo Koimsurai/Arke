@@ -8,6 +8,7 @@
 //! Only `theme` tokens are allowed (enforced by `tests::ui_code_uses_theme_tokens`).
 
 use rust_i18n::t;
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,7 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::media::MediaKey;
 use crate::op_center::ToastDelays;
+use crate::press_guard::is_double_click;
 use crate::text_input::TextInput;
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
@@ -243,6 +245,8 @@ impl Explorer {
         let loaded = self.model.is_some() && !lists_shares(self.current_path());
         let can_paste = loaded && !self.search_mode && self.services.shell.clipboard_has_files();
         div()
+            .relative()
+            .child(self.info_probe())
             .flex()
             .min_w_0()
             // Squeezed past its buttons (a small window at a large scale): cut off, rather than
@@ -357,6 +361,7 @@ impl Explorer {
     pub(super) fn render_selection_actions(
         &self,
         compact: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // `compact` decides whether the summary includes the total size; action buttons are always
@@ -377,13 +382,15 @@ impl Explorer {
         // Split view with both sides on different folders: Copy to/Move to take the room of the
         // regular buttons. Same folder: they'd copy items onto themselves, so they're left out and
         // the regular buttons come back.
-        if self.selection_folds() {
+        let Some(peer_labels) = self.selection_fit(&summary, count, window) else {
             return self.render_folded_selection(count, cx);
-        }
-        let peer_actions = self.render_peer_actions(cx);
+        };
+        let peer_actions = self.render_peer_actions(peer_labels, cx);
         let crowded = peer_actions.is_some();
         div()
             .debug_selector(|| "selection-actions".to_owned())
+            .relative()
+            .child(self.info_probe())
             .flex()
             .min_w_0()
             .items_center()
@@ -396,6 +403,9 @@ impl Explorer {
                     .items_center()
                     .gap(theme::s_8())
                     .mr(theme::s_4())
+                    // The size the window's text has anyway, set here because `selection_width`
+                    // measures the summary at it.
+                    .text_size(theme::fs_14())
                     .font_weight(theme::FW_STRONG)
                     .child(
                         div()
@@ -466,11 +476,70 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// Whether the pane is too narrow for the selection's buttons next to the path bar and the
-    /// view buttons (a split pane in a small window, say): they fold into a "⋯" menu.
-    pub(crate) fn selection_folds(&self) -> bool {
-        let needs = if self.pane.split { 600. } else { 720. };
-        self.paper_width < theme::scaled_px(needs)
+    /// Whether the selection's buttons, `unfolded` wide, would leave the path bar too little of
+    /// the pane row: they fold into a "⋯" menu before the path bar drops its parent folders
+    /// (below [`super::top_bar::path_compact_below`] it keeps only the current one), so the path
+    /// bar keeps its room to go up several levels (#388). The room is what the path bar and the
+    /// row's info (item count or selection) took on the last frame: their sum doesn't change with
+    /// what the info shows, so the choice settles at once. Before the row was laid out, the
+    /// pane's width decides.
+    pub(crate) fn selection_folds(&self, unfolded: Pixels) -> bool {
+        let path = self.path_slot.get();
+        if path <= px(0.) {
+            let needs = if self.pane.split { 600. } else { 720. };
+            return self.paper_width < theme::scaled_px(needs);
+        }
+        path + self.info_slot.get() - unfolded < super::top_bar::path_compact_below()
+    }
+
+    /// How the selection's buttons fit the pane row next to the path bar (#388): `None` folds
+    /// them into "⋯"; `Some(labels)` shows them, with Copy to/Move to the other side (split view)
+    /// named or as icons. The labels show only when the path bar keeps its room with them too;
+    /// otherwise the icons, and failing that the fold.
+    fn selection_fit(&self, summary: &str, count: usize, window: &Window) -> Option<bool> {
+        let Some(peer) = self.peer_target() else {
+            let unfolded = selection_width(summary, count, None, window);
+            return (!self.selection_folds(unfolded)).then_some(false);
+        };
+        let name = peer_name(peer);
+        let labels = [
+            t!("sel.copy_to", name = name),
+            t!("sel.move_to", name = name),
+        ]
+        .iter()
+        .map(|label| {
+            let text =
+                super::top_bar::text_width(label, theme::fs_12(), gpui::FontWeight::NORMAL, window);
+            // The gap between the icon and the label.
+            theme::s_6() + text
+        })
+        .fold(px(0.), |sum, w| sum + w);
+        if self.paper_width >= peer_labels_min()
+            && !self.selection_folds(selection_width(summary, count, Some(labels), window))
+        {
+            return Some(true);
+        }
+        let icons = selection_width(summary, count, Some(px(0.)), window);
+        (!self.selection_folds(icons)).then_some(false)
+    }
+
+    /// Records the width of the pane row's info (the item count or the selection's actions) for
+    /// [`Self::selection_folds`], drawing once more when it changed, as the path bar's slot does
+    /// (they change together, so this adds no frame of its own).
+    fn info_probe(&self) -> impl IntoElement + use<> {
+        let slot = Rc::clone(&self.info_slot);
+        gpui::canvas(
+            move |b, window, _| {
+                if slot.replace(b.size.width) != b.size.width {
+                    window.refresh();
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 
     /// The selection in a narrow pane: "● 3" (the tooltip has the whole summary) and "⋯", which
@@ -483,6 +552,8 @@ impl Explorer {
         }
         div()
             .debug_selector(|| "selection-actions".to_owned())
+            .relative()
+            .child(self.info_probe())
             .flex()
             .flex_none()
             .items_center()
@@ -553,13 +624,12 @@ impl Explorer {
     /// Split view: "Copy to/Move to the other side", naming the destination. In a narrow pane
     /// they show only their icons (the tooltip still names the destination), since a label cut
     /// down to "…" says nothing.
-    fn render_peer_actions(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let peer = self.peer_target()?.to_path_buf();
-        let labels = self.paper_width >= peer_labels_min();
-        let name = peer.file_name().map_or_else(
-            || peer.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
+    fn render_peer_actions(
+        &self,
+        labels: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let name = peer_name(self.peer_target()?);
         Some(
             div()
                 .flex()
@@ -754,7 +824,25 @@ impl Explorer {
         // Details rows end with their last column, like the header above (the list is blank past
         // it); the column view's rows span the list.
         let width = self.cols.map(|c| c.row);
-        Self::item_shell(ix, is_selected, is_cursor, focused, drop_dir, cx)
+        let group = Self::check_group(ix);
+        // The row's answer to the drag over it, for its highlight (drawn as a drop target only
+        // when the row takes the drop). The row paints before its highlight, so it asks first and
+        // the highlight doesn't ask again.
+        let drop_ok = drop_dir
+            .as_ref()
+            .is_some_and(|(_, own)| *own)
+            .then(|| Rc::new(Cell::new(false)));
+        let wash = row_wash(
+            ix,
+            &group,
+            is_selected,
+            is_cursor,
+            focused,
+            drop_ok.as_ref().map(Rc::clone),
+        );
+        Self::item_events(ix, drop_dir, drop_ok, cx)
+            .debug_selector(move || format!("row-{ix}"))
+            .group(group)
             .relative()
             .map(|d| match width {
                 Some(w) => d.w(w).flex_none(),
@@ -766,15 +854,48 @@ impl Explorer {
             .pl(layout::row_pad_l())
             .pr(layout::row_pad_r())
             .gap(layout::col_gap())
+            .child(wash)
     }
 
-    /// Shared by rows and tiles: selection background, cursor ring, mouse events.
+    /// A tile: [`Self::item_events`], with the selection background, cursor ring and drop
+    /// target drawn on the tile itself.
     fn item_shell(
         ix: usize,
         is_selected: bool,
         is_cursor: bool,
         focused: bool,
         drop_dir: Option<(PathBuf, bool)>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let own = drop_dir.as_ref().is_some_and(|(_, own)| *own);
+        Self::item_events(ix, drop_dir, None, cx)
+            .when(own, |d| {
+                d.drag_over::<DraggedFiles>(|s, _, _, _| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+                .drag_over::<ExternalPaths>(|s, _, _, _| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+            })
+            .rounded(theme::r_8())
+            .border_1()
+            .border_color(if is_cursor && focused {
+                theme::signal_line()
+            } else {
+                theme::clear()
+            })
+            .when(is_selected, |d| d.bg(theme::list_selection(focused)))
+            .when(!is_selected, |d| d.hover(|s| s.bg(theme::wash())))
+    }
+
+    /// Shared by rows and tiles: mouse events, dragging and drops. `drop_ok` (rows) is told
+    /// whether the item takes what is dragged over it.
+    fn item_events(
+        ix: usize,
+        drop_dir: Option<(PathBuf, bool)>,
+        drop_ok: Option<Rc<Cell<bool>>>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let source = cx.entity().downgrade();
@@ -797,26 +918,22 @@ impl Explorer {
                 this.on_row_released(ix, event, window, cx);
                 if this.click_select == Some(ix) && event.click_count() == 1 {
                     this.click_select = None;
-                    if let Some(view) = this.view() {
-                        this.selection.select_only(&view, ix);
-                        cx.notify();
-                    }
+                    this.narrow_selection_to(ix);
+                    cx.notify();
                 }
             }))
             // Drop: folders, and files inside an expanded folder (into that folder).
-            .when_some(drop_dir, move |d, (dir, own)| {
+            .when_some(drop_dir, move |d, (dir, _)| {
                 let external = dir.clone();
                 let check = dir.clone();
-                d.can_drop(move |value, _, cx| super::accepts_drop(value, &check, cx))
-                    .when(own, |d| {
-                        d.drag_over::<DraggedFiles>(|s, _, _, _| {
-                            s.bg(theme::signal_wash()).border_color(theme::signal_line())
-                        })
-                        .drag_over::<ExternalPaths>(|s, _, _, _| {
-                            s.bg(theme::signal_wash()).border_color(theme::signal_line())
-                        })
-                    })
-                    .on_drag_move({
+                d.can_drop(move |value, _, cx| {
+                    let ok = super::accepts_drop(value, &check, cx);
+                    if let Some(drop_ok) = &drop_ok {
+                        drop_ok.set(ok);
+                    }
+                    ok
+                })
+                .on_drag_move({
                     let dir = dir.clone();
                     move |e: &gpui::DragMoveEvent<DraggedFiles>, _, cx| {
                         super::report_drop_target(&dir, e, cx);
@@ -829,15 +946,6 @@ impl Explorer {
                     drop_external_into(paths, external.clone(), &target, window, cx);
                 })
             })
-            .rounded(theme::r_8())
-            .border_1()
-            .border_color(if is_cursor && focused {
-                theme::signal_line()
-            } else {
-                theme::clear()
-            })
-            .when(is_selected, |d| d.bg(theme::list_selection(focused)))
-            .when(!is_selected, |d| d.hover(|s| s.bg(theme::wash())))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -907,6 +1015,7 @@ impl Explorer {
                 self.shown_name_of(entry),
                 true,
                 Some(press),
+                rename_box_h(self.row_height()),
             ))
             .children(super::compare::compare_badge(
                 self.compare_mark(&entry.name),
@@ -978,7 +1087,6 @@ impl Explorer {
                         self.item_a11y_label(entry)
                     })
                     .map(|row| self.tree_a11y(ix, entry, row, cx))
-                    .group(Self::check_group(ix))
                     .text_color(if entry.is_hidden() {
                         theme::text_subtle()
                     } else {
@@ -1032,6 +1140,15 @@ impl Explorer {
         // Elsewhere (network shares) only type icons: they read no file.
         let allowed = self.media_ok(&dir, cx);
         let thumb_px = (thumbnails && self.show_thumbnails).then(|| self.thumbnail_px());
+        // System icons come at the size they are drawn at, so they map 1:1 onto screen pixels.
+        let icon_px = crate::media::icon_source_px(
+            f32::from(if thumbnails {
+                self.tile().icon
+            } else {
+                theme::icon()
+            }),
+            self.ui_scale,
+        );
         let key = |ix: usize| {
             entries.get(ix).and_then(|e| {
                 if allowed {
@@ -1039,6 +1156,7 @@ impl Explorer {
                 } else {
                     MediaKey::type_icon(e)
                 }
+                .map(|k| k.with_icon_px(icon_px))
             })
         };
         let keys: Vec<Option<MediaKey>> = range.clone().map(key).collect();
@@ -1052,7 +1170,8 @@ impl Explorer {
             .chain((range.end..prefetch_end).filter_map(key))
             .chain((prefetch_start..range.start).rev().filter_map(key))
             .collect();
-        self.media.update(cx, |m, cx| m.want(wanted, cx));
+        let view = cx.entity_id();
+        self.media.update(cx, |m, cx| m.want(view, wanted, cx));
         let media = self.media.read(cx);
         // A thumbnail decoded for another icon size stands in until this size's arrives.
         keys.iter()
@@ -1086,7 +1205,14 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match rename_input {
-            Some(rename) => name_cell(entry, Some(rename), SharedString::default(), false, None),
+            Some(rename) => name_cell(
+                entry,
+                Some(rename),
+                SharedString::default(),
+                false,
+                None,
+                theme::s_24(),
+            ),
             None => div()
                 .debug_selector({
                     let name = Arc::clone(&entry.name);
@@ -1214,7 +1340,7 @@ impl Explorer {
         // Pane width (preview pane already excluded) minus paper margin, list padding and
         // scrollbar.
         let avail = self.pane_width
-            - theme::s_8()
+            - layout::paper_margin()
             - theme::s_32()
             - scrollbar_gutter()
             - layout::list_gutter();
@@ -1268,7 +1394,9 @@ impl Explorer {
         .track_scroll(&self.scroll)
         // A sideways swipe is back or forward (#70), not a scroll down the list.
         .map(sideways_is_not_down)
-        .pl(theme::s_8())
+        // Rows start a little in from the sidebar, so a marquee started beside it starts in
+        // empty space (#448).
+        .pl(theme::list_inset())
         .pr(theme::s_8() + layout::list_gutter())
         .flex_1();
         self.with_scrollbars(list, &self.scroll)
@@ -1533,8 +1661,11 @@ impl Explorer {
             (None, Some(parent)) => parent.display().to_string(),
             (None, None) => t!("list.here").into_owned(),
         };
-        self.row_shell(ix, cursor == Some(ix), false, focused, cx)
-            .a11y_item(ix, cursor == Some(ix), cursor == Some(ix), || {
+        let is_selected = self.hit_selected(ix, hit);
+        // As in a folder's rows: no ring when the cursor is the only selected item.
+        let is_cursor = cursor == Some(ix) && !(is_selected && self.search_selected_count() <= 1);
+        self.row_shell(ix, is_selected, is_cursor, focused, cx)
+            .a11y_item(ix, is_selected, cursor == Some(ix), || {
                 let modified = entry.modified.map(|t| shell.format_time(t));
                 let content = hit
                     .snippet
@@ -1585,18 +1716,7 @@ impl Explorer {
                             })),
                     ),
             )
-            .child(
-                div()
-                    .w(theme::col_location())
-                    .flex_none()
-                    // Keep the end of long paths (the folders nearest the file).
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_start()
-                    .text_size(theme::fs_12())
-                    .text_color(theme::text_muted())
-                    .child(location),
-            )
+            .child(Self::location_cell(ix, &hit.rel, location, cx))
             .child(
                 div()
                     .w(crate::prefs::modified_width())
@@ -1611,6 +1731,34 @@ impl Explorer {
             )
             .child(size_cell(entry, super::sizes::FolderSize::Unknown))
             .into_any_element()
+    }
+
+    /// A search hit's Location. A double-click on it opens the folder with the hit selected
+    /// (#398), so it looks like a link under the pointer, as the preview pane's Location does.
+    fn location_cell(
+        ix: usize,
+        rel: &Arc<str>,
+        location: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let rel = Arc::clone(rel);
+        div()
+            .debug_selector(move || format!("location:{rel}"))
+            .w(theme::col_location())
+            .flex_none()
+            // Keep the end of long paths (the folders nearest the file).
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis_start()
+            .text_size(theme::fs_12())
+            .text_color(theme::text_muted())
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::text()).underline())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _, _| this.on_location_pressed(ix)),
+            )
+            .child(location)
     }
 
     /// List content: rows, tiles, search results, or the empty/loading state.
@@ -1648,7 +1796,7 @@ impl Explorer {
                     .track_scroll(&self.search_scroll)
                     // A sideways swipe is back or forward (#70), not a scroll down the list.
                     .map(sideways_is_not_down)
-                    .pl(theme::s_8())
+                    .pl(theme::list_inset())
                     .pr(theme::s_8() + layout::list_gutter())
                     .flex_1();
                     self.with_scrollbars(list, &self.search_scroll)
@@ -1750,7 +1898,7 @@ impl Explorer {
                     window.focus(&this.list_focus, cx);
                     // Double click on empty space goes up (setting, off by default); presses on
                     // items are handled by the row.
-                    let up = e.click_count == 2
+                    let up = is_double_click(e.click_count)
                         && !this.row_pressed
                         && crate::settings::SettingsStore::global(cx)
                             .read(cx)
@@ -1974,8 +2122,9 @@ impl Explorer {
         let view = cx.entity_id();
         // Progress toasts wait: short jobs are only in the operation center.
         if let Some(job) = self
-            .extract_job
-            .as_ref()
+            .extract_jobs
+            // The one running; the others wait in the progress center.
+            .first()
             .filter(|_| ToastDelays::shown(cx, view, EXTRACT_TOAST))
         {
             let p = job.progress;
@@ -2104,7 +2253,7 @@ impl Explorer {
     /// Starts the delay of the progress toasts when a job begins and forgets it when the job ends.
     fn track_progress_toasts(&mut self, cx: &mut Context<Self>) {
         ToastDelays::track(cx, OPS_TOAST, self.ops_running > 0);
-        ToastDelays::track(cx, EXTRACT_TOAST, self.extract_job.is_some());
+        ToastDelays::track(cx, EXTRACT_TOAST, !self.extract_jobs.is_empty());
     }
 
     /// The toasts up now, or else a notice that is fading out.
@@ -2296,7 +2445,9 @@ const TOAST_LINES: usize = 6;
 /// A toast's icon and message, then its buttons. Like a WinUI InfoBar, the buttons sit beside a
 /// message that fits on one line next to them ("Copied", Close) and, when `wrap` is set and it
 /// doesn't, move to a line of their own below it, right-aligned, so the message gets the toast's
-/// whole width instead of a narrow column beside them.
+/// whole width instead of a narrow column beside them. Without `wrap` (progress) the message stays
+/// on one line, ending in "…" when it is too long, so the icon, the text and Cancel stay lined
+/// up on its middle (the operation center shows the whole line).
 fn toast_row(
     id: &'static str,
     glyph: impl IntoElement,
@@ -2337,14 +2488,15 @@ fn toast_row(
             .items_center()
             .gap(theme::s_8())
             .child(glyph)
-            .child(
-                div()
-                    .debug_selector(move || format!("{id}-text"))
-                    .min_w_0()
-                    .line_clamp(TOAST_LINES)
-                    .text_ellipsis()
-                    .child(text),
-            ),
+            .child({
+                let message = div().debug_selector(move || format!("{id}-text")).min_w_0();
+                let message = if wrap {
+                    message.line_clamp(TOAST_LINES).text_ellipsis()
+                } else {
+                    message.truncate()
+                };
+                message.child(text)
+            }),
     )
     .children(buttons)
 }
@@ -2398,7 +2550,7 @@ fn active_outline() -> impl IntoElement {
         .debug_selector(|| "active-pane-outline".to_owned())
         .absolute()
         .inset_0()
-        .rounded(theme::r_12())
+        .rounded(theme::r_paper())
         .border_1()
         .border_color(theme::signal_line())
 }
@@ -2408,7 +2560,7 @@ fn search_outline() -> impl IntoElement {
         .debug_selector(|| "search-target".to_owned())
         .absolute()
         .inset_0()
-        .rounded(theme::r_12())
+        .rounded(theme::r_paper())
         .border_2()
         .border_color(theme::signal_line())
 }
@@ -2420,6 +2572,43 @@ pub(super) fn vertical_divider() -> impl IntoElement {
         .mx(theme::s_4())
         .flex_none()
         .bg(theme::line())
+}
+
+/// The other pane's folder as Copy to/Move to name it.
+fn peer_name(peer: &Path) -> String {
+    peer.file_name().map_or_else(
+        || peer.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// Width of the selection's actions in the pane row, unfolded, from the tokens they are drawn
+/// with (see [`Explorer::render_selection_actions`]): the summary, a divider, then Open, Cut,
+/// Copy (Rename for one item) and Delete, or in split view (`peer`: the width Copy to/Move to's
+/// labels add, zero for icons only) Copy to/Move to the other side and Delete, and the clear
+/// button.
+fn selection_width(summary: &str, count: usize, peer: Option<Pixels>, window: &Window) -> Pixels {
+    let text = super::top_bar::text_width(summary, theme::fs_14(), theme::FW_STRONG, window);
+    // Dot, gap, text and the margin after it.
+    let summary = theme::s_6() + theme::s_8() + text + theme::s_4();
+    let divider = px(1.) + theme::s_4() * 2.;
+    let icon_button = theme::s_6() * 2. + theme::icon();
+    let clear = theme::s_8() * 2. + theme::icon_sm();
+    // The buttons, and how many children of the row they are.
+    let (buttons, children) = if let Some(labels) = peer {
+        // Outlined: a 1 px border on each side. Two of them and a divider, 4 px apart.
+        let outlined = theme::s_8() * 2. + theme::icon() + px(2.);
+        (
+            outlined * 2. + labels + divider + theme::s_4() * 2. + icon_button,
+            2.,
+        )
+    } else {
+        let n = if count == 1 { 5. } else { 4. };
+        (icon_button * n, n)
+    };
+    // The summary, the divider, the buttons, the spacer and the clear button, 4 px apart.
+    let gaps = theme::s_4() * (children + 3.);
+    summary + divider + buttons + clear + gaps
 }
 
 /// Opens the selection's menu where Shift+F10 would: "⋯" pressed by a screen reader or from the
@@ -2879,6 +3068,58 @@ pub(crate) fn shown_name(entry: &Entry, show_ext: bool) -> SharedString {
     }
 }
 
+/// A list row's highlight: its selection background, cursor ring, hover wash and drop target.
+/// It stays [`theme::row_wash_inset`] inside the row at the top and bottom, so neighbouring
+/// highlighted rows keep a gap, as in File Explorer (#448), while the whole row stays the pointer
+/// target. It lies under the row's content and follows the row's hover and the drag over it
+/// through the row's `group`; `drop_ok` is the row's own answer to that drag (`None`: the row
+/// isn't a drop target).
+pub(super) fn row_wash(
+    ix: usize,
+    group: &SharedString,
+    is_selected: bool,
+    is_cursor: bool,
+    focused: bool,
+    drop_ok: Option<Rc<Cell<bool>>>,
+) -> gpui::Div {
+    let inset = theme::row_wash_inset();
+    div()
+        .debug_selector(move || format!("row-wash-{ix}"))
+        .absolute()
+        .left_0()
+        .right_0()
+        .top(inset)
+        .bottom(inset)
+        .rounded(theme::r_row())
+        .border_1()
+        .border_color(if is_cursor && focused {
+            theme::signal_line()
+        } else {
+            theme::clear()
+        })
+        .when(is_selected, |d| d.bg(theme::list_selection(focused)))
+        .when(!is_selected, |d| {
+            d.group_hover(group.clone(), |s| s.bg(theme::wash()))
+        })
+        .when_some(drop_ok, |d, drop_ok| {
+            d.can_drop(move |_, _, _| drop_ok.get())
+                .group_drag_over::<DraggedFiles>(group.clone(), |s| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+                .group_drag_over::<ExternalPaths>(group.clone(), |s| {
+                    s.bg(theme::signal_wash())
+                        .border_color(theme::signal_line())
+                })
+        })
+}
+
+/// The rename box's height in a Details row `row` high: 24, or the row's height in a shorter
+/// (compact) row, like Explorer's box filling its compact row.
+fn rename_box_h(row: Pixels) -> Pixels {
+    row.min(theme::s_24())
+}
+
 /// Space between the rename box's edge and its text: its padding plus the 1 px border.
 fn rename_inset() -> gpui::Pixels {
     crate::theme::scaled_px(4. + 1.)
@@ -2908,6 +3149,7 @@ fn name_cell(
     shown: SharedString,
     in_row: bool,
     on_press: Option<NamePress>,
+    box_h: Pixels,
 ) -> AnyElement {
     match rename {
         Some((input, problem)) => div()
@@ -2928,7 +3170,9 @@ fn name_cell(
                 }
             })
             .min_w_0()
-            .h(theme::s_24())
+            .h(box_h)
+            // Shorter than its usual 24 (a compact row): a tighter line keeps the text whole.
+            .when(box_h < theme::s_24(), |d| d.line_height(gpui::relative(theme::LH_TIGHT)))
             .px(rename_inset() - px(1.))
             .flex()
             .items_center()
@@ -3243,6 +3487,10 @@ impl Explorer {
 impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::a11y::sync(window);
+        // What the lists below ask of the media cache this frame replaces what they asked before.
+        let (window_id, view) = (window.window_handle().window_id(), cx.entity_id());
+        self.media
+            .update(cx, |m, cx| m.drawing(window_id, view, cx));
         self.before_render(window, cx);
         let searching = self.search_box_state(window, cx) == layout::SearchBox::Typing;
         div()
@@ -3265,14 +3513,15 @@ impl Render for Explorer {
             .child(
                 // The paper: the single sheet holding the list
                 div()
+                    .debug_selector(|| "paper".to_owned())
                     .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
                     .mr(self.paper_margin_right())
-                    .mb(theme::s_8())
-                    .rounded(theme::r_12())
+                    .mb(theme::paper_gap())
+                    .rounded(theme::r_paper())
                     .bg(theme::paper())
                     .shadow(theme::elev_2())
                     .children(backdrop_layer())
@@ -3363,9 +3612,9 @@ impl Explorer {
     /// shared preview too (the pane's box runs on under it).
     fn paper_margin_right(&self) -> Pixels {
         if self.pane.trailing {
-            theme::s_8() + self.pane.reserve
+            layout::paper_margin() + self.pane.reserve
         } else {
-            theme::s_8()
+            layout::paper_margin()
         }
     }
 
@@ -3534,7 +3783,7 @@ impl Explorer {
                 .relative()
                 .size_full()
                 .flex()
-                .rounded(theme::r_12())
+                .rounded(theme::r_paper())
                 .bg(theme::paper())
                 .shadow(theme::elev_2())
                 .children(contents)
@@ -3585,7 +3834,7 @@ fn backdrop_layer() -> Option<impl IntoElement> {
             .top_0()
             .left_0()
             .size_full()
-            .rounded(theme::r_12())
+            .rounded(theme::r_paper())
             .overflow_hidden()
             .opacity(opacity)
             .child(

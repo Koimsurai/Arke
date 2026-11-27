@@ -87,6 +87,21 @@ jobs:
           if [ -n "$NUMBER" ]; then args+=(--number "$NUMBER"); fi
           cargo xtask build "${args[@]}"
           ls -l dist
+      # The shipped exe's size budget (perf.yml gates a thin-LTO build of pull requests against its
+      # own). A warning, not a failure: a tag's release shouldn't stop on this.
+      - name: exe size budget
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: |
+          budget=$(grep -E '^[0-9]+$' .github/perf/exe-size-budget | head -n 1)
+          for exe in dist/arke-*.exe; do
+            case "$exe" in *-setup.exe) continue ;; esac
+            size=$(stat -c %s "$exe")
+            echo "$exe: $size bytes, budget $budget"
+            if [ "$size" -gt "$budget" ]; then
+              echo "::warning title=Exe size::$exe is $size bytes, $((size - budget)) over the budget in .github/perf/exe-size-budget"
+            fi
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.arch }}

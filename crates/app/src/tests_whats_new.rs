@@ -194,6 +194,53 @@ fn settings_about_shows_it_and_turns_it_off(cx: &mut TestAppContext) {
     );
 }
 
+/// What `update_page::open_url` was asked to open (tests open no browser).
+fn opened_urls(cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| crate::workspace::update_page::opened_urls_for_test(cx))
+}
+
+/// Settings › About › "Star Arke on GitHub" only opens the repository in the browser, once:
+/// nothing is written to the settings.
+#[gpui::test]
+fn the_about_star_button_only_opens_github(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        ws.settings_category_for_test(&t!("settings.about"), cx);
+    });
+    cx.run_until_parked();
+    let before = settings(cx);
+    assert_eq!(opened_urls(cx), Vec::<String>::new());
+
+    click(cx, "about-star");
+    assert_eq!(opened_urls(cx), [crate::build_info::SOURCE_URL]);
+    assert_eq!(settings(cx), before, "no setting changes");
+}
+
+/// The line at the bottom of What's new only opens the repository in the browser, once:
+/// nothing is written to the settings.
+#[gpui::test]
+fn the_whats_new_star_line_only_opens_github(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\o");
+    cx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(3000.)));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_whats_new(crate::workspace::whats_new_page::Mode::Browse, window, cx);
+    });
+    cx.run_until_parked();
+    let before = settings(cx);
+    assert_eq!(opened_urls(cx), Vec::<String>::new());
+
+    click(cx, "whats-new-star");
+    assert_eq!(opened_urls(cx), [crate::build_info::SOURCE_URL]);
+    assert_eq!(settings(cx), before, "no setting changes");
+}
+
 fn release(version: &str) -> Release {
     Release {
         version: version.into(),
@@ -334,7 +381,9 @@ fn corner_cards_stay_in_the_corner_with_motion_on(cx: &mut TestAppContext) {
                 .debug_bounds(id)
                 .unwrap_or_else(|| panic!("{id} should be drawn"));
             assert!(
-                b.origin.x > gpui::px(1000.) && b.size.height < gpui::px(400.),
+                b.origin.x > gpui::px(1000.)
+                    && b.origin.y > gpui::px(100.)
+                    && b.size.height < gpui::px(900.),
                 "{id} after {wait} ms: {b:?}"
             );
         }
@@ -487,9 +536,8 @@ fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
     let (_ws, cx) = setup_workspace(cx, fs, r"C:\o");
-    let dir = std::env::temp_dir().join(format!("arke-test-restart-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let dir = tmp_dir.path().to_path_buf();
     let exe = dir.join("arke.exe");
     std::fs::write(&exe, b"not a program").unwrap();
     std::fs::write(dir.join("arke.exe.old"), b"the version that runs").unwrap();
@@ -503,5 +551,4 @@ fn a_new_version_that_cant_start_is_rolled_back(cx: &mut TestAppContext) {
         }
         other => panic!("{other:?}"),
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -49,6 +49,10 @@ pub enum Request {
     List {
         /// Volume root to list.
         root: PathBuf,
+        /// Read the MFT at very low I/O priority (Arke already has an older index to show, so
+        /// the rescan can yield to whatever the user is doing). Sent as a trailing byte only
+        /// when set, so a plain request is the same bytes an older service expects.
+        background: bool,
     },
 }
 
@@ -208,9 +212,12 @@ impl Request {
                 w.path(root);
                 w.cursor(*from);
             }
-            Self::List { root } => {
+            Self::List { root, background } => {
                 w.u8(3);
                 w.path(root);
+                if *background {
+                    w.u8(1);
+                }
             }
         }
         w.0
@@ -226,7 +233,11 @@ impl Request {
                 root: r.path()?,
                 from: r.cursor()?,
             },
-            3 => Self::List { root: r.path()? },
+            3 => {
+                let root = r.path()?;
+                let background = !r.0.is_empty() && r.u8()? != 0;
+                Self::List { root, background }
+            }
             _ => return None,
         };
         r.end()?;
@@ -383,6 +394,11 @@ mod tests {
             },
             Request::List {
                 root: PathBuf::from(r"C:\"),
+                background: false,
+            },
+            Request::List {
+                root: PathBuf::from(r"D:\"),
+                background: true,
             },
         ];
         for req in requests {

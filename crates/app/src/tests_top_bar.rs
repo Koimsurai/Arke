@@ -286,7 +286,7 @@ fn the_active_pane_has_a_thin_outline_not_a_tint(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("active-pane-outline").is_none());
 }
 
-/// A search box too narrow for "Search <folder> or this PC" shows the short placeholder.
+/// A search box too narrow for "Search <folder> (Ctrl+F)" shows the short placeholder.
 #[gpui::test]
 fn a_narrow_search_box_shows_the_short_placeholder(cx: &mut TestAppContext) {
     let placeholder = |cx: &mut VisualTestContext, view: &Entity<Explorer>| {
@@ -300,7 +300,7 @@ fn a_narrow_search_box_shows_the_short_placeholder(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(800.), px(650.)));
     settle(cx);
     let narrow = placeholder(cx, &view);
-    assert_eq!(narrow, t!("filter.placeholder_short").into_owned());
+    assert_eq!(narrow, t!("filter.placeholder").into_owned());
     assert!(!narrow.contains("reports"));
     cx.simulate_resize(size(px(1600.), px(650.)));
     settle(cx);
@@ -357,8 +357,131 @@ fn the_selection_actions_share_the_pane_row(cx: &mut TestAppContext) {
     let row = bounds(cx, "pane-row");
     let actions = bounds(cx, "selection-actions");
     assert!(actions.top() >= row.top() && actions.bottom() <= row.bottom());
-    assert!(bounds(cx, "path-bar").size.width >= px(160.));
+    // At this width the buttons used to squeeze the path bar down to its 160 px minimum (#388).
+    assert!(bounds(cx, "path-bar").size.width >= path_keep() - px(0.5));
     assert!(bounds(cx, "path-bar").right() <= actions.left());
+}
+
+/// Narrowest the selection's buttons let the path bar get before they fold into "⋯": the width
+/// below which it keeps only the current folder (`explorer_topbar.rs` `path_compact_below`).
+fn path_keep() -> Pixels {
+    theme::scaled_px(200.)
+}
+
+/// #388: the selection's buttons fold into "⋯" before they squeeze the path bar, at whatever
+/// width: with them in the row the path bar keeps [`path_keep`] and the current folder, and the
+/// fold leaves the path bar as wide as with nothing selected, give or take the "● 3 ⋯".
+#[gpui::test]
+fn the_selection_never_squeezes_the_path_bar(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1600.);
+    // `crumb`: the current folder's breadcrumb.
+    let check =
+        |cx: &mut VisualTestContext, view: &Entity<Explorer>, crumb: &'static str, at: String| {
+            select(cx, view, false);
+            let before = bounds(cx, "path-bar").size.width;
+            select(cx, view, true);
+            let path = bounds(cx, "path-bar");
+            let actions = bounds(cx, "selection-actions");
+            let folded = cx.debug_bounds("sel-more").is_some();
+            let at = format!("{at}, folded {folded}: {path:?} {actions:?}");
+            assert!(path.right() <= actions.left() + px(0.5), "{at}");
+            if folded {
+                assert!(
+                    path.size.width + actions.size.width + theme::s_4() >= before - px(0.5),
+                    "the fold takes only its own room: {at}, before {before:?}"
+                );
+            } else {
+                assert!(path.size.width >= path_keep() - px(0.5), "{at}");
+            }
+            let current = bounds(cx, crumb);
+            assert!(
+                current.size.width > px(0.) && current.right() <= path.right() + px(0.5),
+                "the current folder is drawn: {at}"
+            );
+        };
+    for width in [1600., 1300., 1150., 1000., 900.] {
+        cx.simulate_resize(size(px(width), px(650.)));
+        settle(cx);
+        // C: › top1 › projects › clients › acme › reports
+        check(cx, &left, "crumb-5", format!("{width} px"));
+    }
+    // Split view: the right pane (on OTHER, drawn last) gets Copy to/Move to the other side.
+    cx.simulate_resize(size(px(1600.), px(650.)));
+    settle(cx);
+    let right = split(&ws, &left, cx);
+    for width in [2400., 2000., 1800., 1600., 1400.] {
+        cx.simulate_resize(size(px(width), px(650.)));
+        settle(cx);
+        assert!(
+            bounds(cx, "path-bar").left() > px(width / 2.),
+            "the right pane's path bar is the one measured"
+        );
+        // C: › other
+        check(cx, &right, "crumb-1", format!("{width} px, split"));
+    }
+}
+
+/// Selects all of `view`'s items, or none.
+fn select(cx: &mut VisualTestContext, view: &Entity<Explorer>, all: bool) {
+    view.update(cx, |v, cx| {
+        v.selection.clear();
+        if all && let Some(entries) = v.view() {
+            v.selection.select_all(&entries);
+        }
+        cx.notify();
+    });
+    settle(cx);
+}
+
+/// #388: folded into "⋯", the selection's buttons are still in reach from the keyboard: F6 to the
+/// pane row, the arrows to "⋯", Enter opens the menu with Cut, Copy, Rename and Delete.
+#[gpui::test]
+fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1000.);
+    let view = split(&ws, &left, cx);
+    select(cx, &view, true);
+    assert!(
+        cx.debug_bounds("sel-more").is_some(),
+        "folded at this width"
+    );
+    view.update_in(cx, Explorer::focus_toolbar);
+    settle(cx);
+    for _ in 0..20 {
+        if view.update(cx, |v, _| v.toolbar_at_for_test()) == Some("sel-more") {
+            break;
+        }
+        cx.simulate_keystrokes("right");
+        settle(cx);
+    }
+    assert_eq!(
+        view.update(cx, |v, _| v.toolbar_at_for_test()),
+        Some("sel-more")
+    );
+    // GPUI presses the focused control on the release of Enter.
+    cx.simulate_keystrokes("enter");
+    let keystroke = gpui::Keystroke::parse("enter").unwrap();
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            cx,
+        );
+    });
+    settle(cx);
+    let labels = view
+        .update(cx, |v, _| {
+            v.context_menu
+                .as_ref()
+                .map(crate::explorer::ContextMenuForTest::labels)
+        })
+        .expect("Enter on ⋯ opens the selection's menu");
+    let row = format!(
+        "[{} {} {} {}]",
+        t!("menu.cut"),
+        t!("menu.copy"),
+        t!("menu.rename"),
+        t!("menu.delete")
+    );
+    assert_eq!(labels.last(), Some(&row), "{labels:?}");
 }
 
 /// A split pane in a small window has no room for the selection's buttons: they fold into "● 3"
@@ -378,12 +501,13 @@ fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext
     let right = split(&ws, &left, cx);
     cx.simulate_keystrokes("ctrl-a");
     settle(cx);
-    let view = [&left, &right]
-        .into_iter()
-        .find(|v| v.update(cx, |v, _| !v.selection.is_empty()))
-        .expect("a pane with a selection")
-        .clone();
-    assert!(view.update(cx, |v, _| v.selection_folds()));
+    assert!(
+        [&left, &right]
+            .into_iter()
+            .any(|v| v.update(cx, |v, _| !v.selection.is_empty())),
+        "a pane with a selection"
+    );
+    assert!(cx.debug_bounds("sel-more").is_some(), "folded");
     let actions = bounds(cx, "selection-actions");
     assert!(
         actions.size.width < px(100.),
@@ -524,4 +648,42 @@ fn tooltips_clear_the_pointer(cx: &mut TestAppContext) {
         cx.simulate_mouse_move(point(px(600.), px(500.)), None, Modifiers::none());
         settle(cx);
     }
+}
+
+/// The search box's placeholder always starts with the same verb, whatever the scope (#388): the
+/// folder shown, the subfolders of it, the whole PC. The shortcut hint stays on the folder one.
+#[gpui::test]
+fn the_search_placeholder_follows_the_scope(cx: &mut TestAppContext) {
+    use crate::explorer::scope::Scope;
+    rust_i18n::set_locale("en");
+    let (_ws, view, cx) = open_deep(cx, 1600.);
+    let shown = |cx: &mut VisualTestContext| {
+        settle(cx);
+        view.update(cx, |v, cx| {
+            v.filter_input_for_test().read(cx).placeholder_for_test()
+        })
+    };
+    assert_eq!(shown(cx), "Search reports (Ctrl+F)");
+    view.update(cx, |v, cx| v.set_scope(Scope::Subfolders, cx));
+    assert_eq!(shown(cx), "Search subfolders of reports");
+    view.update(cx, |v, cx| v.set_scope(Scope::Computer, cx));
+    assert_eq!(shown(cx), "Search this PC");
+    view.update(cx, |v, cx| v.set_scope(Scope::Here, cx));
+    assert_eq!(shown(cx), "Search reports (Ctrl+F)");
+
+    // Other languages go through the same function; only the verb and the wording differ.
+    let in_zh = |cx: &mut VisualTestContext, scope: Scope, locale: &str| {
+        view.update(cx, |v, cx| {
+            v.set_scope(scope, cx);
+            v.filter_placeholder(locale, false)
+        })
+    };
+    assert_eq!(in_zh(cx, Scope::Here, "zh-TW"), "搜尋「reports」（Ctrl+F）");
+    assert_eq!(
+        in_zh(cx, Scope::Subfolders, "zh-TW"),
+        "搜尋「reports」的子資料夾"
+    );
+    assert_eq!(in_zh(cx, Scope::Computer, "zh-TW"), "搜尋整台電腦");
+    assert_eq!(in_zh(cx, Scope::Here, "zh-CN"), "搜索“reports”（Ctrl+F）");
+    assert_eq!(in_zh(cx, Scope::Computer, "zh-CN"), "搜索整台电脑");
 }

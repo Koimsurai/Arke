@@ -46,7 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HRESULT, Interface, PCWSTR, PSTR, PWSTR};
 
-use super::{Pidls, clean_label, fill_single, menu_directory, parse_pidls};
+use super::{Pidls, clean_label, fill_single, menu_directory, parse_pidls, read_label};
 use crate::shell::{ShellError, ShellMenu, ShellMenuEntry};
 use crate::win_fileops::wide;
 use crate::win_menu_parts::{HandlerKind, MenuHandler};
@@ -134,16 +134,20 @@ fn verb(
     // In a cascading menu: under that menu's label, as in the whole Windows menu, so the pinned
     // command's key (`Tools › Command`) is found (#278).
     let entry = match handler.parent.as_deref() {
-        Some(parent) => ShellMenuEntry::Submenu {
-            label: clean_label(
+        Some(parent) => {
+            let (label, access) = read_label(
                 &verb_label(parent)
                     .unwrap_or_else(|| parent.rsplit('\\').next().unwrap_or(parent).to_string()),
-            ),
-            enabled: true,
-            icon: None,
-            children: vec![entry],
-            lazy: None,
-        },
+            );
+            ShellMenuEntry::Submenu {
+                label,
+                access,
+                enabled: true,
+                icon: None,
+                children: vec![entry],
+                lazy: None,
+            }
+        }
         None => entry,
     };
     (menu, vec![entry])
@@ -246,8 +250,10 @@ fn shown(
             return None;
         }
         let children = sub_commands(command, items, actions);
-        return (!children.is_empty()).then(|| ShellMenuEntry::Submenu {
-            label: clean_label(&title),
+        let (label, access) = read_label(&title);
+        return (!children.is_empty()).then_some(ShellMenuEntry::Submenu {
+            label,
+            access,
             enabled,
             icon,
             children,
@@ -327,11 +333,13 @@ fn item(
     checked: bool,
     icon: Option<arke_core::thumbs::Thumbnail>,
 ) -> ShellMenuEntry {
+    let (label, access) = read_label(label);
     ShellMenuEntry::Item {
         id,
         // A packaged command's own commands may have no canonical name.
         verb: (!verb.is_empty()).then(|| verb.to_string()),
-        label: clean_label(label),
+        label,
+        access,
         enabled,
         checked,
         default: false,
@@ -598,6 +606,7 @@ pub(super) fn send_to(
     } else {
         vec![ShellMenuEntry::Submenu {
             label,
+            access: None,
             enabled: true,
             icon: None,
             children,
@@ -891,8 +900,8 @@ mod tests {
     )]
     fn this_machines_send_to_reads_quickly() {
         let _com = crate::win_fileops::Com::init().unwrap();
-        let file = crate::win::long_temp_dir()
-            .join(format!("arke-sendto-real-{}.txt", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-sendto-real-");
+        let file = tmp_dir.path().join("sendto.txt");
         std::fs::write(&file, "x").unwrap();
         let handler = MenuHandler::send_to();
         let read = || {
@@ -910,7 +919,6 @@ mod tests {
         let (_, first) = read();
         let (menu, took) = read();
         eprintln!("first {first:?}, again {took:?}");
-        let _ = std::fs::remove_file(&file);
         let Some(ShellMenuEntry::Submenu {
             label, children, ..
         }) = menu.entries.first()
@@ -972,14 +980,14 @@ mod tests {
 
     #[test]
     fn send_to_lists_its_folder_as_explorer_names_it() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-sendto-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-sendto-");
+        let dir = tmp_dir.path().to_path_buf();
         let _com = crate::win_fileops::Com::init().unwrap();
         let send_to = send_to_folder_with_shortcut(&dir);
         let names: Vec<String> = send_to_targets(&send_to)
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(names, ["Args tool"]);
     }
 
@@ -988,8 +996,8 @@ mod tests {
     #[test]
     #[ignore = "starts cmd.exe through the shell; run by hand"]
     fn a_file_sent_to_a_shortcut_reaches_its_program() {
-        let dir =
-            crate::win::long_temp_dir().join(format!("arke-sendto-run-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-sendto-run-");
+        let dir = tmp_dir.path().to_path_buf();
         let _com = crate::win_fileops::Com::init().unwrap();
         let send_to = send_to_folder_with_shortcut(&dir);
         let file = dir.join("sent.txt");
@@ -1009,7 +1017,6 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        let _ = std::fs::remove_dir_all(&dir);
         let got = got.expect("the program never ran");
         assert!(got.contains("sent.txt"), "{got:?}");
     }

@@ -225,11 +225,20 @@ fn dragging_a_tab_onto_the_pin_zone_pins_it(cx: &mut TestAppContext) {
         "no pin zone without a drag"
     );
 
-    // Dragging c: the New tab row becomes the pin zone; dropping there pins c at the top.
+    // Dragging c: the Tabs heading becomes the pin zone, and the tabs stay where they were;
+    // dropping there pins c at the top.
+    let header = cx.debug_bounds("tabs-header").expect("the Tabs heading");
+    let tab_a = cx.debug_bounds("tab-0").expect("tab a");
     start_tab_drag(cx, 2);
     let zone = cx
         .debug_bounds("tab-pin-drop")
         .expect("dragging an unpinned tab should show the pin zone");
+    assert!(
+        zone.top() >= header.top() - gpui::px(0.5)
+            && zone.bottom() <= header.bottom() + gpui::px(0.5),
+        "the zone takes the heading's place: {zone:?} in {header:?}"
+    );
+    assert_eq!(cx.debug_bounds("tab-0"), Some(tab_a), "the tabs don't move");
     drop_tab_at(cx, zone.center());
     ws.update(cx, |ws, cx| {
         assert_eq!(ws.pinned_for_test(), [true, false, false]);
@@ -257,6 +266,40 @@ fn dragging_a_tab_onto_the_pin_zone_pins_it(cx: &mut TestAppContext) {
             [Some(p(r"C:\a")), Some(p(r"C:\c")), Some(p(r"C:\b"))]
         );
     });
+}
+
+/// #301: New tab is a "+" in the Tabs heading, so the tabs start right under the heading, in the
+/// row New tab took; the "+" opens Ctrl+T's "go to" as the row did.
+#[gpui::test]
+fn new_tab_sits_in_the_tabs_heading(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton};
+    let fs = FakeFs::new();
+    fs.insert_many(r"C:\a", 1);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    cx.run_until_parked();
+    let header = cx.debug_bounds("tabs-header").expect("the Tabs heading");
+    let plus = cx.debug_bounds("new-tab").expect("the New tab button");
+    assert!(
+        plus.top() >= header.top() - gpui::px(0.5)
+            && plus.bottom() <= header.bottom() + gpui::px(0.5),
+        "{plus:?} in {header:?}"
+    );
+    let tab = cx.debug_bounds("tab-0").expect("the tab");
+    assert!(
+        tab.top() - header.bottom() < crate::theme::h_row_side(),
+        "no row between the heading and the tabs: {tab:?} under {header:?}"
+    );
+
+    assert!(ws.update(cx, |ws, _| ws.palette.is_none()));
+    cx.simulate_mouse_down(plus.center(), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(plus.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        ws.update(cx, |ws, _| ws.palette.is_some()),
+        "the + opens the go-to box"
+    );
 }
 
 #[gpui::test]
@@ -836,7 +879,7 @@ fn split_tab_shares_one_preview_that_follows_the_active_side(cx: &mut TestAppCon
     assert!(left.update(cx, |v, _| v.pane.preview_host.is_none()));
 
     // Over to the left side: the preview follows it, the right side lets go of its item.
-    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("shift-tab");
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
     left.update(cx, |e, cx| e.select_index(0, cx));
@@ -886,7 +929,7 @@ fn ctrl_w_closes_the_active_side_then_the_tab(cx: &mut TestAppContext) {
     open_tabs(&ws, cx, &[r"C:\a"]);
     let (_, right) = split_to(&ws, cx, r"C:\b");
     // Make the left side the active one.
-    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("shift-tab");
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.active_pane()), 0);
 
@@ -2521,12 +2564,19 @@ fn a_history_jump_on_the_other_side_of_a_split(cx: &mut TestAppContext) {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
-    // The steps stay in line: forward on the left comes back after the right's own step.
-    cx.simulate_keystrokes("alt-left");
+    // The steps stay in line: forward on the left comes back after the right's own step. Back
+    // and forward go through the workspace as the keys' handler does (the keys themselves are
+    // covered by the tests above): a key reaches it through the window's last drawn frame and
+    // the focus, which a test can't wait on.
+    let step = |cx: &mut VisualTestContext, back: bool| {
+        ws.update_in(cx, |ws, window, cx| ws.go_in_history(back, window, cx));
+        cx.run_until_parked();
+    };
+    step(cx, true);
     wait_until(cx, &right, "right back to b", loaded(r"C:\b"));
-    cx.simulate_keystrokes("alt-right");
+    step(cx, false);
     wait_until(cx, &right, "right forward to c", loaded(r"C:\c"));
-    cx.simulate_keystrokes("alt-right");
+    step(cx, false);
     wait_until(cx, &left, "left forward to b", loaded(r"C:\b"));
 }
 
@@ -2973,4 +3023,68 @@ fn restored_pinned_tabs_are_locked(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(ws.update(cx, |ws, _| ws.pinned_for_test()), [true, false]);
     assert_eq!(locks(cx), [true, false]);
+}
+
+/// The back and forward buttons name the folder they go to, and follow the history; a button
+/// that is off keeps the plain tooltip.
+#[gpui::test]
+fn back_and_forward_tooltips_name_the_destination(cx: &mut TestAppContext) {
+    rust_i18n::set_locale("en");
+    let fs = folders(&[r"C:\a", r"C:\b", r"C:\c"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "a", loaded(r"C:\a"));
+    let tips = |cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, cx| {
+            (
+                ws.nav_tip_for_test(true, cx),
+                ws.nav_tip_for_test(false, cx),
+            )
+        })
+    };
+    assert_eq!(
+        tips(cx),
+        ("Back (Alt+←)".to_owned(), "Forward (Alt+→)".to_owned()),
+        "nothing to go to: the plain tooltips"
+    );
+    for dir in [r"C:\b", r"C:\c"] {
+        view.update(cx, |e, cx| e.navigate(p(dir), NavKind::New, cx));
+        wait_until(cx, &view, dir, loaded(dir));
+    }
+    assert_eq!(
+        tips(cx),
+        ("Back to b (Alt+←)".to_owned(), "Forward (Alt+→)".to_owned())
+    );
+    view.update_in(cx, |e, window, cx| {
+        e.go_back(&crate::explorer::GoBack, window, cx);
+    });
+    wait_until(cx, &view, "back", loaded(r"C:\b"));
+    assert_eq!(
+        tips(cx),
+        (
+            "Back to a (Alt+←)".to_owned(),
+            "Forward to c (Alt+→)".to_owned()
+        )
+    );
+}
+
+/// A tab in the sidebar shows its folder's full path on hover; a split tab lists both sides.
+#[gpui::test]
+fn a_tab_tooltip_is_the_full_path(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a\x", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a\x");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a\x"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_tip(0, cx).as_deref(), Some(r"C:\a\x"));
+        assert_eq!(ws.tab_tip(1, cx).as_deref(), Some(r"C:\b"));
+        assert_eq!(ws.tab_tip(2, cx), None);
+    });
+    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(true, window, cx));
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        let tip = ws.tab_tip(ws.active, cx);
+        assert_eq!(tip, Some(rust_i18n::t!("home.title").into_owned()));
+    });
 }

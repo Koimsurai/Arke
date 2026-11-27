@@ -48,81 +48,25 @@ pub(crate) fn set_font(name: &str) -> bool {
     true
 }
 
-/// Simplified Chinese UI fonts, UI variant first.
-const SIMPLIFIED_FONTS: [&str; 2] = ["Microsoft YaHei UI", "Microsoft YaHei"];
-/// Traditional Chinese UI fonts, UI variant first.
-const TRADITIONAL_FONTS: [&str; 2] = ["Microsoft JhengHei UI", "Microsoft JhengHei"];
-
-/// Japanese UI fonts, UI variant first.
-const JAPANESE_FONTS: [&str; 2] = ["Yu Gothic UI", "Meiryo UI"];
-
-/// CJK fallback fonts, in order, for a UI language (`zh-CN`, `zh-TW`, `ja`, `en`) on a system whose
-/// display locale maps to `system` (same names).
-///
-/// The default UI font has no CJK glyphs, so DirectWrite picks one by the *system* locale. Han
-/// characters shared by both scripts (U+7F29 in 「压缩」) would then come out in Traditional
-/// shapes on a zh-TW system even with a Simplified UI, or the reverse. Naming the fonts in the UI
-/// language's order fixes that. Japanese has its own fonts, since the same characters take
-/// Chinese shapes on a Chinese system. English follows the system, which is what the file names on it
-/// are most likely written in; other systems get no list and keep DirectWrite's own choice.
-pub(crate) fn cjk_fallbacks(ui: &str, system: &str) -> Vec<&'static str> {
-    if ui == "ja" {
-        return JAPANESE_FONTS.to_vec();
-    }
-    let simplified_first = match (ui, system) {
-        ("zh-CN", _) | ("en", "zh-CN") => true,
-        ("zh-TW", _) | ("en", "zh-TW") => false,
-        _ => return Vec::new(),
-    };
-    let (first, second) = if simplified_first {
-        (SIMPLIFIED_FONTS, TRADITIONAL_FONTS)
-    } else {
-        (TRADITIONAL_FONTS, SIMPLIFIED_FONTS)
-    };
-    first.into_iter().chain(second).collect()
-}
-
-/// Fallback fonts for the UI font under the current UI language (see [`set_ui_language`]).
-static FALLBACKS: parking_lot::RwLock<Option<gpui::FontFallbacks>> = parking_lot::RwLock::new(None);
-
-/// Orders the CJK fallbacks for UI language `ui` (system locale `system`). Returns whether they
-/// changed; windows must repaint then. A custom font from settings stays the primary family, only
-/// the fallbacks behind it change.
-pub(crate) fn set_ui_language(ui: &str, system: &str) -> bool {
-    let fonts = cjk_fallbacks(ui, system);
-    let wanted = (!fonts.is_empty())
-        .then(|| gpui::FontFallbacks::from_fonts(fonts.into_iter().map(str::to_owned).collect()));
-    let mut fallbacks = FALLBACKS.write();
-    if *fallbacks == wanted {
-        return false;
-    }
-    *fallbacks = wanted;
-    drop(fallbacks);
-    LOOK.fetch_add(1, Ordering::Relaxed);
-    true
-}
-
-/// Sets the UI font and its language-ordered fallbacks on an element; children inherit both.
-/// Use this instead of `font_family(ui_font())`, which would lose the fallbacks.
+/// Sets the UI font on an element; children inherit it. Characters it lacks fall back to
+/// DirectWrite's choice for the UI language (see `win::text_locale`).
 pub(crate) trait UiFont: gpui::Styled + Sized {
     #[must_use]
     fn ui_font(mut self) -> Self {
-        let style = self.text_style();
-        style.font_family = Some(ui_font());
-        style.font_fallbacks.clone_from(&FALLBACKS.read());
+        self.text_style().font_family = Some(ui_font());
         self
     }
 }
 
 impl<T: gpui::Styled> UiFont for T {}
 
-/// The UI font with its language fallbacks at `weight`, for measuring text before layout (the
-/// breadcrumbs decide what to collapse from it).
+/// The UI font at `weight`, for measuring text before layout (the breadcrumbs decide what to
+/// collapse from it).
 pub(crate) fn ui_font_at(weight: FontWeight) -> gpui::Font {
     gpui::Font {
         family: ui_font(),
         features: gpui::FontFeatures::default(),
-        fallbacks: FALLBACKS.read().clone(),
+        fallbacks: None,
         weight,
         style: gpui::FontStyle::Normal,
     }
@@ -212,10 +156,26 @@ scaled!(s_32, 32.);
 
 // List row height (standard density).
 scaled!(h_row, 32.);
-// List row height (compact, used in dual pane).
-scaled!(h_row_compact, 28.);
+// List row height in compact density: File Explorer's compact view (21 px at 100%, #438). The
+// row is the pointer target, as in Explorer; the rename box shrinks to fit it (`LH_TIGHT`).
+scaled!(h_row_compact, 21.);
+// Rows a little tighter than standard: split panes (half width), pinned tabs and the column
+// view's parent column, outside compact density.
+scaled!(h_row_tight, 28.);
 // List row height (comfortable).
 scaled!(h_row_comfortable, 40.);
+
+/// Sidebar rows (folders, places, tabs, the Shelf, Home and Settings): compact rows in compact
+/// density (#438), the standard height otherwise. Section headings keep [`h_row`].
+pub(crate) fn h_row_side() -> Pixels {
+    by_room(24., 32., 32.)
+}
+
+/// The strip between two sidebar sections, a hairline across its middle: a little more room
+/// between the groups as the density opens up.
+pub(crate) fn side_rule_h() -> Pixels {
+    by_room(5., 9., 13.)
+}
 // Controls: buttons, inputs.
 scaled!(h_ctl, 32.);
 // Small controls: context bar actions.
@@ -266,6 +226,73 @@ pub(crate) fn sidebar_full_width() -> Pixels {
 }
 // Width of the collapsed sidebar: a column of icons (#91).
 scaled!(rail_w, 52.);
+
+// --- Gaps around the paper (#429) ---
+
+/// How much room the frame leaves around the paper: 0 compact, 1 standard, 2 comfortable. Follows
+/// the density setting.
+static ROOM: AtomicU32 = AtomicU32::new(1);
+
+/// Sets the room around the paper from the density setting. Returns whether it changed; windows
+/// must repaint if so.
+pub(crate) fn set_density(density: crate::settings::Density) -> bool {
+    use crate::settings::Density;
+    let room = match density {
+        Density::Compact => 0,
+        Density::Standard => 1,
+        Density::Comfortable => 2,
+    };
+    if ROOM.swap(room, Ordering::Relaxed) == room {
+        return false;
+    }
+    LOOK.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+/// The value (at 100%) for the current density.
+fn by_room(compact: f32, standard: f32, comfortable: f32) -> Pixels {
+    scaled_px(match ROOM.load(Ordering::Relaxed) {
+        0 => compact,
+        2 => comfortable,
+        _ => standard,
+    })
+}
+
+/// Space between the paper and the window's right and bottom edges, between the two papers of a
+/// split tab and before its shared preview. About what Edge leaves around its page; the same
+/// when maximized or snapped, as in Edge.
+pub(crate) fn paper_gap() -> Pixels {
+    by_room(2., 4., 8.)
+}
+
+/// The paper's corner radius. It shrinks with [`paper_gap`] so the paper's corner keeps close to
+/// the window's own (8 px) corner; a large radius in a thin gap looks loose.
+pub(crate) fn r_paper() -> Pixels {
+    by_room(6., 8., 12.)
+}
+
+// --- The file list's insets (#448) ---
+
+/// Space between the paper's left edge (the sidebar or the split divider) and the list's rows,
+/// their highlight and the column header: about File Explorer's (15 px at standard spacing), so a
+/// marquee started beside the sidebar starts in empty space rather than on a file.
+pub(crate) fn list_inset() -> Pixels {
+    by_room(12., 16., 20.)
+}
+
+/// How far a list row's highlight (selection, hover, cursor ring, drop target) stays inside the
+/// row at its top and bottom, so neighbouring highlighted rows show a gap, as in File Explorer
+/// (2 px there). The whole row is still the pointer target. A compact row (21 px) keeps 1 px: 2 px
+/// would leave a 17 px highlight, shorter than the name's line.
+pub(crate) fn row_wash_inset() -> Pixels {
+    by_room(1., 2., 2.)
+}
+
+/// Corner radius of a list row's highlight. A compact row's highlight (19 px) takes a smaller one
+/// so its sides keep some straight edge, as a standard row's do.
+pub(crate) fn r_row() -> Pixels {
+    by_room(6., 8., 8.)
+}
 
 static SIDEBAR_COLLAPSED: AtomicBool = AtomicBool::new(false);
 
@@ -383,6 +410,10 @@ scaled!(r_8, 8.);
 scaled!(r_12, 12.);
 /// Pills, progress bars.
 pub(crate) const R_FULL: Pixels = px(999.);
+/// Line height (relative to the font size) for text in a box shorter than the default line
+/// (1.618): the rename box in a compact row. Still above the UI fonts' ascent plus descent
+/// (about 1.33 for Segoe UI and the CJK fallbacks), so nothing is cut off.
+pub(crate) const LH_TIGHT: f32 = 1.35;
 
 // --- Raw layer ---
 
@@ -1215,6 +1246,16 @@ fn drop_shadow(color: Rgba, y: f32, blur: f32) -> BoxShadow {
     }
 }
 
+/// Light theme: the edge of a floating surface, a contact shadow all round (no offset, a small
+/// sigma) in place of a drawn hairline (#403). The hairline was darker than the shadow right
+/// beside it, so the edge read as a pen stroke; the contact shadow is darkest at the edge and
+/// fades into the ambient shadow over two or three pixels, which still separates white from
+/// white paper (Fluent's light shadows work the same way). Like every drop shadow it also fills
+/// the area under the element, which only shows through translucent surfaces.
+fn light_edge(opacity: f32, sigma: f32) -> BoxShadow {
+    drop_shadow(alpha(p().veil, opacity), 0., sigma)
+}
+
 /// Cards: a single hairline border.
 pub(crate) fn elev_1() -> Vec<BoxShadow> {
     vec![hairline(line())]
@@ -1237,37 +1278,46 @@ pub(crate) fn elev_2() -> Vec<BoxShadow> {
         vec![hairline(line()), drop]
     }
 }
-/// Floating surfaces: menus, popovers, tooltips, toasts, drag previews. They are always opaque
-/// (`overlay()`), so the dark theme can use the outline plus a lit inner edge.
 /// Tooltips: lighter than menus. No dark outline (on a small label it reads as a black ring), a
 /// faint edge and a short, soft shadow, so the tip floats without weighing on what it explains.
+/// The light theme's edge is the lightest of the floating ones (12%, sigma 1.5).
 pub(crate) fn elev_tooltip() -> Vec<BoxShadow> {
     let drop = drop_shadow(alpha(p().veil, if is_dark() { 0.22 } else { 0.08 }), 2., 8.);
     if is_dark() {
         vec![inner_hairline(alpha(p().ink, 0.08)), drop]
     } else {
-        vec![hairline(line()), drop]
+        vec![light_edge(0.12, 1.5), drop]
     }
 }
 
+/// Floating surfaces: toasts, popovers, drag previews, the tab ghost.
+///
+/// The same natural shape as [`elev_3`], one step lower: darkest at the edge and fading out
+/// smoothly all round, a little heavier below, with no dark outline (#403). `blur_radius` is the
+/// Gaussian's sigma. The dark theme has a contact shadow (1 px down, sigma 2) under an ambient one
+/// (3 px down, sigma 6: half of `elev_3`'s, and lighter); the lit inner edge separates gray from
+/// gray. The light theme has a [`light_edge`] (14%, sigma 1.5) under one close drop (8%, 2 px
+/// down, sigma 5). The old drop (8 px down, sigma 24) left a long tail below the outline. Drop
+/// shadows also fill the area under the element, which shows through the translucent slide card,
+/// so the layers there add up to about the old drop's darkness in the dark theme (36%); the light
+/// drop is a little lighter than before (was 10%) so the card darkens by only about 2% more.
 pub(crate) fn elev_float() -> Vec<BoxShadow> {
-    let drop = drop_shadow(
-        alpha(p().veil, if is_dark() { 0.35 } else { 0.10 }),
-        8.,
-        24.,
-    );
     if is_dark() {
         vec![
-            dark_outline(),
-            drop,
+            drop_shadow(alpha(p().veil, 0.22), 1., 2.),
+            drop_shadow(alpha(p().veil, 0.18), 3., 6.),
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop]
+        vec![
+            light_edge(0.14, 1.5),
+            drop_shadow(alpha(p().veil, 0.08), 2., 5.),
+        ]
     }
 }
 /// Menus (context menus, dropdowns): a tighter shadow than other floating surfaces, close to the
-/// system's own menus (#275).
+/// system's own menus (#275). The light theme's edge is a [`light_edge`] (16%, sigma 1.5), between
+/// a tooltip's and a dialog's.
 pub(crate) fn elev_menu() -> Vec<BoxShadow> {
     let drop = drop_shadow(
         alpha(p().veil, if is_dark() { 0.35 } else { 0.12 }),
@@ -1281,24 +1331,34 @@ pub(crate) fn elev_menu() -> Vec<BoxShadow> {
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop]
+        vec![light_edge(0.16, 1.5), drop]
     }
 }
-/// Dialogs, Ctrl+T, Quick Look.
+/// Dialogs, Ctrl+T, Quick Look and the flyouts (view, sort and search options, the operation
+/// center).
+///
+/// Shaped like a real shadow: darkest right at the edge, fading out smoothly all round and only a
+/// little heavier below (#403). GPUI's `blur_radius` is the Gaussian's sigma (a CSS blur of
+/// twice that). The dark theme has a short contact shadow (1 px down, sigma 3) under an ambient
+/// one (6 px down, sigma 12), and no dark outline: a black line darker than the shadow beside it
+/// read as a pen stroke, and the old drop (24 px down, sigma 56) hung a gray smudge far below the
+/// surface. The lit inner edge still separates gray from gray. The light theme has no hairline
+/// either: a [`light_edge`] (16%, sigma 2, the widest of the floating ones) under one close drop
+/// (16%, 3 px down, sigma 8), so it stays at two layers. Its edge pixel is now about 13% darker
+/// than the paper at the sides and 11% at the top, fading by 3 to 4% a pixel, where the hairline
+/// was 17% next to a 7% shadow.
 pub(crate) fn elev_3() -> Vec<BoxShadow> {
-    let drop = drop_shadow(
-        alpha(p().veil, if is_dark() { 0.5 } else { 0.22 }),
-        24.,
-        56.,
-    );
     if is_dark() {
         vec![
-            dark_outline(),
-            drop,
+            drop_shadow(alpha(p().veil, 0.35), 1., 3.),
+            drop_shadow(alpha(p().veil, 0.40), 6., 12.),
             inner_hairline(alpha(p().ink, FLOAT_EDGE)),
         ]
     } else {
-        vec![hairline(line()), drop]
+        vec![
+            light_edge(0.16, 2.),
+            drop_shadow(alpha(p().veil, 0.16), 3., 8.),
+        ]
     }
 }
 
@@ -1698,58 +1758,15 @@ mod tests {
         }
     }
 
-    /// CJK fallbacks follow the UI language, whatever the system is set to; English follows the
-    /// system.
+    /// The UI font sets only the family; fallbacks are left to DirectWrite.
     #[test]
-    fn cjk_fallbacks_follow_the_ui_language() {
-        let simplified = [
-            "Microsoft YaHei UI",
-            "Microsoft YaHei",
-            "Microsoft JhengHei UI",
-            "Microsoft JhengHei",
-        ];
-        let traditional = [
-            "Microsoft JhengHei UI",
-            "Microsoft JhengHei",
-            "Microsoft YaHei UI",
-            "Microsoft YaHei",
-        ];
-        for system in ["zh-TW", "zh-CN", "en"] {
-            assert_eq!(cjk_fallbacks("zh-CN", system), simplified, "{system}");
-            assert_eq!(cjk_fallbacks("zh-TW", system), traditional, "{system}");
-        }
-        assert_eq!(cjk_fallbacks("en", "zh-CN"), simplified);
-        assert_eq!(cjk_fallbacks("en", "zh-TW"), traditional);
-        assert_eq!(cjk_fallbacks("ja", "zh-TW"), ["Yu Gothic UI", "Meiryo UI"]);
-        // Elsewhere DirectWrite keeps choosing by the system locale (Korean, ...).
-        assert!(cjk_fallbacks("en", "en").is_empty());
-        assert!(cjk_fallbacks("de", "zh-CN").is_empty());
-    }
-
-    /// The UI font keeps a custom family and only takes the fallbacks.
-    #[test]
-    fn ui_font_carries_language_fallbacks() {
+    fn ui_font_sets_the_family_only() {
         use gpui::Styled as _;
-        set_ui_language("zh-CN", "zh-TW");
         let mut el = gpui::div().ui_font();
         let style = el.text_style();
-        assert_eq!(style.font_family.as_deref(), Some(DEFAULT_UI_FONT));
-        let fallbacks = style.font_fallbacks.clone();
-        assert_eq!(
-            fallbacks.as_ref().map(|f| f.fallback_list()[0].as_str()),
-            Some("Microsoft YaHei UI")
-        );
-        set_ui_language("zh-TW", "zh-TW");
-        let mut el = gpui::div().ui_font();
-        assert_eq!(
-            el.text_style()
-                .font_fallbacks
-                .as_ref()
-                .map(|f| f.fallback_list()[0].as_str()),
-            Some("Microsoft JhengHei UI")
-        );
-        set_ui_language("en", "en");
-        assert!(gpui::div().ui_font().text_style().font_fallbacks.is_none());
+        assert_eq!(style.font_family, Some(ui_font()));
+        assert!(style.font_fallbacks.is_none());
+        assert!(ui_font_at(FontWeight::NORMAL).fallbacks.is_none());
     }
 
     /// File type glyphs stay visible on their paper, small (tinted) and large, in either theme.
@@ -1809,6 +1826,69 @@ mod tests {
         // A dark enough color stays unchanged in the light theme.
         let (same, _) = accent_for(hex(0x8e4ec6), &LIGHT);
         assert_eq!(pack(same), 0x8e4ec6);
+    }
+
+    /// How much the shadows darken the paper `d` px outside an element's edge, `lift` px of the
+    /// shadows' offset turned away from it (0 at the sides, the offset at the top), the way the
+    /// shader does it: each layer is a Gaussian blurred rectangle (sigma `blur_radius`).
+    fn shadow_darkness(shadows: &[BoxShadow], d: f32, top: bool) -> f32 {
+        // The shader's erf approximation.
+        let erf = |x: f32| {
+            let a = x.abs();
+            let t = (1. + (0.278_393 + (0.230_389 + 0.078_108 * a * a) * a) * a).powi(4);
+            x.signum() * (1. - 1. / t)
+        };
+        let clear = shadows.iter().fold(1., |clear, s| {
+            let lift = if top { f32::from(s.offset.y) } else { 0. };
+            let sigma = f32::from(s.blur_radius);
+            let cover = f32::midpoint(
+                1.,
+                erf(-(d + lift) / sigma * std::f32::consts::FRAC_1_SQRT_2),
+            );
+            clear * (1. - s.color.a * cover)
+        });
+        1. - clear
+    }
+
+    /// Light floating surfaces have no drawn line at the edge (#403): at most two layers, all of
+    /// them blurred, so the edge pixel is less than twice as dark as the one beside it (the old
+    /// hairline was more than twice). The edge still darkens the paper enough on every side to
+    /// set white apart from white, and more for higher surfaces.
+    #[test]
+    fn light_floating_edges_are_shadows_not_lines() {
+        set_dark(false);
+        let levels = [
+            ("dialog", elev_3()),
+            ("menu", elev_menu()),
+            ("float", elev_float()),
+            ("tooltip", elev_tooltip()),
+        ];
+        let mut above = f32::MAX;
+        for (name, shadows) in &levels {
+            assert!(shadows.len() <= 2, "{name}: no more layers than before");
+            for s in shadows {
+                assert!(!s.inset && s.spread_radius == px(0.), "{name}: no ring");
+                assert!(s.blur_radius >= px(1.), "{name}: every layer is soft");
+            }
+            for top in [false, true] {
+                let edge = shadow_darkness(shadows, 0.5, top);
+                let next = shadow_darkness(shadows, 1.5, top);
+                assert!(
+                    edge >= 0.065,
+                    "{name} (top {top}): edge {edge:.3} separates"
+                );
+                assert!(
+                    next * 2. > edge,
+                    "{name} (top {top}): {edge:.3} then {next:.3}"
+                );
+            }
+            let side = shadow_darkness(shadows, 0.5, false);
+            assert!(
+                side < above,
+                "{name}: lighter than the level above ({side:.3})"
+            );
+            above = side;
+        }
     }
 
     #[test]

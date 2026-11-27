@@ -29,6 +29,7 @@ minisign-verify.workspace = true
 raw-window-handle = "0.6"
 image.workspace = true
 parking_lot.workspace = true
+percent-encoding.workspace = true
 thiserror.workspace = true
 
 # Arke is Windows-only for now; on other targets build.rs stops with a clear message instead of
@@ -127,6 +128,7 @@ features = [
 embed-resource = "3"
 
 [dev-dependencies]
+tempfile.workspace = true
 # Node ids for accessibility actions in tests; the version gpui uses.
 accesskit = "0.24"
 # Signs test downloads with a throwaway key

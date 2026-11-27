@@ -281,6 +281,11 @@ fn process_memory() -> Option<Memory> {
     })
 }
 
+/// Highest working set of this process so far, in bytes (`--bench list` reports it too).
+pub(crate) fn peak_working_set() -> Option<u64> {
+    process_memory().map(|m| m.peak_working_set)
+}
+
 /// How a volume's items were gathered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Source {
@@ -608,7 +613,8 @@ mod tests {
 
     #[test]
     fn temp_folder_is_deleted_on_drop() {
-        let base = std::env::temp_dir().join(format!("arke-bench-test-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let base = tmp_dir.path().to_path_buf();
         let path = base.join("run");
         {
             let dir = TempDir::create(path.clone()).unwrap();
@@ -616,12 +622,12 @@ mod tests {
             assert_eq!(index_file_size(dir.path()), Some(4));
         }
         assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn leftovers_of_finished_runs_are_removed() {
-        let base = std::env::temp_dir().join(format!("arke-bench-left-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let base = tmp_dir.path().to_path_buf();
         // u32::MAX is never a live process id; our own id is always kept.
         let dead = temp_dir_in(&base, u32::MAX);
         let own = temp_dir_in(&base, std::process::id());
@@ -630,6 +636,5 @@ mod tests {
         remove_leftovers(&base);
         assert!(!dead.exists());
         assert!(own.exists());
-        let _ = std::fs::remove_dir_all(base);
     }
 }

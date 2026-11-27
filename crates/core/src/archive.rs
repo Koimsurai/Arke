@@ -30,6 +30,7 @@ mod bsdtar;
 mod libarchive;
 mod sevenz;
 mod system;
+mod zip_parallel;
 mod zstd;
 
 /// Why an archive could not be extracted, compressed or listed.
@@ -430,6 +431,10 @@ pub struct ExtractOptions<'a> {
     pub decode_legacy: &'a (dyn Fn(&[u8]) -> String + Sync),
     /// For a password-protected zip or 7z (#346); `None` until the user gives one.
     pub password: Option<&'a str>,
+    /// Most threads a zip with many files is extracted on, this one included; 1 extracts entry
+    /// by entry on this thread. Other formats always use one. The caller passes more only where
+    /// writing in parallel pays (solid-state drives).
+    pub workers: usize,
 }
 
 /// Extracts into `dest`, creating it if needed.
@@ -449,7 +454,7 @@ pub fn extract(
         source,
     })?;
     match kind {
-        ArchiveKind::Zip => extract_zip(file, dest, opts),
+        ArchiveKind::Zip => extract_zip(file, archive, dest, opts),
         ArchiveKind::Tar => {
             let total = file.metadata().map_or(0, |m| m.len());
             extract_tar(CountingReader::new(file), total, dest, opts)
@@ -1176,111 +1181,159 @@ fn copy_entry(
     Ok(true)
 }
 
+/// What the first pass learns about a zip entry, from the central directory alone.
+#[derive(Default)]
+struct ZipEntryInfo {
+    /// Needs the password (folders never do).
+    encrypted: bool,
+    /// Its compression method's id, to name one Arke can't read.
+    method: u16,
+    /// Where it goes under the destination; `None` for a name that isn't safe.
+    rel: Option<PathBuf>,
+    /// A folder entry.
+    dir: bool,
+}
+
+/// What became of one zip entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZipOutcome {
+    /// Unsafe name or a link: skipped.
+    Unsafe,
+    /// A folder, made (or already there).
+    Dir,
+    File(Written),
+}
+
+impl ZipOutcome {
+    const fn count(self, summary: &mut ExtractSummary) {
+        match self {
+            Self::Unsafe => summary.skipped_unsafe += 1,
+            Self::Dir => summary.dirs += 1,
+            Self::File(written) => written.count(summary),
+        }
+    }
+}
+
 fn extract_zip(
     file: File,
+    archive: &Path,
     dest: &Path,
     opts: &ExtractOptions<'_>,
 ) -> Result<ExtractSummary, ArchiveError> {
     let mut zip = zip::ZipArchive::new(BufReader::new(file))
         .map_err(|source| ArchiveError::NotZip { source })?;
-    let mut summary = ExtractSummary::default();
     let mut progress = ExtractProgress::default();
-    let mut encrypted = vec![false; zip.len()];
-    // Each entry's method, to name one Arke can't read.
-    let mut methods = vec![0u16; zip.len()];
-    for (i, (flag, method)) in encrypted.iter_mut().zip(&mut methods).enumerate() {
-        if let Ok(entry) = zip.by_index_raw(i) {
-            *flag = entry.encrypted() && !entry.is_dir();
+    let entries: Vec<ZipEntryInfo> = (0..zip.len())
+        .map(|i| {
+            let Ok(entry) = zip.by_index_data(i) else {
+                return ZipEntryInfo::default();
+            };
+            progress.total = progress.total.saturating_add(entry.size());
             #[allow(
                 deprecated,
                 reason = "the number names the methods the crate has no constant for"
             )]
-            {
-                *method = entry.compression().to_u16();
+            let method = entry.compression().to_u16();
+            ZipEntryInfo {
+                encrypted: entry.encrypted() && !entry.is_dir(),
+                method,
+                rel: safe_relative_path(entry.name_raw(), opts.decode_legacy),
+                dir: entry.is_dir(),
             }
-            progress.total = progress.total.saturating_add(entry.size());
-        }
-    }
+        })
+        .collect();
     // A password-protected entry: ask for the password instead of calling the archive damaged
     // (#282), and check it against every such entry (each has its own check value, read without
     // decoding anything) before anything is written, so a mixed archive isn't left half extracted.
-    if encrypted.contains(&true) {
+    if entries.iter().any(|e| e.encrypted) {
         let password = opts.password.ok_or(ArchiveError::Encrypted)?;
-        for i in (0..zip.len()).filter(|&i| encrypted[i]) {
+        for (i, entry) in entries.iter().enumerate().filter(|(_, e)| e.encrypted) {
             zip.by_index_decrypt(i, password.as_bytes())
-                .map_err(|source| zip_error(source, true, methods[i]))?;
+                .map_err(|source| zip_error(source, true, entry.method))?;
         }
     }
     (opts.progress)(progress);
-    for (i, &encrypted) in encrypted.iter().enumerate() {
+    let workers = zip_parallel::workers(&entries, opts.workers);
+    if workers > 1 {
+        return zip_parallel::extract(zip, archive, &entries, dest, opts, progress, workers);
+    }
+    let mut summary = ExtractSummary::default();
+    for (i, info) in entries.iter().enumerate() {
         if cancelled(opts) {
             summary.cancelled = true;
             return Ok(summary);
-        }
-        // zstd is decoded here, from the raw bytes (`zstd.rs`); encrypted, it is left to the
-        // zip crate, which says it can't.
-        let zstd = methods[i] == zstd::ZIP_ZSTD && !encrypted;
-        let entry = match opts.password.filter(|_| encrypted) {
-            Some(password) => zip.by_index_decrypt(i, password.as_bytes()),
-            None if zstd => zip.by_index_raw(i),
-            None => zip.by_index(i),
-        };
-        let mut entry = entry.map_err(|source| zip_error(source, encrypted, methods[i]))?;
-        let Some(rel) = safe_relative_path(entry.name_raw(), opts.decode_legacy) else {
-            summary.skipped_unsafe += 1;
-            continue;
-        };
-        if entry.is_symlink() {
-            summary.skipped_unsafe += 1;
-            continue;
-        }
-        let target = dest.join(&rel);
-        if entry.is_dir() {
-            fs::create_dir_all(&target).map_err(|source| ArchiveError::Create {
-                path: target.clone(),
-                source,
-            })?;
-            summary.dirs += 1;
-            continue;
         }
         let mut on_bytes = |n: u64| {
             progress.done = progress.done.saturating_add(n);
             (opts.progress)(progress);
         };
-        let size = entry.size();
-        let written = if zstd {
-            let (packed, crc) = (entry.compressed_size(), entry.crc32());
-            match zstd::ZstdEntry::new(&mut entry, packed, crc) {
-                Ok(mut decoded) => {
-                    write_new_file(&target, &mut decoded, Some(size), &mut on_bytes, opts)
-                }
-                Err(source) => Err(ArchiveError::Read {
-                    path: target.clone(),
-                    source,
-                }),
-            }
-        } else {
-            write_new_file(&target, &mut entry, Some(size), &mut on_bytes, opts)
-        };
-        // ZipCrypto's check value is one byte: one wrong password in 256 passes it and decodes
-        // to garbage, which fails here (bad data or CRC).
-        let written = match written {
-            // The zip crate says it can't decode a method only once it is read.
-            Err(ArchiveError::Read { source, .. })
-                if source.kind() == io::ErrorKind::Unsupported =>
-            {
-                Err(ArchiveError::UnsupportedMethod {
-                    method: zip_method_name(methods[i]),
-                })
-            }
-            Err(ArchiveError::Read { .. }) if encrypted => Err(ArchiveError::WrongPassword),
-            written => written,
-        };
-        written?.count(&mut summary);
+        extract_zip_entry(&mut zip, i, info, dest, opts, &mut on_bytes)?.count(&mut summary);
         progress.files = summary.files;
     }
     summary.cancelled = cancelled(opts);
     Ok(summary)
+}
+
+/// Extracts entry `i` of `zip` (described by `info`) under `dest`. The same for one thread and
+/// for several (`zip_parallel`).
+fn extract_zip_entry<R: Read + io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    i: usize,
+    info: &ZipEntryInfo,
+    dest: &Path,
+    opts: &ExtractOptions<'_>,
+    on_bytes: &mut dyn FnMut(u64),
+) -> Result<ZipOutcome, ArchiveError> {
+    let encrypted = info.encrypted;
+    // zstd is decoded here, from the raw bytes (`zstd.rs`); encrypted, it is left to the
+    // zip crate, which says it can't.
+    let zstd = info.method == zstd::ZIP_ZSTD && !encrypted;
+    let entry = match opts.password.filter(|_| encrypted) {
+        Some(password) => zip.by_index_decrypt(i, password.as_bytes()),
+        None if zstd => zip.by_index_raw(i),
+        None => zip.by_index(i),
+    };
+    let mut entry = entry.map_err(|source| zip_error(source, encrypted, info.method))?;
+    let Some(rel) = &info.rel else {
+        return Ok(ZipOutcome::Unsafe);
+    };
+    if entry.is_symlink() {
+        return Ok(ZipOutcome::Unsafe);
+    }
+    let target = dest.join(rel);
+    if entry.is_dir() {
+        fs::create_dir_all(&target).map_err(|source| ArchiveError::Create {
+            path: target.clone(),
+            source,
+        })?;
+        return Ok(ZipOutcome::Dir);
+    }
+    let size = entry.size();
+    let written = if zstd {
+        let (packed, crc) = (entry.compressed_size(), entry.crc32());
+        match zstd::ZstdEntry::new(&mut entry, packed, crc) {
+            Ok(mut decoded) => write_new_file(&target, &mut decoded, Some(size), on_bytes, opts),
+            Err(source) => Err(ArchiveError::Read {
+                path: target.clone(),
+                source,
+            }),
+        }
+    } else {
+        write_new_file(&target, &mut entry, Some(size), on_bytes, opts)
+    };
+    // ZipCrypto's check value is one byte: one wrong password in 256 passes it and decodes
+    // to garbage, which fails here (bad data or CRC).
+    let written = match written {
+        // The zip crate says it can't decode a method only once it is read.
+        Err(ArchiveError::Read { source, .. }) if source.kind() == io::ErrorKind::Unsupported => {
+            Err(ArchiveError::UnsupportedMethod {
+                method: zip_method_name(info.method),
+            })
+        }
+        Err(ArchiveError::Read { .. }) if encrypted => Err(ArchiveError::WrongPassword),
+        written => written,
+    };
+    Ok(ZipOutcome::File(written?))
 }
 
 /// Maps a zip error for an entry (`encrypted`: a password was needed for it; `method`: its
@@ -1424,25 +1477,23 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     mod formats;
+    mod parallel;
 
-    /// Tests run only in their own folder under %TEMP%, deleted afterwards.
-    struct Sandbox(PathBuf);
+    /// Tests run only in their own folder under %TEMP%, deleted afterwards (also when a test
+    /// panics). The second field is what deletes it.
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("arke-archive-test-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            if self.0.starts_with(std::env::temp_dir()) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
+            let guard = tempfile::Builder::new()
+                .prefix(&format!("arke-archive-test-{tag}-"))
+                .tempdir()
+                .unwrap();
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 
@@ -1464,6 +1515,8 @@ mod tests {
             progress,
             decode_legacy: &fake_big5,
             password: None,
+            // Big enough zips take the parallel path (`zip_parallel`).
+            workers: 4,
         }
     }
 

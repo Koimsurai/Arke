@@ -198,15 +198,15 @@ other ecdsa-sha2-nistp256 KEY3
 
     #[test]
     fn file_is_created_on_first_trust() {
-        let dir = std::env::temp_dir().join(format!("arke-known-hosts-{}", std::process::id()));
-        let path = dir.join("known_hosts");
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
+        // The folder doesn't exist yet either.
+        let path = dir.join("Arke").join("known_hosts");
         let hosts = KnownHosts::new(Some(path.clone()));
         let k = key("[127.0.0.1]:2222", "DATA");
         assert_eq!(hosts.verdict(&k), Verdict::Unknown);
         hosts.trust(&k).unwrap();
         assert_eq!(hosts.verdict(&k), Verdict::Trusted);
         assert!(std::fs::read_to_string(&path).unwrap().contains("DATA"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

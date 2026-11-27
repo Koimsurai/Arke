@@ -1,0 +1,168 @@
+name: perf
+
+# Performance gates for pull requests to main: the release exe's size (hard limit) and startup,
+# 100,000-item folder and memory numbers against the base build (warnings first).
+#
+# - size: fails when arke.exe is larger than the budget in .github/perf/exe-size-budget-thin.
+#   (The shipped fat-LTO exe is checked against exe-size-budget in release.yml.)
+# - bench: both builds run on one runner, alternating, several runs each; the medians are
+#   compared in the job summary (.github/perf/bench.ps1). A regression is a warning annotation
+#   until the repository variable PERF_GATE_FAIL is set to `true` (or the manual run asks for it).
+# - Draft pull requests are skipped unless they carry the `perf` label; a pull request runs when
+#   it is ready for review, on every push after that, and when `perf` is added. A skipped job
+#   counts as passed for a required check.
+# Both builds use thin LTO and 16 codegen units (the exe is about 4.5% bigger, startup and memory
+# are the same as fat), which about halves the build. They run side by side as a matrix. The
+# settings are on the build step only, so they apply equally to both sides. Changing codegen
+# units and LTO changes how every dependency is compiled, so release-cache.yml's cache (fat, one
+# unit) can't be used: this workflow keeps its own (`perf-thin`), saved by a push to main that
+# changes the dependencies (that run only builds, no comparison).
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - .github/workflows/perf.yml
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    paths-ignore:
+      - "README*.md"
+      - CONTRIBUTING.md
+      - SECURITY.md
+      - ".github/assets/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".changeset/**"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Branch, tag or commit to compare against (the selected ref is the PR side)"
+        default: main
+        required: true
+      fail:
+        description: "Fail the run on a benchmark regression, not only warn"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A run that will be skipped (some other label added) gets a group of its own, so it can't cancel
+# a build in progress.
+concurrency:
+  group: perf-${{ github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'perf' && github.run_id || 'run' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.side }}
+    # A push to main only fills the cache. A pull request runs unless it is a
+    # draft without the label, or the event is some other label being added.
+    if: >-
+      (github.event_name != 'pull_request' ||
+        ((github.event.action != 'labeled' || github.event.label.name == 'perf') &&
+         (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'perf'))))
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        # A push to main only needs the head side (the matrix can't be used in the job's `if`).
+        side: ${{ fromJSON(github.event_name == 'push' && '["head"]' || '["base","head"]') }}
+    steps:
+      # head is what the pull request would become (the merge commit); base is the tip of main the
+      # pull request was opened against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.side == 'base' && (github.event.pull_request.base.sha || inputs.base) || '' }}
+          persist-credentials: false
+      # Saved by a push to main, restored by everything else. The build settings are on the
+      # build step only, not the job: the cache key hashes the job's CARGO_* variables.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: perf-thin
+          workspaces: ". -> target/dist"
+          save-if: ${{ github.event_name == 'push' }}
+      - name: build arke.exe
+        env:
+          CARGO_TARGET_DIR: target/dist
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: cargo build --locked --release -p arke-app --bin arke
+      - name: collect
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/dist/release/arke.exe out/arke.exe
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exe-${{ matrix.side }}
+          path: out/arke.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  size:
+    name: exe size
+    needs: build
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: exe-*
+          path: exe
+      - name: check against the budget
+        shell: bash
+        run: |
+          budget=$(grep -E '^[0-9]+$' .github/perf/exe-size-budget-thin | head -n 1)
+          head_size=$(stat -c %s exe/exe-head/arke.exe)
+          base_size=$(stat -c %s exe/exe-base/arke.exe)
+          delta=$((head_size - base_size))
+          mb() { awk -v b="$1" 'BEGIN { printf "%.2f", b / 1048576 }'; }
+          {
+            echo "## Exe size"
+            echo
+            echo "| | bytes | MiB |"
+            echo "| --- | ---: | ---: |"
+            echo "| base | $base_size | $(mb "$base_size") |"
+            echo "| PR | $head_size | $(mb "$head_size") |"
+            echo "| change | $delta | $(mb "$delta") |"
+            echo "| budget | $budget | $(mb "$budget") |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "arke.exe: $head_size bytes ($(mb "$head_size") MiB), $delta bytes vs base, budget $budget"
+          if [ "$head_size" -gt "$budget" ]; then
+            echo "::error title=Exe size::arke.exe is $head_size bytes, $((head_size - budget)) over the budget of $budget (.github/perf/exe-size-budget-thin, thin-LTO build). Slim it down, or raise the budget in this pull request with a reason."
+            echo "**Over the budget by $((head_size - budget)) bytes.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  bench:
+    name: startup · 100k folder · memory
+    needs: build
+    if: github.event_name != 'push'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: exe-*
+          path: exe
+      - name: benchmark
+        shell: pwsh
+        env:
+          FAIL_ON_REGRESSION: ${{ inputs.fail || vars.PERF_GATE_FAIL }}
+        run: |
+          $splat = @{ Base = "$PWD\exe\exe-base\arke.exe"; Head = "$PWD\exe\exe-head\arke.exe" }
+          if ($env:FAIL_ON_REGRESSION -eq 'true') { $splat['Fail'] = $true }
+          & .github/perf/bench.ps1 @splat

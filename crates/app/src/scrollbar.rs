@@ -10,6 +10,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui::{
@@ -34,6 +35,30 @@ fn thumb_min_h() -> gpui::Pixels {
 /// Grow and shrink duration (seconds)
 const GROW_SECS: f32 = crate::motion::FAST.as_secs_f32();
 
+/// Windows shows scrollbars all the time ("Always show scrollbars", and always on Windows 10):
+/// the resting thumb is then drawn as wide as the hovered one.
+static ALWAYS_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Re-read the Windows scrollbar setting. Called at startup and whenever a window is activated,
+/// like the animation setting (see `motion::sync_app`). Tests keep the default.
+pub(crate) fn refresh_system_setting() {
+    if !cfg!(test) {
+        ALWAYS_SHOWN.store(crate::win::always_show_scrollbars(), Ordering::Relaxed);
+    }
+}
+
+/// Whether the setting makes scrollbars permanent: Windows 10 (build under 22000) has no dynamic
+/// scrollbars; Windows 11 hides them unless `DynamicScrollbars` (HKCU\Control
+/// Panel\Accessibility) is 0. An unreadable value means the default, dynamic.
+pub(crate) const fn always_shown(build: Option<u32>, dynamic_scrollbars: Option<u32>) -> bool {
+    matches!(build, Some(b) if b < 22000) || matches!(dynamic_scrollbars, Some(0))
+}
+
+/// How wide the thumb rests at the next step: 1 is fully widened, 0 the thin line.
+const fn target_grow(active: bool, always_shown: bool) -> f32 {
+    if active || always_shown { 1. } else { 0. }
+}
+
 /// Scrollbar state across frames, kept in the view that owns the list.
 #[derive(Default)]
 pub(crate) struct ScrollbarState {
@@ -48,7 +73,7 @@ pub(crate) struct ScrollbarState {
 impl ScrollbarState {
     /// Step toward wide or thin; returns the current width (0-1) and whether to keep painting.
     fn step(&self, wide: bool) -> (f32, bool) {
-        let target = if wide { 1. } else { 0. };
+        let target = target_grow(wide, ALWAYS_SHOWN.load(Ordering::Relaxed));
         let now = Instant::now();
         let elapsed = self
             .painted
@@ -303,4 +328,36 @@ fn bar(handle: ScrollHandle, drag: ScrollbarDrag, axis: Axis) -> gpui::Canvas<Bo
             });
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{always_shown, target_grow};
+
+    /// Windows 10 has no dynamic scrollbars; Windows 11 follows "Always show scrollbars"
+    /// (`DynamicScrollbars` = 0), and a missing value keeps the dynamic default.
+    #[test]
+    fn the_windows_setting_decides_whether_scrollbars_rest_wide() {
+        assert!(always_shown(Some(19045), None), "Windows 10");
+        assert!(
+            always_shown(Some(19045), Some(1)),
+            "Windows 10, value ignored"
+        );
+        assert!(
+            always_shown(Some(26100), Some(0)),
+            "Windows 11, always show"
+        );
+        assert!(!always_shown(Some(26100), Some(1)), "Windows 11, dynamic");
+        assert!(!always_shown(Some(26100), None), "Windows 11, no value");
+        assert!(!always_shown(None, None), "unknown version, dynamic");
+    }
+
+    /// The thumb grows to full width on hover, and rests there when scrollbars are always shown.
+    #[test]
+    fn the_resting_thumb_is_wide_only_when_scrollbars_are_always_shown() {
+        assert!((target_grow(false, false) - 0.).abs() < f32::EPSILON);
+        assert!((target_grow(true, false) - 1.).abs() < f32::EPSILON);
+        assert!((target_grow(false, true) - 1.).abs() < f32::EPSILON);
+        assert!((target_grow(true, true) - 1.).abs() < f32::EPSILON);
+    }
 }

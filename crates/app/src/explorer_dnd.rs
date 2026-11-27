@@ -133,9 +133,6 @@ pub(crate) struct RightPress {
     pub(crate) at: Point<Pixels>,
 }
 
-/// How far the right button must move before the press becomes a drag (a little more than GPUI's
-/// own threshold, so a shaky right click still opens the menu).
-const RIGHT_DRAG_THRESHOLD: f64 = 4.;
 /// Most bytes downloaded so remote items can be dragged into other programs.
 const DRAG_STAGE_MAX: u64 = 64 * 1024 * 1024;
 
@@ -615,7 +612,10 @@ impl Explorer {
             cx.notify();
             return;
         }
-        if (event.position - press.at).magnitude() <= RIGHT_DRAG_THRESHOLD {
+        // The same distance as every other drag (the system's drag rectangle).
+        let moved = event.position - press.at;
+        let threshold = cx.drag_threshold();
+        if moved.x.abs() <= threshold.width && moved.y.abs() <= threshold.height {
             return;
         }
         self.right_press = None;
@@ -763,7 +763,11 @@ impl Explorer {
     /// that item.
     pub(crate) fn drag_paths(&self, ix: usize) -> Vec<PathBuf> {
         if self.search_mode {
-            return self.path_at(ix).map(|(p, _)| p).into_iter().collect();
+            return self
+                .search_drag_items(ix)
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
         }
         let selected = self
             .view()
@@ -782,10 +786,9 @@ impl Explorer {
     /// [`Self::drag_paths`] if every one is a folder.
     pub(crate) fn drag_folders(&self, ix: usize) -> Option<Vec<PathBuf>> {
         if self.search_mode {
-            return self
-                .path_at(ix)
-                .filter(|(_, is_dir)| *is_dir)
-                .map(|(p, _)| vec![p]);
+            let dragged = self.search_drag_items(ix);
+            return (!dragged.is_empty() && dragged.iter().all(|(_, is_dir)| *is_dir))
+                .then(|| dragged.into_iter().map(|(p, _)| p).collect());
         }
         let (model, view) = (self.model.as_ref()?, self.view()?);
         let at = view.get(ix)?;
@@ -843,6 +846,11 @@ impl Explorer {
     }
 
     fn drag_kind(&self, ix: usize) -> FileKind {
+        if self.search_mode {
+            return self.search_hit(Some(ix)).map_or(FileKind::Other, |hit| {
+                arke_core::filetype::file_kind(&hit.entry)
+            });
+        }
         self.view()
             .and_then(|v| v.get(ix).map(arke_core::filetype::file_kind))
             .unwrap_or(FileKind::Other)

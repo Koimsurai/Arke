@@ -41,6 +41,8 @@ use windows::core::{HRESULT, PCWSTR, w};
 
 use crate::shell::{ClipboardFiles, FileOp, ItemFailure, OpOutcome, PutBack, ShellError, Undo};
 
+mod lazy_clipboard;
+
 /// Cancel pressed in a copy engine dialog.
 const COPYENGINE_E_USER_CANCELLED: HRESULT = HRESULT(0x8027_0000_u32.cast_signed());
 const DROPEFFECT_COPY: u32 = 1;
@@ -374,6 +376,8 @@ mod recorder {
         fn UpdateProgress(&self, total: u32, so_far: u32) -> windows::core::Result<()> {
             if let Some(p) = &self.progress {
                 use std::sync::atomic::Ordering;
+                // Windows' own units, shown as a count while nothing is done.
+                p.work_in_bytes.store(false, Ordering::Relaxed);
                 p.work_total.store(u64::from(total), Ordering::Relaxed);
                 p.work_done.store(u64::from(so_far), Ordering::Relaxed);
             }
@@ -648,6 +652,24 @@ pub(crate) fn perform_tracked(
             };
             &rest
         }
+        // Same-volume move: what is only a rename is renamed here (win_fast_move.rs), the rest
+        // goes through the engine below, which asks about conflicts as it always did.
+        FileOp::Move { sources, dest } => {
+            let renamed = crate::win_fast_move::rename(sources, dest, progress);
+            fast = renamed.put_back;
+            let undo = || (!fast.is_empty()).then(|| Undo::PutBack(fast.clone()));
+            if renamed.cancelled {
+                return (Ok(OpOutcome::Cancelled), undo());
+            }
+            if renamed.rest.is_empty() {
+                return (Ok(OpOutcome::Done), undo());
+            }
+            rest = FileOp::Move {
+                sources: renamed.rest,
+                dest: dest.clone(),
+            };
+            &rest
+        }
         other => other,
     };
     HIDE_PROGRESS.set(true);
@@ -685,6 +707,7 @@ fn copy_tracked(
         // The engine reports its own work, starting from nothing.
         progress.work_done.store(0, Ordering::Relaxed);
         progress.work_total.store(0, Ordering::Relaxed);
+        progress.work_in_bytes.store(false, Ordering::Relaxed);
         let rest = FileOp::Copy {
             sources: fast.rest.iter().map(|(_, path)| path.clone()).collect(),
             dest: dest.to_path_buf(),
@@ -1887,7 +1910,13 @@ fn set_clipboard_shell(files: &ClipboardFiles) -> Result<(), ShellError> {
 }
 
 pub(crate) fn set_clipboard_files(files: &ClipboardFiles) -> Result<u32, ShellError> {
-    // Prefer the shell data object (most formats); if e.g. a path can't be parsed, fall back
+    // Paths and drop effect at once, shell IDs only when a program asks for them: nothing is
+    // parsed here, so thousands of files cost no more than a few.
+    match lazy_clipboard::set(files) {
+        Ok(seq) => return Ok(seq),
+        Err(err) => log::info!("clipboard without delayed rendering: {err}"),
+    }
+    // Otherwise the shell data object (most formats); if e.g. a path can't be parsed, fall back
     // to a hand-built CF_HDROP.
     match set_clipboard_shell(files) {
         // SAFETY: only reads the sequence number.
@@ -1918,6 +1947,12 @@ pub(crate) fn set_clipboard_files(files: &ClipboardFiles) -> Result<u32, ShellEr
     }
     // SAFETY: only reads the sequence number.
     Ok(unsafe { GetClipboardSequenceNumber() })
+}
+
+/// Before Arke exits: renders the clipboard formats no program has asked for yet, so the files
+/// stay pasteable in full after Arke is gone. Does nothing if Arke put no files on the clipboard.
+pub(crate) fn render_clipboard_on_quit() {
+    lazy_clipboard::render_all_now();
 }
 
 pub(crate) fn set_clipboard_text(text: &str) -> Result<(), ShellError> {
@@ -2001,18 +2036,18 @@ mod tests {
     use std::fs;
     use std::sync::atomic::Ordering;
 
-    /// Temp folder under %TEMP% named with the PID, deleted afterwards. Real file
-    /// operations in tests happen only here, never on user files.
-    struct Sandbox(PathBuf);
+    /// Temp folder under %TEMP%, deleted afterwards. Real file operations in tests happen only
+    /// here, never on user files.
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-fileop-test-{tag}-{}", std::process::id()));
-            assert!(dir.starts_with(crate::win::long_temp_dir()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = crate::win::long_tempdir(&format!("arke-fileop-test-{tag}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
 
         fn file(&self, rel: &str, body: &str) -> PathBuf {
@@ -2486,6 +2521,72 @@ mod tests {
             .expect("the operation did not finish: Windows may be showing a dialog")
     }
 
+    /// A same-volume move done by `perform_tracked` renames directly and records the same undo the
+    /// engine does: put back, in the order of the sources, and the undo restores everything.
+    #[test]
+    fn tracked_move_renames_and_undoes() {
+        use std::sync::atomic::Ordering;
+        let sb = Sandbox::new("fast-move");
+        let a = sb.file(r"src\a.txt", "aaa");
+        let b = sb.file(r"src\folder\b.txt", "bbb");
+        fs::create_dir_all(sb.0.join("dst")).unwrap();
+        let progress = Arc::new(crate::shell::OpProgress::default());
+        let (result, undo_step) = tracked_with(
+            FileOp::Move {
+                sources: vec![a, b.parent().unwrap().to_path_buf()],
+                dest: sb.0.join("dst"),
+            },
+            &progress,
+        );
+        assert_eq!(result.map_err(|e| e.to_string()), Ok(OpOutcome::Done));
+        assert_eq!(sb.names("src"), Vec::<String>::new());
+        assert_eq!(sb.names("dst"), ["a.txt", "folder"]);
+        assert_eq!(progress.done.load(Ordering::Relaxed), 2);
+        assert_eq!(progress.bytes.load(Ordering::Relaxed), 0);
+        let step = undo_step.expect("a move has an undo step");
+        assert_eq!(step.len(), 2);
+        assert_eq!(
+            undo(&step, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(sb.names("src"), ["a.txt", "folder"]);
+        assert_eq!(sb.names("dst"), Vec::<String>::new());
+    }
+
+    /// Items the fast path leaves alone (a junction) still go through the engine, and the undo of
+    /// both kinds is one list.
+    #[test]
+    fn tracked_move_sends_what_it_cannot_rename_to_the_engine() {
+        let sb = Sandbox::new("fast-move-mixed");
+        let a = sb.file(r"src\a.txt", "aaa");
+        let target = sb.file(r"target\t.txt", "t");
+        let link = sb.0.join(r"src\link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(target.parent().unwrap())
+            .output();
+        if !made.is_ok_and(|o| o.status.success()) {
+            return;
+        }
+        fs::create_dir_all(sb.0.join("dst")).unwrap();
+        let (result, undo_step) = tracked(FileOp::Move {
+            sources: vec![link.clone(), a],
+            dest: sb.0.join("dst"),
+        });
+        assert_eq!(result.map_err(|e| e.to_string()), Ok(OpOutcome::Done));
+        assert_eq!(sb.names("dst"), ["a.txt", "link"]);
+        assert!(target.exists(), "the junction moved, not what it points to");
+        let step = undo_step.expect("a move has an undo step");
+        assert_eq!(step.len(), 2);
+        assert_eq!(
+            undo(&step, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(sb.names("src"), ["a.txt", "link"]);
+        let _ = fs::remove_dir(&link);
+    }
+
     /// Recycling two folders where one holds a file in use: the engine reports both, the failed one
     /// too, but only the folder that went to the bin counts as done.
     #[test]
@@ -2802,8 +2903,8 @@ mod shell_clipboard_tests {
     /// Shell IDList Array, and the cut marker.
     #[test]
     fn shell_data_object_has_files_ids_and_the_cut_flag() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-clip-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = crate::win::long_tempdir("arke-clip-");
+        let dir = tmp_dir.path().to_path_buf();
         let a = dir.join("a.txt");
         // Non-ASCII on purpose: paths must survive the data object intact.
         let b = dir.join("b 報告.txt");
@@ -2841,7 +2942,6 @@ mod shell_clipboard_tests {
             );
             let _ = GlobalUnlock(effect.u.hGlobal);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -2894,9 +2994,8 @@ mod drag_tests {
     #[test]
     #[ignore = "starts cmd.exe through the shell; run by hand"]
     fn files_dropped_on_a_shortcut_reach_its_program() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-drop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = crate::win::long_tempdir("arke-drop-");
+        let dir = tmp_dir.path().to_path_buf();
         let file = dir.join("dropped.txt");
         std::fs::write(&file, "x").unwrap();
         let script = dir.join("args.cmd");
@@ -2935,8 +3034,6 @@ mod drag_tests {
         drop_on(&shortcut, &data);
         let got = wait("Arke's drag");
         assert!(got.contains("dropped.txt"), "{got:?}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Items in the object's Shell IDList Array (a CIDA: item count, then offsets); `None` when
@@ -2958,8 +3055,8 @@ mod drag_tests {
     /// could wait on the network) and keep the plain object.
     #[test]
     fn drags_of_local_files_carry_shell_ids() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-drag-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = crate::win::long_tempdir("arke-drag-");
+        let dir = tmp_dir.path().to_path_buf();
         let a = dir.join("a.txt");
         let b = dir.join("b 報告.txt");
         std::fs::write(&a, "a").unwrap();
@@ -2978,7 +3075,6 @@ mod drag_tests {
             0,
             "network paths stay plain"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The formats an object offers, in its own order, as (format, storage media).
@@ -3089,8 +3185,8 @@ mod drag_tests {
     /// its length.
     #[test]
     fn drags_from_one_folder_match_explorers() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-drag-ex-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = crate::win::long_tempdir("arke-drag-ex-");
+        let dir = tmp_dir.path().to_path_buf();
         let a = dir.join("a.txt");
         let b = dir.join("b 報告.txt");
         std::fs::write(&a, "a").unwrap();
@@ -3119,13 +3215,13 @@ mod drag_tests {
         assert_eq!(path_of(&our_folder), dir.to_string_lossy());
         assert_eq!(path_of(&our_folder), path_of(&their_folder));
         assert_eq!(our_folder.len(), their_folder.len(), "folder ID length");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Items from different folders (search results) still go in one object, all of them.
     #[test]
     fn drags_from_several_folders_carry_every_id() {
-        let dir = crate::win::long_temp_dir().join(format!("arke-drag-mix-{}", std::process::id()));
+        let tmp_dir = crate::win::long_tempdir("arke-drag-mix-");
+        let dir = tmp_dir.path().to_path_buf();
         let sub = dir.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         let a = dir.join("a.txt");
@@ -3145,7 +3241,6 @@ mod drag_tests {
             assert_eq!(parse_hdrop(HDROP(medium.u.hGlobal.0)), paths);
             windows::Win32::System::Ole::ReleaseStgMedium(&raw mut medium);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

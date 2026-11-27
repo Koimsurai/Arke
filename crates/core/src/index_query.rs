@@ -22,6 +22,7 @@
 //! [`type_state`] and friends, so the typed syntax and the chips are always one model.
 
 use crate::filetype::{FileKind, kind_for_extension};
+use crate::time::{civil_from_days, days_from_civil};
 
 /// Clock for date parsing: current time and time zone (from the system in the app, fixed in tests).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -627,38 +628,6 @@ fn parse_size_filter(value: &str) -> Option<(u64, u64)> {
 }
 
 // ───────────────────────── Dates ─────────────────────────
-
-/// Civil date -> days since 1970-01-01 (Howard Hinnant's algorithm).
-const fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Days since 1970-01-01 -> civil date.
-const fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (
-        if m <= 2 {
-            yoe + era * 400 + 1
-        } else {
-            yoe + era * 400
-        },
-        m,
-        d,
-    )
-}
 
 /// Date keyword. English always works; UI-language words from `query.dm.*` in
 /// `locales/core.yml` are accepted too (comma-separated alternatives).

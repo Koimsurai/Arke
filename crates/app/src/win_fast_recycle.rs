@@ -13,7 +13,9 @@
 //! - No Group Policy turns the bin off or caps its size (the engine applies those).
 //! - The `$I` records already in the bin are all version 2, the layout written here.
 //! - The rename succeeds: a file in use inside the folder makes it fail, nothing has moved, and
-//!   the item goes through the engine instead.
+//!   the item goes through the engine instead. A folder holding read-only items can be refused
+//!   by the rename (seen on a CI runner: access denied moving it into the bin, while renaming it
+//!   in place works), and then goes to the engine too.
 //!
 //! Everything else goes to the Windows engine. An item bigger than its drive's bin may hold at
 //! all is the exception: Windows would delete it permanently (asking behind Arke's window, or not
@@ -153,13 +155,16 @@ impl Batch {
             .get_or_init(|| policy_allows().then(user_sid).flatten())
             .clone()
         else {
+            declined(|| format!("{}: policy or user", path.display()));
             return Outcome::UNMEASURED;
         };
         // Windows was seen not counting an item moved to a bin: the engine, until Arke restarts.
         if !counted().allowed() {
+            declined(|| format!("{}: Windows was seen not counting", path.display()));
             return Outcome::UNMEASURED;
         }
         let Some(root) = drive_root(path) else {
+            declined(|| format!("{}: no drive letter", path.display()));
             return Outcome::UNMEASURED;
         };
         let Some(drive) = self
@@ -168,18 +173,22 @@ impl Batch {
             .or_insert_with(|| Drive::check(&root, &sid))
             .as_mut()
         else {
+            declined(|| format!("{}: the drive isn't taken (Drive::check)", path.display()));
             return Outcome::UNMEASURED;
         };
         let Ok(meta) = fs::symlink_metadata(path) else {
+            declined(|| format!("{}: metadata unreadable", path.display()));
             return Outcome::UNMEASURED;
         };
         // Links, junctions and cloud placeholders (OneDrive and the like keep a reparse point on
         // every item they sync) stay with the engine, which knows what each of them needs.
         if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            declined(|| format!("{}: reparse point", path.display()));
             return Outcome::UNMEASURED;
         }
         let size = if meta.is_dir() {
             let Some(size) = tree_size(path) else {
+                declined(|| format!("{}: a folder inside can't be listed", path.display()));
                 return Outcome::MEASURED;
             };
             size
@@ -191,11 +200,15 @@ impl Batch {
             Room::Full { need } if drive.can_free(need) => {}
             // Deleting every older item wouldn't make room (some aren't version 2 records, or
             // they are this batch's own): nothing is deleted, and the engine decides.
-            Room::Full { .. } => return Outcome::MEASURED,
+            Room::Full { need } => {
+                declined(|| format!("{}: bin full, can't free {need}", path.display()));
+                return Outcome::MEASURED;
+            }
             // Windows would delete it permanently: Arke asks instead.
             Room::TooBig => return Outcome::TooBig,
         }
         let Some(placed) = place(path, &drive.bin, size) else {
+            declined(|| format!("{}: left to the engine by place()", path.display()));
             return Outcome::MEASURED;
         };
         // The first item moved to a bin on this version of Windows: Windows must count it. If it
@@ -206,13 +219,14 @@ impl Batch {
         if let Some(count_before) = drive.unconfirmed.take()
             && !counted().confirmed()
         {
-            if bin_state(&root).is_some_and(|(_, count)| count > count_before) {
+            if windows_counted(&root, count_before) {
                 counted().confirm();
             } else {
                 log::warn!(
                     "fast recycle: Windows didn't count {}; put back",
                     path.display()
                 );
+                declined(|| format!("{}: Windows didn't count it", path.display()));
                 counted().fail();
                 let back = move_no_replace(
                     &arke_core::path::verbatim(&placed.item),
@@ -336,7 +350,10 @@ struct Placed {
 /// moved; no record is left behind then.
 fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
     let ext = bin_extension(path);
-    let (info, item) = free_names(bin, &ext)?;
+    let Some((info, item)) = free_names(bin, &ext) else {
+        declined(|| format!("{}: no free name in the bin", path.display()));
+        return None;
+    };
     let deleted = now_filetime();
     let record = encode(VERSION, size, deleted, &arke_core::path::unverbatim(path));
     // The whole record must be in place before anything moves: after it is closed (when
@@ -352,7 +369,14 @@ fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
     let in_place = fs::symlink_metadata(&info)
         .ok()
         .filter(|m| m.len() == record.len() as u64);
-    let (Ok(()), Some(meta)) = (written, in_place) else {
+    let (Ok(()), Some(meta)) = (&written, &in_place) else {
+        declined(|| {
+            format!(
+                "{}: record not written ({written:?}, in place: {})",
+                path.display(),
+                in_place.is_some()
+            )
+        });
         let _ = fs::remove_file(&info);
         return None;
     };
@@ -360,6 +384,7 @@ fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
         &arke_core::path::verbatim(path),
         &arke_core::path::verbatim(&item),
     ) {
+        declined(|| format!("{}: rename failed: {err}", path.display()));
         log::info!(
             "fast recycle: {} stays with the engine: {err}",
             path.display()
@@ -371,7 +396,7 @@ fn place(path: &Path, bin: &Path, size: u64) -> Option<Placed> {
         info,
         item,
         deleted,
-        stamp: Stamp::of(&meta),
+        stamp: Stamp::of(meta),
     })
 }
 
@@ -504,21 +529,88 @@ fn user_sid() -> Option<String> {
     }
 }
 
+/// What the `$I` records already in a bin say about their layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    /// No records yet: nothing to compare with.
+    Empty,
+    /// Every record looked at is the version written here.
+    Current,
+    /// A record of another version (1 is Vista to 8.1, 2 is Windows 10 and later) is there.
+    Other,
+    /// A record couldn't be read or isn't well formed.
+    Unreadable,
+}
+
+impl Layout {
+    /// The verdict for the versions of the records looked at (`None`: not readable).
+    /// A foreign version outweighs an unreadable record.
+    fn judge(versions: impl IntoIterator<Item = Option<i64>>) -> Self {
+        let mut verdict = Self::Empty;
+        for version in versions {
+            match version {
+                Some(v) if v != VERSION => return Self::Other,
+                Some(_) if verdict == Self::Empty => verdict = Self::Current,
+                Some(_) => {}
+                None => verdict = Self::Unreadable,
+            }
+        }
+        verdict
+    }
+
+    /// Whether items may be written here directly: nothing seen says the layout differs.
+    const fn allows(self) -> bool {
+        matches!(self, Self::Empty | Self::Current)
+    }
+
+    /// Whether the verdict rests on records actually seen, so it can be remembered.
+    const fn settled(self) -> bool {
+        matches!(self, Self::Current | Self::Other)
+    }
+}
+
+/// Verdicts per bin folder for this run of Arke.
+static LAYOUTS: LazyLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, bool>>> =
+    LazyLock::new(Default::default);
+
 /// The `$I` records already there are all the version written here (or there are none yet).
+/// A verdict based on records is remembered per bin, so later deletes don't read any; an empty
+/// bin or an unreadable record is looked at again next time.
 fn layout_is_known(bin: &Path) -> bool {
+    layout_allowed(&LAYOUTS, bin, || probe_bin(bin, |p| fs::read(p).ok()))
+}
+
+/// [`Layout::allows`] for `bin`, asking `probe` only when `cache` has no verdict for it.
+fn layout_allowed(
+    cache: &parking_lot::Mutex<std::collections::HashMap<PathBuf, bool>>,
+    bin: &Path,
+    probe: impl FnOnce() -> Layout,
+) -> bool {
+    if let Some(&known) = cache.lock().get(bin) {
+        return known;
+    }
+    let layout = probe();
+    if layout.settled() {
+        cache.lock().insert(bin.to_path_buf(), layout.allows());
+    }
+    layout.allows()
+}
+
+/// Looks at the first [`PROBE_RECORDS`] `$I` records of `bin`, read with `read`.
+fn probe_bin(bin: &Path, read: impl Fn(&Path) -> Option<Vec<u8>>) -> Layout {
     let Ok(entries) = fs::read_dir(bin) else {
-        return false;
+        return Layout::Unreadable;
     };
-    entries
+    let versions = entries
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("$I"))
         .take(PROBE_RECORDS)
-        .all(|e| {
-            fs::read(e.path())
-                .ok()
+        .map(|e| {
+            read(&e.path())
                 .and_then(|bytes| decode(&bytes))
-                .is_some_and(|record| record.version == VERSION)
-        })
+                .map(|r| r.version)
+        });
+    Layout::judge(versions)
 }
 
 /// Total size of the files below `dir`, from directory listings (no file is opened). Links are
@@ -750,6 +842,47 @@ fn bin_state(root: &Path) -> Option<(u64, u64)> {
     ))
 }
 
+/// Notes why an item is left to the engine; only recorded in tests, for their messages.
+fn declined(why: impl FnOnce() -> String) {
+    #[cfg(test)]
+    DECLINES.lock().push(why());
+    #[cfg(not(test))]
+    let _ = why;
+}
+
+/// Every reason [`declined`] was given, for the messages of failing live tests.
+#[cfg(test)]
+static DECLINES: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Whether Windows' item count for the bin at `root` went above `before` after an item was
+/// moved in. The shell may take a moment to notice what was renamed into the bin, so the count
+/// is asked again a few times (at most ~0.3 s, and only while a version of Windows is unconfirmed).
+fn windows_counted(root: &Path, before: u64) -> bool {
+    const TRIES: u32 = 6;
+    const WAIT: std::time::Duration = std::time::Duration::from_millis(60);
+    for attempt in 0..TRIES {
+        if attempt > 0 {
+            std::thread::sleep(WAIT);
+        }
+        let state = bin_state(root);
+        #[cfg(test)]
+        COUNT_CHECKS.lock().push(format!(
+            "attempt {attempt}: before {before} items, now (bytes, items) {state:?}"
+        ));
+        if state.is_some_and(|(_, count)| count > before) {
+            return true;
+        }
+    }
+    false
+}
+
+/// What each count check saw, for the messages of failing live tests.
+#[cfg(test)]
+static COUNT_CHECKS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Names handed out so far: set apart from each other, whatever the clock says.
+static NAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Unused `$I`/`$R` names in `bin` for an item with extension `ext`.
 fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -757,7 +890,10 @@ fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_nanos() as u64
-        ^ u64::from(std::process::id()).rotate_left(32);
+        ^ u64::from(std::process::id()).rotate_left(32)
+        // The clock ticks every millisecond or so: threads asking within one tick (two deletes
+        // at once) would get the same names and one of them would lose the race to create them.
+        ^ NAMES.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     for _ in 0..32 {
         let mut tag = String::with_capacity(6);
         for _ in 0..6 {
@@ -1021,14 +1157,7 @@ fn counted() -> &'static Counted {
         let file = if cfg!(test) {
             None
         } else {
-            version.and_then(|_| {
-                std::env::var_os("LOCALAPPDATA").map(|d| {
-                    PathBuf::from(d)
-                        .join("Arke")
-                        .join("bin-usage")
-                        .join("counted.txt")
-                })
-            })
+            version.and_then(|_| crate::paths::bin_usage_dir().map(|d| d.join("counted.txt")))
         };
         let version = version.map_or_else(
             || "unknown".to_owned(),
@@ -1085,16 +1214,19 @@ pub(crate) mod test_support {
     use crate::shell::OpOutcome;
 
     /// A folder under %TEMP% named for this test and process; only it is ever touched.
-    pub(crate) struct Sandbox(pub(crate) PathBuf);
+    pub(crate) struct Sandbox(
+        pub(crate) PathBuf,
+        Vec<crate::shell::RecycledItem>,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         pub(crate) fn new(tag: &str) -> Self {
             purge_leftovers(tag);
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-test-fastbin-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = crate::win::long_tempdir(&format!("arke-test-fastbin-{tag}-"));
+            let primed = prime_bin();
+            Self(guard.path().to_path_buf(), primed, guard)
         }
         pub(crate) fn file(&self, rel: &str, body: &str) -> PathBuf {
             let path = self.0.join(rel);
@@ -1104,9 +1236,218 @@ pub(crate) mod test_support {
         }
     }
 
+    /// Puts one throwaway file of its own in the bin through the engine and returns it, to be
+    /// purged when the sandbox is dropped. The fast path leaves a drive to the engine until its
+    /// bin has a folder for this user, an `$I` record to check the layout against, and a count
+    /// Windows keeps up to date; on a PC that has deleted something that is so, but a fresh
+    /// machine such as a CI runner has an empty bin. The file comes from a folder of its own, so
+    /// it never shows among what a test finds from its sandbox.
+    fn prime_bin() -> Vec<crate::shell::RecycledItem> {
+        let dir = crate::win::long_temp_dir()
+            .join(format!("arke-test-fastbin-prime-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        if fs::create_dir_all(&dir).is_err() {
+            return Vec::new();
+        }
+        let file = dir.join("prime-the-bin.tmp");
+        let primed = fs::write(&file, "prime").is_ok()
+            && crate::win_fileops::perform(
+                &crate::shell::FileOp::Delete {
+                    paths: vec![file],
+                    recycle: true,
+                },
+                None,
+                true,
+            )
+            .is_ok();
+        let here = fs::canonicalize(&dir).ok();
+        let items = if primed {
+            crate::win_recycle::list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|item| fs::canonicalize(&item.from).ok() == here)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let _ = fs::remove_dir_all(&dir);
+        items
+    }
+
+    /// Waits until `folder` can be moved: right after a test fills it, antivirus may still hold
+    /// a file inside open, and the rename into the bin is then refused (the real path leaves
+    /// such a folder to the engine, which is right). Renames it to a sibling name and back until
+    /// both succeed; panics if something outside the test keeps it open.
+    pub(crate) fn settle(folder: &Path) {
+        let mut aside = folder.as_os_str().to_owned();
+        aside.push(".settle");
+        let aside = PathBuf::from(aside);
+        let started = std::time::Instant::now();
+        let mut last = None;
+        while started.elapsed() < std::time::Duration::from_secs(5) {
+            match fs::rename(folder, &aside) {
+                Ok(()) => {
+                    // Back where it was; it can't be held now unless the check itself raced.
+                    while let Err(e) = fs::rename(&aside, folder) {
+                        assert!(
+                            started.elapsed() < std::time::Duration::from_secs(10),
+                            "{} couldn't be moved back: {e}",
+                            aside.display()
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    return;
+                }
+                Err(e) => last = Some(e),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!(
+            "something outside the test kept {} open for 5 s: {:?}",
+            folder.display(),
+            last
+        );
+    }
+
+    /// Why items were left to the engine so far in this process (see `declined`).
+    pub(crate) fn declines() -> Vec<String> {
+        super::DECLINES.lock().clone()
+    }
+
+    /// Why the fast path would leave `path` to the engine, one line per condition `Drive::check`
+    /// tests with its value. For the messages of failing live tests only.
+    pub(crate) fn diagnose(path: &Path) -> String {
+        use std::fmt::Write as _;
+        use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+        let mut out = format!("\n  path: {}", path.display());
+        let Some(root) = super::drive_root(path) else {
+            return out + "\n  drive_root: none";
+        };
+        let host = windows::core::HSTRING::from(root.as_os_str());
+        let mut fs_name = [0u16; 32];
+        let mut flags = 0u32;
+        // SAFETY: root is NUL-terminated; the out buffers outlive the call.
+        let info = unsafe {
+            GetVolumeInformationW(
+                &host,
+                None,
+                None,
+                None,
+                Some(&raw mut flags),
+                Some(&mut fs_name),
+            )
+        };
+        let _ = write!(
+            out,
+            "\n  root: {}\n  temp dir: {}\n  file system: {:?} (query ok: {}, flags {flags:#x})\n  fixed drive: {}\n  local_ntfs: {}",
+            root.display(),
+            crate::win::long_temp_dir().display(),
+            String::from_utf16_lossy(&fs_name).trim_end_matches('\0'),
+            info.is_ok(),
+            super::fixed_drive(&root),
+            super::local_ntfs(&root),
+        );
+        let _ = write!(
+            out,
+            "\n  policy_allows: {}\n  counted().allowed: {}",
+            super::policy_allows(),
+            super::counted().allowed()
+        );
+        let Some(sid) = super::user_sid() else {
+            return out + "\n  user_sid: none";
+        };
+        let bin = root.join("$Recycle.Bin").join(&sid);
+        let _ = write!(
+            out,
+            "\n  sid: {sid}\n  bin: {} (is_dir: {})",
+            bin.display(),
+            bin.is_dir()
+        );
+        let _ = write!(
+            out,
+            "\n  bin entries: {:?}",
+            fs::read_dir(&bin).map(|d| d
+                .flatten()
+                .map(|e| e.file_name())
+                .take(12)
+                .collect::<Vec<_>>())
+        );
+        let _ = write!(
+            out,
+            "\n  layout (probe): {:?}",
+            super::probe_bin(&bin, |p| fs::read(p).ok())
+        );
+        let guid = {
+            use windows::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
+            let mut name = [0u16; 64];
+            // SAFETY: host is NUL-terminated; the buffer outlives the call.
+            let got = unsafe { GetVolumeNameForVolumeMountPointW(&host, &mut name) };
+            format!(
+                "{:?}: {}",
+                got,
+                String::from_utf16_lossy(&name).trim_end_matches('\0')
+            )
+        };
+        let _ = write!(
+            out,
+            "\n  volume name: {guid}\n  bin_settings (MaxCapacity MB, NukeOnDelete): {:?}",
+            super::bin_settings(&root)
+        );
+        let _ = write!(out, "\n  declined: {:#?}", super::DECLINES.lock());
+        let _ = write!(out, "\n  count checks: {:#?}", super::COUNT_CHECKS.lock());
+        let _ = write!(
+            out,
+            "\n  tracker bytes: {:?}\n  bin_state (SHQueryRecycleBin bytes, items): {:?}\n  counted confirmed: {}",
+            super::tracker().bytes(&bin),
+            super::bin_state(&root),
+            super::counted().confirmed()
+        );
+        out
+    }
+
+    /// Attributes and size of every item below `dir`, for a failing test's message.
+    pub(crate) fn describe_tree(dir: &Path) -> String {
+        use std::fmt::Write as _;
+        use std::os::windows::fs::MetadataExt as _;
+        let mut out = String::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(d) = pending.pop() {
+            let Ok(entries) = fs::read_dir(&d) else {
+                let _ = write!(out, "\n  {}: can't list", d.display());
+                continue;
+            };
+            for e in entries.flatten() {
+                match e.metadata() {
+                    Ok(m) => {
+                        let _ = write!(
+                            out,
+                            "\n  {} attributes {:#x}, {} bytes",
+                            e.path().display(),
+                            m.file_attributes(),
+                            m.len()
+                        );
+                        if m.is_dir() {
+                            pending.push(e.path());
+                        }
+                    }
+                    Err(err) => {
+                        let _ = write!(out, "\n  {}: {err}", e.path().display());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     impl Drop for Sandbox {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+            if !self.1.is_empty() {
+                let _ = crate::win_fileops::purge_recycled(
+                    &self.1,
+                    &crate::shell::OpProgress::default(),
+                );
+            }
         }
     }
 
@@ -1314,22 +1655,85 @@ mod tests {
     }
 
     /// A folder under %TEMP% for tests that only write and list their own files; removed after.
-    struct Scratch(PathBuf);
+    struct Scratch(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-test-binlimit-{tag}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = crate::win::long_tempdir(&format!("arke-test-binlimit-{tag}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+    #[test]
+    fn only_records_of_the_written_version_allow_direct_writes() {
+        let judge = |v: &[Option<i64>]| Layout::judge(v.iter().copied());
+        assert_eq!(judge(&[]), Layout::Empty);
+        assert_eq!(judge(&[Some(2), Some(2)]), Layout::Current);
+        assert_eq!(judge(&[Some(2), Some(1)]), Layout::Other);
+        assert_eq!(judge(&[Some(3)]), Layout::Other);
+        assert_eq!(judge(&[Some(2), None]), Layout::Unreadable);
+        assert_eq!(judge(&[None, Some(1)]), Layout::Other, "foreign wins");
+        let allowed: Vec<bool> = [
+            Layout::Empty,
+            Layout::Current,
+            Layout::Other,
+            Layout::Unreadable,
+        ]
+        .map(Layout::allows)
+        .to_vec();
+        assert_eq!(allowed, [true, true, false, false]);
+    }
+
+    #[test]
+    fn records_are_probed_through_the_injected_read() {
+        let sb = Scratch::new("layout-probe");
+        let bin = &sb.0;
+        for name in ["$IAAAAAA.txt", "$RAAAAAA.txt", "desktop.ini"] {
+            fs::write(bin.join(name), "x").unwrap();
         }
+        let record = |version: i64| encode(version, 1, 0, Path::new(r"C:\a.txt"));
+        assert_eq!(probe_bin(bin, |_| Some(record(2))), Layout::Current);
+        assert_eq!(probe_bin(bin, |_| Some(record(1))), Layout::Other);
+        assert_eq!(probe_bin(bin, |_| None), Layout::Unreadable);
+        assert_eq!(
+            probe_bin(bin, |_| Some(vec![2, 0])),
+            Layout::Unreadable,
+            "too short"
+        );
+        assert_eq!(
+            probe_bin(&bin.join("missing"), |_| Some(record(2))),
+            Layout::Unreadable
+        );
+    }
+
+    #[test]
+    fn a_settled_verdict_is_remembered_and_others_are_asked_again() {
+        let cache = parking_lot::Mutex::new(std::collections::HashMap::new());
+        let asked = std::cell::Cell::new(0);
+        let ask = |bin: &str, layout: Layout| {
+            layout_allowed(&cache, Path::new(bin), || {
+                asked.set(asked.get() + 1);
+                layout
+            })
+        };
+        // A foreign version: the engine, and no second read of the bin.
+        assert!(!ask(r"C:\bin", Layout::Other));
+        assert!(!ask(r"C:\bin", Layout::Current), "cached, not asked");
+        assert_eq!(asked.get(), 1);
+        // The version written here is remembered per bin.
+        assert!(ask(r"D:\bin", Layout::Current));
+        assert!(ask(r"D:\bin", Layout::Other), "cached, not asked");
+        assert_eq!(asked.get(), 2);
+        // Nothing to compare with, or unreadable: asked again each time.
+        assert!(ask(r"E:\bin", Layout::Empty));
+        assert!(ask(r"E:\bin", Layout::Empty));
+        assert!(!ask(r"F:\bin", Layout::Unreadable));
+        assert!(!ask(r"F:\bin", Layout::Unreadable));
+        assert_eq!(asked.get(), 6);
     }
 
     /// Ten files of 100 bytes and a subfolder with 500 more.
@@ -1450,23 +1854,23 @@ mod tests {
         purge(&items);
     }
 
-    /// The fast path end to end: the folder (a read-only file and a subfolder inside) is in the
-    /// bin with the right name, origin and size, then comes back where it was with everything in
-    /// it, and leaves no record behind.
+    /// The fast path end to end: the folder (a file and a subfolder inside) is in the bin with
+    /// the right name, origin and size, then comes back where it was with everything in it, and
+    /// leaves no record behind.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
     fn a_folder_goes_to_the_bin_and_comes_back() {
         let sb = Sandbox::new("roundtrip");
         sb.file(r"photos.v2\a.bin", "1234567");
         sb.file(r"photos.v2\sub\b.bin", "123");
-        let ro = sb.0.join(r"photos.v2\a.bin");
-        let mut perms = fs::metadata(&ro).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&ro, perms).unwrap();
         let folder = sb.0.join("photos.v2");
+        test_support::settle(&folder);
 
         let Some(now) = recycle(&folder) else {
-            panic!("this drive should take the fast path (fixed NTFS, bin folder present)");
+            panic!(
+                "this drive should take the fast path (fixed NTFS, bin folder present){}",
+                test_support::diagnose(&folder)
+            );
         };
         assert!(!folder.exists());
         assert!(now.file_name().unwrap().to_string_lossy().starts_with("$R"));
@@ -1491,6 +1895,53 @@ mod tests {
             fs::read_to_string(folder.join(r"sub\b.bin")).unwrap(),
             "123"
         );
+        assert!(recycled_from(&sb.0).is_empty(), "no record left behind");
+    }
+
+    /// A folder holding a read-only file goes to the bin and comes back with the flag. The rename
+    /// into the bin may be refused (then the engine takes it), so only the outcome is checked,
+    /// not which of the two did it.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn a_folder_with_a_read_only_file_goes_to_the_bin_and_comes_back() {
+        let sb = Sandbox::new("readonly");
+        sb.file(r"docs.v2\a.bin", "1234567");
+        sb.file(r"docs.v2\sub\b.bin", "123");
+        let ro = sb.0.join(r"docs.v2\a.bin");
+        let mut perms = fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&ro, perms).unwrap();
+        let folder = sb.0.join("docs.v2");
+        test_support::settle(&folder);
+
+        if recycle(&folder).is_none() {
+            assert_eq!(
+                engine(vec![folder.clone()]),
+                Ok(OpOutcome::Done),
+                "the fast path declined it ({:?}) and the engine failed too",
+                test_support::declines()
+            );
+        }
+        assert!(!folder.exists());
+        let items = recycled_from(&sb.0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "docs.v2");
+        assert!(items[0].is_dir);
+        assert_eq!(items[0].size, 10);
+
+        let back = Undo::PutBack(vec![PutBack {
+            now: items[0].now.clone(),
+            parent: sb.0.clone(),
+            name: "docs.v2".into(),
+        }]);
+        assert_eq!(
+            crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join(r"sub\b.bin")).unwrap(),
+            "123"
+        );
         assert!(fs::metadata(&ro).unwrap().permissions().readonly());
         assert!(recycled_from(&sb.0).is_empty(), "no record left behind");
     }
@@ -1505,7 +1956,7 @@ mod tests {
             None,
             true,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e} / {e:?}"))
     }
 
     /// The `$R` name past the six random characters: what Windows keeps of the original name.
@@ -1558,6 +2009,7 @@ mod tests {
                 Ok(OpOutcome::Done),
                 "{name}"
             );
+            test_support::settle(&fast_item);
             let fast_now = recycle(&fast_item).unwrap_or_else(|| panic!("{name}: not taken"));
             let by_engine = recycled_from(engine_item.parent().unwrap());
             let by_fast = recycled_from(fast_item.parent().unwrap());
@@ -1583,7 +2035,7 @@ mod tests {
                 name: f.name.clone(),
             }]);
             assert_eq!(
-                crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+                crate::win_fileops::undo(&back, None, true).map_err(|e| format!("{e} / {e:?}")),
                 Ok(OpOutcome::Done),
                 "{name}: restore"
             );
@@ -1690,6 +2142,7 @@ mod tests {
             "a junction itself stays with the engine"
         );
         assert!(alone.exists());
+        test_support::settle(&folder);
         let now = recycle(&folder).expect("the folder is taken");
         assert_eq!(
             fs::read_to_string(&outside).unwrap(),
@@ -1718,8 +2171,9 @@ mod tests {
         let _ = fs::remove_dir(&alone);
     }
 
-    /// Sizes Windows records for files with an alternate data stream, and hidden, system and
-    /// read-only ones, match what the fast path records.
+    /// Sizes Windows records for files with an alternate data stream, and hidden and system
+    /// ones (not read-only: the engine in silent mode refuses read-only system files, where a
+    /// real delete asks), match what the fast path records.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
     fn recorded_sizes_match_windows_for_streams_and_attributes() {
@@ -1733,7 +2187,7 @@ mod tests {
             let flagged = folder.join("flagged.txt");
             fs::write(&flagged, "123").unwrap();
             let ok = std::process::Command::new("attrib")
-                .args(["+h", "+s", "+r"])
+                .args(["+h", "+s"])
                 .arg(&flagged)
                 .status()
                 .unwrap()
@@ -1741,7 +2195,14 @@ mod tests {
             assert!(ok, "attrib");
             folder
         });
-        assert_eq!(engine(vec![engine_item.clone()]), Ok(OpOutcome::Done));
+        assert_eq!(
+            engine(vec![engine_item.clone()]),
+            Ok(OpOutcome::Done),
+            "the engine refused the folder; what is in it:{}{}",
+            test_support::describe_tree(&engine_item),
+            test_support::diagnose(&engine_item)
+        );
+        test_support::settle(&fast_item);
         recycle(&fast_item).expect("taken");
         let e = &recycled_from(engine_item.parent().unwrap())[0];
         let f = &recycled_from(fast_item.parent().unwrap())[0];
@@ -1794,7 +2255,6 @@ mod tests {
             assert!(fast_item.join("x.txt").exists());
         }
         purge(&recycled_from(engine_item.parent().unwrap()));
-        let _ = fs::remove_dir_all(arke_core::path::verbatim(&sb.0));
     }
 
     /// Many items at once from several threads (as with two windows deleting together): each gets
@@ -1812,6 +2272,9 @@ mod tests {
                 dir
             })
             .collect();
+        for item in &items {
+            test_support::settle(item);
+        }
         let next = std::sync::atomic::AtomicUsize::new(0);
         let done = parking_lot::Mutex::new(Vec::new());
         std::thread::scope(|scope| {
@@ -1825,7 +2288,12 @@ mod tests {
             }
         });
         let done = done.into_inner();
-        assert!(done.iter().all(|(_, now)| now.is_some()), "all taken");
+        assert!(
+            done.iter().all(|(_, now)| now.is_some()),
+            "all taken ({} of {ITEMS} were){}",
+            done.iter().filter(|(_, now)| now.is_some()).count(),
+            test_support::diagnose(&sb.0)
+        );
         let mut places: Vec<&PathBuf> = done.iter().filter_map(|(_, now)| now.as_ref()).collect();
         places.sort();
         places.dedup();

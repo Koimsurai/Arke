@@ -36,6 +36,51 @@ pub enum WatchEvent {
     Rescan,
 }
 
+/// What a change notification said about one item (see [`Fs::watch_changes`]).
+#[derive(Debug, Clone)]
+pub enum Change {
+    /// Something about this path changed: stat it to see what it is now.
+    Unknown(PathBuf),
+    /// This path is gone (deleted, or renamed to another name).
+    Removed(PathBuf),
+    /// This path exists, and the notification described it: the entry [`Fs::stat`] would give,
+    /// under the name the notification used.
+    Present(PathBuf, Entry),
+}
+
+impl Change {
+    /// The path this change is about.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Unknown(path) | Self::Removed(path) | Self::Present(path, _) => path,
+        }
+    }
+}
+
+/// Change notification from [`Fs::watch_changes`].
+#[derive(Debug, Clone)]
+pub enum ChangeEvent {
+    /// These items changed; later changes of one path supersede earlier ones.
+    Changed(Vec<Change>),
+    /// Events were lost (buffer overflow etc.); relist the directory.
+    Rescan,
+}
+
+impl From<WatchEvent> for ChangeEvent {
+    fn from(event: WatchEvent) -> Self {
+        match event {
+            WatchEvent::Changed(paths) => {
+                Self::Changed(paths.into_iter().map(Change::Unknown).collect())
+            }
+            WatchEvent::Rescan => Self::Rescan,
+        }
+    }
+}
+
+/// Handler of [`Fs::watch_changes`]; called on the watcher's background thread, which it must
+/// not block (and from which it must not start or close watches).
+pub type ChangeCallback = Box<dyn Fn(ChangeEvent) + Send + Sync>;
+
 /// One entry seen by a folder size walk ([`Fs::scan_sizes`]).
 #[derive(Debug)]
 pub enum SizeItem {
@@ -72,6 +117,15 @@ pub trait Fs: Send + Sync + 'static {
     }
     /// Watches a directory (non-recursive). Dropping the returned value stops watching.
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>>;
+    /// Like [`Fs::watch`], but a change may say what the item is now ([`Change::Present`]) or
+    /// that it is gone ([`Change::Removed`]), so the owner needn't stat it. The default reports
+    /// every change as [`Change::Unknown`].
+    fn watch_changes(&self, path: &Path, on_change: ChangeCallback) -> io::Result<Box<dyn Send>> {
+        self.watch(
+            path,
+            Box::new(move |event| on_change(ChangeEvent::from(event))),
+        )
+    }
     /// Reads a whole file (for thumbnails). Errors without reading if larger than `max_len`.
     fn read(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>>;
     /// Reads up to `len` bytes from the start of a file (for text previews).
@@ -81,6 +135,12 @@ pub trait Fs: Send + Sync + 'static {
     fn open(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
         let bytes = self.read(path, OPEN_IN_MEMORY_MAX)?;
         Ok(Box::new(io::Cursor::new(bytes)))
+    }
+    /// Opens for one read from start to end (checksums, content search). The real file system on
+    /// Windows returns the file unbuffered (callers read in large blocks) and hints
+    /// the cache manager to read ahead; everything else is [`Fs::open`].
+    fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
+        self.open(path)
     }
     /// Where the symlink or junction at `path` points, as an absolute path (see
     /// [`crate::link::link_target`]). Never follows the link any further.
@@ -236,6 +296,25 @@ impl Fs for RealFs {
         Ok(Box::new(io::BufReader::new(std::fs::File::open(path)?)))
     }
 
+    fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn ReadSeek>> {
+        debug_assert_not_ui_thread("open_sequential", path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            /// `FILE_FLAG_SEQUENTIAL_SCAN`.
+            const SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(SEQUENTIAL_SCAN)
+                .open(path)?;
+            Ok(Box::new(file))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(Box::new(std::fs::File::open(path)?))
+        }
+    }
+
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>> {
         debug_assert_not_ui_thread("watch", path);
         watch_with(path, notify::RecursiveMode::NonRecursive, on_event)
@@ -250,6 +329,26 @@ impl Fs for RealFs {
     fn watch_tree(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>> {
         debug_assert_not_ui_thread("watch_tree", path);
         watch_with(path, notify::RecursiveMode::Recursive, on_event)
+    }
+
+    /// Asks for the extended change records (`ReadDirectoryChangesExW`) where the file system has
+    /// them, so changed items needn't be stat'ed (see `winfs`).
+    #[cfg(windows)]
+    fn watch_changes(&self, path: &Path, on_change: ChangeCallback) -> io::Result<Box<dyn Send>> {
+        debug_assert_not_ui_thread("watch_changes", path);
+        let on_change: Arc<ChangeCallback> = Arc::new(on_change);
+        let target = path.to_path_buf();
+        let events = Arc::clone(&on_change);
+        let guard = crate::watches::registry().watch(
+            path,
+            Box::new(move || {
+                let sink = crate::winfs::Sink::Changes(Arc::clone(&events));
+                let watcher = crate::winfs::DirWatcher::start(&target, false, sink)?;
+                Ok(Box::new(watcher) as Box<dyn crate::watches::Armed>)
+            }),
+            Box::new(move || on_change(ChangeEvent::Rescan)),
+        )?;
+        Ok(Box::new(guard))
     }
 }
 
@@ -309,8 +408,9 @@ impl crate::watches::Armed for crate::winfs::DirWatcher {
     }
 }
 
-/// Folders shown in a tab use Arke's own watcher ([`crate::winfs::DirWatcher`]: no polling, and
-/// a full change buffer asks for a relist). Whole trees for the search index stay on notify.
+/// Single folders use Arke's own watcher ([`crate::winfs::DirWatcher`]: no polling, one thread
+/// for all of them, and a full change buffer asks for a relist). Whole trees for the search index
+/// stay on notify.
 #[cfg(windows)]
 fn arm_watcher(
     path: &Path,
@@ -319,8 +419,9 @@ fn arm_watcher(
 ) -> io::Result<Box<dyn crate::watches::Armed>> {
     use notify::Watcher;
     if mode == notify::RecursiveMode::NonRecursive {
+        let sink = crate::winfs::Sink::Paths(on_event);
         return Ok(Box::new(crate::winfs::DirWatcher::start(
-            path, false, on_event,
+            path, false, sink,
         )?));
     }
     let (closed_tx, closed) = std::sync::mpsc::channel();
@@ -372,20 +473,23 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    /// Thousands of new items at once (an extracted archive) while the consumer is busy overflow
+    /// Hundreds of new items at once (an extracted archive) while the consumer is busy overflow
     /// the change buffer. That must ask for a relist, and watching must go on afterwards.
     /// Folders rather than files: they make the same change records, and an antivirus doesn't
-    /// scan them, so creating thousands takes seconds instead of minutes.
+    /// scan them. Long names make each record big (about 290 bytes), so the two 64 KB buffers a
+    /// busy watch has (the pending read's and the kernel's) fill after about 450 items: 1,200
+    /// overflow them for sure while creating far fewer folders than short names would need, which
+    /// keeps the test quick when the whole suite runs at once. Every wait is for a condition.
     #[test]
     fn overflowing_watch_asks_for_a_rescan_and_keeps_watching() {
-        const FILES: usize = 3000;
-        let dir = std::env::temp_dir().join(format!("arke-watch-overflow-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        const FILES: usize = 1200;
+        /// Generous: under a loaded suite creating the folders alone can take many seconds.
+        const WAIT: Duration = Duration::from_secs(60);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let seen: Arc<Mutex<HashSet<String>>> = Arc::default();
         let rescans = Arc::new(AtomicUsize::new(0));
-        let last = Arc::new(Mutex::new(Instant::now()));
-        let (seen2, rescans2, last2) = (Arc::clone(&seen), Arc::clone(&rescans), Arc::clone(&last));
+        let (seen2, rescans2) = (Arc::clone(&seen), Arc::clone(&rescans));
         // The consumer is busy (as the UI or an antivirus scan can be) until everything exists.
         let created = Arc::new(AtomicBool::new(false));
         let busy = Arc::clone(&created);
@@ -407,37 +511,35 @@ mod tests {
                             rescans2.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    *last2.lock() = Instant::now();
                 }),
             )
             .unwrap();
         std::fs::write(dir.join("first.txt"), b"x").unwrap();
+        let padding = "x".repeat(124);
         for i in 0..FILES {
-            std::fs::create_dir(dir.join(format!("extracted-{i:05}"))).unwrap();
+            std::fs::create_dir(dir.join(format!("extracted-{i:05}-{padding}"))).unwrap();
         }
         created.store(true, Ordering::Relaxed);
-        *last.lock() = Instant::now();
-        // Until no event came for a while.
-        let start = Instant::now();
-        while last.lock().elapsed() < Duration::from_millis(800)
-            && start.elapsed() < Duration::from_secs(20)
-        {
+        // Either a relist was asked for, or every change came through; anything else is lost.
+        let got = || {
+            seen.lock()
+                .iter()
+                .filter(|n| n.starts_with("extracted-"))
+                .count()
+        };
+        let deadline = Instant::now() + WAIT;
+        while rescans.load(Ordering::Relaxed) == 0 && got() < FILES {
+            assert!(
+                Instant::now() < deadline,
+                "changes were lost without asking for a rescan: saw {} of {FILES}",
+                got()
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
-        let got = seen
-            .lock()
-            .iter()
-            .filter(|n| n.starts_with("extracted-"))
-            .count();
-        let rescanned = rescans.load(Ordering::Relaxed) > 0;
-        assert!(
-            rescanned || got == FILES,
-            "changes were lost without asking for a rescan: saw {got} of {FILES}"
-        );
 
         // Still watching.
         std::fs::write(dir.join("after.txt"), b"y").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + WAIT;
         while !seen.lock().contains("after.txt") {
             assert!(
                 Instant::now() < deadline,
@@ -446,7 +548,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         drop(watch);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 
@@ -457,8 +558,8 @@ mod replace_tests {
     /// The new content replaces the old whole, and the temporary file doesn't stay behind.
     #[test]
     fn a_replaced_file_has_the_new_content_and_no_temporary_file_is_left() {
-        let dir = std::env::temp_dir().join(format!("arke-test-replace-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let path = dir.join("settings.json");
         let tmp = dir.join("settings.json.tmp");
         std::fs::write(&path, "old").unwrap();
@@ -467,6 +568,5 @@ mod replace_tests {
         assert!(!tmp.exists());
         replace_file(&path, &tmp, b"bytes too").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"bytes too");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

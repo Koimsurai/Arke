@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use gpui_util::ResultExt;
 use windows::{
     Win32::{
-        Foundation::HWND,
+        // zed#63821: `RECT` for clearing the Windows 10 top border row.
+        Foundation::{HWND, RECT},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -139,7 +140,59 @@ impl Drop for Annotation<'_> {
 struct DirectComposition {
     comp_device: IDCompositionDevice,
     comp_target: IDCompositionTarget,
+    // zed#63821: the scene and the top border visual hang off a root visual.
+    root_visual: IDCompositionVisual,
     comp_visual: IDCompositionVisual,
+    /// zed#63821: carries the window's top border while the window is inactive.
+    /// `None` anywhere DWM draws that border itself, which is everywhere but
+    /// Windows 10.
+    border: Option<TopBorderVisual>,
+}
+
+// zed#63821: Windows 10 top border visual.
+/// The window's inactive top border, as a composition visual of its own rather
+/// than a row of the rendered scene, so that showing and hiding it costs a
+/// composition commit instead of a whole frame. See
+/// [`WindowsWindowInner::update_top_border`].
+struct TopBorderVisual {
+    visual: IDCompositionVisual,
+    /// A single premultiplied pixel of border colour, stretched to the width of
+    /// the window by `scale`. One pixel rather than a wide buffer so there is
+    /// no maximum texture size to bump into on lower feature levels.
+    swap_chain: IDXGISwapChain1,
+    scale: IDCompositionScaleTransform,
+}
+
+impl TopBorderVisual {
+    fn new(comp_device: &IDCompositionDevice, devices: &DirectXRendererDevices) -> Result<Self> {
+        let swap_chain =
+            create_swap_chain_for_composition(&devices.dxgi_factory, &devices.device, 1, 1)
+                .context("Creating the top border swap chain")?;
+        unsafe {
+            let buffer: ID3D11Texture2D = swap_chain.GetBuffer(0)?;
+            let mut view = None;
+            devices
+                .device
+                .CreateRenderTargetView(&buffer, None, Some(&mut view))?;
+            let view = view.context("missing border render target view")?;
+            devices
+                .device_context
+                .ClearRenderTargetView(&view, &top_border_color());
+            swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
+        }
+
+        let visual = unsafe { comp_device.CreateVisual() }?;
+        let scale = unsafe { comp_device.CreateScaleTransform() }?;
+        unsafe {
+            scale.SetScaleY2(1.0)?;
+            visual.SetTransform(&scale)?;
+        }
+        Ok(Self {
+            visual,
+            swap_chain,
+            scale,
+        })
+    }
 }
 
 impl DirectXRendererDevices {
@@ -152,6 +205,7 @@ impl DirectXRendererDevices {
             dxgi_factory,
             device,
             device_context,
+            ..
         } = directx_devices;
         let dxgi_device = if disable_direct_composition {
             None
@@ -180,6 +234,8 @@ impl DirectXRenderer {
         if disable_direct_composition {
             log::info!("Direct Composition is disabled.");
         }
+        // Arke: what a window's renderer costs, for measuring menus (`RUST_LOG=gpui_windows=debug`).
+        let started = std::time::Instant::now();
 
         let devices = DirectXRendererDevices::new(directx_devices, disable_direct_composition)
             .context("Creating DirectX devices")?;
@@ -189,19 +245,30 @@ impl DirectXRenderer {
             .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
             .context("Creating DirectX global elements")?;
-        let pipelines = DirectXRenderPipelines::new(&devices.device)
+        // Arke: the shaders are the device's, shared with every other window.
+        let shaders = directx_devices
+            .shaders
+            .get(&devices.device)
+            .context("Creating DirectX shaders")?;
+        let pipelines = DirectXRenderPipelines::new(&devices.device, &shaders)
             .context("Creating DirectX render pipelines")?;
 
         let direct_composition = if disable_direct_composition {
             None
         } else {
-            let composition = DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), hwnd)
-                .context("Creating DirectComposition")?;
+            // zed#63821: the devices make the top border visual; the swap chain is 1 px wide.
+            let composition =
+                DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), hwnd, &devices)
+                    .context("Creating DirectComposition")?;
             composition
-                .set_swap_chain(&resources.swap_chain)
+                .set_swap_chain(&resources.swap_chain, 1)
                 .context("Setting swap chain for DirectComposition")?;
             Some(composition)
         };
+        log::debug!(
+            "window renderer made in {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
 
         Ok(DirectXRenderer {
             hwnd,
@@ -319,15 +386,21 @@ impl DirectXRenderer {
         .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
             .context("Creating DirectXGlobalElements")?;
-        let pipelines = DirectXRenderPipelines::new(&devices.device)
+        // Arke: the new device's shaders, made by the first window that recovers onto it.
+        let shaders = directx_devices
+            .shaders
+            .get(&devices.device)
+            .context("Creating DirectX shaders")?;
+        let pipelines = DirectXRenderPipelines::new(&devices.device, &shaders)
             .context("Creating DirectXRenderPipelines")?;
 
         let direct_composition = if disable_direct_composition {
             None
         } else {
+            // zed#63821: the devices make the top border visual, stretched to the width.
             let composition =
-                DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), self.hwnd)?;
-            composition.set_swap_chain(&resources.swap_chain)?;
+                DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), self.hwnd, &devices)?;
+            composition.set_swap_chain(&resources.swap_chain, self.width)?;
             Some(composition)
         };
 
@@ -352,6 +425,8 @@ impl DirectXRenderer {
         &mut self,
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
+        // zed#63821
+        top_border_height: u32,
     ) -> Result<()> {
         if self.skip_draws {
             // skip drawing this frame, we just recovered from a device lost event
@@ -365,7 +440,61 @@ impl DirectXRenderer {
             resources.paths = None;
         }
         self.render(scene, background_appearance)?;
+        // zed#63821
+        self.draw_top_border(top_border_height).log_err();
         self.present()
+    }
+
+    // zed#63821: Windows 10 top border, `set_top_border_visible` and `draw_top_border`.
+    /// Show or hide the inactive top border. See
+    /// [`WindowsWindowInner::top_border_height`].
+    pub(crate) fn set_top_border_visible(&self, visible: bool) -> Result<()> {
+        let Some(composition) = self.direct_composition.as_ref() else {
+            return Ok(());
+        };
+        composition.set_border_visible(visible)
+    }
+
+    /// Paint the window's top border over the top `height` physical pixels of
+    /// the frame, in premultiplied `color`.
+    ///
+    /// See [`WindowsWindowInner::top_border_height`]: this only runs on Windows
+    /// 10. While the window is active `color` is fully transparent, uncovering
+    /// the pixel of DWM frame extended underneath so the system draws its own
+    /// border; when it is inactive DWM leaves that pixel alone and `color` is
+    /// the border itself, translucent like the ones DWM draws down the other
+    /// three edges.
+    ///
+    /// Either way this needs the premultiplied-alpha DirectComposition swap
+    /// chain, since the row is written with its alpha intact; the fallback swap
+    /// chain is created with [`DXGI_ALPHA_MODE_IGNORE`], which would turn the
+    /// transparent row into an opaque black line.
+    fn draw_top_border(&self, height: u32) -> Result<()> {
+        if height == 0 || self.direct_composition.is_none() {
+            return Ok(());
+        }
+        let resources = self.resources.as_ref().context("resources missing")?;
+        let render_target_view = resources
+            .render_target_view
+            .as_ref()
+            .context("missing render target view")?;
+        let device_context: ID3D11DeviceContext1 = self
+            .devices
+            .as_ref()
+            .context("devices missing")?
+            .device_context
+            .cast()?;
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: self.width as i32,
+            bottom: height as i32,
+        };
+        // Cleared, never coloured: whatever occupies the row is composited
+        // underneath by DWM (the active border) or over it by the border visual
+        // (the inactive one), and both are independent of this frame.
+        unsafe { device_context.ClearView(render_target_view, &[0.0; 4], Some(&[rect])) };
+        Ok(())
     }
 
     /// Clear the render target for `background_appearance` and encode every
@@ -548,6 +677,11 @@ impl DirectXRenderer {
             devices
                 .device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
+        }
+
+        // zed#63821: the top border visual follows the window's width.
+        if let Some(composition) = self.direct_composition.as_ref() {
+            composition.set_border_width(width).log_err();
         }
 
         Ok(())
@@ -959,63 +1093,156 @@ impl DirectXResources {
     }
 }
 
+/// Arke: a pipeline's shaders and blend state. They depend only on the device, so they are made
+/// once per device and shared by every window's renderer (see [`PipelineShaders`]).
+#[derive(Clone)]
+struct PipelineShader {
+    vertex: ID3D11VertexShader,
+    fragment: ID3D11PixelShader,
+    blend_state: ID3D11BlendState,
+}
+
+impl PipelineShader {
+    fn new(
+        device: &ID3D11Device,
+        shader_module: ShaderModule,
+        blend_state: ID3D11BlendState,
+    ) -> Result<Self> {
+        let vertex = {
+            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
+            create_vertex_shader(device, raw_shader.as_bytes())?
+        };
+        let fragment = {
+            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
+            create_fragment_shader(device, raw_shader.as_bytes())?
+        };
+        Ok(Self {
+            vertex,
+            fragment,
+            blend_state,
+        })
+    }
+}
+
+/// Arke: the shaders and blend states of the eight pipelines, for one device. Upstream made them
+/// again for every window, so every menu level made sixteen shaders (compiled from source in
+/// debug builds). They are made once per device now, kept in [`ShaderCache`], and each window's
+/// renderer only makes its own instance buffers.
+#[derive(Clone)]
+pub(crate) struct PipelineShaders {
+    shadow: PipelineShader,
+    quad: PipelineShader,
+    path_rasterization: PipelineShader,
+    path_sprite: PipelineShader,
+    underline: PipelineShader,
+    mono_sprites: PipelineShader,
+    subpixel_sprites: PipelineShader,
+    poly_sprites: PipelineShader,
+}
+
+impl PipelineShaders {
+    fn new(device: &ID3D11Device) -> Result<Self> {
+        Ok(Self {
+            shadow: PipelineShader::new(device, ShaderModule::Shadow, create_blend_state(device)?)?,
+            quad: PipelineShader::new(device, ShaderModule::Quad, create_blend_state(device)?)?,
+            path_rasterization: PipelineShader::new(
+                device,
+                ShaderModule::PathRasterization,
+                create_blend_state_for_path_rasterization(device)?,
+            )?,
+            path_sprite: PipelineShader::new(
+                device,
+                ShaderModule::PathSprite,
+                create_blend_state_for_path_sprite(device)?,
+            )?,
+            underline: PipelineShader::new(
+                device,
+                ShaderModule::Underline,
+                create_blend_state(device)?,
+            )?,
+            mono_sprites: PipelineShader::new(
+                device,
+                ShaderModule::MonochromeSprite,
+                create_blend_state(device)?,
+            )?,
+            subpixel_sprites: PipelineShader::new(
+                device,
+                ShaderModule::SubpixelSprite,
+                create_blend_state_for_subpixel_rendering(device)?,
+            )?,
+            poly_sprites: PipelineShader::new(
+                device,
+                ShaderModule::PolychromeSprite,
+                create_blend_state(device)?,
+            )?,
+        })
+    }
+}
+
+/// Arke: the [`PipelineShaders`] of one device, made by whoever needs them first and shared after
+/// that. A [`DirectXDevices`] carries one, so new devices (after a device lost) start empty and
+/// every window recovering onto them shares the shaders made for them.
+#[derive(Default)]
+pub(crate) struct ShaderCache(parking_lot::Mutex<Option<PipelineShaders>>);
+
+impl ShaderCache {
+    /// The shaders for `device`, made now if no one has made them yet. While another thread is
+    /// making them (see [`PendingDevices`]), this waits for that instead of making them again.
+    pub(crate) fn get(&self, device: &ID3D11Device) -> Result<PipelineShaders> {
+        let mut cached = self.0.lock();
+        let shaders = Self::fill(&mut cached, device)?.clone();
+        Ok(shaders)
+    }
+
+    /// Makes the shaders into `cached` unless they are there already. A failure leaves it empty,
+    /// so the next caller tries again.
+    pub(crate) fn fill<'a>(
+        cached: &'a mut Option<PipelineShaders>,
+        device: &ID3D11Device,
+    ) -> Result<&'a PipelineShaders> {
+        if cached.is_none() {
+            *cached = Some(PipelineShaders::new(device)?);
+        }
+        cached.as_ref().context("the shader cache is empty")
+    }
+
+    /// Holds the cache, so that callers of [`Self::get`] wait until the holder has filled it.
+    pub(crate) fn lock(&self) -> parking_lot::MutexGuard<'_, Option<PipelineShaders>> {
+        self.0.lock()
+    }
+}
+
 impl DirectXRenderPipelines {
-    pub fn new(device: &ID3D11Device) -> Result<Self> {
-        let shadow_pipeline = PipelineState::new(
-            device,
-            "shadow_pipeline",
-            ShaderModule::Shadow,
-            4,
-            create_blend_state(device)?,
-        )?;
-        let quad_pipeline = PipelineState::new(
-            device,
-            "quad_pipeline",
-            ShaderModule::Quad,
-            64,
-            create_blend_state(device)?,
-        )?;
+    pub fn new(device: &ID3D11Device, shaders: &PipelineShaders) -> Result<Self> {
+        let shadow_pipeline = PipelineState::new(device, "shadow_pipeline", &shaders.shadow, 4)?;
+        let quad_pipeline = PipelineState::new(device, "quad_pipeline", &shaders.quad, 64)?;
         let path_rasterization_pipeline = PipelineState::new(
             device,
             "path_rasterization_pipeline",
-            ShaderModule::PathRasterization,
+            &shaders.path_rasterization,
             32,
-            create_blend_state_for_path_rasterization(device)?,
         )?;
-        let path_sprite_pipeline = PipelineState::new(
-            device,
-            "path_sprite_pipeline",
-            ShaderModule::PathSprite,
-            4,
-            create_blend_state_for_path_sprite(device)?,
-        )?;
-        let underline_pipeline = PipelineState::new(
-            device,
-            "underline_pipeline",
-            ShaderModule::Underline,
-            4,
-            create_blend_state(device)?,
-        )?;
+        let path_sprite_pipeline =
+            PipelineState::new(device, "path_sprite_pipeline", &shaders.path_sprite, 4)?;
+        let underline_pipeline =
+            PipelineState::new(device, "underline_pipeline", &shaders.underline, 4)?;
         let mono_sprites = PipelineState::new(
             device,
             "monochrome_sprite_pipeline",
-            ShaderModule::MonochromeSprite,
+            &shaders.mono_sprites,
             512,
-            create_blend_state(device)?,
         )?;
         let subpixel_sprites = PipelineState::new(
             device,
             "subpixel_sprite_pipeline",
-            ShaderModule::SubpixelSprite,
+            &shaders.subpixel_sprites,
             512,
-            create_blend_state_for_subpixel_rendering(device)?,
         )?;
         let poly_sprites = PipelineState::new(
             device,
             "polychrome_sprite_pipeline",
-            ShaderModule::PolychromeSprite,
+            &shaders.poly_sprites,
             16,
-            create_blend_state(device)?,
         )?;
 
         Ok(Self {
@@ -1031,23 +1258,71 @@ impl DirectXRenderPipelines {
     }
 }
 
+// zed#63821: a root visual over the scene and, on Windows 10, the top border visual.
 impl DirectComposition {
-    pub fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
+    pub fn new(
+        dxgi_device: &IDXGIDevice,
+        hwnd: HWND,
+        devices: &DirectXRendererDevices,
+    ) -> Result<Self> {
         let comp_device = get_comp_device(dxgi_device)?;
         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, true) }?;
+        let root_visual = unsafe { comp_device.CreateVisual() }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
+        unsafe { root_visual.AddVisual(&comp_visual, false, None) }?;
+
+        let border = is_windows_10()
+            .then(|| TopBorderVisual::new(&comp_device, devices))
+            .transpose()?;
+        if let Some(border) = border.as_ref() {
+            // Above the scene, covering the row the renderer keeps clear.
+            unsafe { root_visual.AddVisual(&border.visual, true, &comp_visual) }?;
+        }
 
         Ok(Self {
             comp_device,
             comp_target,
+            root_visual,
             comp_visual,
+            border,
         })
     }
 
-    pub fn set_swap_chain(&self, swap_chain: &IDXGISwapChain1) -> Result<()> {
+    pub fn set_swap_chain(&self, swap_chain: &IDXGISwapChain1, width: u32) -> Result<()> {
         unsafe {
             self.comp_visual.SetContent(swap_chain)?;
-            self.comp_target.SetRoot(&self.comp_visual)?;
+            self.comp_target.SetRoot(&self.root_visual)?;
+        }
+        self.set_border_width(width)?;
+        unsafe { self.comp_device.Commit() }?;
+        Ok(())
+    }
+
+    /// Show or hide the inactive top border. Cheap enough to call from a window
+    /// message: it is a content swap and a commit, with no rendering.
+    fn set_border_visible(&self, visible: bool) -> Result<()> {
+        let Some(border) = self.border.as_ref() else {
+            return Ok(());
+        };
+        unsafe {
+            if visible {
+                border.visual.SetContent(&border.swap_chain)?;
+            } else {
+                border.visual.SetContent(None)?;
+            }
+            self.comp_device.Commit()?;
+        }
+        Ok(())
+    }
+
+    /// Stretch the border across the window. The single pixel of colour is
+    /// scaled rather than redrawn, so this is just a transform update.
+    fn set_border_width(&self, width: u32) -> Result<()> {
+        let Some(border) = self.border.as_ref() else {
+            return Ok(());
+        };
+        unsafe {
+            border.scale.SetScaleX2(width as f32)?;
             self.comp_device.Commit()?;
         }
         Ok(())
@@ -1117,32 +1392,25 @@ struct PipelineState<T> {
 }
 
 impl<T> PipelineState<T> {
+    // Arke: the shaders and blend state come from the device's `ShaderCache`; only the instance
+    // buffer is this window's.
     fn new(
         device: &ID3D11Device,
         label: &'static str,
-        shader_module: ShaderModule,
+        shader: &PipelineShader,
         buffer_size: usize,
-        blend_state: ID3D11BlendState,
     ) -> Result<Self> {
-        let vertex = {
-            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
-            create_vertex_shader(device, raw_shader.as_bytes())?
-        };
-        let fragment = {
-            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
-            create_fragment_shader(device, raw_shader.as_bytes())?
-        };
         let buffer = create_buffer(device, std::mem::size_of::<T>(), buffer_size)?;
         let view = create_buffer_view(device, &buffer)?;
 
         Ok(PipelineState {
             label,
-            vertex,
-            fragment,
+            vertex: shader.vertex.clone(),
+            fragment: shader.fragment.clone(),
             buffer,
             buffer_size,
             view,
-            blend_state,
+            blend_state: shader.blend_state.clone(),
             _marker: std::marker::PhantomData,
         })
     }
@@ -2070,5 +2338,93 @@ mod dxgi {
             (number >> 16) & 0xFFFF,
             number & 0xFFFF
         ))
+    }
+}
+
+// Arke: the renderer's shaders are made once per device and shared by every window.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::HMODULE;
+
+    /// A software device, so the tests don't depend on this machine's GPU.
+    fn warp_device() -> Option<ID3D11Device> {
+        let mut device: Option<ID3D11Device> = None;
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+        }
+        .ok()?;
+        device
+    }
+
+    #[test]
+    fn windows_of_one_device_share_its_shaders() -> Result<()> {
+        let Some(device) = warp_device() else {
+            return Ok(());
+        };
+        let cache = ShaderCache::default();
+        let first = cache.get(&device)?;
+        let second = cache.get(&device)?;
+        assert_eq!(first.quad.vertex, second.quad.vertex);
+        assert_eq!(first.poly_sprites.fragment, second.poly_sprites.fragment);
+
+        // Two windows: the same shaders and blend states, but instance buffers of their own.
+        let one = DirectXRenderPipelines::new(&device, &first)?;
+        let other = DirectXRenderPipelines::new(&device, &second)?;
+        assert_eq!(one.quad_pipeline.vertex, other.quad_pipeline.vertex);
+        assert_eq!(
+            one.subpixel_sprites.blend_state,
+            other.subpixel_sprites.blend_state
+        );
+        assert_ne!(one.quad_pipeline.buffer, other.quad_pipeline.buffer);
+        Ok(())
+    }
+
+    #[test]
+    fn new_devices_start_with_an_empty_cache() -> Result<()> {
+        let Some(device) = warp_device() else {
+            return Ok(());
+        };
+        let lost = ShaderCache::default();
+        let recovered = ShaderCache::default();
+        let before = lost.get(&device)?;
+        assert!(recovered.lock().is_none());
+        let after = recovered.get(&device)?;
+        assert_ne!(before.quad.vertex, after.quad.vertex);
+        Ok(())
+    }
+
+    #[test]
+    fn a_window_waits_for_shaders_being_made_elsewhere() -> Result<()> {
+        let Some(device) = warp_device() else {
+            return Ok(());
+        };
+        let cache = std::sync::Arc::new(ShaderCache::default());
+        let (held, holding) = std::sync::mpsc::channel();
+        let maker = {
+            let cache = std::sync::Arc::clone(&cache);
+            let device = device.clone();
+            std::thread::spawn(move || -> Result<ID3D11VertexShader> {
+                let mut cached = cache.lock();
+                held.send(()).ok();
+                Ok(ShaderCache::fill(&mut cached, &device)?.quad.vertex.clone())
+            })
+        };
+        holding.recv()?;
+        // Blocks until the other thread has filled the cache, then takes its shaders.
+        let shaders = cache.get(&device)?;
+        let made_elsewhere = maker.join().expect("the shader thread panicked")?;
+        assert_eq!(shaders.quad.vertex, made_elsewhere);
+        Ok(())
     }
 }

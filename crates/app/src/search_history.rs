@@ -156,7 +156,7 @@ fn save(path: &Path, file: &StoredFile) -> Result<(), HistoryError> {
 
 /// `%APPDATA%\Arke\search_history.json`, next to the settings (string work only).
 pub(crate) fn default_path() -> Option<PathBuf> {
-    crate::settings::default_path().map(|p| p.with_file_name("search_history.json"))
+    crate::paths::roaming_file("search_history.json")
 }
 
 /// Whether `path` is worth remembering: a local or network path, not a server (SFTP, WebDAV) or

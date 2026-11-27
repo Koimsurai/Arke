@@ -584,6 +584,14 @@ pub trait Platform: 'static {
 
     fn should_auto_hide_scrollbars(&self) -> bool;
 
+    /// How far the pointer must move away from where a button went down before the press counts
+    /// as a drag, in logical pixels, per axis (a rectangle centered on the press, like
+    /// `SM_CXDRAG` and `SM_CYDRAG` on Windows). Platforms with a system setting report it; the
+    /// default is 2 px.
+    fn drag_threshold(&self) -> Size<Pixels> {
+        size(px(2.), px(2.))
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn write_to_clipboard(&self, item: ClipboardItem);
 
@@ -1579,6 +1587,13 @@ pub trait PlatformTextSystem: Send + Sync {
     /// Returns the dilation level to use for a glyph painted in the given color.
     fn glyph_dilation_for_color(&self, _color: Hsla) -> u8 {
         0
+    }
+    /// Sets the locale (a BCP 47 name such as `zh-TW`) text is laid out in, which picks
+    /// locale-specific glyphs and the fonts characters missing from a font fall back to. `None`
+    /// restores the platform's default. Returns whether it changed. Platforms that don't support
+    /// it keep their default and return `false`.
+    fn set_locale(&self, _locale: Option<&str>) -> Result<bool> {
+        Ok(false)
     }
 }
 

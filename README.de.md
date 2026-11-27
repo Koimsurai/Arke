@@ -127,8 +127,8 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
   SVG), PDF, Word, Excel und PowerPoint, Text und Code mit Syntaxhervorhebung, Markdown, Archive,
   `.gz`-Dateien und Ordner.
 - Videos zeigen ein Bild und PDFs ihre erste Seite als Miniaturansicht. Die Schnellansicht zoomt
-  Text, Dokumente und PDF-Seiten (Strg+Mausrad), und wenn QuickLook installiert ist, kann die
-  Leertaste stattdessen dieses öffnen.
+  Text, Dokumente und PDF-Seiten (Strg+Mausrad), und die Leertaste kann stattdessen an ein
+  anderes Vorschauprogramm wie QuickLook gehen.
 
 **Suche**
 - Schon während der Eingabe, in diesem Ordner, seinen Unterordnern oder auf dem ganzen Computer, mit
@@ -139,7 +139,7 @@ Arke wurde in [Ruan Yifengs Tech-Wochenrückblick #420](https://www.ruanyifeng.c
 **Dateien**
 - Kopieren und Verschieben über die Windows-Shell-Engine mit Fortschritt, Rückgängig und
   Wiederholen. Aufträge auf demselben Laufwerk reihen sich in eine Warteschlange ein und lassen sich
-  anhalten, optional mit Überprüfung nach dem Kopieren oder Übergabe an TeraCopy (experimentell).
+  anhalten, optional mit Überprüfung nach dem Kopieren oder Übergabe an ein anderes Kopierprogramm wie TeraCopy (experimentell).
   Viele kleine Dateien zwischen lokalen SSDs werden zu mehreren gleichzeitig kopiert, viel schneller
   als eine nach der anderen.
 - Stapelweises Umbenennen, „In neuen Ordner verschieben“ und ein Menü zum Verschieben/Kopieren/

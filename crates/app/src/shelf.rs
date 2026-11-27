@@ -229,7 +229,7 @@ fn save(path: &Path, items: Vec<ShelfItem>) -> Result<(), ShelfError> {
 
 /// `%APPDATA%\Arke\shelf.json`, next to the settings.
 pub(crate) fn default_path() -> Option<PathBuf> {
-    crate::settings::default_path().map(|p| p.with_file_name("shelf.json"))
+    crate::paths::roaming_file("shelf.json")
 }
 
 /// The app-wide shelf, shared by every window and tab.
@@ -516,7 +516,8 @@ mod tests {
 
     #[test]
     fn file_round_trip_skips_bad_items() {
-        let dir = std::env::temp_dir().join(format!("arke-shelf-test-{}", std::process::id()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dir = tmp_dir.path().to_path_buf();
         let file = dir.join("shelf.json");
         let mut shelf = Shelf::default();
         shelf.add([(p(r"C:\a b\c.txt"), false), (p(r"\\nas\share\d"), true)]);
@@ -531,6 +532,5 @@ mod tests {
         assert_eq!(loaded.len(), 1, "bad and repeated items are skipped");
         assert!(!loaded.items()[0].is_dir);
         assert!(load(&dir.join("absent.json")).unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

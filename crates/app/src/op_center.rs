@@ -185,33 +185,20 @@ impl Job {
         remaining(f64::from(self.fraction()?), self.started.elapsed())
     }
 
-    /// Title: what is done to what.
+    /// Title: what is done to what, as one string (the list draws it from [`Self::title_parts`]).
+    #[cfg(test)]
     pub(crate) fn title(&self) -> String {
-        // "Move ... to Recycle Bin" wraps the name, so it doesn't fit the "<op> <name>" pattern.
-        if self.verb == "op.recycle" {
-            return match &self.subject {
-                Some((name, 1)) => t!("ops.recycle_one", name = name).into_owned(),
-                Some((name, count)) => t!(
-                    "ops.recycle_many",
-                    name = name,
-                    count = arke_core::format::format_count(*count)
-                )
-                .into_owned(),
-                None => t!(self.verb).into_owned(),
-            };
-        }
-        let op = t!(self.verb);
-        match &self.subject {
-            Some((name, 1)) => t!("ops.subject_one", op = op, name = name).into_owned(),
-            Some((name, count)) => t!(
-                "ops.subject_many",
-                op = op,
-                name = name,
-                count = arke_core::format::format_count(*count)
-            )
-            .into_owned(),
-            None => op.into_owned(),
-        }
+        self.title_parts().text()
+    }
+
+    /// The title cut around the name, so the list can shorten the name alone (see
+    /// [`TitleParts`]).
+    pub(crate) fn title_parts(&self) -> TitleParts {
+        let subject = self
+            .subject
+            .as_ref()
+            .map(|(name, count)| (name.as_str(), *count));
+        title_parts(self.verb, subject, &rust_i18n::locale())
     }
 
     /// Line below the title: progress, speed, time left, or the final result.
@@ -221,12 +208,15 @@ impl Job {
             JobState::Running if self.progress.cancel.load(Ordering::Relaxed) => {
                 t!("ops.state_stopping").into_owned()
             }
-            JobState::Running if self.queued() => if crate::op_queue::paused() {
-                t!("ops.state_queued_paused")
-            } else {
-                t!("ops.state_queued")
+            // Extractions and compressions wait in a queue of their own, which doesn't pause.
+            JobState::Running if self.queued() => {
+                if crate::op_queue::paused() && !matches!(self.verb, "op.extract" | "op.compress") {
+                    t!("ops.state_queued_paused")
+                } else {
+                    t!("ops.state_queued")
+                }
+                .into_owned()
             }
-            .into_owned(),
             JobState::Running if self.progress.verifying.load(Ordering::Relaxed) => {
                 self.fraction().map_or_else(
                     || t!("ops.state_verifying").into_owned(),
@@ -236,9 +226,9 @@ impl Job {
                     },
                 )
             }
-            JobState::Running if self.done_items() == 0 => match self.fraction() {
+            JobState::Running if self.done_items() == 0 => {
                 // One large file: no item finished yet, but there is progress.
-                Some(f) => {
+                if let Some(f) = self.fraction() {
                     let percent = (f * 100.).floor() as u32;
                     let mut parts = vec![t!("ops.state_percent", percent = percent).into_owned()];
                     parts.extend(self.speed_text());
@@ -248,18 +238,23 @@ impl Job {
                         );
                     }
                     parts.join(&t!("ops.separator"))
+                } else {
+                    // The copy engine counted the items but reports nothing until one finishes
+                    // (a big folder going to the Recycle Bin is a single item): say how many. A
+                    // total of bytes isn't a count (a file dragged out of a zip, before any
+                    // arrived).
+                    let total = self.progress.work_total.load(Ordering::Relaxed);
+                    if total == 0 || self.progress.work_in_bytes.load(Ordering::Relaxed) {
+                        t!("ops.state_preparing").into_owned()
+                    } else {
+                        tn!(
+                            "ops.state_preparing_items",
+                            usize::try_from(total).unwrap_or(usize::MAX)
+                        )
+                        .into_owned()
+                    }
                 }
-                // The copy engine counted the items but reports nothing until one finishes (a
-                // big folder going to the Recycle Bin is a single item): say how many.
-                None => match self.progress.work_total.load(Ordering::Relaxed) {
-                    0 => t!("ops.state_preparing").into_owned(),
-                    total => tn!(
-                        "ops.state_preparing_items",
-                        usize::try_from(total).unwrap_or(usize::MAX)
-                    )
-                    .into_owned(),
-                },
-            },
+            }
             JobState::Running => {
                 let mut parts = vec![tn!("ops.state_running", items).into_owned()];
                 if let Some(speed) = self.speed_text() {
@@ -277,6 +272,94 @@ impl Job {
             JobState::Failed(why) => t!("ops.state_failed", error = why).into_owned(),
         }
     }
+}
+
+/// Stand-ins for the name and the count while a title's template is filled in: private-use
+/// characters, which no translation contains, so the text around them can be cut out.
+const NAME_MARK: &str = "\u{e000}";
+const COUNT_MARK: &str = "\u{e001}";
+
+/// A job title in the pieces the list lays out on one line: when it doesn't fit, the name gives
+/// way to "…" first, so the operation and the item count stay readable ("Copy “ClassifiedArch…”
+/// and others (4 items)"). The pieces follow the translation, so any word order works.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TitleParts {
+    /// Up to the name ("Copy “").
+    pub(crate) before: String,
+    pub(crate) name: String,
+    /// From the name to the count ("” and others ("), or to the end without a count.
+    pub(crate) between: String,
+    /// The count and what follows it ("4 items)"); empty without a count.
+    pub(crate) tail: String,
+}
+
+impl TitleParts {
+    /// Cuts `filled`, a title template filled in with [`NAME_MARK`] and [`COUNT_MARK`], at the
+    /// marks and puts `name` and `count` in their place.
+    fn split(filled: &str, name: &str, count: &str) -> Self {
+        let Some((before, rest)) = filled.split_once(NAME_MARK) else {
+            return Self {
+                before: filled.replace(COUNT_MARK, count),
+                ..Self::default()
+            };
+        };
+        let (between, tail) = match rest.split_once(COUNT_MARK) {
+            Some((between, after)) => (between.to_owned(), format!("{count}{after}")),
+            None => (rest.to_owned(), String::new()),
+        };
+        Self {
+            before: before.replace(COUNT_MARK, count),
+            name: name.to_owned(),
+            between: between.replace(NAME_MARK, name),
+            tail: tail.replace(NAME_MARK, name),
+        }
+    }
+
+    /// The whole title, as one string.
+    pub(crate) fn text(&self) -> String {
+        [
+            self.before.as_str(),
+            self.name.as_str(),
+            self.between.as_str(),
+            self.tail.as_str(),
+        ]
+        .concat()
+    }
+}
+
+/// The title of an operation `verb` on `subject` (first item's name and how many items) in
+/// `locale`.
+fn title_parts(verb: &str, subject: Option<(&str, usize)>, locale: &str) -> TitleParts {
+    let Some((name, count)) = subject else {
+        return TitleParts {
+            before: t!(verb, locale = locale).into_owned(),
+            ..TitleParts::default()
+        };
+    };
+    // "Move ... to Recycle Bin" wraps the name, so it doesn't fit the "<op> <name>" pattern.
+    let filled = match (verb, count) {
+        ("op.recycle", 1) => t!("ops.recycle_one", locale = locale, name = NAME_MARK),
+        ("op.recycle", _) => t!(
+            "ops.recycle_many",
+            locale = locale,
+            name = NAME_MARK,
+            count = COUNT_MARK
+        ),
+        (_, 1) => t!(
+            "ops.subject_one",
+            locale = locale,
+            op = t!(verb, locale = locale),
+            name = NAME_MARK
+        ),
+        _ => t!(
+            "ops.subject_many",
+            locale = locale,
+            op = t!(verb, locale = locale),
+            name = NAME_MARK,
+            count = COUNT_MARK
+        ),
+    };
+    TitleParts::split(&filled, name, &arke_core::format::format_count(count))
 }
 
 /// Items per second; `None` when too short (fewer than two samples) or nothing moved.
@@ -575,6 +658,56 @@ mod tests {
         assert_eq!(op_icon("op.recycle"), Icon::Trash);
     }
 
+    /// A long name is what gets cut short in the list, never the item count (#403): in every
+    /// language the name and the count are pieces of their own, and the pieces still read as the
+    /// whole title.
+    #[test]
+    fn the_title_keeps_the_count_apart_from_the_name() {
+        let name = "ClassifiedArchive-2026-final.zip";
+        for locale in ["en", "zh-TW", "zh-CN", "ja", "de", "es", "pt-BR"] {
+            for verb in ["op.copy", "op.move", "op.recycle"] {
+                let parts = title_parts(verb, Some((name, 1234)), locale);
+                assert_eq!(parts.name, name, "{locale} {verb}: {parts:?}");
+                assert!(
+                    parts.tail.starts_with("1,234"),
+                    "{locale} {verb}: the count leads its own piece: {parts:?}"
+                );
+                assert!(
+                    !parts.before.contains("1,234") && !parts.between.contains("1,234"),
+                    "{locale} {verb}: {parts:?}"
+                );
+                let whole = if verb == "op.recycle" {
+                    t!(
+                        "ops.recycle_many",
+                        locale = locale,
+                        name = name,
+                        count = "1,234"
+                    )
+                } else {
+                    t!(
+                        "ops.subject_many",
+                        locale = locale,
+                        op = t!(verb, locale = locale),
+                        name = name,
+                        count = "1,234"
+                    )
+                };
+                assert_eq!(parts.text(), whole, "{locale} {verb}");
+            }
+        }
+        let one = title_parts("op.copy", Some((name, 1)), "en");
+        assert_eq!((one.name.as_str(), one.tail.as_str()), (name, ""));
+        assert_eq!(one.text(), "Copy “ClassifiedArchive-2026-final.zip”");
+        // Paste before the clipboard is read: just the operation.
+        assert_eq!(
+            title_parts("op.paste", None, "en"),
+            TitleParts {
+                before: "Paste".to_owned(),
+                ..TitleParts::default()
+            }
+        );
+    }
+
     /// Recycling one big folder reports no finished item for a long time; the line says how many
     /// items the copy engine counted instead of a bare "getting ready".
     #[test]
@@ -596,6 +729,34 @@ mod tests {
         assert_eq!(job.detail(), t!("ops.state_preparing"));
         progress.work_total.store(20_022, Ordering::Relaxed);
         assert_eq!(job.detail(), tn!("ops.state_preparing_items", 20_022));
+    }
+
+    /// A job counted in bytes that hasn't read any yet (a big file dragged out of a zip while
+    /// File Explorer unpacks it) is getting ready, not getting 1,572,864,000 items ready (#456).
+    #[test]
+    fn a_job_counted_in_bytes_is_getting_ready_until_bytes_arrive() {
+        let progress = Arc::new(OpProgress::default());
+        let job = Job {
+            id: 1,
+            verb: "op.copy",
+            subject: Some(("big.iso".into(), 1)),
+            progress: Arc::clone(&progress),
+            started: Instant::now(),
+            state: JobState::Running,
+            undo: None,
+            redo: None,
+            retry: None,
+            was_queued: false,
+            samples: VecDeque::new(),
+        };
+        progress.work_in_bytes.store(true, Ordering::Relaxed);
+        progress.work_total.store(1_572_864_000, Ordering::Relaxed);
+        assert_eq!(job.detail(), t!("ops.state_preparing"));
+        progress.work_done.store(786_432_000, Ordering::Relaxed);
+        assert!(
+            job.detail()
+                .starts_with(&*t!("ops.state_percent", percent = 50))
+        );
     }
 
     #[test]

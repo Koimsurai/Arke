@@ -8,11 +8,13 @@ use crate::settings::SettingsStore;
 use arke_remote::testing::{PASSWORD, USER, serve_sftp};
 use std::sync::Arc;
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("arke-app-remote-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A folder of its own, and the guard that deletes it when dropped.
+fn temp_dir(tag: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-app-remote-{tag}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn setup_remote<'a>(
@@ -80,7 +82,7 @@ fn the_wrapped_shell_answers_like_the_local_one() {
 
 #[gpui::test]
 fn adds_an_sftp_location_and_works_in_it(cx: &mut TestAppContext) {
-    let root = temp_dir("root");
+    let (root, _root) = temp_dir("root");
     std::fs::write(root.join("hello.txt"), b"hi").unwrap();
     std::fs::create_dir(root.join("docs")).unwrap();
     let port = serve_sftp(root.clone(), 3);
@@ -169,8 +171,6 @@ fn adds_an_sftp_location_and_works_in_it(cx: &mut TestAppContext) {
     wait_until(cx, &view, "gone from the list", |v| {
         !names(v).contains(&"hello.txt".to_owned())
     });
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Plain http with a password is refused until the user allows it for that location: the dialog

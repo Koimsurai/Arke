@@ -241,6 +241,46 @@ fn cloud_folders_are_announced_and_rechecked(cx: &mut TestAppContext) {
     assert_eq!(*shell.folder_visits.lock(), [announced, (slot, None)]);
 }
 
+/// A recheck that finds the sync client's items while the list changes under it (a watcher
+/// delta for another item) doesn't drop them: it runs once more against the new list and
+/// reloads, so they show without F5 (#319).
+#[gpui::test]
+fn a_recheck_racing_a_watcher_delta_still_shows_the_items(cx: &mut TestAppContext) {
+    const ONLINE_ONLY: u32 = 0x400 | 0x40_0000;
+    let fs = FakeFs::new();
+    let cloud = Path::new(r"C:\wps");
+    fs.insert_dir(cloud, vec![file("local.txt", 2)]);
+    let shell = Arc::new(FakeShell::default());
+    *shell.cloud.lock() = crate::shell::CloudScan {
+        sync_root: true,
+        ..Default::default()
+    };
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\wps");
+    wait_until(cx, &view, "load", loaded(r"C:\wps"));
+    wait_shell_in(cx, "announced", || !shell.folder_visits.lock().is_empty());
+
+    // The recheck's listing waits while the client fills the folder without a watcher event.
+    fs.hang(cloud);
+    let before = fs.read_dir_calls();
+    let changed = shell.visit_changed.lock().take().expect("the visit's hint");
+    changed();
+    wait_shell_in(cx, "the recheck listing", || fs.read_dir_calls() > before);
+    fs.add_entry(
+        cloud,
+        Entry::new("remote.txt", EntryKind::File, 12, None, ONLINE_ONLY),
+    );
+    // Meanwhile the watcher reports another item, so the list moves on.
+    fs.add_entry(cloud, file("other.txt", 1));
+    fs.emit_changed(cloud, &["other.txt"]);
+    wait_until(cx, &view, "the watched item", |v| {
+        names(v) == ["local.txt", "other.txt"]
+    });
+    fs.release(cloud);
+    wait_until(cx, &view, "the client's item", |v| {
+        names(v) == ["local.txt", "other.txt", "remote.txt"]
+    });
+}
+
 fn shelf_paths(cx: &mut VisualTestContext) -> Vec<(PathBuf, bool, bool)> {
     cx.update(|_, cx| {
         ShelfStore::global(cx)

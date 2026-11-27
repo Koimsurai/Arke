@@ -65,6 +65,22 @@ const RESOLVE_BUDGET: Duration = Duration::from_secs(3);
 /// Connect timeout per address.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// Windows' error for a DLL that isn't there (`ERROR_MOD_NOT_FOUND`).
+const MOD_NOT_FOUND: u32 = 126;
+
+/// Whether `mpr.dll` (the `WNet*` functions) is there. A stripped Windows can lack it, and a
+/// delayed load that fails would end the process, so every `WNet*` caller asks first.
+fn mpr() -> bool {
+    crate::win_dll::system_dll("mpr.dll")
+}
+
+/// The error for a `WNet*` call without `mpr.dll`.
+fn no_mpr() -> NetError {
+    NetError::Windows(windows::core::Error::from_hresult(
+        WIN32_ERROR(MOD_NOT_FOUND).to_hresult(),
+    ))
+}
+
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -147,6 +163,12 @@ fn server_shares(server: &str) -> std::io::Result<Vec<Share>> {
     const NERR_SUCCESS: u32 = 0;
     const ERROR_MORE_DATA: u32 = 234;
     debug_assert!(!arke_core::fs::is_ui_thread());
+    // Both functions are in netapi32.dll, which a stripped Windows can lack.
+    if !crate::win_dll::system_dll("netapi32.dll") {
+        return Err(std::io::Error::from_raw_os_error(
+            MOD_NOT_FOUND.cast_signed(),
+        ));
+    }
     let name = wide(std::ffi::OsStr::new(&format!(r"\\{server}")));
     let mut shares = Vec::new();
     let mut resume = 0u32;
@@ -231,6 +253,9 @@ fn drive_target(letter: char) -> Option<(PathBuf, bool)> {
     /// No such drive: an unconnected remembered drive has no root yet.
     const DRIVE_NO_ROOT_DIR: u32 = 1;
     const ERROR_CONNECTION_UNAVAIL: u32 = 1201;
+    if !mpr() {
+        return None;
+    }
     let root = wide(std::ffi::OsStr::new(&format!("{letter}:\\")));
     // SAFETY: root is NUL-terminated and outlives the call; only queries the drive type.
     let connected = match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
@@ -278,6 +303,11 @@ fn reconnect_drive(letter: char) -> std::io::Result<()> {
     windows_core::link!("mpr.dll" "system" fn WNetRestoreSingleConnectionW(
         hwnd: HWND, device: PCWSTR, use_ui: windows::core::BOOL) -> u32);
     debug_assert!(!arke_core::fs::is_ui_thread());
+    if !mpr() {
+        return Err(std::io::Error::from_raw_os_error(
+            MOD_NOT_FOUND.cast_signed(),
+        ));
+    }
     let device = wide(std::ffi::OsStr::new(&format!("{letter}:")));
     // SAFETY: device is NUL-terminated and outlives the call; no owner window, no UI.
     let result = unsafe {
@@ -360,6 +390,9 @@ fn format_mapped_label(unc: &str, custom: Option<&str>) -> Option<String> {
 /// logon session. Call from a background thread.
 pub(crate) fn connect(request: &crate::shell::NetConnect) -> Result<(), NetError> {
     use windows::Win32::NetworkManagement::WNet::{NET_CONNECT_FLAGS, WNetAddConnection2W};
+    if !mpr() {
+        return Err(no_mpr());
+    }
     // Signing in to a server itself (to list its shares) goes through its IPC$ share, like
     // Explorer does.
     let server = arke_core::net::bare_server(&request.share);
@@ -462,6 +495,9 @@ fn remember(share: &Path, user: &str, password: &str) {
 /// Call from a background thread.
 pub(crate) fn disconnect(drive: &Path) -> Result<(), NetError> {
     use windows::Win32::NetworkManagement::WNet::{NET_CONNECT_FLAGS, WNetCancelConnection2W};
+    if !mpr() {
+        return Err(no_mpr());
+    }
     let text = drive.to_string_lossy();
     let name = wide(std::ffi::OsStr::new(text.trim_end_matches('\\')));
     // SAFETY: name is a NUL-terminated wide string. Flags 0 leave the reconnect-at-logon
@@ -482,6 +518,9 @@ pub(crate) fn disconnect(drive: &Path) -> Result<(), NetError> {
 /// disconnected, `false` on cancel. Call from a background thread.
 pub(crate) fn drive_dialog(owner: Option<isize>, map: bool) -> Result<bool, NetError> {
     debug_assert!(!arke_core::fs::is_ui_thread());
+    if !mpr() {
+        return Err(no_mpr());
+    }
     let owner = owner.map_or_else(HWND::default, |h| HWND(h as *mut _));
     // SAFETY: owner is the Arke window or null; the call returns once the dialog closes.
     let result = unsafe {
@@ -555,6 +594,27 @@ mod tests {
         assert_eq!(format_mapped_label(r"\\nas", None), None);
         assert_eq!(format_mapped_label("", None), None);
         assert_eq!(format_mapped_label(r"C:\x", None), None);
+    }
+
+    /// Without `mpr.dll` and `netapi32.dll` the network actions fail with an error and the
+    /// lookups find nothing, and no `WNet*` or `Net*` function is called.
+    #[test]
+    fn missing_network_dlls_are_errors_not_crashes() {
+        crate::win_dll::assert_not_loaded(&["mpr.dll", "netapi32.dll"], "before the test");
+        let _missing = crate::win_dll::pretend_missing(&["mpr.dll", "netapi32.dll"]);
+        assert!(matches!(
+            disconnect(Path::new(r"Z:\")),
+            Err(NetError::Windows(_))
+        ));
+        assert!(matches!(
+            drive_dialog(None, true),
+            Err(NetError::Windows(_))
+        ));
+        assert!(drive_target('Z').is_none());
+        assert!(mapped_drive_label('Z').is_none());
+        assert!(reconnect_drive('Z').is_err());
+        assert!(server_shares("arke-test-server").is_err());
+        crate::win_dll::assert_not_loaded(&["mpr.dll", "netapi32.dll"], "after the gated calls");
     }
 
     #[test]

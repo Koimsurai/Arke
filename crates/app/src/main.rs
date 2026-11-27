@@ -6,6 +6,8 @@
 //!   arke <path> --bench startup|scroll|scroll-grid [--bench-out file]
 //!   arke --bench index [--bench-out file]   build the search index headless, report time and
 //!                                           memory (see `bench_index.rs`)
+//!   arke [folder] --bench list [--bench-out file]   list and sort 100,000 items headless
+//!                                           (see `bench_list.rs`)
 //!   arke --no-resident [path]   don't use or become the resident process
 //!   arke --quit                 quit the resident process
 //!   arke --api <json>           an integration API request; prints the JSON reply (see `api.rs`
@@ -49,13 +51,17 @@ mod archive_password;
 mod assets;
 mod bench;
 mod bench_index;
+mod bench_list;
 mod brand;
 mod build_info;
 mod caption;
 mod cloud_places;
 mod commands;
 mod crashlog;
+mod elevation;
 mod explorer;
+mod external;
+mod external_pipe;
 mod folder_handler;
 mod folder_views;
 mod frame_probe;
@@ -63,22 +69,25 @@ mod global_search;
 mod home;
 mod instance;
 mod keynav;
+mod legacy_tools;
 mod localized;
 mod media;
+mod media_budget;
 mod menu_order;
 mod menu_pin_looks;
 mod motion;
 mod net_dialog;
+mod onboarding;
 mod op_center;
 mod op_queue;
 mod palette;
+mod paths;
 mod place_names;
 mod popup;
 mod prefs;
 mod press_guard;
 mod properties;
 mod quick_access;
-mod quicklook;
 mod recycle_bin;
 mod redirection_guard;
 mod remote_shell;
@@ -93,7 +102,6 @@ mod shell;
 mod shell_host;
 mod slider;
 mod spring;
-mod teracopy;
 mod text_input;
 mod theme;
 mod thumb_host;
@@ -109,10 +117,12 @@ mod win_bin_evict;
 mod win_bin_usage;
 mod win_cloud;
 mod win_devnotify;
+mod win_dll;
 mod win_dragimage;
 mod win_e_hook;
 mod win_eject;
 mod win_fast_copy;
+mod win_fast_move;
 mod win_fast_recycle;
 mod win_fileops;
 mod win_folder_com;
@@ -169,6 +179,8 @@ enum BenchArg {
     Window(BenchMode),
     /// `--bench index`: headless index benchmark, no window (`bench_index.rs`)
     Index,
+    /// `--bench list`: headless list-and-sort of 100,000 items (`bench_list.rs`)
+    List,
 }
 
 #[allow(
@@ -231,6 +243,7 @@ fn parse_args_from(mut it: impl Iterator<Item = std::ffi::OsString>) -> Args {
             Some("--bench") => {
                 args.bench = Some(match it.next().as_ref().and_then(|s| s.to_str()) {
                     Some("index") => BenchArg::Index,
+                    Some("list") => BenchArg::List,
                     Some("scroll") => BenchArg::Window(BenchMode::Scroll),
                     Some("scroll-grid") => BenchArg::Window(BenchMode::ScrollGrid),
                     _ => BenchArg::Window(BenchMode::Startup),
@@ -399,6 +412,9 @@ fn main() -> std::process::ExitCode {
     if args.bench == Some(BenchArg::Index) {
         return bench_index::run(args.bench_out.as_deref());
     }
+    if args.bench == Some(BenchArg::List) {
+        return bench_list::run(args.path.as_deref(), args.bench_out.as_deref());
+    }
     app_main(args);
     std::process::ExitCode::SUCCESS
 }
@@ -421,6 +437,7 @@ fn app_main(mut args: Args) {
     let launched_unix_ms = unix_ms_now();
     crashlog::init();
     motion::refresh_system_setting();
+    scrollbar::refresh_system_setting();
     rust_i18n::set_locale(&win::ui_locale());
     theme::set_mica_available(use_mica());
     // From here any filesystem call on this thread trips a debug assertion.
@@ -462,11 +479,29 @@ fn app_main(mut args: Args) {
         crashlog::flush(Duration::from_millis(200));
         return;
     }
+    // Started as administrator while the shell isn't (a program running elevated opened a folder,
+    // #451): hand over to the resident Arke as usual, but never become it. With none running, start
+    // again as the user through the desktop shell before anything else (`elevation.rs`). Not when
+    // COM started this copy, for the same reason as above (and COM doesn't start it elevated: its
+    // class is per user).
+    let admin = if args.embedding {
+        elevation::Plan::Normal
+    } else {
+        elevation::plan()
+    };
+    let elevated = admin != elevation::Plan::Normal;
+    let relaunch_tried = elevated && !instance::resident_exists();
+    if relaunch_tried && elevation::start_unelevated(admin) {
+        crashlog::flush(Duration::from_millis(200));
+        return;
+    }
     let linger = shell_window(&args);
     let listener = if args.background || args.embedding {
         // Background launch: if a resident process exists we're not needed; otherwise become
         // resident without a window. Started by COM, the folders come through the class.
+        // Elevated, there is nothing to do (see above).
         match instance::listen() {
+            Some(_) if elevated => return,
             Some(listener) => Some(listener),
             None if args.embedding => {
                 win_folder_com::forward_until_idle();
@@ -497,6 +532,17 @@ fn app_main(mut args: Args) {
                     linger.wait();
                 }
                 return;
+            }
+            // The resident Arke went away or doesn't answer: the copy started as the user deals
+            // with it; failing that, a window here without residency.
+            outcome if elevated => {
+                // Closes the pipe first, so the new copy can become the resident Arke.
+                drop(outcome);
+                if !relaunch_tried && elevation::start_unelevated(admin) {
+                    crashlog::flush(Duration::from_millis(200));
+                    return;
+                }
+                None
             }
             HandOff::BecomeResident(listener) => Some(listener),
             HandOff::Standalone => None,
@@ -603,25 +649,10 @@ fn app_main(mut args: Args) {
             )),
             remotes,
         };
-        // "Open in VS Code/Zed": check in the background whether they're installed.
-        if bench.is_none() {
-            let shell = Arc::clone(&services.shell);
-            explorer::spawn_thread("editor-apps", move || {
-                let apps = shell.editor_apps();
-                // Icons come from each exe (icon only, no thumbnail provider).
-                let icons = apps
-                    .iter()
-                    .map(|(_, exe)| shell.file_icon(exe, 32))
-                    .collect();
-                explorer::set_open_with(apps, icons);
-            });
-        }
         // The integration API (`api.rs`): `WM_COPYDATA` to any window, and the resident pipe.
         let api_queue = start_api(cx, &services);
         if bench.is_none() {
             follow_drive_removals(cx, Arc::clone(&services.remotes));
-            teracopy::detect_in_background();
-            quicklook::detect_in_background();
         }
         if resident && bench.is_none() {
             install_tray(cx, &services, &store);
@@ -671,6 +702,8 @@ fn app_main(mut args: Args) {
                 update_quiet::on_quit(cx);
                 // Arke's windows leave the shell's window list with it (#319).
                 win_folder_visit::end_all();
+                // Clipboard formats nobody asked for yet are made now, or they die with Arke.
+                win_fileops::render_clipboard_on_quit();
                 // The process ends right after: the last lines (why it quit) go in the file first.
                 crashlog::flush(Duration::from_millis(200));
                 async {}
@@ -857,8 +890,7 @@ fn follow_takeover_setting(
     let services = services.clone();
     cx.spawn(async move |cx| {
         while let Ok(request) = rx.recv_async().await {
-            let opened = cx.update(|cx| open_taken_over(cx, &services, &request));
-            let _ = request.reply.send(opened);
+            cx.update(|cx| answer_taken_over(cx, &services, request));
         }
     })
     .detach();
@@ -964,6 +996,71 @@ fn follow_win_e_hook(
         }
     })
     .detach();
+}
+
+/// Answers one request of "Open folders in Arke" ([`open_taken_over`]). A network folder the early
+/// path took without looking ([`win_takeover::OpenRequest::unchecked`]) is looked at off the UI
+/// thread first ([`open_unchecked`]) and answered once that is done; requests after it don't wait
+/// for it.
+fn answer_taken_over(cx: &mut App, services: &Services, request: win_takeover::OpenRequest) {
+    if !request.unchecked {
+        let opened = open_taken_over(cx, services, &request);
+        let _ = request.reply.send(opened);
+        return;
+    }
+    let services = services.clone();
+    cx.spawn(async move |cx| {
+        let opened = open_unchecked(cx, &services, &request).await;
+        let _ = request.reply.send(opened);
+    })
+    .detach();
+}
+
+/// [`open_taken_over`] for a network folder nobody looked at (#285): it is looked at on a thread
+/// of its own, since the server may take seconds to answer. Opens nothing and answers `false` when
+/// it is not a folder (missing, a file, the server unreachable, credentials needed): File Explorer
+/// then gets it back and shows its own prompt or error. Also opens nothing once nobody waits for
+/// the answer: the takeover thread gave it back to File Explorer already.
+async fn open_unchecked(
+    cx: &mut gpui::AsyncApp,
+    services: &Services,
+    request: &win_takeover::OpenRequest,
+) -> bool {
+    let Target::Folder(folder) = &request.target else {
+        return cx.update(|cx| open_taken_over(cx, services, request));
+    };
+    let started = Instant::now();
+    let (tx, rx) = flume::bounded(1);
+    let (fs, path) = (Arc::clone(&services.fs), folder.clone());
+    explorer::spawn_thread("takeover-check", move || {
+        let _ = tx.send(fs.stat(&path).map(|entry| entry.is_dir_like()));
+    });
+    let why = match rx.recv_async().await {
+        Ok(Ok(true)) => None,
+        Ok(Ok(false)) => Some("not a folder".to_owned()),
+        Ok(Err(err)) => Some(err.to_string()),
+        Err(_) => Some("the check did not finish".to_owned()),
+    };
+    let ms = started.elapsed().as_millis();
+    if let Some(why) = why {
+        log::info!(
+            "takeover: network folder {} given back to File Explorer after {ms} ms: {why}",
+            folder.display()
+        );
+        return false;
+    }
+    if request.reply.is_disconnected() {
+        log::info!(
+            "takeover: network folder {} found after {ms} ms, too late: File Explorer has it",
+            folder.display()
+        );
+        return false;
+    }
+    log::debug!(
+        "takeover: network folder {} found after {ms} ms",
+        folder.display()
+    );
+    cx.update(|cx| open_taken_over(cx, services, request))
 }
 
 /// Opens a window showing what an Explorer window showed. Answers whether Arke has a window.
@@ -1438,11 +1535,12 @@ fn follow_language_setting(store: &gpui::Entity<settings::SettingsStore>, cx: &m
     apply_language(&store.read(cx).settings.language.locale(), cx);
 }
 
-/// Starts looking up Windows' names for file types the built-in table doesn't have; windows
+/// Starts looking up Windows' names for file types (all of them, when Arke speaks Windows' language); windows
 /// repaint (and re-sort by type) when names arrive.
 fn start_type_names(cx: &mut App) {
     let (tx, rx) = flume::bounded::<()>(1);
     let notify = tx.clone();
+    arke_core::format::set_windows_language(win::system_display_locale());
     arke_core::format::start_type_names(win_dragimage::registered_type_name, move || {
         let _ = tx.try_send(());
     });
@@ -1457,11 +1555,16 @@ fn start_type_names(cx: &mut App) {
     .detach();
 }
 
-/// Switches strings and the CJK font fallback order to `locale`, repainting if either changed.
+/// Switches strings and the text locale to `locale`, repainting if either changed.
 fn apply_language(locale: &str, cx: &mut App) {
-    // Fonts follow the UI language so Simplified text gets Simplified glyphs on a Traditional
-    // system and vice versa (see `theme::cjk_fallbacks`).
-    let mut changed = theme::set_ui_language(locale, win::system_locale());
+    // Text is laid out in the UI language's locale, so DirectWrite falls back to fonts of that
+    // language: Simplified text gets Simplified glyphs on a Traditional system and vice versa
+    // (see `win::text_locale`).
+    let text_locale = win::text_locale(locale, &win::user_locale_name());
+    let mut changed = cx.text_system().set_locale(text_locale);
+    if changed {
+        theme::touch();
+    }
     if *rust_i18n::locale() != *locale {
         rust_i18n::set_locale(locale);
         arke_core::format::language_changed();
@@ -2371,6 +2474,14 @@ mod arg_tests {
         assert_eq!(args.window_bench(), None);
         assert_eq!(args.bench_out, Some(PathBuf::from(r"C:\out.txt")));
         assert_eq!(args.path, None);
+    }
+
+    #[test]
+    fn bench_list_takes_a_folder_and_no_window() {
+        let args = parse(&[r"C:\big", "--bench", "list"]);
+        assert_eq!(args.bench, Some(BenchArg::List));
+        assert_eq!(args.window_bench(), None);
+        assert_eq!(args.path, Some(PathBuf::from(r"C:\big")));
     }
 
     #[test]

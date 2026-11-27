@@ -59,6 +59,21 @@ impl Workspace {
         }
     }
 
+    /// Tab or Shift+Tab inside the Home page: on to its next or previous section. `false` when
+    /// the page has none left, so the keyboard goes on to the rest of the window.
+    pub(super) fn home_tab_section(&self, forward: bool, cx: &mut Context<Self>) -> bool {
+        self.home_page
+            .as_ref()
+            .is_some_and(|p| p.view.update(cx, |home, cx| home.tab_section(forward, cx)))
+    }
+
+    /// Tab or Shift+Tab brings the keyboard to the Home page: its first or last section.
+    pub(super) fn home_enter(&self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(p) = &self.home_page {
+            p.view.update(cx, |home, cx| home.enter(forward, cx));
+        }
+    }
+
     pub(super) fn home_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
         use gpui::Focusable as _;
         self.home_page.as_ref().map(|p| p.view.focus_handle(cx))
@@ -352,6 +367,13 @@ impl Workspace {
         Some(self.home_page.as_ref()?.view.read(cx).favorites_for_test())
     }
 
+    /// The card under Home's keyboard cursor (`None` while closed or with no ring and nothing
+    /// picked).
+    #[cfg(test)]
+    pub(crate) fn home_cursor_for_test(&self, cx: &App) -> Option<String> {
+        self.home_page.as_ref()?.view.read(cx).cursor_for_test()
+    }
+
     /// Whether Home draws its recent files section (tests).
     #[cfg(test)]
     pub(crate) fn home_recent_shown_for_test(&self, cx: &App) -> Option<bool> {
@@ -381,7 +403,7 @@ impl Workspace {
             .a11y(gpui::Role::Link, t!("home.title"))
             .relative()
             .flex_none()
-            .h(theme::h_row())
+            .h(theme::h_row_side())
             .mx(theme::s_8())
             .mb(theme::s_4())
             .pl(theme::s_8())
@@ -473,9 +495,9 @@ impl Workspace {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .mr(theme::s_8())
-                        .mb(theme::s_8())
-                        .rounded(theme::r_12())
+                        .mr(theme::paper_gap())
+                        .mb(theme::paper_gap())
+                        .rounded(theme::r_paper())
                         .bg(theme::paper())
                         .shadow(theme::elev_2())
                         .overflow_hidden()

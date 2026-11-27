@@ -21,7 +21,8 @@ russh-sftp = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
 # PROPFIND responses
 roxmltree = "0.21"
-percent-encoding = "2"
+percent-encoding.workspace = true
+jiff.workspace = true
 base64 = "0.22"
 flume.workspace = true
 
@@ -32,8 +33,10 @@ features = [
     "Win32_Foundation",
     "Win32_Networking_WinHttp",
     "Win32_Security_Credentials",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
     "Win32_System_Time",
     "Win32_System_Variant",
 ]
@@ -41,6 +44,9 @@ features = [
 [features]
 # A local SFTP server for the app's end-to-end tests (`testing`)
 test-support = []
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

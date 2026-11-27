@@ -71,6 +71,8 @@ mod path_bar;
 mod preview;
 #[path = "explorer_scope.rs"]
 pub(crate) mod scope;
+#[path = "explorer_search_select.rs"]
+pub(crate) mod search_select;
 #[path = "explorer_shelf.rs"]
 mod shelf_ops;
 #[path = "explorer_similar.rs"]
@@ -98,11 +100,11 @@ pub(crate) use dnd::{
 };
 pub(crate) use icons::IconSize;
 pub(crate) use layout::{SharedPreview, shared_preview};
-pub(crate) use menu::{
-    app_name, menu_open_with_found, open_with_list, pin_is_submenu, set_open_with,
-};
+pub(crate) use menu::{app_name, open_with_list, pin_is_submenu};
 #[cfg(test)]
 pub(crate) use preview::PreviewBody;
+#[cfg(test)]
+pub(crate) use preview::{Saved, saved_since, take_built_rows_for_test};
 pub(crate) use top_bar::TitleLayout;
 
 pub(crate) use ops::commit_problem;
@@ -116,6 +118,7 @@ pub(crate) use view::{caption_buttons, error_toast, ghost_button, kind_icon, too
 
 use crate::bench::{Bench, BenchStep};
 use crate::media::MediaStore;
+use crate::press_guard::is_double_click;
 use crate::settings::{Density, SettingsStore};
 use crate::shell::{Place, Shell};
 use crate::text_input::{InputEvent, TextInput};
@@ -215,15 +218,14 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // Details view with the folder tree on: expand/collapse.
         KeyBinding::new("left", MoveLeft, list),
         KeyBinding::new("right", MoveRight, list),
-        // Dual pane: Alt+C copies and Alt+M moves to the other side (as in OneCommander), Tab
-        // and Shift+Tab switch (there are only two sides, so both go to the other one).
+        // Dual pane: Alt+C copies and Alt+M moves to the other side (as in OneCommander). Tab and
+        // Shift+Tab reach the other pane as the next and previous stop (`workspace.rs`), so
+        // there is no separate key to switch (`FocusOtherPane` stays as a command).
         // Total Commander's F5/F6 are avoided on purpose: F5 is refresh on Windows, and a slip
         // would copy files.
         // Without a split these keys fall through to other handlers.
         KeyBinding::new("alt-c", CopyToPeer, list),
         KeyBinding::new("alt-m", MoveToPeer, list),
-        KeyBinding::new("tab", FocusOtherPane, list),
-        KeyBinding::new("shift-tab", FocusOtherPane, list),
         // Only while Quick Look is open; otherwise they pass on.
         KeyBinding::new("ctrl-=", LookZoomIn, list),
         KeyBinding::new("ctrl--", LookZoomOut, list),
@@ -333,7 +335,11 @@ pub(crate) enum AppEvent {
     OpenFolder(PathBuf),
     /// Go to the item's folder and select it ("Open file location" on a shortcut).
     RevealPath(PathBuf),
-    ExtractProgress(arke_core::archive::ExtractProgress),
+    /// Progress of the extraction or compression with this progress center id.
+    ExtractProgress {
+        job: u64,
+        progress: arke_core::archive::ExtractProgress,
+    },
     /// One subfolder's size finished (None if unreadable).
     FolderSize {
         dir: PathBuf,
@@ -341,20 +347,29 @@ pub(crate) enum AppEvent {
         bytes: Option<u64>,
     },
     CompressDone {
+        job: u64,
         result: Result<arke_core::archive::CompressSummary, arke_core::archive::ArchiveError>,
         name: String,
         dest: PathBuf,
     },
     ExtractDone {
+        job: u64,
         result: Result<arke_core::archive::ExtractSummary, arke_core::archive::ArchiveError>,
         folder: Option<String>,
     },
+    /// The queued extraction or compression with this id was cancelled before it started.
+    ArchiveJobDropped(u64),
     Preview {
         generation: u64,
         data: preview::PreviewData,
     },
     /// A page rendered for the preview pane's page list
     PanePdfPage(preview::RenderedPage),
+    /// More of a previewed text file: its index, or lines read as they come into view.
+    PreviewText {
+        generation: u64,
+        update: preview::TextUpdate,
+    },
     /// Creation time of the previewed item, read when its entry came without one (search hits).
     PreviewCreated {
         generation: u64,
@@ -458,6 +473,9 @@ pub(crate) enum ExplorerEvent {
     Activated,
     /// Dual pane: switch to the other side.
     FocusOtherPane,
+    /// Tab (`true`) or Shift+Tab was pressed where the pane has its own meaning for the key and
+    /// has nothing to do with it: the window moves to the next or previous stop.
+    StepStop(bool),
     /// A copy or move from this pane finished in `dir`, which this pane isn't showing: the other
     /// side selects `names` if it shows `dir` (Alt+C/Alt+M, drags between the panes).
     Arrived {
@@ -653,6 +671,34 @@ fn sort_entries(
     }
 }
 
+/// What a left press on item `ix` of `list` does to `selection`, the same in a folder's list
+/// and in search results: Shift selects a range (keeping the rest with Ctrl), Ctrl toggles,
+/// a plain press selects only the item. Returns `true` for a plain press inside a
+/// multi-selection, which keeps it (it may be dragged) and narrows to the item on release.
+fn press_selection(
+    selection: &mut Selection,
+    list: &[Entry],
+    ix: usize,
+    m: gpui::Modifiers,
+    click_count: usize,
+) -> bool {
+    let in_selection = list.get(ix).is_some_and(|e| selection.contains(&e.name));
+    if m.shift {
+        selection.extend_to(list, ix, m.control);
+    } else if m.control {
+        // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
+        // selected, whether the first one selected it or (already selected) unselected it.
+        if !is_double_click(click_count) || !in_selection {
+            selection.toggle(list, ix);
+        }
+    } else if in_selection && selection.len() > 1 {
+        return true;
+    } else {
+        selection.select_only(list, ix);
+    }
+    false
+}
+
 /// A sort running in the background: (folder, content version, sort, folder size version, system
 /// type name version) it was started with.
 type SortJob = (Gen, u64, SortSpec, Option<u64>, Option<u32>);
@@ -745,6 +791,8 @@ pub(crate) struct Explorer {
     list_focus: FocusHandle,
     path_input: Entity<TextInput>,
     pub(crate) editing_path: bool,
+    /// What the path bar's box held when editing began: Tab completes only once it differs.
+    path_entry: String,
     /// Marquee selection in progress.
     marquee: Option<marquee::Marquee>,
     /// The left press landed on an item, so the list's own handler doesn't start a marquee.
@@ -759,6 +807,9 @@ pub(crate) struct Explorer {
     path_bounds: path_bar::PathBounds,
     /// Width of the title bar slot the path bar fills.
     path_slot: path_bar::SlotWidth,
+    /// Width of the pane row's item count or selection actions (last frame). With
+    /// [`Self::path_slot`] it is the room the path bar and the selection share (#388).
+    info_slot: path_bar::SlotWidth,
     /// The title row's search box width and the press-to-drag on the path bar.
     top_row: top_bar::TopRow,
     /// The pane row's buttons from the keyboard (F6).
@@ -806,6 +857,8 @@ pub(crate) struct Explorer {
     /// hits at or below these are left out of every result until the next fresh walk.
     search_gone: Vec<PathBuf>,
     pub(crate) search_cursor: Option<usize>,
+    /// What is selected in the search results (#413), with the list's own [`Selection`].
+    pub(crate) search_pick: search_select::SearchPick,
     /// "Similar results" (#396) were opened for this query text; another text closes them.
     similar_open: Option<String>,
     /// Nothing in the subfolders matched this query text as typed, so the walk lists similar
@@ -861,14 +914,24 @@ pub(crate) struct Explorer {
     pub(crate) early_menu: Option<menu::EarlyMenu>,
     /// A dismissed context menu fading out (drawn inert, see `motion::Leaving`).
     pub(crate) closing_menu: Option<crate::motion::Leaving<menu::ContextMenu>>,
-    pub(crate) extract_job: Option<menu::ExtractJob>,
+    /// This tab's extractions and compressions, in line (#407): the first runs, the others wait
+    /// for it.
+    pub(crate) extract_jobs: Vec<menu::ExtractJob>,
+    /// This tab's place in the archive queue (`op_queue::enter_archive`), unique in the process.
+    pub(crate) archive_line: u64,
     /// After creating a folder, start renaming it once it shows up in the list (`true`: whole name
     /// selected, see [`ops::NewItem::File`]).
     rename_when_appears: Option<(Arc<str>, bool)>,
+    /// A finished compression's archive: renamed once it is listed, unless the user is typing
+    /// somewhere else by then (#409).
+    rename_after_compress: Option<Arc<str>>,
     /// "New folder…" / "New file…" on a folder item, waiting for that folder's listing.
     pending_create: Option<ops::PendingCreate>,
     /// After delete, wait for the items to disappear, then select the item at the old position.
     pending_reselect: Option<(Vec<Arc<str>>, usize)>,
+    /// The only selected item, taken out of the list by a change (an editor's save that deletes the
+    /// file first) and when: if it comes back under the name soon, it is selected again (#434).
+    vanished_selection: Option<(Arc<str>, Instant)>,
     pub(crate) ops_running: usize,
     /// Progress of the running file operation (drawn by Arke) and which operation it is.
     pub(crate) op_progress: Option<(Arc<crate::shell::OpProgress>, &'static str)>,
@@ -898,6 +961,11 @@ pub(crate) struct Explorer {
     /// Press inside a multi-selection: keep the selection (it may be dragged) and narrow to this
     /// item on release if no drag happened.
     click_select: Option<usize>,
+    /// What the last single-click-mode click opened: the item and the folder it was in. A later
+    /// click of the same quick run that lands on the same item in the same folder must not open
+    /// it again (a file would launch twice; a folder that did not navigate is not worth a retry).
+    /// A folder that did navigate never matches: the folder differs.
+    last_click_open: Option<(PathBuf, Option<PathBuf>)>,
     /// The last press landed on this item's name (set by the name, read by the item's handler,
     /// which runs after it).
     name_pressed: Option<usize>,
@@ -932,7 +1000,7 @@ pub(crate) struct Explorer {
     pub(crate) preview: Option<preview::Preview>,
     /// Left column of the column view (parent folder).
     parent_column: Option<columns::ParentColumn>,
-    preview_gen: u64,
+    pub(crate) preview_gen: u64,
     preview_task: Option<Task<()>>,
     /// Quick Look actual-size mode.
     pub(crate) zoom: preview::Zoom,
@@ -951,7 +1019,7 @@ pub(crate) struct Explorer {
     cols: Option<layout::Columns>,
     /// Sideways scroll the header was drawn at in this render (`None`: no header), to redraw it
     /// if the list clamps its own.
-    header_x: std::cell::Cell<Option<Pixels>>,
+    header_x: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
     /// Height the side preview's frame got at the last layout (less than asked for in a short
     /// window), so a PDF's pages fit what is shown.
     pane_frame_h: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
@@ -1150,6 +1218,7 @@ impl Explorer {
             list_focus,
             path_input,
             editing_path: false,
+            path_entry: String::new(),
             marquee: None,
             row_pressed: false,
             list_bounds: marquee::ListBounds::default(),
@@ -1158,6 +1227,7 @@ impl Explorer {
             suggest: path_bar::Suggest::default(),
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
+            info_slot: path_bar::SlotWidth::default(),
             top_row: top_bar::TopRow::default(),
             toolbar: toolbar::ToolbarKeys::new(cx.focus_handle()),
             filter_input,
@@ -1181,6 +1251,7 @@ impl Explorer {
             search_relevance: None,
             search_gone: Vec::new(),
             search_cursor: None,
+            search_pick: search_select::SearchPick::default(),
             similar_open: None,
             similar_fallback: None,
             similar_focus: false,
@@ -1215,10 +1286,13 @@ impl Explorer {
             context_menu: None,
             early_menu: None,
             closing_menu: None,
-            extract_job: None,
+            extract_jobs: Vec::new(),
+            archive_line: menu::next_archive_line(),
             rename_when_appears: None,
+            rename_after_compress: None,
             pending_create: None,
             pending_reselect: None,
+            vanished_selection: None,
             ops_running: 0,
             op_progress: None,
             ops_open: false,
@@ -1233,6 +1307,7 @@ impl Explorer {
             pane: PaneInfo::default(),
             compare: None,
             click_select: None,
+            last_click_open: None,
             name_pressed: None,
             rename_press: None,
             rename_wait: None,
@@ -1264,7 +1339,7 @@ impl Explorer {
             pane_width: crate::theme::scaled_px(1000.),
             fit: layout::Fit::default(),
             cols: None,
-            header_x: std::cell::Cell::new(None),
+            header_x: std::rc::Rc::default(),
             pane_frame_h: std::rc::Rc::default(),
             pane_split: std::rc::Rc::default(),
             pane_info_scroll: Default::default(),
@@ -1537,6 +1612,7 @@ impl Explorer {
             self.notice = None;
             self.renaming = None;
             self.rename_when_appears = None;
+            self.rename_after_compress = None;
             self.pending_create = None;
             self.pending_reselect = None;
             // Filter and search belong to the old folder, and so does a folder comparison.
@@ -1776,13 +1852,23 @@ impl Explorer {
     /// Folders the back (or forward) button's menu lists, the nearest first. None in a pinned
     /// tab, whose buttons are off too.
     pub(crate) fn history_menu(&self, back: bool) -> Vec<PathBuf> {
+        self.history_list(back, HISTORY_MENU_MAX)
+    }
+
+    /// The folder the back (or forward) button goes to: the top row of its menu.
+    pub(crate) fn history_next(&self, back: bool) -> Option<PathBuf> {
+        self.history_list(back, 1).into_iter().next()
+    }
+
+    /// The first `limit` folders of [`Self::history_menu`].
+    fn history_list(&self, back: bool, limit: usize) -> Vec<PathBuf> {
         if self.locked {
             return Vec::new();
         }
-        let entries: Vec<&Path> = if back {
-            self.history.back_entries().collect()
+        let entries: Box<dyn Iterator<Item = &Path>> = if back {
+            Box::new(self.history.back_entries())
         } else {
-            self.history.forward_entries().collect()
+            Box::new(self.history.forward_entries())
         };
         // Home was where the tab started: Back stops on Home, so the folders under it can't be
         // reached by going back (the menu doesn't offer them either).
@@ -1791,8 +1877,7 @@ impl Explorer {
             _ => usize::MAX,
         };
         entries
-            .into_iter()
-            .take(HISTORY_MENU_MAX.min(reachable))
+            .take(limit.min(reachable))
             .map(Path::to_path_buf)
             .collect()
     }
@@ -2021,18 +2106,33 @@ impl Explorer {
                 self.error = Some(msg);
                 cx.notify();
             }
-            AppEvent::ExtractProgress(p) => self.handle_extract_progress(p, cx),
+            AppEvent::ExtractProgress { job, progress } => {
+                self.handle_extract_progress(job, progress, cx);
+            }
             AppEvent::FolderSize { dir, name, bytes } => {
                 self.handle_folder_size(&dir, name, bytes, cx);
             }
-            AppEvent::CompressDone { result, name, dest } => {
-                self.handle_compress_done(result, name, dest, cx);
+            AppEvent::CompressDone {
+                job,
+                result,
+                name,
+                dest,
+            } => {
+                self.handle_compress_done(job, result, name, dest, cx);
             }
-            AppEvent::ExtractDone { result, folder } => {
-                self.handle_extract_done(result, folder, cx);
+            AppEvent::ExtractDone {
+                job,
+                result,
+                folder,
+            } => {
+                self.handle_extract_done(job, result, folder, cx);
             }
+            AppEvent::ArchiveJobDropped(job) => self.handle_archive_job_dropped(job, cx),
             AppEvent::Preview { generation, data } => self.handle_preview(generation, data, cx),
             AppEvent::PanePdfPage(page) => self.handle_pane_pdf_page(page, cx),
+            AppEvent::PreviewText { generation, update } => {
+                self.handle_preview_text(generation, update, cx);
+            }
             AppEvent::PreviewCreated {
                 generation,
                 created,
@@ -2145,6 +2245,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         self.keep_localized_names(&mut delta);
+        let back = self.selection_coming_back(&delta);
         // A merge is running: this one follows it, in order.
         if let Some(merge) = self
             .delta_merge
@@ -2168,9 +2269,51 @@ impl Explorer {
             self.reload(cx);
             return;
         }
+        self.note_vanished_selection(&removed);
         self.selection.remove_names(&removed);
         self.after_content_change(cx);
+        self.reselect_returned(back);
         self.restore_scroll_anchor(anchor);
+    }
+
+    /// The selected item named in `delta`'s upserts after it was deleted a moment ago (Word saves
+    /// that way, and a slow disk can split it across two batches).
+    fn selection_coming_back(&mut self, delta: &arke_core::Delta) -> Option<Arc<str>> {
+        let (name, at) = self.vanished_selection.as_ref()?;
+        if at.elapsed() > Duration::from_secs(2) {
+            self.vanished_selection = None;
+            return None;
+        }
+        if !delta.upserts.iter().any(|e| e.name == *name) {
+            return None;
+        }
+        self.vanished_selection.take().map(|(name, _)| name)
+    }
+
+    /// Remembers the sole selected item when `removed` takes it out of the list.
+    fn note_vanished_selection(&mut self, removed: &[Arc<str>]) {
+        if self.search_mode || self.selection.len() != 1 {
+            return;
+        }
+        if let Some(name) = self.selection.names().next()
+            && removed.contains(name)
+        {
+            self.vanished_selection = Some((Arc::clone(name), Instant::now()));
+        }
+    }
+
+    /// Selects `back` again (see [`Self::selection_coming_back`]), unless the user picked
+    /// something else meanwhile.
+    fn reselect_returned(&mut self, back: Option<Arc<str>>) {
+        let Some(name) = back else { return };
+        if !self.selection.is_empty() {
+            return;
+        }
+        let Some(view) = self.view() else { return };
+        if let Some(ix) = view.iter().position(|e| e.name == name) {
+            self.selection.select_only(&view, ix);
+            self.cursor = Some(ix);
+        }
     }
 
     /// A large folder got more changes than the UI thread applies in a frame: merge them into a
@@ -2731,15 +2874,9 @@ impl Explorer {
     /// Input placeholders. They're set at creation, so reset them when the language or search mode
     /// changes.
     fn refresh_placeholders(&mut self, locale: &str, cx: &mut Context<Self>) {
-        let filter = match self.scope() {
-            scope::Scope::Here => t!("filter.placeholder", locale = locale),
-            scope::Scope::Subfolders => self.search_in_name().map_or_else(
-                || t!("filter.search_placeholder", locale = locale),
-                |name| t!("filter.search_in_placeholder", name = name, locale = locale),
-            ),
-            scope::Scope::Computer => t!("filter.computer_placeholder", locale = locale),
-        }
-        .to_string();
+        let filter = self.filter_placeholder(locale, false);
+        // The next frame fits it to the box's width again.
+        self.reset_placeholder_fit();
         let path = t!("path.placeholder", locale = locale).to_string();
         self.filter_input
             .update(cx, |input, cx| input.set_placeholder(filter, cx));
@@ -2764,6 +2901,7 @@ impl Explorer {
             self.search_relevance = None;
             self.search_gone.clear();
             self.search_cursor = None;
+            self.reset_search_pick();
             // Back to "this folder": the next search starts with subfolders.
             self.search_global = false;
             self.global_task = None;
@@ -2776,6 +2914,8 @@ impl Explorer {
     /// Updates the subfolder search for the current query and folder. Rewalks only when the root or
     /// hidden setting changes.
     fn update_search(&mut self, cx: &mut Context<Self>) {
+        // A new query starts a new selection.
+        self.reset_search_pick();
         if self.search_global {
             self.run_global(cx);
             return;
@@ -2822,20 +2962,13 @@ impl Explorer {
         if self.fall_back_to_similar(&results) {
             self.search_results = None;
             self.search_cursor = None;
+            self.reset_search_pick();
             cx.notify();
             return;
         }
         let results = self.without_gone(results);
         let results = self.arrange_results(results);
-        let len = results.hits.len();
-        self.search_cursor = match self.search_cursor {
-            _ if len == 0 => None,
-            Some(ix) => Some(ix.min(len - 1)),
-            // On "Similar results" (just opened): it stays there.
-            None if self.similar_focused() => None,
-            None => Some(0),
-        };
-        self.search_results = Some(results);
+        self.show_search_results(results);
         cx.notify();
     }
 
@@ -2950,6 +3083,7 @@ impl Explorer {
                 .filter(|_| len > 0)
                 .map(|ix| ix.min(len.saturating_sub(1)));
             self.search_results = Some(results);
+            self.sync_search_pick();
         }
         cx.notify();
     }
@@ -2960,6 +3094,16 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Already in the box while searching subfolders or this PC (Ctrl+K, Ctrl+Shift+F): Ctrl+F
+        // goes back to this folder, the typed text kept (#388).
+        let in_box = self
+            .filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        if in_box && self.scope() != scope::Scope::Here {
+            self.set_scope(scope::Scope::Here, cx);
+        }
         self.focus_filter_input(window, cx);
     }
 
@@ -3064,8 +3208,7 @@ impl Explorer {
         }
         let ix = ix.min(len - 1);
         if self.search_mode {
-            self.search_cursor = Some(ix);
-            self.similar_focus = false;
+            self.search_select_only(ix);
             let row = self.search_row_of(ix);
             self.search_scroll
                 .scroll_to_item(row, ScrollStrategy::Nearest);
@@ -3080,13 +3223,13 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Shift+arrow: select from the anchor to `ix`. Search results only support single selection.
+    /// Shift+arrow: select from the anchor to `ix`.
     fn extend_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.renaming.is_some() {
             return;
         }
         if self.search_mode {
-            self.select_index(ix, cx);
+            self.search_extend(ix, cx);
             return;
         }
         let Some(view) = self.view() else { return };
@@ -3187,7 +3330,7 @@ impl Explorer {
     /// Height taken outside the list: top bar, context bar, column header, bottom margin and list
     /// padding.
     fn list_chrome() -> Pixels {
-        theme::h_bar() + theme::h_ctx() + theme::h_header() + theme::s_8() + theme::s_8()
+        theme::h_bar() + theme::h_ctx() + theme::h_header() + theme::paper_gap() + theme::s_8()
     }
 
     fn on_path_event(
@@ -3280,13 +3423,12 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Split panes are half width, so they use compact density.
+    /// Split panes are half width, so outside compact density their rows are tighter than the
+    /// density's.
     pub(crate) fn row_height(&self) -> Pixels {
-        if self.pane.split {
-            return theme::h_row_compact();
-        }
         match self.density {
             Density::Compact => theme::h_row_compact(),
+            _ if self.pane.split => theme::h_row_tight(),
             Density::Standard => theme::h_row(),
             Density::Comfortable => theme::h_row_comfortable(),
         }
@@ -3390,14 +3532,14 @@ impl Explorer {
         self.select_index(self.target(Step::Last, w), cx);
     }
     fn extend_prev(&mut self, _: &ExtendPrev, w: &mut Window, cx: &mut Context<Self>) {
-        // Search results take one item at a time: Shift moves like the plain key.
-        if self.search_move(Step::Prev, w, cx) {
+        // Search results with "Similar results" move by list rows, extending from hit to hit.
+        if self.search_extend_move(Step::Prev, w, cx) {
             return;
         }
         self.extend_index(self.target(Step::Prev, w), cx);
     }
     fn extend_next(&mut self, _: &ExtendNext, w: &mut Window, cx: &mut Context<Self>) {
-        if self.search_move(Step::Next, w, cx) {
+        if self.search_extend_move(Step::Next, w, cx) {
             return;
         }
         self.extend_index(self.target(Step::Next, w), cx);
@@ -3417,6 +3559,8 @@ impl Explorer {
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         if self.search_mode {
+            self.search_select_all();
+            cx.notify();
             return;
         }
         if let Some(view) = self.view() {
@@ -3427,7 +3571,10 @@ impl Explorer {
     }
 
     fn toggle_cursor(&mut self, _: &ToggleCursor, _: &mut Window, cx: &mut Context<Self>) {
-        if let (false, Some(ix), Some(view)) = (self.search_mode, self.cursor, self.view()) {
+        if self.search_mode {
+            self.search_toggle_cursor();
+            cx.notify();
+        } else if let (Some(ix), Some(view)) = (self.cursor, self.view()) {
             self.selection.toggle(&view, ix);
             cx.notify();
         }
@@ -3488,20 +3635,8 @@ impl Explorer {
 
     /// Shift+Enter (search results): goes to the item's folder and selects it.
     fn open_location(&mut self, _: &OpenLocation, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(hit) = self.search_hit(self.search_cursor) else {
-            return;
-        };
-        let Some(root) = self.search_results.as_ref().map(|r| r.root.clone()) else {
-            return;
-        };
-        let path = root.join(&*hit.rel);
-        if let Some(parent) = path.parent() {
-            self.navigate_selecting(
-                parent.to_path_buf(),
-                NavKind::New,
-                Some(Arc::clone(&hit.entry.name)),
-                cx,
-            );
+        if let Some(ix) = self.search_cursor {
+            self.open_hit_location(ix, cx);
         }
     }
 
@@ -3567,6 +3702,7 @@ impl Explorer {
     ) {
         let list_was_focused = self.list_focus.is_focused(window);
         let on_name = self.name_pressed.take() == Some(ix);
+        let on_location = self.take_location_press(ix);
         window.focus(&self.list_focus, cx);
         self.row_pressed = true;
         // A press decides the selection; a pending point-to-select must not undo it.
@@ -3592,49 +3728,40 @@ impl Explorer {
             self.rename_press = Some(entry.name);
         }
         if self.search_mode {
-            self.search_cursor = Some(ix);
-            self.similar_focus = false;
+            self.search_press(ix, m, event.click_count);
         } else if let Some(view) = self.view() {
-            let in_selection = view
-                .get(ix)
-                .is_some_and(|e| self.selection.contains(&e.name));
             self.click_select = None;
-            if m.shift {
-                self.selection.extend_to(&view, ix, m.control);
-                self.drop_hidden_selection();
-            } else if m.control {
-                // Ctrl+double-click opens a folder in a new tab: its second click leaves the item
-                // selected, whether the first one selected it or (already selected) unselected it.
-                let selected = view
-                    .get(ix)
-                    .is_some_and(|e| self.selection.contains(&e.name));
-                if event.click_count < 2 || !selected {
-                    self.selection.toggle(&view, ix);
-                }
-            } else if in_selection && self.selection.len() > 1 {
+            if press_selection(&mut self.selection, &view, ix, m, event.click_count) {
                 self.click_select = Some(ix);
-            } else {
-                self.selection.select_only(&view, ix);
+            }
+            if m.shift {
+                self.drop_hidden_selection();
             }
             self.cursor = Some(ix);
             self.scroll_to_cursor = None;
         }
         // Double-click opens. In single-click mode, opening happens on release (`on_row_click`), so
-        // don't
-        // open again here: the second click would land on whatever is under the cursor in the new
-        // folder.
-        if event.click_count >= 2 && !m.control && !m.shift && !crate::prefs::single_click() {
+        // don't open again here: the second click would land on whatever is under the cursor in
+        // the new folder. Only the even clicks of a quick run are double-clicks.
+        if is_double_click(event.click_count)
+            && !m.control
+            && !m.shift
+            && !crate::prefs::single_click()
+        {
             if m.alt {
                 // Alt+double-click: Properties of the selection it is in, as in File Explorer
                 // (#337).
                 self.open_properties(self.menu_targets(), cx);
+            } else if on_location {
+                // A search hit's Location: its folder, with it selected (#398).
+                self.open_hit_location(ix, cx);
             } else {
                 self.open_index(ix, cx);
             }
         }
         // Ctrl+double-click on a folder: a new tab, in the background; with Shift too, in front, as
         // Ctrl+click on a link in a browser (#291). Ctrl+click alone selects, as in File Explorer.
-        if event.click_count == 2
+        if is_double_click(event.click_count)
             && m.control
             && let Some((path, true)) = self.path_at(ix)
         {
@@ -3780,8 +3907,9 @@ impl Explorer {
         self.name_pressed = Some(ix);
     }
 
-    /// Single-click mode: opens on release if there was no drag and no Ctrl/Shift. Returns whether
-    /// it opened.
+    /// Single-click mode: opens on release if there was no drag and no Ctrl/Shift. Every click of
+    /// a quick run opens (counts 1, 2, 3...), as in File Explorer, so clicking where a folder's
+    /// only subfolder shows goes down a level per click. Returns whether the click was handled.
     pub(super) fn on_row_click(
         &mut self,
         ix: usize,
@@ -3789,18 +3917,41 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> bool {
         let m = event.modifiers();
-        if !crate::prefs::single_click()
-            || event.click_count() != 1
-            || m.control
-            || m.shift
-            || m.alt
-            || self.renaming.is_some()
+        let previous = self.last_click_open.take();
+        if !crate::prefs::single_click() || m.control || m.shift || m.alt || self.renaming.is_some()
         {
             return false;
         }
         self.click_select = None;
-        self.open_index(ix, cx);
+        let here = (
+            self.path_at(ix).map(|(path, _)| path),
+            self.current_path().map(Path::to_path_buf),
+        );
+        if event.click_count() > 1
+            && let (Some(item), folder) = &here
+            && previous.as_ref() == Some(&(item.clone(), folder.clone()))
+        {
+            // Still on what the run's previous click opened, in the same folder: don't open it
+            // again.
+            self.last_click_open = previous;
+            return true;
+        }
+        if self.take_location_click(ix) {
+            self.open_hit_location(ix, cx);
+        } else {
+            self.open_index(ix, cx);
+        }
+        self.last_click_open = here.0.map(|item| (item, here.1));
         true
+    }
+
+    /// A click without a drag inside a multi-selection: only item `ix` stays selected.
+    pub(super) fn narrow_selection_to(&mut self, ix: usize) {
+        if self.search_mode {
+            self.search_select_only(ix);
+        } else if let Some(view) = self.view() {
+            self.selection.select_only(&view, ix);
+        }
     }
 
     fn on_row_middle_down(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -3876,6 +4027,7 @@ impl Explorer {
             .display_path()
             .map_or_default(|p| p.display().to_string());
         self.editing_path = true;
+        self.path_entry.clone_from(&text);
         self.path_input.update(cx, |input, cx| {
             input.set_text(text, cx);
             input.select_all_text(cx);
@@ -3901,6 +4053,16 @@ impl Explorer {
         } else {
             None
         }
+    }
+
+    /// The search panel under the box has the keyboard.
+    pub(crate) fn panel_held(&self, window: &Window) -> bool {
+        self.panel_focus.is_focused(window)
+    }
+
+    /// Something over the list owns Tab: Quick Look, or an open menu or rename.
+    pub(crate) const fn list_keeps_tab(&self) -> bool {
+        self.quick_look || self.context_menu.is_some() || self.renaming.is_some()
     }
 
     pub(crate) fn cancel_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {

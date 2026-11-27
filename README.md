@@ -113,7 +113,7 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
 - A resizable preview pane and Quick Look (Space) for images (SVG too), PDF, Word, Excel and
   PowerPoint, text and code with syntax highlighting, Markdown, archives, `.gz` files and folders.
 - Videos show a frame and PDFs their first page as their thumbnail. Quick Look zooms text, documents and PDF pages
-  (Ctrl+wheel), and with QuickLook installed, Space can open that instead.
+  (Ctrl+wheel), and Space can go to another preview program, such as QuickLook, instead.
 
 **Search**
 - As you type, in this folder, its subfolders or the whole computer, with fuzzy matching and
@@ -123,8 +123,8 @@ Arke was featured in [Ruan Yifeng's tech weekly #420](https://www.ruanyifeng.com
 
 **Files**
 - Copy and move through the Windows shell engine with progress, undo and redo. Jobs on the same
-  drive queue up and can be paused, with optional verify after copy or hand-off to TeraCopy
-  (experimental). Many small files between local SSDs are copied several at a time, much faster
+  drive queue up and can be paused, with optional verify after copy or hand-off to another copy
+  program such as TeraCopy (experimental). Many small files between local SSDs are copied several at a time, much faster
   than one by one.
 - Batch rename, "Move to new folder", and a move/copy/shortcut menu when you drag with the right
   mouse button or drop with Alt held.
@@ -297,10 +297,11 @@ ranks higher; turn it off or clear it in Settings › Search.
 | Ctrl+W · Ctrl+Shift+T | Close tab (in split view, the active side) · reopen closed tab |
 | Ctrl+Tab · Ctrl+Shift+Tab · Ctrl+1…9 | Switch tabs |
 | Ctrl+Shift+S · Ctrl+Shift+D | Dual pane: synchronized browsing · compare folders |
-| Tab · Alt+C · Alt+M | Split view: switch panes · copy · move the selection to the other pane |
+| Alt+C · Alt+M | Split view: copy · move the selection to the other pane |
 | Ctrl+F · Ctrl+Shift+F · Ctrl+K | Search this folder · this folder and subfolders · the whole computer; Tab moves into the scope and filters |
 | Ctrl+L · Alt+D | Edit the path |
 | F6 · Shift+F6 | Next · previous area: file list, sidebar, path bar, toolbar, search box |
+| Tab · Shift+Tab | Next · previous stop: each file list (so also the other pane), sidebar, path bar, each toolbar button, search box |
 | Alt+← · Alt+→ · Alt+↑ | Back · forward · up |
 | F5 · Ctrl+R | Refresh |
 | Space | Quick look |

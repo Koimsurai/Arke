@@ -2,8 +2,8 @@
 //! each with a header row.
 //!
 //! - Date modified uses relative buckets (today, yesterday, earlier this week, ...), then years.
-//!   Size uses the same buckets as Windows. Name groups by first letter. Folders kept apart (first
-//!   when ascending, last when descending) get their own section; sorted by a date, or mixed with
+//!   Size uses the same buckets as Windows. Name groups by first letter. Folders kept apart (always
+//!   first) get their own section; sorted by a date, or mixed with
 //!   files, folders go into the section of their date like any file.
 //! - Grouping by the sort column means sections are already contiguous, so one linear pass is
 //!   enough (a few ms for tens of thousands of items). Cached by (list, sort, today).
@@ -24,7 +24,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arke_core::sort::days_from_civil;
+use arke_core::time::days_from_civil;
 use arke_core::{Entry, SortColumn};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;
@@ -32,6 +32,7 @@ use rust_i18n::t;
 use super::{Explorer, ViewMode};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
+use crate::press_guard::is_double_click;
 use crate::theme;
 
 /// One row in the list.
@@ -738,6 +739,46 @@ impl Explorer {
         true
     }
 
+    /// A group heading's chevron: collapses and expands the group `label`.
+    fn group_chevron(
+        row: usize,
+        label: SharedString,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        div()
+            .id(("group-chevron", row))
+            .size(theme::tree_chevron())
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::r_4())
+            .hover(|s| s.bg(theme::wash_strong()))
+            // Toggles without selecting the section or starting a marquee.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&this.list_focus, cx);
+                    this.toggle_group(&label, cx);
+                }),
+            )
+            .child(
+                svg()
+                    .path(Icon::ChevronRight.path())
+                    .size(theme::icon_sm())
+                    .text_color(theme::text_subtle())
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        if collapsed {
+                            0.
+                        } else {
+                            std::f32::consts::FRAC_PI_2
+                        },
+                    ))),
+            )
+    }
+
     /// Section header with label, count and a rule. Clicking selects the section: `span` items
     /// from `start` (expanded folders' items included). The chevron, or a double click, collapses
     /// and expands it.
@@ -752,6 +793,7 @@ impl Explorer {
     ) -> AnyElement {
         let on_chevron = label.clone();
         let on_double = label.clone();
+        let height = height.unwrap_or_else(|| self.row_height());
         div()
             .id(("group-header", row))
             .a11y_lazy(gpui::Role::Heading, || format!("{label} ({count})"))
@@ -763,48 +805,22 @@ impl Explorer {
             // Full width, and at least as wide as Details rows when they scroll sideways.
             .w_full()
             .when_some(self.cols, |d, c| d.min_w(c.row))
-            .h(height.unwrap_or_else(|| self.row_height()))
+            .h(height)
             .px(theme::s_12())
             .flex()
-            .items_end()
-            .pb(theme::s_6())
+            // In a compact row there is no room to sit the heading low: centered instead.
+            .map(|d| {
+                if height < theme::h_row_tight() {
+                    d.items_center()
+                } else {
+                    d.items_end().pb(theme::s_6())
+                }
+            })
             .gap(theme::s_8())
             .cursor_pointer()
             .rounded(theme::r_8())
             .hover(|s| s.bg(theme::wash()))
-            .child(
-                div()
-                    .id(("group-chevron", row))
-                    .size(theme::tree_chevron())
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(theme::r_4())
-                    .hover(|s| s.bg(theme::wash_strong()))
-                    // Toggles without selecting the section or starting a marquee.
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            window.focus(&this.list_focus, cx);
-                            this.toggle_group(&on_chevron, cx);
-                        }),
-                    )
-                    .child(
-                        svg()
-                            .path(Icon::ChevronRight.path())
-                            .size(theme::icon_sm())
-                            .text_color(theme::text_subtle())
-                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                if collapsed {
-                                    0.
-                                } else {
-                                    std::f32::consts::FRAC_PI_2
-                                },
-                            ))),
-                    ),
-            )
+            .child(Self::group_chevron(row, on_chevron, collapsed, cx))
             // A heading, not a caption: item size, semibold, full ink.
             .child(
                 div()
@@ -828,7 +844,7 @@ impl Explorer {
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 window.focus(&this.list_focus, cx);
-                if event.click_count() >= 2 {
+                if is_double_click(event.click_count()) {
                     this.toggle_group(&on_double, cx);
                     return;
                 }

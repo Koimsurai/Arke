@@ -57,9 +57,11 @@ pub fn format_count(n: usize) -> String {
     out
 }
 
-/// Text for the Type column. Extensions in the built-in table keep the built-in name (it doesn't
-/// depend on the default app). Others show the name Windows has for the type once the background
-/// lookup ([`start_type_names`]) has answered, and the built-in "XYZ File" until then.
+/// Text for the Type column: the name Windows has for the type (as File Explorer shows it, so
+/// sorting agrees with it and names the user customised appear), once the background lookup
+/// ([`start_type_names`]) has answered. Until then, and for extensions Windows has no name for,
+/// the built-in name. When Arke's language is not Windows' display language ([`set_windows_language`])
+/// extensions in the built-in table keep the built-in, translated name.
 pub fn type_label(entry: &Entry) -> String {
     match entry.kind {
         EntryKind::Dir => return t!("type.folder").into_owned(),
@@ -70,11 +72,14 @@ pub fn type_label(entry: &Entry) -> String {
     if ext.is_empty() {
         return t!("type.file").into_owned();
     }
-    if let Some(key) = known_type(ext) {
-        return t!(key).into_owned();
-    }
-    if let Some(name) = system_type_name(ext) {
+    let known = known_type(ext);
+    if (known.is_none() || windows_names_apply())
+        && let Some(name) = system_type_name(ext)
+    {
         return name.to_string();
+    }
+    if let Some(key) = known {
+        return t!(key).into_owned();
     }
     t!("type.ext_file", ext = ext.to_uppercase()).into_owned()
 }
@@ -97,8 +102,54 @@ impl SystemNames {
             self.names.clear();
             self.asked.clear();
             NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
+            self.ask_known();
         }
     }
+
+    /// Asks the lookup thread for every extension of the built-in table, so the names are there
+    /// before the first list needs them. Only when Windows' names are used for them.
+    fn ask_known(&mut self) {
+        let Some(ask) = ASK.get() else { return };
+        let windows = WINDOWS_LANGUAGE.lock().clone();
+        self.ask_known_to(ask, windows.as_deref());
+    }
+
+    /// [`Self::ask_known`] with the channel and Windows' language given.
+    fn ask_known_to(&mut self, ask: &flume::Sender<String>, windows: Option<&str>) {
+        if !names_apply(&self.locale, windows) {
+            return;
+        }
+        for ext in KNOWN_EXTENSIONS {
+            if self.asked.insert((*ext).to_owned()) {
+                let _ = ask.send((*ext).to_owned());
+            }
+        }
+    }
+}
+
+/// The language Windows shows its names in, as one of Arke's locales; `None` when it is none of
+/// them (Arke then keeps its own names for the built-in table).
+static WINDOWS_LANGUAGE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Tells the type names which language Windows' own names are in. Windows' names replace the
+/// built-in ones only when Arke's UI language is the same, so a Traditional Chinese UI on an
+/// English Windows keeps reading Chinese.
+pub fn set_windows_language(language: Option<&str>) {
+    *WINDOWS_LANGUAGE.lock() = language.map(str::to_owned);
+    let mut state = SYSTEM_NAMES.lock();
+    state.follow_language();
+    state.ask_known();
+    drop(state);
+    NAMES_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Whether Windows' names are used for the built-in table: the UI language is Windows' language.
+fn names_apply(ui: &str, windows: Option<&str>) -> bool {
+    windows == Some(ui)
+}
+
+fn windows_names_apply() -> bool {
+    names_apply(&rust_i18n::locale(), WINDOWS_LANGUAGE.lock().as_deref())
 }
 
 static SYSTEM_NAMES: LazyLock<Mutex<SystemNames>> = LazyLock::new(Mutex::default);
@@ -167,6 +218,11 @@ pub fn start_type_names(
     if ASK.set(tx).is_err() {
         return;
     }
+    {
+        let mut state = SYSTEM_NAMES.lock();
+        state.follow_language();
+        state.ask_known();
+    }
     let spawned = std::thread::Builder::new()
         .name("type-names".into())
         .spawn(move || {
@@ -182,6 +238,15 @@ pub fn start_type_names(
         log::warn!("type name thread: {e}");
     }
 }
+
+/// Every extension [`known_type`] has a name for (a test keeps the two in step); these are looked
+/// up in the background at startup.
+const KNOWN_EXTENSIONS: &[&str] = &[
+    "txt", "log", "md", "exe", "msi", "dll", "lnk", "url", "bat", "cmd", "ps1", "zip", "7z", "rar",
+    "jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "mp3", "wav", "flac", "mp4", "mkv", "mov",
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "json", "xml", "html", "htm", "rs",
+    "py", "js", "ts", "toml", "yaml", "yml", "iso",
+];
 
 /// Translation key for an extension (`type.*` in `locales/core.yml`).
 fn known_type(ext: &str) -> Option<&'static str> {
@@ -278,11 +343,65 @@ mod tests {
         set_type_name("dwg", Some("AutoCAD Drawing"));
         set_type_name("txt", Some("Something Else"));
         assert_eq!(type_label(&file("a.dwg")), "AutoCAD Drawing");
-        assert_eq!(type_label(&file("a.txt")), "Text Document", "table first");
+        assert_eq!(
+            type_label(&file("a.txt")),
+            "Text Document",
+            "built-in table while Windows' language is unknown"
+        );
         set_type_name("qqq", Some("Qqq.Document.3"));
         assert_eq!(type_label(&file("a.qqq")), "QQQ File", "ProgID rejected");
         set_type_name("rrr", None);
         assert_eq!(type_label(&file("a.rrr")), "RRR File");
+    }
+
+    /// Windows' name wins for the built-in table only when the UI language is Windows' language.
+    #[test]
+    fn windows_names_replace_built_in_ones_only_in_its_language() {
+        rust_i18n::set_locale("en");
+        language_changed();
+        set_type_name("iso", Some("Disc Image File"));
+        set_windows_language(Some("en"));
+        assert_eq!(type_label(&file("a.iso")), "Disc Image File");
+        set_windows_language(Some("zh-TW"));
+        assert_eq!(type_label(&file("a.iso")), "Disc Image", "other language");
+        set_windows_language(None);
+        assert_eq!(type_label(&file("a.iso")), "Disc Image", "unknown language");
+        assert!(names_apply("en", Some("en")));
+        assert!(!names_apply("zh-TW", Some("en")));
+        assert!(!names_apply("en", None));
+    }
+
+    /// Asking for the built-in table happens once per language, only when Windows' names apply,
+    /// and a language change starts over (the cache is per UI language).
+    #[test]
+    fn known_extensions_are_asked_once_per_language() {
+        let (tx, rx) = flume::unbounded::<String>();
+        let mut state = SystemNames {
+            locale: "en".into(),
+            ..SystemNames::default()
+        };
+        state.ask_known_to(&tx, Some("zh-TW"));
+        assert_eq!(rx.try_iter().count(), 0, "languages differ: nothing asked");
+        state.ask_known_to(&tx, Some("en"));
+        assert_eq!(rx.try_iter().count(), KNOWN_EXTENSIONS.len());
+        state.ask_known_to(&tx, Some("en"));
+        assert_eq!(rx.try_iter().count(), 0, "already asked");
+        state.asked.clear();
+        state.ask_known_to(&tx, Some("en"));
+        assert_eq!(
+            rx.try_iter().count(),
+            KNOWN_EXTENSIONS.len(),
+            "new language"
+        );
+    }
+
+    #[test]
+    fn known_extension_list_matches_the_table() {
+        for ext in KNOWN_EXTENSIONS {
+            assert!(known_type(ext).is_some(), "{ext}");
+        }
+        let unique: HashSet<_> = KNOWN_EXTENSIONS.iter().collect();
+        assert_eq!(unique.len(), KNOWN_EXTENSIONS.len());
     }
 
     /// The lookup runs on its own thread, once per extension; the label shows the built-in name
@@ -309,10 +428,12 @@ mod tests {
             .unwrap();
         assert_eq!(type_label(&file("c.dwg")), "AutoCAD Drawing");
         assert_ne!(type_names_version(), before);
-        assert_eq!(
-            asked_rx.try_iter().collect::<Vec<_>>(),
-            [("dwg".to_owned(), true)]
-        );
+        // Other tests may have made the built-in table asked too; only dwg is of interest.
+        let asked: Vec<_> = asked_rx
+            .try_iter()
+            .filter(|(ext, _)| ext == "dwg")
+            .collect();
+        assert_eq!(asked, [("dwg".to_owned(), true)]);
     }
 
     #[test]

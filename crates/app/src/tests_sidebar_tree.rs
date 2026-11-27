@@ -21,12 +21,27 @@ fn fs() -> Arc<FakeFs> {
     fs
 }
 
-/// A window on `start`, with the drive `C:` under This PC.
+/// A window on `start`, with the drive `C:` under This PC and the tree following the folder
+/// (off by default since #416, these tests are about it).
 fn window_at<'a>(
     cx: &'a mut TestAppContext,
     fs: Arc<FakeFs>,
     start: &str,
 ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    window_following(cx, fs, start, true)
+}
+
+/// A window on `start`, with the drive `C:` under This PC, with the tree following the folder or
+/// not from the first frame.
+fn window_following<'a>(
+    cx: &'a mut TestAppContext,
+    fs: Arc<FakeFs>,
+    start: &str,
+    follow: bool,
+) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    cx.update(|cx| {
+        SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_follow = follow, cx));
+    });
     let shell = Arc::new(FakeShell::default());
     shell.extra_places.lock().push(Place {
         label: "Local Disk (C:)".into(),
@@ -327,10 +342,10 @@ fn change(cx: &mut VisualTestContext, f: impl FnOnce(&mut crate::settings::Setti
     cx.run_until_parked();
 }
 
-/// #307: working in a folder inside a favorite, the sidebar stays on the favorite: the tree
-/// opens below, out of sight, but doesn't scroll away to the folder.
+/// #424 (it was #307: stay on the favorite): working in a folder inside a favorite, the tree
+/// opens under This PC and the sidebar scrolls to the folder's row there, as File Explorer does.
 #[gpui::test]
-fn inside_a_favorite_the_sidebar_stays_on_it(cx: &mut TestAppContext) {
+fn inside_a_favorite_the_sidebar_scrolls_to_the_folder(cx: &mut TestAppContext) {
     let (ws, cx) = deep_window(cx);
     change(cx, |st| {
         st.favorites = Some(vec![PathBuf::from(r"C:\work")]);
@@ -344,13 +359,20 @@ fn inside_a_favorite_the_sidebar_stays_on_it(cx: &mut TestAppContext) {
     }
     assert!(
         ws.update(cx, |ws, _| ws.places_overflow_for_test()) > gpui::px(0.),
-        "deep is out of sight"
+        "the places overflow"
     );
-    assert_eq!(
-        ws.update(cx, |ws, _| ws.places_offset_for_test()),
-        gpui::px(0.),
-        "the sidebar stays on the favorite"
+    assert!(
+        ws.update(cx, |ws, _| ws.places_offset_for_test()) < gpui::px(0.),
+        "the sidebar scrolled"
     );
+    settle(cx, "deep is in view", |cx| {
+        let frame = cx.debug_bounds("sidebar-places-frame");
+        let deep = cx.debug_bounds("sidebar deep");
+        matches!(
+            (frame, deep),
+            (Some(f), Some(d)) if d.top() >= f.top() && d.bottom() <= f.bottom()
+        )
+    });
 }
 
 /// #299: following the folder turned off, the tree opens only where the user opens it.
@@ -401,4 +423,195 @@ fn the_tiles_stay_in_view_while_the_tree_follows(cx: &mut TestAppContext) {
             "{slot} {tile:?} in {frame:?}"
         );
     }
+}
+
+fn right_click(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// Opens the menu of the sidebar's empty space, as a right click below the tabs does.
+fn open_space_menu(cx: &mut VisualTestContext) {
+    refresh(cx);
+    let at = cx
+        .debug_bounds("tab-list-end")
+        .expect("the end of the tab list is drawn")
+        .center();
+    right_click(cx, at);
+}
+
+/// The open menu's row for "Expand to open folder": its place and whether it is checked.
+fn follow_row(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (usize, bool) {
+    let label = t!("sidebar.follow_folder").into_owned();
+    let labels = ws
+        .update(cx, |ws, _| ws.history_menu_labels_for_test())
+        .expect("a menu is open");
+    let ix = labels
+        .iter()
+        .position(|l| *l == label)
+        .unwrap_or_else(|| panic!("no {label:?} in {labels:?}"));
+    let checks = ws
+        .update(cx, |ws, _| ws.open_menu_checks_for_test())
+        .expect("a menu is open");
+    (ix, checks[ix])
+}
+
+fn follow_setting(cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| SettingsStore::global(cx).read(cx).settings.sidebar_follow)
+}
+
+/// #416: a new install doesn't open the tree to the current folder; the menu of the sidebar's
+/// empty space has the item, unchecked, and choosing it turns following on, opens the tree to
+/// the folder and saves the setting.
+#[gpui::test]
+fn the_tree_does_not_follow_until_the_menu_turns_it_on(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, fs(), r"C:\work\reports\2026", false);
+    for _ in 0..5 {
+        refresh(cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!expanded(&ws, cx, r"C:\work"), "nothing opened by itself");
+    assert!(!follow_setting(cx));
+
+    open_space_menu(cx);
+    let (ix, checked) = follow_row(&ws, cx);
+    assert!(!checked, "off, so no check");
+    ws.update_in(cx, |ws, window, cx| {
+        ws.pick_menu_row_for_test(ix, window, cx);
+    });
+    settle(cx, "the tree opens to 2026", |cx| {
+        expanded(&ws, cx, r"C:\work\reports")
+    });
+    assert!(follow_setting(cx));
+    assert!(expanded(&ws, cx, r"C:\"), "the drive is open too");
+    // What is written is what is read back.
+    let saved = cx.update(|_, cx| SettingsStore::global(cx).read(cx).settings.clone());
+    let bytes = serde_json::to_vec(&saved).expect("settings serialize");
+    let back: crate::settings::Settings = serde_json::from_slice(&bytes).expect("settings read");
+    assert!(back.sidebar_follow);
+
+    open_space_menu(cx);
+    assert!(follow_row(&ws, cx).1, "on, so checked");
+}
+
+/// #416: turned off from the menu, the tree stays as it is: nothing closes.
+#[gpui::test]
+fn turning_following_off_from_the_menu_leaves_the_tree(cx: &mut TestAppContext) {
+    let (ws, cx) = window_at(cx, fs(), r"C:\work\reports\2026");
+    settle(cx, "the tree opens to 2026", |cx| {
+        expanded(&ws, cx, r"C:\work\reports")
+    });
+    open_space_menu(cx);
+    let (ix, checked) = follow_row(&ws, cx);
+    assert!(checked, "on, so checked");
+    ws.update_in(cx, |ws, window, cx| {
+        ws.pick_menu_row_for_test(ix, window, cx);
+    });
+    refresh(cx);
+    assert!(!follow_setting(cx));
+    assert!(expanded(&ws, cx, r"C:\work") && expanded(&ws, cx, r"C:\work\reports"));
+    assert!(expanded(&ws, cx, r"C:\"));
+
+    open_space_menu(cx);
+    assert!(!follow_row(&ws, cx).1, "off, so no check");
+}
+
+fn favorite_expanded(ws: &Entity<Workspace>, cx: &mut VisualTestContext, path: &str) -> bool {
+    ws.update(cx, |ws, _| ws.favorite_expanded_for_test(Path::new(path)))
+}
+
+/// #424: following the folder opens the tree under This PC only. A favorite that holds the
+/// current folder stays closed, as the user left it.
+#[gpui::test]
+fn following_a_folder_in_a_favorite_leaves_the_favorite_closed(cx: &mut TestAppContext) {
+    let (ws, cx) = window_at(cx, fs(), r"C:\work");
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work")]);
+    open(&ws, cx, r"C:\work\reports\2026");
+    settle(cx, "the tree opens to 2026", |cx| {
+        expanded(&ws, cx, r"C:\work\reports")
+    });
+    assert!(expanded(&ws, cx, r"C:\work"), "This PC's row opened");
+    assert!(
+        !favorite_expanded(&ws, cx, r"C:\work"),
+        "the favorite's row stays closed"
+    );
+    assert!(!favorite_expanded(&ws, cx, r"C:\work\reports"));
+}
+
+/// #424: the current folder is a favorite: its own row is the selected one and nothing opens
+/// for it, neither under the favorite nor under This PC.
+#[gpui::test]
+fn a_favorite_that_is_the_current_folder_is_selected_as_it_is(cx: &mut TestAppContext) {
+    // Following is off while the window goes to the favorite, so the tree is still closed.
+    let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work\reports")]);
+    open(&ws, cx, r"C:\work\reports");
+    refresh(cx);
+    change(cx, |st| st.sidebar_follow = true);
+    for _ in 0..5 {
+        refresh(cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!expanded(&ws, cx, r"C:\"), "nothing opened under This PC");
+    assert!(!expanded(&ws, cx, r"C:\work"));
+    assert!(!favorite_expanded(&ws, cx, r"C:\work\reports"));
+    assert!(
+        ws.update(cx, |ws, _| ws.favorite_selected_for_test()),
+        "the favorite's row is the selected one"
+    );
+}
+
+/// #424: the favorite that was the current folder is unpinned: the tree opens to the folder, as
+/// it does for any folder.
+#[gpui::test]
+fn unpinning_the_current_folder_follows_it(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work\reports")]);
+    open(&ws, cx, r"C:\work\reports");
+    refresh(cx);
+    change(cx, |st| st.sidebar_follow = true);
+    for _ in 0..5 {
+        refresh(cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!expanded(&ws, cx, r"C:\work"), "a favorite: nothing opens");
+    // Frames at a favorite schedule nothing: there is nothing to follow.
+    let scheduled = ws.update(cx, |ws, _| ws.follows_scheduled_for_test());
+    for _ in 0..5 {
+        refresh(cx);
+    }
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.follows_scheduled_for_test()),
+        scheduled
+    );
+
+    change(cx, |st| st.pinned = Vec::new());
+    settle(cx, "the tree opens to reports", |cx| {
+        expanded(&ws, cx, r"C:\work")
+    });
+    assert!(expanded(&ws, cx, r"C:\"));
+}
+
+/// #424: a favorite's row and the row of the same folder under This PC open and close on their
+/// own, whichever is clicked.
+#[gpui::test]
+fn a_favorite_and_its_twin_under_this_pc_open_on_their_own(cx: &mut TestAppContext) {
+    let (ws, cx) = window_following(cx, fs(), r"C:\music", false);
+    change(cx, |st| st.pinned = vec![PathBuf::from(r"C:\work")]);
+    refresh(cx);
+    let work = || PathBuf::from(r"C:\work");
+    ws.update(cx, |ws, cx| ws.toggle_favorite_expand_for_test(work(), cx));
+    assert!(favorite_expanded(&ws, cx, r"C:\work"));
+    assert!(!expanded(&ws, cx, r"C:\work"), "This PC's row stays closed");
+
+    ws.update(cx, |ws, cx| ws.toggle_expand_for_test(work(), cx));
+    assert!(favorite_expanded(&ws, cx, r"C:\work") && expanded(&ws, cx, r"C:\work"));
+
+    ws.update(cx, |ws, cx| ws.toggle_favorite_expand_for_test(work(), cx));
+    assert!(!favorite_expanded(&ws, cx, r"C:\work"));
+    assert!(
+        expanded(&ws, cx, r"C:\work"),
+        "closing one leaves the other"
+    );
 }

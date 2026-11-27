@@ -54,6 +54,7 @@ impl Sink<'_> {
         self.0.done.fetch_add(1, Ordering::Relaxed);
     }
     fn add_total(&self, bytes: u64) {
+        self.0.work_in_bytes.store(true, Ordering::Relaxed);
         self.0.bytes_total.fetch_add(bytes, Ordering::Relaxed);
         self.0.work_total.fetch_add(bytes, Ordering::Relaxed);
     }
@@ -241,18 +242,20 @@ pub(crate) fn start(
     store: &gpui::Entity<crate::settings::SettingsStore>,
     cx: &gpui::App,
 ) -> Arc<Remotes> {
-    let known_hosts =
-        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Arke").join("known_hosts"));
-    let transport: Arc<dyn arke_remote::dav::Transport> = match arke_remote::http::WinHttp::new() {
-        Ok(http) => Arc::new(http),
-        Err(err) => {
-            log::error!("WinHTTP unavailable, WebDAV disabled: {err}");
-            Arc::new(NoHttp)
-        }
-    };
+    let known_hosts = crate::paths::known_hosts_file();
+    // Without winhttp.dll (a stripped Windows) the call below would be a failed delayed load.
+    let transport: Arc<dyn arke_remote::dav::Transport> =
+        match crate::win_dll::system_dll("winhttp.dll").then(arke_remote::http::WinHttp::new) {
+            Some(Ok(http)) => Arc::new(http),
+            Some(Err(err)) => {
+                log::error!("WinHTTP unavailable, WebDAV disabled: {err}");
+                Arc::new(NoHttp)
+            }
+            None => Arc::new(NoHttp),
+        };
     let remotes = Remotes::new(arke_remote::RemotesConfig {
         known_hosts,
-        cache_dir: std::env::temp_dir().join("Arke").join("remote"),
+        cache_dir: crate::paths::remote_cache_dir(),
         secrets: Arc::new(arke_remote::creds::CredentialManager),
         transport,
         portable: Arc::new(arke_remote::wpd::Wpd::new()),
@@ -692,6 +695,9 @@ impl Shell for RemoteShell {
     fn is_local_disk(&self, path: &Path) -> bool {
         remote(path).is_none() && self.inner.is_local_disk(path)
     }
+    fn is_fixed_disk(&self, path: &Path) -> bool {
+        remote(path).is_none() && self.inner.is_fixed_disk(path)
+    }
     fn has_recycle_bin(&self, path: &Path) -> bool {
         remote(path).is_none() && self.inner.has_recycle_bin(path)
     }
@@ -701,8 +707,8 @@ impl Shell for RemoteShell {
         }
         self.inner.file_icon(path, size)
     }
-    fn type_icon(&self, ext: &str) -> Option<arke_core::thumbs::Thumbnail> {
-        self.inner.type_icon(ext)
+    fn type_icon(&self, ext: &str, px: u32) -> Option<arke_core::thumbs::Thumbnail> {
+        self.inner.type_icon(ext, px)
     }
     fn video_thumbnail(
         &self,
@@ -893,17 +899,20 @@ impl Shell for RemoteShell {
         }
         self.inner.run_in(command_line, dir)
     }
-    fn run_quicklook(&self, exe: Option<&Path>, item: &Path) -> Result<(), ShellError> {
-        if remote(item).is_some() {
-            return Err(ShellError::NotOnRemote);
-        }
-        self.inner.run_quicklook(exe, item)
+    fn run_program(&self, program: &Path, args: &std::ffi::OsStr) -> Result<(), ShellError> {
+        self.inner.run_program(program, args)
+    }
+    fn write_pipe(&self, pipe: &str, line: &str) -> Result<(), ShellError> {
+        self.inner.write_pipe(pipe, line)
     }
     fn local_parts(&self, time: SystemTime) -> Option<[u16; 6]> {
         self.inner.local_parts(time)
     }
     fn decode_ansi(&self, bytes: &[u8]) -> String {
         self.inner.decode_ansi(bytes)
+    }
+    fn solid_state(&self, path: &Path) -> bool {
+        remote(path).is_none() && self.inner.solid_state(path)
     }
     fn net_probe(&self) -> Option<Arc<dyn arke_core::net::NetProbe>> {
         self.inner.net_probe()
@@ -913,9 +922,6 @@ impl Shell for RemoteShell {
     }
     fn net_disconnect(&self, drive: &Path) -> Result<(), ShellError> {
         self.inner.net_disconnect(drive)
-    }
-    fn editor_apps(&self) -> Vec<(String, PathBuf)> {
-        self.inner.editor_apps()
     }
     fn set_autostart(&self, on: bool) -> Result<(), ShellError> {
         self.inner.set_autostart(on)

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
@@ -280,6 +280,19 @@ fn create_instance(name: &[u16], first: bool) -> Option<Pipe> {
         )
     };
     (!handle.is_invalid() && handle != INVALID_HANDLE_VALUE).then_some(Pipe(handle))
+}
+
+/// Whether a resident process runs (its pipe exists), without connecting to it or creating it.
+pub(crate) fn resident_exists() -> bool {
+    let name = pipe_name();
+    // SAFETY: name is NUL-terminated and outlives the call; waits 1 ms at most.
+    if unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), 1) }.as_bool() {
+        return true;
+    }
+    // Busy (every instance taken) means it exists too.
+    // SAFETY: no arguments; reads this thread's last error, set by the call above.
+    let error = unsafe { GetLastError() };
+    error != ERROR_FILE_NOT_FOUND
 }
 
 /// Try to become the resident process. Returns `None` if another one already is.

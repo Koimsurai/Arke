@@ -17,12 +17,14 @@
 //! The worker writes the items into a folder of Arke's own in the temp folder (folders, the
 //! relative names inside them, sizes and times from the descriptor), a chunk at a time with
 //! progress and Cancel, then moves them into the target like any other drop. Name conflicts in
-//! the target therefore get the same question as a copy.
+//! the target therefore get the same question as a copy. It never calls the source itself: a
+//! thread of the drop's own does ([`reader`]), so Cancel works even when the source stops
+//! answering (#456).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use rust_i18n::t;
 use windows::Win32::Foundation::{E_ABORT, E_FAIL, FILETIME, HGLOBAL, S_FALSE, S_OK};
@@ -33,8 +35,8 @@ use windows::Win32::System::Com::StructuredStorage::{
 };
 use windows::Win32::System::Com::{
     COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize, DVASPECT_CONTENT, FORMATETC, IDataObject,
-    IStream, STGC_DEFAULT, STGM_CREATE, STGM_READWRITE, STGM_SHARE_EXCLUSIVE, STREAM_SEEK_SET,
-    TYMED, TYMED_HGLOBAL, TYMED_ISTORAGE, TYMED_ISTREAM,
+    IStream, STGC_DEFAULT, STGM_CREATE, STGM_READWRITE, STGM_SHARE_EXCLUSIVE, TYMED, TYMED_HGLOBAL,
+    TYMED_ISTORAGE, TYMED_ISTREAM,
 };
 use windows::Win32::System::DataExchange::IsClipboardFormatAvailable;
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
@@ -51,8 +53,14 @@ use windows::core::{AgileReference, HRESULT, Interface as _, PCWSTR, w};
 
 use crate::shell::{OpProgress, ShellError};
 
-/// Bytes read from a stream at a time.
+/// The most read from a stream at a time (reads start smaller, see [`reader::ChunkSize`]), and
+/// the pieces contents in memory are written in.
 pub(crate) const CHUNK: usize = 1 << 20;
+
+#[path = "win_virtual_drop_reader.rs"]
+mod reader;
+
+use reader::{Answer, Ask, Link, Opened};
 
 /// The data object of a drop of virtual files being handled, on the thread that received it.
 pub(crate) fn dropped_data() -> Option<IDataObject> {
@@ -213,7 +221,8 @@ impl VirtualDrop {
     }
 
     /// Writes the items into `stage`, an empty folder. Background thread, which must not have
-    /// COM initialized as single-threaded ([`ComThread`] sets it up).
+    /// COM initialized as single-threaded ([`ComThread`] sets it up), unless it keeps the
+    /// objects of a paste that lives there ([`ComThread::ole`]).
     pub(crate) fn extract(self, stage: &Path, progress: &OpProgress) -> Extraction {
         let Self {
             items,
@@ -223,51 +232,37 @@ impl VirtualDrop {
         let known: u64 = items.iter().filter_map(|i| i.size).sum();
         let files = items.iter().filter(|i| !i.is_dir).count() as u64;
         progress.bytes_total.store(known, Ordering::Relaxed);
+        progress.work_in_bytes.store(known > 0, Ordering::Relaxed);
         progress
             .work_total
             .store(if known > 0 { known } else { files }, Ordering::Relaxed);
+        let later = matches!(source, Source::Later { .. });
         let mut writer = Writer::new(stage, progress, known > 0);
-        match source {
-            Source::Fetched(fetched) => {
-                for (item, fetched) in items.iter().zip(fetched) {
-                    let contents = fetched.map(|f| match f {
-                        Fetched::Bytes(bytes) => Ok(Contents::Bytes(bytes)),
-                        Fetched::Stream(s) => s.resolve().map(Contents::Stream),
-                        Fetched::Storage(s) => s.resolve().map(Contents::Storage),
-                        Fetched::Failed(e) => Err(e),
-                    });
-                    if !writer.write(item, contents) {
-                        break;
-                    }
+        let link = match Link::start(items.clone(), format, source) {
+            Ok(link) => link,
+            Err(e) => {
+                if let Some(item) = items.first() {
+                    writer.fail(item, e.into());
                 }
+                return writer.out;
             }
-            Source::Later { data, operation } => {
-                match data.resolve() {
-                    Ok(data) => {
-                        for item in &items {
-                            let contents = (!item.is_dir).then(|| contents(&data, format, item));
-                            if !writer.write(item, contents) {
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(item) = items.first() {
-                            writer.fail(item, e.into());
-                        }
-                    }
-                }
-                let ok = !writer.out.cancelled && writer.out.failed.is_none();
-                let hr = if writer.out.cancelled {
-                    E_ABORT
-                } else if ok {
-                    S_OK
-                } else {
-                    E_FAIL
-                };
-                operation.end(hr, ok);
+        };
+        for (n, item) in items.iter().enumerate() {
+            if !writer.write(&link, n, item) {
+                break;
             }
         }
+        if later {
+            let hr = if writer.out.cancelled {
+                E_ABORT
+            } else if writer.out.failed.is_none() {
+                S_OK
+            } else {
+                E_FAIL
+            };
+            link.ask(Ask::End(hr, hr == S_OK));
+        }
+        link.close(&progress.cancel);
         writer.out
     }
 }
@@ -442,18 +437,11 @@ fn ansi(bytes: &[u8]) -> String {
 }
 
 fn system_time(t: &FILETIME) -> Option<SystemTime> {
-    /// 100 ns intervals from 1601 to 1970.
-    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
     let ticks = (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
     if ticks == 0 {
         return None;
     }
-    let since = |ticks: u64| Duration::from_nanos(ticks.saturating_mul(100));
-    if ticks >= UNIX_EPOCH_TICKS {
-        SystemTime::UNIX_EPOCH.checked_add(since(ticks - UNIX_EPOCH_TICKS))
-    } else {
-        SystemTime::UNIX_EPOCH.checked_sub(since(UNIX_EPOCH_TICKS - ticks))
-    }
+    arke_core::time::system_time_from_filetime(ticks)
 }
 
 /// A source's relative name as names that stay inside the target folder: split at `\` and `/`,
@@ -537,6 +525,8 @@ struct Writer<'a> {
     by_bytes: bool,
     /// Folders made so far: the source's relative path and where it went.
     dirs: Vec<(Vec<String>, PathBuf)>,
+    /// How much to read at a time, learned across the drop's items.
+    chunk: std::cell::Cell<reader::ChunkSize>,
     out: Extraction,
 }
 
@@ -565,21 +555,22 @@ impl<'a> Writer<'a> {
             progress,
             by_bytes,
             dirs: Vec::new(),
+            chunk: std::cell::Cell::new(reader::ChunkSize::new()),
             out: Extraction::default(),
         }
     }
 
-    /// Writes one item; `false` once cancelled. A failure is noted and the next item tried.
-    fn write(&mut self, item: &Item, contents: Option<windows::core::Result<Contents>>) -> bool {
+    /// Writes item `n`, with its contents from the source's thread; `false` once cancelled. A
+    /// failure is noted and the next item tried.
+    fn write(&mut self, link: &Link, n: usize, item: &Item) -> bool {
         if self.progress.cancel.load(Ordering::Relaxed) {
             self.out.cancelled = true;
             return false;
         }
-        let result = match contents {
-            None => self.dir(&item.parts).map(|_| ()).map_err(Stop::from),
-            Some(contents) => contents
-                .map_err(Stop::from)
-                .and_then(|contents| self.file(item, contents)),
+        let result = if item.is_dir {
+            self.dir(&item.parts).map(|_| ()).map_err(Stop::from)
+        } else {
+            self.file(link, n, item)
         };
         match result {
             Ok(()) => {
@@ -632,16 +623,18 @@ impl<'a> Writer<'a> {
         }
     }
 
-    fn file(&mut self, item: &Item, contents: Contents) -> Result<(), Stop> {
+    fn file(&mut self, link: &Link, n: usize, item: &Item) -> Result<(), Stop> {
+        let opened = self.open(link, n)?;
         let (name, parent) = item.parts.split_last().ok_or_else(|| {
             Stop::Failed(std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
         })?;
         let parent = self.dir(parent)?;
         // Two items of the same name (two attachments both called image001.png): numbered.
         let path = free_name(&parent.join(name));
-        let written = match contents {
-            Contents::Storage(storage) => write_storage(&path, &storage).map_err(Stop::from),
-            contents => self.write_file(&path, contents),
+        let written = match opened {
+            Opened::Bytes(bytes) => self.write_bytes(&path, &bytes),
+            Opened::Stream => self.copy_stream(link, &path, item.size),
+            Opened::Storage => self.save(link, &path),
         };
         if let Err(stop) = written {
             let _ = std::fs::remove_file(&path);
@@ -652,47 +645,85 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    fn write_file(&self, path: &Path, contents: Contents) -> Result<(), Stop> {
+    /// Asks the source's thread for item `n`'s contents. Answers to reads of the item before
+    /// that were still on their way are passed over.
+    fn open(&self, link: &Link, n: usize) -> Result<Opened, Stop> {
+        if !link.ask(Ask::Open(n)) {
+            return Err(reader::gone());
+        }
+        loop {
+            match link.answer(&self.progress.cancel)? {
+                Answer::Opened(opened) => return opened.map_err(Stop::from),
+                Answer::Read(_) | Answer::Saved(_) => {}
+            }
+        }
+    }
+
+    fn write_bytes(&self, path: &Path, bytes: &[u8]) -> Result<(), Stop> {
         let mut file = std::fs::File::create_new(path)?;
-        match contents {
-            Contents::Bytes(bytes) => {
-                for chunk in bytes.chunks(CHUNK) {
-                    self.check_cancel()?;
-                    file.write_all(chunk)?;
-                    self.count(chunk.len());
-                }
-            }
-            Contents::Stream(stream) => {
-                // Some sources leave the stream's position at its end.
-                // SAFETY: seeking a live stream.
-                let _ = unsafe { stream.Seek(0, STREAM_SEEK_SET, None) };
-                let mut buffer = vec![0u8; CHUNK];
-                loop {
-                    self.check_cancel()?;
-                    let mut read = 0u32;
-                    // SAFETY: `buffer` has room for CHUNK bytes; `read` receives the count.
-                    let hr: HRESULT = unsafe {
-                        stream.Read(
-                            buffer.as_mut_ptr().cast(),
-                            CHUNK as u32,
-                            Some(&raw mut read),
-                        )
-                    };
-                    hr.ok()?;
-                    let read = (read as usize).min(CHUNK);
-                    if read > 0 {
-                        file.write_all(&buffer[..read])?;
-                        self.count(read);
-                    }
-                    if read == 0 || hr == S_FALSE {
-                        break;
-                    }
-                }
-            }
-            Contents::Storage(_) => {}
+        for chunk in bytes.chunks(CHUNK) {
+            self.check_cancel()?;
+            file.write_all(chunk)?;
+            self.count(chunk.len());
         }
         file.flush()?;
         Ok(())
+    }
+
+    /// Copies the open stream into a new file, one read ahead of the writing ([`reader::AHEAD`]),
+    /// in pieces sized by how fast the source answers ([`reader::ChunkSize`]).
+    fn copy_stream(&self, link: &Link, path: &Path, size: Option<u64>) -> Result<(), Stop> {
+        let mut file = std::fs::File::create_new(path)?;
+        let mut chunk = self.chunk.get().next_item();
+        let mut spare: Vec<Vec<u8>> = Vec::with_capacity(reader::AHEAD);
+        let (mut asked, mut on_the_way) = (0u64, 0usize);
+        loop {
+            self.check_cancel()?;
+            // Past the size the descriptor gave, a read is only asked to see the end, as the
+            // stream may be longer.
+            while on_the_way < reader::AHEAD
+                && (on_the_way == 0 || size.is_none_or(|size| asked < size))
+            {
+                let len = chunk.get();
+                if !link.ask(Ask::Read(spare.pop().unwrap_or_default(), len)) {
+                    return Err(reader::gone());
+                }
+                asked += len as u64;
+                on_the_way += 1;
+            }
+            let Answer::Read(done) = link.answer(&self.progress.cancel)? else {
+                return Err(reader::gone());
+            };
+            on_the_way -= 1;
+            chunk.learn(done.asked, done.got, done.took);
+            if done.pinned {
+                chunk.pin();
+            }
+            self.chunk.set(chunk);
+            done.hr.ok()?;
+            let bytes = done.buffer.get(..done.got).unwrap_or_default();
+            if !bytes.is_empty() {
+                file.write_all(bytes)?;
+                self.count(bytes.len());
+            }
+            if bytes.is_empty() || done.hr == S_FALSE {
+                break;
+            }
+            spare.push(done.buffer);
+        }
+        file.flush()?;
+        Ok(())
+    }
+
+    /// Has the source's thread save the open storage (an Outlook message) at `path`.
+    fn save(&self, link: &Link, path: &Path) -> Result<(), Stop> {
+        if !link.ask(Ask::Save(path.to_path_buf())) {
+            return Err(reader::gone());
+        }
+        match link.answer(&self.progress.cancel)? {
+            Answer::Saved(saved) => saved.map_err(Stop::from),
+            Answer::Opened(_) | Answer::Read(_) => Err(reader::gone()),
+        }
     }
 
     fn check_cancel(&self) -> Result<(), Stop> {

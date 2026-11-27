@@ -109,3 +109,74 @@ fn home_favorites_reorder_by_drag(cx: &mut TestAppContext) {
     let shown: Vec<PathBuf> = listed(&ws, cx).into_iter().map(|(p, _)| p).collect();
     assert_eq!(shown, [p("b"), p("c"), p("a")], "Home shows the new order");
 }
+
+/// A click on a Home card follows "Single click to open" like the recent files: with it off, one
+/// click only picks the card and a double click opens it; with it on, one click opens (#426).
+#[gpui::test]
+fn home_cards_follow_the_single_click_setting(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\w", vec![dir("a")]);
+    fs.insert_dir(p("a"), Vec::new());
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\w");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\w"));
+    change(cx, |st| st.favorites = Some(vec![p("a")]));
+    let click = |cx: &mut VisualTestContext, click_count: usize| {
+        let at = cx
+            .debug_bounds("home-favorite a")
+            .expect("card drawn")
+            .center();
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::none(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::none(),
+            click_count,
+        });
+        cx.run_until_parked();
+    };
+    let home_open = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.update(cx, |ws, cx| ws.home_favorites_for_test(cx))
+            .is_some()
+    };
+    let open_home = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_home_for_test(false, window, cx);
+        });
+        refresh(cx);
+        assert!(home_open(ws, cx), "Home is open");
+    };
+
+    crate::prefs::apply(&Settings::default());
+    open_home(&ws, cx);
+    click(cx, 1);
+    assert!(
+        home_open(&ws, cx),
+        "double-click mode: one click doesn't open"
+    );
+    refresh(cx);
+    click(cx, 1);
+    click(cx, 2);
+    assert!(
+        !home_open(&ws, cx),
+        "double-click mode: a double click opens"
+    );
+    wait_until(cx, &view, "folder", loaded(r"C:\w\a"));
+
+    crate::prefs::apply(&Settings {
+        single_click: true,
+        ..Settings::default()
+    });
+    open_home(&ws, cx);
+    click(cx, 1);
+    assert!(!home_open(&ws, cx), "single-click mode: one click opens");
+    wait_until(cx, &view, "folder", loaded(r"C:\w\a"));
+    crate::prefs::apply(&Settings::default());
+}

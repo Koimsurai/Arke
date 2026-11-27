@@ -111,7 +111,9 @@ actions!(
         /// The saved workspaces panel.
         OpenWorkspaces,
         /// Collapses the sidebar to a column of icons, or expands it (Ctrl+B, #91).
-        ToggleSidebar
+        ToggleSidebar,
+        /// The setup guide (`workspace_welcome.rs`), again from its first step.
+        OpenSetupGuide
     ]
 );
 
@@ -139,6 +141,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
     crate::net_dialog::bind_keys(cx);
     crate::archive_password::bind_keys(cx);
     crate::recycle_bin::bind_keys(cx);
+    crate::home::bind_keys(cx);
     let ctx = Some("Workspace");
     cx.bind_keys([
         KeyBinding::new("ctrl-t", OpenPalette, ctx),
@@ -376,6 +379,11 @@ pub(crate) struct Workspace {
     closed: Vec<ClosedTab>,
     /// Sidebar tree: expanded folders and listed children.
     expanded: HashSet<PathBuf>,
+    /// The folders opened under the favorites list (#424): the same folder under This PC opens on
+    /// its own, and following the current folder never touches these.
+    fav_expanded: HashSet<PathBuf>,
+    /// `tree_cue` is a row under the favorites list, not the same folder under This PC.
+    tree_cue_fav: bool,
     /// The tree node just expanded or collapsed: its chevron turns and its children fade in.
     tree_cue: (Option<PathBuf>, crate::motion::Cue),
     /// A tab was just split: the new right pane (its view) slides in from the right as it fades in.
@@ -401,6 +409,9 @@ pub(crate) struct Workspace {
     net_dialog: Option<NetDialogSlot>,
     /// An archive's password, asked when extracting it (#346).
     archive_password: Option<ArchivePasswordSlot>,
+    /// Further archives asking for their password while that dialog is open (several extracted
+    /// at once, #407): asked one after another.
+    archive_password_waiting: Vec<(Entity<Explorer>, crate::archive_password::PasswordAsk)>,
     /// Saved workspaces panel.
     workspaces: Option<(Entity<saved::WorkspacesPanel>, Subscription)>,
     /// The saved workspace this window was opened from or saved as last (#269).
@@ -520,6 +531,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let (view, ask) = (view.clone(), ask.clone());
+        if self.archive_password.is_some() {
+            self.archive_password_waiting.push((view, ask));
+            return;
+        }
         let name = ask.archive.file_name().map_or_else(
             || ask.archive.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -554,6 +569,10 @@ impl Workspace {
             slot.view.update(cx, |v, cx| {
                 v.extract_archive(slot.archive, slot.here, Some(password), cx);
             });
+        }
+        if !self.archive_password_waiting.is_empty() {
+            let (view, ask) = self.archive_password_waiting.remove(0);
+            self.ask_password(&view, &ask, window, cx);
         }
         cx.notify();
     }
@@ -681,6 +700,7 @@ pub(crate) fn apply_theme(window: &mut Window, cx: &mut App) {
     theme::set_font(&look.font);
     theme::set_scale(look.ui_scale);
     theme::set_sidebar_base(look.sidebar_width);
+    theme::set_density(look.density);
     theme::set_backdrop(look.background_image.clone().map(|path| {
         (
             path,
@@ -785,8 +805,6 @@ impl Workspace {
             crate::quick_access::refresh(&this.services.shell, places, cx);
             // Another program may have added or deleted files.
             this.refresh_disk_space(cx);
-            // QuickLook may have been started or quit while Arke was in the background.
-            Self::recheck_quicklook(cx);
             // Shelf items may have been moved or deleted outside Arke.
             let fs = Arc::clone(&this.services.fs);
             crate::shelf::ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
@@ -824,6 +842,8 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             expanded: HashSet::new(),
+            fav_expanded: HashSet::new(),
+            tree_cue_fav: false,
             tree_cue: (None, crate::motion::Cue::default()),
             split_cue: (None, crate::motion::Cue::default()),
             tree_children: HashMap::new(),
@@ -835,6 +855,7 @@ impl Workspace {
             closing_palette: None,
             net_dialog: None,
             archive_password: None,
+            archive_password_waiting: Vec::new(),
             workspaces: None,
             saved_shown: None,
             _saved_workspaces: saved_workspaces,
@@ -1464,6 +1485,9 @@ impl Workspace {
             }
             ExplorerEvent::FocusOtherPane => {
                 self.activate_pane(tab_ix, 1 - pane_ix.min(1), window, cx);
+            }
+            ExplorerEvent::StepStop(forward) => {
+                self.step_stop(*forward, window, cx);
             }
             ExplorerEvent::Arrived { dir, names } => {
                 self.select_arrived_beside(tab_ix, pane_ix, dir, names, cx);
@@ -2797,16 +2821,18 @@ impl Workspace {
                 .child(tab.panes[0].view.clone())
                 .into_any_element();
         }
-        // Zero-width divider; the hit area extends left into the gap between the two papers.
+        // Zero-width divider; the hit area extends left into the gap between the two papers,
+        // centered on it.
         let resizing = self.resizing;
+        let gap = theme::paper_gap();
         let gutter = div().relative().w(px(0.)).h_full().child(
             div()
                 .id("pane-gutter")
                 .group("pane-gutter")
                 .absolute()
                 .top_0()
-                .bottom(theme::s_8())
-                .left(-theme::s_12() + px(2.))
+                .bottom(gap)
+                .left(-gap / 2. - theme::s_6())
                 .w(theme::s_12())
                 .flex()
                 .items_center()
@@ -2851,8 +2877,8 @@ impl Workspace {
                 div()
                     .absolute()
                     .top_0()
-                    .bottom(theme::s_8())
-                    .right(theme::s_8())
+                    .bottom(gap)
+                    .right(gap)
                     .w(shared.width)
                     .child(preview),
             )
@@ -2915,13 +2941,13 @@ impl Workspace {
                 } else {
                     theme::h_bar()
                 })
-                .bottom(theme::s_8())
-                .right(theme::s_8())
-                .w((self.panes_width_hint() - theme::s_8()) / 2.)
+                .bottom(theme::paper_gap())
+                .right(theme::paper_gap())
+                .w((self.panes_width_hint() - theme::paper_gap()) / 2.)
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(theme::r_12())
+                .rounded(theme::r_paper())
                 .border_2()
                 .border_color(theme::signal_line())
                 .bg(theme::signal_wash())
@@ -3203,6 +3229,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::focus_next_region))
             .on_action(cx.listener(Self::focus_prev_region))
+            .on_action(cx.listener(Self::focus_next_stop))
+            .on_action(cx.listener(Self::focus_prev_stop))
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
                 this.peek_pointer_moved(e, cx);
             }))
@@ -3225,6 +3253,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenWorkspaces, window, cx| {
                 this.open_workspaces(window, cx);
             }))
+            .on_action(|_: &OpenSetupGuide, window, cx| welcome::open_guide(window, cx))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(|this, a: &crate::explorer::FocusComputerSearch, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.focus_computer_search(a, window, cx));
@@ -3343,7 +3372,7 @@ impl Render for Workspace {
             .children(self.render_drag_out_watch(cx))
             .children(self.render_tab_drop_watch(cx))
             .children(sidebar_menu)
-            .children(welcome::welcome_card(cx))
+            .children(welcome::welcome_card(window, cx))
             .children(update_page::update_notice(cx))
             .children(self.net_dialog.as_ref().map(|slot| slot.dialog.clone()))
             .children(
@@ -3486,7 +3515,7 @@ impl Workspace {
                             "back",
                             Icon::ArrowLeft,
                             can_back,
-                            t!("nav.back"),
+                            self.nav_tip(true, cx),
                             nav(|e, w, cx| e.go_back(&GoBack, w, cx)),
                         ),
                         cx,
@@ -3500,7 +3529,7 @@ impl Workspace {
                         "forward",
                         Icon::ArrowRight,
                         can_forward,
-                        t!("nav.forward"),
+                        self.nav_tip(false, cx),
                         nav(|e, w, cx| e.go_forward(&GoForward, w, cx)),
                     )),
             )

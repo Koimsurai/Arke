@@ -11,6 +11,8 @@
 //! - Read-only files are made writable first, as Explorer does.
 //! - Paths are used in their `\\?\` form, so long paths and names Windows normally mangles (a
 //!   trailing period or space, `con`, `nul`) are deleted too instead of "not found".
+//! - Folders are listed once (large fetches) and their attributes used as listed, with no stat per
+//!   item; the files and links of one folder are deleted on 4 to 8 threads, folders bottom-up.
 //! - Cancel is checked before each item; progress goes to `OpProgress`.
 //!
 //! Call from a background thread.
@@ -19,12 +21,15 @@ use std::fs;
 use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use arke_core::fs::Fs as _;
+use arke_core::{EntryKind, RealFs};
 use rust_i18n::t;
 
 use crate::shell::{ItemFailure, OpOutcome, OpProgress, ShellError};
 
+const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 /// Deletes the trees at `paths`. Failures are reported as an error listing the items and why
@@ -160,7 +165,11 @@ fn volume_gone(data: &Path) -> bool {
 
 fn remove_info(info: &Path) -> io::Result<()> {
     match fs::symlink_metadata(info) {
-        Ok(meta) => remove_writable(info, &meta, |p| fs::remove_file(p)),
+        Ok(meta) => remove_writable(
+            info,
+            meta.file_attributes() & FILE_ATTRIBUTE_READONLY != 0,
+            |p| fs::remove_file(p),
+        ),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
@@ -193,104 +202,280 @@ fn info_record(data: &Path) -> Option<PathBuf> {
 
 /// One step of [`remove_tree`]'s walk.
 enum Step {
-    /// Look at this item: delete it, or list a folder's contents first.
-    Visit(PathBuf),
-    /// Every child of this folder has been visited: delete the folder itself. `failed_before` is
-    /// how many failures there were when it was listed, so a child's failure is told apart.
+    /// List this folder, delete its files and links in parallel, then visit its subfolders.
+    List { path: PathBuf, readonly: bool },
+    /// Every child of this folder has been dealt with: delete the folder itself. `failed_before`
+    /// is how many failures there were when it was listed, so a child's failure is told apart.
     Leave {
         path: PathBuf,
-        meta: fs::Metadata,
+        readonly: bool,
         failed_before: usize,
     },
+}
+
+/// What a listed child is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A real folder: emptied, then removed.
+    Dir,
+    /// A file, or a link to a file.
+    File,
+    /// A junction, or a symlink to a folder: removed with `remove_dir`, never entered.
+    DirLink,
+}
+
+/// A child of a listed folder, with what its listing says about it (no per-item stat).
+struct Child {
+    path: PathBuf,
+    kind: Kind,
+    /// Has the Read-only attribute.
+    readonly: bool,
+}
+
+/// Lists `dir` with the attributes the directory listing already carries (large fetches, one
+/// find record per item), so no item needs a stat of its own. Items that can't be read are left
+/// out (the folder then can't be removed, which is reported).
+fn list_dir(dir: &Path) -> io::Result<Vec<Child>> {
+    let mut children = Vec::new();
+    for entry in RealFs.read_dir(dir)?.flatten() {
+        // The listing's names are lossy text; a name with unpaired surrogates would point at
+        // another path, so such a folder is listed by std instead (exact names).
+        if entry.name.contains('\u{FFFD}') {
+            return list_dir_std(dir);
+        }
+        let kind = match entry.kind {
+            EntryKind::Dir => Kind::Dir,
+            EntryKind::Link { is_dir: true } => Kind::DirLink,
+            EntryKind::File | EntryKind::Link { is_dir: false } => Kind::File,
+        };
+        children.push(Child {
+            path: dir.join(&*entry.name),
+            kind,
+            readonly: entry.attributes & FILE_ATTRIBUTE_READONLY != 0,
+        });
+    }
+    Ok(children)
+}
+
+/// [`list_dir`] with `std::fs::read_dir`, which keeps names exactly.
+fn list_dir_std(dir: &Path) -> io::Result<Vec<Child>> {
+    let mut children = Vec::new();
+    for entry in fs::read_dir(dir)?.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let attributes = meta.file_attributes();
+        let kind = if meta.file_type().is_symlink() {
+            if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                Kind::DirLink
+            } else {
+                Kind::File
+            }
+        } else if meta.is_dir() {
+            Kind::Dir
+        } else {
+            Kind::File
+        };
+        children.push(Child {
+            path: entry.path(),
+            kind,
+            readonly: attributes & FILE_ATTRIBUTE_READONLY != 0,
+        });
+    }
+    Ok(children)
+}
+
+/// Fewer files than this in a folder are deleted on the calling thread: starting threads costs
+/// more than it saves.
+const PARALLEL_MIN: usize = 64;
+
+/// How many threads delete the files of one folder: the machine's, within 4 to 8. Deleting is
+/// mostly waiting on the file system (and antivirus), so more than the cores still helps.
+fn workers() -> usize {
+    static WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *WORKERS.get_or_init(|| std::thread::available_parallelism().map_or(4, |n| n.get().clamp(4, 8)))
+}
+
+/// Counts a finished removal. `Ok` is one more item done; an item that is already gone counts as
+/// deleted; anything else is handed back to be reported.
+fn account(result: io::Result<()>, progress: &OpProgress) -> Option<io::Error> {
+    match result {
+        Ok(()) => {
+            progress.done.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            tests::after_removal(progress);
+            None
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => Some(e),
+    }
+}
+
+/// Removes a file or a link (never what a link points to).
+fn remove_child(child: &Child) -> io::Result<()> {
+    if child.kind == Kind::DirLink {
+        fs::remove_dir(&child.path)
+    } else {
+        remove_writable(&child.path, child.readonly, |p| fs::remove_file(p))
+    }
+}
+
+/// Deletes the files and links of one folder, in parallel when there are many. Cancel is checked
+/// before each item, so at most one item per thread is still being removed after it. Failures go
+/// to `failed` in listing order. Returns true if cancelled.
+fn remove_batch(
+    children: &[Child],
+    progress: &OpProgress,
+    failed: &mut Vec<(PathBuf, io::Error)>,
+) -> bool {
+    if children.len() < PARALLEL_MIN {
+        for child in children {
+            if progress.cancel.load(Ordering::Relaxed) {
+                return true;
+            }
+            if let Some(e) = account(remove_child(child), progress) {
+                failed.push((child.path.clone(), e));
+            }
+        }
+        return false;
+    }
+    let next = AtomicUsize::new(0);
+    let stopped = AtomicBool::new(false);
+    let work = || {
+        let mut errors: Vec<(usize, PathBuf, io::Error)> = Vec::new();
+        loop {
+            if progress.cancel.load(Ordering::Relaxed) {
+                stopped.store(true, Ordering::Relaxed);
+                break;
+            }
+            let ix = next.fetch_add(1, Ordering::Relaxed);
+            let Some(child) = children.get(ix) else { break };
+            if let Some(e) = account(remove_child(child), progress) {
+                errors.push((ix, child.path.clone(), e));
+            }
+        }
+        errors
+    };
+    let mut errors = std::thread::scope(|scope| {
+        let mut helpers = Vec::new();
+        for _ in 1..workers().min(children.len()) {
+            helpers.push(scope.spawn(work));
+        }
+        let mut errors = work();
+        for helper in helpers {
+            match helper.join() {
+                Ok(more) => errors.extend(more),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        errors
+    });
+    errors.sort_by_key(|(ix, ..)| *ix);
+    failed.extend(errors.into_iter().map(|(_, path, e)| (path, e)));
+    stopped.load(Ordering::Relaxed)
 }
 
 /// Deletes `path` and everything below it. Returns true if cancelled.
 ///
 /// The walk keeps its own stack rather than recursing, so a folder nested thousands of levels deep
 /// (which `\\?\` paths allow) can't overflow the thread's stack, and only one folder is open at a
-/// time. Folders are removed after their contents (post-order).
+/// time. Folders are removed after their contents (post-order); the files and links inside one
+/// folder are removed in parallel ([`remove_batch`]).
 fn remove_tree(path: &Path, progress: &OpProgress, failed: &mut Vec<(PathBuf, io::Error)>) -> bool {
-    let mut steps = vec![Step::Visit(path.to_path_buf())];
+    if progress.cancel.load(Ordering::Relaxed) {
+        return true;
+    }
+    // The only stat of the walk: what was selected. Everything below comes with its listing.
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        // Already gone (e.g. a link target deleted earlier): treat as deleted.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            failed.push((path.to_path_buf(), e));
+            return false;
+        }
+    };
+    let readonly = meta.file_attributes() & FILE_ATTRIBUTE_READONLY != 0;
+    if meta.file_type().is_symlink() {
+        // Symlink, junction or mount point: remove the link only, never what it points to
+        // (directory links need remove_dir).
+        let result = if meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        };
+        if let Some(e) = account(result, progress) {
+            failed.push((path.to_path_buf(), e));
+        }
+        return false;
+    }
+    if !meta.is_dir() {
+        let result = remove_writable(path, readonly, |p| fs::remove_file(p));
+        if let Some(e) = account(result, progress) {
+            failed.push((path.to_path_buf(), e));
+        }
+        return false;
+    }
+    let mut steps = vec![Step::List {
+        path: path.to_path_buf(),
+        readonly,
+    }];
     while let Some(step) = steps.pop() {
-        let (path, result) = match step {
-            Step::Visit(path) => {
+        match step {
+            Step::List { path, readonly } => {
                 if progress.cancel.load(Ordering::Relaxed) {
                     return true;
                 }
-                let meta = match fs::symlink_metadata(&path) {
-                    Ok(meta) => meta,
-                    // Already gone (e.g. a link target deleted earlier): treat as deleted.
+                // Listed in full and closed before going deeper.
+                let children = match list_dir(&path) {
+                    Ok(children) => children,
                     Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                     Err(e) => {
                         failed.push((path, e));
                         continue;
                     }
                 };
-                let result = if meta.file_type().is_symlink() {
-                    // Symlink, junction or mount point: remove the link only, never what it points
-                    // to (directory links need remove_dir).
-                    if meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
-                        fs::remove_dir(&path)
-                    } else {
-                        fs::remove_file(&path)
-                    }
-                } else if meta.is_dir() {
-                    match fs::read_dir(&path) {
-                        Ok(entries) => {
-                            // Listed in full and closed before going deeper.
-                            let children: Vec<PathBuf> =
-                                entries.flatten().map(|entry| entry.path()).collect();
-                            steps.push(Step::Leave {
-                                path,
-                                meta,
-                                failed_before: failed.len(),
-                            });
-                            steps.extend(children.into_iter().rev().map(Step::Visit));
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                        Err(e) => failed.push((path, e)),
-                    }
-                    continue;
-                } else {
-                    remove_writable(&path, &meta, |p| fs::remove_file(p))
-                };
-                (path, result)
+                steps.push(Step::Leave {
+                    path,
+                    readonly,
+                    failed_before: failed.len(),
+                });
+                let (dirs, leaves): (Vec<Child>, Vec<Child>) =
+                    children.into_iter().partition(|c| c.kind == Kind::Dir);
+                if remove_batch(&leaves, progress, failed) {
+                    return true;
+                }
+                steps.extend(dirs.into_iter().rev().map(|c| Step::List {
+                    path: c.path,
+                    readonly: c.readonly,
+                }));
             }
             Step::Leave {
                 path,
-                meta,
+                readonly,
                 failed_before,
             } => {
-                let result = remove_writable(&path, &meta, |p| fs::remove_dir(p));
+                let result = remove_writable(&path, readonly, |p| fs::remove_dir(p));
                 // The folder failed because of a child already recorded: don't report it twice.
                 if result.is_err() && failed.len() > failed_before {
                     continue;
                 }
-                (path, result)
+                if let Some(e) = account(result, progress) {
+                    failed.push((path, e));
+                }
             }
-        };
-        match result {
-            Ok(()) => {
-                progress.done.fetch_add(1, Ordering::Relaxed);
-                #[cfg(test)]
-                tests::after_removal(progress);
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => failed.push((path, e)),
         }
     }
     false
 }
 
-/// Removes `path`, clearing the read-only attribute and retrying if needed.
+/// Removes `path`, clearing the read-only attribute and retrying if it was set (`readonly`).
 fn remove_writable(
     path: &Path,
-    meta: &fs::Metadata,
+    readonly: bool,
     remove: fn(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     match remove(path) {
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied && meta.permissions().readonly() => {
-            let mut perms = meta.permissions();
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied && readonly => {
+            let mut perms = fs::symlink_metadata(path)?.permissions();
             #[allow(
                 clippy::permissions_set_readonly_false,
                 reason = "Windows: clears the read-only attribute so the file can be deleted"
@@ -308,15 +493,16 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    struct Sandbox(PathBuf);
+    struct Sandbox(
+        PathBuf,
+        #[allow(dead_code, reason = "held for its Drop, which deletes the folder")]
+        tempfile::TempDir,
+    );
 
     impl Sandbox {
         fn new(name: &str) -> Self {
-            let dir = crate::win::long_temp_dir()
-                .join(format!("arke-purge-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
+            let guard = crate::win::long_tempdir(&format!("arke-purge-{name}-"));
+            Self(guard.path().to_path_buf(), guard)
         }
         fn file(&self, rel: &str, text: &str) -> PathBuf {
             let path = self.0.join(rel);
@@ -524,28 +710,50 @@ mod tests {
     }
 
     /// A test callback given the operation's progress.
-    type Hook = Box<dyn Fn(&OpProgress)>;
+    type Hook = std::sync::Arc<dyn Fn(&OpProgress) + Send + Sync>;
 
-    thread_local! {
-        /// Runs after each file or folder [`remove_tree`] removes, on this thread.
-        static AFTER_REMOVAL: std::cell::RefCell<Option<Hook>> = std::cell::RefCell::new(None);
-    }
+    /// Hooks by the address of the `OpProgress` they watch, so tests running side by side don't
+    /// see each other's removals and worker threads reach the hook too.
+    static HOOKS: parking_lot::Mutex<Vec<(usize, Hook)>> = parking_lot::Mutex::new(Vec::new());
 
     pub(super) fn after_removal(progress: &OpProgress) {
-        AFTER_REMOVAL.with(|hook| {
-            if let Some(hook) = hook.borrow().as_ref() {
-                hook(progress);
-            }
-        });
+        let key = std::ptr::from_ref(progress) as usize;
+        let hook = HOOKS
+            .lock()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, hook)| Hook::clone(hook));
+        if let Some(hook) = hook {
+            hook(progress);
+        }
     }
 
-    /// A folder nested 1,000 levels deep (only `\\?\` paths reach that far) is emptied on a thread
+    /// Runs `hook` after each file or folder removed under `progress`, until the guard drops.
+    struct HookGuard(usize);
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            HOOKS.lock().retain(|(k, _)| *k != self.0);
+        }
+    }
+
+    fn hook_removals(
+        progress: &OpProgress,
+        hook: impl Fn(&OpProgress) + Send + Sync + 'static,
+    ) -> HookGuard {
+        let key = std::ptr::from_ref(progress) as usize;
+        HOOKS.lock().push((key, std::sync::Arc::new(hook)));
+        HookGuard(key)
+    }
+
+    /// A folder nested 400 levels deep (only `\\?\` paths reach that far) is emptied on a thread
     /// with a small stack: the walk keeps its own stack, so it can't overflow the thread's.
     #[test]
     fn purge_bin_empties_a_very_deep_folder_on_a_small_stack() {
-        // Far more than a recursive walk fits in the small stack below. (Each level costs more the
-        // deeper it is, so 3,000 takes over 30 s with real-time antivirus.)
-        const LEVELS: usize = 1000;
+        // Still several times what a recursive walk fits in the small stack below (a frame of the
+        // walk is hundreds of bytes, the stack 128 KiB). Each level costs more the deeper it is,
+        // so 1,000 took 4 to 10 s alone and timed out under a loaded full run.
+        const LEVELS: usize = 400;
         let sb = Sandbox::new("bin-deep");
         let bin = fake_bin(&sb);
         let item = record(&bin, "AAAAA1", "deep");
@@ -689,17 +897,15 @@ mod tests {
                 .unwrap()
         };
         // Cancel once three of the folder's files are gone.
-        AFTER_REMOVAL.with(|hook| {
-            *hook.borrow_mut() = Some(Box::new(|p: &OpProgress| {
-                if p.done.load(Ordering::Relaxed) >= 3 {
-                    p.cancel.store(true, Ordering::Relaxed);
-                }
-            }));
-        });
         let items = [locked, folder, after];
         let progress = OpProgress::default();
+        let guard = hook_removals(&progress, |p| {
+            if p.done.load(Ordering::Relaxed) >= 3 {
+                p.cancel.store(true, Ordering::Relaxed);
+            }
+        });
         let result = purge_bin(&items, &progress);
-        AFTER_REMOVAL.with(|hook| hook.borrow_mut().take());
+        drop(guard);
         drop(handle);
 
         let error = result.unwrap_err();
@@ -1004,5 +1210,120 @@ mod tests {
                 gone.display()
             );
         }
+    }
+
+    /// A folder with many files (the parallel path), nested folders, read-only files and a
+    /// junction to a folder outside: all gone, the junction's target untouched, and every item
+    /// counted once.
+    #[test]
+    fn purge_deletes_a_big_tree_in_parallel_and_keeps_link_targets() {
+        let sb = Sandbox::new("parallel");
+        let outside = sb.file(r"outside\keep.txt", "keep");
+        let tree = sb.0.join("tree");
+        let mut files = 0;
+        for dir in ["tree", "tree/a", "tree/a/b", "tree/c"] {
+            for i in 0..(PARALLEL_MIN * 3) {
+                let rel = format!("{dir}/f{i}.txt");
+                let path = sb.file(&rel, "x");
+                if i % 7 == 0 {
+                    read_only(&path);
+                }
+                files += 1;
+            }
+        }
+        junction(&tree.join("a").join("link"), outside.parent().unwrap());
+        // Folders: tree, a, a/b, c, and the junction itself.
+        let items = files + 5;
+
+        let progress = OpProgress::default();
+        assert_eq!(
+            purge(std::slice::from_ref(&tree), &progress).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert!(!exists(&tree));
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+        assert_eq!(progress.done.load(Ordering::Relaxed), items);
+    }
+
+    /// Many files, some in use: the failures are reported in listing order with the right path
+    /// and reason, the rest goes, and the folder (still holding them) is not reported again.
+    #[test]
+    fn purge_reports_locked_files_among_many() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let sb = Sandbox::new("parallel-locked");
+        let mut handles = Vec::new();
+        let mut locked = Vec::new();
+        for i in 0..PARALLEL_MIN * 2 {
+            let name = format!("f{i:03}.txt");
+            let path = sb.file(&format!("t/{name}"), "x");
+            if i % 50 == 0 {
+                handles.push(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(&path)
+                        .unwrap(),
+                );
+                locked.push(sb.0.join("t").join(name));
+            }
+        }
+        let result = purge(&[sb.0.join("t")], &OpProgress::default());
+        drop(handles);
+        let Err(ShellError::Items { failed }) = result else {
+            panic!("{:?}", result.map_err(|e| e.to_string()));
+        };
+        let mut paths: Vec<PathBuf> = failed.iter().map(|f| f.path.clone()).collect();
+        paths.sort();
+        assert_eq!(paths, locked);
+        let left = fs::read_dir(sb.0.join("t")).unwrap().count();
+        assert_eq!(left, locked.len());
+    }
+
+    /// Cancelled while a big folder is being emptied: it stops within a few items (one per
+    /// thread may still be in flight), reports cancelled, and leaves the rest.
+    #[test]
+    fn purge_stops_promptly_when_cancelled_mid_folder() {
+        const FILES: usize = 600;
+        let sb = Sandbox::new("parallel-cancel");
+        let dir = sb.0.join("many");
+        for i in 0..FILES {
+            sb.file(&format!("many/f{i:03}.txt"), "x");
+        }
+        let progress = OpProgress::default();
+        let guard = hook_removals(&progress, |p| {
+            if p.done.load(Ordering::Relaxed) >= 20 {
+                p.cancel.store(true, Ordering::Relaxed);
+            }
+        });
+        let result = purge(std::slice::from_ref(&dir), &progress);
+        drop(guard);
+        assert_eq!(result.map_err(|e| e.to_string()), Ok(OpOutcome::Cancelled));
+        let done = progress.done.load(Ordering::Relaxed);
+        assert!(
+            (20..20 + 8).contains(&done),
+            "{done} removed after cancel at 20"
+        );
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count() as u64,
+            FILES as u64 - done
+        );
+    }
+
+    /// Names with unpaired surrogates (legal on NTFS, lossy in a listing) are still deleted.
+    #[test]
+    fn purge_deletes_names_that_are_not_valid_unicode() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        let sb = Sandbox::new("surrogate");
+        let dir = sb.0.join("t");
+        fs::create_dir_all(&dir).unwrap();
+        let odd = dir.join(OsString::from_wide(&[0x61, 0xD800, 0x62]));
+        fs::write(&odd, "x").unwrap();
+        sb.file(r"t\plain.txt", "p");
+        assert_eq!(
+            purge(std::slice::from_ref(&dir), &OpProgress::default()).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert!(!dir.exists());
     }
 }

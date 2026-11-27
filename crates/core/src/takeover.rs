@@ -333,20 +333,44 @@ pub enum OnDisk {
     Folder,
     /// A file (Explorer opens it in its program, or shows a .zip as a folder).
     File,
-    /// Missing, or not looked at (network paths, which could take long to answer).
+    /// Not looked at: a network location (`\\server\share\...`, `\\wsl$\...`, a mapped drive),
+    /// whose server could keep the caller waiting longer than File Explorer's launcher takes to
+    /// hand over. Taken as a folder; Arke checks it after the launcher is ended and gives it back to
+    /// File Explorer if it is not one ([`Launched::unchecked`]).
+    Network,
+    /// Missing, or not looked at for another reason (a drive type that isn't a local disk or a
+    /// network drive, such as a CD drive or an unassigned letter).
     Unknown,
+}
+
+/// What the early path takes from File Explorer's launcher ([`launch_target`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launched {
+    /// Where the window would open.
+    pub target: Target,
+    /// The folder is on the network and was not looked at ([`OnDisk::Network`]): Arke checks it
+    /// first and gives it back to File Explorer when it can't show it.
+    pub unchecked: bool,
 }
 
 /// The target Arke would take from the window `launch` is about to open: the same answer
 /// [`classify`] gives for that window. A folder must be one on disk (a file such as a .zip shown as
 /// a folder is a stream, left alone); a `/select,` item must exist (Explorer opens its default
-/// folder otherwise). `on_disk` is asked only for paths [`classify`] could take.
-pub fn launch_target(launch: &ExplorerLaunch, on_disk: impl Fn(&Path) -> OnDisk) -> Option<Target> {
+/// folder otherwise). `on_disk` is asked only for paths [`classify`] could take. A network folder
+/// ([`OnDisk::Network`]) is taken without looking, its `/select,` item too, and comes back marked
+/// [`Launched::unchecked`].
+pub fn launch_target(
+    launch: &ExplorerLaunch,
+    on_disk: impl Fn(&Path) -> OnDisk,
+) -> Option<Launched> {
     if launch.location.starts_with("::") {
         return if launch.select.is_some() {
             None
         } else {
-            classify(&launch.location, ShellAttrs::default())
+            classify(&launch.location, ShellAttrs::default()).map(|target| Launched {
+                target,
+                unchecked: false,
+            })
         };
     }
     let fs = ShellAttrs {
@@ -354,15 +378,25 @@ pub fn launch_target(launch: &ExplorerLaunch, on_disk: impl Fn(&Path) -> OnDisk)
         stream: false,
     };
     let target = classify(&launch.location, fs)?;
-    if on_disk(Path::new(&launch.location)) != OnDisk::Folder {
-        return None;
+    match on_disk(Path::new(&launch.location)) {
+        OnDisk::Network => {
+            return Some(Launched {
+                target,
+                unchecked: true,
+            });
+        }
+        OnDisk::Folder => {}
+        OnDisk::File | OnDisk::Unknown => return None,
     }
     if let Some(name) = &launch.select
         && on_disk(Path::new(&launch.location).join(name).as_path()) == OnDisk::Unknown
     {
         return None;
     }
-    Some(target)
+    Some(Launched {
+        target,
+        unchecked: false,
+    })
 }
 
 /// A process as the early path (#285) tells them apart: its id and when it started (100 ns ticks
@@ -1231,7 +1265,11 @@ mod tests {
             r"C:\dir\x.txt" | r"C:\t.zip" | r"C:\x.txt" => OnDisk::File,
             _ => OnDisk::Unknown,
         };
-        let target = |args: &str| launch_target(&parse_explorer_args(args)?, disk);
+        let target = |args: &str| {
+            let launched = launch_target(&parse_explorer_args(args)?, disk)?;
+            assert!(!launched.unchecked, "{args}: looked at");
+            Some(launched.target)
+        };
         assert_eq!(target(r"C:\dir"), Some(folder(r"C:\dir")));
         assert_eq!(target(r"/select,C:\dir\x.txt"), Some(folder(r"C:\dir")));
         assert_eq!(target(r"/select,C:\dir\sub"), Some(folder(r"C:\dir")));
@@ -1250,13 +1288,65 @@ mod tests {
         assert_eq!(target(r"C:\t.zip\inner"), None);
         assert_eq!(target(r"C:\missing"), None);
         assert_eq!(target(r"/select,C:\dir\gone.txt"), None);
-        assert_eq!(target(r"\\nas\share"), None, "not looked at");
+        assert_eq!(target(r"\\nas\share"), None, "unknown: declined");
         assert_eq!(target(r"\\nas"), None, "a bare server");
         // Control Panel stays in Explorer.
         assert_eq!(
             target("shell:::{26EE0668-A00A-44D7-9371-BEB064C98683}"),
             None
         );
+    }
+
+    /// #285: network folders are taken without looking (with or without `/select,`) and marked
+    /// unchecked; local paths that weren't looked at are still declined.
+    #[test]
+    fn launch_target_takes_network_folders_unchecked() {
+        let disk = |p: &Path| {
+            let text = p.to_str().unwrap_or_default();
+            if text.starts_with(r"\\") || text.starts_with(r"Z:\") {
+                OnDisk::Network
+            } else if text == r"C:\dir" {
+                OnDisk::Folder
+            } else {
+                OnDisk::Unknown
+            }
+        };
+        let launched = |args: &str| launch_target(&parse_explorer_args(args)?, disk);
+        let unchecked = |path: &str| {
+            Some(Launched {
+                target: folder(path),
+                unchecked: true,
+            })
+        };
+        assert_eq!(launched(r"\\nas\share"), unchecked(r"\\nas\share"));
+        assert_eq!(launched(r"\\nas\share\pic\"), unchecked(r"\\nas\share\pic"));
+        assert_eq!(
+            launched(r"\\wsl$\Ubuntu\home"),
+            unchecked(r"\\wsl$\Ubuntu\home")
+        );
+        assert_eq!(launched(r"Z:\mapped"), unchecked(r"Z:\mapped"));
+        assert_eq!(launched(r"Z:\"), unchecked(r"Z:\"));
+        assert_eq!(
+            launched(r"/select,\\nas\share\pic\a.jpg"),
+            unchecked(r"\\nas\share\pic")
+        );
+        assert_eq!(
+            launched(r"/select,Z:\mapped\a.jpg"),
+            unchecked(r"Z:\mapped")
+        );
+        // What `classify` refuses is never asked about, network or not.
+        assert_eq!(launched(r"\\nas"), None);
+        assert_eq!(launched(r"\\nas\share\t.zip\inner"), None);
+        // Local: looked at, or declined when not.
+        assert_eq!(
+            launched(r"C:\dir"),
+            Some(Launched {
+                target: folder(r"C:\dir"),
+                unchecked: false,
+            })
+        );
+        assert_eq!(launched(r"D:\unknown"), None);
+        assert_eq!(launched(r"/select,C:\dir\unknown.txt"), None);
     }
 
     #[test]

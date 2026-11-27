@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arke_core::Entry;
-use arke_core::fs::{DirIter, Fs, WatchCallback};
+use arke_core::fs::{ChangeCallback, DirIter, Fs, WatchCallback};
 use arke_core::remote::RemoteUrl;
 
 use crate::hub::Remotes;
@@ -50,6 +50,15 @@ impl Fs for RoutingFs {
         }
     }
 
+    /// Remote listings carry the names as they are; only local items can be found under another
+    /// spelling (#310).
+    fn listed_name(&self, path: &Path) -> Option<String> {
+        if RemoteUrl::from_path(path).is_some() {
+            return None;
+        }
+        self.local.listed_name(path)
+    }
+
     fn watch(&self, path: &Path, on_event: WatchCallback) -> io::Result<Box<dyn Send>> {
         if RemoteUrl::from_path(path).is_some() {
             return Err(unsupported());
@@ -62,6 +71,13 @@ impl Fs for RoutingFs {
             return Err(unsupported());
         }
         self.local.watch_tree(path, on_event)
+    }
+
+    fn watch_changes(&self, path: &Path, on_change: ChangeCallback) -> io::Result<Box<dyn Send>> {
+        if RemoteUrl::from_path(path).is_some() {
+            return Err(unsupported());
+        }
+        self.local.watch_changes(path, on_change)
     }
 
     fn read(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
@@ -93,5 +109,62 @@ impl Fs for RoutingFs {
             }
             None => self.local.open(path),
         }
+    }
+
+    fn open_sequential(&self, path: &Path) -> io::Result<Box<dyn arke_core::fs::ReadSeek>> {
+        match RemoteUrl::from_path(path) {
+            Some(_) => self.open(path),
+            None => self.local.open_sequential(path),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arke_core::EntryKind;
+    use arke_core::fake::FakeFs;
+
+    /// A transport that is never used: these tests touch no network.
+    struct NoHttp;
+
+    impl crate::dav::Transport for NoHttp {
+        fn send(
+            &self,
+            _: crate::dav::Request<'_>,
+            _: &mut dyn std::io::Write,
+            _: crate::dav::Progress<'_>,
+        ) -> crate::RemoteResult<u16> {
+            Err(crate::RemoteError::Server("no http".into()))
+        }
+    }
+
+    /// The name a local item is listed under reaches the folder watch through the router, so a
+    /// change named in another spelling (a case-only rename, a short 8.3 name) leaves one item.
+    #[test]
+    fn listed_names_of_local_items_pass_through() {
+        let local = FakeFs::new();
+        let dir = Path::new(r"C:\w");
+        local.insert_dir(
+            dir,
+            vec![Entry::new("Report.txt", EntryKind::File, 1, None, 0)],
+        );
+        let remotes = Remotes::new(crate::RemotesConfig {
+            known_hosts: None,
+            cache_dir: std::env::temp_dir().join(format!("arke-routing-{}", std::process::id())),
+            secrets: Arc::new(crate::creds::NoSecrets),
+            transport: Arc::new(NoHttp),
+            portable: Arc::new(crate::mtp::NoDevices),
+        });
+        let fs = RoutingFs::new(local, remotes);
+        assert_eq!(
+            fs.listed_name(&dir.join("report.txt")).as_deref(),
+            Some("Report.txt")
+        );
+        assert_eq!(fs.listed_name(&dir.join("Report.txt")), None);
+        assert_eq!(
+            fs.listed_name(Path::new("http://u@10.0.0.5/files/a.txt")),
+            None
+        );
     }
 }

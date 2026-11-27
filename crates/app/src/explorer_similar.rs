@@ -20,8 +20,8 @@ use std::sync::Arc;
 use arke_core::index_query::{self as iq, NameMatch};
 use arke_core::{SearchHit, SearchSort};
 use gpui::{
-    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollStrategy, Window, div,
-    prelude::*, px, svg,
+    AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, ScrollStrategy, SharedString,
+    Window, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -165,6 +165,26 @@ impl Explorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.search_move_by(step, false, window, cx)
+    }
+
+    /// [`Self::search_move`] with Shift: landing on a hit extends the selection to it (#413).
+    pub(super) fn search_extend_move(
+        &mut self,
+        step: Step,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.search_move_by(step, true, window, cx)
+    }
+
+    fn search_move_by(
+        &mut self,
+        step: Step,
+        extend: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.search_mode || matches!(step, Step::Left | Step::Right) {
             return false;
         }
@@ -188,6 +208,7 @@ impl Explorer {
         };
         match hit_at_row(to, Some(at)) {
             None => self.focus_similar_row(at, cx),
+            Some(ix) if extend => self.extend_index(ix, cx),
             Some(ix) => self.select_index(ix, cx),
         }
         true
@@ -256,6 +277,7 @@ impl Explorer {
                 exact.checked_sub(1)
             }
         });
+        self.sync_search_pick();
     }
 
     /// The extra row at list row `row`: "Similar results" with a chevron, opened and closed by a
@@ -303,19 +325,19 @@ impl Explorer {
         }
         let open = kind == SimilarRow::Open;
         // Under the cursor it looks and reads like a hit under the cursor (search rows show the
-        // cursor as the selection).
+        // cursor as the selection), with the same inset highlight.
         let on = self.similar_focused();
+        let group = SharedString::from(format!("similar-row-{row}"));
+        let wash = super::view::row_wash(row, &group, on, false, focused, None);
         shell
             .a11y_item(row, on, on, || t!("list.similar").into_owned())
             .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
                 this.toggle_similar(cx);
             })
+            .group(group)
+            .relative()
             .cursor_pointer()
-            .rounded(theme::r_8())
-            .border_1()
-            .border_color(theme::clear())
-            .when(on, |d| d.bg(theme::list_selection(focused)))
-            .when(!on, |d| d.hover(|s| s.bg(theme::wash())))
+            .child(wash)
             .child(
                 div()
                     .size(theme::tree_chevron())

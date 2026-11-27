@@ -11,11 +11,13 @@ use russh::keys::PrivateKey;
 use crate::testing::{PASSWORD, USER, serve_sftp as serve};
 use crate::{HostKey, NoProgress, RemoteError, Remotes, RemotesConfig};
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("arke-sftp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A folder of its own, and the guard that deletes it when dropped (also when a test panics).
+fn temp_dir(tag: &str) -> (PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("arke-sftp-{tag}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 struct NoHttp;
@@ -43,8 +45,8 @@ fn remotes(cache: &Path) -> Arc<Remotes> {
 
 #[test]
 fn browses_and_changes_a_real_sftp_server() {
-    let root = temp_dir("root");
-    let cache = temp_dir("cache");
+    let (root, _root) = temp_dir("root");
+    let (cache, _cache) = temp_dir("cache");
     std::fs::create_dir(root.join("docs")).unwrap();
     std::fs::write(root.join("docs").join("readme.txt"), b"hello over ssh").unwrap();
     std::fs::write(root.join("報告.txt"), vec![b'x'; 300_000]).unwrap();
@@ -139,16 +141,13 @@ fn browses_and_changes_a_real_sftp_server() {
     // A dropped connection is reopened transparently.
     hub.disconnect(&url);
     assert_eq!(hub.list(&url).unwrap().len(), 2);
-
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
 fn a_changed_host_key_is_refused() {
-    let root = temp_dir("changed");
-    let cache = temp_dir("changed-cache");
-    let port = serve(root.clone(), 9);
+    let (root, _root) = temp_dir("changed");
+    let (cache, _cache) = temp_dir("changed-cache");
+    let port = serve(root, 9);
     let hub = remotes(&cache);
     let url = RemoteUrl::from_path(Path::new(&format!("sftp://{USER}@127.0.0.1:{port}/"))).unwrap();
     // Pretend another key was trusted for this server earlier.
@@ -168,13 +167,11 @@ fn a_changed_host_key_is_refused() {
         hub.list(&url),
         Err(RemoteError::HostKeyChanged(_))
     ));
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
 fn unreachable_servers_fail_fast() {
-    let cache = temp_dir("down");
+    let (cache, _cache) = temp_dir("down");
     let hub = remotes(&cache);
     // Bind and drop: nothing listens on this port now.
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -188,21 +185,20 @@ fn unreachable_servers_fail_fast() {
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     let bad = RemoteUrl::from_path(Path::new("sftp://u@arke-test.invalid/")).unwrap();
     assert!(matches!(hub.list(&bad), Err(RemoteError::NoSuchHost(_))));
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 /// WebDAV through the real WinHTTP transport against the local test server.
 #[cfg(windows)]
 #[test]
 fn browses_and_changes_a_webdav_server_over_winhttp() {
-    let root = temp_dir("dav-root");
-    let cache = temp_dir("dav-cache");
+    let (root, _root) = temp_dir("dav-root");
+    let (cache, _cache) = temp_dir("dav-cache");
     std::fs::create_dir(root.join("My Docs")).unwrap();
     std::fs::write(root.join("My Docs").join("報告 #1.txt"), b"dav says hi").unwrap();
     let port = crate::testing_dav::serve_dav(root.clone());
     let hub = Remotes::new(RemotesConfig {
         known_hosts: None,
-        cache_dir: cache.clone(),
+        cache_dir: cache,
         secrets: Arc::new(crate::creds::NoSecrets),
         transport: Arc::new(crate::http::WinHttp::new().unwrap()),
         portable: Arc::new(crate::mtp::NoDevices),
@@ -256,6 +252,4 @@ fn browses_and_changes_a_webdav_server_over_winhttp() {
     assert!(root.join("Sub").join("moved.txt").is_file());
     hub.delete(&url.join("Sub"), &NoProgress).unwrap();
     assert!(!root.join("Sub").exists());
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::remove_dir_all(&cache);
 }

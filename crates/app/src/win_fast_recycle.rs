@@ -1860,7 +1860,7 @@ mod tests {
         assert_eq!(Path::new(&items[0].now), now);
         let back = Undo::PutBack(vec![PutBack {
             now: items[0].now.clone(),
-            parent: sb.0,
+            parent: sb.0.clone(),
             name: "project".into(),
         }]);
         assert_eq!(

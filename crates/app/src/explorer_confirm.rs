@@ -1,6 +1,6 @@
 //! Confirmation dialogs: before recycling (when enabled) and on extension changes.
 //!
-//! Covers the whole window like Quick Look. Enter confirms, Esc or clicking outside cancels.
+//! Covers the whole window like Quick Look. Enter or Space confirms, Esc or clicking outside cancels.
 //! Permanent delete always asks here, so the Windows copy engine never shows its own prompt.
 
 use std::path::PathBuf;
@@ -24,6 +24,7 @@ const CONTEXT: &str = "ConfirmDialog";
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", ConfirmOk, Some(CONTEXT)),
+        KeyBinding::new("space", ConfirmOk, Some(CONTEXT)),
         KeyBinding::new("escape", ConfirmCancel, Some(CONTEXT)),
     ]);
 }

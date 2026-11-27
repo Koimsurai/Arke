@@ -30,6 +30,7 @@ use gpui::{
 };
 
 use super::layout;
+use super::ops::DeletePermanently;
 use super::toolbar::ToolbarStop as _;
 use super::{
     CopyFiles, CutFiles, DeleteFiles, ErrorAction, Escape, Explorer, ExplorerEvent, FocusOtherPane,
@@ -466,7 +467,13 @@ impl Explorer {
                 t!("sel.delete"),
                 Tone::Danger,
                 compact,
-                cx.listener(|this, _: &ClickEvent, w, cx| this.delete_files(&DeleteFiles, w, cx)),
+                cx.listener(|this, e: &ClickEvent, w, cx| {
+                    if e.modifiers().shift {
+                        this.delete_permanently(&DeletePermanently, w, cx);
+                    } else {
+                        this.delete_files(&DeleteFiles, w, cx);
+                    }
+                }),
             ))
             .child(div().flex_1())
             .child(clear_selection_button(
@@ -2714,6 +2721,7 @@ fn action_button(
     let label = SharedString::from(label.to_string());
     div()
         .id(id)
+        .debug_selector(|| id.to_owned())
         .a11y_button(label.clone())
         .group(id)
         .h(theme::h_ctl_sm())

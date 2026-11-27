@@ -762,6 +762,111 @@ fn shift_with_deletes_key_asks_to_delete_permanently(cx: &mut TestAppContext) {
     assert!(shell.ops().is_empty());
 }
 
+/// Clicks the menu's Delete button, with `modifiers` held, in a menu opened on `a.txt`.
+fn click_menu_delete(
+    view: &Entity<Explorer>,
+    cx: &mut VisualTestContext,
+    modifiers: Modifiers,
+) {
+    right_click(view, cx, Some(0));
+    let (popup, _) = level_popup(view, cx, 0).unwrap();
+    let mut popup_cx = VisualTestContext::from_window(popup, &cx.cx);
+    let at = popup_cx
+        .debug_bounds("menu-action-Delete")
+        .expect("Delete drawn in the menu window")
+        .center();
+    popup_cx.simulate_mouse_down(at, MouseButton::Left, modifiers);
+    popup_cx.simulate_mouse_up(at, MouseButton::Left, modifiers);
+    popup_cx.run_until_parked();
+    cx.run_until_parked();
+}
+
+/// Shift+click on the menu's Delete button deletes permanently after asking, as in File Explorer:
+/// nothing is recycled. Space then confirms and the file is purged.
+#[gpui::test]
+fn shift_click_on_the_menus_delete_button_asks_to_delete_permanently(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    click_menu_delete(&view, cx, Modifiers::shift());
+    view.update(cx, |v, _| {
+        assert_eq!(
+            v.confirm_title().as_deref(),
+            Some(&*t!("recycle.confirm_purge_title"))
+        );
+    });
+    assert!(shell.ops().is_empty(), "nothing is deleted before the yes");
+
+    // Escape still cancels.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.update(cx, |v, _| assert!(v.confirm_title().is_none()));
+    assert!(shell.ops().is_empty());
+
+    // Space confirms.
+    click_menu_delete(&view, cx, Modifiers::shift());
+    cx.simulate_keystrokes("space");
+    wait_until(cx, &view, "purged", |v| v.ops_running == 0 && names(v).is_empty());
+    assert_eq!(
+        shell.ops(),
+        [FileOp::Delete {
+            paths: vec![PathBuf::from(r"C:\m\a.txt")],
+            recycle: false,
+        }]
+    );
+}
+
+/// A plain click on the menu's Delete button still recycles, without asking.
+#[gpui::test]
+fn a_plain_click_on_the_menus_delete_button_recycles(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    click_menu_delete(&view, cx, Modifiers::none());
+    wait_until(cx, &view, "recycled", |v| v.ops_running == 0 && names(v).is_empty());
+    assert_eq!(
+        shell.ops(),
+        [FileOp::Delete {
+            paths: vec![PathBuf::from(r"C:\m\a.txt")],
+            recycle: true,
+        }]
+    );
+}
+
+/// Shift+click on the selection bar's Delete button asks to delete permanently too.
+#[gpui::test]
+fn shift_click_on_the_selection_bars_delete_button_asks_to_delete_permanently(
+    cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    apply_to_fake_fs(&fs, &shell);
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    let at = cx
+        .debug_bounds("sel-delete")
+        .expect("Delete drawn in the selection bar")
+        .center();
+    cx.simulate_click(at, Modifiers::shift());
+    cx.run_until_parked();
+    view.update(cx, |v, _| {
+        assert_eq!(
+            v.confirm_title().as_deref(),
+            Some(&*t!("recycle.confirm_purge_title"))
+        );
+    });
+    assert!(shell.ops().is_empty());
+}
+
 /// In a folder's menu, Cut's button takes no letter, so T is Open in Terminal's alone: it runs
 /// at once, and nothing is cut (#422).
 #[gpui::test]

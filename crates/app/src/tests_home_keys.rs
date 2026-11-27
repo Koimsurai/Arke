@@ -141,6 +141,10 @@ fn arrows_move_between_the_home_cards(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("home-focus-ring").is_none());
     key(cx, "shift-tab");
     assert_eq!(stop(&ws, cx), "list0", "back on the page");
+    // Shift+Tab comes in at the last section.
+    assert_eq!(cursor(&ws, cx).as_deref(), Some(RECENT_A));
+    assert!(cx.debug_bounds("home-focus-ring").is_some(), "a ring");
+    key(cx, "home");
     assert_eq!(cursor(&ws, cx).as_deref(), Some(MUSIC));
     assert!(
         ring_on(cx, "home-favorite music"),
@@ -184,8 +188,12 @@ fn arrows_move_between_the_home_cards(cx: &mut TestAppContext) {
     assert_eq!(stop(&ws, cx), "sidebar");
     key(cx, "shift-tab");
     assert_eq!(stop(&ws, cx), "list0");
-    assert_eq!(cursor(&ws, cx).as_deref(), Some(RECENT_B), "the last card");
-    key(cx, "up up");
+    assert_eq!(
+        cursor(&ws, cx).as_deref(),
+        Some(RECENT_A),
+        "the last section"
+    );
+    key(cx, "up");
     assert_eq!(cursor(&ws, cx).as_deref(), Some(DRIVE_D));
     assert!(ring_on(cx, "home-card Local Disk (D:)"));
 }
@@ -197,8 +205,6 @@ fn enter_opens_the_home_card(cx: &mut TestAppContext) {
     let (ws, shell, cx) = window(cx);
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     crate::prefs::apply(&crate::settings::Settings::default());
-    key(cx, "tab");
-    key(cx, "shift-tab");
     key(cx, "end");
     assert_eq!(cursor(&ws, cx).as_deref(), Some(RECENT_B));
     key(cx, "enter");
@@ -243,12 +249,68 @@ fn shift_f10_opens_the_home_cards_menu(cx: &mut TestAppContext) {
     let menu = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
         ws.update(cx, |ws, _| ws.history_menu_labels_for_test())
     };
-    key(cx, "tab");
-    key(cx, "shift-tab");
+    key(cx, "home");
     key(cx, "right");
     assert_eq!(menu(&ws, cx), None);
     key(cx, "shift-f10");
     let labels = menu(&ws, cx).expect("the favorite's menu");
     assert!(!labels.is_empty());
     assert_eq!(cursor(&ws, cx).as_deref(), Some(WORK), "on the same card");
+}
+
+/// Where the keyboard is: the page with its card, or the stop.
+fn at(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
+    match stop(ws, cx).as_str() {
+        "list0" => format!("page {}", cursor(ws, cx).unwrap_or_default()),
+        other => other.to_owned(),
+    }
+}
+
+/// Tab walks the page's sections (favorites, drives, recent files), then leaves it for the
+/// sidebar, and Shift+Tab walks them back: a round visits more than two stops, and the arrow keys
+/// still move inside a section (#322).
+#[gpui::test]
+fn tab_walks_the_home_sections_then_leaves_the_page(cx: &mut TestAppContext) {
+    let (ws, _shell, cx) = window(cx);
+    // The ring is up on the first card.
+    key(cx, "home");
+    assert_eq!(at(&ws, cx), format!("page {MUSIC}"));
+    let mut forward = Vec::new();
+    for _ in 0..4 {
+        key(cx, "tab");
+        forward.push(at(&ws, cx));
+    }
+    let page = |card: &str| format!("page {card}");
+    assert_eq!(
+        forward,
+        [
+            page(DRIVE_C),
+            page(RECENT_A),
+            "sidebar".to_owned(),
+            page(MUSIC)
+        ]
+    );
+    // The arrow keys stay inside the section.
+    key(cx, "right");
+    assert_eq!(at(&ws, cx), page(WORK));
+
+    let mut back = Vec::new();
+    for _ in 0..5 {
+        key(cx, "shift-tab");
+        back.push(at(&ws, cx));
+    }
+    assert_eq!(
+        back,
+        [
+            "sidebar".to_owned(),
+            page(RECENT_A),
+            page(DRIVE_C),
+            page(MUSIC),
+            "sidebar".to_owned()
+        ]
+    );
+    let mut distinct: Vec<&String> = forward.iter().chain(&back).collect();
+    distinct.sort();
+    distinct.dedup();
+    assert!(distinct.len() > 2, "{distinct:?}");
 }

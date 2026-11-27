@@ -2451,53 +2451,63 @@ mod tests {
     /// An event a listener got: DISPID, how many arguments, and the URL among them.
     type Fired = (i32, u32, Option<String>);
 
-    /// A listener that notes every event it gets.
-    #[implement(IDispatch)]
-    struct Recorder {
-        seen: Rc<RefCell<Vec<Fired>>>,
-    }
+    #[allow(
+        clippy::inline_always,
+        clippy::wildcard_imports,
+        reason = "The macro-generated code of #[implement] trips them, as in `mod com`"
+    )]
+    mod recorder {
+        use super::*;
 
-    impl IDispatch_Impl for Recorder_Impl {
-        fn GetTypeInfoCount(&self) -> windows::core::Result<u32> {
-            Ok(0)
+        /// A listener that notes every event it gets.
+        #[implement(IDispatch)]
+        pub(super) struct Recorder {
+            pub(super) seen: Rc<RefCell<Vec<Fired>>>,
         }
-        fn GetTypeInfo(&self, _: u32, _: u32) -> windows::core::Result<ITypeInfo> {
-            Err(E_NOTIMPL.into())
-        }
-        fn GetIDsOfNames(
-            &self,
-            _: *const GUID,
-            _: *const PCWSTR,
-            _: u32,
-            _: u32,
-            _: *mut i32,
-        ) -> windows::core::Result<()> {
-            Err(E_NOTIMPL.into())
-        }
-        fn Invoke(
-            &self,
-            id: i32,
-            _: *const GUID,
-            _: u32,
-            _: DISPATCH_FLAGS,
-            params: *const DISPPARAMS,
-            _: *mut VARIANT,
-            _: *mut EXCEPINFO,
-            _: *mut u32,
-        ) -> windows::core::Result<()> {
-            // SAFETY: the caller's arguments, valid for the call.
-            let params = unsafe { &*params };
-            let args: &[VARIANT] = if params.cArgs == 0 {
-                &[]
-            } else {
-                // SAFETY: `cArgs` VARIANTs at `rgvarg`.
-                unsafe { std::slice::from_raw_parts(params.rgvarg, params.cArgs as usize) }
-            };
-            let url = args.iter().find_map(text_of);
-            self.seen.borrow_mut().push((id, params.cArgs, url));
-            Ok(())
+
+        impl IDispatch_Impl for Recorder_Impl {
+            fn GetTypeInfoCount(&self) -> windows::core::Result<u32> {
+                Ok(0)
+            }
+            fn GetTypeInfo(&self, _: u32, _: u32) -> windows::core::Result<ITypeInfo> {
+                Err(E_NOTIMPL.into())
+            }
+            fn GetIDsOfNames(
+                &self,
+                _: *const GUID,
+                _: *const PCWSTR,
+                _: u32,
+                _: u32,
+                _: *mut i32,
+            ) -> windows::core::Result<()> {
+                Err(E_NOTIMPL.into())
+            }
+            fn Invoke(
+                &self,
+                id: i32,
+                _: *const GUID,
+                _: u32,
+                _: DISPATCH_FLAGS,
+                params: *const DISPPARAMS,
+                _: *mut VARIANT,
+                _: *mut EXCEPINFO,
+                _: *mut u32,
+            ) -> windows::core::Result<()> {
+                // SAFETY: the caller's arguments, valid for the call.
+                let params = unsafe { &*params };
+                let args: &[VARIANT] = if params.cArgs == 0 {
+                    &[]
+                } else {
+                    // SAFETY: `cArgs` VARIANTs at `rgvarg`.
+                    unsafe { std::slice::from_raw_parts(params.rgvarg, params.cArgs as usize) }
+                };
+                let url = args.iter().find_map(text_of);
+                self.seen.borrow_mut().push((id, params.cArgs, url));
+                Ok(())
+            }
         }
     }
+    use recorder::Recorder;
 
     /// The text of a `VT_BSTR` argument, or of a by-reference VARIANT holding one.
     fn text_of(arg: &VARIANT) -> Option<String> {

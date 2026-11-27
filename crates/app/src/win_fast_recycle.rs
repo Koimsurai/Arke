@@ -1272,6 +1272,41 @@ pub(crate) mod test_support {
         items
     }
 
+    /// Waits until `folder` can be moved: right after a test fills it, antivirus may still hold
+    /// a file inside open, and the rename into the bin is then refused (the real path leaves
+    /// such a folder to the engine, which is right). Renames it to a sibling name and back until
+    /// both succeed; panics if something outside the test keeps it open.
+    pub(crate) fn settle(folder: &Path) {
+        let mut aside = folder.as_os_str().to_owned();
+        aside.push(".settle");
+        let aside = PathBuf::from(aside);
+        let started = std::time::Instant::now();
+        let mut last = None;
+        while started.elapsed() < std::time::Duration::from_secs(5) {
+            match fs::rename(folder, &aside) {
+                Ok(()) => {
+                    // Back where it was; it can't be held now unless the check itself raced.
+                    while let Err(e) = fs::rename(&aside, folder) {
+                        assert!(
+                            started.elapsed() < std::time::Duration::from_secs(10),
+                            "{} couldn't be moved back: {e}",
+                            aside.display()
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    return;
+                }
+                Err(e) => last = Some(e),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!(
+            "something outside the test kept {} open for 5 s: {:?}",
+            folder.display(),
+            last
+        );
+    }
+
     /// Why the fast path would leave `path` to the engine, one line per condition `Drive::check`
     /// tests with its value. For the messages of failing live tests only.
     pub(crate) fn diagnose(path: &Path) -> String {
@@ -1826,6 +1861,7 @@ mod tests {
         perms.set_readonly(true);
         fs::set_permissions(&ro, perms).unwrap();
         let folder = sb.0.join("photos.v2");
+        test_support::settle(&folder);
 
         let Some(now) = recycle(&folder) else {
             panic!(
@@ -1923,6 +1959,7 @@ mod tests {
                 Ok(OpOutcome::Done),
                 "{name}"
             );
+            test_support::settle(&fast_item);
             let fast_now = recycle(&fast_item).unwrap_or_else(|| panic!("{name}: not taken"));
             let by_engine = recycled_from(engine_item.parent().unwrap());
             let by_fast = recycled_from(fast_item.parent().unwrap());
@@ -2055,6 +2092,7 @@ mod tests {
             "a junction itself stays with the engine"
         );
         assert!(alone.exists());
+        test_support::settle(&folder);
         let now = recycle(&folder).expect("the folder is taken");
         assert_eq!(
             fs::read_to_string(&outside).unwrap(),
@@ -2114,6 +2152,7 @@ mod tests {
             test_support::describe_tree(&engine_item),
             test_support::diagnose(&engine_item)
         );
+        test_support::settle(&fast_item);
         recycle(&fast_item).expect("taken");
         let e = &recycled_from(engine_item.parent().unwrap())[0];
         let f = &recycled_from(fast_item.parent().unwrap())[0];
@@ -2183,6 +2222,9 @@ mod tests {
                 dir
             })
             .collect();
+        for item in &items {
+            test_support::settle(item);
+        }
         let next = std::sync::atomic::AtomicUsize::new(0);
         let done = parking_lot::Mutex::new(Vec::new());
         std::thread::scope(|scope| {

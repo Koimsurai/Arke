@@ -433,6 +433,51 @@ fn select(cx: &mut VisualTestContext, view: &Entity<Explorer>, all: bool) {
     settle(cx);
 }
 
+/// #388: with one item selected (one more button, Rename) and the preview pane open, the buttons
+/// fold into "⋯" before the path bar loses a parent folder; only when it doesn't fit even with
+/// them folded does it collapse.
+#[gpui::test]
+fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
+    let (_ws, view, cx) = open_deep(cx, 1600.);
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx)
+            .update(cx, |s, cx| s.update(|st| st.preview_pane = true, cx));
+    });
+    let levels = arke_core::path::breadcrumbs(std::path::Path::new(DEEP)).len();
+    let one = |cx: &mut VisualTestContext| {
+        view.update(cx, |v, cx| {
+            v.selection.clear();
+            if let Some(entry) = v.view().and_then(|entries| entries.first().cloned()) {
+                v.selection.select_name(entry.name);
+            }
+            cx.notify();
+        });
+        settle(cx);
+        assert_eq!(view.update(cx, |v, _| v.selection.len()), 1);
+    };
+    let mut saw_fold_keeping_path = false;
+    for width in (1000..=1600_u16).rev().step_by(50) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        settle(cx);
+        one(cx);
+        let folded = cx.debug_bounds("sel-more").is_some();
+        let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+        if !folded {
+            assert_eq!(shown, levels, "{width} px: buttons out, path bar squeezed");
+        } else if shown == levels {
+            saw_fold_keeping_path = true;
+        }
+    }
+    assert!(saw_fold_keeping_path, "a width where the fold saves the path");
+    // Too narrow for the path even with the buttons folded: it may collapse.
+    cx.simulate_resize(size(px(500.), px(650.)));
+    settle(cx);
+    one(cx);
+    assert!(cx.debug_bounds("sel-more").is_some(), "folded when narrow");
+    let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+    assert!(shown < levels, "the path bar collapses: {shown} of {levels}");
+}
+
 /// #388: folded into "⋯", the selection's buttons are still in reach from the keyboard: F6 to the
 /// pane row, the arrows to "⋯", Enter opens the menu with Cut, Copy, Rename and Delete.
 #[gpui::test]

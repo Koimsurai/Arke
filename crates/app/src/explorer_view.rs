@@ -476,20 +476,21 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// Whether the selection's buttons, `unfolded` wide, would leave the path bar too little of
-    /// the pane row: they fold into a "⋯" menu before the path bar drops its parent folders
-    /// (below [`super::top_bar::path_compact_below`] it keeps only the current one), so the path
-    /// bar keeps its room to go up several levels (#388). The room is what the path bar and the
-    /// row's info (item count or selection) took on the last frame: their sum doesn't change with
-    /// what the info shows, so the choice settles at once. Before the row was laid out, the
-    /// pane's width decides.
-    pub(crate) fn selection_folds(&self, unfolded: Pixels) -> bool {
+    /// Whether the selection's buttons, `unfolded` wide, would take room the path bar needs to
+    /// show every level: they fold into a "⋯" menu first, and the path bar collapses its middle
+    /// levels only when it still doesn't fit with the buttons folded (#388). Below
+    /// [`super::top_bar::path_compact_below`] the path bar keeps only the current folder, so
+    /// that is the least it keeps. The room is what the path bar and the row's info (item count
+    /// or selection) took on the last frame: their sum doesn't change with what the info shows,
+    /// so the choice settles at once. Before the row was laid out, the pane's width decides.
+    pub(crate) fn selection_folds(&self, unfolded: Pixels, window: &Window) -> bool {
         let path = self.path_slot.get();
         if path <= px(0.) {
             let needs = if self.pane.split { 600. } else { 720. };
             return self.paper_width < theme::scaled_px(needs);
         }
-        path + self.info_slot.get() - unfolded < super::top_bar::path_compact_below()
+        let room = path + self.info_slot.get() - unfolded;
+        room < super::top_bar::path_compact_below() || room < self.path_full_width(window)
     }
 
     /// How the selection's buttons fit the pane row next to the path bar (#388): `None` folds
@@ -499,7 +500,7 @@ impl Explorer {
     fn selection_fit(&self, summary: &str, count: usize, window: &Window) -> Option<bool> {
         let Some(peer) = self.peer_target() else {
             let unfolded = selection_width(summary, count, None, window);
-            return (!self.selection_folds(unfolded)).then_some(false);
+            return (!self.selection_folds(unfolded, window)).then_some(false);
         };
         let name = peer_name(peer);
         let labels = [
@@ -515,12 +516,12 @@ impl Explorer {
         })
         .fold(px(0.), |sum, w| sum + w);
         if self.paper_width >= peer_labels_min()
-            && !self.selection_folds(selection_width(summary, count, Some(labels), window))
+            && !self.selection_folds(selection_width(summary, count, Some(labels), window), window)
         {
             return Some(true);
         }
         let icons = selection_width(summary, count, Some(px(0.)), window);
-        (!self.selection_folds(icons)).then_some(false)
+        (!self.selection_folds(icons, window)).then_some(false)
     }
 
     /// Records the width of the pane row's info (the item count or the selection's actions) for

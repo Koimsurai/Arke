@@ -3930,6 +3930,21 @@ impl Explorer {
     ) -> bool {
         let m = event.modifiers();
         let previous = self.last_click_open.take();
+        if crate::prefs::single_click()
+            && m.alt
+            && !m.control
+            && !m.shift
+            && self.renaming.is_none()
+        {
+            // Alt+click: Properties of the selection the press made, not opening it, as in File
+            // Explorer. Its double-click is two clicks, and the first one already opened the
+            // window (#493).
+            if !is_double_click(event.click_count()) {
+                self.click_select = None;
+                self.open_properties(self.menu_targets(), cx);
+            }
+            return true;
+        }
         if !crate::prefs::single_click() || m.control || m.shift || m.alt || self.renaming.is_some()
         {
             return false;

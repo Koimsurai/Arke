@@ -259,7 +259,37 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
 }
 
 /// Adds icons to Arke's own items; items read from Windows bring their own.
+/// A top-row button whose letter an enabled row of the same menu has keeps no letter: the key only
+/// highlights the row (`access_hit`), so underlining it on the button would promise too much.
+fn drop_shadowed_button_keys(entries: &mut [MenuEntry]) {
+    let rows: Vec<Access> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            MenuEntry::Item(i) if i.enabled => i.access,
+            MenuEntry::Submenu {
+                enabled: true,
+                access,
+                ..
+            } => *access,
+            _ => None,
+        })
+        .collect();
+    for entry in entries {
+        if let MenuEntry::Actions(items) = entry {
+            for item in items {
+                if item
+                    .access
+                    .is_some_and(|a| rows.iter().any(|r| r.matches(a.key)))
+                {
+                    item.access = None;
+                }
+            }
+        }
+    }
+}
+
 fn decorate(entries: &mut [MenuEntry]) {
+    drop_shadowed_button_keys(entries);
     for entry in entries {
         match entry {
             MenuEntry::Item(item) if item.icon.is_none() => item.glyph = glyph_for(item.command),
@@ -4933,6 +4963,26 @@ mod access_tests {
         assert_eq!(hit('T', true), AccessHit::Run(C::Cut));
         assert_eq!(hit('O', true), AccessHit::Run(C::Open));
         assert_eq!(hit('Z', true), AccessHit::Nothing);
+    }
+
+    #[test]
+    fn a_button_sharing_a_rows_key_is_not_underlined() {
+        use MenuCommand as C;
+        let mut entries = [
+            keyed("Open in Terminal", 't', C::OpenTerminal),
+            MenuEntry::Actions(vec![
+                button("Cut", 't', C::Cut, true),
+                button("Copy", 'c', C::Copy, true),
+            ]),
+        ];
+        decorate(&mut entries);
+        let MenuEntry::Actions(items) = &entries[1] else {
+            return;
+        };
+        assert_eq!(items[0].access, None);
+        assert!(items[1].access.is_some());
+        // The key still only highlights the row.
+        assert_eq!(access_hit(&entries, None, 't'), AccessHit::Move(0));
     }
 
     #[test]

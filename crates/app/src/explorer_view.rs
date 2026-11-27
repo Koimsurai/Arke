@@ -2669,6 +2669,7 @@ pub(crate) fn ghost_button_turned(
     let tip = SharedString::from(tip.to_string());
     div()
         .id(id)
+        .debug_selector(|| id.to_owned())
         .a11y_button(tip.clone())
         .a11y_disabled(!enabled)
         .size(theme::h_ctl())

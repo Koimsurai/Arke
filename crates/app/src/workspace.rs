@@ -1389,12 +1389,20 @@ impl Workspace {
         source: &Entity<Explorer>,
         (tab_ix, pane_ix): (usize, usize),
         path: &Path,
-        stepped: bool,
-        kind: NavKind,
+        (stepped, kind): (bool, NavKind),
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if stepped {
             self.note_navigation(source.entity_id(), cx);
+        }
+        // A page that gave way to this folder took the keyboard focus with it: the list takes it
+        // back, or Alt+Left and Alt+Right would find nothing to act on.
+        if kind != NavKind::Refresh
+            && window.focused(cx).is_none()
+            && self.active_view().entity_id() == source.entity_id()
+        {
+            self.focus_active(window, cx);
         }
         self.history_landed(source.entity_id(), kind, cx);
         crate::search_history::SearchHistory::record(path, true, cx);
@@ -1496,7 +1504,7 @@ impl Workspace {
                 path,
                 stepped,
                 kind,
-            } => self.on_navigated(source, (tab_ix, pane_ix), path, *stepped, *kind, cx),
+            } => self.on_navigated(source, (tab_ix, pane_ix), path, (*stepped, *kind), window, cx),
             ExplorerEvent::ToggleSync => self.toggle_sync(tab_ix, cx),
             ExplorerEvent::RenamePlace(path) => self.start_place_rename(path, window, cx),
             ExplorerEvent::FolderMenu { path, position } => {
@@ -3521,11 +3529,12 @@ impl Workspace {
             .pl(theme::s_12())
             .child(crate::brand::sidebar_mark())
             .child(if self.settings_open()
-                || self.recycle_open()
-                || self.home_open()
                 || self.whats_new_open()
+                || ((self.recycle_open() || self.home_open()) && !can_back)
             {
-                // With Settings or Recycle Bin open, back returns to the previous folder.
+                // With Settings open, or a page with nothing before it, back closes the page and
+                // shows the folder under it. Home and the Recycle Bin with a history before them
+                // step through it like any other location.
                 ghost_button(
                     "back",
                     Icon::ArrowLeft,

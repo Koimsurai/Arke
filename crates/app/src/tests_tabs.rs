@@ -1427,6 +1427,106 @@ fn history_menu_jumps_to_and_over_pages(cx: &mut TestAppContext) {
     );
 }
 
+/// Alt+Left or Alt+Right, as typed.
+fn key_step(cx: &mut VisualTestContext, back: bool) {
+    cx.simulate_keystrokes(if back { "alt-left" } else { "alt-right" });
+    cx.run_until_parked();
+}
+
+/// A click on the Back or Forward button of the toolbar.
+fn click_nav_button(cx: &mut VisualTestContext, back: bool) {
+    use gpui::Modifiers;
+    let id = if back { "back" } else { "forward" };
+    let bounds = cx
+        .debug_bounds(id)
+        .unwrap_or_else(|| panic!("{id} should be drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// #490, with the keyboard: Alt+Left and Alt+Right go through Home both ways, also once the page
+/// gave way to the folder under it (the list has the keys again).
+#[gpui::test]
+fn alt_left_and_right_step_through_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\Users\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let home = t!("home.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+
+    key_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "back to Home");
+    key_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    key_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
+    key_step(cx, false);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+}
+
+/// #490, with the keyboard, through the Recycle Bin.
+#[gpui::test]
+fn alt_left_and_right_step_through_the_recycle_bin(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\t010\rc2"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let bin = t!("recycle.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx)));
+    go(&view, cx, r"C:\t010\rc2");
+
+    key_step(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "back to the bin");
+    key_step(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    key_step(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(bin.as_str()), "forward to the bin");
+    key_step(cx, false);
+    wait_until(cx, &view, "rc2", loaded(r"C:\t010\rc2"));
+    assert_eq!(page(cx), None);
+}
+
+/// #490, with the toolbar buttons: the same steps as the mouse and the keys.
+#[gpui::test]
+fn toolbar_back_and_forward_step_through_home(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\t499", r"C:\Users\me\Desktop"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\t499");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "t499", loaded(r"C:\t499"));
+    let page = |cx: &mut VisualTestContext| ws.update(cx, |ws, _| ws.shown_page_for_test());
+    let home = t!("home.title").into_owned();
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_home_for_test(false, window, cx)));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.home_open_folder_for_test(p(r"C:\Users\me\Desktop"), window, cx);
+        });
+    });
+    wait_until(cx, &view, "desktop", loaded(r"C:\Users\me\Desktop"));
+
+    click_nav_button(cx, true);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "back to Home");
+    click_nav_button(cx, true);
+    wait_until(cx, &view, "t499 again", loaded(r"C:\t499"));
+    assert_eq!(page(cx), None);
+    click_nav_button(cx, false);
+    assert_eq!(page(cx).as_deref(), Some(home.as_str()), "forward to Home");
+    click_nav_button(cx, false);
+    wait_until(cx, &view, "desktop again", loaded(r"C:\Users\me\Desktop"));
+    assert_eq!(page(cx), None);
+}
+
 /// A few frames, so the workspace has noticed a page that closed.
 fn settle(cx: &mut VisualTestContext) {
     for _ in 0..3 {

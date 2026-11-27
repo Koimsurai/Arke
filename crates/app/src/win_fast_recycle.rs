@@ -206,7 +206,7 @@ impl Batch {
         if let Some(count_before) = drive.unconfirmed.take()
             && !counted().confirmed()
         {
-            if bin_state(&root).is_some_and(|(_, count)| count > count_before) {
+            if windows_counted(&root, count_before) {
                 counted().confirm();
             } else {
                 log::warn!(
@@ -817,6 +817,32 @@ fn bin_state(root: &Path) -> Option<(u64, u64)> {
     ))
 }
 
+/// Whether Windows' item count for the bin at `root` went above `before` after an item was
+/// moved in. The shell may take a moment to notice what was renamed into the bin, so the count
+/// is asked again a few times (at most ~0.3 s, and only while a version of Windows is unconfirmed).
+fn windows_counted(root: &Path, before: u64) -> bool {
+    const TRIES: u32 = 6;
+    const WAIT: std::time::Duration = std::time::Duration::from_millis(60);
+    for attempt in 0..TRIES {
+        if attempt > 0 {
+            std::thread::sleep(WAIT);
+        }
+        let state = bin_state(root);
+        #[cfg(test)]
+        COUNT_CHECKS.lock().push(format!(
+            "attempt {attempt}: before {before} items, now (bytes, items) {state:?}"
+        ));
+        if state.is_some_and(|(_, count)| count > before) {
+            return true;
+        }
+    }
+    false
+}
+
+/// What each count check saw, for the messages of failing live tests.
+#[cfg(test)]
+static COUNT_CHECKS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
 /// Unused `$I`/`$R` names in `bin` for an item with extension `ext`.
 fn free_names(bin: &Path, ext: &str) -> Option<(PathBuf, PathBuf)> {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -1289,6 +1315,7 @@ pub(crate) mod test_support {
             "\n  volume name: {guid}\n  bin_settings (MaxCapacity MB, NukeOnDelete): {:?}",
             super::bin_settings(&root)
         );
+        let _ = write!(out, "\n  count checks: {:#?}", super::COUNT_CHECKS.lock());
         let _ = write!(
             out,
             "\n  tracker bytes: {:?}\n  bin_state (SHQueryRecycleBin bytes, items): {:?}\n  counted confirmed: {}",

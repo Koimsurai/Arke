@@ -39,6 +39,11 @@
 //!   so as soon as it hears of the visit can't be missed, and the folder is listed once more after
 //!   the navigation was announced and after each later listener was told of it, for a client
 //!   that fills it inside the navigation events;
+//! - the folder's own entry in its parent changed ([`ParentWatch`]): a client that fills the
+//!   folder seconds later (WPS Cloud while its sync process restarts) creates placeholders that
+//!   raise no watcher event inside the folder and no shell notification, but the folder's entry
+//!   (its last write time, its attributes) changes in the parent, which a watcher on the parent
+//!   sees at the very moment the folder is filled;
 //! - a "Show in folder" caller (`SHOpenFolderAndSelectItems`) that found this registration selects
 //!   items: they are selected in the pane, as they would be in File Explorer.
 //!
@@ -47,7 +52,8 @@
 //! fired at them, the hints and how many relists they made, and when the visit registered and
 //! first heard from a listener.
 //!
-//! Nothing is downloaded: the folder is only named, never opened or read.
+//! Nothing is downloaded: the folder is only named, never opened or read. Its parent is opened
+//! only to be watched (like any folder Arke shows), never listed.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -60,6 +66,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use arke_core::fs::{Change, ChangeEvent, Fs as _, RealFs};
 use parking_lot::{Condvar, Mutex};
 use windows::Win32::Foundation::{
     DISP_E_BADINDEX, DISP_E_MEMBERNOTFOUND, DISP_E_UNKNOWNNAME, E_NOINTERFACE, E_NOTIMPL,
@@ -130,6 +137,8 @@ const WM_SHELL_CHANGE: u32 = WM_APP + 2;
 const WM_NAVIGATED: u32 = WM_APP + 3;
 /// To the visit's message window: hints are pending, list the folder again once for all of them.
 const WM_RELIST: u32 = WM_APP + 4;
+/// To the visit's message window: the folder's own entry in its parent changed ([`ParentWatch`]).
+const WM_PARENT_ENTRY: u32 = WM_APP + 5;
 
 /// What may hint that the folder's items changed without a watcher event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,14 +159,21 @@ enum Trigger {
     /// have filled the folder inside them (a client subscribes only once it hears the window was
     /// registered, after `OnNavigate`). Once per round of telling.
     Told,
+    /// The folder's own entry in its parent changed (its last write time or attributes), or an
+    /// item was created or renamed under its name, or the parent's watcher lost changes
+    /// ([`ParentWatch`]). A client that fills the folder later than the navigation (WPS Cloud,
+    /// seconds later while its sync process restarts) says nothing else: placeholders raise no
+    /// watcher event inside the folder.
+    ParentEntryChanged,
 }
 
 /// The hints the explorer acts on. Drop one here to stop acting on it.
-const RELIST_ON: [Trigger; 4] = [
+const RELIST_ON: [Trigger; 5] = [
     Trigger::ShellNotify,
     Trigger::ListenerRefresh,
     Trigger::Navigated,
     Trigger::Told,
+    Trigger::ParentEntryChanged,
 ];
 
 /// Shell notifications that mean items came, went or were renamed. `SHCNE_UPDATEITEM` (an
@@ -249,6 +265,114 @@ fn event_name(event: u32, target: Option<Target>) -> &'static str {
         .iter()
         .find(|(id, _)| event & id.0 != 0)
         .map_or("other", |&(_, name)| name)
+}
+
+/// The folder's name the way the parent's watcher records are compared with it ([`names_folder`]):
+/// lowercase, like [`path_key`].
+fn name_key(name: &std::ffi::OsStr) -> String {
+    name.to_string_lossy().to_lowercase()
+}
+
+/// Whether `change`, from the watcher on the folder's parent, is about the folder's own entry,
+/// `folder` being its name ([`name_key`]): the entry changed (`FILE_ACTION_MODIFIED`), or an item
+/// was created (`ADDED`) or renamed (`RENAMED_NEW_NAME`) under its name, in any case. A sibling's
+/// change isn't, nor the folder going away (`REMOVED`, `RENAMED_OLD_NAME`): the pane sees that.
+/// The watch is on one level, so the name is all a record has to match.
+fn names_folder(change: &Change, folder: &str) -> bool {
+    match change {
+        Change::Removed(_) => false,
+        Change::Unknown(path) | Change::Present(path, _) => {
+            path.file_name().is_some_and(|name| name_key(name) == folder)
+        }
+    }
+}
+
+/// Whether what one read of the parent's watcher brought hints the folder was filled: a change
+/// of its entry ([`names_folder`]), or lost changes (the buffer overflowed, the drive's watchers
+/// were reopened), which may have had one.
+fn about_folder(event: &ChangeEvent, folder: &str) -> bool {
+    match event {
+        ChangeEvent::Rescan => true,
+        ChangeEvent::Changed(changes) => changes.iter().any(|c| names_folder(c, folder)),
+    }
+}
+
+/// Watches the visited folder's parent, one level, for changes of the folder's own entry, and
+/// posts [`WM_PARENT_ENTRY`] to the visit's message window for each read that has one (hints that
+/// arrive together make one relist, [`Relist`]). Placeholders a sync client creates in the folder
+/// later than the navigation raise no event in the folder's own watcher and no shell notification,
+/// but the folder's entry in its parent changes at that moment (#319).
+///
+/// Lives exactly as long as the visit's registration: started before the window is registered,
+/// dropped once the loop ended, before the message window is destroyed. It goes through the
+/// explorer's own watcher ([`arke_core::fs::Fs::watch_changes`] of [`RealFs`]): no thread of its
+/// own and no clock, a handle that shares read, write and delete (the parent can still be renamed
+/// or deleted), closed with the others when the drive is ejected.
+struct ParentWatch {
+    /// The visit's message window, as the watcher's thread posts to it; `None` once the visit
+    /// ended. Taken for each post, so no post reaches the window after [`Drop`] cleared it.
+    window: Arc<Mutex<Option<isize>>>,
+    /// Dropping it stops the watcher; its handle is closed right after, on the watcher's thread.
+    _watch: Box<dyn Send>,
+}
+
+impl ParentWatch {
+    /// Starts watching the parent of `dir` for it, posting to `messages`. `None` for a drive root
+    /// (no parent) or a parent that can't be watched: the other hints still work.
+    fn start(messages: HWND, dir: &Path) -> Option<Self> {
+        let parent = dir.parent()?;
+        let folder = name_key(dir.file_name()?);
+        let window = Arc::new(Mutex::new(Some(messages.0 as isize)));
+        let posting = Arc::clone(&window);
+        let watched = RealFs.watch_changes(
+            parent,
+            Box::new(move |event| {
+                if about_folder(&event, &folder) {
+                    post_parent_entry(&posting);
+                }
+            }),
+        );
+        match watched {
+            Ok(watch) => Some(Self {
+                window,
+                _watch: watch,
+            }),
+            Err(err) => {
+                log::debug!("folder visit: cannot watch {}: {err}", parent.display());
+                None
+            }
+        }
+    }
+}
+
+/// Posts [`WM_PARENT_ENTRY`] to the visit's message window, unless the visit ended. On the
+/// watcher's thread, which mustn't wait: PostMessageW doesn't.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "held while posting: the visit clears the window under it before destroying it"
+)]
+fn post_parent_entry(window: &Mutex<Option<isize>>) {
+    let window = window.lock();
+    if let Some(hwnd) = *window {
+        // SAFETY: posts to the visit's own message window, which exists while the value is set.
+        let _ = unsafe {
+            PostMessageW(
+                Some(HWND(hwnd as *mut c_void)),
+                WM_PARENT_ENTRY,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
+    }
+    drop(window);
+}
+
+impl Drop for ParentWatch {
+    fn drop(&mut self) {
+        // Before the watcher stops (the fields drop after this): a read it is handling now posts
+        // nothing more.
+        *self.window.lock() = None;
+    }
 }
 
 /// Relisting after hints: one wake-up for any number of hints that arrive before the loop gets to
@@ -1844,6 +1968,11 @@ unsafe extern "system" fn visit_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM)
             current.state.flush_relist();
             LRESULT(0)
         }
+        (WM_PARENT_ENTRY, Some(current)) => {
+            current.state.journal.borrow_mut().mark("first parent change");
+            current.state.hint(Trigger::ParentEntryChanged);
+            LRESULT(0)
+        }
         // SAFETY: forwards to the default procedure with the same arguments.
         _ => unsafe { DefWindowProcW(hwnd, msg, w, l) },
     }
@@ -2017,7 +2146,11 @@ fn register_and_wait(
     if notify == 0 {
         log::debug!("folder visit: no shell notifications for {}", dir.display());
     }
+    // The folder's entry in its parent, also before the window is in the list. Stopped once the
+    // loop ended, while the message window it posts to still exists.
+    let parent = ParentWatch::start(state.messages, dir);
     let result = navigate_and_wait(state, pidl, &dispatch);
+    drop(parent);
     if notify != 0 {
         // SAFETY: undoes the registration made above.
         let _ = unsafe { SHChangeNotifyDeregister(notify) };
@@ -2679,6 +2812,146 @@ mod tests {
             let _ = SHChangeNotifyDeregister(notify);
             let _ = DestroyWindow(state.messages);
         }
+        CURRENT.with(|c| *c.borrow_mut() = None);
+    }
+
+    /// The parent's watcher hints for the folder's own entry in any case, and for an item renamed
+    /// or created under its name; not for a sibling, nor for the folder going away. A drive root
+    /// has no parent to watch.
+    #[test]
+    fn only_the_folders_own_entry_in_its_parent_hints() {
+        use arke_core::{Entry, EntryKind};
+        use std::ffi::OsStr;
+        let parent = Path::new(r"C:\Users\me\WPS Cloud");
+        let at = |name: &str| parent.join(name);
+        let present = |name: &str| {
+            Change::Present(at(name), Entry::new(name, EntryKind::Dir, 0, None, 0x10))
+        };
+        let folder = name_key(OsStr::new("Team"));
+        // FILE_ACTION_MODIFIED of the folder, named in another case than the pane's path.
+        assert!(names_folder(&present("TEAM"), &folder));
+        assert!(names_folder(&Change::Unknown(at("team")), &folder));
+        // ADDED or RENAMED_NEW_NAME under its name.
+        assert!(names_folder(&present("Team"), &folder));
+        // Siblings.
+        assert!(!names_folder(&Change::Unknown(at("Team 2")), &folder));
+        assert!(!names_folder(&present("Tea"), &folder));
+        assert!(!names_folder(&Change::Unknown(at("Team.docx")), &folder));
+        // REMOVED or RENAMED_OLD_NAME.
+        assert!(!names_folder(&Change::Removed(at("Team")), &folder));
+        let accented = name_key(OsStr::new("Équipe"));
+        assert!(names_folder(&Change::Unknown(at("ÉQUIPE")), &accented));
+
+        let sibling = ChangeEvent::Changed(vec![Change::Unknown(at("Other"))]);
+        assert!(!about_folder(&sibling, &folder));
+        let renamed = ChangeEvent::Changed(vec![Change::Removed(at("Team.tmp")), present("Team")]);
+        assert!(about_folder(&renamed, &folder));
+        assert!(about_folder(&ChangeEvent::Rescan, &folder), "lost changes may have had it");
+        assert!(!about_folder(&ChangeEvent::Changed(Vec::new()), &folder));
+        assert!(relists(Trigger::ParentEntryChanged));
+        assert!(ParentWatch::start(HWND::default(), Path::new(r"C:\")).is_none());
+    }
+
+    /// Live: a change of the folder's own entry in its parent (its attributes, as a sync client
+    /// filling it changes it) hints, however the folder's path is spelled; a sibling's change
+    /// doesn't; the parent can still be renamed meanwhile; once the watch stopped, nothing more
+    /// comes.
+    #[test]
+    fn a_change_of_the_folders_entry_in_its_parent_hints() {
+        use std::time::{Duration, Instant};
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES,
+            SetFileAttributesW,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::PM_REMOVE;
+        // SAFETY: this test thread's apartment.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let parent = tmp_dir.path().join("parent");
+        let dir = parent.join("Cloud Folder");
+        let sibling = parent.join("Cloud Folder 2");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        let count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&count);
+        let state = Rc::new(State {
+            hwnd: HWND::default(),
+            messages: message_window().unwrap(),
+            dir: dir.clone(),
+            folder: Pidl(std::ptr::null_mut()),
+            url: String::new(),
+            name: String::new(),
+            type_info: None,
+            sinks: RefCell::default(),
+            next_cookie: Cell::new(0),
+            selected: RefCell::default(),
+            changed: Box::new(move || counted.set(counted.get() + 1)),
+            select: Box::new(|_| {}),
+            running: Arc::default(),
+            relist: Cell::default(),
+            journal: RefCell::default(),
+        });
+        state.journal.borrow_mut().start();
+        CURRENT.with(|c| {
+            *c.borrow_mut() = Some(Current {
+                state: Rc::clone(&state),
+                browser: com::View {
+                    state: Rc::clone(&state),
+                }
+                .into(),
+            });
+        });
+        let set_attributes = |path: &Path, attributes: FILE_FLAGS_AND_ATTRIBUTES| {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: a NUL-terminated path for the call.
+            unsafe { SetFileAttributesW(PCWSTR(wide.as_ptr()), attributes) }.unwrap();
+        };
+        // Pumps this thread's messages until `done` or `wait` passed; returns whether `done`.
+        let pump = |done: &dyn Fn() -> bool, wait: Duration| -> bool {
+            let deadline = Instant::now() + wait;
+            loop {
+                let mut msg = MSG::default();
+                // SAFETY: msg is a valid out pointer; this thread's own messages.
+                while unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    // SAFETY: msg came from PeekMessageW.
+                    unsafe { DispatchMessageW(&raw const msg) };
+                }
+                if done() {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let hinted = || count.get() > 0;
+
+        // The pane's path in another case than on disk.
+        let spelled = PathBuf::from(dir.to_string_lossy().to_uppercase());
+        let watch = ParentWatch::start(state.messages, &spelled).expect("the parent is watched");
+        set_attributes(&sibling, FILE_ATTRIBUTE_HIDDEN);
+        assert!(!pump(&hinted, Duration::from_millis(500)), "a sibling's change doesn't hint");
+        set_attributes(&dir, FILE_ATTRIBUTE_HIDDEN);
+        assert!(pump(&hinted, Duration::from_secs(10)), "the folder's own change hints");
+        let summary = state.journal.borrow().summary();
+        assert!(summary.contains("hints: ParentEntryChanged x"), "{summary}");
+        assert!(summary.contains("first parent change +"), "{summary}");
+
+        // The watch doesn't hold the parent: it can be renamed (and back).
+        let moved = tmp_dir.path().join("moved");
+        std::fs::rename(&parent, &moved).unwrap();
+        std::fs::rename(&moved, &parent).unwrap();
+
+        drop(watch);
+        let before = count.get();
+        set_attributes(&dir, FILE_ATTRIBUTE_NORMAL);
+        assert!(
+            !pump(&|| count.get() > before, Duration::from_millis(500)),
+            "nothing comes once the watch stopped"
+        );
+        // SAFETY: the window made above, on this thread.
+        let _ = unsafe { DestroyWindow(state.messages) };
         CURRENT.with(|c| *c.borrow_mut() = None);
     }
 }

@@ -339,7 +339,7 @@ impl Workspace {
                 let (t, p) = self.pane_of(id)?;
                 let view = self.tabs[t].panes[p].view.read(cx);
                 let here = match view.page() {
-                    Some(page) => arke_core::Location::Page(page),
+                    Some(shown) => arke_core::Location::Page(shown),
                     None => arke_core::Location::Folder(view.display_path()?.to_path_buf()),
                 };
                 (id, here)

@@ -1858,9 +1858,16 @@ impl Explorer {
         };
         match target {
             Location::Folder(path) => {
-                let under = self.pending.is_none()
+                // The folder under the page is already shown, or still opening for the first
+                // time (a tab restored on Home): nothing to list, the page just goes.
+                let settled = self.model.is_none()
+                    || self
+                        .pending
+                        .as_ref()
+                        .is_none_or(|p| p.kind == NavKind::Refresh);
+                let under = settled
                     && self.page.is_some()
-                    && self.current_path().is_some_and(|p| same_folder(p, &path));
+                    && self.display_path().is_some_and(|p| same_folder(p, &path));
                 if under {
                     let from = self.page.take().map(Location::Page);
                     self.history.commit(kind, from, &Location::Folder(path));

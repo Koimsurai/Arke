@@ -1293,8 +1293,8 @@ fn back_from_a_folder_opened_from_home_returns_to_home(cx: &mut TestAppContext) 
 
 /// Mouse Back or Forward over the sidebar, where no list takes it.
 fn mouse_step(cx: &mut VisualTestContext, back: bool) {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, NavigationDirection, point, px};
-    cx.simulate_event(MouseDownEvent {
+    use gpui::{Modifiers, MouseButton, MouseUpEvent, NavigationDirection, point, px};
+    cx.simulate_event(MouseUpEvent {
         button: MouseButton::Navigate(if back {
             NavigationDirection::Back
         } else {
@@ -1303,7 +1303,6 @@ fn mouse_step(cx: &mut VisualTestContext, back: bool) {
         position: point(px(8.), px(300.)),
         modifiers: Modifiers::none(),
         click_count: 1,
-        first_mouse: false,
     });
     cx.run_until_parked();
 }

@@ -3068,6 +3068,26 @@ fn back_and_forward_tooltips_name_the_destination(cx: &mut TestAppContext) {
     );
 }
 
+/// A tab row's element id (which holds its hover and tooltip state) follows the tab through a
+/// reorder, so a moved tab never shows another tab's path.
+#[gpui::test]
+fn a_tab_row_id_follows_the_tab_through_a_reorder(cx: &mut TestAppContext) {
+    let fs = folders(&[r"C:\a", r"C:\b"]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    open_tabs(&ws, cx, &[r"C:\b"]);
+    let (id_a, id_b) = ws.update(cx, |ws, _| (ws.tab_row_id(0), ws.tab_row_id(1)));
+    assert_ne!(id_a, id_b);
+    ws.update(cx, |ws, cx| ws.move_tab_for_test(1, 0, cx));
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_row_id(0), id_b, "b moved to the top with its id");
+        assert_eq!(ws.tab_row_id(1), id_a);
+        assert_eq!(ws.tab_tip(0, cx).as_deref(), Some(r"C:\b"));
+        assert_eq!(ws.tab_tip(1, cx).as_deref(), Some(r"C:\a"));
+    });
+}
+
 /// A tab in the sidebar shows its folder's full path on hover; a split tab lists both sides.
 #[gpui::test]
 fn a_tab_tooltip_is_the_full_path(cx: &mut TestAppContext) {

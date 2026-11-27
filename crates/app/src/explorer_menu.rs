@@ -36,7 +36,9 @@ use gpui::{
     prelude::FluentBuilder, px, svg,
 };
 
-use super::ops::{CopyFiles, CutFiles, DeleteFiles, NewFolder, PasteFiles, RenameFile};
+use super::ops::{
+    CopyFiles, CutFiles, DeleteFiles, DeletePermanently, NewFolder, PasteFiles, RenameFile,
+};
 use super::{AppEvent, Explorer, ExplorerEvent, Refresh, ViewDetails, ViewMode, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -103,6 +105,8 @@ pub(crate) enum MenuCommand {
     Paste,
     Rename,
     Delete,
+    /// Delete's key with Shift: no Recycle Bin, after asking (Shift+Delete).
+    DeleteForever,
     CopyPath,
     /// Details tree: the item's path below the folder shown (`src\ui\view.rs`).
     CopyRelativePath,
@@ -227,7 +231,7 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
         C::Copy | C::CopyAddress | C::DropCopy | C::CopyToPeer => Icon::Copy,
         C::Paste => Icon::Paste,
         C::Rename | C::EditAddress => Icon::Rename,
-        C::Delete | C::ClearHistory => Icon::Trash,
+        C::Delete | C::DeleteForever | C::ClearHistory => Icon::Trash,
         C::CopyPath | C::CopyRelativePath => Icon::CopyPath,
         C::NewFolder | C::NewFolderIn | C::MoveToNewFolder => Icon::FolderPlus,
         C::Undo => Icon::Undo,
@@ -255,7 +259,37 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
 }
 
 /// Adds icons to Arke's own items; items read from Windows bring their own.
+/// A top-row button whose letter an enabled row of the same menu has keeps no letter: the key only
+/// highlights the row (`access_hit`), so underlining it on the button would promise too much.
+fn drop_shadowed_button_keys(entries: &mut [MenuEntry]) {
+    let rows: Vec<Access> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            MenuEntry::Item(i) if i.enabled => i.access,
+            MenuEntry::Submenu {
+                enabled: true,
+                access,
+                ..
+            } => *access,
+            _ => None,
+        })
+        .collect();
+    for entry in entries {
+        if let MenuEntry::Actions(items) = entry {
+            for item in items {
+                if item
+                    .access
+                    .is_some_and(|a| rows.iter().any(|r| r.matches(a.key)))
+                {
+                    item.access = None;
+                }
+            }
+        }
+    }
+}
+
 fn decorate(entries: &mut [MenuEntry]) {
+    drop_shadowed_button_keys(entries);
     for entry in entries {
         match entry {
             MenuEntry::Item(item) if item.icon.is_none() => item.glyph = glyph_for(item.command),
@@ -680,6 +714,15 @@ pub(crate) fn access_hit(
             AccessHit::Move(next)
         }
         _ => AccessHit::Nothing,
+    }
+}
+
+/// `hit` with Shift held: Delete's key then deletes permanently, as Shift+Delete does. Every other
+/// key is the same with or without it.
+const fn shift_hit(hit: AccessHit, shift: bool) -> AccessHit {
+    match hit {
+        AccessHit::Run(MenuCommand::Delete) if shift => AccessHit::Run(MenuCommand::DeleteForever),
+        other => other,
     }
 }
 
@@ -2060,7 +2103,10 @@ impl Explorer {
             return;
         }
         cx.stop_propagation();
-        let hit = access_hit(menu.level(menu.open.len()), menu.highlighted, typed);
+        let hit = shift_hit(
+            access_hit(menu.level(menu.open.len()), menu.highlighted, typed),
+            mods.shift,
+        );
         match hit {
             AccessHit::Nothing => {}
             AccessHit::Run(command) => self.run_menu_command(command, window, cx),
@@ -2324,6 +2370,7 @@ impl Explorer {
             C::Paste => self.paste_files(&PasteFiles, window, cx),
             C::Rename => self.rename_file(&RenameFile, window, cx),
             C::Delete => self.delete_files(&DeleteFiles, window, cx),
+            C::DeleteForever => self.delete_permanently(&DeletePermanently, window, cx),
             C::NewFolder => self.new_folder(&NewFolder, window, cx),
             C::NewTextFile => self.new_text_file(cx),
             C::NewFolderIn | C::NewFileIn => {
@@ -3314,6 +3361,10 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         if let Some(job) = self.take_extract_job(id) {
+            // The count the job ends with, not the last progress tick the writer got to.
+            if let Ok(s) = &result {
+                job.ops.done.store(s.files, Ordering::Relaxed);
+            }
             let state = outcome(result.as_ref().map(|s| s.cancelled));
             crate::op_center::OpCenter::finish(cx, job.job, "op.compress", &state);
         }
@@ -3401,6 +3452,10 @@ impl Explorer {
             .and_then(|j| j.archive.as_ref().map(|(path, _)| path.clone()));
         let name = match job {
             Some(job) => {
+                // The count the job ends with, not the last progress tick the writer got to.
+                if let Ok(s) = &result {
+                    job.ops.done.store(s.files, Ordering::Relaxed);
+                }
                 let state = outcome(result.as_ref().map(|s| s.cancelled));
                 crate::op_center::OpCenter::finish(cx, job.job, "op.extract", &state);
                 job.name
@@ -4613,6 +4668,8 @@ mod access_tests {
     /// The own items each menu can show at once, by their `access.*` key. An item that never shows
     /// with another (a folder's "Add to favorites" and "Remove from favorites") is in its own
     /// copy of the menu. "Open with <app>", the pane items and the PC search ones have no key.
+    const BUTTONS: &[&str] = &["new_folder", "cut", "copy", "rename", "delete"];
+
     const MENUS: &[(&str, &str)] = &[
         (
             "folder",
@@ -4727,7 +4784,15 @@ mod access_tests {
                         continue;
                     };
                     let letter = letter.to_ascii_lowercase();
-                    if let Some((_, other)) = seen.iter().find(|(l, _)| *l == letter) {
+                    // A row may share its letter with a top-row button: the letter only
+                    // highlights the row (`access_hit`). Two rows or two buttons may not.
+                    // ("New folder" is a row in the "New" menu.)
+                    let is_button = |n: &str| BUTTONS.contains(&n) && *menu != "new_bg";
+                    let button = is_button(name);
+                    if let Some((_, other)) = seen
+                        .iter()
+                        .find(|(l, o)| *l == letter && is_button(o) == button)
+                    {
                         panic!("{locale}, {menu}: {other} and {name} share the key {letter}");
                     }
                     seen.push((letter, name));
@@ -4852,6 +4917,66 @@ mod access_tests {
         assert_eq!(access_hit(&entries, None, 'c'), AccessHit::Run(C::Copy));
         assert_eq!(access_hit(&entries, Some(0), 'C'), AccessHit::Run(C::Copy));
         assert_eq!(access_hit(&entries, None, 'T'), AccessHit::Run(C::Cut));
+    }
+
+    #[test]
+    fn open_in_terminal_takes_t_and_shares_it_with_cut() {
+        use MenuCommand as C;
+        let label = t!("menu.open_terminal", locale = "en");
+        let access = access_in("en", "terminal", &label, None).expect("a letter");
+        assert_eq!(access.key, 'T');
+        let entries = [
+            keyed("Cut", 't', C::Cut),
+            keyed("Open in Terminal", 't', C::OpenTerminal),
+        ];
+        // The first T lights one, the next moves to the other, and a third wraps.
+        assert_eq!(access_hit(&entries, None, 't'), AccessHit::Move(0));
+        assert_eq!(access_hit(&entries, Some(0), 't'), AccessHit::Move(1));
+        assert_eq!(access_hit(&entries, Some(1), 't'), AccessHit::Move(0));
+        // Alone, it runs at once.
+        assert_eq!(
+            access_hit(&entries[1..], None, 't'),
+            AccessHit::Run(C::OpenTerminal)
+        );
+    }
+
+    #[test]
+    fn shift_with_deletes_key_deletes_for_good_and_nothing_else_changes() {
+        use MenuCommand as C;
+        let buttons = MenuEntry::Actions(vec![
+            button("Cut", 't', C::Cut, true),
+            button("Delete", 'd', C::Delete, true),
+        ]);
+        let entries = [keyed("Open", 'o', C::Open), buttons];
+        let hit = |typed, shift| shift_hit(access_hit(&entries, None, typed), shift);
+        assert_eq!(hit('D', true), AccessHit::Run(C::DeleteForever));
+        assert_eq!(hit('d', false), AccessHit::Run(C::Delete));
+        assert_eq!(hit('T', true), AccessHit::Run(C::Cut));
+        assert_eq!(hit('O', true), AccessHit::Run(C::Open));
+        assert_eq!(hit('Z', true), AccessHit::Nothing);
+    }
+
+    #[test]
+    fn a_button_sharing_a_rows_key_is_not_underlined() {
+        use MenuCommand as C;
+        let mut entries = [
+            keyed("Open in Terminal", 't', C::OpenTerminal),
+            MenuEntry::Actions(vec![
+                button("Cut", 't', C::Cut, true),
+                button("Copy", 'c', C::Copy, true),
+            ]),
+        ];
+        decorate(&mut entries);
+        let MenuEntry::Actions(items) = &entries[1] else {
+            return;
+        };
+        assert_eq!(items[0].access, None);
+        assert!(items[1].access.is_some());
+        // The row is now the only T, so it runs at once.
+        assert_eq!(
+            access_hit(&entries, None, 't'),
+            AccessHit::Run(C::OpenTerminal)
+        );
     }
 
     #[test]

@@ -1132,6 +1132,13 @@ fn tab_from_the_first_home_card_walks_on(cx: &mut TestAppContext) {
     distinct.sort();
     distinct.dedup();
     assert!(distinct.len() > 2, "{went:?}");
+    // The ring wasn't showing: the first Tab shows it on the first card (favorites) instead of
+    // walking past it to the drives.
+    assert_eq!(
+        went[1], start,
+        "the first Tab stays on the first card: {went:?}"
+    );
+    assert!(went[2..].iter().any(|w| *w != start), "then it walks on");
     assert!(sidebar, "Tab reaches the sidebar: {went:?}");
     assert!(went[1..].contains(&start), "and comes back: {went:?}");
 }

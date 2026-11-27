@@ -643,6 +643,57 @@ impl Explorer {
 
     // ───────────────────────── Rendering ─────────────────────────
 
+    /// The folder's breadcrumbs, a renamed drive or network place under its name.
+    fn display_crumbs(&self) -> Vec<(String, PathBuf)> {
+        let mut crumbs = self
+            .display_path()
+            .map_or_default(arke_core::path::breadcrumbs);
+        for (label, path) in &mut crumbs {
+            if let Some(name) = crate::place_names::shown_name(&self.place_names, path) {
+                *label = name;
+            }
+        }
+        crumbs
+    }
+
+    /// The drawn width of each breadcrumb (with its leading ›), and of the "…" piece.
+    fn crumb_widths(crumbs: &[(String, PathBuf)], window: &Window) -> (Vec<Pixels>, Pixels) {
+        let text_w = |text: &str, size: Pixels, weight: gpui::FontWeight| {
+            super::top_bar::text_width(text, size, weight, window)
+        };
+        let pad = theme::s_6() * 2.;
+        let last = crumbs.len().saturating_sub(1);
+        let widths = crumbs
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _))| {
+                // Same sizes as `crumb_piece`: the current folder is larger and semibold.
+                let (size, weight) = if i == last {
+                    (theme::fs_15(), theme::FW_STRONG)
+                } else {
+                    (theme::fs_14(), gpui::FontWeight::NORMAL)
+                };
+                let chevron = if i > 0 { theme::s_20() } else { px(0.) };
+                chevron + text_w(label, size, weight) + pad
+            })
+            .collect();
+        let more = theme::s_20() + text_w("…", theme::fs_14(), gpui::FontWeight::NORMAL) + pad;
+        (widths, more)
+    }
+
+    /// The path bar's room outside its breadcrumbs: the bar's padding, the leading and trailing ›
+    /// and the blank area for clicking to edit.
+    fn path_chrome() -> Pixels {
+        theme::s_4() * 2. + theme::s_20() * 2. + path_blank_min()
+    }
+
+    /// The width the path bar needs to show every level (the selection's buttons fold before the
+    /// path bar loses one, #388).
+    pub(crate) fn path_full_width(&self, window: &Window) -> Pixels {
+        let (widths, _) = Self::crumb_widths(&self.display_crumbs(), window);
+        widths.iter().fold(Self::path_chrome(), |sum, w| sum + *w)
+    }
+
     /// Segments to draw (index, name and path; None is the collapsed "…"), total count, and the
     /// collapsed segments.
     ///
@@ -662,15 +713,7 @@ impl Explorer {
         usize,
         Vec<(String, PathBuf)>,
     ) {
-        let mut crumbs = self
-            .display_path()
-            .map_or_default(arke_core::path::breadcrumbs);
-        // A renamed drive or network place shows its name.
-        for (label, path) in &mut crumbs {
-            if let Some(name) = crate::place_names::shown_name(&self.place_names, path) {
-                *label = name;
-            }
-        }
+        let crumbs = self.display_crumbs();
         let total = crumbs.len();
         // Too narrow even for "… › current folder" (a split pane in a small window): just the
         // current folder. Up still goes up.
@@ -728,28 +771,8 @@ impl Explorer {
         if compact && crumbs.len() > 1 {
             return Some(0..crumbs.len() - 1);
         }
-        // The bar's padding, the leading and trailing › and the blank area for clicking to edit.
-        let avail = slot - theme::s_4() * 2. - theme::s_20() * 2. - path_blank_min();
-        let text_w = |text: &str, size: Pixels, weight: gpui::FontWeight| {
-            super::top_bar::text_width(text, size, weight, window)
-        };
-        let pad = theme::s_6() * 2.;
-        let last = crumbs.len().saturating_sub(1);
-        let widths: Vec<Pixels> = crumbs
-            .iter()
-            .enumerate()
-            .map(|(i, (label, _))| {
-                // Same sizes as `crumb_piece`: the current folder is larger and semibold.
-                let (size, weight) = if i == last {
-                    (theme::fs_15(), theme::FW_STRONG)
-                } else {
-                    (theme::fs_14(), gpui::FontWeight::NORMAL)
-                };
-                let chevron = if i > 0 { theme::s_20() } else { px(0.) };
-                chevron + text_w(label, size, weight) + pad
-            })
-            .collect();
-        let more = theme::s_20() + text_w("…", theme::fs_14(), gpui::FontWeight::NORMAL) + pad;
+        let avail = slot - Self::path_chrome();
+        let (widths, more) = Self::crumb_widths(crumbs, window);
         super::layout::collapse_crumbs(&widths, avail, more)
     }
 

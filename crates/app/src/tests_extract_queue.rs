@@ -248,3 +248,42 @@ fn a_second_extraction_waits_in_the_line_and_can_be_cancelled(cx: &mut TestAppCo
     assert!(matches!(extractions(cx)[0].1, JobState::Done { .. }));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A zip at `path` holding `count` small files, `f0.txt`, `f1.txt` and so on.
+fn make_zip_many(path: &Path, count: usize) {
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    for n in 0..count {
+        zip.start_file(
+            format!("f{n}.txt"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"x").unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+/// An archive with many small files: the finished entry counts every one of them, not the last
+/// progress report that got through.
+#[gpui::test]
+fn a_finished_extraction_counts_every_file(cx: &mut TestAppContext) {
+    const FILES: usize = 200;
+    let dir = sandbox("count");
+    make_zip_many(&dir.join("many.zip"), FILES);
+    let (view, cx) = open(cx, &dir, &["many.zip"]);
+
+    menu_on(&view, cx, &["many.zip"]);
+    run_command(&view, cx, MenuCommand::ExtractToFolder);
+    wait_until(cx, &view, "extracted", |v| v.extract_jobs.is_empty());
+
+    assert_eq!(view.update(cx, |v, _| v.error.clone()), None);
+    assert_eq!(std::fs::read_dir(dir.join("many")).unwrap().count(), FILES);
+    let (done, detail) = cx.update(|_, cx| {
+        let jobs = OpCenter::jobs(cx);
+        let job = jobs.iter().find(|job| job.verb == "op.extract").unwrap();
+        (matches!(job.state, JobState::Done { .. }), job.done_items())
+    });
+    assert!(done);
+    assert_eq!(detail, FILES as u64);
+    let _ = std::fs::remove_dir_all(&dir);
+}

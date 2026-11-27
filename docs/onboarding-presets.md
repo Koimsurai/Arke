@@ -22,7 +22,7 @@ preset rather than guessed.
 | Arke setting | Value | Basis |
 | --- | --- | --- |
 | Open items with a single click | Off | Fresh-install behavior: Folder Options › "Double-click to open an item (single-click to select)" |
-| Folders | Before files | Fresh-install behavior: sorting by name lists folders first; Explorer has no option to mix them |
+| Folders | Before files | Fresh-install behavior: folders come before files going up and after them going down; Explorer has no option to mix them or to keep them first both ways |
 | Sort by | Name, ascending | Fresh-install behavior |
 | View | Details | Fresh-install behavior for general items folders (Documents, Downloads) |
 | Show hidden items | Off | Documented: hidden items are off until turned on under View › Show ([Microsoft](https://support.microsoft.com/en-us/windows/view-hidden-files-and-folders-in-windows-97fbc472-c603-9d90-91d0-1166d1d9f4b5)) |
@@ -42,7 +42,7 @@ preset rather than guessed.
 | Arke setting | Value | Basis |
 | --- | --- | --- |
 | Open items with a single click | Off | Documented for DC: "A double click is necessary to launch the action (default)" ([DC manual](https://doublecmd.github.io/doc/en/configuration.html)); TC: option documented ([TC wiki, Options](https://www.ghisler.ch/wiki/index.php/Options)) |
-| Folders | Before files | Documented for DC: `gSortFolderMode := sfmSortLikeFileShowFirst` ([DC source, uglobs.pas](https://raw.githubusercontent.com/doublecmd/doublecmd/master/src/uglobs.pas)); TC: option documented ("Sort directories: Always by name / Like files", [TC wiki, Options](https://www.ghisler.ch/wiki/index.php/Options)); directories are listed above files either way |
+| Folders | Always first | Documented for DC: `gSortFolderMode := sfmSortLikeFileShowFirst` ([DC source, uglobs.pas](https://raw.githubusercontent.com/doublecmd/doublecmd/master/src/uglobs.pas)); TC: option documented ("Sort directories: Always by name / Like files", [TC wiki, Options](https://www.ghisler.ch/wiki/index.php/Options)); directories are listed above files either way |
 | Sort by | Name, ascending | Fresh-install behavior of both |
 | View | Details | Fresh-install behavior: the "Full" (columns) view |
 | Show hidden items | Off | Documented for DC: `gShowSystemFiles := False` ([uglobs.pas](https://raw.githubusercontent.com/doublecmd/doublecmd/master/src/uglobs.pas)); TC: author on the forum ([TC forum](https://ghisler.ch/board/viewtopic.php?p=276079)) |
@@ -67,7 +67,7 @@ Only what both do out of the box.
 | Arke setting | Value | Basis |
 | --- | --- | --- |
 | Open items with a single click | Off | Option documented (single-click is an option in both: [Opus](https://www.gpsoft.com.au/help/opus12/Documents/Folder_Options.htm)); off out of the box |
-| Folders | Before files | Option documented: Opus "sort folders alphabetically" / XYplorer "Sort folders apart" ([Opus](https://www.gpsoft.com.au/help/opus12/documents/FolderOptions/Display1.htm), [XYplorer forum](https://www.xyplorer.com/xyfc/viewtopic.php?p=213988)); folders first out of the box |
+| Folders | Always first | Option documented: Opus "sort folders alphabetically" / XYplorer "Sort folders apart" ([Opus](https://www.gpsoft.com.au/help/opus12/documents/FolderOptions/Display1.htm), [XYplorer forum](https://www.xyplorer.com/xyfc/viewtopic.php?p=213988)); folders first out of the box |
 | Sort by | Name, ascending | Fresh-install behavior of both |
 | View | Details | Fresh-install behavior of both |
 | Show file name extensions | On | Fresh-install behavior of both |

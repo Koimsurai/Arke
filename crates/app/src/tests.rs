@@ -4877,17 +4877,28 @@ fn sorting_by_size_uses_folder_sizes(cx: &mut TestAppContext) {
         Some("c-mid")
     );
 
-    // Largest first: folders still lead a descending sort.
+    // Largest first: folders trail a descending sort, like File Explorer.
     let mut spec = SortSpec::by(SortColumn::Size, false, false);
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "sort by size", |v| {
-        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
+        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
     });
     assert_eq!(
         view.update(cx, |v, _| selected_name(v)).as_deref(),
         Some("c-mid"),
         "selection should follow the item"
     );
+    // Always first (#499): the folders lead the descending sort too.
+    spec.always_first = true;
+    view.update(cx, |v, cx| v.set_sort(spec, cx));
+    wait_until(cx, &view, "folders always first", |v| {
+        names(v) == ["b-big", "c-mid", "a-small", "f.bin"]
+    });
+    spec.always_first = false;
+    view.update(cx, |v, cx| v.set_sort(spec, cx));
+    wait_until(cx, &view, "folders before files again", |v| {
+        names(v) == ["f.bin", "b-big", "c-mid", "a-small"]
+    });
     spec.ascending = true;
     view.update(cx, |v, cx| v.set_sort(spec, cx));
     wait_until(cx, &view, "smallest first", |v| {

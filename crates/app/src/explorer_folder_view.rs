@@ -94,6 +94,7 @@ impl Explorer {
             ascending: view.ascending,
             // Where folders go is one setting for every folder
             mixed: self.seen_defaults.0.mixed,
+            always_first: self.seen_defaults.0.always_first,
             then: view.then,
             sections: None,
         }
@@ -173,7 +174,11 @@ impl Explorer {
     fn unremembered_view(&self, path: &Path) -> (SortSpec, ViewMode) {
         let (sort, view) = self.seen_defaults;
         if self.is_downloads(path) {
-            return (SortSpec::by(SortColumn::Modified, false, sort.mixed), view);
+            return (
+                SortSpec::by(SortColumn::Modified, false, sort.mixed)
+                    .with_always_first(sort.always_first),
+                view,
+            );
         }
         (sort, view)
     }

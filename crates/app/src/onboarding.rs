@@ -97,7 +97,7 @@ const EXPLORER: &[Item] = &[
 /// of its own, and the attributes column; no Type column.
 const COMMANDER: &[Item] = &[
     Item::SingleClick(false),
-    Item::Folders(FolderOrder::First),
+    Item::Folders(FolderOrder::AlwaysFirst),
     Item::Sort(SortBy::Name, false),
     Item::View(ViewMode::Details),
     Item::ShowHidden(false),
@@ -115,7 +115,7 @@ const COMMANDER: &[Item] = &[
 /// Directory Opus and XYplorer: only what both do out of the box.
 const OPUS: &[Item] = &[
     Item::SingleClick(false),
-    Item::Folders(FolderOrder::First),
+    Item::Folders(FolderOrder::AlwaysFirst),
     Item::Sort(SortBy::Name, false),
     Item::View(ViewMode::Details),
     Item::ShowExtensions(true),
@@ -265,6 +265,7 @@ impl Item {
             | Self::Checkboxes(v)
             | Self::ConfirmRecycle(v) => on_off(v),
             Self::Folders(FolderOrder::First) => t!("settings.folders_first"),
+            Self::Folders(FolderOrder::AlwaysFirst) => t!("settings.folders_always_first"),
             Self::Folders(FolderOrder::Mixed) => t!("settings.folders_mixed"),
             Self::Sort(by, descending) => Cow::Owned(format!(
                 "{}, {}",
@@ -508,14 +509,17 @@ mod tests {
         let explorer = applied(Source::Explorer);
         assert!(explorer.show_extensions, "kept shown on purpose");
         assert!(!explorer.show_hidden);
+        assert_eq!(explorer.folders, FolderOrder::First);
         assert_eq!(explorer.tab_layout, TabLayout::Horizontal);
         assert_eq!(explorer.nav_scope, NavScope::WithinTab);
         let commander = applied(Source::Commander);
         assert!(commander.show_extension && commander.show_attributes && !commander.show_type);
         assert!(commander.confirm_recycle);
+        assert_eq!(commander.folders, FolderOrder::AlwaysFirst);
         assert_eq!(commander.new_tab, NewTabAction::CurrentFolder);
         let opus = applied(Source::Opus);
         assert!(opus.show_extensions && opus.full_dates);
+        assert_eq!(opus.folders, FolderOrder::AlwaysFirst);
         let finder = applied(Source::Finder);
         assert_eq!(finder.default_view, ViewMode::Icons);
         assert_eq!(finder.folders, FolderOrder::Mixed);

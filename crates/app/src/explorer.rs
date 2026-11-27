@@ -3410,6 +3410,7 @@ impl Explorer {
             };
             let mut sort = if follow_sort { defaults.0 } else { self.sort };
             sort.mixed = defaults.0.mixed;
+            sort.always_first = defaults.0.always_first;
             if sort != self.sort {
                 self.apply_sort(sort, cx);
             }

@@ -1744,10 +1744,7 @@ impl Workspace {
                 None,
                 choice(
                     "folders",
-                    &[
-                        (FolderOrder::First, t!("settings.folders_first")),
-                        (FolderOrder::Mixed, t!("settings.folders_mixed")),
-                    ],
+                    &folder_order_options(),
                     s.folders,
                     |st, v| st.folders = v,
                     ui,
@@ -2577,6 +2574,18 @@ pub(super) fn row_desc(text: Cow<'static, str>) -> AnyElement {
         .text_color(theme::text_subtle())
         .child(SharedString::from(text.into_owned()))
         .into_any_element()
+}
+
+/// The "Folders" dropdown's options (#499): before files (File Explorer), always first, mixed.
+fn folder_order_options() -> [(FolderOrder, Cow<'static, str>); 3] {
+    [
+        (FolderOrder::First, t!("settings.folders_first")),
+        (
+            FolderOrder::AlwaysFirst,
+            t!("settings.folders_always_first"),
+        ),
+        (FolderOrder::Mixed, t!("settings.folders_mixed")),
+    ]
 }
 
 /// Dropdown for picking one of a few options. The button shows the current value; the list checks the selected one.
@@ -4650,4 +4659,29 @@ fn network_row(
         )
         .child(div().flex_none().child(button))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod folder_order_tests {
+    use super::*;
+
+    /// #499: the Folders dropdown has three choices, each with its own words and value.
+    #[test]
+    fn the_folders_dropdown_has_three_options() {
+        let options = folder_order_options();
+        let values: Vec<FolderOrder> = options.iter().map(|(v, _)| *v).collect();
+        assert_eq!(
+            values,
+            [
+                FolderOrder::First,
+                FolderOrder::AlwaysFirst,
+                FolderOrder::Mixed
+            ]
+        );
+        let mut labels: Vec<String> = options.iter().map(|(_, l)| l.to_string()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()));
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), 3, "three different labels");
+    }
 }

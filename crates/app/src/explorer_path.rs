@@ -689,7 +689,7 @@ impl Explorer {
 
     /// The width the path bar needs to show every level (the selection's buttons fold before the
     /// path bar loses one, #388).
-    pub(super) fn path_full_width(&self, window: &Window) -> Pixels {
+    pub(crate) fn path_full_width(&self, window: &Window) -> Pixels {
         let (widths, _) = Self::crumb_widths(&self.display_crumbs(), window);
         widths.iter().fold(Self::path_chrome(), |sum, w| sum + *w)
     }

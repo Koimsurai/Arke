@@ -4579,6 +4579,13 @@ impl Workspace {
             }))
     }
 
+    /// A tab row's element id, keyed by the tab's identity rather than its place: GPUI keeps the
+    /// hover and tooltip state per id, so a place-based id left a moved tab with the tooltip of
+    /// the tab that used to sit there.
+    pub(crate) fn tab_row_id(&self, ix: usize) -> gpui::ElementId {
+        ("tab", self.tabs.get(ix).map_or(u64::MAX, |t| t.id)).into()
+    }
+
     /// What a tab shows on hover: the full path of its folder (one line per side of a split
     /// tab); a page's own name for Home, Settings and the like.
     pub(crate) fn tab_tip(&self, ix: usize, cx: &App) -> Option<String> {
@@ -4632,7 +4639,7 @@ impl Workspace {
             theme::h_row_side()
         };
         let row = div()
-            .id(("tab", ix))
+            .id(self.tab_row_id(ix))
             .debug_selector(|| format!("tab-{ix}"))
             .group(group.clone())
             .h(if split {

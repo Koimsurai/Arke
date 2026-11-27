@@ -13,7 +13,9 @@
 //! - No Group Policy turns the bin off or caps its size (the engine applies those).
 //! - The `$I` records already in the bin are all version 2, the layout written here.
 //! - The rename succeeds: a file in use inside the folder makes it fail, nothing has moved, and
-//!   the item goes through the engine instead.
+//!   the item goes through the engine instead. A folder holding read-only items can be refused
+//!   by the rename (seen on a CI runner: access denied moving it into the bin, while renaming it
+//!   in place works), and then goes to the engine too.
 //!
 //! Everything else goes to the Windows engine. An item bigger than its drive's bin may hold at
 //! all is the exception: Windows would delete it permanently (asking behind Arke's window, or not
@@ -1307,6 +1309,11 @@ pub(crate) mod test_support {
         );
     }
 
+    /// Why items were left to the engine so far in this process (see `declined`).
+    pub(crate) fn declines() -> Vec<String> {
+        super::DECLINES.lock().clone()
+    }
+
     /// Why the fast path would leave `path` to the engine, one line per condition `Drive::check`
     /// tests with its value. For the messages of failing live tests only.
     pub(crate) fn diagnose(path: &Path) -> String {
@@ -1847,19 +1854,15 @@ mod tests {
         purge(&items);
     }
 
-    /// The fast path end to end: the folder (a read-only file and a subfolder inside) is in the
-    /// bin with the right name, origin and size, then comes back where it was with everything in
-    /// it, and leaves no record behind.
+    /// The fast path end to end: the folder (a file and a subfolder inside) is in the bin with
+    /// the right name, origin and size, then comes back where it was with everything in it, and
+    /// leaves no record behind.
     #[test]
     #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
     fn a_folder_goes_to_the_bin_and_comes_back() {
         let sb = Sandbox::new("roundtrip");
         sb.file(r"photos.v2\a.bin", "1234567");
         sb.file(r"photos.v2\sub\b.bin", "123");
-        let ro = sb.0.join(r"photos.v2\a.bin");
-        let mut perms = fs::metadata(&ro).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&ro, perms).unwrap();
         let folder = sb.0.join("photos.v2");
         test_support::settle(&folder);
 
@@ -1883,6 +1886,53 @@ mod tests {
             now: items[0].now.clone(),
             parent: sb.0.clone(),
             name: "photos.v2".into(),
+        }]);
+        assert_eq!(
+            crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),
+            Ok(OpOutcome::Done)
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join(r"sub\b.bin")).unwrap(),
+            "123"
+        );
+        assert!(recycled_from(&sb.0).is_empty(), "no record left behind");
+    }
+
+    /// A folder holding a read-only file goes to the bin and comes back with the flag. The rename
+    /// into the bin may be refused (then the engine takes it), so only the outcome is checked,
+    /// not which of the two did it.
+    #[test]
+    #[ignore = "uses the real Recycle Bin (only this test's own temp items, purged at the end)"]
+    fn a_folder_with_a_read_only_file_goes_to_the_bin_and_comes_back() {
+        let sb = Sandbox::new("readonly");
+        sb.file(r"docs.v2\a.bin", "1234567");
+        sb.file(r"docs.v2\sub\b.bin", "123");
+        let ro = sb.0.join(r"docs.v2\a.bin");
+        let mut perms = fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&ro, perms).unwrap();
+        let folder = sb.0.join("docs.v2");
+        test_support::settle(&folder);
+
+        if recycle(&folder).is_none() {
+            assert_eq!(
+                engine(vec![folder.clone()]),
+                Ok(OpOutcome::Done),
+                "the fast path declined it ({:?}) and the engine failed too",
+                test_support::declines()
+            );
+        }
+        assert!(!folder.exists());
+        let items = recycled_from(&sb.0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "docs.v2");
+        assert!(items[0].is_dir);
+        assert_eq!(items[0].size, 10);
+
+        let back = Undo::PutBack(vec![PutBack {
+            now: items[0].now.clone(),
+            parent: sb.0.clone(),
+            name: "docs.v2".into(),
         }]);
         assert_eq!(
             crate::win_fileops::undo(&back, None, true).map_err(|e| e.to_string()),

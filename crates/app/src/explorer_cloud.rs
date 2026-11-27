@@ -61,9 +61,6 @@ pub(crate) struct CloudStates {
     /// The shell's announcement of the current folder; dropping it ends the announcement.
     visit: Option<VisitGuard>,
     recheck: Recheck,
-    /// The current recheck already ran once more for a change the list couldn't take; another
-    /// one waits for a new hint.
-    rerun_spent: bool,
     /// Hints since the last recheck log line that found one running (merged into its follow-up)
     /// or the list not ready (waiting for it).
     hints_merged: u32,
@@ -283,7 +280,6 @@ impl Explorer {
             }
             self.cloud.window = Self::owner_from(window);
             self.cloud.recheck = Recheck::default();
-            self.cloud.rerun_spent = false;
             self.cloud.hints_merged = 0;
             self.cloud.hints_waiting = 0;
             // Another folder: show its last known states while rereading.
@@ -340,7 +336,16 @@ impl Explorer {
                 .collect();
             let mut scan = shell.cloud_scan(&path, &items);
             if scan.sync_root {
-                scan.not_synced = unsynced_by_attributes(&entries);
+                // What the attributes call not synced, checked with the items themselves: a
+                // placeholder can list as a plain item (#319).
+                let plain = unsynced_by_attributes(&entries);
+                let (not_synced, syncing) = if plain.is_empty() {
+                    (plain, Vec::new())
+                } else {
+                    shell.cloud_verify(&path, plain)
+                };
+                scan.not_synced = not_synced;
+                scan.syncing.extend(syncing);
                 if first {
                     let counts = CloudCounts::of(entries.iter());
                     log::info!("cloud folder {} listed: {counts}", path.display());
@@ -438,8 +443,6 @@ impl Explorer {
         if self.current_path() != Some(dir) {
             return;
         }
-        // A new hint: a change the list can't take may be run again once more.
-        self.cloud.rerun_spent = false;
         let ready = self.list_ready(dir);
         if self.cloud.recheck.ask(ready) {
             self.start_recheck();
@@ -498,7 +501,7 @@ impl Explorer {
             .as_ref()
             .is_some_and(|m| m.generation == recheck.generation && m.version == recheck.version);
         let list = ListState::of(current, self.pending.is_none());
-        let action = recheck_action(recheck.changed, list, self.cloud.rerun_spent);
+        let action = recheck_action(recheck.changed, list);
         log::info!(
             "cloud recheck of {}: on disk {}; changed {}, list moved {}: {action:?}; hints merged {}, waiting {}",
             dir.display(),
@@ -512,12 +515,8 @@ impl Explorer {
             RecheckAction::Reload => self.reload(cx),
             // Compared with a list that has changed since (a watcher delta, a re-sort) or is
             // being listed again: dropping the result would lose the hint that asked for it.
-            // Once per hint, so a folder that keeps changing isn't listed over and over.
-            RecheckAction::RunAgain => {
-                self.cloud.rerun_spent = true;
-                self.cloud.recheck.rerun();
-            }
-            RecheckAction::Nothing | RecheckAction::AlreadyRanAgain => {}
+            RecheckAction::RunAgain => self.cloud.recheck.rerun(),
+            RecheckAction::Nothing => {}
         }
         let ready = self.list_ready(dir);
         if self.cloud.recheck.finished(ready) {
@@ -547,8 +546,6 @@ enum RecheckAction {
     Reload,
     /// Items came or went, but the list changed meanwhile or is being listed: compare again.
     RunAgain,
-    /// As [`Self::RunAgain`], but this hint already ran again once.
-    AlreadyRanAgain,
 }
 
 /// The list a finished recheck compared with, as it is when the result arrives.
@@ -570,13 +567,12 @@ impl ListState {
     }
 }
 
-/// See [`RecheckAction`]. `spent`: this hint already ran again once.
-const fn recheck_action(changed: bool, list: ListState, spent: bool) -> RecheckAction {
-    match (changed, list, spent) {
-        (false, _, _) => RecheckAction::Nothing,
-        (true, ListState::Same, _) => RecheckAction::Reload,
-        (true, ListState::Moved, false) => RecheckAction::RunAgain,
-        (true, ListState::Moved, true) => RecheckAction::AlreadyRanAgain,
+/// See [`RecheckAction`].
+const fn recheck_action(changed: bool, list: ListState) -> RecheckAction {
+    match (changed, list) {
+        (false, _) => RecheckAction::Nothing,
+        (true, ListState::Same) => RecheckAction::Reload,
+        (true, ListState::Moved) => RecheckAction::RunAgain,
     }
 }
 
@@ -611,17 +607,15 @@ fn items_changed(
 mod tests {
     use super::*;
 
-    /// A change the list can take reloads; one it can't runs again, once per hint.
+    /// A change the list can take reloads; one it can't runs again.
     #[test]
-    fn a_recheck_reloads_or_runs_again_once() {
+    fn a_recheck_reloads_or_runs_again() {
         use RecheckAction as A;
         let (same, moved) = (ListState::Same, ListState::Moved);
-        assert_eq!(recheck_action(false, same, false), A::Nothing);
-        assert_eq!(recheck_action(false, moved, true), A::Nothing);
-        assert_eq!(recheck_action(true, same, false), A::Reload);
-        assert_eq!(recheck_action(true, same, true), A::Reload);
-        assert_eq!(recheck_action(true, moved, false), A::RunAgain);
-        assert_eq!(recheck_action(true, moved, true), A::AlreadyRanAgain);
+        assert_eq!(recheck_action(false, same), A::Nothing);
+        assert_eq!(recheck_action(false, moved), A::Nothing);
+        assert_eq!(recheck_action(true, same), A::Reload);
+        assert_eq!(recheck_action(true, moved), A::RunAgain);
         // The list moved, or a listing is running: either way it can't take the change.
         assert_eq!(ListState::of(true, true), same);
         assert_eq!(ListState::of(false, true), moved, "list moved");

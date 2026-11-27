@@ -1287,6 +1287,15 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = (dir, items);
         CloudScan::default()
     }
+    /// Of `plain` (items of `dir`, a folder inside a sync root, whose listed attributes say they
+    /// aren't placeholders), the ones that really aren't (not synced), and the placeholders among
+    /// them the sync client hasn't marked in sync. A listing can give a placeholder without its
+    /// reparse point attribute (#319). Reads placeholder info only, nothing is downloaded.
+    /// Background thread.
+    fn cloud_verify(&self, dir: &Path, plain: Vec<Arc<str>>) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+        let _ = dir;
+        (plain, Vec::new())
+    }
     /// Tells the shell that the pane `slot` shows `visit.dir`, a folder inside a cloud sync root,
     /// the way File Explorer announces every folder it opens: some sync clients only fill a folder
     /// with its online-only items once a shell window shows it (#319, `win_folder_visit.rs`). The

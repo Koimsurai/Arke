@@ -1117,10 +1117,10 @@ fn a_command_left_out_here_is_not_drawn_ahead(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-/// #344: "Pin to Start" only works when File Explorer itself runs it; from Arke Windows answers
-/// "access denied". It stays out of "Show more options"; the rest of the Windows menu is kept.
+/// #367: "Pin to Start" and "Unpin from Start" are in "Show more options" for a program, as in
+/// File Explorer, next to the rest of the Windows menu.
 #[gpui::test]
-fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
+fn pin_to_start_is_in_more_options(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\p", vec![file("a.exe", 1)]);
     let shell = Arc::new(FakeShell::default());
@@ -1136,7 +1136,8 @@ fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
     };
     *shell.extra_menu.lock() = vec![
         item(40, "Pin to Start", "PinToStartScreen"),
-        item(41, "Share", "Windows.ModernShare"),
+        item(41, "Unpin from Start", "UnpinFromStartScreen"),
+        item(42, "Share", "Windows.ModernShare"),
     ];
     let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\p");
     wait_until(cx, &view, "load", loaded(r"C:\p"));
@@ -1150,8 +1151,9 @@ fn pin_to_start_stays_out_of_more_options(cx: &mut TestAppContext) {
         };
         menu.shell_items_for_test()
     });
-    assert!(items.iter().any(|i| i == "Share"), "{items:?}");
-    assert!(!items.iter().any(|i| i == "Pin to Start"), "{items:?}");
+    for label in ["Pin to Start", "Unpin from Start", "Share"] {
+        assert!(items.iter().any(|i| i == label), "{label}: {items:?}");
+    }
 }
 
 /// "More options" says once what its pins do: the line is there until the submenu has been open,

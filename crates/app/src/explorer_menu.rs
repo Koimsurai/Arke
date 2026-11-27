@@ -4104,13 +4104,9 @@ fn row_mark(icon: Option<MenuIcon>, glyph: Option<Icon>, checked: bool) -> gpui:
         })
 }
 
-/// Windows menu items that only File Explorer itself may run: from any other program Windows
-/// answers "access denied" (#344). Files hides them too.
-const EXPLORER_ONLY_VERBS: &[&str] = &["pintostartscreen", "unpinfromstartscreen"];
-
 /// Drops items from "Show more options" that Arke's menu already has (open, cut, copy, delete,
-/// ...), matched by standard Windows verbs like Files does, and the ones only File Explorer may
-/// run. Only the top level is filtered.
+/// ...), matched by standard Windows verbs like Files does. Only the top level is filtered.
+/// "Pin to Start" and "Unpin from Start" stay, as in File Explorer (#367).
 fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<ShellMenuEntry> {
     use MenuCommand as C;
     let verbs: Vec<&str> = ours
@@ -4136,7 +4132,6 @@ fn without_duplicates(shell: Vec<ShellMenuEntry>, ours: &[MenuEntry]) -> Vec<She
             _ => &[][..],
         })
         .copied()
-        .chain(EXPLORER_ONLY_VERBS.iter().copied())
         .collect();
     let kept = shell
         .into_iter()

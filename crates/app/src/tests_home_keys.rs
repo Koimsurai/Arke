@@ -267,6 +267,55 @@ fn at(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
     }
 }
 
+/// Tab from the sidebar enters the page on the first section, favorites, and walks on in the
+/// order the sections are drawn: drives, recent files, then out of the page. Shift+Tab from the
+/// first section goes back to the sidebar. When the mouse moved after Tab came in, so the ring
+/// isn't on screen, the next Tab shows the first card instead of walking past it (#322).
+#[gpui::test]
+fn tab_enters_the_home_page_on_favorites(cx: &mut TestAppContext) {
+    let (ws, _shell, cx) = window(cx);
+    key(cx, "shift-tab");
+    assert_eq!(stop(&ws, cx), "sidebar");
+
+    let page = |card: &str| format!("page {card}");
+    let mut went = Vec::new();
+    for _ in 0..4 {
+        key(cx, "tab");
+        went.push(at(&ws, cx));
+    }
+    assert_eq!(
+        went,
+        [
+            page(MUSIC),
+            page(DRIVE_C),
+            page(RECENT_A),
+            "sidebar".to_owned()
+        ]
+    );
+
+    // Shift+Tab from the first section leaves the page.
+    key(cx, "tab");
+    assert_eq!(at(&ws, cx), page(MUSIC));
+    key(cx, "shift-tab");
+    assert_eq!(stop(&ws, cx), "sidebar");
+
+    // The mouse moves after Tab came in: the ring is gone, and Tab brings it back on favorites.
+    key(cx, "tab");
+    assert_eq!(at(&ws, cx), page(MUSIC));
+    cx.simulate_mouse_move(
+        gpui::point(gpui::px(900.), gpui::px(800.)),
+        None,
+        gpui::Modifiers::none(),
+    );
+    refresh(cx);
+    assert!(cx.debug_bounds("home-focus-ring").is_none(), "no ring");
+    key(cx, "tab");
+    assert_eq!(at(&ws, cx), page(MUSIC), "the first card, not the drives");
+    assert!(ring_on(cx, "home-favorite music"));
+    key(cx, "tab");
+    assert_eq!(at(&ws, cx), page(DRIVE_C));
+}
+
 /// Tab walks the page's sections (favorites, drives, recent files), then leaves it for the
 /// sidebar, and Shift+Tab walks them back: a round visits more than two stops, and the arrow keys
 /// still move inside a section (#322).

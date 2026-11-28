@@ -554,7 +554,7 @@ impl Builder {
         let (name, attrs) = tag.split_at(name_end);
         let is = |want: &str| name.eq_ignore_ascii_case(want);
         if is("img") && !closing {
-            let alt = attr(attrs, "alt").map(unescape).unwrap_or_default();
+            let alt = attr(attrs, "alt").map_or_else(Default::default, unescape);
             let alt = alt.trim();
             if alt.is_empty() {
                 self.placeholder_image();
@@ -619,10 +619,9 @@ fn tag_end(tag: &str) -> Option<usize> {
     for (i, b) in tag.bytes().enumerate().skip(1) {
         match (quote, b) {
             (Some(q), _) if b == q => quote = None,
-            (Some(_), _) => {}
             (None, b'"' | b'\'') => quote = Some(b),
             (None, b'>') => return Some(i),
-            (None, _) => {}
+            _ => {}
         }
     }
     None

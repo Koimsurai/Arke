@@ -10128,13 +10128,13 @@ cmd.focus_filter:
   pt-BR: Filtrar esta pasta
   ja: このフォルダーをフィルター
 cmd.focus_search:
-  en: Search
-  zh-TW: 搜尋
-  zh-CN: 搜索
-  de: Suchen
-  es: Buscar
-  pt-BR: Pesquisar
-  ja: 検索
+  en: Search subfolders
+  zh-TW: 搜尋子資料夾
+  zh-CN: 搜索子文件夹
+  de: In Unterordnern suchen
+  es: Buscar en subcarpetas
+  pt-BR: Pesquisar nas subpastas
+  ja: サブフォルダーを検索
 cmd.focus_computer_search:
   en: Search this PC
   zh-TW: 搜尋這台電腦

@@ -1142,3 +1142,373 @@ fn tab_from_the_first_home_card_walks_on(cx: &mut TestAppContext) {
     assert!(sidebar, "Tab reaches the sidebar: {went:?}");
     assert!(went[1..].contains(&start), "and comes back: {went:?}");
 }
+
+/// The node with role `role` named `name`.
+fn named_as<'a>(tree: &'a Value, role_is: &str, name: &str) -> &'a Value {
+    nodes(tree)
+        .find(|n| role(n) == role_is && label(n) == name)
+        .unwrap_or_else(|| panic!("no {role_is} named {name:?}"))
+}
+
+/// The nodes under `node` (itself included) as "Role label".
+fn subtree(tree: &Value, node: &Value) -> std::collections::BTreeSet<String> {
+    let mut inside = std::collections::BTreeSet::new();
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        inside.insert(format!("{} {}", role(node), label(node)));
+        if let Some(children) = node["children"].as_array() {
+            stack.extend(
+                children
+                    .iter()
+                    .filter_map(|c| c.as_str())
+                    .map(|k| &tree["nodes"][k]),
+            );
+        }
+    }
+    inside
+}
+
+/// The node the keyboard focus is on (not an active item under it).
+fn gpui_focused(tree: &Value) -> &Value {
+    let key = tree["gpui_focus"]
+        .as_str()
+        .expect("something has the focus");
+    &tree["nodes"][key]
+}
+
+/// What's new: a version is a button read with what it is ("0.10.2 · What's new"), collapsed or
+/// expanded; Enter opens it, and its notes follow as a group Tab stops at, read with the notes and
+/// holding a text node per line (#322).
+#[gpui::test]
+fn whats_new_versions_open_from_the_keyboard(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_whats_new(crate::workspace::whats_new_page::Mode::Browse, window, cx);
+    });
+    let t = tree(cx);
+    let title = format!(" · {}", t!("whats_new.title"));
+    let folded = nodes(&t)
+        .find(|n| {
+            role(n) == "Button"
+                && label(n).contains(&title)
+                && n["aria"]["expanded"] == Value::Bool(false)
+        })
+        .expect("a folded version");
+    let name = label(folded).to_owned();
+    let version = name.split(" · ").next().unwrap_or_default().to_owned();
+    assert!(
+        actions(folded).contains(&"Expand"),
+        "a screen reader can open it: {:?}",
+        actions(folded)
+    );
+    let button = format!("Button {name}");
+    let mut path = Vec::new();
+    for _ in 0..300 {
+        cx.simulate_keystrokes("tab");
+        let at = focus_desc(&tree(cx)).unwrap_or_default();
+        if at == button {
+            break;
+        }
+        path.push(at);
+    }
+    assert_eq!(
+        focus_desc(&tree(cx)).as_deref(),
+        Some(button.as_str()),
+        "Tab reaches it; went {path:#?}"
+    );
+    press(cx, "enter");
+    let t = tree(cx);
+    assert_eq!(
+        named_as(&t, "Button", &name)["aria"]["expanded"],
+        Value::Bool(true),
+        "Enter opens it"
+    );
+    cx.simulate_keystrokes("tab");
+    let t = tree(cx);
+    let notes = gpui_focused(&t);
+    assert_eq!(
+        (role(notes), label(notes)),
+        ("Group", version.as_str()),
+        "Tab goes on to its notes"
+    );
+    assert!(
+        notes["aria"]["description"]
+            .as_str()
+            .is_some_and(|d| !d.trim().is_empty()),
+        "the notes are read with it: {notes}"
+    );
+    let lines = notes["children"].as_array().map_or_default(|c| {
+        c.iter()
+            .filter_map(|k| k.as_str())
+            .map(|k| &t["nodes"][k])
+            .filter(|n| role(n) == "Label" && n["aria"]["value"].is_string())
+            .count()
+    });
+    assert!(lines > 0, "each line is a text node: {notes}");
+
+    // The screen reader's Collapse folds it again.
+    cx.simulate_a11y_action(node_id(&t, &name), gpui::AccessibleAction::Collapse);
+    assert_eq!(
+        named_as(&tree(cx), "Button", &name)["aria"]["expanded"],
+        Value::Bool(false),
+        "Collapse folds it"
+    );
+}
+
+/// The setup guide opened from Settings › About takes the focus, so a screen reader reads it out
+/// (its step as the description); Tab stays in it; Esc closes it and the focus goes back to the
+/// button that opened it (#322).
+#[gpui::test]
+fn the_setup_guide_takes_the_focus_and_gives_it_back(cx: &mut TestAppContext) {
+    let (_ws, cx) = window(cx);
+    cx.dispatch_action(crate::workspace::OpenSettings);
+    let t = tree(cx);
+    cx.simulate_a11y_action(node_id(&t, "About"), gpui::AccessibleAction::Click);
+    if !on_categories(&tree(cx)) {
+        cx.simulate_keystrokes("f6");
+    }
+    assert!(on_categories(&tree(cx)), "F6 goes to the categories");
+    let opener = {
+        let t = tree(cx);
+        let title = t!("onboarding.settings_title");
+        let node = nodes(&t)
+            .find(|n| role(n) == "Button" && label(n).starts_with(&*title))
+            .expect("the Setup guide button");
+        format!("Button {}", label(node))
+    };
+    let mut path = Vec::new();
+    for _ in 0..100 {
+        cx.simulate_keystrokes("tab");
+        let at = focus_desc(&tree(cx)).unwrap_or_default();
+        if at == opener {
+            break;
+        }
+        path.push(at);
+    }
+    assert_eq!(
+        focus_desc(&tree(cx)).as_deref(),
+        Some(opener.as_str()),
+        "Tab reaches the button; went {path:#?}"
+    );
+    press(cx, "enter");
+    assert_eq!(
+        cx.update(|_, cx| Workspace::guide_step_for_test(cx)),
+        Some(0),
+        "the guide opens"
+    );
+    let t = tree(cx);
+    let card = gpui_focused(&t);
+    assert_eq!(
+        (role(card), label(card)),
+        ("Dialog", &*t!("onboarding.welcome")),
+        "the guide has the focus"
+    );
+    assert!(
+        card["aria"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains(&*t!("onboarding.source_title"))),
+        "its step is read with it: {card}"
+    );
+    let inside = subtree(&t, card);
+    let mut went = Vec::new();
+    for key in ["tab", "tab", "tab", "tab", "tab", "shift-tab", "shift-tab"] {
+        cx.simulate_keystrokes(key);
+        went.push(focus_desc(&tree(cx)).unwrap_or_default());
+    }
+    assert!(
+        went.iter().all(|d| inside.contains(d)),
+        "Tab stays in the guide: {went:?} in {inside:?}"
+    );
+    assert!(
+        went.iter().collect::<std::collections::BTreeSet<_>>().len() > 1,
+        "Tab moves between its controls: {went:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        cx.update(|_, cx| Workspace::guide_step_for_test(cx)),
+        None,
+        "Esc closes it"
+    );
+    assert_eq!(
+        focus_desc(&tree(cx)).as_deref(),
+        Some(opener.as_str()),
+        "the focus goes back to the button"
+    );
+}
+
+/// From the pane row, the keyboard goes to `name` (Right from the first button).
+fn row_to(cx: &mut VisualTestContext, name: &str) {
+    for _ in 0..3 {
+        cx.simulate_keystrokes("f6");
+        tree(cx);
+    }
+    let mut path = Vec::new();
+    while focused(&tree(cx)).1 != name {
+        assert!(path.len() < 30, "no {name} button: {path:?}");
+        cx.simulate_keystrokes("right");
+        path.push(focused(&tree(cx)));
+    }
+}
+
+/// The focused choice of an open flyout: its role, name and whether it is checked.
+fn choice(cx: &mut VisualTestContext) -> (String, String, String) {
+    let t = tree(cx);
+    let (role_is, name) = focused(&t);
+    let node = nodes(&t)
+        .find(|n| role(n) == role_is && label(n) == name)
+        .expect("the focused choice");
+    let toggled = node["aria"]["toggled"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    (role_is, name, toggled)
+}
+
+/// The Sort flyout from the keyboard: Enter on Sort opens it with the focus on the column sorted
+/// by, read as a checked radio button; Down moves to the next column, Enter sorts by it, and Esc
+/// closes the flyout and goes back to the Sort button (#322).
+#[gpui::test]
+fn the_sort_flyout_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let sort = t!("view.sort").into_owned();
+    row_to(cx, &sort);
+    press(cx, "enter");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    assert!(
+        view.update(cx, |v, _| v.sort_options_open_for_test()),
+        "Enter opens it"
+    );
+    assert_eq!(
+        named_as(&tree(cx), "Button", &sort)["aria"]["expanded"],
+        Value::Bool(true)
+    );
+    let name = t!("col.name").into_owned();
+    let modified = t!("col.modified").into_owned();
+    assert_eq!(
+        choice(cx),
+        ("RadioButton".to_owned(), name.clone(), "True".to_owned()),
+        "the focus is on the column sorted by"
+    );
+    cx.simulate_keystrokes("down");
+    assert_eq!(
+        choice(cx),
+        (
+            "RadioButton".to_owned(),
+            modified.clone(),
+            "False".to_owned()
+        ),
+        "Down moves to the next one"
+    );
+    press(cx, "enter");
+    assert_eq!(
+        view.update(cx, |v, _| v.sort.column),
+        arke_core::SortColumn::Modified,
+        "Enter sorts by it"
+    );
+    assert_eq!(
+        choice(cx),
+        ("RadioButton".to_owned(), modified, "True".to_owned()),
+        "the flyout stays, the focus too"
+    );
+    cx.simulate_keystrokes("end");
+    assert_eq!(choice(cx).1, t!("settings.descending"), "End: the last");
+    cx.simulate_keystrokes("escape");
+    assert!(
+        !view.update(cx, |v, _| v.sort_options_open_for_test()),
+        "Esc closes it"
+    );
+    assert_eq!(
+        focused(&tree(cx)),
+        ("Button".to_owned(), sort),
+        "the focus is back on Sort"
+    );
+    assert_eq!(role(gpui_focused(&tree(cx))), "Toolbar", "in the pane row");
+}
+
+/// The View options flyout from the keyboard: Space opens it on the current layout; Down and
+/// Enter pick Icons; the slider's Right makes the icons bigger; Space flips a switch; Esc goes
+/// back to the button. Opened with the mouse, it leaves the focus in the list (#322).
+#[gpui::test]
+fn the_view_options_flyout_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let (ws, cx) = window(cx);
+    let options = t!("view.options").into_owned();
+    row_to(cx, &options);
+    press(cx, "space");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    assert!(
+        view.update(cx, |v, _| v.view_options_open_for_test()),
+        "Space opens it"
+    );
+    assert_eq!(
+        choice(cx),
+        (
+            "RadioButton".to_owned(),
+            t!("menu.view_details").into_owned(),
+            "True".to_owned()
+        ),
+        "the focus is on the current layout"
+    );
+    cx.simulate_keystrokes("down");
+    press(cx, "enter");
+    assert_eq!(
+        view.update(cx, |v, _| v.view_mode),
+        crate::explorer::ViewMode::Icons,
+        "Icons picked"
+    );
+    assert_eq!(
+        choice(cx),
+        (
+            "RadioButton".to_owned(),
+            t!("view.icons").into_owned(),
+            "True".to_owned()
+        )
+    );
+    cx.simulate_keystrokes("down down");
+    assert_eq!(
+        focused(&tree(cx)),
+        ("Slider".to_owned(), t!("view.icon_size").into_owned())
+    );
+    let before = view.update(cx, |v, _| v.icon_size);
+    cx.simulate_keystrokes("right");
+    assert!(
+        view.update(cx, |v, _| v.icon_size) > before,
+        "Right makes them bigger"
+    );
+    cx.simulate_keystrokes("down");
+    assert_eq!(
+        focused(&tree(cx)),
+        ("Switch".to_owned(), t!("settings.group_rows").into_owned())
+    );
+    let grouped = settings_now(cx).group_rows;
+    press(cx, "space");
+    assert_eq!(settings_now(cx).group_rows, !grouped, "Space flips it");
+    cx.simulate_keystrokes("escape");
+    assert!(
+        !view.update(cx, |v, _| v.view_options_open_for_test()),
+        "Esc closes it"
+    );
+    assert_eq!(
+        focused(&tree(cx)),
+        ("Button".to_owned(), options.clone()),
+        "the focus is back on View options"
+    );
+
+    // With the mouse the list keeps the keyboard.
+    view.update_in(cx, |v, window, cx| {
+        let list = gpui::Focusable::focus_handle(v, cx);
+        window.focus(&list, cx);
+    });
+    let bounds = cx
+        .debug_bounds("view-options")
+        .expect("the button is drawn");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    let t = tree(cx);
+    assert!(view.update(cx, |v, _| v.view_options_open_for_test()));
+    assert_ne!(
+        role(gpui_focused(&t)),
+        "Dialog",
+        "a click doesn't take the keyboard"
+    );
+    let region = cx.update(|window, cx| ws.read(cx).region_for_test(window, cx));
+    assert_eq!(region, "list", "it stays in the list");
+}

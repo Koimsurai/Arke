@@ -318,12 +318,11 @@ fn com_class_key() -> String {
 fn in_put_back_order(entries: &mut [BackupEntry]) {
     let class = com_class_key();
     entries.sort_by_key(|entry| {
+        // 0: a command (the default value), 1: anything else (`DelegateExecute`), 2: the class.
         if entry.key.eq_ignore_ascii_case(&class) {
             2
-        } else if entry.value.is_empty() {
-            0
         } else {
-            1
+            u8::from(!entry.value.is_empty())
         }
     });
 }

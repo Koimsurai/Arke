@@ -384,8 +384,9 @@ impl Explorer {
         // How the row fits (#388, #474, #528), decided once: the path bar collapses levels only
         // when the row says so.
         let selecting = !self.search_mode && !self.selection.is_empty();
-        let fold = self.row_layout(selecting, window);
+        let fold = self.row_layout(selecting, window, cx);
         self.row_fold.sort_in_more = fold.sort_folded;
+        self.row_fold.toggles_in_more = fold.toggles_folded;
         self.row_fold.path_collapses = fold.collapse;
         // A narrow path bar (as laid out on the last frame) keeps only the current folder.
         let slot = self.path_slot.get();
@@ -408,7 +409,7 @@ impl Explorer {
         let chip = self.render_filter_chip(cx);
         let info = match fold.selection {
             Some(layout) if selecting => self.render_selection_actions(layout, cx),
-            _ => self.render_folder_actions(self.compact_bar(), cx),
+            _ => self.render_folder_actions(self.compact_bar(), !fold.count_hidden, cx),
         };
         let view = self
             .render_view_controls(&fold, window, cx)

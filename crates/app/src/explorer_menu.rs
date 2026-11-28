@@ -196,6 +196,10 @@ pub(crate) enum MenuCommand {
     FreeUpSpace,
     /// Put the targets on the shelf.
     AddToShelf,
+    /// Split view, from the pane row's "⋯": synchronized browsing on or off.
+    ToggleSync,
+    /// Split view, from the pane row's "⋯": compare the two folders, or stop.
+    ToggleCompare,
 }
 
 /// An app listed under "Open with": one the user added in Settings › Context menu.
@@ -258,6 +262,8 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
         C::ToggleSearchNetwork | C::SearchInFolder => Icon::Search,
         C::FreeUpSpace => Icon::Cloud,
         C::AddToShelf => Icon::Shelf,
+        C::ToggleSync => Icon::Link,
+        C::ToggleCompare => Icon::Compare,
         _ => return None,
     })
 }
@@ -1709,6 +1715,11 @@ impl Explorer {
         if std::mem::take(&mut self.row_fold.menu_adds_sort) && !targets.is_empty() {
             entries.extend([MenuEntry::Separator, self.sort_submenu()]);
         }
+        // With synchronized browsing and compare folded into it: they come along, checked while
+        // on, as the buttons show them (#474).
+        if std::mem::take(&mut self.row_fold.menu_adds_toggles) && self.pane.pair_toggles {
+            entries.extend(self.dual_toggle_items());
+        }
         let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);
         // Shift held, as File Explorer: the Windows menu includes commands registered to show
         // only then (#272).
@@ -1779,6 +1790,29 @@ impl Explorer {
             key: Some("view"),
             pin: None,
         }
+    }
+
+    /// Split view's synchronized browsing and compare as menu rows, checked while on, after a
+    /// separator. A pinned tab has no synchronized browsing.
+    fn dual_toggle_items(&self) -> Vec<MenuEntry> {
+        use MenuCommand as C;
+        let mut items = vec![MenuEntry::Separator];
+        if !self.locked {
+            items.push(checked_item(
+                t!("compare.sync_tip").into_owned(),
+                Some("Ctrl+Shift+S"),
+                C::ToggleSync,
+                self.pane.synced,
+            ));
+        }
+        items.push(checked_item(
+            t!("compare.compare_tip").into_owned(),
+            Some("Ctrl+Shift+D"),
+            C::ToggleCompare,
+            self.pane.comparing,
+        ));
+        decorate(&mut items);
+        items
     }
 
     /// "New": a folder and a file, as in Windows' own New submenu, instead of two rows of their
@@ -2686,6 +2720,9 @@ impl Explorer {
                     cx.emit(ExplorerEvent::ImportSettings(path));
                 }
             }
+            // The same as the buttons in the pane row.
+            C::ToggleSync => cx.emit(ExplorerEvent::ToggleSync),
+            C::ToggleCompare => cx.emit(ExplorerEvent::ToggleCompare),
             C::SetBackground => {
                 if let Some((path, false)) = targets.first().cloned() {
                     crate::settings::SettingsStore::global(cx).update(cx, |store, cx| {

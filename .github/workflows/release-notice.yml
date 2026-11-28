@@ -4,7 +4,7 @@
 name: release notice
 
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] only our own release workflow triggers it, on a tag we pushed
     workflows: [release]
     types: [completed]
   workflow_dispatch:

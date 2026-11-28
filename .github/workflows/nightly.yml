@@ -47,7 +47,7 @@ jobs:
       # The installers, as in release.yml (installer/arke.iss needs Inno Setup 6.7.4 or later, #406).
       - name: install Inno Setup
         if: steps.changed.outputs.build == 'true'
-        uses: ./.github/actions/install-inno-setup
+        uses: $/.github/actions/install-inno-setup
       # A dry run also checks the signing secret against the key built into Arke, so a wrong
       # secret shows here rather than in the first release (signs nothing it keeps).
       - name: build only (dry run)
@@ -65,4 +65,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Nightly updates are signed like the others (update_sig.rs).
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        run: cargo xtask publish nightly
+        run: cargo xtask publish nightly # zizmor: ignore[use-trusted-publishing] publishes a GitHub release, not a package index

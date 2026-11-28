@@ -168,8 +168,8 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
   # The workflows themselves: actionlint for mistakes, zizmor for security (template injection
-  # from issue and PR text, cache poisoning, credentials left in checkouts). zizmor reports only
-  # for now; once its findings are fixed it will fail the check.
+  # from issue and PR text, cache poisoning, credentials left in checkouts). A finding that is safe
+  # here gets a `# zizmor: ignore[...]` comment on its line saying why.
   workflows:
     name: workflows · actionlint + zizmor
     runs-on: ubuntu-latest
@@ -183,7 +183,6 @@ jobs:
         with:
           tool: zizmor
       - name: zizmor
-        continue-on-error: true
         run: zizmor .github/workflows/
 
   # Dependabot's grouped update titles run past the 72-character limit.

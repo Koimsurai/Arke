@@ -69,6 +69,8 @@ mod tabdrag;
 mod tabghost;
 #[path = "workspace_tabmove.rs"]
 mod tabmove;
+#[path = "workspace_tabstrip.rs"]
+mod tabstrip;
 #[path = "workspace_uninstall.rs"]
 mod uninstall_page;
 #[path = "workspace_update.rs"]
@@ -3625,9 +3627,11 @@ impl Workspace {
                 let pinned = self.tabs[ix].pinned;
                 div()
                     .when(pinned, |d| d.w(crate::theme::scaled_px(132.)).flex_none())
+                    // Down to a width that keeps the titles apart (#533); past that the strip
+                    // scrolls.
                     .when(!pinned, |d| {
                         d.w(crate::theme::scaled_px(200.))
-                            .min_w(crate::theme::scaled_px(96.))
+                            .min_w(crate::theme::scaled_px(tabstrip::TAB_MIN_W))
                             .flex_shrink(1.)
                     })
                     .child(self.render_tab(ix, cx))
@@ -3648,6 +3652,8 @@ impl Workspace {
                 cx.notify();
             }
         }
+        // Tabs cut off: scroll buttons at both ends of the tabs say so and step to them (#541).
+        let edges = tabstrip::StripEdges::of(scroll);
         div()
             .id("tab-strip")
             .debug_selector(|| "tab-strip".to_owned())
@@ -3663,6 +3669,9 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(theme::s_4())
+            .when(edges.overflow, |d| {
+                d.child(Self::strip_scroll_button(false, edges.back, cx))
+            })
             // Too many tabs to fit: they scroll sideways (the wheel scrolls them too) instead of
             // the last ones being cut off.
             .child(
@@ -3677,6 +3686,9 @@ impl Workspace {
                     .track_scroll(scroll)
                     .children(tabs),
             )
+            .when(edges.overflow, |d| {
+                d.child(Self::strip_scroll_button(true, edges.forward, cx))
+            })
             .child(
                 div()
                     .id("strip-new-tab")
@@ -3713,6 +3725,8 @@ impl Workspace {
             )
             .child(Self::workspaces_button(cx))
             .child(sidebar::tab_layout_button(true, cx))
+            // After the tabs, so it reads their layout of this frame.
+            .child(self.strip_watch(edges))
     }
 }
 

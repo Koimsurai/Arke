@@ -4642,9 +4642,15 @@ impl Workspace {
             })
             .collect();
         let close_button = Self::tab_close_button(ix, cx);
+        let horizontal = Self::horizontal_tabs(cx);
+        // Tabs on top: the close button sits over the end of the tab and takes its room from the
+        // title only where it shows (the active tab, the one under the pointer), so the other
+        // titles keep it (#533). The title doesn't move, its end is cut sooner.
+        let floating_close = horizontal && !tab.pinned;
+        let close_shown = floating_close && self.strip_close_shown(ix);
         // Sidebar tabs follow the density like the other sidebar rows (#438); the top strip's
         // tabs fill its bar and keep their height.
-        let row_h = if Self::horizontal_tabs(cx) {
+        let row_h = if horizontal {
             theme::h_row()
         } else {
             theme::h_row_side()
@@ -4667,7 +4673,11 @@ impl Workspace {
             .items_center()
             .gap(theme::s_4())
             .pl(if split { theme::s_4() } else { theme::s_8() })
-            .pr(theme::s_6())
+            .pr(if close_shown {
+                theme::s_6() + super::tabstrip::close_room()
+            } else {
+                theme::s_6()
+            })
             .rounded(theme::r_8())
             .cursor_pointer()
             // Slides from the old position after a reorder (the offset is relative).
@@ -4734,7 +4744,7 @@ impl Workspace {
             .aria_selected(active)
             // The sidebar's tab titles are only the folder's name: the full path is on hover.
             .when_some(
-                (!Self::horizontal_tabs(cx))
+                (!horizontal)
                     .then(|| self.tab_tip(ix, cx))
                     .flatten(),
                 |d, tip| d.aria_description(tip.clone()).tooltip(tooltip_text(tip)),
@@ -4771,13 +4781,34 @@ impl Workspace {
                     .into_any_element(),
                 None => kind_icon(FileKind::Folder, theme::icon()),
             };
-            row.gap(theme::s_8())
-                .child(icon)
-                .child(div().flex_1().min_w_0().truncate().child(title))
+            row.gap(theme::s_8()).child(icon).child(
+                div()
+                    .debug_selector(move || format!("tab-title-{ix}"))
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(title),
+            )
         };
         let row = if tab.pinned {
             // Pinned: a pin instead of the close button, always shown; clicking it unpins.
             row.child(Self::tab_pin_button(ix, cx))
+        } else if floating_close {
+            row.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(theme::s_6())
+                    .flex()
+                    .items_center()
+                    // Shown at once where hover styles see the pointer; the title gives way from
+                    // the next frame, once the strip saw the pointer there too (`strip_watch`).
+                    .when(!close_shown, |d| {
+                        d.invisible().group_hover(group, gpui::Styled::visible)
+                    })
+                    .child(close_button),
+            )
         } else {
             row.child(
                 // Close button only on the active tab or on hover.
@@ -4791,7 +4822,7 @@ impl Workspace {
         };
         let last_pinned = tab.pinned && self.tabs.get(ix + 1).is_none_or(|t| !t.pinned);
         let shell = self.tab_drag_shell(ix, row, cx);
-        if last_pinned && !Self::horizontal_tabs(cx) && ix + 1 < self.tabs.len() {
+        if last_pinned && !horizontal && ix + 1 < self.tabs.len() {
             // A hairline under the pinned group sets it apart from the other tabs.
             div()
                 .flex()

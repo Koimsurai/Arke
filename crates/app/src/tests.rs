@@ -117,6 +117,8 @@ mod sort_options;
 mod stuck_drag;
 #[path = "tests_tab_drag.rs"]
 mod tab_drag;
+#[path = "tests_tab_strip.rs"]
+mod tab_strip;
 #[path = "tests_tabs.rs"]
 mod tabs;
 #[path = "tests_columns.rs"]

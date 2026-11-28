@@ -739,13 +739,10 @@ fn each_pane_folds_its_own_row(cx: &mut TestAppContext) {
     );
 }
 
-/// #474: in a split tab, the right pane (on a short path) folds Sort, then its item count, then
-/// synchronized browsing and compare into "⋯", before its path loses a level. The menu shows
-/// them checked while on, and they toggle as the buttons do.
-#[gpui::test]
-fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
-    let (ws, left, cx) = open_deep(cx, 1800.);
-    let right = split(&ws, &left, cx);
+/// Narrows the window until the right pane of a split tab folds synchronized browsing and
+/// compare into "⋯" with its path whole, checking on the way that its path keeps its levels while
+/// they are drawn and that Sort went first. Returns the width.
+fn fold_the_right_toggles(cx: &mut VisualTestContext, right: &Entity<Explorer>) -> u16 {
     let levels = arke_core::path::breadcrumbs(std::path::Path::new(OTHER)).len();
     let state =
         |cx: &mut VisualTestContext| right.update(cx, |v, _| (v.row_fold, v.row_debug_for_test()));
@@ -770,7 +767,66 @@ fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
             break;
         }
     }
-    let width = found.expect("a width where the right pane folds its toggles, path whole");
+    found.expect("a width where the right pane folds its toggles, path whole")
+}
+
+/// #474: the dual pane toggles folded into "⋯" take access keys like every other row: N for
+/// synchronized browsing and M for compare in English, written after the text in Chinese, and
+/// the key toggles them.
+#[gpui::test]
+fn the_folded_toggles_take_access_keys(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1800.);
+    let right = split(&ws, &left, cx);
+    let width = fold_the_right_toggles(cx, &right) - 60;
+    // Further in, so the Chinese texts' widths can't bring the toggles back out.
+    cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+    settle(cx);
+    let menu = |cx: &mut VisualTestContext| {
+        right.update_in(cx, Explorer::open_more_menu_for_test);
+        settle(cx);
+        let sync = t!("compare.sync_tip").into_owned();
+        let compare = t!("compare.compare_tip").into_owned();
+        right
+            .update(cx, |v, _| {
+                v.context_menu
+                    .as_ref()
+                    .map(|m| (m.key_of(&sync), m.key_of(&compare)))
+            })
+            .expect("⋯ opens the folder's menu")
+    };
+
+    rust_i18n::set_locale("en");
+    let (sync, compare) = menu(cx);
+    assert_eq!(
+        sync,
+        Some(('N', t!("compare.sync_tip").into_owned())),
+        "{width} px"
+    );
+    assert_eq!(compare, Some(('M', t!("compare.compare_tip").into_owned())));
+    cx.simulate_keystrokes("n");
+    settle(cx);
+    assert!(right.update(cx, |v, _| v.context_menu.is_none()), "N runs it");
+    assert!(right.update(cx, |v, _| v.pane.synced), "synchronized");
+
+    rust_i18n::set_locale("zh-TW");
+    let (sync, compare) = menu(cx);
+    assert_eq!(sync, Some(('N', "同步瀏覽(N)".to_owned())));
+    assert_eq!(compare, Some(('M', "比較資料夾(M)".to_owned())));
+    cx.simulate_keystrokes("m");
+    settle(cx);
+    rust_i18n::set_locale("en");
+    assert!(right.update(cx, |v, _| v.context_menu.is_none()), "M runs it");
+    assert!(right.update(cx, |v, _| v.pane.comparing), "comparing");
+}
+
+/// #474: in a split tab, the right pane (on a short path) folds Sort, then its item count, then
+/// synchronized browsing and compare into "⋯", before its path loses a level. The menu shows
+/// them checked while on, and they toggle as the buttons do.
+#[gpui::test]
+fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1800.);
+    let right = split(&ws, &left, cx);
+    let width = fold_the_right_toggles(cx, &right);
     assert!(
         cx.debug_bounds("row-more").is_some(),
         "{width} px: ⋯ holds them"

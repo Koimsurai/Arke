@@ -1180,6 +1180,18 @@ impl ContextMenu {
             .collect()
     }
 
+    /// Test helper: the access key of the top-level row `label`, and its text as drawn (the CJK
+    /// form with the key after it, as `(N)`).
+    #[cfg(test)]
+    pub(crate) fn key_of(&self, label: &str) -> Option<(char, String)> {
+        self.level(0).iter().find_map(|entry| match entry {
+            MenuEntry::Item(row) if row.label.as_ref() == label => row
+                .access
+                .map(|access| (access.key, drawn_text(row.label.clone(), access).0.to_string())),
+            _ => None,
+        })
+    }
+
     /// Test helper: labels at the top level (separators as `—`).
     #[cfg(test)]
     pub(crate) fn labels(&self) -> Vec<String> {
@@ -1802,14 +1814,14 @@ impl Explorer {
         let mut items = vec![MenuEntry::Separator];
         if !self.locked {
             items.push(checked_item(
-                t!("compare.sync_tip").into_owned(),
+                lab("sync", t!("compare.sync_tip")),
                 Some("Ctrl+Shift+S"),
                 C::ToggleSync,
                 self.pane.synced,
             ));
         }
         items.push(checked_item(
-            t!("compare.compare_tip").into_owned(),
+            lab("compare", t!("compare.compare_tip")),
             Some("Ctrl+Shift+D"),
             C::ToggleCompare,
             self.pane.comparing,
@@ -4906,9 +4918,16 @@ mod access_tests {
 
     const LOCALES: [&str; 7] = ["en", "zh-TW", "zh-CN", "de", "es", "pt-BR", "ja"];
 
-    /// Spanish has no key for these: every letter of their words was taken by something they
-    /// share a menu with.
-    const NO_SPANISH_KEY: [&str; 4] = ["copy_rel", "link", "keep", "free"];
+    /// No key for these: every letter of their words was taken by something they share a menu
+    /// with.
+    const NO_KEY: [(&str, &str); 6] = [
+        ("es", "copy_rel"),
+        ("es", "link"),
+        ("es", "keep"),
+        ("es", "free"),
+        ("es", "compare"),
+        ("pt-BR", "compare"),
+    ];
 
     /// The own items each menu can show at once, by their `access.*` key. An item that never shows
     /// with another (a folder's "Add to favorites" and "Remove from favorites") is in its own
@@ -5006,7 +5025,34 @@ mod access_tests {
          copy_as_path=menu.copy_as_path edit_address=menu.edit_address \
          clear_history=menu.clear_history reset_cols=menu.reset_column_order \
          drop_move=dnd.menu_move drop_copy=dnd.menu_copy drop_shortcut=dnd.menu_shortcut \
-         drop_cancel=dnd.menu_cancel";
+         drop_cancel=dnd.menu_cancel sync=compare.sync_tip compare=compare.compare_tip";
+
+    /// The pane row's "⋯" adds to a menu (#474): "Sort by" to the selection's, and in a split
+    /// tab synchronized browsing and compare to it or to the folder's.
+    fn more_menus() -> Vec<(String, String)> {
+        const SELECTION: [&str; 7] = [
+            "folder",
+            "folder_rm",
+            "file_archive",
+            "files_archives",
+            "file_image",
+            "file_json",
+            "file_lnk",
+        ];
+        MENUS
+            .iter()
+            .filter_map(|(menu, names)| {
+                let added = if menu.starts_with("background") {
+                    "sync compare"
+                } else if SELECTION.contains(menu) {
+                    "sort_by sync compare"
+                } else {
+                    return None;
+                };
+                Some((format!("{menu}, from ⋯"), format!("{names} {added}")))
+            })
+            .collect()
+    }
 
     fn letter(locale: &str, name: &str) -> Option<char> {
         let key = format!("access.{name}");
@@ -5017,13 +5063,18 @@ mod access_tests {
 
     #[test]
     fn no_two_items_of_a_menu_share_an_access_key() {
+        let menus: Vec<(String, String)> = MENUS
+            .iter()
+            .map(|(menu, names)| ((*menu).to_owned(), (*names).to_owned()))
+            .chain(more_menus())
+            .collect();
         for locale in LOCALES {
-            for (menu, names) in MENUS {
+            for (menu, names) in &menus {
                 let mut seen: Vec<(char, &str)> = Vec::new();
                 for name in names.split_whitespace() {
                     let Some(letter) = letter(locale, name) else {
                         assert!(
-                            locale == "es" && NO_SPANISH_KEY.contains(&name),
+                            NO_KEY.iter().any(|&(l, n)| l == locale && n == name),
                             "{locale}: access.{name} has no letter"
                         );
                         continue;
@@ -5032,7 +5083,7 @@ mod access_tests {
                     // A row may share its letter with a top-row button: the letter only
                     // highlights the row (`access_hit`). Two rows or two buttons may not.
                     // ("New folder" is a row in the "New" menu.)
-                    let is_button = |n: &str| BUTTONS.contains(&n) && *menu != "new_bg";
+                    let is_button = |n: &str| BUTTONS.contains(&n) && menu != "new_bg";
                     let button = is_button(name);
                     if let Some((_, other)) = seen
                         .iter()

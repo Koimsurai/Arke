@@ -491,6 +491,8 @@ UI-Framework des Zed-Editors, und auf den Open-Source-Crates, die in
 [Files](https://files.community/) sehr viel, und die Registerkarten-Seitenleiste ist eine Verbeugung
 vor dem Arc-Browser.
 
+Danke an die [LINUX DO](https://linux.do)-Community.
+
 Der Name stammt aus der griechischen Mythologie: Arke ist die Zwillingsschwester der Iris, beide sind
 geflügelte Götterboten.
 

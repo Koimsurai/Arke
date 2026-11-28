@@ -450,6 +450,8 @@ Arke は、Zed エディターの UI フレームワークである [GPUI](https
 検索構文は [Everything](https://www.voidtools.com/) に倣い、見た目は [Files](https://files.community/) アプリから
 多くを学び、タブのサイドバーは Arc ブラウザーへのオマージュです。
 
+[LINUX DO](https://linux.do) コミュニティに感謝します。
+
 名前はギリシャ神話に由来します。アルケーはイリスの双子の姉妹で、どちらも翼を持つ使者です。
 
 ## コード署名ポリシー
